@@ -1,0 +1,4 @@
+intent: project skeleton from design phase
+assumes: none
+rejected: none
+evidence: cargo test, 17 passed (1 suite), 0 failed
