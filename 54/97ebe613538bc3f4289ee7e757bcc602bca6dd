@@ -1,0 +1,4 @@
+intent: bring the lane up to the trunk before the final gate
+assumes: none
+rejected: none
+evidence: merge only; gate run on the merged tree next
