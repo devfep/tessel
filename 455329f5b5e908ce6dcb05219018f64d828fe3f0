@@ -1,0 +1,4 @@
+intent: Separate Worker and test type environments so Node globals cannot leak into Worker code
+assumes: none
+rejected: triple-slash node reference, since it makes Node types global for all of src
+evidence: probe src file using Buffer/process fails typecheck (TS2591), passes after deletion; vitest 119/119; oxlint, oxfmt clean
