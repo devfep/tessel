@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -44,6 +44,7 @@ struct Inner {
     next_socket: Mutex<u64>,
     events: Mutex<Vec<Event>>,
     accepting: AtomicBool,
+    cut_replay: AtomicUsize,
     lose: Mutex<Vec<(String, Lose)>>,
 }
 
@@ -81,8 +82,8 @@ impl Inner {
     fn act(&self, agent: &AgentId, msg: ClientMsg) {
         let effects = lock(&self.core).handle(agent, msg, now_ms());
         let (events, outbound) = shell::split_effects(effects);
-        self.publish(events);
         self.deliver(None, outbound);
+        self.publish(events);
     }
 
     fn deliver(&self, origin: Option<u64>, outbound: Vec<Outbound>) {
@@ -133,6 +134,7 @@ impl Fake {
             next_socket: Mutex::new(0),
             events: Mutex::new(Vec::new()),
             accepting: AtomicBool::new(true),
+            cut_replay: AtomicUsize::new(0),
             lose: Mutex::new(Vec::new()),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -151,6 +153,12 @@ impl Fake {
     /// Refuses (or accepts again) new connections with HTTP 503. Open sockets are unaffected.
     pub fn set_accepting(&self, accepting: bool) {
         self.inner.accepting.store(accepting, Ordering::SeqCst);
+    }
+
+    /// Makes every event-log replay stop `n` events short and close, as a dropped connection
+    /// would. 0 turns it off.
+    pub fn cut_replay(&self, n: usize) {
+        self.inner.cut_replay.store(n, Ordering::SeqCst);
     }
 
     /// Loses the next message of this kind from `agent`.
@@ -197,8 +205,8 @@ async fn expire_loop(inner: Arc<Inner>) {
             core.expire(now_ms())
         };
         let (events, outbound) = shell::split_effects(effects);
-        inner.publish(events);
         inner.deliver(None, outbound);
+        inner.publish(events);
     }
 }
 
@@ -322,14 +330,19 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
         }
         Action::Watch { from_seq } => {
             let log = lock(&inner.events);
+            let cut = inner.cut_replay.load(Ordering::SeqCst);
             let mut sockets = lock(&inner.sockets);
             if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
-                for event in log.iter().filter(|e| e.seq >= from_seq) {
+                let shown = log.len().saturating_sub(cut);
+                for event in log[..shown].iter().filter(|e| e.seq >= from_seq) {
                     let _ = entry.tx.send(ServerMsg::Event {
                         event: event.clone(),
                     });
                 }
                 entry.watching = true;
+            }
+            if cut > 0 {
+                return Some(Handled { close: true });
             }
         }
         Action::Call { agent } => {
@@ -352,7 +365,6 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                 core.handle(&agent, msg, now_ms())
             };
             let (events, outbound) = shell::split_effects(effects);
-            inner.publish(events);
             if let Some(bound) = shell::bind_on_welcome(session, &agent, &outbound) {
                 *session = bound;
                 let mut sockets = inner
@@ -363,7 +375,9 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                     entry.bound.clone_from(&session.agent);
                 }
             }
+            // As the Durable Object does: the reply first, then the events it caused.
             inner.deliver(Some(id), outbound);
+            inner.publish(events);
         }
     }
     None
@@ -392,8 +406,8 @@ fn close_socket(inner: &Inner, id: u64, session: &Session) {
         core.disconnect(agent, now_ms())
     };
     let (events, outbound) = shell::split_effects(effects);
-    inner.publish(events);
     inner.deliver(None, outbound);
+    inner.publish(events);
 }
 
 fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {

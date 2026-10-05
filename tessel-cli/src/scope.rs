@@ -81,9 +81,7 @@ pub enum Located {
 /// file in the worktree counts as that file, and a symlinked prefix such as macOS `/var`
 /// compares equal to the root. The file itself need not exist.
 pub fn locate(root: &Path, cwd: &Path, raw: &str) -> Located {
-    let joined = cwd.join(raw);
-    let normalized = normalize(&joined);
-    classify(root, &canonicalize_prefix(&normalized))
+    classify(root, &resolve(cwd, raw))
 }
 
 fn classify(root: &Path, resolved: &Path) -> Located {
@@ -110,42 +108,35 @@ fn classify(root: &Path, resolved: &Path) -> Located {
     }
 }
 
-/// Lexically removes `.` and resolves `..`, without touching the filesystem.
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
+/// Walks `raw` from `cwd` one component at a time, the way the filesystem does: each existing
+/// component that is a symlink is replaced by its target before the next component is read, so
+/// `link/..` is the parent of the link's target, not the directory holding the link. Components
+/// that do not exist yet are appended as they are.
+fn resolve(cwd: &Path, raw: &str) -> PathBuf {
+    let mut current = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    for component in Path::new(raw).components() {
         match component {
-            Component::ParentDir => {
-                out.pop();
+            Component::RootDir | Component::Prefix(_) => {
+                current = PathBuf::from(component.as_os_str());
             }
             Component::CurDir => {}
-            Component::Normal(_) | Component::RootDir | Component::Prefix(_) => {
-                out.push(component);
+            Component::ParentDir => {
+                current.pop();
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                let is_link = current
+                    .symlink_metadata()
+                    .is_ok_and(|meta| meta.file_type().is_symlink());
+                if is_link {
+                    if let Ok(target) = current.canonicalize() {
+                        current = target;
+                    }
+                }
             }
         }
     }
-    out
-}
-
-fn canonicalize_prefix(path: &Path) -> PathBuf {
-    let mut tail = Vec::new();
-    let mut head = path.to_path_buf();
-    loop {
-        if let Ok(real) = head.canonicalize() {
-            let mut full = real;
-            for part in tail.iter().rev() {
-                full.push(part);
-            }
-            return full;
-        }
-        let Some(name) = head.file_name().map(std::ffi::OsStr::to_os_string) else {
-            return path.to_path_buf();
-        };
-        tail.push(name);
-        if !head.pop() {
-            return path.to_path_buf();
-        }
-    }
+    current
 }
 
 #[cfg(test)]
@@ -243,6 +234,24 @@ mod tests {
         assert_eq!(
             locate(&root, &root, "alias.rs"),
             Located::Inside("src/a.rs".into())
+        );
+    }
+
+    #[test]
+    fn dot_dot_after_a_symlink_means_the_parent_of_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let far = outside.path().canonicalize().unwrap().join("sub");
+        std::fs::create_dir_all(&far).unwrap();
+        std::fs::create_dir_all(root.join("a/real")).unwrap();
+        std::os::unix::fs::symlink(&far, root.join("out")).unwrap();
+        std::os::unix::fs::symlink(root.join("a/real"), root.join("in")).unwrap();
+        // Written lexically `out/../x.rs` would be inside; on disk it is beside `sub`, outside.
+        assert_eq!(locate(&root, &root, "out/../x.rs"), Located::Outside);
+        assert_eq!(
+            locate(&root, &root, "in/../x.rs"),
+            Located::Inside("a/x.rs".into())
         );
     }
 

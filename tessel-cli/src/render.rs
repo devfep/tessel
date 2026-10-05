@@ -12,14 +12,34 @@ use crate::state::{Connection, HeldClaim, Notice, NoticeKind, State};
 /// The longest quoted text shown; longer text is cut and marked.
 const MAX_QUOTED_CHARS: usize = 500;
 
-/// Characters that move the cursor, rewrite earlier output or reorder text without being
-/// "control" characters in Rust's sense: line and paragraph separators, zero-width and
-/// directional marks, and the byte order mark.
+/// The Unicode "format" characters (category Cf), plus the line and paragraph separators
+/// (Zl, Zp): none is a control character to Rust, but each can hide text, reorder it or break
+/// a line. Rust's standard library has no category lookup, so the ranges are listed here from
+/// the Unicode Character Database (Unicode 16) rather than pulling in a dependency.
 fn is_invisible_format(c: char) -> bool {
     matches!(
         c,
-        '\u{2028}' | '\u{2029}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
     )
 }
 
@@ -378,6 +398,39 @@ mod tests {
         );
         assert!(shown.starts_with("a\\n\\r\\u{1b}[2J"), "{shown}");
         assert_eq!(escape("src/ünï.rs"), "src/ünï.rs");
+    }
+
+    #[test]
+    fn every_format_character_is_escaped() {
+        for c in [
+            '\u{AD}',
+            '\u{600}',
+            '\u{61C}',
+            '\u{6DD}',
+            '\u{180E}',
+            '\u{200B}',
+            '\u{200F}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{202A}',
+            '\u{202E}',
+            '\u{2060}',
+            '\u{2064}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{206F}',
+            '\u{FEFF}',
+            '\u{FFFB}',
+            '\u{E0001}',
+            '\u{E0041}',
+        ] {
+            let shown = escape(&c.to_string());
+            assert!(shown.starts_with("\\u{"), "{c:?} printed raw");
+        }
+        // Neighbours that are ordinary text stay as they are.
+        for c in ['\u{2065}', '\u{2070}', '\u{AE}', '\u{FFFC}', 'é'] {
+            assert_eq!(escape(&c.to_string()), c.to_string());
+        }
     }
 
     #[test]

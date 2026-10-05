@@ -1041,3 +1041,75 @@ async fn a_reconnect_says_hello_with_the_current_head() -> Result<()> {
     assert_ne!(bases.first(), Some(&head));
     Ok(())
 }
+
+// ---------- fix pass 2 ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("short job")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The log is: connected, granted, released, connected again. Cut it before the release.
+    fake.cut_replay(2);
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        a1.held_claims()?,
+        0,
+        "a dead claim was adopted from a cut-off read"
+    );
+    let inbox = a1.tessel(&["inbox", "--all"])?;
+    assert!(
+        inbox.stdout.contains("not read to its end"),
+        "{}",
+        inbox.stdout
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_the_next_read(
+) -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("unlucky twice")?;
+    fake.cut_replay(1);
+    fake.lose_next("a1", Lose::ClaimReply);
+    let refused = a1.tessel(&["claim", "src/a.rs"])?;
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(
+        refused.stdout.contains("run it again"),
+        "{}",
+        refused.stdout
+    );
+    assert_eq!(a1.held_claims()?, 0);
+
+    fake.cut_replay(0);
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || Ok((a1.held_claims()? == 1).then_some(()))).await?;
+    a2.start("collide")?;
+    assert_eq!(a2.tessel(&["claim", "src/a.rs"])?.code, 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wait_queued_while_the_log_is_read_survives_the_read_connection_closing() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("holder")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("waiter")?;
+    let before = hellos(&fake, "a2");
+    fake.drop_connections();
+    back_online(&fake, &a2, before).await?;
+    // Queued right after the reconnect, while or just after the log is read on a second socket.
+    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(()))).await?;
+    Ok(())
+}

@@ -120,6 +120,10 @@ pub struct Local<'a> {
     pub lost_requests: &'a [Vec<ScopeClaim>],
     /// Claims this daemon asked to release before the socket dropped.
     pub lost_releases: &'a HashSet<ClaimId>,
+    /// Whether the log was read to its end marker. A truncated read can stop after a claim's
+    /// grant and before its release, so it never justifies adopting, answering or releasing:
+    /// only a logged ending is evidence, and a missing one is not.
+    pub complete: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -127,7 +131,7 @@ pub struct Plan {
     /// Local claims the log shows as ended. Absence from the log is not enough: the read may
     /// have been cut short, and forgetting a claim that is still held would be worse.
     pub forget: Vec<ClaimId>,
-    /// Local claims whose fence differs from the log's latest.
+    /// Local claims whose fence is older than the log's latest. A fence never goes backwards.
     pub refresh: Vec<(ClaimId, Fence)>,
     /// Live claims that answer a request whose reply was lost: index into `lost_requests`.
     pub answer_lost: Vec<(usize, ClaimId, ServerClaim)>,
@@ -145,7 +149,7 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
     let ended = ended_claims(events);
     for held in local.claims {
         match live.get(&held.claim.0) {
-            Some(server) if server.fence != held.fence => {
+            Some(server) if server.fence > held.fence => {
                 plan.refresh.push((held.claim, server.fence));
             }
             None if ended.contains(&held.claim) && !local.fresh.contains(&held.claim) => {
@@ -153,6 +157,9 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
             }
             Some(_) | None => {}
         }
+    }
+    if !local.complete {
+        return plan;
     }
     let known: HashSet<ClaimId> = local.claims.iter().map(|held| held.claim).collect();
     let mut answered = HashSet::new();
@@ -307,8 +314,68 @@ mod tests {
             fresh: &fresh,
             lost_requests,
             lost_releases: &releases,
+            complete: true,
         };
         plan(&local, &live, events)
+    }
+
+    fn plan_incomplete(
+        local: &[HeldClaim],
+        events: &[Event],
+        lost: &[Vec<Sc>],
+        rel: &[u64],
+    ) -> Plan {
+        let live = live_claims(&AgentId("a1".into()), events);
+        let releases: HashSet<ClaimId> = rel.iter().map(|id| ClaimId(*id)).collect();
+        let fresh = HashSet::new();
+        let local = Local {
+            claims: local,
+            fresh: &fresh,
+            lost_requests: lost,
+            lost_releases: &releases,
+            complete: false,
+        };
+        plan(&local, &live, events)
+    }
+
+    #[test]
+    fn a_truncated_read_never_adopts_answers_or_releases() {
+        // The log stops after a grant whose release was cut off.
+        let events = vec![
+            granted(0, "a1", 7, 9, "a.rs"),
+            granted(1, "a1", 8, 10, "b.rs"),
+        ];
+        let plan = plan_incomplete(&[], &events, &[scopes("a.rs")], &[8]);
+        assert_eq!(plan, Plan::default());
+    }
+
+    #[test]
+    fn a_truncated_read_still_forgets_a_logged_ending() {
+        let local = [held(1, 1, "a.rs")];
+        let events = vec![granted(0, "a1", 1, 1, "a.rs"), released(1, 1)];
+        let plan = plan_incomplete(&local, &events, &[], &[]);
+        assert_eq!(plan.forget, vec![ClaimId(1)]);
+    }
+
+    #[test]
+    fn a_fence_never_goes_backwards() {
+        let local = [held(1, 5, "a.rs")];
+        let events = vec![granted(0, "a1", 1, 3, "a.rs")];
+        assert!(plan_for(&local, &events, &[], &[]).refresh.is_empty());
+    }
+
+    #[test]
+    fn the_latest_live_claim_answers_a_lost_request_when_several_match() {
+        let events = vec![
+            granted(0, "a1", 5, 5, "a.rs"),
+            granted(1, "a1", 9, 9, "a.rs"),
+            granted(2, "a1", 7, 7, "a.rs"),
+        ];
+        let plan = plan_for(&[], &events, &[scopes("a.rs")], &[]);
+        assert_eq!(plan.answer_lost.len(), 1);
+        assert_eq!(plan.answer_lost[0].1, ClaimId(9));
+        let adopted: Vec<ClaimId> = plan.adopt.iter().map(|(claim, _)| *claim).collect();
+        assert_eq!(adopted, vec![ClaimId(7), ClaimId(5)]);
     }
 
     #[test]
@@ -378,6 +445,7 @@ mod tests {
             fresh: &fresh,
             lost_requests: &[],
             lost_releases: &none,
+            complete: true,
         };
         assert!(super::plan(&local, &live, &ended).forget.is_empty());
     }

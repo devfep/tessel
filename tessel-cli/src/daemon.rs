@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, ErrorCode, Event, Intent, Mode,
-    OnConflict, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, ErrorCode, Event, EventKind,
+    Intent, Mode, OnConflict, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -34,10 +34,8 @@ const FIRST_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(1);
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
-/// The event-log read after a reconnect ends when no event has arrived for this long.
-const SNAPSHOT_QUIET: Duration = Duration::from_millis(400);
-/// Live events from busy agents can keep the log from ever going quiet, so the read also ends
-/// after this long. By then the replay is long over; what was read is what is used.
+/// How long the event-log read after a reconnect may take to reach its end marker. A read that
+/// does not is treated as truncated.
 const SNAPSHOT_LIMIT: Duration = Duration::from_secs(5);
 /// Until the coordinator's `Welcome` says otherwise.
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(10);
@@ -76,8 +74,15 @@ enum Incoming {
     /// The coordinator's event log, read right after a reconnect.
     Snapshot {
         generation: u64,
-        events: Result<Vec<Event>, String>,
+        log: Result<LogRead, String>,
     },
+}
+
+/// What the event-log read returned.
+struct LogRead {
+    events: Vec<Event>,
+    /// The read reached its end marker, with no gap in `seq`.
+    complete: bool,
 }
 
 struct Conn {
@@ -119,6 +124,9 @@ struct Daemon {
     lost_releases: HashSet<ClaimId>,
     /// Claims granted since the current connection was welcomed.
     fresh: HashSet<ClaimId>,
+    /// The task reading the event log. Aborted when the working socket drops: a bound read
+    /// connection that outlived it would stop the coordinator withdrawing a queued wait.
+    snapshot: Option<JoinHandle<()>>,
     in_tx: mpsc::UnboundedSender<Incoming>,
     backoff: Duration,
     reconnect_at: Option<Instant>,
@@ -253,6 +261,7 @@ impl Daemon {
             lost_requests: Vec::new(),
             lost_releases: HashSet::new(),
             fresh: HashSet::new(),
+            snapshot: None,
             in_tx,
             backoff: FIRST_BACKOFF,
             reconnect_at: Some(now),
@@ -432,8 +441,8 @@ impl Daemon {
             Incoming::Closed { generation, reason } if generation == self.generation => {
                 self.on_closed(&reason);
             }
-            Incoming::Snapshot { generation, events } if generation == self.generation => {
-                self.on_snapshot(events);
+            Incoming::Snapshot { generation, log } if generation == self.generation => {
+                self.on_snapshot(log);
             }
             Incoming::Msg { .. } | Incoming::Closed { .. } | Incoming::Snapshot { .. } => {}
         }
@@ -441,6 +450,9 @@ impl Daemon {
 
     fn on_closed(&mut self, reason: &str) {
         self.conn = None;
+        if let Some(read) = self.snapshot.take() {
+            read.abort();
+        }
         self.log(&format!("connection closed: {reason}"));
         self.state.last_error = Some(reason.to_string());
         // A claim request that was in flight may have been granted without us hearing of it.
@@ -556,11 +568,15 @@ impl Daemon {
         self.heartbeat_every = Duration::from_millis((lease_ms / 3).max(1));
         self.next_heartbeat = Instant::now() + self.heartbeat_every;
         self.fresh.clear();
-        tokio::spawn(snapshot_task(
+        if let Some(read) = self.snapshot.take() {
+            read.abort();
+        }
+        self.snapshot = Some(tokio::spawn(snapshot_task(
             self.config.clone(),
+            self.state.base.clone(),
             self.in_tx.clone(),
             self.generation,
-        ));
+        )));
         self.log(&format!("welcomed; lease {lease_ms} ms"));
         self.persist();
     }
@@ -620,11 +636,11 @@ impl Daemon {
 
     /// Compares this agent's claims in the coordinator's log with the local ones, and repairs
     /// the difference. The rules are in `reconcile`.
-    fn on_snapshot(&mut self, events: Result<Vec<Event>, String>) {
+    fn on_snapshot(&mut self, log: Result<LogRead, String>) {
         let lost = std::mem::take(&mut self.lost_requests);
         let lost_releases = std::mem::take(&mut self.lost_releases);
-        let events = match events {
-            Ok(events) => events,
+        let LogRead { events, complete } = match log {
+            Ok(log) => log,
             Err(why) => {
                 self.log(&format!("cannot read the event log: {why}"));
                 self.notify(
@@ -644,8 +660,9 @@ impl Daemon {
         };
         let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
         self.log(&format!(
-            "event log read: {} events, {} live claims for this agent",
+            "event log read: {} events ({}), {} live claims for this agent",
             events.len(),
+            if complete { "complete" } else { "TRUNCATED" },
             live.len()
         ));
         let scopes: Vec<Vec<ScopeClaim>> = lost.iter().map(|p| p.scopes.clone()).collect();
@@ -654,9 +671,26 @@ impl Daemon {
             fresh: &self.fresh,
             lost_requests: &scopes,
             lost_releases: &lost_releases,
+            complete,
         };
         let plan = reconcile::plan(&local, &live, &events);
-        self.apply_plan(plan, lost);
+        if complete {
+            self.apply_plan(plan, lost);
+            return;
+        }
+        self.notify(
+            NoticeKind::Error,
+            "the coordinator's event log was not read to its end after reconnecting, so no claim \
+             was adopted; only claims the log shows as ended were dropped",
+            None,
+        );
+        self.lost_releases = lost_releases;
+        let message = "the connection dropped before the coordinator answered, and the outcome \
+                       could not be checked afterwards; run `tessel status`, then run it again";
+        for pending in lost {
+            answer(pending.replies, &refused(None, message));
+        }
+        self.apply_plan(plan, Vec::new());
     }
 
     fn apply_plan(&mut self, plan: Plan, lost: Vec<PendingClaim>) {
@@ -1063,34 +1097,68 @@ async fn open_socket(config: &Config) -> Result<Socket, ConnectFailure> {
     }
 }
 
-/// Reads the whole event log on a short-lived second connection, which `Watch` turns into a
-/// replay followed by live events. The replay has no end marker, so it is over when no event
-/// has arrived for `SNAPSHOT_QUIET`, or after `SNAPSHOT_LIMIT`.
-async fn snapshot_task(config: Config, tx: mpsc::UnboundedSender<Incoming>, generation: u64) {
-    let events = tokio::time::timeout(CONNECT_TIMEOUT + SNAPSHOT_LIMIT * 2, read_log(&config))
-        .await
-        .unwrap_or_else(|_| Err("the event log read hung".to_string()));
-    let _ = tx.send(Incoming::Snapshot { generation, events });
+/// Reads the whole event log on a short-lived second connection. `Watch { from_seq: 0 }`
+/// replays the log and then follows it live; the replay has no end of its own. So the read then
+/// sends `Hello`, which the coordinator handles after the replay is done (its Durable Object
+/// takes one message at a time while it reads storage). Its `Welcome` reply is sent before the
+/// events it caused, so the first `AgentConnected` for this agent after the `Welcome` is the one
+/// that `Hello` logged: it comes after every event the replay held. A read that does not reach
+/// it within `SNAPSHOT_LIMIT`, or whose `seq` numbers have a gap, is marked truncated.
+///
+/// The read connection is bound to the agent while it lives, so the coordinator withdraws a
+/// queued wait only when the last of the agent's sockets closes; `on_closed` aborts this task
+/// so that it is never the last.
+async fn snapshot_task(
+    config: Config,
+    base: String,
+    tx: mpsc::UnboundedSender<Incoming>,
+    generation: u64,
+) {
+    let log = tokio::time::timeout(
+        CONNECT_TIMEOUT + SNAPSHOT_LIMIT * 2,
+        read_log(&config, base),
+    )
+    .await
+    .unwrap_or_else(|_| Err("the event log read hung".to_string()));
+    let _ = tx.send(Incoming::Snapshot { generation, log });
 }
 
-async fn read_log(config: &Config) -> Result<Vec<Event>, String> {
+async fn read_log(config: &Config, base: String) -> Result<LogRead, String> {
+    let me = AgentId(config.agent.clone());
     let mut socket = open_socket(config).await.map_err(|failure| match failure {
         ConnectFailure::Fatal(message) | ConnectFailure::Transient(message) => message,
     })?;
-    let watch =
-        serde_json::to_string(&ClientMsg::Watch { from_seq: 0 }).map_err(|e| e.to_string())?;
-    socket
-        .send(Message::text(watch))
-        .await
-        .map_err(|e| e.to_string())?;
+    for msg in [
+        ClientMsg::Watch { from_seq: 0 },
+        ClientMsg::Hello {
+            agent: me.clone(),
+            base: CommitId(base),
+            protocol: PROTOCOL_VERSION,
+        },
+    ] {
+        let text = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+        socket
+            .send(Message::text(text))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let mut events = Vec::new();
+    let mut welcomed = false;
+    let mut marker = false;
     let deadline = Instant::now() + SNAPSHOT_LIMIT;
-    while Instant::now() < deadline {
-        match tokio::time::timeout(SNAPSHOT_QUIET, socket.next()).await {
-            Err(_) | Ok(None) => break,
-            Ok(Some(Err(e))) => return Err(e.to_string()),
+    while !marker {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        match tokio::time::timeout(left, socket.next()).await {
+            // A closed or failed socket mid-read leaves a truncated log, not an unreadable one.
+            Err(_) | Ok(None | Some(Err(_))) => break,
             Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<ServerMsg>(&text) {
-                Ok(ServerMsg::Event { event }) => events.push(event),
+                Ok(ServerMsg::Event { event }) => {
+                    marker = welcomed && is_connection_of(&event, &me);
+                    events.push(event);
+                }
+                Ok(ServerMsg::Welcome { .. }) => welcomed = true,
                 Ok(ServerMsg::Error { code, .. }) => return Err(format!("refused: {code:?}")),
                 Ok(_) => {}
                 Err(e) => return Err(format!("unreadable message: {e}")),
@@ -1099,7 +1167,39 @@ async fn read_log(config: &Config) -> Result<Vec<Event>, String> {
         }
     }
     let _ = socket.close(None).await;
-    Ok(events)
+    let gapless = events
+        .iter()
+        .zip(0u64..)
+        .all(|(event, seq)| event.seq == seq);
+    Ok(LogRead {
+        complete: marker && gapless,
+        events,
+    })
+}
+
+fn is_connection_of(event: &Event, agent: &AgentId) -> bool {
+    match &event.kind {
+        EventKind::AgentConnected { agent: who } => who == agent,
+        EventKind::ClaimGranted { .. }
+        | EventKind::ClaimDenied { .. }
+        | EventKind::ClaimShadowed { .. }
+        | EventKind::ClaimAmended { .. }
+        | EventKind::ClaimReleased { .. }
+        | EventKind::WaitQueued { .. }
+        | EventKind::WaitWithdrawn { .. }
+        | EventKind::Submitted { .. }
+        | EventKind::Merged { .. }
+        | EventKind::SubmitRejected { .. }
+        | EventKind::ReviewRequested { .. }
+        | EventKind::ReviewDecided { .. }
+        | EventKind::BaseMoved { .. }
+        | EventKind::AssumptionChallenged { .. }
+        | EventKind::RaceOpened { .. }
+        | EventKind::RaceDecided { .. }
+        | EventKind::DenialVerified { .. }
+        | EventKind::AssumptionVerified { .. }
+        | EventKind::ReplayMerged { .. } => false,
+    }
 }
 
 /// Owns the socket: forwards frames to the daemon and daemon messages to the socket. Ends when
