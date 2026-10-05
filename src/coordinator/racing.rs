@@ -24,12 +24,14 @@
 //!   not submitted by then is cut off and released. Tests are tried by the verification queue (see
 //!   `verifying`), one entry at a time with merges first, all on the head when judging began. A
 //!   trial that never runs to a result leaves `tests_passed` as `None`. `risk_bp` and `diff_lines`
-//!   are never measured, so they stay `None` and sort last: a race ranked by them alone falls
-//!   back to claim order.
+//!   are never measured, so `LowestRisk` and `SmallestDiff` are refused at `OpenRace`: ranking by
+//!   them would present the earliest joiner as the lowest risk (CLAUDE.md rule 7). A winner whose
+//!   trial passed counts as having test evidence for the review gate.
 //! - With `HumanPick`, ranked entries are sent as a recommendation (`winner: None`) and the race
-//!   waits, with no time limit, for `PickWinner`. `RaceDecided` is logged once, when the winner is
-//!   known, so `races_decided` counts a race once. A race with no eligible entry, including one
-//!   nobody entered, is decided at once with `winner: None`.
+//!   waits for `PickWinner` for at most `MAX_RACE_MS` past its deadline. Then it is decided with
+//!   no winner and every entry is rejected; nobody is picked for the reviewers. `RaceDecided` is
+//!   logged once, when the outcome is known, so `races_decided` counts a race once. A race with
+//!   no eligible entry, including one nobody entered, is decided at once with `winner: None`.
 //! - `RaceResult` goes to every entrant and to the opener, who may not be one but is who decides a
 //!   `HumanPick`. Losers get `SubmitRejected` with a fixed reason and lose their claim; their forks
 //!   are untouched. The winner becomes a real claim holding the race's scopes.
@@ -57,6 +59,9 @@ const MAX_CRITERIA: usize = 5;
 
 /// What every loser is told. Fixed: nothing about the winning work is quoted.
 const LOST_RACE: &str = "lost the race";
+
+/// What every entry is told when a `HumanPick` race ran out of time. Fixed, like `LOST_RACE`.
+const NOT_PICKED: &str = "the race was not picked in time";
 
 /// An `OpenRace` message minus the sender. `claim` carries the race's task and scopes, so they are
 /// checked as a claim's are.
@@ -120,9 +125,21 @@ struct Verdict {
     winner: Option<ClaimId>,
     ranking: Vec<ClaimId>,
     entries: Vec<RaceEntry>,
+    /// Why each entry other than the winner is rejected.
+    rejection: &'static str,
 }
 
 impl Race {
+    /// When the race needs the coordinator next, if it does: the deadline of an open race, or the
+    /// last moment a `HumanPick` may be made.
+    fn due_ms(&self) -> Option<u64> {
+        match self.phase {
+            Phase::Open => Some(self.deadline_ms),
+            Phase::AwaitingPick { .. } => Some(self.deadline_ms.saturating_add(MAX_RACE_MS)),
+            Phase::Judging => None,
+        }
+    }
+
     fn is_joinable(&self) -> bool {
         match self.phase {
             Phase::Open => {
@@ -199,18 +216,9 @@ impl Coordinator {
         self.state.races.get(&race.0).is_some_and(Race::is_joinable)
     }
 
-    /// The earliest deadline of a race still taking entrants.
+    /// The earliest deadline of a race still taking entrants or waiting for a pick.
     pub(super) fn next_race_deadline_ms(&self) -> Option<u64> {
-        let mut earliest: Option<u64> = None;
-        for race in self.state.races.values() {
-            match race.phase {
-                Phase::Open => {
-                    earliest = Some(earliest.map_or(race.deadline_ms, |e| e.min(race.deadline_ms)));
-                }
-                Phase::Judging | Phase::AwaitingPick { .. } => {}
-            }
-        }
-        earliest
+        self.state.races.values().filter_map(Race::due_ms).min()
     }
 
     /// Whether `race` was ever opened. Ids start at 1, rise by one and are never reused.
@@ -312,6 +320,14 @@ impl Coordinator {
         }
         if request.criteria.is_empty() || request.criteria.len() > MAX_CRITERIA {
             return malformed(format!("a race needs 1 to {MAX_CRITERIA} criteria"));
+        }
+        for criterion in &request.criteria {
+            match criterion {
+                Criterion::LowestRisk | Criterion::SmallestDiff => {
+                    return malformed(format!("{criterion:?} is not measured yet"));
+                }
+                Criterion::TestsPass | Criterion::FirstSubmitted | Criterion::HumanPick => {}
+            }
         }
         None
     }
@@ -484,18 +500,32 @@ impl Coordinator {
         Vec::new()
     }
 
-    /// Judge every open race whose deadline has come.
+    /// Judge every open race whose deadline has come, and end every `HumanPick` race that was not
+    /// picked in time.
     pub(super) fn judge_races_past_deadline(&mut self, now_ms: u64) -> Vec<Effect> {
-        let mut due = Vec::new();
-        for (id, race) in &self.state.races {
-            match race.phase {
-                Phase::Open if race.deadline_ms <= now_ms => due.push(RaceId(*id)),
-                Phase::Open | Phase::Judging | Phase::AwaitingPick { .. } => {}
-            }
-        }
         let mut effects = Vec::new();
-        for race in due {
-            effects.extend(self.begin_judging(race, now_ms));
+        let ids: Vec<u64> = self.state.races.keys().copied().collect();
+        for id in ids {
+            let race_id = RaceId(id);
+            let Some(race) = self.state.races.get(&id) else {
+                continue;
+            };
+            if race.due_ms().is_none_or(|due| due > now_ms) {
+                continue;
+            }
+            match &race.phase {
+                Phase::Open => effects.extend(self.begin_judging(race_id, now_ms)),
+                Phase::AwaitingPick { ranking, entries } => {
+                    let verdict = Verdict {
+                        winner: None,
+                        ranking: ranking.clone(),
+                        entries: entries.clone(),
+                        rejection: NOT_PICKED,
+                    };
+                    effects.extend(self.conclude(race_id, verdict, None, now_ms));
+                }
+                Phase::Judging => {}
+            }
         }
         effects
     }
@@ -581,6 +611,7 @@ impl Coordinator {
                 winner,
                 ranking,
                 entries,
+                rejection: LOST_RACE,
             };
             return self.conclude(race_id, verdict, None, now_ms);
         }
@@ -634,6 +665,7 @@ impl Coordinator {
             winner: Some(claim),
             ranking: ranking.clone(),
             entries: entries.clone(),
+            rejection: LOST_RACE,
         };
         self.conclude(race_id, verdict, Some(agent.clone()), now_ms)
     }
@@ -677,7 +709,8 @@ impl Coordinator {
             if Some(entrant.claim) == verdict.winner {
                 winning = Some((entrant.claim, entrant.agent, entered));
             } else {
-                effects.extend(self.reject_loser(entrant.claim, entrant.agent, now_ms));
+                let rejection = verdict.rejection;
+                effects.extend(self.reject_loser(entrant.claim, entrant.agent, rejection, now_ms));
             }
         }
         if let Some((claim, agent, entered)) = winning {
@@ -688,9 +721,15 @@ impl Coordinator {
     }
 
     /// A loser's claim ends. Its fork is not touched.
-    fn reject_loser(&mut self, claim: ClaimId, agent: AgentId, now_ms: u64) -> Vec<Effect> {
+    fn reject_loser(
+        &mut self,
+        claim: ClaimId,
+        agent: AgentId,
+        reason: &str,
+        now_ms: u64,
+    ) -> Vec<Effect> {
         self.state.claims.remove(&claim.0);
-        let reason = LOST_RACE.to_string();
+        let reason = reason.to_string();
         let rejected = EventKind::SubmitRejected {
             claim,
             reason: reason.clone(),
@@ -724,12 +763,14 @@ impl Coordinator {
             touched,
             submit_req,
             has_evidence,
+            tests_passed,
             ..
         } = entered;
         let (mut effects, challenged) =
             self.challenge_assumptions(agent, &fork_commit, &touched, now_ms);
         let threatened = u32::try_from(challenged.len()).unwrap_or(u32::MAX);
-        let reasons = review_reasons(&touched, threatened, has_evidence, &[]);
+        let evidence = has_evidence || tests_passed == Some(true);
+        let reasons = review_reasons(&touched, threatened, evidence, &[]);
         let submission = Submission::new(
             fork_commit,
             touched,
@@ -1396,6 +1437,13 @@ mod tests {
                 NOW + day,
                 vec![Criterion::TestsPass],
             ),
+            (
+                "deadline one past the limit",
+                vec![edit("a")],
+                2,
+                NOW + MAX_RACE_MS + 1,
+                vec![Criterion::TestsPass],
+            ),
             ("no criteria", vec![edit("a")], 2, DEADLINE, vec![]),
             (
                 "six criteria",
@@ -1756,42 +1804,21 @@ mod tests {
     }
 
     #[test]
-    fn risk_and_diff_are_never_measured_so_they_rank_by_claim_order() {
+    fn criteria_that_are_not_measured_are_refused() {
         for criterion in [Criterion::LowestRisk, Criterion::SmallestDiff] {
             let mut c = core();
-            let race = open(&mut c, vec![criterion]);
-            let one = join(&mut c, "a1", race);
-            let two = join(&mut c, "a2", race);
-            submit_at(&mut c, "a2", two, NOW + 1);
-            submit_at(&mut c, "a1", one, NOW + 2);
-            let effects = run_trials(&mut c, NOW + 3, &[("a1", passed()), ("a2", passed())]);
-            let (winner, ranking, entries) = result_for(&effects, "felix").expect("told");
-            assert_eq!(winner, Some(one.0), "{criterion:?}");
-            assert_eq!(ranking, vec![one.0, two.0], "{criterion:?}");
-            assert!(entries
-                .iter()
-                .all(|e| e.risk_bp.is_none() && e.diff_lines.is_none()));
+            let before = state(&c);
+            let criteria = vec![Criterion::TestsPass, criterion];
+            let msg = open_msg(vec![edit("src/a.rs")], 2, DEADLINE, criteria);
+            let effects = c.handle(&agent("felix"), msg, NOW);
+            assert_eq!(error_code(&effects), ErrorCode::Malformed, "{criterion:?}");
+            let ServerMsg::Error { message, .. } = replies(&effects)[0] else {
+                panic!("expected Error");
+            };
+            assert!(message.contains("not measured"), "{message}");
+            assert!(logged(&effects).is_empty());
+            assert_eq!(state(&c), before);
         }
-    }
-
-    #[test]
-    fn criteria_apply_in_order() {
-        let mut c = core();
-        let race = open(
-            &mut c,
-            vec![Criterion::LowestRisk, Criterion::FirstSubmitted],
-        );
-        let one = join(&mut c, "a1", race);
-        let two = join(&mut c, "a2", race);
-        submit_at(&mut c, "a2", two, NOW + 1);
-        submit_at(&mut c, "a1", one, NOW + 2);
-        let effects = run_trials(&mut c, NOW + 3, &[("a1", passed()), ("a2", passed())]);
-        let (winner, _, _) = result_for(&effects, "felix").expect("told");
-        assert_eq!(
-            winner,
-            Some(two.0),
-            "risk is equal and unknown, so the next criterion decides"
-        );
     }
 
     #[test]
@@ -2107,6 +2134,62 @@ mod tests {
     }
 
     #[test]
+    fn a_race_nobody_picked_is_decided_without_a_winner_when_the_pick_window_ends() {
+        let (mut c, [one, two, three]) = human_race();
+        let results = [("a1", passed()), ("a2", passed()), ("a3", failed())];
+        run_trials(&mut c, NOW + 4, &results);
+        let due = DEADLINE + MAX_RACE_MS;
+        assert_eq!(c.next_expiry_ms(), Some(due));
+        assert_eq!(c.next_wake_ms(false, false, NOW + 5), Some(due));
+        assert!(
+            c.expire(due - 1).is_empty(),
+            "still waiting one tick before"
+        );
+
+        let effects = c.expire(due);
+        let [EventKind::RaceDecided {
+            winner, ranking, ..
+        }, ..] = logged(&effects)[..]
+        else {
+            panic!("expected RaceDecided first, got {effects:?}");
+        };
+        assert_eq!((*winner, ranking.clone()), (None, vec![one.0, two.0]));
+        for (who, entry) in [("a1", one), ("a2", two), ("a3", three)] {
+            assert!(
+                notices(&effects, who).iter().any(|msg| matches!(msg,
+                    ServerMsg::SubmitRejected { claim, reason }
+                        if *claim == entry.0 && reason == "the race was not picked in time")),
+                "{who}"
+            );
+            let (winner, _, entries) = result_for(&effects, who).expect(who);
+            assert_eq!((winner, entries.len()), (None, 3), "{who}");
+        }
+        assert_eq!(c.begin_merge(due + 1), None);
+        let free = claim_as(&mut c, "outsider", "src/a.rs", OnConflict::Fail);
+        assert!(is_granted(&free));
+        assert_eq!(
+            c.next_expiry_ms(),
+            Some(due + 1 + LEASE),
+            "only the new claim's lease is left"
+        );
+        let late = pick(&mut c, "felix", one.0);
+        assert_eq!(error_code(&late), ErrorCode::RaceClosed);
+    }
+
+    #[test]
+    fn a_pick_made_in_time_stops_the_pick_window() {
+        let (mut c, [one, ..]) = human_race();
+        run_trials(
+            &mut c,
+            NOW + 4,
+            &[("a1", passed()), ("a2", passed()), ("a3", passed())],
+        );
+        pick(&mut c, "felix", one.0);
+        assert_eq!(c.next_expiry_ms(), None);
+        assert!(c.expire(DEADLINE + MAX_RACE_MS).is_empty());
+    }
+
+    #[test]
     fn a_human_pick_race_with_nothing_eligible_is_decided_without_waiting() {
         let (mut c, _) = human_race();
         let effects = run_trials(
@@ -2138,7 +2221,11 @@ mod tests {
             }]
         ));
 
-        let effects = run_trials(&mut c, NOW + 3, &[("a1", passed())]);
+        let unknown = TrialReport {
+            before: Some(TrialOutcome::Conflict {}),
+            after: None,
+        };
+        let effects = run_trials(&mut c, NOW + 3, &[("a1", unknown)]);
         assert!(notices(&effects, "a1").iter().any(|msg| matches!(msg,
             ServerMsg::ReviewRequired { claim, .. } if *claim == one.0)));
         assert!(logged(&effects).iter().any(|k| matches!(k,
@@ -2155,6 +2242,33 @@ mod tests {
         assert!(notices(&approved, "a1").iter().any(|msg| matches!(msg,
             ServerMsg::Accepted { claim, queue_position: 1, .. } if *claim == one.0)));
         assert_eq!(c.begin_merge(NOW + 7).map(|d| d.claim), Some(one.0));
+    }
+
+    #[test]
+    fn a_passing_trial_counts_as_test_evidence_for_the_review_gate() {
+        let mut c = core();
+        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_effects(&mut c, "a1", one, false, NOW + 1);
+        let effects = run_trials(&mut c, NOW + 3, &[("a1", passed())]);
+        assert!(notices(&effects, "a1").iter().any(|msg| matches!(msg,
+            ServerMsg::Accepted { claim, .. } if *claim == one.0)));
+        assert!(!logged(&effects)
+            .iter()
+            .any(|k| matches!(k, EventKind::ReviewRequested { .. })));
+        assert_eq!(c.begin_merge(NOW + 4).map(|d| d.claim), Some(one.0));
+    }
+
+    #[test]
+    fn a_failing_trial_is_not_test_evidence() {
+        let mut c = core();
+        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_effects(&mut c, "a1", one, false, NOW + 1);
+        let effects = run_trials(&mut c, NOW + 3, &[("a1", failed())]);
+        assert!(notices(&effects, "a1")
+            .iter()
+            .any(|msg| matches!(msg, ServerMsg::ReviewRequired { .. })));
     }
 
     #[test]
@@ -2416,8 +2530,6 @@ mod tests {
         proptest::collection::vec(
             prop_oneof![
                 Just(Criterion::TestsPass),
-                Just(Criterion::LowestRisk),
-                Just(Criterion::SmallestDiff),
                 Just(Criterion::FirstSubmitted),
                 Just(Criterion::HumanPick),
             ],
@@ -2582,8 +2694,13 @@ mod tests {
             assert!(race.entrants.len() <= usize::try_from(MAX_ENTRANTS).unwrap());
             for entrant in &race.entrants {
                 let alive = c.state.claims.contains_key(&entrant.claim.0);
-                let cut_off = entrant.entered.is_none() && !alive;
-                assert!(alive || cut_off || entrant.entered.is_some(), "{entrant:?}");
+                match race.phase {
+                    Phase::Open => assert!(alive, "an open race lists a dead claim: {entrant:?}"),
+                    Phase::Judging | Phase::AwaitingPick { .. } => assert!(
+                        alive || entrant.entered.is_none(),
+                        "a submitted entry lost its claim: {entrant:?}"
+                    ),
+                }
             }
         }
     }
