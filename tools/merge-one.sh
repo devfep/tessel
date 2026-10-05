@@ -43,8 +43,16 @@ deleted="$(git diff --diff-filter=D --name-only "$ours" "$predicted")"
 git diff --quiet "$ours" "$predicted" -- "$FROZEN" ||
   fail "$FROZEN would change; the protocol is frozen and needs Felix's approval"
 
-git merge --no-ff --no-edit "$BRANCH" || fail "git merge failed"
+git merge --no-ff --no-commit "$BRANCH" || {
+  git merge --abort
+  fail "git merge failed"
+}
 
-[ "$(git rev-parse 'HEAD^{tree}')" = "$predicted" ] || fail "tree != merge-tree"
+if [ "$(git write-tree)" != "$predicted" ]; then
+  git merge --abort
+  fail "tree != merge-tree; merge aborted, $SPRINT unchanged"
+fi
+
+git commit --no-edit --quiet
 
 git log --oneline -3
