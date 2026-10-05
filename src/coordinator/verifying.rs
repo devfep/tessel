@@ -1005,6 +1005,11 @@ mod tests {
         assert_eq!(queued.claim, assuming);
         let dispatch = c.begin_verification(NOW).unwrap();
         assert_eq!(dispatch.main, CommitId(MAIN2.into()));
+        assert_eq!(
+            dispatch.before,
+            CommitId("old".into()),
+            "the baseline is main before the first challenging merge"
+        );
     }
 
     #[test]
