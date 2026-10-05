@@ -1,0 +1,4 @@
+intent: bring sprint/build a30785f (ROADMAP.md only) into the task branch
+assumes: none
+rejected: none
+evidence: merge touched docs/ROADMAP.md only; gate rerun on this tree
