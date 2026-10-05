@@ -1,0 +1,4 @@
+intent: ReviewRequired is the only immediate reply to a flagged Submit; Accepted follows on approval, so the CLI picks its exit code from the first message
+assumes: no client relies on Accepted preceding ReviewRequired
+rejected: none
+evidence: cargo test --workspace 402 passed; clippy clean
