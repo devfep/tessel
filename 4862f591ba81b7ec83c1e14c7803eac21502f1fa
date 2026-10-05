@@ -1,0 +1,4 @@
+intent: pure in-memory coordinator core with hierarchical lock table (hello, Fail claims, release)
+assumes: caller persists state and Log events before delivering Reply/Notify; caller passes the Hello agent id on later messages
+rejected: BTreeMap keyed by ClaimId/Scope (no Ord in frozen protocol), so HashMap with lock table serialized as pairs; Debug-printing the message in not-implemented errors (echoes untrusted text)
+evidence: cargo test 38 passed (17 existing + 20 unit + 1 proptest); clippy clean for coordinator.rs; mutations (no intention locks, denied claim keeps locks) fail 4 and 2 tests
