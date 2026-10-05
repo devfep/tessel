@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 02:12 EDT.
+**As of:** 2026-10-05 02:36 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
-**Tip:** `sprint/build` at the COORD-1 merge `e3e2847` (plus this docs commit), pushed. `main` at `9211b67`.
+**Tip:** `sprint/build` at the COORD-2 merge `8b50045` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
 to Felix at FREEZE.
 
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-2 | COORD-2 | `.claude/worktrees/coord-2` / `task-coord-2` | fix pass 1 (5 items) → re-check |
-| cq-coord-2 | COORD-2 review | same worktree, read-only | "With fixes" on `0067cb9` (1 Important, 4 Minor; 20 mutants killed) → re-check |
+| impl-coord-3 | COORD-3 | `.claude/worktrees/coord-3` / `task-coord-3` | implementing from `8b50045` → review |
+| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | implementing from `8b50045`; local dev on port 8797 → review |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -34,6 +34,13 @@ to Felix at FREEZE.
    `Coordinator::new` rejects `lease_ms == 0`.
 9. COORD-3 and COORD-4 run as two parallel lanes after COORD-2 merges (disjoint files). A submitted
    claim needs a status that expiry, heartbeat and `next_expiry_ms` skip; shadow claims place no locks.
+10. COORD-3: an uncovered submission leaves the claim active; a submitted claim rejects `Release` and
+   `Amend` with `AlreadySubmitted`; assumption challenges are sent at `Submit`; shadow claims hold no
+   locks, block no one, and a shadow `Submit` is answered `Accepted` with position 0 (recorded for
+   verification, never queued). The merge-outcome path waits for the steward work on Oct 7.
+11. COORD-4: one atomic write of state plus events before any send; identity bound per socket on
+   `Welcome`; `Notify` to an agent with no open socket is dropped; `Watch` is served by the shell.
+   COORD-4 merges after COORD-3 and sets `shadow_enabled` from a `SHADOW_ENABLED` variable.
 
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
@@ -56,13 +63,18 @@ subscriptions `tessel-repo-lifecycle` and `tessel-push-demo--agent-1`. Artifacts
    errors carry no `req`; `Conflict` carries no claim id; `ClaimId` and `Scope` lack `Ord`.
 5. `cargo clippy -D warnings` fails on `src/protocol.rs` itself (14 doc-list lints and unused items).
    New code is clean; fixing the protocol file means editing it.
+6. Agents are not authenticated: any client can connect and claim under any agent name. The
+   protocol has no credential in `Hello`.
+7. A shadow claim's `Submit` has no dedicated reply in the protocol; the core answers `Accepted`
+   with `queue_position: 0`. An additive `ServerMsg` variant would be clearer.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
 attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Workers are approved.
 
 **Next actions:**
 1. On each report: dispatch the Opus reviewer, run fix passes, merge on "Yes", gate, close.
-2. COORD-3 when COORD-2 merges, then COORD-4, then FREEZE.
+2. Merge COORD-3 first, then COORD-4 (it adapts to the new `Config` field), deploy the coordinator
+   and run the two-agent live check, then FREEZE.
 
 ## Tasks
 
@@ -81,9 +93,10 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   CLOSED 2026-10-05 at `e3e2847` (merge of `task-coord-1`; review "Yes" after two fix passes, 15
   reviewer mutants killed). `cargo test` 50 passed on the merged tree, including a property test
   against a brute-force oracle with save-and-reload before every operation.
-- [ ] **COORD-2** — Leases, heartbeat, expiry, `Amend`, and the `Wait` queue (invariants 2, 3, 4).
-  Files: `src/coordinator.rs`.
-  Verify: an expired lease retires its fence; a stale fence is rejected; no hold-and-wait.
+- [x] **COORD-2** — Leases, heartbeat, expiry, `Amend`, and the `Wait` queue (invariants 2, 3, 4).
+  CLOSED 2026-10-05 at `8b50045` (merge of `task-coord-2`; review "Yes" after two fix passes; one
+  equivalent mutant survived out of 41). `cargo test` 78 passed on the merged tree, including a
+  model-based property test over claims, waits, amends, releases, heartbeats and time.
 - [ ] **COORD-3** — `Submit` with fence and coverage checks, and shadow claims
   (invariants 5, 10, 11).
   Files: `src/coordinator.rs`.
