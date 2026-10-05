@@ -818,6 +818,7 @@ async fn the_hook_blocks_when_the_daemon_answers_wrongly() -> Result<()> {
             "{\"reply\":\"released\",\"claims\":[]}",
             "this is not json",
             "{\"reply\":\"failed\",\"message\":\"boom\"}",
+            "{\"reply\":\"claim\",\"outcome\":{\"outcome\":\"queued\",\"position\":2}}",
         ] {
             let (mut stream, _) = listener.accept()?;
             let mut line = String::new();
@@ -829,6 +830,7 @@ async fn the_hook_blocks_when_the_daemon_answers_wrongly() -> Result<()> {
     let unexpected = a1.hook("Edit", "file_path", "src/a.rs")?;
     let unreadable = a1.hook("Edit", "file_path", "src/a.rs")?;
     let failed = a1.hook("Edit", "file_path", "src/a.rs")?;
+    let queued = a1.hook("Edit", "file_path", "src/a.rs")?;
     server
         .join()
         .map_err(|_| anyhow::anyhow!("server panicked"))??;
@@ -838,6 +840,12 @@ async fn the_hook_blocks_when_the_daemon_answers_wrongly() -> Result<()> {
         unexpected.stderr.contains("unexpected"),
         "{}",
         unexpected.stderr
+    );
+    assert_eq!(queued.code, 2, "{}", queued.all());
+    assert!(
+        queued.stderr.contains("is queued behind"),
+        "{}",
+        queued.stderr
     );
     assert_eq!(failed.code, 2, "{}", failed.all());
     assert!(failed.stderr.contains("boom"), "{}", failed.stderr);
