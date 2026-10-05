@@ -5,10 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 11:34 EDT.
+**As of:** 2026-10-05 11:49 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the COVER-1 merge `191dc0d` plus this STATE commit; `main` at `29aa8fe`
-(pull request 1).
+**Tip:** `sprint/build` at the CLI-2b merge `3fb687b` plus this STATE commit; the GitHub trunk at
+`29aa8fe` (pull request 1).
 **Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
 steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
 v0 ran on `tessel-dogfood` (agent `cli-2`, claims 1–19, every edit claimed first; record in the
@@ -32,8 +32,9 @@ is recorded with the first Tessel commit merged by the steward.
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** CLI-2b (Sonnet, `.claude/worktrees/cli-2b`): building; dogfooded as agent `cli-2b`.
-COVER-1 closed and reclaimed.
+**Agents:** ASSUME-1 (Sonnet, `.claude/worktrees/assume-1`): review "With fixes" (no baseline:
+a work-in-progress fork that already fails would count as a confirmed break); fix pass 1 running.
+CLI-2b closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
@@ -96,10 +97,11 @@ attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZ
 two Workers are approved.
 
 **Next actions:**
-1. Review CLI-2b when it reports.
-2. PLAN §9 Oct 8: assumptions end to end (verified), races. Dashboard and review screen (agents'
-   lane per PLAN §7).
-3. Milestone PR `sprint/build` -> `main` after Oct 8 (full gate, `/code-review`, `/security-review`).
+1. Re-review ASSUME-1; merge; deploy; live-check a challenged assumption verified as broken.
+2. DOGFOOD-1, starting with a measured probe in a scratch `standard-4` container (cold and warm
+   build time and peak memory against the 600 s test timeout). Research findings are in the
+   DOGFOOD-1 task text.
+3. REVIEW-CLI-FIX, then the milestone pull request to the GitHub trunk.
 
 ## Tasks
 
@@ -198,11 +200,25 @@ two Workers are approved.
   claim per agent through `Amend`, a deterministic submit reply, `stop` confirming releases, and
   the hook's missing-cwd fail-open). Workspace tests 468. Live with the real CLI: claim, commit,
   push, `tessel submit`, `merged` in the inbox, trunk at the agent's commit.
+  Part b CLOSED 2026-10-05 at `3fb687b` (review "Yes" after two fix passes). Workspace tests 551.
+  Live: the hook claimed `src/lib.rs::greet` for a body edit and amended `edit-signature` for a
+  signature edit; the submit was held for review; `tessel review` approved it and it merged.
+- [ ] **REVIEW-CLI-FIX** — found live: `tessel review` fails in a directory whose git repo has no
+  commit, because it reads HEAD for its hello. A reviewer needs no checkout; send a fixed base.
 - [ ] **DOGFOOD-1** — dogfood v1 (PLAN §7, §9 Oct 8; Felix approved): the steward runs Tessel's
   own gate. Test image with the Rust toolchain (wasm target) and pnpm; an install step for repos
   with dependencies (lockfile only, scripts disabled); per-repo test command; Tessel imported into
   Artifacts as `tessel`, one fork per lane, lanes push and `tessel submit`; the Artifacts trunk
   mirrored to GitHub `sprint/build`. After CLI-2b and ASSUME-1 merge.
+  Research (Opus, 2026-10-05): run on `standard-4` (4 vCPU, 12 GiB, 20 GB; today every run is on
+  `lite`, 256 MiB) with the Internet off; bake the toolchain and dependencies into the image
+  (cargo-chef, `pnpm fetch`); `cargo test --workspace --locked --offline` and
+  `pnpm install --offline --frozen-lockfile --ignore-scripts`; a changed lockfile fails at step
+  `install`; skip wasm and clippy in v1; `tessel.toml` with argv-array gate commands read from the
+  trunk commit, never the fork; import with the existing create route plus a push from the Mac;
+  mirror with a local fast-forward-only script (no GitHub credential in Cloudflare). Probe first:
+  build time and memory, the Docker build context, a 5-minute merge over the service binding, and
+  image storage (50 GB per account).
 - [ ] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
   `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
   changes. Put leading attribute and decorator siblings in the signature range.
