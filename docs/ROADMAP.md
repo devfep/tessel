@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 11:08 EDT.
+**As of:** 2026-10-05 11:34 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
 **Tip:** `sprint/build` at the COVER-1 merge `191dc0d` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
@@ -23,6 +23,11 @@ except ruling 3, which lands with the steward merge path:
 3. Push events: `Submit` is the merge signal; the steward verifies the commit by reading the fork;
    one push subscription on the main repo. PLAN §4 diagram updated in `8feb196`.
 4. `src/protocol.rs` clippy and rustfmt clean (PROTO-FREEZE).
+
+**Felix's ruling, 2026-10-05 11:34 EDT:** go ahead with dogfood v1 through the steward (DOGFOOD-1), once CLI-2b
+and ASSUME-1 merge. Condition he set: only if it is tried, tested and robust. So `merge-one.sh`
+stays the fallback until DOGFOOD-1 passes review and live checks on scratch repos, and the switch
+is recorded with the first Tessel commit merged by the steward.
 
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
@@ -53,6 +58,8 @@ COVER-1 closed and reclaimed.
    which stopped being true with REVIEW-1 (a rejected and resubmitted change is requested twice and
    a rejected one never merges). Correct the doc; optionally add `reviews_approved` with
    `#[serde(default)]` if the dashboard needs "merged after approval".
+   Also from the ASSUME-1 review: add `#[serde(default)] commit: Option<CommitId>` to
+   `EventKind::AssumptionVerified`, so the log records which fork commit was tried.
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
@@ -191,6 +198,14 @@ two Workers are approved.
   claim per agent through `Amend`, a deterministic submit reply, `stop` confirming releases, and
   the hook's missing-cwd fail-open). Workspace tests 468. Live with the real CLI: claim, commit,
   push, `tessel submit`, `merged` in the inbox, trunk at the agent's commit.
+- [ ] **DOGFOOD-1** — dogfood v1 (PLAN §7, §9 Oct 8; Felix approved): the steward runs Tessel's
+  own gate. Test image with the Rust toolchain (wasm target) and pnpm; an install step for repos
+  with dependencies (lockfile only, scripts disabled); per-repo test command; Tessel imported into
+  Artifacts as `tessel`, one fork per lane, lanes push and `tessel submit`; the Artifacts trunk
+  mirrored to GitHub `sprint/build`. After CLI-2b and ASSUME-1 merge.
+- [ ] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
+  `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
+  changes. Put leading attribute and decorator siblings in the signature range.
 - [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
   CLOSED 2026-10-05 at `38e5ff8` (review "Yes" after one fix pass; flagged submissions now get
   `ReviewRequired` before any `Accepted`). Workspace tests 404. Live on `9f75140a`: held submit,

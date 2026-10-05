@@ -12,7 +12,7 @@ use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
     uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event,
-    EventKind, Intent, Mode, OnConflict, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    EventKind, Intent, OnConflict, RequestId, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -24,6 +24,7 @@ use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::config::Config;
+use crate::plan::escalate;
 use crate::reconcile::{self, Local, Plan, ServerClaim};
 use crate::rpc::{self, ClaimOutcome, Reply, Request, SubmitOutcome};
 use crate::state::{append_notice, Connection, HeldClaim, Notice, NoticeKind, QueuedWait, State};
@@ -45,7 +46,7 @@ const CONFIRM_READS: u32 = 3;
 const CONFIRM_DEADLINE: Duration = Duration::from_secs(15);
 const CONFIRM_PAUSE: Duration = Duration::from_millis(150);
 
-type Socket =
+pub(crate) type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// What `tessel start` hands the daemon.
@@ -84,10 +85,10 @@ enum Incoming {
 }
 
 /// What the event-log read returned.
-struct LogRead {
-    events: Vec<Event>,
+pub(crate) struct LogRead {
+    pub(crate) events: Vec<Event>,
     /// The read reached its end marker, with no gap in `seq`.
-    complete: bool,
+    pub(crate) complete: bool,
 }
 
 struct Conn {
@@ -112,7 +113,7 @@ struct PendingSubmit {
 }
 
 /// Why a connection attempt failed.
-enum ConnectFailure {
+pub(crate) enum ConnectFailure {
     /// Retrying cannot help (bad token, wrong repo or URL).
     Fatal(String),
     Transient(String),
@@ -1114,8 +1115,8 @@ impl Daemon {
         self.notify(
             NoticeKind::ReviewRequired,
             &format!(
-                "claim {} is held for human review; approval is not built yet, so it does not \
-                 merge",
+                "claim {} is held for human review; a reviewer must approve it before it \
+                 merges",
                 claim.0
             ),
             Some(msg),
@@ -1286,7 +1287,7 @@ impl Daemon {
                 }
                 self.start_claim(scopes, wait, &assumptions, new, reply);
             }
-            Request::Ensure { path, create } => self.ensure(&path, create, reply),
+            Request::Ensure { wanted } => self.ensure(&wanted, reply),
             Request::Status | Request::Release { .. } | Request::Submit { .. } | Request::Stop => {
                 let _ = reply.send(refused(None, "not a claim request"));
             }
@@ -1317,21 +1318,24 @@ impl Daemon {
         Some((only.claim, only.fence))
     }
 
-    fn ensure(&mut self, path: &str, create: bool, reply: oneshot::Sender<Reply>) {
-        let mode = if create { Mode::Create } else { Mode::EditBody };
-        let wanted = ScopeClaim {
-            scope: Scope::File {
-                path: path.to_string(),
-            },
-            mode,
-        };
+    fn ensure(&mut self, wanted: &[ScopeClaim], reply: oneshot::Sender<Reply>) {
         let held: Vec<ScopeClaim> = self
             .state
             .claims
             .iter()
             .flat_map(|held| held.scopes.iter().cloned())
             .collect();
-        if uncovered(&held, std::slice::from_ref(&wanted)).is_empty() {
+        let missing = uncovered(&held, wanted);
+        // Escalation counts only open claims: a submitted claim's scopes leave with its merge.
+        let open: Vec<ScopeClaim> = self
+            .state
+            .claims
+            .iter()
+            .filter(|held| !held.submitted)
+            .flat_map(|held| held.scopes.iter().cloned())
+            .collect();
+        let wanted = uncovered(&held, &escalate(&open, &missing));
+        if wanted.is_empty() {
             let _ = reply.send(Reply::Claim {
                 outcome: ClaimOutcome::Covered,
             });
@@ -1340,20 +1344,16 @@ impl Daemon {
         let same = self
             .pending
             .values_mut()
-            .find(|p| !p.queued && p.scopes == [wanted.clone()]);
+            .find(|p| !p.queued && p.scopes == wanted);
         if let Some(pending) = same {
             pending.replies.push(reply);
             return;
         }
         if self.claim_in_flight() {
-            let request = Request::Ensure {
-                path: path.to_string(),
-                create,
-            };
-            self.deferred.push_back((request, reply));
+            self.deferred.push_back((Request::Ensure { wanted }, reply));
             return;
         }
-        self.start_claim(vec![wanted], false, &[], false, reply);
+        self.start_claim(wanted, false, &[], false, reply);
     }
 
     fn start_claim(
@@ -1657,7 +1657,7 @@ async fn sleep_until_some(deadline: Option<Instant>) {
 
 // ---------- WebSocket ----------
 
-async fn open_socket(config: &Config) -> Result<Socket, ConnectFailure> {
+pub(crate) async fn open_socket(config: &Config) -> Result<Socket, ConnectFailure> {
     let url = config.socket_url();
     let mut request = url
         .as_str()
@@ -1722,7 +1722,7 @@ async fn snapshot_task(
     let _ = tx.send(Incoming::Snapshot { generation, log });
 }
 
-async fn read_log(config: &Config, base: String) -> Result<LogRead, String> {
+pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, String> {
     let me = AgentId(config.agent.clone());
     let mut socket = open_socket(config).await.map_err(|failure| match failure {
         ConnectFailure::Fatal(message) | ConnectFailure::Transient(message) => message,
