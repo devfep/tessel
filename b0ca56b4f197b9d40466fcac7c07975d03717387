@@ -1,0 +1,4 @@
+intent: close FIX-STEWARD in the roadmap and rewrite STATE
+assumes: none
+rejected: none
+evidence: docs only; gate and live evidence are in the note on 7de5ff3
