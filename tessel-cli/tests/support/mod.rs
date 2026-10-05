@@ -12,7 +12,8 @@ use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tempfile::TempDir;
 use tessel_coordinator::coordinator::{Config, Coordinator};
-use tessel_coordinator::protocol::{AgentId, ClientMsg, Event, RunId, ServerMsg};
+use tessel_coordinator::merge::MergeOutcome;
+use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
@@ -47,6 +48,9 @@ struct Inner {
     cut_replay: AtomicUsize,
     skip_seq: AtomicU64,
     stall_live: AtomicBool,
+    review_first: AtomicBool,
+    hold_claim_reply: AtomicBool,
+    held: Mutex<Vec<(u64, Vec<Outbound>)>>,
     lose: Mutex<Vec<(String, Lose)>>,
 }
 
@@ -140,6 +144,9 @@ impl Fake {
             cut_replay: AtomicUsize::new(0),
             skip_seq: AtomicU64::new(u64::MAX),
             stall_live: AtomicBool::new(false),
+            review_first: AtomicBool::new(false),
+            hold_claim_reply: AtomicBool::new(false),
+            held: Mutex::new(Vec::new()),
             lose: Mutex::new(Vec::new()),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -148,6 +155,43 @@ impl Fake {
         tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx));
         tokio::spawn(expire_loop(Arc::clone(&inner)));
         Ok(Self { url, inner, kill })
+    }
+
+    /// Keeps the reply to the next `Claim` or `Amend` back until `release_held`.
+    pub fn hold_next_claim_reply(&self) {
+        self.inner.hold_claim_reply.store(true, Ordering::SeqCst);
+    }
+
+    /// Delivers the replies kept back by `hold_next_claim_reply`.
+    pub fn release_held(&self) {
+        let held = std::mem::take(&mut *lock(&self.inner.held));
+        for (origin, outbound) in held {
+            self.inner.deliver(Some(origin), outbound);
+        }
+    }
+
+    /// Makes the coordinator send `ReviewRequired` before `Accepted`, as REVIEW-1 will.
+    pub fn review_before_accepted(&self, on: bool) {
+        self.inner.review_first.store(on, Ordering::SeqCst);
+    }
+
+    /// Runs the next queued merge to completion on the real core, as the steward would, and
+    /// sends `Merged` to the submitter if it has a socket open.
+    pub fn merge_next(&self) {
+        let effects = {
+            let mut core = lock(&self.inner.core);
+            let Some(dispatch) = core.begin_merge(now_ms()) else {
+                return;
+            };
+            let landed = MergeOutcome::Merged {
+                base: CommitId("b".repeat(40)),
+                head: CommitId("c".repeat(40)),
+            };
+            core.merge_outcome(dispatch.claim, &landed, now_ms())
+        };
+        let (events, outbound) = shell::split_effects(effects);
+        self.inner.deliver(None, outbound);
+        self.inner.publish(events);
     }
 
     /// Cuts every open socket without a close frame, as a network failure would.
@@ -396,6 +440,8 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((agent.clone(), msg.clone()));
+            let holds_claim_reply =
+                matches!(msg, ClientMsg::Claim { .. } | ClientMsg::Amend { .. });
             let effects = {
                 let mut core = inner
                     .core
@@ -403,7 +449,12 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 core.handle(&agent, msg, now_ms())
             };
-            let (events, outbound) = shell::split_effects(effects);
+            let (events, mut outbound) = shell::split_effects(effects);
+            if inner.review_first.load(Ordering::SeqCst) {
+                let review =
+                    |o: &Outbound| matches!(o, Outbound::Reply(ServerMsg::ReviewRequired { .. }));
+                outbound.sort_by_key(|o| !review(o));
+            }
             if let Some(bound) = shell::bind_on_welcome(session, &agent, &outbound) {
                 *session = bound;
                 let mut sockets = inner
@@ -415,7 +466,11 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                 }
             }
             // As the Durable Object does: the reply first, then the events it caused.
-            inner.deliver(Some(id), outbound);
+            if holds_claim_reply && inner.hold_claim_reply.swap(false, Ordering::SeqCst) {
+                lock(&inner.held).push((id, outbound));
+            } else {
+                inner.deliver(Some(id), outbound);
+            }
             inner.publish(events);
         }
     }
@@ -450,7 +505,7 @@ fn close_socket(inner: &Inner, id: u64, session: &Session) {
 }
 
 fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
-    let wanted = if let ClientMsg::Claim { .. } = msg {
+    let wanted = if let ClientMsg::Claim { .. } | ClientMsg::Amend { .. } = msg {
         Lose::ClaimReply
     } else if let ClientMsg::Release { .. } = msg {
         Lose::Release
@@ -590,6 +645,30 @@ impl Agent {
     pub fn hook(&self, tool: &str, key: &str, path: &str) -> Result<Done> {
         let root = self.root().display().to_string();
         self.hook_at(tool, key, path, &self.path, &["--root", &root])
+    }
+
+    /// The hook JSON with no `cwd` field, run from `run_from`, which may be outside the worktree.
+    pub fn hook_without_cwd(
+        &self,
+        tool: &str,
+        key: &str,
+        path: &str,
+        run_from: &Path,
+    ) -> Result<Done> {
+        use std::io::Write;
+        let root = self.root().display().to_string();
+        let event = serde_json::json!({ "tool_name": tool, "tool_input": { key: path } });
+        let mut child = self
+            .command(&["hook", "pre-edit", "--root", &root])
+            .current_dir(run_from)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut pipe) = child.stdin.take() {
+            pipe.write_all(event.to_string().as_bytes())?;
+        }
+        Ok(Done::from(child.wait_with_output()?))
     }
 
     /// Like `hook`, with the event's `cwd` and the hook's extra arguments chosen by the caller.

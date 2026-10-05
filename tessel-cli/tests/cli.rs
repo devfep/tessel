@@ -224,7 +224,7 @@ async fn release_frees_everything_or_one_claim() -> Result<()> {
     let (_fake, a1, a2) = world(30_000).await?;
     a1.start("two files")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    assert_eq!(a1.tessel(&["claim", "src/b.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
     let ids = claim_ids(&a1)?;
     assert_eq!(ids.len(), 2);
 
@@ -519,8 +519,18 @@ async fn the_inbox_marks_notices_read() -> Result<()> {
 
 // ---------- hook ----------
 
+/// The `index`th scope across all held claims, in order.
 fn scope_of(status: &Value, index: usize) -> (String, String) {
-    let claim = &status["state"]["claims"][index]["scopes"][0];
+    let all: Vec<&Value> = status["state"]["claims"]
+        .as_array()
+        .map(|claims| {
+            claims
+                .iter()
+                .flat_map(|c| c["scopes"].as_array().into_iter().flatten())
+                .collect()
+        })
+        .unwrap_or_default();
+    let claim = all.get(index).copied().unwrap_or(&Value::Null);
     (
         claim["scope"]["path"]
             .as_str()
@@ -571,7 +581,7 @@ async fn a_depend_claim_does_not_cover_an_edit() -> Result<()> {
     );
     let done = a1.hook("Edit", "file_path", "src/a.rs")?;
     assert_eq!(done.code, 0, "{}", done.all());
-    assert_eq!(a1.held_claims()?, 2);
+    assert_eq!(a1.held_claims()?, 1, "the edit amends the open claim");
     assert_eq!(scope_of(&a1.status()?, 1).1, "edit_body");
     Ok(())
 }
@@ -969,6 +979,22 @@ async fn a_relative_path_needs_a_usable_working_directory() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relative_path_without_a_cwd_is_blocked_whatever_the_process_directory() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("no cwd")?;
+    let outside = tempfile::tempdir()?;
+    let done = a1.hook_without_cwd("Edit", "file_path", "src/a.rs", outside.path())?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("not usable"), "{}", done.stderr);
+    assert_eq!(a1.held_claims()?, 0);
+    // An absolute path needs no cwd.
+    let absolute = a1.root().join("src/a.rs").display().to_string();
+    let done = a1.hook_without_cwd("Edit", "file_path", &absolute, outside.path())?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(a1.held_claims()?, 1);
+    Ok(())
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_hook_without_a_root_blocks_unless_claude_names_the_project() -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
@@ -1546,5 +1572,514 @@ async fn dropping_the_working_socket_closes_the_log_read() -> Result<()> {
         Ok((fake.watching_sockets() == 0).then_some(()))
     })
     .await?;
+    Ok(())
+}
+
+// ---------- one claim per agent: amend ----------
+
+fn scope_paths(agent: &Agent) -> Result<Vec<String>> {
+    let status = agent.status()?;
+    let mut paths = Vec::new();
+    for claim in status["state"]["claims"].as_array().into_iter().flatten() {
+        for scope in claim["scopes"].as_array().into_iter().flatten() {
+            paths.push(
+                scope["scope"]["path"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+        }
+    }
+    Ok(paths)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_claim_amends_the_open_claim_and_tracks_the_new_fence() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("one claim")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let first = a1.status()?["state"]["claims"][0]["fence"]
+        .as_u64()
+        .context("fence")?;
+    let amended = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(amended.code, 0, "{}", amended.all());
+    assert!(
+        amended.stdout.contains("added to your open claim"),
+        "{}",
+        amended.stdout
+    );
+    assert_eq!(claim_ids(&a1)?.len(), 1);
+    assert_eq!(scope_paths(&a1)?, vec!["src/a.rs", "src/b.rs"]);
+    let second = a1.status()?["state"]["claims"][0]["fence"]
+        .as_u64()
+        .context("fence")?;
+    assert!(second > first, "{first} -> {second}");
+    let amends = fake
+        .received("a1")
+        .into_iter()
+        .filter(|m| matches!(m, ClientMsg::Amend { .. }))
+        .count();
+    assert_eq!(amends, 1);
+
+    // Claiming what is already held changes nothing, and the new fence releases cleanly.
+    let again = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(again.code, 0, "{}", again.all());
+    assert!(again.stdout.contains("already covered"), "{}", again.stdout);
+    a2.start("other")?;
+    assert_eq!(a2.tessel(&["claim", "src/b.rs"])?.code, 3);
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    eventually(SHORT, || {
+        Ok((a2.tessel(&["claim", "src/b.rs"])?.code == 0).then_some(()))
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_and_assumptions_make_a_separate_claim() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("two claims")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
+    assert_eq!(claim_ids(&a1)?.len(), 2);
+    // With two open claims there is nothing to amend.
+    assert_eq!(a1.tessel(&["claim", "src/c.rs"])?.code, 0);
+    assert_eq!(claim_ids(&a1)?.len(), 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_assumption_cannot_ride_on_an_amend_so_it_gets_its_own_claim() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("assume")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let done = a1.tessel(&["claim", "src/b.rs", "--assume", "a() returns 1"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(claim_ids(&a1)?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_denied_amend_reports_a_denial_and_leaves_the_claim_alone() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a2.start("holds b")?;
+    assert_eq!(a2.tessel(&["claim", "src/b.rs"])?.code, 0);
+    a1.start("wants b too")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let fence = a1.status()?["state"]["claims"][0]["fence"].clone();
+
+    let denied = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(denied.code, 3, "{}", denied.all());
+    assert!(
+        denied.stdout.contains("held by agent a2"),
+        "{}",
+        denied.stdout
+    );
+    assert_eq!(scope_paths(&a1)?, vec!["src/a.rs"]);
+    assert_eq!(a1.status()?["state"]["claims"][0]["fence"], fence);
+
+    let blocked = a1.hook("Edit", "file_path", "src/b.rs")?;
+    assert_eq!(blocked.code, 2, "{}", blocked.all());
+    assert_eq!(scope_paths(&a1)?, vec!["src/a.rs"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_that_arrives_while_a_claim_is_in_flight_waits_and_amends_it() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("overlapping edits")?;
+    fake.hold_next_claim_reply();
+    let sent = |fake: &Fake| {
+        fake.received("a1")
+            .iter()
+            .filter(|m| matches!(m, ClientMsg::Claim { .. }))
+            .count()
+    };
+    let (one, two) = std::thread::scope(|scope| {
+        let one = scope.spawn(|| a1.hook("Edit", "file_path", "src/a.rs"));
+        // The first claim has reached the coordinator, whose reply is held back.
+        for _ in 0..400 {
+            if sent(&fake) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let two = scope.spawn(|| a1.hook("Edit", "file_path", "src/b.rs"));
+        // The second request reaches the daemon and must wait for that reply.
+        std::thread::sleep(Duration::from_millis(500));
+        fake.release_held();
+        (one.join(), two.join())
+    });
+    let one = one.map_err(|_| anyhow::anyhow!("hook thread panicked"))??;
+    let two = two.map_err(|_| anyhow::anyhow!("hook thread panicked"))??;
+    assert_eq!((one.code, two.code), (0, 0), "{}{}", one.all(), two.all());
+    let received = fake.received("a1");
+    let claims = received
+        .iter()
+        .filter(|m| matches!(m, ClientMsg::Claim { .. }))
+        .count();
+    let amends = received
+        .iter()
+        .filter(|m| matches!(m, ClientMsg::Amend { .. }))
+        .count();
+    assert_eq!((claims, amends), (1, 1), "{received:?}");
+    assert_eq!(claim_ids(&a1)?.len(), 1);
+    let mut paths = scope_paths(&a1)?;
+    paths.sort();
+    assert_eq!(paths, vec!["src/a.rs", "src/b.rs"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_amend_reply_is_repaired_after_the_reconnect() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("lost amend")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let before = hellos(&fake, "a1");
+    fake.lose_next("a1", Lose::ClaimReply);
+    let lost = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(lost.code, 1, "{}", lost.all());
+    assert!(
+        lost.stdout.contains("may have been added"),
+        "{}",
+        lost.stdout
+    );
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || {
+        Ok((scope_paths(&a1)? == ["src/a.rs", "src/b.rs"]).then_some(()))
+    })
+    .await?;
+    // The fence the daemon holds is the amended one: releasing works.
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    Ok(())
+}
+
+// ---------- review reply order ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_required_before_accepted_decides_the_reply_and_accepted_is_not_unexpected(
+) -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    fake.review_before_accepted(true);
+    a1.start("review first")?;
+    assert_eq!(
+        a1.tessel(&["claim", "src/b.rs", "--mode", "edit-signature"])?
+            .code,
+        0
+    );
+    git(&a1.root(), &["rm", "-q", "src/b.rs"])?;
+    git(&a1.root(), &["commit", "-q", "-m", "delete b"])?;
+    let done = a1.tessel(&["submit", "--evidence", "ok"])?;
+    assert_eq!(done.code, 7, "{}", done.all());
+    assert!(done.stdout.contains("review required"), "{}", done.stdout);
+    // The Accepted that follows is dropped quietly.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let inbox = a1.tessel(&["inbox", "--all"])?;
+    assert!(!inbox.stdout.contains("[unexpected]"), "{}", inbox.stdout);
+    assert!(
+        inbox.stdout.contains("[review_required]"),
+        "{}",
+        inbox.stdout
+    );
+    assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
+    Ok(())
+}
+
+// ---------- stop ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_returns_only_after_every_release_took_effect() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a1.start("many claims")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/c.rs"])?.code, 0);
+    assert_eq!(claim_ids(&a1)?.len(), 3);
+    let stopped = a1.tessel(&["stop"])?;
+    assert_eq!(stopped.code, 0, "{}", stopped.all());
+    assert!(
+        stopped.stdout.contains("claims released"),
+        "{}",
+        stopped.stdout
+    );
+
+    // Right away, with no waiting: another agent gets every file.
+    a2.start("takes over")?;
+    for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+        let done = a2.tessel(&["claim", "--new", path])?;
+        assert_eq!(done.code, 0, "{path}: {}", done.all());
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_names_a_claim_whose_release_the_coordinator_never_took() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("lost release")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    fake.lose_next("a1", Lose::Release);
+    let stopped = a1.tessel(&["stop"])?;
+    assert_eq!(stopped.code, 0, "{}", stopped.all());
+    assert!(
+        stopped.stdout.contains("NOT released"),
+        "{}",
+        stopped.stdout
+    );
+    assert!(
+        !stopped.stdout.contains("claims released"),
+        "{}",
+        stopped.stdout
+    );
+    a2.start("blocked")?;
+    assert_eq!(a2.tessel(&["claim", "src/a.rs"])?.code, 3);
+    Ok(())
+}
+
+// ---------- the diff base survives a restart ----------
+
+async fn kill_daemon(agent: &Agent) -> Result<()> {
+    let pid = agent.status()?["state"]["pid"]
+        .as_u64()
+        .context("no daemon pid")?;
+    let killed = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()?;
+    assert!(killed.success());
+    eventually(SHORT, || Ok((!alive(pid)).then_some(()))).await
+}
+
+/// The fake's coordinator head is this repository's first commit, which exists locally; naming a
+/// head the repository does not have leaves the pinned start commit as the only diff base.
+async fn forget_the_coordinator_head(fake: &Fake, agent: &Agent) -> Result<()> {
+    fake.push(
+        "a1",
+        ServerMsg::BaseMoved {
+            head: CommitId("1".repeat(40)),
+            by: AgentId("a2".into()),
+            affected: vec![],
+        },
+    );
+    eventually(SHORT, || {
+        Ok((agent.status()?["state"]["coordinator_head"] == "1".repeat(40)).then_some(()))
+    })
+    .await
+}
+
+fn commit_in(agent: &Agent, path: &str, text: &str) -> Result<()> {
+    std::fs::write(agent.root().join(path), text)?;
+    git(&agent.root(), &["add", path])?;
+    git(
+        &agent.root(),
+        &["commit", "-q", "-m", &format!("edit {path}")],
+    )?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_and_restart_keeps_the_pinned_start_so_earlier_commits_still_count() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("crash")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    commit_in(&a1, "src/b.rs", "pub fn b() { 1; }\n")?;
+
+    kill_daemon(&a1).await?;
+    a1.start("after the crash")?;
+    eventually(SHORT, || Ok((a1.held_claims()? == 1).then_some(()))).await?;
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
+    commit_in(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    forget_the_coordinator_head(&fake, &a1).await?;
+
+    let done = a1.tessel(&["submit", "--evidence", "ok"])?;
+    assert_eq!(done.code, 5, "{}", done.all());
+    assert!(done.stdout.contains("src/b.rs"), "{}", done.stdout);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_the_state_file_resets_the_base_to_head() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("first session")?;
+    commit_in(&a1, "src/b.rs", "pub fn b() { 1; }\n")?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    std::fs::remove_file(a1.root().join(".tessel/state.json"))?;
+    a1.start("fresh worktree state")?;
+    let head = head_of(&a1)?;
+    assert_eq!(a1.status()?["state"]["start_base"], head.as_str());
+    Ok(())
+}
+
+/// The probe: work committed before the daemon went away still counts afterwards.
+async fn restart_then_submit_is_uncovered(
+    fake: &Fake,
+    a1: &Agent,
+    restart: impl AsyncFnOnce(&Agent) -> Result<()>,
+) -> Result<()> {
+    a1.start("session one")?;
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_in(a1, "src/b.rs", "pub fn b() { 1; }\n")?;
+
+    restart(a1).await?;
+    a1.start("session two")?;
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_in(a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    forget_the_coordinator_head(fake, a1).await?;
+
+    let done = a1.tessel(&["submit", "--evidence", "ok"])?;
+    assert_eq!(done.code, 5, "{}", done.all());
+    assert!(done.stdout.contains("src/b.rs"), "{}", done.stdout);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_then_start_does_not_move_the_base_past_committed_work() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    restart_then_submit_is_uncovered(&fake, &a1, async |agent| {
+        assert_eq!(agent.tessel(&["stop"])?.code, 0);
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_that_outlasts_the_lease_does_not_move_the_base_either() -> Result<()> {
+    let (fake, a1, _a2) = world(900).await?;
+    restart_then_submit_is_uncovered(&fake, &a1, async |agent| {
+        kill_daemon(agent).await?;
+        // The coordinator expires the claim, so nothing is adopted on the next start.
+        tokio::time::sleep(Duration::from_millis(1800)).await;
+        Ok(())
+    })
+    .await
+}
+
+fn head_of(agent: &Agent) -> Result<String> {
+    Ok(git(&agent.root(), &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_gives_up_confirming_within_the_clients_patience() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("a log that never ends")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    // The event log read never reaches its end marker, so no release can be confirmed.
+    fake.stall_live_events(true);
+    let began = std::time::Instant::now();
+    let stopped = a1.tessel(&["stop"])?;
+    let took = began.elapsed();
+    assert_eq!(stopped.code, 0, "{}", stopped.all());
+    assert!(
+        stopped.stdout.contains("NOT released"),
+        "{}",
+        stopped.stdout
+    );
+    assert!(took < Duration::from_secs(22), "stop took {took:?}");
+    Ok(())
+}
+
+// ---------- a Merged the daemon missed ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merge_that_lands_while_the_socket_is_down_still_moves_the_base() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("merged while away")?;
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_in(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    let submitted = head_of(&a1)?;
+    assert_eq!(a1.tessel(&["submit", "--evidence", "ok"])?.code, 0);
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
+
+    // Cut the daemon off, let the steward merge, and let the daemon come back.
+    let before = fake.received("a1").len();
+    fake.set_accepting(false);
+    fake.drop_connections();
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["connection"] != "online").then_some(()))
+    })
+    .await?;
+    fake.merge_next();
+    let hellos_before = hellos(&fake, "a1");
+    fake.set_accepting(true);
+    back_online(&fake, &a1, hellos_before).await?;
+    assert!(fake.received("a1").len() > before);
+
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["start_base"] == submitted.as_str()).then_some(()))
+    })
+    .await?;
+    assert_eq!(a1.held_claims()?, 0, "the merged claim is forgotten");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_damaged_state_file_refuses_to_start_and_a_missing_one_does_not() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("first")?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    let state = a1.root().join(".tessel/state.json");
+    std::fs::write(&state, "{ this is not json")?;
+    let refused = a1.tessel(&["start", "second"])?;
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(refused.stderr.contains("state.json"), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("resets the base to HEAD"),
+        "{}",
+        refused.stderr
+    );
+    assert!(a1
+        .tessel(&["claim", "src/a.rs"])?
+        .stderr
+        .contains("no daemon is running"));
+
+    std::fs::remove_file(&state)?;
+    a1.start("third")?;
+    assert_eq!(a1.status()?["state"]["start_base"], head_of(&a1)?.as_str());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merged_commit_outside_this_work_never_moves_the_base() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("unrelated merge")?;
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    // A commit on an unrelated history, which is not a descendant of the pinned base.
+    let root = a1.root();
+    git(&root, &["checkout", "-q", "--orphan", "elsewhere"])?;
+    git(&root, &["commit", "-q", "--allow-empty", "-m", "elsewhere"])?;
+    let stray = head_of(&a1)?;
+    git(&root, &["checkout", "-q", "-f", "master"])
+        .or_else(|_| git(&root, &["checkout", "-q", "-f", "main"]))?;
+    let claim = a1.status()?["state"]["claims"][0].clone();
+    fake.act(
+        "a1",
+        ClientMsg::Submit {
+            req: RequestId(777),
+            claim: ClaimId(claim["claim"].as_u64().context("claim")?),
+            fence: Fence(claim["fence"].as_u64().context("fence")?),
+            fork_commit: CommitId(stray),
+            touched: vec![ScopeClaim {
+                scope: Scope::File {
+                    path: "src/a.rs".into(),
+                },
+                mode: Mode::EditBody,
+            }],
+            decisions: tessel_coordinator::protocol::DecisionRecord {
+                evidence: vec!["ok".into()],
+                ..Default::default()
+            },
+        },
+    );
+    fake.merge_next();
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(()))).await?;
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
     Ok(())
 }

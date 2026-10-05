@@ -50,6 +50,15 @@ pub fn parse(arg: &str) -> Result<Scope, ScopeError> {
     })
 }
 
+/// The file scope for a repo-relative path taken as it stands, so a `::` in a file name is not
+/// read as a symbol separator.
+pub fn file(path: &str) -> Result<Scope, ScopeError> {
+    check_path(path, path)?;
+    Ok(Scope::File {
+        path: path.to_string(),
+    })
+}
+
 fn check_path(scope: &str, path: &str) -> Result<(), ScopeError> {
     let bad = path.is_empty()
         || path.contains('\\')
@@ -185,6 +194,17 @@ mod tests {
                 qualified_name: "Session::refresh".into()
             })
         );
+    }
+
+    #[test]
+    fn a_file_scope_keeps_a_double_colon_in_the_name() {
+        assert_eq!(
+            file("src/a::b.rs"),
+            Ok(Scope::File {
+                path: "src/a::b.rs".into()
+            })
+        );
+        assert!(file("src//a.rs").is_err());
     }
 
     #[test]
