@@ -71,6 +71,27 @@ describe("readGatePlan", () => {
     }
   });
 
+  it("does not read the bytes of a file over the size bound", async () => {
+    let bytesRead = false;
+    const oversized = {
+      size: MAX_CONFIG_BYTES + 1,
+      arrayBuffer: async () => {
+        bytesRead = true;
+        return new TextEncoder().encode(GOOD).buffer;
+      },
+    } as unknown as Blob;
+    expect(
+      await readGatePlan(
+        source(async () => oversized),
+        COMMIT,
+      ),
+    ).toEqual({
+      kind: "legacy",
+      issue: "invalid",
+    });
+    expect(bytesRead).toBe(false);
+  });
+
   it("throws on an unexpected Artifacts failure instead of guessing a gate", async () => {
     await expect(readGatePlan(source(failsWith), COMMIT)).rejects.toThrow("down");
   });
