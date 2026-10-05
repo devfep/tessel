@@ -1,0 +1,4 @@
+intent: close two surviving mutants (recovery branch removed; in-flight marker not serialized) with a test where the persisted marker, not submission order, decides the dispatch
+assumes: a future Review handler clears awaiting_review on the submission
+rejected: none
+evidence: cargo test --lib merging 19 passed
