@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 10:52 EDT.
+**As of:** 2026-10-05 11:08 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the CLI-2 merge `5700165` plus this STATE commit; `main` at `29aa8fe`
+**Tip:** `sprint/build` at the COVER-1 merge `191dc0d` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
 **Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
 steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
@@ -27,17 +27,17 @@ except ruling 3, which lands with the steward merge path:
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** COVER-1 (Sonnet, `.claude/worktrees/cover-1`): committed `8deeeaa`, in review (Opus).
-CLI-2 closed and reclaimed.
+**Agents:** CLI-2b (Sonnet, `.claude/worktrees/cli-2b`): building; dogfooded as agent `cli-2b`.
+COVER-1 closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `9f75140a`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `493e4466`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
-- `tessel-steward` version `20a409ee` (adds the `MergeService` entrypoint), with the `TestRunner` container; admin routes need
+- `tessel-steward` version `c43ad948` (merge executor checks coverage), with the `TestRunner` container; admin routes need
   `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/merges` runs the merge
   executor (STEWARD-1). `POST /repos/<repo>/agents/<agent>/identity`
   mints a 24 h agent token.
@@ -81,18 +81,18 @@ CLI-2 closed and reclaimed.
 - Five lines over 100 characters predate REVIEW-1: `src/coordinator.rs:13`,
   `src/coordinator/merging.rs:629` and `:825`, `src/identity.rs:153`, `src/shell.rs:1`.
 - `tessel submit` computes `touched` from a base pinned at the first start and advanced only by
-  this agent's `Merged`; deleting `.tessel/state.json` resets it to HEAD (documented). COVER-1 adds
-  the server-side check.
+  this agent's `Merged`; deleting `.tessel/state.json` resets it to HEAD (documented). The steward
+  also checks the rebased commit's files against the claim (COVER-1), at file level only.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
 attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZE. Deploys of the
 two Workers are approved.
 
 **Next actions:**
-1. Review COVER-1; merge; deploy steward then coordinator; live-check an uncovered file rejected.
-2. CLI-2b: tree-sitter symbol claims and mode escalation; `tessel review` for reviewers.
-3. PLAN §9 Oct 8: assumptions end to end (verified), races. Dashboard and review screen (agents'
+1. Review CLI-2b when it reports.
+2. PLAN §9 Oct 8: assumptions end to end (verified), races. Dashboard and review screen (agents'
    lane per PLAN §7).
+3. Milestone PR `sprint/build` -> `main` after Oct 8 (full gate, `/code-review`, `/security-review`).
 
 ## Tasks
 
@@ -178,10 +178,13 @@ two Workers are approved.
   worktree root: a cwd outside the worktree could otherwise skip the claim). Workspace tests 348.
   Live from a 130-byte-deep worktree: start works; the installed hook auto-claims, blocks a held
   file and allows a path outside.
-- [ ] **COVER-1** — invariant 11 enforced at merge, not only from the agent's `touched` list: the
+- [x] **COVER-1** — invariant 11 enforced at merge, not only from the agent's `touched` list: the
   coordinator passes the claim's scopes to the steward, which checks the rebased commit's changed
   files against them (file level) before testing or pushing, and returns `uncovered {files}` as a
   verified rejection. Filed from the CLI-2 reviews (a client-computed diff base kept failing open).
+  CLOSED 2026-10-05 at `191dc0d` (review "Yes" after two fix passes). Steward tests 375. Live: a
+  commit touching an unclaimed file was rejected before any test ran and the trunk did not move; a
+  covered change merged.
 - [x] **CLI-2** — part a: `tessel submit` (file-level `touched`, local coverage check, evidence
   required). Part b (CLI-2b): tree-sitter symbol claims and mode escalation in the hook.
   Part a CLOSED 2026-10-05 at `5700165` (review "Yes" after four fix passes: the diff base, one
