@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 07:21 EDT.
+**As of:** 2026-10-05 07:41 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at `8feb196` (PLAN §4 diagram) plus this STATE commit; `main` at `29aa8fe`
+**Tip:** `sprint/build` at the IDENTITY merge `d6f127f` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
 **Milestone:** next is PLAN §9 Oct 6 (CLI levels 1–2, skill file, dogfood v0).
 
@@ -24,16 +24,20 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 through was refused by the session's permission classifier, so Felix runs the PROTO-FREEZE merge
 himself (his ruling, 07:19).
 
-**Agents:** PROTO-FREEZE (Sonnet, worktree `.claude/worktrees/proto-freeze`) and IDENTITY (Sonnet,
-worktree `.claude/worktrees/identity`), both cut from `8feb196`, dispatched 07:21.
+**Agents:** PROTO-FREEZE (Sonnet, worktree `.claude/worktrees/proto-freeze`): review Yes at
+`c07956a` after one fix pass; now merging the `sprint/build` tip (IDENTITY) into its branch for a
+re-gate before Felix merges it. IDENTITY closed; its worktree and branch are reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `7ff796a0`; upgrades need `Authorization: Bearer <COORDINATOR_TOKEN>`
-  (value in the gitignored `.dev.vars`) until IDENTITY ships.
-- `tessel-steward` version `64e07633`, with the `TestRunner` container; admin routes need
-  `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`).
+- `tessel-coordinator` version `4426eafc`: every upgrade needs `Authorization: Bearer <token>` minted
+  by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
+  both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
+  still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
+- `tessel-steward` version `dfed7cbe`, with the `TestRunner` container; admin routes need
+  `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/agents/<agent>/identity`
+  mints a 24 h agent token.
 - Queue `tessel-artifacts-events` with subscriptions `tessel-repo-lifecycle` and
   `tessel-push-demo--agent-1` (the fork subscription goes once the Submit path lands). Artifacts
   repos `demo` and `demo--agent-1` in namespace `tessel`.
@@ -60,10 +64,8 @@ attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZ
 two Workers are approved.
 
 **Next actions:**
-1. Review PROTO-FREEZE and IDENTITY as they report; merge IDENTITY on Yes; hand PROTO-FREEZE to
-   Felix.
-2. Deploy and check IDENTITY live (set `IDENTITY_SIGNING_KEY` on both Workers).
-3. Dispatch CLI-1 (protocol as a library crate, CLI levels 1–2, skill file) after PROTO-FREEZE
+1. Re-gate PROTO-FREEZE on the merged tip, hand the merge to Felix, then deploy the coordinator.
+2. Dispatch CLI-1 (protocol as a library crate, CLI levels 1–2, skill file) after PROTO-FREEZE
    merges.
 
 ## Tasks
@@ -119,6 +121,10 @@ two Workers are approved.
 - [ ] **PROTO-FREEZE** — Felix's rulings 1 and 4: queued and withdrawn wait events, `req` on
   `Release` and `Uncovered`, clippy and rustfmt clean on `src/protocol.rs`; the coordinator emits
   the events.
-- [ ] **IDENTITY** — Felix's ruling 2: steward-signed per-agent tokens replace `COORDINATOR_TOKEN`;
+- [x] **IDENTITY** — Felix's ruling 2: steward-signed per-agent tokens replace `COORDINATOR_TOKEN`;
   the coordinator binds the socket to the token's agent.
+  CLOSED 2026-10-05 at `d6f127f` (review "Yes" after one fix pass; adds `deny.toml`). Merged tree:
+  `cargo test` 232, steward 163. Live on coordinator `4426eafc` and steward `dfed7cbe`: a minted
+  token connects, a hello under another agent gets `not_owner`, and the wrong repo, no auth, a
+  garbage token, the old secret and a forged agent header all get 401.
 - [ ] **CLI-1** — PLAN §9 Oct 6: protocol as a library crate, `tessel-cli` levels 1–2, skill file.
