@@ -1,0 +1,4 @@
+intent: swarm policy that shadows a denied claim and reports verified preventions from the log
+assumes: the coordinator tries a shadow commit only if it submitted before its blocker merged
+rejected: counting denials or computing prevention outside Summary::from_events (rule 7); sleeping the work time for shadow agents (risks submitting after the blocker merged)
+evidence: cargo test --workspace 775 passed; clippy -D warnings clean on tessel-swarm; 6 of 7 mutants killed
