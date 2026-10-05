@@ -1,0 +1,4 @@
+intent: stop lanes running each other's scratch scripts, and record the COORD-3 fix pass
+assumes: none
+rejected: none
+evidence: docs only; the coord-4 worktree was checked clean at b2cc7c7 after the incident
