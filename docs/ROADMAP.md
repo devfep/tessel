@@ -5,93 +5,75 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 03:39 EDT.
-**Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
-**Tip:** `sprint/build` at the FIX-STEWARD merge `7de5ff3` (plus this docs commit), pushed. Pull request 1 to `main` is open.
-**Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
-to Felix at FREEZE.
+**As of:** 2026-10-05 04:17 EDT.
+**Orchestrator:** none (stopped at FREEZE to report to Felix; last held by the Claude Code session in
+`repos/tessel`, Claude Fable 5.1).
+**Tip:** `sprint/build` at the FIX-RUST merge `597f625` plus this docs commit, pushed, and merged to
+`main` by pull request 1.
+**Milestone:** reached. Spikes 1 to 3 and the coordinator (PLAN §9 rows for Oct 3 and Oct 4–5) are
+done. The protocol in `src/protocol.rs` is unchanged since the first commit and is ready to freeze,
+subject to item 1 below.
 
-**Agents:**
-
-| Agent | Task | Worktree / branch | Stage → next |
-|---|---|---|---|
-| impl-fix-rust | FIX-RUST | `.claude/worktrees/fix-rust` / `task-fix-rust` | fix pass 1 (7 items) → re-check |
-| cq-fix-rust | FIX-RUST review | same worktree; live probes on port 8796 | "With fixes" on `222e499` (1 Important, 6 Minor; 24 of 25 mutants killed) → re-check |
-
-**Rulings carried into COORD-2..4** (from the COORD-1 reviews):
-1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
-   another agent is `Malformed`. The shell binds identity per connection.
-2. `handle` routes by message family to two functions, each naming every variant with no wildcard.
-3. The current fence never appears in an error message.
-4. Claims live in a `BTreeMap`; the lock table is derived state, rebuilt on load, never persisted;
-   serialized state is byte-identical across identical replays; conflicts are sorted explicitly.
-5. Exact-duplicate scopes in a request are dropped once, up front.
-6. `Watch` replay belongs to the shell, which owns the event store (COORD-4).
-7. COORD-2: an agent with a queued `Wait` request may make no other claim; waiters are served FIFO
-   and never jump an earlier waiter they conflict with; queueing logs nothing because the protocol
-   has no event for it (proposed below).
-8. COORD-2 fix pass: time never goes backwards inside the core (a persisted clock clamps `now_ms`);
-   `Coordinator::new` rejects `lease_ms == 0`.
-9. COORD-3 and COORD-4 run as two parallel lanes after COORD-2 merges (disjoint files). A submitted
-   claim needs a status that expiry, heartbeat and `next_expiry_ms` skip; shadow claims place no locks.
-10. COORD-3: an uncovered submission leaves the claim active; a submitted claim rejects `Release` and
-   `Amend` with `AlreadySubmitted`; assumption challenges are sent at `Submit`; shadow claims hold no
-   locks, block no one, and a shadow `Submit` is answered `Accepted` with position 0 (recorded for
-   verification, never queued). The merge-outcome path waits for the steward work on Oct 7.
-11. COORD-4: one atomic write of state plus events before any send; identity bound per socket on
-   `Welcome`; `Notify` to an agent with no open socket is dropped; `Watch` is served by the shell.
-   COORD-4 merges after COORD-3 and sets `shadow_enabled` from a `SHADOW_ENABLED` variable.
-12. The 75-character subject on COORD-3 commit `2e760b1` is reworded by the orchestrator at merge
-   time, with a tree-equality check and the note carried over.
-13. COORD-4 fix pass: sending requires a `Persisted` token that only a completed write returns, so
-   persist-before-send is enforced by the types; delivery order is a pure, tested function; a failed
-   send to another socket closes that socket only; a second `Watch` on a watching socket is refused.
-14. FIX-RUST: the 1 MiB state limit refuses only growth caused by a client message; expiry-only work
-   (the alarm, a disconnect, and the expiry run after a refused message) may store up to the storage
-   cap, so a repo near the limit keeps making progress. A disconnect withdraws the agent's queued
-   request before expiry runs. The only deployed coordinator versions that ran the core (6a493efd,
-   f661b66f) had `SHADOW_ENABLED = "false"`, so no stored state holds a shadow claim.
+**Agents:** none live. Every worktree and task branch is reclaimed.
 
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop is running for the steward lane and the redeploy; stop it with `docker desktop stop` when FREEZE closes (quitting the window leaves the backend running).
+**Background jobs:** none. Docker Desktop is stopped (`docker desktop stop`).
 
-**Deployed:** `tessel-coordinator` (the full coordinator, version `f661b66f`) and `tessel-steward`
-(with the `TestRunner` container, version `64e07633`) on `devfep.workers.dev`. Queue `tessel-artifacts-events` with
-subscriptions `tessel-repo-lifecycle` and `tessel-push-demo--agent-1`. Artifacts repos `demo` and
-`demo--agent-1` in namespace `tessel`.
+**Deployed** on `devfep.workers.dev`:
+- `tessel-coordinator` version `7ff796a0`: the full coordinator. Every WebSocket upgrade needs
+  `Authorization: Bearer <COORDINATOR_TOKEN>`. The value is in the gitignored `.dev.vars` in the
+  repo root and set as a Worker secret.
+- `tessel-steward` version `64e07633`, with the `TestRunner` container. Admin routes need
+  `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`).
+- Queue `tessel-artifacts-events` with subscriptions `tessel-repo-lifecycle` and
+  `tessel-push-demo--agent-1`. Artifacts repos `demo` and `demo--agent-1` in namespace `tessel`.
+- Scratch coordinator repos from the gates (`gate-*`, `gate2-*`, `gate3-*`) hold test state only.
 
 **Pending from Felix:**
-1. Push-event design. Recommendation: the CLI's existing `Submit` is the merge signal, the steward
+1. Protocol freeze sign-off. Additive changes are still allowed today (CLAUDE.md rule 1). Gaps found
+   while building, none blocking: no event for a queued or withdrawn `Wait` request (invariant 10
+   says every state change is logged); `Release` errors and `Uncovered` carry no `req`; `Conflict`
+   carries no claim id; a shadow claim's `Submit` and `Amend` have no dedicated replies (the core
+   answers `Accepted` with `queue_position: 0`, and `Granted`); no message cancels a queued `Wait`
+   (closing the socket does); `ClaimId` and `Scope` lack `Ord`. Recommendation: add the queued and
+   withdrawn events and the two `req` fields now, leave the rest.
+2. Per-agent identity. The coordinator now refuses anything without the deployment secret, but any
+   holder of that secret can still say `hello` under another agent's name and read fences on
+   `watch`. Recommendation: a per-agent token signed by the steward and verified at the upgrade,
+   binding the socket's identity; no protocol change. It touches the CLI and steward work of
+   Oct 6–7, so it needs his yes.
+3. Push-event design. Recommendation: the CLI's existing `Submit` is the merge signal, the steward
    verifies the commit by reading the fork through the binding, and one push subscription stays on
-   the main repo. No protocol change. It changes the diagram in PLAN §4, so it needs his yes.
-   Research and probes: 60 per-fork subscriptions on one queue also work.
-2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
-3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) appeared in the repo root on Oct 3. Not created
+   the main repo. No protocol change, but it changes the diagram in PLAN §4. Probes showed 60
+   per-fork subscriptions on one queue also work.
+4. `cargo clippy -D warnings` and `rustfmt` report findings in `src/protocol.rs` itself (doc-list
+   lints, unused items, formatting). All new code is clean. Fixing it means editing the protocol
+   file, with no wire change.
+5. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
+6. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) appeared in the repo root on Oct 3. Not created
    by this build; left untracked.
-4. Protocol gaps found while building the core, all additive, for a decision at the freeze: no
-   event for a queued `Wait` request (invariant 10 says every state change is logged); `Release`
-   errors carry no `req`; `Conflict` carries no claim id; `ClaimId` and `Scope` lack `Ord`.
-5. `cargo clippy -D warnings` fails on `src/protocol.rs` itself (14 doc-list lints and unused items).
-   New code is clean; fixing the protocol file means editing it.
-6. Agents are not authenticated, and it is exploitable, confirmed live on the deployed coordinator on
-   2026-10-05: a socket that never sent `hello` read claim 5's fence from the `watch` stream; a second
-   socket said `hello` under the holder's name, released the claim with that fence, and took the
-   scope. Fix in two steps, neither needing a protocol change:
-   - SEC-1 (in the FREEZE gate, decided by the orchestrator, Felix may flip): the coordinator
-     refuses the WebSocket upgrade without a deployment secret, so nothing anonymous can connect.
-   - Recommended next, needs Felix's yes because the CLI and steward must issue and carry it: a
-     per-agent token signed by the steward and verified at the upgrade, binding the socket's
-     identity. With that, a fence seen on `watch` is useless to another agent (`NotOwner`).
-7. A shadow claim's `Submit` has no dedicated reply in the protocol; the core answers `Accepted`
-   with `queue_position: 0`. An additive `ServerMsg` variant would be clearer.
+
+**Known limits, recorded so nobody rediscovers them:**
+- A submitted claim is held until a merge outcome is reported; that path arrives with the steward
+  merge work (Oct 7). Add then: a test that queue positions follow the submission ordinal once
+  merged claims are removed.
+- The test runner refuses repos with dependencies (step `install`) until install is built.
+- A `Granted` whose send fails after the write is not re-sent; the claim then lives until its lease
+  lapses, or longer if that agent keeps sending heartbeats. A resync on `hello` would close it.
+- New claims are checked against active claims only, so a steady stream of compatible claims can
+  delay a waiter.
+- Worker glue in `src/lib.rs` has no native tests (no fake storage layer); it is covered by the
+  `Persisted` type, the pure functions it calls, and the live runs in the merge notes.
+- Not exercised live: closing another socket after a failed send to it.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
-attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Workers are approved.
+attribution trailer on commits. `src/protocol.rs` is not edited without Felix. Deploys of the two
+Workers are approved. Design rulings from the reviews are in the git notes on the merge commits
+and in the doc comments of the code they govern.
 
-**Next actions:**
-1. On each report: dispatch the Opus reviewer, run fix passes, merge on "Yes", gate, close.
-2. FREEZE: steward and Rust gates on the tip, `/code-review` and `/security-review` on the milestone
-   diff, pull request `sprint/build` → `main`, merge, report to Felix.
+**Next actions on resume:**
+1. Take Felix's answers to items 1 to 3.
+2. PLAN §9, Oct 6: CLI levels 1–2 and the skill file; then the steward merge path (Oct 7).
 
 ## Tasks
 
@@ -126,18 +108,20 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   Live on version `f661b66f`: grant, denial with the holder's intent, queue then grant on release,
   watcher replay, expiry through the alarm, and head, counters and the full log intact after a
   redeploy. Not exercised live: close-on-failure for a send to another socket, and hibernation.
-- [ ] **FIX-RUST** — Coordinator fixes from the milestone code review and security review: SEC-1 (the
-  upgrade requires the deployment secret), bounded frames, scope counts and state size, waiters
-  withdrawn on disconnect, canonical scope paths only, shared intent, large `from_seq`, state
-  enums, cheaper delivery, `StaleFence` for claims that are gone.
-  Files: `src/lib.rs`, `src/shell.rs`, `src/store.rs`, `src/coordinator.rs`, `wrangler.toml`, `README.md`.
-  Verify: on the deployed Worker an upgrade without the secret gets 401, and the scripted two-agent
-  run passes with it.
+- [x] **FIX-RUST** — Coordinator fixes from the milestone code review and security review: the
+  upgrade requires the deployment secret, bounded frames, scope counts and state size, waiters
+  withdrawn on disconnect, canonical scope paths only, `StaleFence` for claims that are gone.
+  CLOSED 2026-10-05 at `597f625` (merge of `task-fix-rust`; review "Yes" after four fix passes).
+  `cargo test` 220 passed on the merged tree. Live on version `7ff796a0`: an upgrade without the
+  secret gets 401, the two-agent run passes with it, and a waiter that closes after hibernation is
+  withdrawn.
 - [x] **FIX-STEWARD** — Steward fixes from the milestone code review: refuse repos with
   dependencies as step `install` instead of reporting failed tests, never run repo code when the
   token revoke failed, cap captured output, mint write tokens for forks only.
   CLOSED 2026-10-05 at `7de5ff3` (merge of `task-fix-steward`; review "Yes" after two fix passes;
   119 steward tests). Live on version `64e07633`: `demo` passes, a fork with a declared dependency
   returns step `install`, a token for `demo` is refused with 403 and one for the fork is issued.
-- [ ] **FREEZE** — Milestone gate: full gate on the tip, `/code-review` and `/security-review` on
-  the milestone diff, pull request `sprint/build` → `main`, report to Felix, protocol frozen.
+- [x] **FREEZE** — Milestone gate: full gate on the tip, `/code-review` and `/security-review` on
+  the milestone diff, pull request `sprint/build` → `main`, report to Felix.
+  CLOSED 2026-10-05 with pull request 1. The two reviews produced FIX-RUST and FIX-STEWARD, both
+  merged, deployed and checked live before the merge to `main`.
