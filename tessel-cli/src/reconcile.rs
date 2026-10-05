@@ -19,6 +19,8 @@ pub struct ServerClaim {
     pub race: Option<RaceId>,
     /// Submitted and not since rejected: the coordinator holds the claim for the steward.
     pub submitted: bool,
+    /// The fork commit of the submission while `submitted`.
+    pub submitted_commit: Option<String>,
 }
 
 /// The claims `agent` holds after replaying `events` in order, with each claim's latest fence
@@ -43,6 +45,7 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                         scopes: scopes.clone(),
                         race: *race,
                         submitted: false,
+                        submitted_commit: None,
                     },
                 );
             }
@@ -56,14 +59,18 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                     held.scopes.extend(added.iter().cloned());
                 }
             }
-            EventKind::Submitted { claim, .. } => {
+            EventKind::Submitted {
+                claim, fork_commit, ..
+            } => {
                 if let Some(held) = live.get_mut(&claim.0) {
                     held.submitted = true;
+                    held.submitted_commit = Some(fork_commit.0.clone());
                 }
             }
             EventKind::SubmitRejected { claim, .. } => {
                 if let Some(held) = live.get_mut(&claim.0) {
                     held.submitted = false;
+                    held.submitted_commit = None;
                 }
             }
             EventKind::ClaimReleased { claim, .. } | EventKind::Merged { claim, .. } => {
@@ -149,7 +156,7 @@ pub struct Plan {
     /// Local claims whose submitted flag differs from the log: a submission whose reply was lost
     /// (now true), or one the steward rejected (now false). Only a complete read decides this,
     /// and never for a claim whose state changed since the new connection was welcomed.
-    pub set_submitted: Vec<(ClaimId, bool)>,
+    pub set_submitted: Vec<(ClaimId, bool, Option<String>)>,
     /// Live claims that answer a request whose reply was lost: index into `lost_requests`.
     pub answer_lost: Vec<(usize, ClaimId, ServerClaim)>,
     /// Live claims this daemon tried to release before the socket dropped.
@@ -177,7 +184,11 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
                     && server.submitted != held.submitted
                     && !local.fresh.contains(&held.claim) =>
             {
-                plan.set_submitted.push((held.claim, server.submitted));
+                plan.set_submitted.push((
+                    held.claim,
+                    server.submitted,
+                    server.submitted_commit.clone(),
+                ));
             }
             None if ended.contains(&held.claim) && !local.fresh.contains(&held.claim) => {
                 plan.forget.push(held.claim);
@@ -266,6 +277,7 @@ mod tests {
             race: None,
             scopes: scopes(path),
             submitted: false,
+            submitted_commit: None,
         }
     }
 
@@ -393,7 +405,10 @@ mod tests {
         let plan = plan_for(&local, &events, &[], &[]);
         assert_eq!(
             plan.set_submitted,
-            vec![(ClaimId(1), true), (ClaimId(2), false)]
+            vec![
+                (ClaimId(1), true, Some("f".to_string())),
+                (ClaimId(2), false, None)
+            ]
         );
         let incomplete = plan_incomplete(&local, &events, &[], &[]);
         assert!(incomplete.set_submitted.is_empty());

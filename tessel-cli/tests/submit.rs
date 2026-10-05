@@ -779,3 +779,53 @@ async fn an_unknown_coordinator_head_falls_back_to_the_pinned_start_commit() -> 
     assert_eq!(submits(&fake).len(), 1);
     Ok(())
 }
+
+/// A merge is the one event that moves the diff base: to the merged submission's commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_base_advances_to_the_merged_commit_and_only_then() -> Result<()> {
+    let (fake, a1) = world().await?;
+    a1.start("two tasks")?;
+    let start = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let first = commit_file(&a1, "src/a.rs", "pub fn a() { 1; }\n", "task one")?;
+    assert_eq!(a1.tessel(&["submit", "--evidence", "ok"])?.code, 0);
+    assert_eq!(
+        a1.status()?["state"]["start_base"],
+        start,
+        "accepted is not merged"
+    );
+
+    fake.push(
+        "a1",
+        ServerMsg::Merged {
+            claim: ClaimId(claim_id(&a1)?),
+            head: CommitId("2".repeat(40)),
+        },
+    );
+    eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(()))).await?;
+    assert_eq!(a1.status()?["state"]["start_base"], first.as_str());
+
+    // The next task is diffed from the merged commit: task one's file is not its business.
+    fake.push(
+        "a1",
+        ServerMsg::BaseMoved {
+            head: CommitId("1".repeat(40)),
+            by: tessel_coordinator::protocol::AgentId("a2".into()),
+            affected: vec![],
+        },
+    );
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["coordinator_head"] == "1".repeat(40)).then_some(()))
+    })
+    .await?;
+    assert_eq!(a1.tessel(&["claim", "src/b.rs"])?.code, 0);
+    commit_file(&a1, "src/b.rs", "pub fn b() { 1; }\n", "task two")?;
+    let done = a1.tessel(&["submit", "--evidence", "ok"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let sent = submits(&fake);
+    let ClientMsg::Submit { touched, .. } = &sent[1] else {
+        anyhow::bail!("not a submit");
+    };
+    assert_eq!(touched, &vec![file("src/b.rs", Mode::EditBody)]);
+    Ok(())
+}

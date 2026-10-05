@@ -107,6 +107,7 @@ struct PendingClaim {
 /// A `Submit` sent and not yet answered by `Accepted`, `Uncovered`, `ReviewRequired` or `Error`.
 struct PendingSubmit {
     claim: ClaimId,
+    fork_commit: String,
     reply: oneshot::Sender<Reply>,
 }
 
@@ -150,12 +151,6 @@ struct Daemon {
     heartbeat_every: Duration,
     next_housekeeping: Instant,
     ever_online: bool,
-    /// HEAD when this daemon process started.
-    launch_head: String,
-    /// `start_base` still has to be settled against the claims the first log read shows.
-    start_base_unsettled: bool,
-    /// `start_base` was not persisted by an earlier daemon, so it is only this process's HEAD.
-    start_base_invented: bool,
 }
 
 /// Runs the daemon for `worktree` until `tessel stop` or a fatal error. Returns `Ok` without
@@ -196,13 +191,14 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         .context("cannot write daemon.pid")?;
 
     let base = worktree.head()?;
-    // The diff base outlives a restart while claims do: it was pinned when the work began.
+    // The diff base is pinned at the first start in a worktree and then only moves when a merge
+    // lands (`on_merged`): not on a restart, a reconnect, `stop` or a lapsed lease. Deleting
+    // `.tessel/state.json` resets it to HEAD.
     let persisted = State::read(&worktree)
         .ok()
         .flatten()
         .map(|prior| prior.start_base)
         .filter(|pinned| !pinned.is_empty());
-    let invented = persisted.is_none();
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let accept = tokio::spawn(accept_loop(listener, cmd_tx, shutdown_rx));
@@ -225,9 +221,6 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         updated_at_ms: now_ms(),
     };
     let mut daemon = Daemon::new(worktree.clone(), config, state, in_tx);
-    daemon.launch_head = base.clone();
-    daemon.start_base_unsettled = true;
-    daemon.start_base_invented = invented;
     daemon.log("daemon started");
     let result = daemon.main_loop(cmd_rx, in_rx).await;
     if let Err(e) = &result {
@@ -306,9 +299,6 @@ impl Daemon {
             heartbeat_every: DEFAULT_HEARTBEAT,
             next_housekeeping: now + HOUSEKEEPING_EVERY,
             ever_online: false,
-            launch_head: String::new(),
-            start_base_unsettled: false,
-            start_base_invented: false,
         }
     }
 
@@ -683,6 +673,7 @@ impl Daemon {
                 race,
                 scopes: pending.scopes,
                 submitted: false,
+                submitted_commit: None,
             };
             self.state.claims.push(held.clone());
             held
@@ -787,7 +778,6 @@ impl Daemon {
         let plan = reconcile::plan(&local, &live, &events);
         if complete {
             self.apply_plan(plan, lost);
-            self.settle_start_base();
             return;
         }
         self.notify(
@@ -803,32 +793,6 @@ impl Daemon {
             answer(pending.replies, &refused(None, message));
         }
         self.apply_plan(plan, Vec::new());
-    }
-
-    /// Settles the diff base once the first complete log read has said which claims this agent
-    /// holds from before this process. With none, the work starts here: the base is this
-    /// process's HEAD. With some (a restart after a crash adopts them), the base is the one an
-    /// earlier daemon persisted, so commits made before the restart still count; if none was
-    /// persisted it is unknown and `submit` fails closed.
-    fn settle_start_base(&mut self) {
-        if !self.start_base_unsettled {
-            return;
-        }
-        self.start_base_unsettled = false;
-        let inherited = self
-            .state
-            .claims
-            .iter()
-            .any(|held| !self.fresh.contains(&held.claim));
-        if !inherited {
-            self.state.start_base = self.launch_head.clone();
-        } else if self.start_base_invented {
-            self.state.start_base.clear();
-            self.log(
-                "claims held from before this daemon started, but no start commit was persisted",
-            );
-        }
-        self.persist();
     }
 
     /// Brings the fences and scopes of local claims up to what the log shows.
@@ -849,10 +813,11 @@ impl Daemon {
         }
     }
 
-    fn apply_submitted(&mut self, set_submitted: Vec<(ClaimId, bool)>) {
-        for (claim, submitted) in set_submitted {
+    fn apply_submitted(&mut self, set_submitted: Vec<(ClaimId, bool, Option<String>)>) {
+        for (claim, submitted, commit) in set_submitted {
             if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
                 held.submitted = submitted;
+                held.submitted_commit = commit;
             }
             let note = if submitted {
                 format!(
@@ -920,6 +885,7 @@ impl Daemon {
                 race: None,
                 scopes: Vec::new(),
                 submitted: false,
+                submitted_commit: None,
             };
             self.send_release(&held);
             let note = format!(
@@ -944,6 +910,7 @@ impl Daemon {
             race: server.race,
             scopes: server.scopes,
             submitted: server.submitted,
+            submitted_commit: server.submitted_commit,
         };
         self.state.claims.push(held.clone());
         held
@@ -993,10 +960,15 @@ impl Daemon {
 
     /// Records that the coordinator holds `claim` as submitted (or, after a rejection, active
     /// again). A submitted claim does not expire; a rejected one gets a fresh lease estimate.
-    fn set_submitted(&mut self, claim: ClaimId, submitted: bool) {
+    fn set_submitted(&mut self, claim: ClaimId, submitted: bool, commit: Option<String>) {
         let renewed = now_ms().saturating_add(self.state.lease_ms.unwrap_or(0));
         if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
             held.submitted = submitted;
+            held.submitted_commit = if submitted {
+                commit.or_else(|| held.submitted_commit.take())
+            } else {
+                None
+            };
             if !submitted {
                 held.expires_at_ms = renewed;
             }
@@ -1005,7 +977,18 @@ impl Daemon {
         self.persist();
     }
 
+    /// A merge is the only thing that moves the diff base: everything up to the merged
+    /// submission's commit has landed on main (as rebased copies), so later work is diffed from it.
     fn on_merged(&mut self, claim: ClaimId, msg: ServerMsg) {
+        let landed = self
+            .state
+            .claims
+            .iter()
+            .find(|held| held.claim == claim)
+            .and_then(|held| held.submitted_commit.clone());
+        if let Some(commit) = landed {
+            self.state.start_base = commit;
+        }
         self.state.claims.retain(|held| held.claim != claim);
         self.notify(
             NoticeKind::Merged,
@@ -1016,7 +999,7 @@ impl Daemon {
     }
 
     fn on_submit_rejected(&mut self, claim: ClaimId, msg: ServerMsg) {
-        self.set_submitted(claim, false);
+        self.set_submitted(claim, false, None);
         self.notify(
             NoticeKind::SubmitRejected,
             &format!(
@@ -1067,11 +1050,12 @@ impl Daemon {
                 return;
             }
         }
-        if let Some(pending) = self.submits.remove(&req.0) {
+        let commit = self.submits.remove(&req.0).map(|pending| {
             let outcome = SubmitOutcome::Accepted { queue_position };
             let _ = pending.reply.send(Reply::Submit { outcome });
-        }
-        self.set_submitted(claim, true);
+            pending.fork_commit
+        });
+        self.set_submitted(claim, true, commit);
     }
 
     fn on_uncovered(
@@ -1103,7 +1087,7 @@ impl Daemon {
         msg: ServerMsg,
     ) {
         if let Some(pending) = self.take_submit(None, claim) {
-            self.set_submitted(claim, true);
+            self.set_submitted(claim, true, Some(pending.fork_commit.clone()));
             let outcome = SubmitOutcome::ReviewRequired { reasons };
             let _ = pending.reply.send(Reply::Submit { outcome });
         }
@@ -1160,7 +1144,7 @@ impl Daemon {
             req: RequestId(req),
             claim,
             fence,
-            fork_commit: CommitId(fork_commit),
+            fork_commit: CommitId(fork_commit.clone()),
             touched,
             decisions,
         };
@@ -1169,7 +1153,14 @@ impl Daemon {
             let _ = reply.send(submit_refused(None, message));
             return;
         }
-        self.submits.insert(req, PendingSubmit { claim, reply });
+        self.submits.insert(
+            req,
+            PendingSubmit {
+                claim,
+                fork_commit,
+                reply,
+            },
+        );
     }
 
     fn on_error(
@@ -1921,6 +1912,7 @@ mod tests {
             race: None,
             scopes: Vec::new(),
             submitted: false,
+            submitted_commit: None,
         }
     }
 
@@ -1971,6 +1963,7 @@ mod tests {
             5,
             PendingSubmit {
                 claim: ClaimId(1),
+                fork_commit: "f".into(),
                 reply,
             },
         );

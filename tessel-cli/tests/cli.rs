@@ -1897,45 +1897,62 @@ async fn a_crash_and_restart_keeps_the_pinned_start_so_earlier_commits_still_cou
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn adopted_claims_with_no_pinned_start_make_submit_fail_closed() -> Result<()> {
-    let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("crash and lose the state file")?;
-    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+async fn deleting_the_state_file_resets_the_base_to_head() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("first session")?;
     commit_in(&a1, "src/b.rs", "pub fn b() { 1; }\n")?;
-
-    kill_daemon(&a1).await?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
     std::fs::remove_file(a1.root().join(".tessel/state.json"))?;
-    a1.start("after the crash")?;
-    eventually(SHORT, || Ok((a1.held_claims()? == 1).then_some(()))).await?;
-    commit_in(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
-    forget_the_coordinator_head(&fake, &a1).await?;
+    a1.start("fresh worktree state")?;
+    let head = head_of(&a1)?;
+    assert_eq!(a1.status()?["state"]["start_base"], head.as_str());
+    Ok(())
+}
+
+/// The probe: work committed before the daemon went away still counts afterwards.
+async fn restart_then_submit_is_uncovered(
+    fake: &Fake,
+    a1: &Agent,
+    restart: impl AsyncFnOnce(&Agent) -> Result<()>,
+) -> Result<()> {
+    a1.start("session one")?;
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_in(a1, "src/b.rs", "pub fn b() { 1; }\n")?;
+
+    restart(a1).await?;
+    a1.start("session two")?;
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_in(a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    forget_the_coordinator_head(fake, a1).await?;
 
     let done = a1.tessel(&["submit", "--evidence", "ok"])?;
-    assert_eq!(done.code, 1, "{}", done.all());
-    assert!(
-        done.stderr
-            .contains("cannot tell what this work is based on"),
-        "{}",
-        done.stderr
-    );
+    assert_eq!(done.code, 5, "{}", done.all());
+    assert!(done.stdout.contains("src/b.rs"), "{}", done.stdout);
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_restart_with_no_claims_pins_the_current_head() -> Result<()> {
-    let (_fake, a1, _a2) = world(30_000).await?;
-    a1.start("first session")?;
-    let first = a1.status()?["state"]["start_base"].clone();
-    assert_eq!(a1.tessel(&["stop"])?.code, 0);
-    commit_in(&a1, "src/b.rs", "pub fn b() { 1; }\n")?;
-    a1.start("second session")?;
-    let head = head_of(&a1)?;
-    eventually(SHORT, || {
-        Ok((a1.status()?["state"]["start_base"] == head.as_str()).then_some(()))
+async fn stop_then_start_does_not_move_the_base_past_committed_work() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    restart_then_submit_is_uncovered(&fake, &a1, async |agent| {
+        assert_eq!(agent.tessel(&["stop"])?.code, 0);
+        Ok(())
     })
-    .await?;
-    assert_ne!(first, serde_json::Value::String(head));
-    Ok(())
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_that_outlasts_the_lease_does_not_move_the_base_either() -> Result<()> {
+    let (fake, a1, _a2) = world(900).await?;
+    restart_then_submit_is_uncovered(&fake, &a1, async |agent| {
+        kill_daemon(agent).await?;
+        // The coordinator expires the claim, so nothing is adopted on the next start.
+        tokio::time::sleep(Duration::from_millis(1800)).await;
+        Ok(())
+    })
+    .await
 }
 
 fn head_of(agent: &Agent) -> Result<String> {

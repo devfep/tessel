@@ -22,6 +22,9 @@ pub struct HeldClaim {
     /// `SubmitRejected` (invariant 5). A submitted claim does not expire and cannot be released.
     #[serde(default)]
     pub submitted: bool,
+    /// The fork commit of the submission, to move the diff base to when it merges.
+    #[serde(default)]
+    pub submitted_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,9 +53,9 @@ pub struct State {
     pub repo: String,
     pub summary: String,
     pub task_ref: Option<String>,
-    /// HEAD when this daemon was started in the worktree. Set once and never changed by a
-    /// reconnect, so `submit` has a diff base that comes from the commit graph, not from the
-    /// connection.
+    /// HEAD at the first start in the worktree, moved only when one of this agent's submissions
+    /// merges. A reconnect, restart, `stop` or lapsed lease never changes it, so `submit` has a diff
+    /// base that comes from the commit graph, not from the connection.
     #[serde(default)]
     pub start_base: String,
     /// The coordinator's head commit, from `Welcome`, `Merged` and `BaseMoved`.
