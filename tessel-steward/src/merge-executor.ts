@@ -75,7 +75,6 @@ function reportRevokeFailure(repo: string, tokenId: string): (reason: string) =>
  * It cannot use the token: the token is held by `MergePushGateway`, which forwards only the one
  * pinned update, and the outcome is decided by a read of main made by the Worker, not by the
  * sandbox. Isolating the tests under another uid is not built.
- * Object instance with a new random name for each merge.
  *
  * @throws If the fork is not a fork of `repo`, a repo is missing, the container cannot start,
  *   or a read token could not be revoked (no repo code runs in that case).

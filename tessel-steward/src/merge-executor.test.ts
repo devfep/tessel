@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { NETWORK_TIMEOUT_SECONDS } from "./merge-commands";
 import { executeMerge, redactOutcome } from "./merge-executor";
@@ -25,6 +25,7 @@ interface World {
   pushExit: number;
   mainNow: Sha;
   forkHost: string;
+  mainReadFails: boolean;
 }
 
 function textStream(text: string): ReadableStream<Uint8Array> {
@@ -59,6 +60,7 @@ function build(overrides: Partial<World> = {}) {
     pushExit: 0,
     mainNow: HEAD,
     forkHost: "git.example",
+    mainReadFails: false,
     ...overrides,
   };
   const events: string[] = [];
@@ -83,7 +85,12 @@ function build(overrides: Partial<World> = {}) {
         events.push(`revoke ${id}`);
         return true;
       },
-      log: async () => [{ hash: world.mainNow }],
+      log: async () => {
+        if (world.mainReadFails) {
+          throw new Error("artifacts unavailable");
+        }
+        return [{ hash: world.mainNow }];
+      },
       [Symbol.dispose]: () => undefined,
     };
   }
@@ -211,6 +218,14 @@ describe("executeMerge", () => {
 
   it("does not report merged when the push exits 0 but main did not move", async () => {
     const { ctx, env } = build({ mainNow: BASE });
+    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+      outcome: "push_failed",
+    });
+  });
+
+  it("reports push_failed, never merged or main_moved, when main cannot be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { ctx, env } = build({ mainReadFails: true });
     expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
       outcome: "push_failed",
     });
