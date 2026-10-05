@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 01:18 EDT.
+**As of:** 2026-10-05 01:36 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
-**Tip:** `sprint/build` code at `ddaeb44` (docs commits on top), pushed. `main` at `9211b67`.
+**Tip:** `sprint/build` at the SPIKE-3 merge `a4b411c` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
 to Felix at FREEZE.
 
@@ -15,10 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-spike-3 | SPIKE-3 | `.claude/worktrees/spike-3` / `task-spike-3` | fix pass 2 (test the clone/revoke/test sequencing) → re-check |
-| cq-spike-3 | SPIKE-3 review | same worktree, read-only | "Yes" on `b4790e4` with one Minor (sequencing untested) → confirm fix pass 2 |
-| impl-coord-1 | COORD-1 | `.claude/worktrees/coord-1` / `task-coord-1` | fix pass 1 (9 items) → re-check |
-| cq-coord-1 | COORD-1 review | same worktree, read-only | "With fixes" on `4862f59` (2 Important, 5 Minor) → re-check after fix pass 1 |
+| impl-coord-1 | COORD-1 | `.claude/worktrees/coord-1` / `task-coord-1` | fix pass 1 committed at `5c43340` → re-check |
+| cq-coord-1 | COORD-1 review | same worktree, read-only | "With fixes" on `4862f59` (2 Important, 5 Minor) → re-check `5c43340` |
 
 **Rulings for COORD-1 fix pass 1** (sent with the reviewer's findings as one brief):
 1. `Hello` identity: the core uses the `agent` argument of `handle` for the reply and the log. A
@@ -34,10 +32,10 @@ to Felix at FREEZE.
    COORD-3 to COORD-4.
 
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop is running for SPIKE-3; quit it when SPIKE-3 closes.
+**Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
 
 **Deployed:** `tessel-coordinator` (toolchain check, version `7aeaebc0`) and `tessel-steward`
-(spike 2, version `94904597`) on `devfep.workers.dev`. Queue `tessel-artifacts-events` with
+(spikes 2 and 3 with the `TestRunner` container, version `7be0d0c7`) on `devfep.workers.dev`. Queue `tessel-artifacts-events` with
 subscriptions `tessel-repo-lifecycle` and `tessel-push-demo--agent-1`. Artifacts repos `demo` and
 `demo--agent-1` in namespace `tessel`.
 
@@ -55,8 +53,7 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
 
 **Next actions:**
 1. On each report: dispatch the Opus reviewer, run fix passes, merge on "Yes", gate, close.
-2. SPIKE-3 gate includes a deploy of `tessel-steward` and a live test run against `demo`.
-3. Dispatch COORD-2 when COORD-1 merges; COORD-3 and COORD-4 follow in order.
+2. Dispatch COORD-2 when COORD-1 merges; COORD-3 and COORD-4 follow in order.
 
 ## Tasks
 
@@ -65,10 +62,11 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
 - [x] **SPIKE-2** — Artifacts fork + repo-scoped token + push event via Queue.
   CLOSED 2026-10-05 at `ddaeb44`: create, fork, 1h write token, git push and the `pushed` event
   verified on the deployed steward.
-- [ ] **SPIKE-3** — Sandbox runs `npm test` on an Artifacts repo.
-  Files: `tessel-steward/**`.
-  Verify: `POST /repos/demo/test-runs` on the deployed steward returns `passed: true`, and the
-  sandbox never holds a token.
+- [x] **SPIKE-3** — Sandbox runs `npm test` on an Artifacts repo.
+  CLOSED 2026-10-05 at `a4b411c` (merge of `task-spike-3`; review "Yes" after two fix passes; 67
+  steward tests). Live on version `7be0d0c7`: `demo` passed in 18 s, a deliberately failing test on
+  `demo--agent-1` returned exit 1 and `passed: false`, then passed after the revert. The token stays
+  in the Worker and is revoked straight after the clone.
 - [ ] **COORD-1** — Pure coordinator core: hello, claims with `Fail`, release, lock table, fences,
   event log, at-risk assumptions.
   Files: `src/coordinator.rs`, `src/lib.rs` (module line), `Cargo.toml`, `Cargo.lock`.
