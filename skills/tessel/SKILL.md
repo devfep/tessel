@@ -76,6 +76,8 @@ in Rust (module path from the file path, then `mod`/`impl` nesting; a trait impl
 | `Write` over an existing file | the file, `edit-signature` and `create` |
 | `Write` of a new file | the file, `create` |
 
+A symbol's signature includes the attributes, derives, decorators and doc comments above it. An
+`impl` or class header (generics, bounds, trait, decorators) is part of every member's signature.
 A struct, enum, constant, type alias or bodyless trait method is all signature. The whole file is
 claimed, never a guess, when `old_string` is missing or occurs more than once (without
 `replace_all`), when the file has a syntax error before or after the edit, or when the language

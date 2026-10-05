@@ -85,6 +85,10 @@ fn shape(path: &str, source: &str) -> Option<Shape> {
         residual.push('\0');
         at = symbol.range.end;
         let parts = symbols.entry(symbol.name.clone()).or_default();
+        if let Some(header) = &symbol.header {
+            parts.signature.push_str(&source[header.clone()]);
+            parts.signature.push('\0');
+        }
         parts.signature.push_str(&source[symbol.signature.clone()]);
         parts.signature.push('\0');
         parts.body.push_str(&source[symbol.body()]);
@@ -160,7 +164,8 @@ fn file_fallback(path: &str, current: &str, edits: &[Replace<'_>]) -> Vec<ScopeC
     let signatures: Vec<Range<usize>> = extract(path, current)
         .unwrap_or_default()
         .into_iter()
-        .map(|symbol: Symbol| symbol.signature)
+        .flat_map(|symbol: Symbol| [Some(symbol.signature), symbol.header])
+        .flatten()
         .collect();
     let touches_signature = edits.iter().filter(|e| !e.old.is_empty()).any(|edit| {
         current.match_indices(edit.old).any(|(at, hit)| {
@@ -705,6 +710,165 @@ fn check(user: &str) -> bool {
                 scope: symbol_scope("src/lib.rs", "f"),
                 mode: Mode::EditBody
             }]
+        );
+    }
+
+    const ATTRIBUTED: &str = "\
+/// Starts a session.
+#[derive(Debug)]
+pub struct Session {
+    id: u32,
+}
+
+impl Session {
+    pub fn refresh(&self) -> u32 {
+        self.id
+    }
+}
+
+#[must_use]
+pub fn open() -> Session {
+    Session { id: 1 }
+}
+
+pub fn other() {}
+";
+
+    fn changed(before: &str, after: &str) -> Vec<ScopeClaim> {
+        changed_scopes("src/lib.rs", before, after).unwrap()
+    }
+
+    #[test]
+    fn adding_a_derive_is_a_signature_change() {
+        let after = ATTRIBUTED.replace("#[derive(Debug)]", "#[derive(Debug, Clone)]");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
+        );
+        let bare = ATTRIBUTED.replace("#[derive(Debug)]\n", "");
+        assert_eq!(
+            changed(ATTRIBUTED, &bare),
+            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn changing_an_attribute_is_a_signature_change() {
+        let after = ATTRIBUTED.replace("#[must_use]", "#[must_use = \"drop closes it\"]");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "open", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn changing_a_doc_comment_is_a_signature_change() {
+        let after = ATTRIBUTED.replace("Starts a session.", "Opens a session.");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn a_plain_comment_above_a_symbol_is_not_part_of_it() {
+        let before = "// note\nfn a() {}\n";
+        let after = "// other note\nfn a() {}\n";
+        assert_eq!(
+            changed(before, after),
+            [file_in("src/lib.rs", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn an_attribute_on_another_symbol_leaves_this_one_alone() {
+        let after = ATTRIBUTED.replace("#[must_use]", "#[inline]");
+        let got = changed(ATTRIBUTED, &after);
+        assert_eq!(got, [sym_in("src/lib.rs", "open", Mode::EditSignature)]);
+        assert!(!got.contains(&sym_in("src/lib.rs", "Session", Mode::EditSignature)));
+        assert!(!got.contains(&sym_in("src/lib.rs", "other", Mode::EditSignature)));
+    }
+
+    #[test]
+    fn a_body_only_change_is_still_edit_body() {
+        let after = ATTRIBUTED.replace("Session { id: 1 }", "Session { id: 2 }");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "open", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn an_impl_bound_change_is_a_signature_change_of_its_methods() {
+        let before = "impl<T: Clone> Wrapper<T> {\n    fn get(&self) {}\n    fn put(&self) {}\n}\n\nfn z() {}\n";
+        let after = before.replace("T: Clone", "T: Clone + Send");
+        let got = changed(before, &after);
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "Wrapper::get", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "Wrapper::put", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(!got
+            .iter()
+            .any(|c| c.scope == symbol_scope("src/lib.rs", "z")));
+    }
+
+    #[test]
+    fn a_where_clause_change_is_a_signature_change() {
+        let before = "fn f<T>(t: T) where T: Clone {\n    drop(t);\n}\n";
+        let after = before.replace("T: Clone", "T: Copy");
+        assert_eq!(
+            changed(before, &after),
+            [sym_in("src/lib.rs", "f", Mode::EditSignature)]
+        );
+        let impl_before = "impl<T> W<T>\nwhere\n    T: Clone,\n{\n    fn g(&self) {}\n}\n";
+        let impl_after = impl_before.replace("T: Clone", "T: Copy");
+        assert!(changed(impl_before, &impl_after).contains(&sym_in(
+            "src/lib.rs",
+            "W::g",
+            Mode::EditSignature
+        )));
+    }
+
+    #[test]
+    fn a_typescript_decorator_is_part_of_the_signature() {
+        let before = "class Api {\n  @Get('/a')\n  list() {\n    return 1;\n  }\n  other() {}\n}\n";
+        let after = before.replace("@Get('/a')", "@Get('/b')");
+        assert_eq!(
+            changed_scopes("src/api.ts", before, &after).unwrap(),
+            [sym_in("src/api.ts", "Api.list", Mode::EditSignature)]
+        );
+        let added = before.replace("  @Get('/a')\n", "");
+        assert_eq!(
+            changed_scopes("src/api.ts", &added, before).unwrap(),
+            [sym_in("src/api.ts", "Api.list", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn a_typescript_class_decorator_is_the_signature_of_its_members() {
+        let before = "@Injectable()\nexport class Api {\n  list() {}\n  show() {}\n}\n";
+        let after = before.replace("@Injectable()", "@Injectable({ scope: 'x' })");
+        let got = changed_scopes("src/api.ts", before, &after).unwrap();
+        assert!(
+            got.contains(&sym_in("src/api.ts", "Api.list", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&sym_in("src/api.ts", "Api.show", Mode::EditSignature)),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn the_hook_claims_the_symbol_for_a_derive_edit() {
+        let edits = one("#[derive(Debug)]", "#[derive(Debug, Clone)]");
+        assert_eq!(
+            plan_edit("src/lib.rs", ATTRIBUTED, &edits),
+            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
         );
     }
 
