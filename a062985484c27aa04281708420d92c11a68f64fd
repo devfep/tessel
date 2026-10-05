@@ -1,0 +1,4 @@
+intent: close the fix-pass-1 findings: terminal escape through server text, ghost claims after lost replies or a long wait, racing daemons
+assumes: the event log replay has no end marker, so it is read until 400 ms of quiet or 5 s; only a logged ending (release, expiry, submit, merge) makes the daemon forget a claim, so a short read can never drop a held one
+rejected: releasing unexplained live claims, because a sibling daemon of the same agent looks identical to a ghost; answering a lost claim immediately with an error, because the claim may exist and a retry would duplicate it; Watch on the working socket, because every agent event would then stream to every daemon
+evidence: cargo test --workspace 309 passed (29 CLI unit, 39 CLI end-to-end, 241 coordinator); clippy -D warnings clean
