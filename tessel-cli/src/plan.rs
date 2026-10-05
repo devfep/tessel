@@ -75,6 +75,22 @@ struct Shape {
     residual: String,
 }
 
+/// `source[range]` without the doc comments inside it, and those comments apart. The whitespace
+/// after each comment goes with it, so adding or removing a doc leaves the rest unchanged.
+fn split_docs(source: &str, range: &Range<usize>, docs: &[Range<usize>]) -> (String, String) {
+    let (mut rest, mut documented) = (String::new(), String::new());
+    let mut at = range.start;
+    for doc in docs {
+        rest.push_str(&source[at..doc.start]);
+        documented.push_str(&source[doc.clone()]);
+        documented.push('\0');
+        let after = &source[doc.end..range.end];
+        at = doc.end + (after.len() - after.trim_start().len());
+    }
+    rest.push_str(&source[at..range.end]);
+    (rest, documented)
+}
+
 fn shape(path: &str, source: &str) -> Option<Shape> {
     let found = extract(path, source)?;
     let mut symbols: BTreeMap<String, Parts> = BTreeMap::new();
@@ -86,11 +102,14 @@ fn shape(path: &str, source: &str) -> Option<Shape> {
         at = symbol.range.end;
         let parts = symbols.entry(symbol.name.clone()).or_default();
         if let Some(header) = &symbol.header {
-            parts.signature.push_str(&source[header.clone()]);
+            let (head, _) = split_docs(source, &header.range, &header.docs);
+            parts.signature.push_str(&head);
             parts.signature.push('\0');
         }
-        parts.signature.push_str(&source[symbol.signature.clone()]);
+        let (signature, docs) = split_docs(source, &symbol.signature, &symbol.docs);
+        parts.signature.push_str(&signature);
         parts.signature.push('\0');
+        parts.body.push_str(&docs);
         parts.body.push_str(&source[symbol.body()]);
         parts.body.push('\0');
     }
@@ -164,7 +183,7 @@ fn file_fallback(path: &str, current: &str, edits: &[Replace<'_>]) -> Vec<ScopeC
     let signatures: Vec<Range<usize>> = extract(path, current)
         .unwrap_or_default()
         .into_iter()
-        .flat_map(|symbol: Symbol| [Some(symbol.signature), symbol.header])
+        .flat_map(|symbol: Symbol| [Some(symbol.signature), symbol.header.map(|h| h.range)])
         .flatten()
         .collect();
     let touches_signature = edits.iter().filter(|e| !e.old.is_empty()).any(|edit| {
@@ -762,11 +781,99 @@ pub fn other() {}
     }
 
     #[test]
-    fn changing_a_doc_comment_is_a_signature_change() {
+    fn changing_a_doc_comment_is_a_body_change() {
         let after = ATTRIBUTED.replace("Starts a session.", "Opens a session.");
         assert_eq!(
             changed(ATTRIBUTED, &after),
-            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
+            [sym_in("src/lib.rs", "Session", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn a_plain_comment_between_an_attribute_and_its_item_does_not_hide_the_attribute() {
+        let before = "#[derive(Debug)]\n// why\nstruct S;\n";
+        let after = before.replace("Debug", "Debug, Clone");
+        assert_eq!(
+            changed(before, &after),
+            [sym_in("src/lib.rs", "S", Mode::EditSignature)]
+        );
+        let ts = "class A {\n  @Get()\n  // why\n  m() {}\n}\n";
+        assert_eq!(
+            changed_scopes("src/a.ts", ts, &ts.replace("@Get()", "@Post()")).unwrap(),
+            [sym_in("src/a.ts", "A.m", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn editing_a_plain_comment_between_an_attribute_and_its_item_is_a_body_change() {
+        let before = "#[derive(Debug)]\n// why\nstruct S;\n";
+        assert_eq!(
+            changed(before, &before.replace("why", "because")),
+            [sym_in("src/lib.rs", "S", Mode::EditBody)]
+        );
+    }
+    #[test]
+    fn changing_a_trait_header_or_its_attribute_is_a_signature_change_of_its_methods() {
+        let before = "#[async_trait]\ntrait T: Send {\n    fn m(&self);\n    fn n(&self) {}\n}\n";
+        let wider = before.replace("Send", "Send + Sync");
+        let got = changed(before, &wider);
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "T::m", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "T::n", Mode::EditSignature)),
+            "{got:?}"
+        );
+        let bare = before.replace("#[async_trait]\n", "");
+        let got = changed(before, &bare);
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "T::n", Mode::EditSignature)),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn adding_or_removing_a_doc_comment_is_a_body_change() {
+        let documented = "/// Doc.\n#[derive(Debug)]\nstruct S;\n";
+        let bare = "#[derive(Debug)]\nstruct S;\n";
+        let want = [sym_in("src/lib.rs", "S", Mode::EditBody)];
+        assert_eq!(changed(documented, bare), want);
+        assert_eq!(changed(bare, documented), want);
+        let ts = "class A {\n  /** Doc. */\n  m() {}\n}\n";
+        assert_eq!(
+            changed_scopes("src/a.ts", ts, &ts.replace("Doc.", "Docs.")).unwrap(),
+            [sym_in("src/a.ts", "A.m", Mode::EditBody)]
+        );
+        let both = documented
+            .replace("Doc.", "Docs.")
+            .replace("Debug", "Clone");
+        assert_eq!(
+            changed(documented, &both),
+            [sym_in("src/lib.rs", "S", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn four_slashes_and_empty_block_comments_are_not_docs() {
+        for (before, after) in [
+            ("//// a\nfn f() {}\n", "//// b\nfn f() {}\n"),
+            ("/**/ fn f() {}\n", "/* */ fn f() {}\n"),
+        ] {
+            assert_eq!(
+                changed(before, after),
+                [file_in("src/lib.rs", Mode::EditBody)]
+            );
+        }
+    }
+
+    #[test]
+    fn an_ambiguous_edit_on_an_impl_header_is_a_signature_edit_of_the_file() {
+        let source = "impl<T: Clone> A<T> {\n    fn a(&self) {}\n}\n\nimpl<T: Clone> B<T> {\n    fn b(&self) {}\n}\n";
+        let edits = one("<T: Clone>", "<T: Copy>");
+        assert_eq!(
+            plan_edit("src/lib.rs", source, &edits),
+            [file_in("src/lib.rs", Mode::EditSignature)]
         );
     }
 

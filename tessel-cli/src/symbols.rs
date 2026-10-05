@@ -29,10 +29,21 @@ pub struct Symbol {
     /// definition with no body (a struct, a constant, a trait method without a default) is all
     /// signature, so any change to it is a signature change.
     pub signature: Range<usize>,
-    /// The header of the Rust `impl` block or TypeScript class around a member (generics,
-    /// bounds, trait, decorators). It is part of the signature of every member, though it lies
-    /// outside `range`.
-    pub header: Option<Range<usize>>,
+    /// The doc comments inside `signature`. They stay in `range`, but a change to them alone
+    /// is a body change.
+    pub docs: Vec<Range<usize>>,
+    /// The header of the Rust `impl` or `trait` block or TypeScript class around a member
+    /// (generics, bounds, trait, decorators). It is part of the signature of every member,
+    /// though it lies outside `range`.
+    pub header: Option<Header>,
+}
+
+/// The head of a container, up to its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Header {
+    pub range: Range<usize>,
+    /// The doc comments inside `range`.
+    pub docs: Vec<Range<usize>>,
 }
 
 impl Symbol {
@@ -117,25 +128,47 @@ fn join(prefix: &str, separator: &str, name: &str) -> String {
     }
 }
 
-/// Where `node` starts once the attributes, decorators and doc comments written above it are
-/// counted: they change its contract, so they belong to its signature.
-fn leading_start(node: Node<'_>, source: &str) -> usize {
-    let mut start = node.start_byte();
-    let mut current = node;
-    while let Some(previous) = current.prev_sibling() {
-        if !is_leading(previous, source) {
-            break;
-        }
-        start = previous.start_byte();
-        current = previous;
-    }
-    start
+/// What sits above a definition and changes its contract: attributes, decorators and doc
+/// comments. A plain comment between them is inside the range, but not a part that counts.
+struct Lead {
+    start: usize,
+    /// The doc and plain comments among them. A change to these alone is a body change, not a signature
+    /// change: it would otherwise send every typo fix to review.
+    docs: Vec<Range<usize>>,
 }
 
-fn is_leading(node: Node<'_>, source: &str) -> bool {
+fn leading(node: Node<'_>, source: &str) -> Lead {
+    let mut lead = Lead {
+        start: node.start_byte(),
+        docs: Vec::new(),
+    };
+    let mut plain: Vec<Range<usize>> = Vec::new();
+    let mut current = node;
+    while let Some(previous) = current.prev_sibling() {
+        current = previous;
+        if previous.kind().ends_with("comment") && !is_doc(previous, source) {
+            plain.push(previous.byte_range());
+            continue;
+        }
+        if is_doc(previous, source) {
+            lead.docs.push(previous.byte_range());
+        } else if !is_attribute(previous) {
+            break;
+        }
+        lead.docs.append(&mut plain);
+        lead.start = previous.start_byte();
+    }
+    lead.docs.sort_by_key(|doc| doc.start);
+    lead
+}
+
+fn is_attribute(node: Node<'_>) -> bool {
+    matches!(node.kind(), "attribute_item" | "decorator")
+}
+
+fn is_doc(node: Node<'_>, source: &str) -> bool {
     let comment = text(node, source);
     match node.kind() {
-        "attribute_item" | "decorator" => true,
         "line_comment" => comment.starts_with("///") && !comment.starts_with("////"),
         "block_comment" | "comment" => comment.starts_with("/**") && !comment.starts_with("/**/"),
         _ => false,
@@ -144,29 +177,36 @@ fn is_leading(node: Node<'_>, source: &str) -> bool {
 
 /// A symbol whose signature ends where `body` starts.
 fn with_body(name: String, outer: Node<'_>, body: Node<'_>, source: &str) -> Symbol {
-    let start = leading_start(outer, source);
+    let lead = leading(outer, source);
     Symbol {
         name,
-        range: start..outer.end_byte(),
-        signature: start..body.start_byte(),
+        range: lead.start..outer.end_byte(),
+        signature: lead.start..body.start_byte(),
+        docs: lead.docs,
         header: None,
     }
 }
 
 /// A symbol that is all signature.
 fn whole(name: String, outer: Node<'_>, source: &str) -> Symbol {
-    let range = leading_start(outer, source)..outer.end_byte();
+    let lead = leading(outer, source);
+    let range = lead.start..outer.end_byte();
     Symbol {
         name,
         range: range.clone(),
         signature: range,
+        docs: lead.docs,
         header: None,
     }
 }
 
 /// The header of a container: from its leading attributes or decorators to its body.
-fn header_of(outer: Node<'_>, body: Node<'_>, source: &str) -> Range<usize> {
-    leading_start(outer, source)..body.start_byte()
+fn header_of(outer: Node<'_>, body: Node<'_>, source: &str) -> Header {
+    let lead = leading(outer, source);
+    Header {
+        range: lead.start..body.start_byte(),
+        docs: lead.docs,
+    }
 }
 
 // ---------- Rust ----------
@@ -189,12 +229,12 @@ fn rust_module_path(path: &str) -> String {
     names.join("::")
 }
 
-/// `header` is the `impl` header around `container`, if it is an `impl` body.
+/// `header` is the `impl` or `trait` header around `container`, if it is one of their bodies.
 fn rust_items(
     container: Node<'_>,
     source: &str,
     prefix: &str,
-    header: Option<&Range<usize>>,
+    header: Option<&Header>,
     out: &mut Vec<Symbol>,
 ) {
     let mut cursor = container.walk();
@@ -226,7 +266,10 @@ fn rust_items(
                     field_text(item, "name", source),
                     item.child_by_field_name("body"),
                 ) {
-                    rust_items(body, source, &join(prefix, "::", name), None, out);
+                    let container_header =
+                        (item.kind() == "trait_item").then(|| header_of(item, body, source));
+                    let prefix = join(prefix, "::", name);
+                    rust_items(body, source, &prefix, container_header.as_ref(), out);
                 }
             }
             "impl_item" => {
@@ -331,7 +374,7 @@ fn ts_item(item: Node<'_>, outer: Node<'_>, source: &str, prefix: &str, out: &mu
                 item.child_by_field_name("body"),
             ) {
                 let header = header_of(outer, body, source);
-                ts_members(body, source, &join(prefix, ".", name), header, out);
+                ts_members(body, source, &join(prefix, ".", name), &header, out);
             }
         }
         "internal_module" => {
@@ -381,13 +424,7 @@ fn ts_function_body(value: Option<Node<'_>>) -> Option<Node<'_>> {
     }
 }
 
-fn ts_members(
-    body: Node<'_>,
-    source: &str,
-    prefix: &str,
-    header: Range<usize>,
-    out: &mut Vec<Symbol>,
-) {
+fn ts_members(body: Node<'_>, source: &str, prefix: &str, header: &Header, out: &mut Vec<Symbol>) {
     let mut cursor = body.walk();
     for member in body.named_children(&mut cursor) {
         let before = out.len();
@@ -790,7 +827,10 @@ class Panel extends React.Component {
         );
         assert_eq!(g.range.start, g.signature.start);
         let f = find("src/a.rs", source, "a::f");
-        assert_eq!(&source[f.signature], "fn f() ");
+        assert_eq!(
+            &source[f.signature],
+            "/// Doc.\n#[derive(Debug)]\n// plain\nfn f() "
+        );
 
         let ts = "/** Doc. */\nclass A {\n  @Get()\n  m() {}\n}\n";
         let m = find("a.ts", ts, "A.m");
@@ -802,7 +842,7 @@ class Panel extends React.Component {
         let source = "#[cfg(unix)]\nimpl<T: Clone> W<T> {\n    fn get(&self) {}\n}\nfn free() {}\n";
         let get = find("src/a.rs", source, "a::W::get");
         assert_eq!(
-            &source[get.header.unwrap()],
+            &source[get.header.unwrap().range],
             "#[cfg(unix)]\nimpl<T: Clone> W<T> "
         );
         assert!(find("src/a.rs", source, "a::free").header.is_none());
@@ -810,7 +850,7 @@ class Panel extends React.Component {
         let ts = "@Injectable()\nexport class A<T> extends B {\n  m() {}\n}\n";
         let m = find("a.ts", ts, "A.m");
         assert_eq!(
-            &ts[m.header.unwrap()],
+            &ts[m.header.unwrap().range],
             "@Injectable()\nexport class A<T> extends B "
         );
     }

@@ -76,10 +76,10 @@ in Rust (module path from the file path, then `mod`/`impl` nesting; a trait impl
 | `Write` over an existing file | the file, `edit-signature` and `create` |
 | `Write` of a new file | the file, `create` |
 
-Attributes, derives, decorators and doc comments above a symbol, and its `impl` or class header, are
-signature. A struct, enum, constant, type alias or bodyless trait method is all signature. The whole
+Attributes, derives, decorators and the `impl`, `trait` or class header are signature; doc comments
+are body. A struct, enum, constant, type alias or bodyless trait method is all signature. The whole
 file is claimed, never a guess, when `old_string` is missing or ambiguous (without `replace_all`),
-when the file has a syntax error before or after the edit, or when the language has no grammar here.
+when the file has a syntax error before or after the edit, or when the language has no grammar.
 
 **Escalation.** Once you would hold more than 4 symbols of one file, the hook claims the file in
 the modes that cover them all. A denied symbol claim blocks the edit (exit 2); the hook never
