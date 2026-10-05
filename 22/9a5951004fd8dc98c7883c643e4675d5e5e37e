@@ -1,0 +1,4 @@
+intent: keep the daemon socket path short regardless of worktree depth, and make hook pre-edit exit 2 on every error
+assumes: std::env::temp_dir or XDG_RUNTIME_DIR is on a local filesystem that supports Unix sockets
+rejected: libc getuid (new dependency; the owner of a probe file gives the uid instead); DefaultHasher (unstable across Rust versions)
+evidence: cargo test --workspace 337 passed; clippy -D warnings clean; fmt clean; cargo deny licenses ok
