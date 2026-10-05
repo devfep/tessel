@@ -1,0 +1,4 @@
+intent: normalise duplicate ScopeClaims once at Claim entry; property test runs on a serde round-tripped coordinator before every op
+assumes: none
+rejected: reporting repeated scopes at first occurrence inside find_conflicts (duplicates still reached storage and locks)
+evidence: cargo test 50 passed (17 protocol + 32 unit + 1 proptest); removing normalisation fails 5 tests; rebuild placing no locks fails the property; clippy 0 hits in coordinator.rs; wasm warnings 10
