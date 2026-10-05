@@ -173,12 +173,19 @@ async fn wait_for_refusal(socket: &mut Socket) -> Option<(ErrorCode, String)> {
         let Ok(Message::Text(text)) = frame else {
             continue;
         };
-        if let Ok(ServerMsg::Error { req, code, message }) = serde_json::from_str(text) {
-            if req.is_none() || req == Some(REVIEW_REQ) {
-                return Some((code, message));
-            }
+        if let Some(refusal) = refusal_in(text) {
+            return Some(refusal);
         }
     }
+}
+
+/// The refusal in one frame: an `Error` for the review, or one that names no request, since the
+/// review is the only request this connection makes.
+fn refusal_in(frame: &str) -> Option<(ErrorCode, String)> {
+    let Ok(ServerMsg::Error { req, code, message }) = serde_json::from_str(frame) else {
+        return None;
+    };
+    (req.is_none() || req == Some(REVIEW_REQ)).then_some((code, message))
 }
 
 #[cfg(test)]
@@ -209,6 +216,24 @@ mod tests {
         assert!(check_note(Some(&"a".repeat(MAX_NOTE_BYTES))).is_ok());
         let err = check_note(Some(&"a".repeat(MAX_NOTE_BYTES + 1))).unwrap_err();
         assert!(err.to_string().contains("1025 bytes"), "{err}");
+    }
+
+    #[test]
+    fn an_error_for_the_review_or_for_no_request_is_a_refusal_and_nothing_else_is() {
+        let error = |req: &str| {
+            format!(r#"{{"type":"error","req":{req},"code":"malformed","message":"no"}}"#)
+        };
+        assert_eq!(
+            refusal_in(&error("1")),
+            Some((ErrorCode::Malformed, "no".into()))
+        );
+        assert_eq!(
+            refusal_in(&error("null")),
+            Some((ErrorCode::Malformed, "no".into()))
+        );
+        assert_eq!(refusal_in(&error("2")), None, "another request's error");
+        assert_eq!(refusal_in(r#"{"type":"heartbeat_ack"}"#), None);
+        assert_eq!(refusal_in("not json"), None);
     }
 
     #[test]

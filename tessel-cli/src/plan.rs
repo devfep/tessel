@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use tessel_coordinator::protocol::{Mode, Scope, ScopeClaim, SymbolId};
+use tessel_coordinator::protocol::{uncovered, Mode, Scope, ScopeClaim, SymbolId};
 
-use crate::symbols::{extract, Symbol};
+use crate::symbols::{extract, language_of, Symbol};
 
 /// An agent holding more symbol scopes than this in one file holds the file instead (invariant 6:
 /// many symbol claims in one file escalate to a single file claim).
@@ -183,13 +183,26 @@ fn file_fallback(path: &str, current: &str, edits: &[Replace<'_>]) -> Vec<ScopeC
 /// the claim matches what `tessel submit` will later report. It is one symbol when the change is
 /// exactly one symbol's body (`edit_body`) or signature (`edit_signature`). Everything else is
 /// the file: a change across several symbols, outside every symbol, one that adds symbols (the
-/// claim then includes `create`), an `old` text that is missing or ambiguous, a syntax error
-/// before or after, or a language without a grammar.
+/// claim then includes `create`), an `old` text that is missing or ambiguous, or a language
+/// without a grammar. A syntax error before or after the edit, or an empty file, in a language with
+/// a grammar claims what a rewrite does (`edit_signature` and `create`).
 pub fn plan_edit(path: &str, current: &str, edits: &[Replace<'_>]) -> Vec<ScopeClaim> {
+    let grammar = language_of(path).is_some();
+    // Filling an empty file, or an edit that passes through a syntax error, can add any symbol in
+    // a later step, so it holds what a rewrite holds.
+    if grammar && current.is_empty() {
+        return plan_rewrite(path);
+    }
     let Some(updated) = apply(current, edits) else {
+        if grammar && extract(path, current).is_none() {
+            return plan_rewrite(path);
+        }
         return file_fallback(path, current, edits);
     };
     let Some(changed) = changed_scopes(path, current, &updated) else {
+        if grammar {
+            return plan_rewrite(path);
+        }
         return file_fallback(path, current, edits);
     };
     match changed.as_slice() {
@@ -212,6 +225,64 @@ pub fn plan_rewrite(path: &str) -> Vec<ScopeClaim> {
 
 pub fn plan_create(path: &str) -> Vec<ScopeClaim> {
     file_claims(path, &[Mode::Create])
+}
+
+/// The most scope entries one `Claim`, `Amend` or `Submit` may carry. A copy of
+/// `MAX_SCOPES_PER_MESSAGE` in `src/coordinator.rs`, which refuses a longer list.
+pub const MAX_SCOPES_PER_MESSAGE: usize = 256;
+
+fn symbol_path(claim: &ScopeClaim) -> Option<&str> {
+    match &claim.scope {
+        Scope::Symbol(id) => Some(&id.path),
+        Scope::Dir { .. } | Scope::File { .. } => None,
+    }
+}
+
+/// Brings `touched` down to `limit` entries by replacing the symbol scopes of a whole file with
+/// file scopes in the modes those symbols need (`file_claims`). Files whose collapsed scopes the
+/// `held` claims already cover go first, then the others, the most symbols first, so the least
+/// information is lost. Nothing changes while `touched` fits.
+pub fn collapse(touched: Vec<ScopeClaim>, held: &[ScopeClaim], limit: usize) -> Vec<ScopeClaim> {
+    let mut out = touched;
+    while out.len() > limit {
+        let mut counts: Vec<(&str, usize, bool)> = Vec::new();
+        for path in out.iter().filter_map(symbol_path) {
+            if counts.iter().all(|(seen, _, _)| *seen != path) {
+                let modes: Vec<Mode> = out
+                    .iter()
+                    .filter(|c| symbol_path(c) == Some(path))
+                    .map(|c| c.mode)
+                    .collect();
+                let covered = uncovered(held, &file_claims(path, &modes)).is_empty();
+                counts.push((path, modes.len(), covered));
+            }
+        }
+        let Some((path, _, _)) = counts
+            .iter()
+            .max_by_key(|(_, symbols, covered)| (*covered, *symbols))
+            .filter(|(_, symbols, _)| *symbols > 1)
+            .copied()
+        else {
+            return out;
+        };
+        let path = path.to_string();
+        let modes: Vec<Mode> = out
+            .iter()
+            .filter(|c| symbol_path(c) == Some(path.as_str()))
+            .map(|c| c.mode)
+            .collect();
+        let at = out
+            .iter()
+            .position(|c| symbol_path(c) == Some(path.as_str()))
+            .unwrap_or(0);
+        out.retain(|c| symbol_path(c) != Some(path.as_str()));
+        for (offset, claim) in file_claims(&path, &modes).into_iter().enumerate() {
+            if !out.contains(&claim) {
+                out.insert(at + offset, claim);
+            }
+        }
+    }
+    out
 }
 
 // ---------- escalation ----------
@@ -418,14 +489,120 @@ fn check(user: &str) -> bool {
         }];
         assert_eq!(
             plan_edit("src/a.rs", broken, &edits),
-            [file_in("src/a.rs", Mode::EditBody)]
+            [
+                file_in("src/a.rs", Mode::EditSignature),
+                file_in("src/a.rs", Mode::Create)
+            ]
         );
     }
 
     #[test]
-    fn an_edit_that_breaks_the_syntax_claims_the_file() {
+    fn an_edit_that_breaks_the_syntax_claims_what_a_rewrite_claims() {
         let edits = one("check(user)\n}", "check(user)");
-        assert_eq!(plan_edit(PATH, SOURCE, &edits), [file(Mode::EditBody)]);
+        assert_eq!(
+            plan_edit(PATH, SOURCE, &edits),
+            [file(Mode::EditSignature), file(Mode::Create)]
+        );
+        let md = [Replace {
+            old: "a",
+            new: "b",
+            all: false,
+        }];
+        assert_eq!(
+            plan_edit("a.md", "a", &md),
+            [file_in("a.md", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn filling_an_empty_file_claims_what_a_rewrite_claims() {
+        let fill = [Replace {
+            old: "",
+            new: "fn a() {}\n",
+            all: false,
+        }];
+        assert_eq!(plan_edit(PATH, "", &fill), plan_rewrite(PATH));
+        assert_eq!(
+            plan_edit("a.md", "", &fill),
+            [file_in("a.md", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn the_second_step_of_a_two_step_addition_is_covered_by_the_first() {
+        let step1 = one("pub fn logout(", "fn extra(\npub fn logout(");
+        let first = plan_edit(PATH, SOURCE, &step1);
+        assert_eq!(first, [file(Mode::EditSignature), file(Mode::Create)]);
+        let broken = SOURCE.replace("pub fn logout(", "fn extra(\npub fn logout(");
+        let step2 = one("fn extra(\n", "fn extra() {}\n");
+        let second = plan_edit(PATH, &broken, &step2);
+        assert!(uncovered(&first, &second).is_empty(), "{second:?}");
+    }
+
+    #[test]
+    fn moving_a_symbol_across_other_text_is_a_change_outside_every_symbol() {
+        let before = "use a::A;\nfn f() {}use b::B;\n";
+        let after = "fn f() {}use a::A;\nuse b::B;\n";
+        assert_eq!(
+            changed_scopes("src/lib.rs", before, after).unwrap(),
+            [file_in("src/lib.rs", Mode::EditBody)]
+        );
+    }
+
+    fn many(path: &str, n: usize, mode: Mode) -> Vec<ScopeClaim> {
+        (0..n)
+            .map(|i| ScopeClaim {
+                scope: symbol_scope(path, &format!("f{i}")),
+                mode,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn collapse_leaves_a_list_that_fits_alone() {
+        let touched = many("src/a.rs", 5, Mode::EditBody);
+        assert_eq!(collapse(touched.clone(), &[], 5), touched);
+    }
+
+    #[test]
+    fn more_than_the_limit_of_symbols_collapse_to_the_file_the_claim_holds() {
+        let mut touched = many("src/a.rs", MAX_SCOPES_PER_MESSAGE + 44, Mode::EditBody);
+        touched.extend(many("src/b.rs", 3, Mode::EditSignature));
+        let held = [file_in("src/a.rs", Mode::EditBody)];
+        let got = collapse(touched, &held, MAX_SCOPES_PER_MESSAGE);
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert!(got.contains(&file_in("src/a.rs", Mode::EditBody)));
+        assert!(uncovered(&held, &got)
+            .iter()
+            .all(|c| c.scope != file_scope("src/a.rs")));
+    }
+
+    #[test]
+    fn collapse_keeps_the_strongest_modes_and_goes_on_until_the_list_fits() {
+        let mut touched = many("src/a.rs", 200, Mode::EditBody);
+        touched.push(sym_in("src/a.rs", "g", Mode::Create));
+        touched.extend(many("src/b.rs", 100, Mode::EditSignature));
+        touched.extend(many("src/c.rs", 10, Mode::EditBody));
+        let got = collapse(touched, &[], MAX_SCOPES_PER_MESSAGE);
+        assert!(got.len() <= MAX_SCOPES_PER_MESSAGE, "{}", got.len());
+        assert!(
+            got.contains(&file_in("src/a.rs", Mode::EditBody)),
+            "{got:?}"
+        );
+        assert!(got.contains(&file_in("src/a.rs", Mode::Create)), "{got:?}");
+        assert_eq!(
+            got.iter()
+                .filter(|c| c.scope == file_scope("src/b.rs"))
+                .count(),
+            0
+        );
+    }
+
+    fn sym_in(path: &str, name: &str, mode: Mode) -> ScopeClaim {
+        ScopeClaim {
+            scope: symbol_scope(path, name),
+            mode,
+        }
     }
 
     #[test]

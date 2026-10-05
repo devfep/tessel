@@ -67,7 +67,31 @@ pub fn extract(path: &str, source: &str) -> Option<Vec<Symbol>> {
         Language::Rust => rust_items(root, source, &rust_module_path(path), &mut out),
         Language::TypeScript | Language::Tsx => ts_items(root, source, "", &mut out),
     }
+    if out.iter().any(|symbol| !is_canonical_name(&symbol.name)) {
+        return None;
+    }
     Some(out)
+}
+
+/// Whether the coordinator would accept `name` in a `SymbolId`. A copy of `is_canonical_name` and
+/// `is_display_hazard` in `src/coordinator.rs`, which refuses any other name as malformed: keep
+/// the two in step. A file with a name that fails is claimed whole instead.
+fn is_canonical_name(name: &str) -> bool {
+    !name.is_empty() && name.trim() == name && !name.chars().any(is_display_hazard)
+}
+
+fn is_display_hazard(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{61c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
 }
 
 // ---------- shared helpers ----------
@@ -181,16 +205,31 @@ fn rust_impl_label(item: Node<'_>, source: &str) -> Option<String> {
     }
 }
 
-/// The type's name without generic arguments, whitespace collapsed.
+/// The type's name without generic arguments, comments removed, whitespace collapsed.
 fn rust_type_name(node: Node<'_>, source: &str) -> String {
     let base = match (node.kind(), node.child_by_field_name("type")) {
         ("generic_type", Some(inner)) => inner,
         _ => node,
     };
-    text(base, source)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut bare = String::new();
+    let mut at = base.start_byte();
+    without_comments(base, source, &mut at, &mut bare);
+    bare.push_str(&source[at..base.end_byte()]);
+    bare.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Appends the text of `node` up to its comments, each of which becomes a space.
+fn without_comments(node: Node<'_>, source: &str, at: &mut usize, out: &mut String) {
+    if node.kind().ends_with("comment") {
+        out.push_str(&source[*at..node.start_byte()]);
+        out.push(' ');
+        *at = node.end_byte();
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        without_comments(child, source, at, out);
+    }
 }
 
 // ---------- TypeScript and TSX ----------
@@ -608,6 +647,26 @@ class Panel extends React.Component {
             extract("web/ui.ts", TSX_COMPONENT).is_none(),
             "JSX is not valid in .ts"
         );
+    }
+
+    #[test]
+    fn comments_inside_an_impl_label_do_not_reach_the_name() {
+        let source = "impl fmt::/* note */Display for /* x */ Session {\n    fn fmt(&self) {}\n}\n";
+        assert_eq!(
+            names("src/s.rs", source),
+            ["s::<Session as fmt:: Display>::fmt"]
+        );
+    }
+
+    #[test]
+    fn a_name_the_coordinator_would_refuse_gives_no_symbols() {
+        let esc = "class A {\n  \"a\u{1b}b\"() {}\n}\n";
+        let bidi = "class A {\n  \"a\u{202e}b\"() {}\n}\n";
+        let newline = "class A {\n  [`a\nb`]() {}\n}\n";
+        for source in [esc, bidi, newline] {
+            assert!(extract("src/a.ts", source).is_none(), "{source:?}");
+        }
+        assert!(extract("src/a.ts", "class A {\n  \"a b\"() {}\n}\n").is_some());
     }
 
     #[test]

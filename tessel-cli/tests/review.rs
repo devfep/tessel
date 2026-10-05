@@ -159,3 +159,19 @@ async fn exactly_one_of_approve_and_reject_is_required() -> Result<()> {
     assert!(reviews(&fake, "r1").is_empty());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_decision_on_the_claim_does_not_confirm_a_new_one() -> Result<()> {
+    let (fake, _a1, r1, claim) = held_submission().await?;
+    let id = claim.to_string();
+    assert_eq!(r1.tessel(&["review", &id, "--reject"])?.code, 0);
+    fake.lose_next("r1", Lose::Review);
+    let done = r1.tessel(&["review", &id, "--reject"])?;
+    assert_eq!(
+        done.code,
+        9,
+        "the first rejection is not this one: {}",
+        done.all()
+    );
+    Ok(())
+}

@@ -213,7 +213,7 @@ async fn a_language_without_a_grammar_is_claimed_as_a_file() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_file_with_a_syntax_error_is_claimed_as_a_file() -> Result<()> {
+async fn a_file_with_a_syntax_error_is_claimed_like_a_rewrite() -> Result<()> {
     let (_fake, a1, _a2) = started().await?;
     std::fs::write(
         a1.root().join("src/m.rs"),
@@ -221,7 +221,10 @@ async fn a_file_with_a_syntax_error_is_claimed_as_a_file() -> Result<()> {
     )?;
     let done = a1.hook_input("Edit", &edit("src/m.rs", "first();", "second();", false))?;
     assert_eq!(done.code, 0, "{}", done.all());
-    assert_eq!(held(&a1)?, ["file src/m.rs edit_body"]);
+    assert_eq!(
+        held(&a1)?,
+        ["file src/m.rs edit_signature", "file src/m.rs create"]
+    );
     Ok(())
 }
 
@@ -372,5 +375,30 @@ async fn a_symbol_claim_does_not_cover_a_commit_that_changes_another_symbol() ->
         sent_touched(&fake).is_empty(),
         "nothing is sent when the CLI finds it"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_addition_made_through_a_syntax_error_is_covered_and_submits() -> Result<()> {
+    let (fake, a1, _a2) = started_committed().await?;
+    let path = a1.root().join("src/m.rs");
+    let step1 = edit("src/m.rs", "pub fn two()", "fn extra(\npub fn two()", false);
+    assert_eq!(a1.hook_input("Edit", &step1)?.code, 0);
+    std::fs::write(
+        &path,
+        SOURCE.replace("pub fn two()", "fn extra(\npub fn two()"),
+    )?;
+    let step2 = edit("src/m.rs", "fn extra(\n", "fn extra() {}\n", false);
+    let done = a1.hook_input("Edit", &step2)?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    std::fs::write(
+        &path,
+        SOURCE.replace("pub fn two()", "fn extra() {}\npub fn two()"),
+    )?;
+    git(&a1.root(), &["commit", "-q", "-am", "add extra"])?;
+
+    let done = a1.tessel(&["submit", "--evidence", "cargo test passed"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(sent_touched(&fake).contains(&symbol("m::extra", Mode::Create)));
     Ok(())
 }

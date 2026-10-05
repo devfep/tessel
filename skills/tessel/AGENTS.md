@@ -49,7 +49,8 @@ worktree:
 7. `tessel status --json` gives machine-readable state.
 8. Reviewers only: `tessel review <claim-id> --approve|--reject [--note "<reason>"]` decides a
    submission held for review. Exit 0 means the event log holds the decision; 8 the coordinator
-   refused it; 9 it is not in the log (look at `tessel inbox` before retrying).
+   refused it; 9 it is not in the log (run it again: if it landed, the retry is refused with
+   `not_awaiting_review`; with several reviewers, a confirmation can be another reviewer's).
 
 Exit codes: 0 ok, 1 error or refused, 2 hook blocked the edit, 3 denied, 4 queued, 5 submit not
 covered by the claim, 6 submit refused by the coordinator, 7 submit held for review, 8 review

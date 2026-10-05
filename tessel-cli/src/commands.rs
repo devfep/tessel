@@ -14,6 +14,7 @@ use tessel_coordinator::protocol::{uncovered, ClaimId, Mode, ScopeClaim};
 use crate::config::Config;
 use crate::daemon;
 use crate::hook::{self, Installed};
+use crate::plan;
 use crate::render::{
     escape, needs_attention, notice_text, outcome_text, quote_untrusted, status_text, submit_text,
     uncovered_text,
@@ -331,6 +332,15 @@ async fn submit(
     let fork_commit = submit::resolve_commit(&worktree.root, commit)?;
     let base = submit::diff_base(&worktree.root, &state)?;
     let touched = submit::touched(&worktree.root, &base, &fork_commit)?;
+    let touched = plan::collapse(touched, &held.scopes, plan::MAX_SCOPES_PER_MESSAGE);
+    if touched.len() > plan::MAX_SCOPES_PER_MESSAGE {
+        bail!(
+            "commit {fork_commit} changes {} files or symbols; the coordinator accepts at most {} \
+             scopes in one submission. Split the work into smaller commits",
+            touched.len(),
+            plan::MAX_SCOPES_PER_MESSAGE
+        );
+    }
     if touched.is_empty() {
         bail!(
             "commit {fork_commit} changes nothing relative to {base}; commit your work first, or \
@@ -398,8 +408,9 @@ async fn review(
         Decision::Unconfirmed => {
             complain(&format!(
                 "tessel: claim {claim}: the coordinator sent no refusal, but the {verdict} \
-                 decision is not in the event log. It may still land; check with `tessel \
-                 inbox`, and do not assume it failed (a second try is refused if it landed).\n"
+                 decision is not in the event log. It may still land, so do not assume it failed. \
+                 Run the review again: if the decision landed, the coordinator refuses the \
+                 second try with not_awaiting_review.\n"
             ));
             Ok(ExitCode::from(EXIT_REVIEW_UNCONFIRMED))
         }

@@ -122,8 +122,9 @@ tessel review <claim-id> --approve|--reject [--note "<reason>"]     # note: at m
 
 No daemon or claim is needed. Exit 0 only when the coordinator's event log holds the decision.
 Exit 8: the coordinator refused (not a reviewer, claim not awaiting review). Exit 9: no refusal,
-but the decision is not in the log; check `tessel inbox` before retrying, since a retry after it
-landed is refused.
+but the decision is not in the log; run the review again: if it landed, the retry is refused with
+`not_awaiting_review`. A confirmation can also be another reviewer's decision on the same claim, because
+`ReviewDecided` names no reviewer.
 
 ## Reading a denial
 
