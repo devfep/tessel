@@ -5,10 +5,20 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 18:05 EDT.
+**As of:** 2026-10-05 19:15 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
-The session's permission classifier refuses production deploys, secret writes and Artifacts
-deletes, so Felix runs those from a command the orchestrator hands him (Pending 0).
+The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
+settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
+by `Bash(npx wrangler deploy *)` when run bare (no pipe); lane pushes to `tessel-dogfood--*` forks
+by a project allow rule plus Felix's hook exemption for Artifacts URLs.
+**Lanes land through the steward** since 19:13: CLI-BASE was the first lane change merged that way
+(trunk `0118731`). The flow that works (BUILD-PROTOCOL §2, with these specifics): worktree cut
+from `origin/artifacts-trunk`; the orchestrator creates the fork with
+`POST /repos/tessel-dogfood/forks/tessel-dogfood--<agent>`; the lane mints its identity, claims
+through `tessel` (including `create` for added functions and files), pushes with the token in a
+0600 git include file and a bare `git push https://<acct>.artifacts.cloudflare.net/git/tessel/<fork>.git HEAD:refs/heads/main`,
+submits after the Opus Yes; the orchestrator gates an archived copy, approves held work over the
+coordinator socket as `orchestrator`, checks the trunk and mirrors.
 **First live swarm run** (16:03, seed 1, 10 tasks, 6 agents, overlap 0.5, scratch repo
 `swarm-s1-tmgae3`, results in the session scratchpad `orch/swarm1/`): `on` landed 9 of 10 with 0
 rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 6 timed out after
@@ -16,20 +26,13 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** `sprint/build` at the DOGFOOD-4 merge `4793bca`, pushed. The GitHub trunk is at `29aa8fe`
-(pull request 1). The Artifacts trunk `tessel-dogfood` is at `6f78128`, the same tree as `b6b8bfb`
-The Artifacts trunk `tessel-dogfood` is at `8432f8c`, one catch-up commit on `6f78128` whose tree
-equals `sprint/build` `aadba8b` (HARNESS-1 and DOGFOOD-4); admin-merged with the trunk gate in
-136 s and mirrored fast-forward to GitHub `artifacts-trunk`. Lessons from the catch-up (in its
-note): replaying `sprint/build` commits onto the trunk conflicts with their rebased copies, so
-catch-ups are one commit on the trunk head; added files need `create` scopes, not `edit_body`.
-From here new work starts from `artifacts-trunk`, not `sprint/build`.
-**Milestone:** PLAN §9 Oct 6–8 delivered and checked live: CLI and dogfood v0, the steward merge
-path with review gate and coverage check, assumptions verified end to end, races (one scripted race
-live end to end). Dogfood v1 is technically ready: the first Tessel commit merged through the
-steward (admin merge, 96 s) and probe 3 passed. Lanes have NOT switched yet; DOGFOOD-4 finishes
-the switch. Lanes claim through the coordinator (`tessel-dogfood`) by hand (subagents share the
-parent session's hook settings), and merge notes record each late claim.
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `0118731` (CLI-BASE), mirrored to GitHub
+`artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
+pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
+one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
+conflicts with their rebased copies on the trunk, so catch-ups are one commit on the trunk head).
+**Milestone:** PLAN §9 Oct 6–8 delivered and checked live; dogfood v1 is in use (lanes land
+through the steward). Oct 9 (shadow verification) in progress: SHADOW-1.
 
 **Felix's rulings** (newest first; older ones are in the git notes and earlier STATE commits):
 - 15:2x EDT: (1) agent `orchestrator` joins `REVIEWERS`; it approves held lane work only after the
@@ -46,17 +49,10 @@ parent session's hook settings), and merge notes record each late claim.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `impl-shadow-1` (Sonnet) in `.claude/worktrees/shadow-1` on `task-shadow-1` (cut from
-the trunk `8432f8c`), fork `tessel-dogfood--lane-shadow-1`, agent `lane-shadow-1`. `rev-shadow-1`
-(Opus) said "Yes" at `401d8d0` after one fix pass (761 tests). Waiting to push: Felix's hook
-guard blocks any push naming `main`, and every Artifacts fork's branch is `main`. Felix chose to
-exempt Artifacts URLs (hook change done by Felix 18:3x); the session's classifier also needs a
-project allow rule `Bash(git push https://1e40d7b5aed4b7049e5b83bc07a5264c.artifacts.cloudflare.net/git/tessel/tessel-dogfood--*)`
-Felix added it 18:3x; checked by a dry run. The lane pushed `401d8d0` to its fork (claim 36 now
-covers all four files), but `tessel submit` refused locally: CLI-BASE below. SHADOW-1 waits, daemon
-stopped, until CLI-BASE merges through the coordinator (which also refreshes its head).
-`impl-cli-base` (Sonnet), dispatched 18:41 in `.claude/worktrees/cli-base` on `task-cli-base` from
-`8432f8c`, fork `tessel-dogfood--lane-cli-base`; owns `tessel-cli/src/submit.rs` and CLI tests.
+**Agents:** `impl-shadow-1` (Sonnet) in `.claude/worktrees/shadow-1` on `task-shadow-1`, fork
+`tessel-dogfood--lane-shadow-1`, agent `lane-shadow-1`; review "Yes" at `401d8d0` (761 tests).
+Since 19:14 it merges the trunk `0118731` into its branch, rebuilds the fixed CLI, re-gates
+(predicted 767), claims, pushes and submits. Owns `src/coordinator*`.
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop stopped.
 
@@ -278,13 +274,13 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   gate runs every test binary.
   CLOSED 2026-10-05 at `b6b8bfb` (review "Yes" after one follow-up). First Tessel merge through the
   steward (admin merge, 96 s, Artifacts trunk `6f78128`); probe 3 passed (58 s, 625 MiB).
-- [ ] **DOGFOOD-4** — finish the switch: `orchestrator` in `REVIEWERS`, mirror to
+- [x] **DOGFOOD-4** — finish the switch: `orchestrator` in `REVIEWERS`, mirror to
   `artifacts-trunk`, delete the stray `tessel` repo, `docs/BUILD-PROTOCOL.md` for the steward flow,
   first lane merge through the steward.
   MERGED 2026-10-05 at `4793bca` (review "Yes" after one fix pass; 9 of 9 mirror mutants killed).
   Live: `tools/mirror.sh` created GitHub `artifacts-trunk` at `6f78128`; coordinator `66fbe44a`
-  accepts `orchestrator` as reviewer; stray `tessel` repo deleted. Open: the first lane merge
-  through the steward (after the image rebuild and the trunk catch-up).
+  accepts `orchestrator` as reviewer; stray `tessel` repo deleted.
+  CLOSED 2026-10-05 with CLI-BASE (trunk `0118731`), the first lane merge through the steward.
   Time budget (from the ASSUME-1 review): one merge's worst case is clone 240 s + fetch 240 s +
   rebase 120 s + dependency check 30 s + tests 600 s, about 20 minutes, above the 13-minute steward
   call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
@@ -301,11 +297,19 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   coordinator has the steward trial each shadow submission it blocked against the pre- and
   post-merge trunk (the ASSUME-1 primitive) and appends `DenialVerified`; a red baseline or a
   trial without a result counts nothing. The first lane to land through the steward.
-- [ ] **CLI-BASE** — found landing SHADOW-1: `tessel submit` diffed from the coordinator's head
+- [x] **CLI-BASE** — found landing SHADOW-1: `tessel submit` diffed from the coordinator's head
   `36abdb3`, which exists locally (shared object store) but is not an ancestor of the work, and
-  listed 244 unrelated scopes. `diff_base` uses the coordinator's head only when it is an ancestor
-  of HEAD, else the start commit, else fails. In progress (`impl-cli-base`, fork
-  `tessel-dogfood--lane-cli-base`); it submits with its own fixed CLI.
+  listed 244 unrelated scopes. `diff_base` now takes the coordinator's head when it is in the
+  work's history and not older than the start commit, else its fork point with the work when that
+  is at or after the start commit, else the start commit, else fails.
+  CLOSED 2026-10-05 at trunk `0118731`: THE FIRST LANE CHANGE MERGED THROUGH THE STEWARD. Review
+  "Yes" after two fix passes (a fork-point regression and a stale same-line head, both found by the
+  reviewer's probes; no fail-open case). Workspace tests 751, re-run by the orchestrator on an
+  archived copy. Live: claims through Tessel (claim 37; one `uncovered` refusal for missing
+  `create` modes, then amended), push to fork `tessel-dogfood--lane-cli-base`, `tessel submit`
+  sent exactly the 4 files against the stale head, held for review (signature change), approved by
+  `orchestrator` (event 201, note with the Opus verdict and gate), merged by the steward, trunk
+  fast-forwarded `8432f8c..0118731`, coordinator head now `0118731`, mirrored to `artifacts-trunk`.
 - [ ] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
