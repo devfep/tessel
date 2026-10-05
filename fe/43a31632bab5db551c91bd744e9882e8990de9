@@ -1,0 +1,4 @@
+intent: trial sides run concurrently in their own runners with one commit resolved up front, so a trial needs one side's time, not two
+assumes: Artifacts log on the fork's default branch gives its head; one side's worst case can still exceed the 13 minute call timeout (infrastructure, Inconclusive after retries; documented, merge timeout untouched)
+rejected: sequential sides (two worst cases cannot fit the call timeout); keeping the fork-head path inside runTrial (dead once the handler resolves it)
+evidence: steward 445 passed, coordinator 341 passed, clippy/typecheck/oxlint clean
