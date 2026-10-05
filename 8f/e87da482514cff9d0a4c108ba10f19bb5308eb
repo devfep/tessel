@@ -1,0 +1,4 @@
+intent: record both With-fixes verdicts and file CLI-CONNECT-TIMEOUT
+assumes: none
+rejected: none
+evidence: rev-shadow-2 and rev-cli-liveness verdicts (775 and 771 tests)
