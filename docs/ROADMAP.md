@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 13:18 EDT.
+**As of:** 2026-10-05 13:35 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the SYM-SIG merge `05793e3` plus this STATE commit; the GitHub trunk at
+**Tip:** `sprint/build` at the RACE-1 merge `fe57323` plus this STATE commit; the GitHub trunk at
 `29aa8fe` (pull request 1).
 **Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
 steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
@@ -32,16 +32,18 @@ is recorded with the first Tessel commit merged by the steward.
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents** (cargo capped at 3 jobs under `nice`; load reached about 22 with four lanes building):
-- DOGFOOD-1: built (toolchain image 2.48 GB, step budget 769 s of 780 s); in review (Opus).
-- RACE-1: built (655 tests, 24 mutants); in review (Opus).
-- HARNESS-1 (`.claude/worktrees/harness-1`): building; agent `harness-1`.
-SYM-SIG closed and reclaimed.
+**Agents** (cargo capped at 3 jobs under `nice`):
+- DOGFOOD-1: review "With fixes" (gate self-protection, time budget, honest timeout outcome);
+  fix pass 1 running.
+- HARNESS-1: built (662 tests); in review (Opus), including how a live swarm handles review
+  without a global rubber-stamp reviewer.
+- RACE-FIX (`.claude/worktrees/race-1`): found live; judge a race early only when it is full.
+RACE-1 merged and deployed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `2a7e965d`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `55309dff` (races; see RACE-FIX): every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
@@ -245,9 +247,15 @@ two Workers are approved.
   under 10 s cold; clone plus fetch under 60 s; install under 45 s; test under 200 s warm and 240 s
   cold; peak memory under 9 GiB; a full merge over the service binding under 600 s; and the gate
   self-protection (submissions touching `tessel.toml` refused, admin-only escape hatch) has landed.
-- [ ] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
+- [x] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
   join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
   trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
+  CLOSED 2026-10-05 at `fe57323` (review "Yes" after one fix pass; HumanPick bounded, unmeasured
+  criteria refused). Workspace tests 677. Live: race opened, outsider denied with the race named,
+  entry trial `tests_passed: true`, winner merged. Found live: judged as soon as the only entrant
+  submitted, so a second join got `race_closed`.
+- [ ] **RACE-FIX** — judge a race early only when it is full and every entry has submitted;
+  otherwise at the deadline.
 - [ ] **HARNESS-1** — PLAN §8, §9 Oct 9–10: `tessel-swarm`, a seeded workload generator and
   scripted agents in two modes: coordinated (real protocol, numbers from `Summary::from_events`)
   and uncoordinated local replay (labelled local); JSON and a Markdown A/B table. Targets only
