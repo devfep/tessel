@@ -1,0 +1,4 @@
+intent: Submit with fence and coverage checks, assumption challenges, shadow claims in the pure coordinator core
+assumes: protocol::uncovered and Assumption::threatened_by are correct as written; steward later reports merge outcomes for submitted claims
+rejected: a status enum for claims, since shadow and submitted combine and two plain fields persist with serde defaults more simply
+evidence: cargo test 101 passed (78 existing + 23 new, property test extended with Submit); 8 mutants all caught; clippy 0 hits for coordinator.rs; rustfmt clean; wasm build 9 warnings
