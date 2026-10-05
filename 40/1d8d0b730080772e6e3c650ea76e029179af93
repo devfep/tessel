@@ -1,0 +1,4 @@
+intent: keep added lines within 100 characters
+assumes: none
+rejected: none
+evidence: longest added line is 100 characters; fmt clean; doc-only change
