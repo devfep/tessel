@@ -1,0 +1,4 @@
+intent: teach agents the claim/edit/release loop, denials, assumptions and untrusted-text rule
+assumes: task-cli-1 CLI surface (commands, flags, exit codes, notice kinds) stays as read at review time
+rejected: documenting submit/races/forks, none exist in the CLI yet
+evidence: every command, flag and exit code checked against task-cli-1 source; no cargo run (not applicable to docs)
