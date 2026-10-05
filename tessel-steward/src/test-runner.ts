@@ -1,18 +1,15 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
+import { isValidName } from "./identity";
 import { isAllowedGitRequest } from "./git-gateway-policy";
 import { revokeOnce } from "./revoke-once";
-import { DEPENDENCY_CHECK_SCRIPT } from "./dependency-check";
-import { makeOutcome, runCloneThenTest, type StepOutcome } from "./run-steps";
-import { captureTail } from "./tail-capture";
+import { CONTAINER_CA_CERTIFICATE, WORKSPACE, runPackageStep, runStep } from "./container-step";
+import { executeMerge } from "./merge-executor";
+import { parseMergeRequest, type MergeOutcome } from "./merge-types";
+import { runCloneThenTest, type StepOutcome } from "./run-steps";
 
 const CLONE_TIMEOUT_SECONDS = "240";
-const TEST_TIMEOUT_SECONDS = "600";
 const TOKEN_TTL_SECONDS = 300;
-const DEPENDENCY_CHECK_TIMEOUT_SECONDS = "30";
-const OUTPUT_LIMIT_BYTES = 256 * 1024;
-const WORKSPACE = "/workspace";
-const CONTAINER_CA_CERTIFICATE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 
 /**
  * Result of one test run.
@@ -63,31 +60,25 @@ export class ArtifactsGitGateway extends WorkerEntrypoint<Env, GatewayProps> {
   }
 }
 
-async function runStep(
-  container: Container,
-  step: TestRunResult["step"],
-  timeoutSeconds: string,
-  argv: string[],
-  options: ContainerExecOptions,
-): Promise<StepOutcome> {
-  const process = await container.exec(
-    ["timeout", "--kill-after=5", timeoutSeconds, ...argv],
-    options,
-  );
-  const { stdout, stderr } = process;
-  if (stdout === null || stderr === null) {
-    throw new Error(`The ${step} step has no output streams`);
-  }
-  const [out, err, exitCode] = await Promise.all([
-    captureTail(stdout, OUTPUT_LIMIT_BYTES),
-    captureTail(stderr, OUTPUT_LIMIT_BYTES),
-    process.exitCode,
-  ]);
-  return makeOutcome(step, exitCode, out, err);
-}
-
 /** Runs a repo's test suite in a sandbox that holds no credentials and has no Internet. */
 export class TestRunner extends DurableObject<Env> {
+  /**
+   * Merges `commit` of `fork` into main of `repo`: rebase, test, push with a lease. See
+   * `MergeOutcome` for the results and `executeMerge` for the tokens and the sandbox.
+   *
+   * Call this on a Durable Object instance with a new random name for each merge.
+   *
+   * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
+   *   start, or a read token could not be revoked.
+   */
+  async merge(repo: string, fork: string, commit: string): Promise<MergeOutcome> {
+    const parsed = parseMergeRequest({ fork, commit });
+    if (!parsed.ok || !isValidName(repo)) {
+      throw new Error("merge needs a repo name, a fork name and a 40-hex commit");
+    }
+    return executeMerge(this.ctx, this.env, repo, parsed.request);
+  }
+
   /**
    * Clones `ref` of an Artifacts repo into a fresh sandbox and runs `npm test` there.
    *
@@ -165,17 +156,8 @@ export class TestRunner extends DurableObject<Env> {
             { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
           );
         case "install":
-          return runStep(
-            container,
-            "install",
-            DEPENDENCY_CHECK_TIMEOUT_SECONDS,
-            ["node", "-e", DEPENDENCY_CHECK_SCRIPT],
-            { cwd: WORKSPACE },
-          );
         case "test":
-          return runStep(container, "test", TEST_TIMEOUT_SECONDS, ["npm", "test"], {
-            cwd: WORKSPACE,
-          });
+          return runPackageStep(container, step);
       }
     }, revokeToken);
   }

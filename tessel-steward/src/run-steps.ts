@@ -55,14 +55,60 @@ function refusal(check: StepOutcome): StepOutcome {
 }
 
 /**
+ * Runs one step, then revokes the token, whether the step returned or threw.
+ *
+ * The token is therefore never valid once the step ends. If the revocation fails, an error is
+ * thrown (a thrown step error takes precedence) so the caller runs nothing further.
+ *
+ * @param run Runs the step in the sandbox.
+ * @param revokeToken Revokes the token(s); must not throw; resolves to false on failure.
+ * @returns The step's outcome.
+ * @throws If the step throws or the token could not be revoked.
+ */
+export async function runStepThenRevoke(
+  run: () => Promise<StepOutcome>,
+  revokeToken: () => Promise<boolean>,
+): Promise<StepOutcome> {
+  let outcome: StepOutcome;
+  let revoked = false;
+  try {
+    outcome = await run();
+  } finally {
+    revoked = await revokeToken();
+  }
+  if (!revoked) {
+    throw new Error(REVOKE_FAILED_MESSAGE);
+  }
+  return outcome;
+}
+
+/**
+ * Runs the dependency check, then the test step.
+ *
+ * The `"install"` step is the dependency check: if it does not exit 0, the tests are not run
+ * and an `"install"` outcome with a fixed message is returned, because tests that cannot have
+ * their dependencies are not test evidence.
+ *
+ * @param runStep Runs one step in the sandbox.
+ * @returns The install outcome if it stopped the run, otherwise the test outcome.
+ */
+export async function runInstallThenTest(
+  runStep: (step: "install" | "test") => Promise<StepOutcome>,
+): Promise<StepOutcome> {
+  const check = await runStep("install");
+  if (check.exitCode !== 0) {
+    return refusal(check);
+  }
+  return runStep("test");
+}
+
+/**
  * Runs the clone step, then the dependency check, then the test step.
  *
  * The token is revoked as soon as the clone step ends, whether it returned or threw, so it is
  * never valid while the repo's own code runs. If the revocation fails, nothing further runs
  * and an error is thrown (a thrown clone error takes precedence). A failed clone is returned
- * as is. The `"install"` step is the dependency check: if it does not exit 0, the tests are
- * not run and an `"install"` outcome with a fixed message is returned, because tests that
- * cannot have their dependencies are not test evidence.
+ * as is. See `runInstallThenTest` for the rest.
  *
  * @param runStep Runs one step in the sandbox.
  * @param revokeToken Revokes the repo token; must not throw; resolves to false on failure.
@@ -73,22 +119,9 @@ export async function runCloneThenTest(
   runStep: (step: StepOutcome["step"]) => Promise<StepOutcome>,
   revokeToken: () => Promise<boolean>,
 ): Promise<StepOutcome> {
-  let clone: StepOutcome;
-  let revoked = false;
-  try {
-    clone = await runStep("clone");
-  } finally {
-    revoked = await revokeToken();
-  }
-  if (!revoked) {
-    throw new Error(REVOKE_FAILED_MESSAGE);
-  }
+  const clone = await runStepThenRevoke(() => runStep("clone"), revokeToken);
   if (clone.exitCode !== 0) {
     return clone;
   }
-  const check = await runStep("install");
-  if (check.exitCode !== 0) {
-    return refusal(check);
-  }
-  return runStep("test");
+  return runInstallThenTest(runStep);
 }

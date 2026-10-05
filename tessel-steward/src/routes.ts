@@ -3,6 +3,7 @@ export type Route =
   | { kind: "fork"; repo: string; fork: string }
   | { kind: "token"; repo: string }
   | { kind: "test-run"; repo: string }
+  | { kind: "merge"; repo: string }
   | { kind: "identity"; repo: string; agent: string };
 
 export function matchRoute(pathname: string): Route | undefined {
@@ -24,6 +25,9 @@ export function matchRoute(pathname: string): Route | undefined {
   }
   if (action === "test-runs" && fork === undefined) {
     return { kind: "test-run", repo };
+  }
+  if (action === "merges" && fork === undefined) {
+    return { kind: "merge", repo };
   }
   if (action === "forks" && fork !== undefined) {
     return { kind: "fork", repo, fork };
