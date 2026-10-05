@@ -1,0 +1,4 @@
+intent: Fix review findings: fork-only tokens, full dependency check, bounded tail buffer, tests
+assumes: Artifacts info().source starts with artifacts: for forks of Artifacts repos (confirmed by local fork 201)
+rejected: none
+evidence: typecheck, oxlint, oxfmt, awk clean; vitest 119/119; 9 mutants killed; local run demo test/0/passed, tokens 403 and 201
