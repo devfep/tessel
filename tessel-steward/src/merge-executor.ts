@@ -15,8 +15,7 @@ import {
   type MergeRequest,
   type Sha,
   type TrialOutcome,
-  type TrialReport,
-  type TrialRequest,
+  type TrialSide,
 } from "./merge-types";
 import { redactTokens } from "./redact";
 import { revokeOnce } from "./revoke-once";
@@ -69,14 +68,6 @@ export function redactTrialOutcome(outcome: TrialOutcome): TrialOutcome {
     case "main_unreachable":
       return outcome;
   }
-}
-
-/** Redacts both outcomes of a trial report. */
-export function redactTrialReport(report: TrialReport): TrialReport {
-  return {
-    before: report.before && redactTrialOutcome(report.before),
-    after: report.after && redactTrialOutcome(report.after),
-  };
 }
 
 function reportRevokeFailure(repo: string, tokenId: string): (reason: string) => void {
@@ -245,8 +236,9 @@ export async function executeMerge(
 }
 
 /**
- * Tries the fork's commit on main at `request.before` and at `request.main` inside the DO's
- * container and tests it. See `runTrial` for the steps and `TrialReport` for the results. Nothing is pushed and no write
+ * Tries the fork's commit on main at `request.main` inside the DO's
+ * container and tests it. See `runTrial` for the steps and `TrialOutcome` for the results.
+ * Nothing is pushed and no write
  * token is created: this function never calls `createToken("write")`, and the deps it passes
  * have no way to. Call this on a Durable Object instance with a new random name for each trial.
  *
@@ -256,10 +248,10 @@ export async function executeTrial(
   ctx: DurableObjectState,
   env: Env,
   repo: string,
-  request: TrialRequest,
-): Promise<TrialReport> {
+  request: TrialSide,
+): Promise<TrialOutcome> {
   return withSandbox(ctx, env, repo, request.fork, async ({ deps }: TrialSandbox) =>
-    redactTrialReport(await runTrial(deps, request.before, request.main, request.commit)),
+    redactTrialOutcome(await runTrial(deps, request.main, request.commit)),
   );
 }
 

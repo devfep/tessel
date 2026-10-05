@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { GitCommand } from "./merge-commands";
 import type { ClaimedScope } from "./merge-coverage";
 import { runMerge, runTrial, type MergeDeps, type TrialDeps } from "./merge-steps";
+import { reportTrial } from "./trial-report";
 import { parseSha, type GitResult, type Sha } from "./merge-types";
 import { makeOutcome, type StepOutcome } from "./run-steps";
 
@@ -363,13 +364,9 @@ function assumingFork(repos: Repos): { assuming: Sha; oldMain: Sha } {
   return { assuming, oldMain };
 }
 
-/** A trial whose baseline is the main it tries: one run, whose outcome is both sides. */
+/** One trial in a sandbox of its own (a new work tree and nothing shared with other trials). */
 async function trialOnce(repos: Repos, main: Sha, commit: Sha | undefined) {
-  const report = await runTrial(trialDeps(repos), main, main, commit);
-  if (report.before !== null && report.after !== null) {
-    expect(report.before).toEqual(report.after);
-  }
-  return report.after ?? report.before;
+  return runTrial(trialDeps(repos), main, commit);
 }
 
 describe("runTrial against real git", () => {
@@ -479,19 +476,28 @@ describe("runTrial against real git", () => {
   });
 });
 
-describe("runTrial with a baseline against real git", () => {
+/** Each run gets its own work tree, as each gets its own sandbox in production. */
+function report(repos: Repos, before: Sha, main: Sha, commit: Sha | undefined) {
+  const request =
+    commit === undefined
+      ? { fork: "demo--a1", before, main }
+      : { fork: "demo--a1", before, main, commit };
+  return reportTrial(request, (tried, tryCommit) => trialOnce(repos, tried, tryCommit));
+}
+
+describe("reportTrial against real git", () => {
   it("is clean on the baseline and fails on the new main: the merge broke the work", async () => {
     const repos = new Repos();
     const { assuming, oldMain } = assumingFork(repos);
-    repos.commit("junk.txt", "left by nobody\n", "unrelated");
+    repos.commit("junk.txt", "unrelated\n", "unrelated");
     repos.commit("lib.txt", "broken\n", "a2 changes the behaviour");
     repos.push(repos.main);
     const newMain = repos.mainHead();
 
-    const report = await runTrial(trialDeps(repos), oldMain, newMain, assuming);
+    const result = await report(repos, oldMain, newMain, assuming);
 
-    expect(report.before).toMatchObject({ outcome: "clean", base: oldMain });
-    expect(report.after).toMatchObject({ outcome: "tests_failed", base: newMain });
+    expect(result.before).toMatchObject({ outcome: "clean", base: oldMain });
+    expect(result.after).toMatchObject({ outcome: "tests_failed", base: newMain });
     expect(repos.mainHead()).toBe(newMain);
   });
 
@@ -500,45 +506,16 @@ describe("runTrial with a baseline against real git", () => {
     repos.commit("lib.txt", "broken\n", "lib is already broken");
     repos.push(repos.main);
     const oldMain = repos.mainHead();
-    const wip = repos.commit(
-      "test.sh",
-      "grep -qx ok lib.txt\n",
-      "a1's test, failing from the start",
-    );
+    const wip = repos.commit("test.sh", "grep -qx ok lib.txt\n", "a1's failing test");
     repos.push(repos.fork);
     repos.resetTo(oldMain);
     repos.commit("other.txt", "unrelated\n", "unrelated merge");
     repos.push(repos.main);
 
-    const report = await runTrial(trialDeps(repos), oldMain, repos.mainHead(), wip);
+    const result = await report(repos, oldMain, repos.mainHead(), wip);
 
-    expect(report.before).toMatchObject({ outcome: "tests_failed", base: oldMain });
-    expect(report.after).toBeNull();
-  });
-
-  it("starts the second run from a clean work tree, even if the first left files behind", async () => {
-    const repos = new Repos();
-    const { assuming, oldMain } = assumingFork(repos);
-    repos.commit("other.txt", "unrelated\n", "unrelated");
-    repos.push(repos.main);
-    const deps = trialDeps(repos);
-    const workspace = deps.sources.workspace;
-    const first = deps.runPackageStep;
-    let runs = 0;
-    deps.runPackageStep = async (step) => {
-      if (step === "test" && ++runs === 1) {
-        writeFileSync(join(workspace, "left-behind.txt"), "x");
-      }
-      if (step === "test" && runs === 2) {
-        expect(existsSync(join(workspace, "left-behind.txt"))).toBe(false);
-      }
-      return first(step);
-    };
-
-    const report = await runTrial(deps, oldMain, repos.mainHead(), assuming);
-
-    expect(report.after).toMatchObject({ outcome: "clean" });
-    expect(runs).toBe(2);
+    expect(result.before).toMatchObject({ outcome: "tests_failed", base: oldMain });
+    expect(result.after).toBeNull();
   });
 
   it("reports a conflict that is new on the new main, next to a clean baseline", async () => {
@@ -547,9 +524,21 @@ describe("runTrial with a baseline against real git", () => {
     repos.commit("test.sh", "echo main wrote this first\n", "main adds its own test.sh");
     repos.push(repos.main);
 
-    const report = await runTrial(trialDeps(repos), oldMain, repos.mainHead(), assuming);
+    const result = await report(repos, oldMain, repos.mainHead(), assuming);
 
-    expect(report.before).toMatchObject({ outcome: "clean" });
-    expect(report.after).toMatchObject({ outcome: "conflict", files: ["test.sh"] });
+    expect(result.before).toMatchObject({ outcome: "clean" });
+    expect(result.after).toMatchObject({ outcome: "conflict", files: ["test.sh"] });
+  });
+
+  it("tries the fork's head on both sides when no commit is named", async () => {
+    const repos = new Repos();
+    const { assuming, oldMain } = assumingFork(repos);
+    repos.commit("lib.txt", "broken\n", "a2 changes the behaviour");
+    repos.push(repos.main);
+
+    const result = await report(repos, oldMain, repos.mainHead(), undefined);
+
+    expect(result.before).toMatchObject({ outcome: "clean", commit: assuming });
+    expect(result.after).toMatchObject({ outcome: "tests_failed", commit: assuming });
   });
 });

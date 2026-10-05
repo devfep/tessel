@@ -21,6 +21,7 @@ function build(
   artifacts?: { get: () => Promise<never> },
 ) {
   const trial = vi.fn();
+  const getByName = vi.fn((_name: string) => ({ merge, trial }));
   const env = {
     ARTIFACTS: artifacts ?? {
       get: async (name: string) => {
@@ -33,10 +34,10 @@ function build(
         };
       },
     },
-    TEST_RUNNER: { getByName: () => ({ merge, trial }) },
+    TEST_RUNNER: { getByName },
   } as unknown as Env;
   const Service = MergeService as unknown as new (ctx: unknown, env: Env) => MergeService;
-  return { service: new Service({}, env), merge, trial };
+  return { service: new Service({}, env), merge, trial, getByName };
 }
 
 function post(body: unknown): Request {
@@ -60,21 +61,50 @@ describe("MergeService /trial", () => {
     const clean = { outcome: "clean", base: MAIN, head: COMMIT, commit: COMMIT };
     const outcome = { before: clean, after: clean };
     const { service, merge, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
-    trial.mockResolvedValue(outcome);
+    trial.mockResolvedValue(outcome.before);
     const response = await service.fetch(
       postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN, commit: COMMIT }),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(outcome);
-    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, MAIN, COMMIT);
+    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, COMMIT);
     expect(merge).not.toHaveBeenCalled();
+  });
+
+  it("runs the baseline and the new main in two test runners, each with a name of its own", async () => {
+    const other = "d".repeat(40);
+    const clean = (base: string) => ({ outcome: "clean", base, head: COMMIT, commit: COMMIT });
+    const { service, trial, getByName } = build({ "demo--a1": "artifacts:tessel/demo" });
+    trial.mockImplementation(async (_repo, _fork, main: string) => clean(main));
+    const response = await service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", before: other, main: MAIN, commit: COMMIT }),
+    );
+    expect(await response.json()).toEqual({ before: clean(other), after: clean(MAIN) });
+    expect(trial.mock.calls.map((call) => call[2])).toEqual([other, MAIN]);
+    const names = getByName.mock.calls.map((call) => call[0]);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+  });
+
+  it("does not start a second test runner when the baseline is not clean", async () => {
+    const other = "d".repeat(40);
+    const { service, trial, getByName } = build({ "demo--a1": "artifacts:tessel/demo" });
+    trial.mockResolvedValue({ outcome: "commit_not_in_fork" });
+    const response = await service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", before: other, main: MAIN }),
+    );
+    expect(await response.json()).toEqual({
+      before: { outcome: "commit_not_in_fork" },
+      after: null,
+    });
+    expect(getByName).toHaveBeenCalledTimes(1);
   });
 
   it("passes no commit when the request names none, so the steward reads the fork's head", async () => {
     const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
     trial.mockResolvedValue({ outcome: "commit_not_in_fork" });
     await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN }));
-    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, MAIN, undefined);
+    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, undefined);
   });
 
   it("refuses a fork that is not a fork of the repo without running a trial", async () => {

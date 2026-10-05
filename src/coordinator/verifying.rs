@@ -24,8 +24,10 @@
 //!   nothing is logged: there is no longer anyone whose assumption could be broken, and an event
 //!   would count a verification that never happened. A verification already running for a claim
 //!   that ends has its answer discarded.
-//! - Several merges that challenge the same (claim, assumption) before it runs keep only the
-//!   newest main, with the baseline of the oldest of them (main before the first challenge). A verification already running is left to finish: it is evidence about the
+//! - Back-to-back merges that challenge the same (claim, assumption) before it runs keep only the
+//!   newest main, with the baseline of the oldest of them: the second started from the main the
+//!   first produced, so the span holds only challenging merges. If another merge came between,
+//!   the break could be its doing, so the verifications stay separate, each with its own baseline. A verification already running is left to finish: it is evidence about the
 //!   older main, and the newer one queues behind it.
 //! - What the log records is the protocol `Outcome` (`TrialReport::verdict`). Anything that is
 //!   not a verdict about the work (nothing to test, the commit is not on the fork, a timeout,
@@ -90,8 +92,11 @@ pub struct VerifyDispatch {
 impl Coordinator {
     /// Queue a verification for each assumption the landed submission challenged whose assuming
     /// claim is still live, against `main`, with `before` as the baseline. A verification already
-    /// queued for the same (claim, assumption) is replaced by this newer one, which keeps the
-    /// older one's baseline; one in flight is left to finish.
+    /// queued for the same (claim, assumption) is replaced by this newer one only if it is for
+    /// the main this merge started from (`before`): back-to-back challenging merges. The
+    /// replacement keeps the older baseline, so its span covers only merges that challenged this
+    /// assumption. With any other merge in between, a break could come from that merge, so both
+    /// are kept. One in flight is left to finish.
     pub(super) fn record_verifications(
         &mut self,
         challenged: &[Challenged],
@@ -112,7 +117,8 @@ impl Coordinator {
             self.state.verifications.retain(|queued| {
                 let replaced = running != Some(queued.id)
                     && queued.claim == challenge.claim
-                    && queued.assumption == challenge.assumption;
+                    && queued.assumption == challenge.assumption
+                    && queued.main == *before;
                 if replaced {
                     baseline = queued.before.clone();
                 }
@@ -300,6 +306,7 @@ mod tests {
     const NOW: u64 = 1_000;
     const LEASE: u64 = 30_000;
     const MAIN: &str = "dddddddddddddddddddddddddddddddddddddddd";
+    const OTHER: &str = "ffffffffffffffffffffffffffffffffffffffff";
     const MAIN2: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
     fn core() -> Coordinator {
@@ -1010,6 +1017,40 @@ mod tests {
             CommitId("old".into()),
             "the baseline is main before the first challenging merge"
         );
+    }
+
+    #[test]
+    fn a_merge_in_between_keeps_both_verifications_each_with_its_own_baseline() {
+        let mut c = core();
+        let (_, first) = challenged(&mut c);
+        merge_challenger(&mut c, first, MAIN);
+        // An unrelated merge moves main from MAIN to OTHER without challenging anything.
+        let unrelated = grant(&mut c, "a4", vec![edit("src/z.rs")], Vec::new());
+        submit(&mut c, "a4", unrelated, "src/z.rs");
+        c.begin_merge(NOW).unwrap();
+        let moved = MergeOutcome::Merged {
+            base: CommitId(MAIN.into()),
+            head: CommitId(OTHER.into()),
+        };
+        c.merge_outcome(unrelated.0, &moved, NOW);
+        // The second challenging merge starts from OTHER, not from the queued verification's main.
+        let second = grant(&mut c, "a3", vec![edit("src/a.rs")], Vec::new());
+        submit(&mut c, "a3", second, "src/a.rs");
+        c.begin_merge(NOW).unwrap();
+        let after = MergeOutcome::Merged {
+            base: CommitId(OTHER.into()),
+            head: CommitId(MAIN2.into()),
+        };
+        c.merge_outcome(second.0, &after, NOW);
+
+        assert_eq!(pending(&c), 2, "not deduplicated across an unrelated merge");
+        let spans: Vec<_> = c
+            .state
+            .verifications
+            .iter()
+            .map(|v| (v.before.0.as_str(), v.main.0.as_str()))
+            .collect();
+        assert_eq!(spans, [("old", MAIN), (OTHER, MAIN2)]);
     }
 
     #[test]

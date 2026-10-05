@@ -77,16 +77,6 @@ export function forkHeadCommand(sources: MergeSources): GitCommand {
   return local(workspace, ["rev-parse", "--verify", `${forkRef(forkBranch)}^{commit}`]);
 }
 
-/** Puts the work tree and HEAD on `commit`, discarding changes to tracked files. */
-export function resetToCommand(workspace: string, commit: Sha): GitCommand {
-  return local(workspace, ["checkout", "--force", "--detach", commit]);
-}
-
-/** Removes every untracked and ignored file, including what a test run left behind. */
-export function cleanCommand(workspace: string): GitCommand {
-  return local(workspace, ["clean", "-ffdx"]);
-}
-
 /** Exit 0 when `main` is a commit on main's history as cloned. */
 export function onMainCommand(workspace: string, main: Sha): GitCommand {
   return local(workspace, [

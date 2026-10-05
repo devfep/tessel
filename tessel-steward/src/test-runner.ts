@@ -7,9 +7,9 @@ import { CONTAINER_CA_CERTIFICATE, WORKSPACE, runPackageStep, runStep } from "./
 import { executeMerge, executeTrial } from "./merge-executor";
 import {
   parseMergeRequest,
-  parseTrialRequest,
+  parseTrialSide,
   type MergeOutcome,
-  type TrialReport,
+  type TrialOutcome,
 } from "./merge-types";
 import { runCloneThenTest, type StepOutcome } from "./run-steps";
 
@@ -88,11 +88,11 @@ export class TestRunner extends DurableObject<Env> {
 
   /**
    * Tries `commit` of `fork` (the fork's head when `commit` is undefined) on main of `repo` as it
-   * was at `before`, and if that is clean, as it was at `main`, running its tests each time. Never
-   * merges, never pushes, never has a write token. See `TrialReport` for the results and
-   * `executeTrial` for the sandbox.
+   * was at `main`, and runs its tests. Never merges, never pushes, never has a write token. See
+   * `TrialOutcome` for the results and `executeTrial` for the sandbox.
    *
-   * Call this on a Durable Object instance with a new random name for each trial.
+   * Call this on a Durable Object instance with a new random name for each trial: that is what
+   * gives each run its own container.
    *
    * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
    *   start, or a read token could not be revoked.
@@ -100,15 +100,12 @@ export class TestRunner extends DurableObject<Env> {
   async trial(
     repo: string,
     fork: string,
-    before: string,
     main: string,
     commit: string | undefined,
-  ): Promise<TrialReport> {
-    const parsed = parseTrialRequest({ fork, before, main, commit });
+  ): Promise<TrialOutcome> {
+    const parsed = parseTrialSide({ fork, main, commit });
     if (!parsed.ok || !isValidName(repo)) {
-      throw new Error(
-        "trial needs a repo name, a fork name, a 40-hex before and main and an optional commit",
-      );
+      throw new Error("trial needs a repo name, a fork name, a 40-hex main and an optional commit");
     }
     return executeTrial(this.ctx, this.env, repo, parsed.request);
   }

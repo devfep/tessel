@@ -271,23 +271,12 @@ describe("executeMerge", () => {
   });
 });
 
-/** The outcome on main, for a request whose baseline is main itself. */
-async function afterOf(...args: Parameters<typeof executeTrial>) {
-  const report = await executeTrial(...args);
-  return report.after ?? report.before;
-}
-
 describe("executeTrial", () => {
-  const trialRequest = {
-    fork: "demo--a1",
-    before: MAIN_AT_TRIAL,
-    main: MAIN_AT_TRIAL,
-    commit: COMMIT,
-  };
+  const trialRequest = { fork: "demo--a1", main: MAIN_AT_TRIAL, commit: COMMIT };
 
   it("tests the commit on the given main and tears the sandbox down", async () => {
     const { ctx, env, events } = build();
-    const outcome = await afterOf(ctx, env, "demo", trialRequest);
+    const outcome = await executeTrial(ctx, env, "demo", trialRequest);
 
     expect(outcome).toEqual({ outcome: "clean", base: MAIN_AT_TRIAL, head: HEAD, commit: COMMIT });
     expect(events.at(-1)).toBe("destroy");
@@ -309,7 +298,7 @@ describe("executeTrial", () => {
 
   it("classifies failing tests as tests_failed, not as a merge result", async () => {
     const { ctx, env } = build({ testExit: 1 });
-    expect(await afterOf(ctx, env, "demo", trialRequest)).toMatchObject({
+    expect(await executeTrial(ctx, env, "demo", trialRequest)).toMatchObject({
       outcome: "tests_failed",
       base: MAIN_AT_TRIAL,
       commit: COMMIT,
@@ -318,7 +307,7 @@ describe("executeTrial", () => {
 
   it("does not check coverage: a change to any file is tried", async () => {
     const { ctx, env, events } = build({ changed: "A\0docs/new.md\0" });
-    expect(await afterOf(ctx, env, "demo", trialRequest)).toMatchObject({
+    expect(await executeTrial(ctx, env, "demo", trialRequest)).toMatchObject({
       outcome: "clean",
     });
     expect(events.some((event) => event.includes("--name-status"))).toBe(false);
@@ -326,11 +315,7 @@ describe("executeTrial", () => {
 
   it("names the fork's head as the commit when the request names none", async () => {
     const { ctx, env } = build();
-    const outcome = await afterOf(ctx, env, "demo", {
-      fork: "demo--a1",
-      before: MAIN_AT_TRIAL,
-      main: MAIN_AT_TRIAL,
-    });
+    const outcome = await executeTrial(ctx, env, "demo", { fork: "demo--a1", main: MAIN_AT_TRIAL });
     expect(outcome).toMatchObject({ outcome: "clean", commit: FORK_HEAD });
   });
 
@@ -344,25 +329,19 @@ describe("executeTrial", () => {
 
   it("redacts tokens that the repo's tests print", async () => {
     const { ctx, env } = build({ testExit: 1, testOutput: "using art_v1_secret-demo-read now" });
-    const outcome = await afterOf(ctx, env, "demo", trialRequest);
+    const outcome = await executeTrial(ctx, env, "demo", trialRequest);
     expect(JSON.stringify(outcome)).not.toContain("secret-demo-read");
   });
 
-  it("tries the commit on the baseline and on main in one sandbox, with no write token", async () => {
+  it("starts a container and mints read tokens of its own on every call, and tears them down", async () => {
     const { ctx, env, events } = build();
-    const report = await executeTrial(ctx, env, "demo", { ...trialRequest, before: BASE });
-    expect(report.before).toMatchObject({ outcome: "clean", base: BASE });
-    expect(report.after).toMatchObject({ outcome: "clean", base: MAIN_AT_TRIAL });
-    expect(events.filter((event) => event === "start")).toHaveLength(1);
-    expect(events.filter((event) => event.includes("npm test"))).toHaveLength(2);
-    expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
-  });
-
-  it("redacts tokens in both outcomes of a report", async () => {
-    const { ctx, env } = build({ testExit: 1, testOutput: "using art_v1_secret-demo-read now" });
-    const report = await executeTrial(ctx, env, "demo", { ...trialRequest, before: BASE });
-    expect(report.after).toBeNull();
-    expect(JSON.stringify(report)).not.toContain("secret-demo-read");
+    await executeTrial(ctx, env, "demo", trialRequest);
+    await executeTrial(ctx, env, "demo", trialRequest);
+    expect(events.filter((event) => event === "start")).toHaveLength(2);
+    expect(events.filter((event) => event === "destroy")).toHaveLength(2);
+    expect(events.filter((event) => event.startsWith("mint read"))).toHaveLength(4);
+    expect(events.filter((event) => event.startsWith("revoke"))).toHaveLength(4);
+    expect(events.indexOf("destroy")).toBeLessThan(events.lastIndexOf("start"));
   });
 });
 

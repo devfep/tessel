@@ -54,53 +54,64 @@ export function parseMergeRequest(body: unknown): ParsedMergeRequest {
 }
 
 /**
- * A request to try `commit` of `fork` on top of main as it was at `main`, without merging it, and
- * also on main as it was at `before`, the baseline: a failure counts against the work only if the
- * same commit was clean on `before`. Without `commit` the trial uses the head of the fork's
- * default branch, and the outcome says which commit that was.
+ * A request to try `commit` of `fork` on top of main as it was at `main`, without merging it.
+ * Without `commit` the trial uses the head of the fork's default branch, and the outcome says
+ * which commit that was. One trial is one run in one sandbox.
  */
-export interface TrialRequest {
+export interface TrialSide {
   fork: string;
-  before: Sha;
   main: Sha;
   commit?: Sha;
 }
 
+/**
+ * A request for a `TrialReport`: the same, and also on main as it was at `before`, the baseline.
+ * A failure counts against the work only if the same commit was clean on `before`.
+ */
+export interface TrialRequest extends TrialSide {
+  before: Sha;
+}
+
+export type ParsedTrialSide = { ok: true; request: TrialSide } | { ok: false; error: string };
 export type ParsedTrialRequest = { ok: true; request: TrialRequest } | { ok: false; error: string };
 
 /**
- * Validates `{ "fork": <repo name>, "before": <sha>, "main": <sha>, "commit"?: <sha> }`. A `commit`
- * that is present must be a sha: it is never taken to mean "the fork's head".
+ * Validates `{ "fork": <repo name>, "main": <sha>, "commit"?: <sha> }`. A `commit` that is present
+ * must be a sha: it is never taken to mean "the fork's head".
  */
-export function parseTrialRequest(body: unknown): ParsedTrialRequest {
+export function parseTrialSide(body: unknown): ParsedTrialSide {
   if (typeof body !== "object" || body === null) {
-    return { ok: false, error: 'expected a JSON object {"fork", "before", "main", "commit"?}' };
+    return { ok: false, error: 'expected a JSON object {"fork", "main", "commit"?}' };
   }
-  const { fork, before, main, commit } = body as {
-    fork?: unknown;
-    before?: unknown;
-    main?: unknown;
-    commit?: unknown;
-  };
+  const { fork, main, commit } = body as { fork?: unknown; main?: unknown; commit?: unknown };
   if (typeof fork !== "string" || !isValidName(fork)) {
     return { ok: false, error: "fork must be a repo name" };
-  }
-  const beforeSha = parseSha(before);
-  if (beforeSha === undefined) {
-    return { ok: false, error: "before must be 40 lowercase hex characters" };
   }
   const mainSha = parseSha(main);
   if (mainSha === undefined) {
     return { ok: false, error: "main must be 40 lowercase hex characters" };
   }
   if (commit === undefined || commit === null) {
-    return { ok: true, request: { fork, before: beforeSha, main: mainSha } };
+    return { ok: true, request: { fork, main: mainSha } };
   }
   const commitSha = parseSha(commit);
   if (commitSha === undefined) {
     return { ok: false, error: "commit must be 40 lowercase hex characters when present" };
   }
-  return { ok: true, request: { fork, before: beforeSha, main: mainSha, commit: commitSha } };
+  return { ok: true, request: { fork, main: mainSha, commit: commitSha } };
+}
+
+/** Validates `{ "fork", "before", "main", "commit"? }`: a trial side, and the baseline. */
+export function parseTrialRequest(body: unknown): ParsedTrialRequest {
+  const side = parseTrialSide(body);
+  if (!side.ok) {
+    return side;
+  }
+  const beforeSha = parseSha((body as { before?: unknown }).before);
+  if (beforeSha === undefined) {
+    return { ok: false, error: "before must be 40 lowercase hex characters" };
+  }
+  return { ok: true, request: { ...side.request, before: beforeSha } };
 }
 
 /**
@@ -205,14 +216,14 @@ export type TrialOutcome =
   | { outcome: "install"; base: Sha; head: Sha; commit: Sha; result: StepOutcome };
 
 /**
- * What one trial call reports: the commit tried on main at `before`, then on main at `main`.
+ * What a trial request reports: the commit tried on main at `before`, then on main at `main`. Each
+ * is its own trial in its own sandbox, so nothing one run leaves behind (files, processes, a
+ * listening server) can reach the other.
  * - Both ran: `before` and `after` are their outcomes.
- * - `before` was not `clean`: `after` is `null`. The work was already failing on the baseline, so
- *   the second run would prove nothing about the merge that moved main.
- * - The trial stopped before either ran (clone, an unreachable main, an unreadable or missing
- *   commit): `before` is `null` and `after` says why.
+ * - `before` was not `clean`: `after` is `null`. The work was already failing on the baseline, or
+ *   the trial could not run, so a second run would prove nothing about the merge that moved main.
  */
 export interface TrialReport {
-  before: TrialOutcome | null;
+  before: TrialOutcome;
   after: TrialOutcome | null;
 }

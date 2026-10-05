@@ -6,6 +6,7 @@ import {
   parseMergeRequest,
   parseSha,
   parseTrialRequest,
+  parseTrialSide,
 } from "./merge-types";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -119,5 +120,25 @@ describe("parseTrialRequest", () => {
     ],
   ])("rejects %s", (_label, body) => {
     expect(parseTrialRequest(body)).toMatchObject({ ok: false });
+  });
+});
+
+describe("parseTrialSide", () => {
+  it("accepts a fork and a main sha, with or without a commit", () => {
+    expect(parseTrialSide({ fork: "demo--a1", main: SHA })).toEqual({
+      ok: true,
+      request: { fork: "demo--a1", main: SHA },
+    });
+    expect(parseTrialSide({ fork: "demo--a1", main: SHA, commit: SHA })).toEqual({
+      ok: true,
+      request: { fork: "demo--a1", main: SHA, commit: SHA },
+    });
+  });
+
+  it.each([
+    ["a missing main", { fork: "demo--a1" }],
+    ["a commit that is a ref name", { fork: "demo--a1", main: SHA, commit: "main" }],
+  ])("rejects %s", (_label, body) => {
+    expect(parseTrialSide(body)).toMatchObject({ ok: false });
   });
 });
