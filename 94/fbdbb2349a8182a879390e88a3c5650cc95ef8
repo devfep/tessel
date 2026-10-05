@@ -1,0 +1,4 @@
+intent: uid 1000 in a durable_object container keeps root's capabilities, so chmod 000 does not make the config unreadable; probe and return early there, after the invalid-TOML half ran; rename the executor test after the uid
+assumes: none
+rejected: skipping the whole test (the invalid-TOML half still runs)
+evidence: cargo test -p tessel-cli passes; clippy and rustfmt clean; steward vitest passes
