@@ -1,0 +1,4 @@
+intent: merge sprint/build tip c8e7820 into task-cli-2 before the final gate
+assumes: none
+rejected: none
+evidence: clean merge, no conflicts; gate run after on the merged tree; dogfood: claims 1-14 on tessel-dogfood
