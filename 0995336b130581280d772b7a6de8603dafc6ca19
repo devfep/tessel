@@ -1,0 +1,4 @@
+intent: dogfood v0: agents claim through the coordinator from a git worktree, with the edit hook enforcing it
+assumes: Release has no success reply in the protocol, so release is reported on send and a late Error lands in the inbox; claim expiry shown is estimated from the last heartbeat on the local clock
+rejected: configuring --assume with a scope prefix, because the fixed surface is --assume <text>; the text applies to the first claimed scope. Decision-record submit left for the steward task
+evidence: cargo test --workspace 287 passed (17 CLI unit, 29 CLI end-to-end, 241 coordinator); clippy -D warnings clean; cargo deny check licenses exit 0
