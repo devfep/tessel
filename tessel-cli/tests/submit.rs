@@ -20,7 +20,7 @@ use serde_json::Value;
 use support::{eventually, git, Agent, Fake};
 use tessel_coordinator::protocol::{
     ClaimId, ClientMsg, CommitId, DecisionRecord, Fence, Mode, RequestId, ReviewReason, Scope,
-    ScopeClaim, ServerMsg,
+    ScopeClaim, ServerMsg, SymbolId,
 };
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -35,6 +35,16 @@ async fn world() -> Result<(Fake, Agent)> {
 fn file(path: &str, mode: Mode) -> ScopeClaim {
     ScopeClaim {
         scope: Scope::File { path: path.into() },
+        mode,
+    }
+}
+
+fn symbol(path: &str, name: &str, mode: Mode) -> ScopeClaim {
+    ScopeClaim {
+        scope: Scope::Symbol(SymbolId {
+            path: path.into(),
+            qualified_name: name.into(),
+        }),
         mode,
     }
 }
@@ -116,7 +126,16 @@ async fn a_covered_submission_is_accepted_and_the_claim_shows_as_submitted() -> 
         anyhow::bail!("not a submit");
     };
     assert_eq!(fork_commit, &CommitId(sha));
-    assert_eq!(touched, &vec![file("src/a.rs", Mode::EditBody)]);
+    assert_eq!(
+        touched,
+        &vec![ScopeClaim {
+            scope: Scope::Symbol(SymbolId {
+                path: "src/a.rs".into(),
+                qualified_name: "a::a".into()
+            }),
+            mode: Mode::EditBody
+        }]
+    );
     assert_eq!(decisions.evidence, vec!["cargo test passed (3 tests)"]);
     assert_eq!(decisions.rejected.len(), 1);
     assert_eq!(decisions.rejected[0].approach, "global lock");
@@ -637,7 +656,7 @@ async fn an_edit_plus_an_add_fit_one_claim_and_submit_end_to_end() -> Result<()>
         anyhow::bail!("not a submit");
     };
     assert_eq!(touched.len(), 2, "{touched:?}");
-    assert!(touched.contains(&file("src/a.rs", Mode::EditBody)));
+    assert!(touched.contains(&symbol("src/a.rs", "a::a", Mode::EditBody)));
     assert!(touched.contains(&file("src/new.rs", Mode::Create)));
     Ok(())
 }
@@ -750,7 +769,7 @@ async fn files_merged_by_others_are_not_uncovered_after_a_rebase() -> Result<()>
     let ClientMsg::Submit { touched, .. } = &sent[0] else {
         anyhow::bail!("not a submit");
     };
-    assert_eq!(touched, &vec![file("src/a.rs", Mode::EditBody)]);
+    assert_eq!(touched, &vec![symbol("src/a.rs", "a::a", Mode::EditBody)]);
     Ok(())
 }
 
@@ -826,6 +845,6 @@ async fn the_base_advances_to_the_merged_commit_and_only_then() -> Result<()> {
     let ClientMsg::Submit { touched, .. } = &sent[1] else {
         anyhow::bail!("not a submit");
     };
-    assert_eq!(touched, &vec![file("src/b.rs", Mode::EditBody)]);
+    assert_eq!(touched, &vec![symbol("src/b.rs", "b::b", Mode::EditBody)]);
     Ok(())
 }

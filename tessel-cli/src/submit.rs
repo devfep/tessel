@@ -7,6 +7,7 @@ use std::process::Command;
 use anyhow::{bail, Context};
 use tessel_coordinator::protocol::{DecisionRecord, Mode, RejectedApproach, Scope, ScopeClaim};
 
+use crate::plan::changed_scopes;
 use crate::render::escape;
 use crate::scope;
 use crate::state::{HeldClaim, State};
@@ -58,7 +59,7 @@ fn parse_rejected(arg: &str) -> anyhow::Result<RejectedApproach> {
 }
 
 /// The decision record to send. Evidence is required: a submission without any is held for human
-/// review (invariant 12), and review approval is not built yet, so it would never merge.
+/// review (invariant 12), so it is refused here.
 pub fn decisions(evidence: &[String], rejected: &[String]) -> anyhow::Result<DecisionRecord> {
     let evidence: Vec<String> = evidence
         .iter()
@@ -68,8 +69,8 @@ pub fn decisions(evidence: &[String], rejected: &[String]) -> anyhow::Result<Dec
     if evidence.is_empty() {
         bail!(
             "at least one --evidence \"<text>\" is required, for example --evidence \"cargo test \
-             auth:: passed (42 tests)\". A submission without evidence is held for human review, \
-             and review approval is not built yet, so it would never merge"
+             auth:: passed (42 tests)\". A submission without evidence is held for human review \
+             before it can merge"
         );
     }
     let mut record = DecisionRecord {
@@ -147,11 +148,13 @@ fn is_commit(root: &Path, rev: &str) -> bool {
         && git(root, &["cat-file", "-e", &format!("{rev}^{{commit}}")]).is_ok()
 }
 
-/// What `commit` changed since `base`, one file-level scope per change:
-/// an added file is `create`, a modified one `edit-body`, a deleted or type-changed one
-/// `edit-signature` (which triggers review), and a rename is `edit-signature` on the old path
-/// plus `create` on the new. The diff runs from the merge base of `base` and `commit`, so work
-/// that landed on `base`'s side since the fork is not counted.
+/// What `commit` changed since `base`. A file is one scope per change: an added file is `create`,
+/// a deleted or type-changed one `edit-signature` (which triggers review), and a rename is
+/// `edit-signature` on the old path plus `create` on the new. A modified file in a language with
+/// a grammar is one scope per changed symbol (see `plan::changed_scopes`); a modified file in any
+/// other language, or one that does not parse on either side, is `edit-body` on the file. The
+/// diff runs from the merge base of `base` and `commit`, so work that landed on `base`'s side
+/// since the fork is not counted.
 pub fn touched(root: &Path, base: &str, commit: &str) -> anyhow::Result<Vec<ScopeClaim>> {
     let range = format!("{base}...{commit}");
     let out = git(
@@ -161,7 +164,52 @@ pub fn touched(root: &Path, base: &str, commit: &str) -> anyhow::Result<Vec<Scop
     .with_context(|| {
         format!("cannot compute what {commit} changed since its common ancestor with {base}")
     })?;
-    parse_name_status(&out)
+    let files = parse_name_status(&out)?;
+    if !files
+        .iter()
+        .any(|claim| claim.mode == Mode::EditBody && matches!(claim.scope, Scope::File { .. }))
+    {
+        return Ok(files);
+    }
+    let fork_point = merge_base(root, base, commit)?;
+    let mut out = Vec::new();
+    for claim in files {
+        let Scope::File { path } = &claim.scope else {
+            out.push(claim);
+            continue;
+        };
+        if claim.mode != Mode::EditBody {
+            out.push(claim);
+            continue;
+        }
+        let symbols = changed_symbols(root, &fork_point, commit, path);
+        match symbols {
+            Some(scopes) => out.extend(scopes),
+            None => out.push(claim),
+        }
+    }
+    Ok(out)
+}
+
+fn merge_base(root: &Path, base: &str, commit: &str) -> anyhow::Result<String> {
+    let out = git(root, &["merge-base", base, commit])
+        .with_context(|| format!("cannot find the common ancestor of {base} and {commit}"))?;
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
+
+/// The symbol-level scopes of one modified file, or `None` when the file has to be claimed whole:
+/// a language without a grammar, a syntax error on either side, text that is not UTF-8, or a
+/// change the extractor cannot see.
+fn changed_symbols(root: &Path, from: &str, to: &str, path: &str) -> Option<Vec<ScopeClaim>> {
+    let before = blob(root, from, path)?;
+    let after = blob(root, to, path)?;
+    let scopes = changed_scopes(path, &before, &after)?;
+    (!scopes.is_empty()).then_some(scopes)
+}
+
+fn blob(root: &Path, rev: &str, path: &str) -> Option<String> {
+    let out = git(root, &["show", &format!("{rev}:{path}")]).ok()?;
+    String::from_utf8(out).ok()
 }
 
 fn parse_name_status(raw: &[u8]) -> anyhow::Result<Vec<ScopeClaim>> {
@@ -228,6 +276,7 @@ fn git(root: &Path, args: &[&str]) -> anyhow::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tessel_coordinator::protocol::SymbolId;
 
     fn run(root: &Path, args: &[&str]) {
         git(root, args).unwrap();
@@ -269,6 +318,16 @@ mod tests {
         }
     }
 
+    fn symbol(path: &str, name: &str, mode: Mode) -> ScopeClaim {
+        ScopeClaim {
+            scope: Scope::Symbol(SymbolId {
+                path: path.into(),
+                qualified_name: name.into(),
+            }),
+            mode,
+        }
+    }
+
     fn head(root: &Path) -> String {
         resolve_commit(root, None).unwrap()
     }
@@ -280,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn an_added_file_is_create_and_a_modified_one_is_edit_body() {
+    fn an_added_file_is_create_and_a_modified_one_is_its_changed_symbol() {
         let dir = repo();
         let root = dir.path();
         let base = head(root);
@@ -291,7 +350,7 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                claim("src/edit.rs", Mode::EditBody),
+                symbol("src/edit.rs", "edit::edit", Mode::EditBody),
                 claim("src/new.rs", Mode::Create)
             ]
         );
@@ -344,7 +403,93 @@ mod tests {
             let got = touched(root, from, &side).unwrap();
             assert_eq!(
                 got,
-                vec![claim("src/edit.rs", Mode::EditBody)],
+                vec![symbol("src/edit.rs", "edit::edit", Mode::EditBody)],
+                "from {from}"
+            );
+        }
+    }
+
+    const TWO_FNS: &str =
+        "use std::io;\n\npub fn one() {\n    a();\n}\n\npub fn two() {\n    b();\n}\n";
+
+    /// Commits `TWO_FNS` as the base, then `text`, and returns what the second commit touched.
+    fn touched_by(path: &str, base_text: &str, text: &str) -> Vec<ScopeClaim> {
+        let dir = repo();
+        let root = dir.path();
+        let base = commit_file(root, path, base_text);
+        let tip = commit_file(root, path, text);
+        touched(root, &base, &tip).unwrap()
+    }
+
+    #[test]
+    fn a_body_only_change_is_edit_body_on_that_symbol() {
+        let text = TWO_FNS.replace("a();", "a(); a();");
+        assert_eq!(
+            touched_by("src/m.rs", TWO_FNS, &text),
+            [symbol("src/m.rs", "m::one", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn a_signature_change_is_edit_signature_on_that_symbol() {
+        let text = TWO_FNS.replace("pub fn two()", "pub fn two(n: u8)");
+        assert_eq!(
+            touched_by("src/m.rs", TWO_FNS, &text),
+            [symbol("src/m.rs", "m::two", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn an_added_symbol_is_create_and_a_removed_one_is_edit_signature() {
+        let text = TWO_FNS.replace("pub fn two() {\n    b();\n}\n", "pub fn three() {}\n");
+        assert_eq!(
+            touched_by("src/m.rs", TWO_FNS, &text),
+            [
+                symbol("src/m.rs", "m::two", Mode::EditSignature),
+                symbol("src/m.rs", "m::three", Mode::Create),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_change_outside_every_symbol_is_edit_body_on_the_file() {
+        let text = TWO_FNS.replace("use std::io;", "use std::io;\nuse std::fmt;");
+        assert_eq!(
+            touched_by("src/m.rs", TWO_FNS, &text),
+            [claim("src/m.rs", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_on_either_side_is_edit_body_on_the_file() {
+        let broken = TWO_FNS.replace("pub fn one() {", "pub fn one( {");
+        let fixed = TWO_FNS.replace("a();", "a(); a();");
+        let file = [claim("src/m.rs", Mode::EditBody)];
+        assert_eq!(touched_by("src/m.rs", TWO_FNS, &broken), file);
+        assert_eq!(touched_by("src/m.rs", &broken, &fixed), file);
+    }
+
+    #[test]
+    fn a_language_without_a_grammar_is_edit_body_on_the_file() {
+        assert_eq!(
+            touched_by("notes.md", "# one\n", "# two\n"),
+            [claim("notes.md", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn symbols_are_compared_from_the_fork_point_not_from_the_base() {
+        let dir = repo();
+        let root = dir.path();
+        let fork = commit_file(root, "src/m.rs", TWO_FNS);
+        run(root, &["checkout", "-q", "-b", "side"]);
+        let side = commit_file(root, "src/m.rs", &TWO_FNS.replace("b();", "b(); b();"));
+        run(root, &["checkout", "-q", "-"]);
+        let main_tip = commit_file(root, "src/m.rs", &TWO_FNS.replace("a();", "a(); a();"));
+        for from in [&fork, &main_tip] {
+            assert_eq!(
+                touched(root, from, &side).unwrap(),
+                [symbol("src/m.rs", "m::two", Mode::EditBody)],
                 "from {from}"
             );
         }

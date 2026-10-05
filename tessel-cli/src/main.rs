@@ -4,19 +4,22 @@ mod commands;
 mod config;
 mod daemon;
 mod hook;
+mod plan;
 mod reconcile;
 mod render;
+mod review;
 mod rpc;
 mod scope;
 mod state;
 mod submit;
+mod symbols;
 mod worktree;
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use tessel_coordinator::protocol::Mode;
 
 #[derive(Parser)]
@@ -85,6 +88,19 @@ enum Command {
         #[arg(long)]
         commit: Option<String>,
     },
+    /// Approve or reject a submission held for review. Only a reviewer's decision counts.
+    #[command(group(ArgGroup::new("decision").required(true).args(["approve", "reject"])))]
+    Review {
+        /// The held claim to decide, as `tessel submit` reported it.
+        claim: u64,
+        #[arg(long)]
+        approve: bool,
+        #[arg(long)]
+        reject: bool,
+        /// Your reason, shown to the submitter; at most 1024 bytes.
+        #[arg(long)]
+        note: Option<String>,
+    },
     /// Release everything, close the socket and stop the daemon.
     Stop,
     /// Claude Code hook integration.
@@ -150,6 +166,7 @@ fn main() -> ExitCode {
         | Command::Inbox { .. }
         | Command::Release { .. }
         | Command::Submit { .. }
+        | Command::Review { .. }
         | Command::Stop
         | Command::Hook {
             action: HookAction::Install,

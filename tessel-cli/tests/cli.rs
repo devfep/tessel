@@ -5,6 +5,10 @@
     clippy::panic_in_result_fn,
     reason = "assertions are how these tests fail; they return Result so `?` carries setup errors"
 )]
+#![expect(
+    dead_code,
+    reason = "each test crate compiles all of support, which the other test crates also use"
+)]
 
 mod support;
 
@@ -587,7 +591,7 @@ async fn a_depend_claim_does_not_cover_an_edit() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_hook_claims_create_for_a_new_file_and_edit_body_for_an_existing_one() -> Result<()> {
+async fn the_hook_claims_create_for_a_new_file_and_a_rewrite_for_an_existing_one() -> Result<()> {
     let (_fake, a1, _a2) = world(30_000).await?;
     a1.start("new and old")?;
     assert_eq!(a1.hook("Write", "file_path", "src/new.rs")?.code, 0);
@@ -599,7 +603,11 @@ async fn the_hook_claims_create_for_a_new_file_and_edit_body_for_an_existing_one
     );
     assert_eq!(
         scope_of(&status, 1),
-        ("src/b.rs".to_string(), "edit_body".to_string())
+        ("src/b.rs".to_string(), "edit_signature".to_string())
+    );
+    assert_eq!(
+        scope_of(&status, 2),
+        ("src/b.rs".to_string(), "create".to_string())
     );
     Ok(())
 }

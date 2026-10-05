@@ -299,9 +299,8 @@ pub fn submit_text(outcome: &SubmitOutcome, claim: ClaimId, commit: &str, fork: 
         ),
         SubmitOutcome::Uncovered { scopes } => uncovered_text(claim, scopes, false),
         SubmitOutcome::ReviewRequired { reasons } => format!(
-            "review required: claim {} ({commit}) is held until a human approves it:\n{}Review \
-             approval is not built yet, so this submission does not merge. Its claim stays \
-             submitted.\n",
+            "review required: claim {} ({commit}) is held until a human approves it:\n{}A reviewer \
+             must approve it (`tessel review`) before it merges. Its claim stays submitted.\n",
             claim.0,
             review_reasons_text(reasons)
         ),

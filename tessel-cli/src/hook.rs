@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tessel_coordinator::protocol::Conflict;
+use tessel_coordinator::protocol::{Conflict, Mode, Scope, ScopeClaim};
 use thiserror::Error;
 
-use crate::render::{denial_text, escape, one_line, quote_untrusted};
+use crate::plan::{file_claims, plan_create, plan_edit, plan_rewrite, Replace};
+use crate::render::{denial_text, escape, mode_text, one_line, quote_untrusted};
 use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request};
 use crate::scope::{locate, Located};
 use crate::state::write_atomic;
@@ -57,6 +58,7 @@ enum Outcome {
     DaemonUnreachable(ClientError),
     Denied {
         rel: String,
+        hint: String,
         conflicts: Vec<Conflict>,
     },
     Queued {
@@ -124,14 +126,15 @@ impl Outcome {
                 escape(&sock.display().to_string())
             )),
             Self::DaemonUnreachable(e) => block(format!("tessel: cannot reach the daemon: {e}\n")),
-            Self::Denied { rel, conflicts } => {
-                let hint = format!("tessel claim {} --wait", escape(&rel));
-                block(format!(
-                    "tessel: cannot edit {}; another agent holds it.\n{}",
-                    escape(&rel),
-                    denial_text(&conflicts, &hint)
-                ))
-            }
+            Self::Denied {
+                rel,
+                hint,
+                conflicts,
+            } => block(format!(
+                "tessel: cannot edit {}; another agent holds it.\n{}",
+                escape(&rel),
+                denial_text(&conflicts, &escape(&hint))
+            )),
             Self::Queued { rel } => block(format!(
                 "tessel: {} is queued behind another agent; wait for the grant in `tessel inbox`\n",
                 escape(&rel)
@@ -217,15 +220,95 @@ async fn decide(stdin: std::io::Result<Vec<u8>>, root: Option<&Path>) -> Outcome
     if internal(".tessel") || internal(".git") {
         return Outcome::IgnoredPath;
     }
-    let create = !worktree.root.join(&rel).exists();
-    claim_file(&worktree, rel, create).await
+    let wanted = wanted_scopes(&input.tool_name, &input.tool_input, &worktree.root, &rel);
+    claim_scopes(&worktree, wanted).await
 }
 
-async fn claim_file(worktree: &Worktree, rel: String, create: bool) -> Outcome {
-    let request = Request::Ensure {
-        path: rel.clone(),
-        create,
+/// The scopes to hold before this tool call runs: the finest ones that stay honest, decided from
+/// the file as it is now and the edit as the agent sent it (see `plan::plan_edit`).
+fn wanted_scopes(tool: &str, input: &Value, root: &Path, rel: &str) -> Vec<ScopeClaim> {
+    let abs = root.join(rel);
+    if !abs.exists() {
+        return plan_create(rel);
+    }
+    match tool {
+        "Write" => plan_rewrite(rel),
+        "Edit" | "MultiEdit" => {
+            let current = std::fs::read_to_string(&abs).ok();
+            let edits = parse_edits(tool, input);
+            match (current, edits) {
+                (Some(current), Some(edits)) => plan_edit(rel, &current, &edits),
+                (None, _) | (_, None) => file_claims(rel, &[Mode::EditBody]),
+            }
+        }
+        _ => file_claims(rel, &[Mode::EditBody]),
+    }
+}
+
+/// The replacements of an `Edit` (one) or a `MultiEdit` (a list), or `None` when the tool input
+/// does not have the expected shape.
+fn parse_edits<'a>(tool: &str, input: &'a Value) -> Option<Vec<Replace<'a>>> {
+    let one = |edit: &'a Value| {
+        Some(Replace {
+            old: edit.get("old_string")?.as_str()?,
+            new: edit.get("new_string")?.as_str()?,
+            all: edit
+                .get("replace_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
     };
+    if tool == "Edit" {
+        return Some(vec![one(input)?]);
+    }
+    input.get("edits")?.as_array()?.iter().map(one).collect()
+}
+
+/// A scope as the agent would type it to `tessel claim`.
+fn claim_arg(scope: &Scope) -> String {
+    match scope {
+        Scope::Dir { path } => format!("{path}/"),
+        Scope::File { path } => path.clone(),
+        Scope::Symbol(id) => format!("{}::{}", id.path, id.qualified_name),
+    }
+}
+
+/// The `tessel claim` command that waits for these scopes, one per mode.
+fn wait_hint(wanted: &[ScopeClaim]) -> String {
+    let mut modes: Vec<Mode> = Vec::new();
+    for claim in wanted {
+        if !modes.contains(&claim.mode) {
+            modes.push(claim.mode);
+        }
+    }
+    let commands: Vec<String> = modes
+        .iter()
+        .map(|mode| {
+            let scopes: Vec<String> = wanted
+                .iter()
+                .filter(|claim| claim.mode == *mode)
+                .map(|claim| shell_quote(&claim_arg(&claim.scope)))
+                .collect();
+            let flag = match mode {
+                Mode::EditBody => String::new(),
+                Mode::Depend | Mode::EditSignature | Mode::Create => {
+                    format!(" --mode {}", mode_text(*mode))
+                }
+            };
+            format!("tessel claim {}{flag} --wait", scopes.join(" "))
+        })
+        .collect();
+    commands.join("; ")
+}
+
+async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
+    let rel = wanted
+        .iter()
+        .map(|claim| claim_arg(&claim.scope))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hint = wait_hint(&wanted);
+    let request = Request::Ensure { wanted };
     let reply = match rpc::call(&worktree.sock(), &request, HOOK_TIMEOUT).await {
         Ok(reply) => reply,
         Err(ClientError::NotRunning) => return Outcome::NoDaemon(worktree.sock()),
@@ -240,7 +323,11 @@ async fn claim_file(worktree: &Worktree, rel: String, create: bool) -> Outcome {
         } => Outcome::Covered,
         Reply::Claim {
             outcome: ClaimOutcome::Denied { conflicts },
-        } => Outcome::Denied { rel, conflicts },
+        } => Outcome::Denied {
+            rel,
+            hint,
+            conflicts,
+        },
         Reply::Claim {
             outcome: ClaimOutcome::Queued { .. },
         } => Outcome::Queued { rel },
@@ -385,7 +472,7 @@ fn is_our_command(command: &str) -> bool {
 fn shell_quote(text: &str) -> String {
     let safe = text
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'));
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':'));
     if safe {
         return text.to_string();
     }
