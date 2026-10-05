@@ -34,6 +34,9 @@ pub struct Session {
     /// Set once a `Watch` replay has finished.
     #[serde(default)]
     pub watcher: bool,
+    /// The `from_seq` of the `Watch`: live events below it are not sent. 0 if absent.
+    #[serde(default)]
+    pub watch_from: u64,
 }
 
 /// What the shell does with one parsed client message.
@@ -231,6 +234,7 @@ pub fn bind_on_welcome(
             return Some(Session {
                 agent: Some(agent.clone()),
                 watcher: session.watcher,
+                watch_from: session.watch_from,
             });
         }
     }
@@ -248,11 +252,11 @@ pub fn bound_indexes(agent: &AgentId, sessions: &[Session]) -> Vec<usize> {
     found
 }
 
-/// Indexes of the sessions that follow the event log.
-pub fn watcher_indexes(sessions: &[Session]) -> Vec<usize> {
+/// Indexes of the sessions that follow the event log and want the event with this `seq`.
+pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
     let mut found = Vec::new();
     for (index, session) in sessions.iter().enumerate() {
-        if session.watcher {
+        if session.watcher && seq >= session.watch_from {
             found.push(index);
         }
     }
@@ -267,6 +271,16 @@ pub const MAX_DATE_MS: f64 = 8.64e15;
 pub fn alarm_at_ms(next_expiry_ms: Option<u64>) -> Option<f64> {
     let next = next_expiry_ms?;
     Some((next as f64).min(MAX_DATE_MS))
+}
+
+/// Remember the first error of a series of attempts: record `result` in `slot` unless an earlier
+/// one is already there. Delivery uses it to try every send and still report a failure.
+pub fn keep_first<E>(slot: &mut Option<E>, result: Result<(), E>) {
+    if let Err(e) = result {
+        if slot.is_none() {
+            *slot = Some(e);
+        }
+    }
 }
 
 /// How many events one replay read returns.
@@ -325,13 +339,12 @@ pub fn plan_delivery(
             }
         }
     }
-    let watchers = watcher_indexes(sessions);
     for event in events {
-        for index in &watchers {
+        for index in watcher_indexes(sessions, event.seq) {
             let msg = ServerMsg::Event {
                 event: event.clone(),
             };
-            plan.push((Target::Socket(*index), msg));
+            plan.push((Target::Socket(index), msg));
         }
     }
     plan
@@ -370,6 +383,7 @@ mod tests {
         Session {
             agent: Some(agent(name)),
             watcher: false,
+            watch_from: 0,
         }
     }
 
@@ -415,6 +429,7 @@ mod tests {
         let session = Session {
             agent: Some(agent("a1")),
             watcher: true,
+            watch_from: 0,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert_eq!(serde_json::from_str::<Session>(&json).unwrap(), session);
@@ -584,6 +599,7 @@ mod tests {
         let session = Session {
             agent: None,
             watcher: true,
+            watch_from: 0,
         };
         let mut core = new_core();
         let (who, effects) = run(&mut core, &session, hello("a1"));
@@ -654,10 +670,11 @@ mod tests {
         let watcher = Session {
             agent: None,
             watcher: true,
+            watch_from: 0,
         };
         let sessions = [Session::default(), watcher.clone(), bound("a1"), watcher];
-        assert_eq!(watcher_indexes(&sessions), vec![1, 3]);
-        assert!(watcher_indexes(&[]).is_empty());
+        assert_eq!(watcher_indexes(&sessions, 0), vec![1, 3]);
+        assert!(watcher_indexes(&[], 0).is_empty());
     }
 
     #[test]
@@ -826,6 +843,7 @@ mod tests {
         let watcher = Session {
             agent: None,
             watcher: true,
+            watch_from: 0,
         };
         let again = decide(&watcher, &msg(r#"{"type":"watch","from_seq":0}"#));
         assert_eq!(reject_code(again), ErrorCode::Malformed);
@@ -889,6 +907,7 @@ mod tests {
         Session {
             agent: None,
             watcher: true,
+            watch_from: 0,
         }
     }
 
@@ -958,6 +977,7 @@ mod tests {
         let sender = Session {
             agent: Some(agent("a1")),
             watcher: true,
+            watch_from: 0,
         };
         let outbound = [Outbound::Reply(binary_rejection())];
         let plan = plan_delivery(&outbound, &[event_at(0), event_at(1)], &[sender]);
@@ -968,5 +988,74 @@ mod tests {
         );
         assert_eq!(seq_of(&plan[1].1), Some(0));
         assert_eq!(seq_of(&plan[2].1), Some(1));
+    }
+
+    fn watcher_from(watch_from: u64) -> Session {
+        Session {
+            agent: None,
+            watcher: true,
+            watch_from,
+        }
+    }
+
+    fn event_seqs(plan: &[(Target, ServerMsg)], index: usize) -> Vec<u64> {
+        let mut seqs = Vec::new();
+        for (target, msg) in plan {
+            if *target == Target::Socket(index) {
+                seqs.extend(seq_of(msg));
+            }
+        }
+        seqs
+    }
+
+    #[test]
+    fn a_watcher_ahead_of_the_log_receives_nothing_until_the_log_reaches_it() {
+        let sessions = [watcher_from(5)];
+        let behind = [event_at(0), event_at(1), event_at(4)];
+        assert!(plan_delivery(&[], &behind, &sessions).is_empty());
+        let plan = plan_delivery(&[], &[event_at(5), event_at(6)], &sessions);
+        assert_eq!(event_seqs(&plan, 0), vec![5, 6]);
+    }
+
+    #[test]
+    fn a_watcher_gets_each_event_from_its_from_seq_exactly_once() {
+        let events = [event_at(3), event_at(4), event_at(5), event_at(6)];
+        let plan = plan_delivery(&[], &events, &[watcher_from(5)]);
+        assert_eq!(event_seqs(&plan, 0), vec![5, 6]);
+    }
+
+    #[test]
+    fn watchers_with_different_from_seq_each_get_their_own_range() {
+        let events = [event_at(1), event_at(2), event_at(3)];
+        let sessions = [watcher_from(0), watcher_from(2), watcher_from(9)];
+        let plan = plan_delivery(&[], &events, &sessions);
+        assert_eq!(event_seqs(&plan, 0), vec![1, 2, 3]);
+        assert_eq!(event_seqs(&plan, 1), vec![2, 3]);
+        assert!(event_seqs(&plan, 2).is_empty());
+    }
+
+    #[test]
+    fn the_attachment_round_trip_keeps_from_seq() {
+        let session = watcher_from(77);
+        let json = serde_json::to_string(&session).unwrap();
+        assert_eq!(serde_json::from_str::<Session>(&json).unwrap(), session);
+    }
+
+    #[test]
+    fn an_old_attachment_without_from_seq_watches_from_zero() {
+        let session: Session = serde_json::from_str(r#"{"agent":"a1","watcher":true}"#).unwrap();
+        assert_eq!(session.watch_from, 0);
+        assert!(session.watcher);
+    }
+
+    #[test]
+    fn keep_first_keeps_the_earliest_error_and_ignores_successes() {
+        let mut slot: Option<String> = None;
+        keep_first(&mut slot, Ok(()));
+        assert_eq!(slot, None);
+        keep_first(&mut slot, Err("first".to_string()));
+        keep_first(&mut slot, Ok(()));
+        keep_first(&mut slot, Err("second".to_string()));
+        assert_eq!(slot.as_deref(), Some("first"));
     }
 }
