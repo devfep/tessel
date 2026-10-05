@@ -1,0 +1,4 @@
+intent: fix pass 1 for the coordinator review (soft and hard state limits with expiry recovery, disconnect withdraws before expiry, req on the limit refusal, no write on a no-op close)
+assumes: shadow claims never ran on a deployed coordinator (lead is confirming); workerd socket identity after hibernation (unprobed)
+rejected: a serde shim for the old shadow flag (replace, do not deprecate)
+evidence: cargo test 208 passed; clippy 0 in the four files; 7 mutants checked; local run a-e on wrangler dev
