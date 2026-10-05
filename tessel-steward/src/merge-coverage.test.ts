@@ -113,7 +113,12 @@ describe("uncoveredPaths", () => {
   it("rejects a change whose mode the claim does not permit", () => {
     expect(uncovered("D\0a.ts\0", [file("a.ts", "edit_body")])).toEqual(["a.ts"]);
     expect(uncovered("A\0a.ts\0", [file("a.ts", "edit_body")])).toEqual(["a.ts"]);
-    expect(uncovered("M\0a.ts\0", [file("a.ts", "create")])).toEqual(["a.ts"]);
+    expect(uncovered("M\0a.ts\0", [file("a.ts", "depend")])).toEqual(["a.ts"]);
+  });
+
+  it("covers a modified file by edit_body or by create, but not by depend", () => {
+    expect(uncovered("M\0a.ts\0", [file("a.ts", "edit_body")])).toEqual([]);
+    expect(uncovered("M\0a.ts\0", [file("a.ts", "create")])).toEqual([]);
     expect(uncovered("M\0a.ts\0", [file("a.ts", "depend")])).toEqual(["a.ts"]);
   });
 

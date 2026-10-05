@@ -146,6 +146,16 @@ export function parseNameStatus(stdout: string): Requirement[] | undefined {
   return out;
 }
 
+/**
+ * A modified file is covered by a scope whose mode permits `edit_body` or `create`: git records
+ * an agent that adds a function to an existing file as `M`, and that agent holds `create`.
+ * Which symbol was edited, and in which mode, is the coordinator's symbol-level check on the
+ * agent's `touched`; this file-level check cannot see it.
+ */
+function modesFor(mode: Mode): Mode[] {
+  return mode === "edit_body" ? ["edit_body", "create"] : [mode];
+}
+
 function covers(node: ClaimedNode, path: string): boolean {
   switch (node.kind) {
     case "dir":
@@ -160,7 +170,10 @@ function covers(node: ClaimedNode, path: string): boolean {
 export function uncoveredPaths(required: readonly Requirement[], claim: readonly ClaimedScope[]) {
   const uncovered = new Set<string>();
   for (const { path, mode } of required) {
-    const covered = claim.some((held) => covers(held.scope, path) && modePermits(held.mode, mode));
+    const covered = claim.some(
+      (held) =>
+        covers(held.scope, path) && modesFor(mode).some((needed) => modePermits(held.mode, needed)),
+    );
     if (!covered) {
       uncovered.add(path);
     }

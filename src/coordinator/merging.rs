@@ -888,6 +888,29 @@ mod tests {
     }
 
     #[test]
+    fn the_dispatch_after_an_amend_carries_the_added_scopes() {
+        let mut c = core();
+        let (claim, old) = grant(&mut c, "a", vec![edit("src/a.rs")]);
+        let added = sc(file("src/b.rs"), Mode::Create);
+        let amend = ClientMsg::Amend {
+            req: RequestId(7),
+            claim,
+            fence: old,
+            add: vec![added.clone()],
+        };
+        let effects = c.handle(&agent("a"), amend, NOW);
+        let Some(ServerMsg::Granted { fence: new, .. }) = replies(&effects).into_iter().next()
+        else {
+            panic!("expected Granted, got {effects:?}");
+        };
+        submit(&mut c, "a", (claim, *new), "src/a.rs");
+
+        let sent = c.begin_merge(NOW).expect("dispatched");
+
+        assert_eq!(sent.scopes, vec![edit("src/a.rs"), added]);
+    }
+
+    #[test]
     fn an_uncovered_change_rejects_the_submission_and_reactivates_the_claim() {
         let mut c = core();
         let claim = grant(&mut c, "a", vec![edit("src/a.rs")]);

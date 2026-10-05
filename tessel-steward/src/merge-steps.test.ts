@@ -385,6 +385,15 @@ describe("runMerge coverage check (invariant 11)", () => {
     expect(events.indexOf("git:changed")).toBeLessThan(events.indexOf("package:install"));
   });
 
+  it("reads the diff without external diff drivers, with renames and NUL separators", async () => {
+    const { deps, commands } = harness();
+    await runMerge(deps, COMMIT, WHOLE_REPO);
+    const changed = commands.find((command) => gitStep(command) === "changed");
+    expect(changed?.argv).toEqual(
+      expect.arrayContaining(["--name-status", "-z", "-M", "--no-ext-diff"]),
+    );
+  });
+
   it("rejects a change outside the claim as uncovered, running no tests and minting no token", async () => {
     const { deps, events } = harness({
       git: { changed: { exitCode: 0, stdout: "M\0src/a.ts\0A\0src/other.ts\0" } },
