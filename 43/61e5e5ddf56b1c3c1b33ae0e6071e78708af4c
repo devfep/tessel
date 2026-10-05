@@ -1,0 +1,4 @@
+intent: fix the live failure 'setAlarm() cannot be called with an alarm time <= 0': the scheduler returns absolute times never before now, the one clamp (now+1, max Date) sits in shell::alarm_at_ms, and a failed alarm write no longer closes a client socket (logged; the alarm handler ends by rescheduling and returns that error so the runtime retries)
+assumes: setAlarm accepts any positive past time and fires at once (the error text names only <= 0)
+rejected: clamping at the setAlarm call in runtime.rs (not testable natively)
+evidence: cargo test --workspace 386 passed (lib 280 + 2 new); clippy -D warnings, rustfmt, deny licenses clean; wasm release 0 warnings; mutants on item 1 killed
