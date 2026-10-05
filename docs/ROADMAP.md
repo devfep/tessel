@@ -191,6 +191,9 @@ two Workers are approved.
   claim per agent through `Amend`, a deterministic submit reply, `stop` confirming releases, and
   the hook's missing-cwd fail-open). Workspace tests 468. Live with the real CLI: claim, commit,
   push, `tessel submit`, `merged` in the inbox, trunk at the agent's commit.
+- [ ] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
+  `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
+  changes. Put leading attribute and decorator siblings in the signature range.
 - [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
   CLOSED 2026-10-05 at `38e5ff8` (review "Yes" after one fix pass; flagged submissions now get
   `ReviewRequired` before any `Accepted`). Workspace tests 404. Live on `9f75140a`: held submit,
