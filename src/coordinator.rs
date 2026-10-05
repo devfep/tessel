@@ -8,10 +8,6 @@
 //! - Claim ids and fences start at 1 and are never reused. Event `seq` starts at 0.
 //! - `Hello` does not have to precede other messages; connection state belongs to the caller.
 //! - The lock table is derived from the claims. It is not serialized; deserializing rebuilds it.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into the Durable Object in COORD-4")
-)]
 
 use std::collections::{hash_map, BTreeMap, HashMap};
 
