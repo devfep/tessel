@@ -332,9 +332,11 @@ async fn serve(stream: TcpStream, hub: Arc<Hub>, mut stop: watch::Receiver<bool>
             }
         }
     };
-    let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, check).await else {
-        return;
+    let accepted = tokio::select! {
+        result = tokio_tungstenite::accept_hdr_async(stream, check) => result,
+        _ = stop.changed() => return,
     };
+    let Ok(mut socket) = accepted else { return };
     let Some(agent) = lock(&verified).clone() else {
         return;
     };

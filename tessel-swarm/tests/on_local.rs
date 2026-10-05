@@ -4,6 +4,7 @@
 #![expect(clippy::unwrap_used, reason = "test code")]
 
 use std::path::PathBuf;
+
 use std::time::Duration;
 
 use tessel_coordinator::protocol::{EventKind, Summary};
@@ -14,6 +15,7 @@ use tessel_swarm::local::{LocalServer, LocalSetup};
 use tessel_swarm::off::{self, OffConfig};
 use tessel_swarm::on::{self, OnConfig, OnResult, Policy, Resolution, REVIEWER};
 use tessel_swarm::tasks::{Kind, Task};
+use tokio::io::AsyncReadExt;
 
 type Hook = Box<dyn FnOnce(PathBuf) + Send>;
 
@@ -314,7 +316,7 @@ async fn every_number_comes_from_summary_over_the_coordinators_own_log() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shutdown_closes_the_listener() {
+async fn shutdown_closes_open_connections() {
     let scratch = tempfile::tempdir().unwrap();
     let repo = ScratchRepo::parse("swarm-test").unwrap();
     let names = on::principals(1);
@@ -328,10 +330,14 @@ async fn shutdown_closes_the_listener() {
     .await
     .unwrap();
     let addr = server.addr().unwrap();
-    assert!(tokio::net::TcpStream::connect(addr).await.is_ok());
+    // A client that connected and never finished the handshake must not outlive the server.
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
     server.shutdown().await;
+    let mut buf = [0u8; 8];
+    let closed = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf)).await;
     assert!(
-        tokio::net::TcpStream::connect(addr).await.is_err(),
-        "the listener is gone"
+        matches!(closed, Ok(Ok(0) | Err(_))),
+        "the connection was left open: {closed:?}"
     );
 }
