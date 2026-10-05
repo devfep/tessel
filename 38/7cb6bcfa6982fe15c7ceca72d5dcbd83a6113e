@@ -1,0 +1,4 @@
+intent: COVER-1 fix pass 2: pin that a create claim covers neither D, T nor the old path of an R
+assumes: none
+rejected: none
+evidence: steward tests 375 pass; mutant n2 (modesFor adds create for every requirement) fails
