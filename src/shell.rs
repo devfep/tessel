@@ -873,7 +873,11 @@ mod tests {
             panic!("a1 was not granted: {granted:?}");
         };
         run(&mut core, &a2, claim_msg_wait());
-        let release = ClientMsg::Release { claim, fence };
+        let release = ClientMsg::Release {
+            claim,
+            fence,
+            req: None,
+        };
         let (_, effects) = run(&mut core, &a1, release);
         let (_, outbound) = split_effects(effects);
         let sessions = [a1, a2];
@@ -1620,6 +1624,7 @@ mod tests {
         let release = ClientMsg::Release {
             claim: ClaimId(1),
             fence: Fence(1),
+            req: None,
         };
         assert_eq!(work_of(&release), Work::Plain);
         let effects = core.handle(&agent("a"), release, NOW);
@@ -1657,6 +1662,7 @@ mod tests {
         let release = ClientMsg::Release {
             claim: ClaimId(2),
             fence: Fence(2),
+            req: None,
         };
         let effects = recovered.handle(&agent("w0"), release, late);
         let after_release = measured(&recovered, effects, after_expiry.len());
