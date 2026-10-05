@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 08:24 EDT.
+**As of:** 2026-10-05 08:26 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
 **Tip:** `sprint/build` at the STEWARD-1 merge `663c65c` plus this STATE commit; `main` at
 `29aa8fe` (pull request 1).
@@ -23,7 +23,12 @@ except ruling 3, which lands with the steward merge path:
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** CLI-1 (Sonnet, worktree `.claude/worktrees/cli-1`) in review (Opus) since 08:16.
+**Agents:**
+- CLI-1 (Sonnet, `.claude/worktrees/cli-1`): review "With fixes" (two critical: server text could
+  escape the quoting with control characters; a grant after a long wait became a ghost claim), fix
+  pass 1 running, which also reconciles claims after a reconnect and locks the daemon.
+- SKILL-1 (Sonnet, `.claude/worktrees/skill-1`): committed `00fcc2a` against CLI-1 before its fix
+  pass; reconciles with the fixed CLI, then goes to review.
 STEWARD-1 closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
@@ -42,7 +47,9 @@ STEWARD-1 closed and reclaimed.
   repos `demo` and `demo--agent-1` in namespace `tessel`.
 
 **Pending from Felix:**
-1. Run the PROTO-FREEZE merge once its review says Yes (the orchestrator hands over the command).
+1. At the next hand merge of `src/protocol.rs`: delete the six `cfg_attr(not(test), expect(dead_code))`
+   lines (no wire change; the items are public now that the CLI uses the crate), so CLI-1's
+   `#[allow(unfulfilled_lint_expectations)]` on `pub mod protocol` can go.
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
@@ -148,3 +155,10 @@ two Workers are approved.
   merges, each with the trunk checked afterwards.
 - [ ] **SKILL-1** — skill file and the `AGENTS.md` carried into forks, for shipped commands only.
 - [ ] **CLI-2** — tree-sitter symbol claims and mode escalation in the pre-edit hook.
+- [ ] **SUBMIT-1** — Felix's ruling 3: on `Submit`, the coordinator sends the claim's fork
+  (`<repo>--<agent>`) and commit to the steward merge executor through a service binding (not
+  public), and applies the outcome (`Merged` / `SubmitRejected`, `BaseMoved`,
+  `AssumptionChallenged`); `tessel submit` in the CLI. After CLI-1 merges.
+- [ ] **COORD-HARDEN** — from the CLI-1 review: the coordinator refuses control characters (C0, DEL,
+  C1) in scope paths and qualified names, as defence in depth behind the CLI's escaping. Touches
+  `src/coordinator.rs` only.
