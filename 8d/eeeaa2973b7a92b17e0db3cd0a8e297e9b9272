@@ -1,0 +1,4 @@
+intent: COVER-1: the steward checks that the claim's scopes cover every file of the commit rebased onto main (invariant 11), before any repo code runs; uncovered is a verified rejection
+assumes: git diff --name-status -z -M of base..rebased head lists the changed files; a symbol scope covers only its own file (file-level approximation)
+rejected: skipping the check when scopes are missing (the steward answers 400 instead); putting paths in the rejection reason (fixed form with a count)
+evidence: cargo test --workspace 407, clippy/rustfmt/wasm 0 warnings/deny licenses clean; steward typecheck/oxlint/oxfmt clean, 372 tests incl. real-git uncovered, rename, delete and odd-name cases
