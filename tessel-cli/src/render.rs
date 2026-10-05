@@ -4,9 +4,11 @@
 
 use std::fmt::Write as _;
 
-use tessel_coordinator::protocol::{Conflict, HeldAssumption, Mode, Scope, ScopeClaim, ServerMsg};
+use tessel_coordinator::protocol::{
+    ClaimId, Conflict, HeldAssumption, Mode, ReviewReason, Scope, ScopeClaim, ServerMsg,
+};
 
-use crate::rpc::ClaimOutcome;
+use crate::rpc::{ClaimOutcome, SubmitOutcome};
 use crate::state::{Connection, HeldClaim, Notice, NoticeKind, State};
 
 /// The longest quoted text shown; longer text is cut and marked.
@@ -145,8 +147,9 @@ fn scopes_text(scopes: &[ScopeClaim]) -> String {
 }
 
 fn held_line(held: &HeldClaim) -> String {
+    let submitted = if held.submitted { " [submitted]" } else { "" };
     format!(
-        "claim {} fence {} expires_at_ms {}: {}",
+        "claim {} fence {} expires_at_ms {}{submitted}: {}",
         held.claim.0,
         held.fence.0,
         held.expires_at_ms,
@@ -207,6 +210,89 @@ pub fn outcome_text(outcome: &ClaimOutcome, hint: &str) -> String {
              `tessel status`\n"
         ),
         ClaimOutcome::Refused { code, message } => {
+            let code = code.map_or_else(|| "local".to_string(), |c| format!("{c:?}"));
+            format!(
+                "refused ({code}):\n{}",
+                quote_untrusted("the coordinator", message)
+            )
+        }
+    }
+}
+
+/// The touched scopes a claim does not cover. `local` is true when the CLI found them before
+/// sending anything.
+pub fn uncovered_text(claim: ClaimId, missing: &[ScopeClaim], local: bool) -> String {
+    let mut out = format!(
+        "uncovered: claim {} does not cover {} touched scope(s):\n",
+        claim.0,
+        missing.len()
+    );
+    for scope in missing {
+        let _ = writeln!(out, "  - {}", claim_text(scope));
+    }
+    if local {
+        out.push_str("nothing was sent. ");
+    }
+    out.push_str(
+        "A submission needs one claim whose scopes and modes cover every touched scope. Release \
+         the claim if nothing under it is uncommitted and claim the full set, or drop the \
+         changes outside it.\n",
+    );
+    out
+}
+
+fn review_reasons_text(reasons: &[ReviewReason]) -> String {
+    let mut out = String::new();
+    for reason in reasons {
+        let line = match reason {
+            ReviewReason::SignatureChange { scope } => {
+                format!(
+                    "changes a signature others may depend on: {}",
+                    scope_text(scope)
+                )
+            }
+            ReviewReason::ThreatensAssumptions { count } => {
+                format!("could break {count} assumption(s) other agents declared")
+            }
+            ReviewReason::SensitivePath { scope, pattern } => format!(
+                "touches a sensitive path: {} (matches {})",
+                scope_text(scope),
+                one_line(pattern)
+            ),
+            ReviewReason::NoTestEvidence => "no test evidence attached".to_string(),
+        };
+        let _ = writeln!(out, "  - {line}");
+    }
+    out
+}
+
+/// What `tessel submit` prints once the coordinator has answered. `claim` is the submitted
+/// claim, `commit` its fork commit and `fork` the name of the fork the commit must be pushed to.
+pub fn submit_text(outcome: &SubmitOutcome, claim: ClaimId, commit: &str, fork: &str) -> String {
+    match outcome {
+        SubmitOutcome::Accepted { queue_position: 0 } => format!(
+            "accepted: claim {} ({commit}) is recorded for verification and is not queued to \
+             merge\n",
+            claim.0
+        ),
+        SubmitOutcome::Accepted { queue_position } => format!(
+            "accepted: claim {} ({commit}) is in the merge queue at position {queue_position}.\n\
+             The steward merges the commit it reads from your fork `{fork}`, so the commit must \
+             already be pushed there.\n\
+             The outcome arrives in `tessel inbox` (merged, submit_rejected, uncovered or \
+             review_required); `tessel status` shows the claim as submitted until then. A \
+             submitted claim cannot be released.\n",
+            claim.0
+        ),
+        SubmitOutcome::Uncovered { scopes } => uncovered_text(claim, scopes, false),
+        SubmitOutcome::ReviewRequired { reasons } => format!(
+            "review required: claim {} ({commit}) is held until a human approves it:\n{}Review \
+             approval is not built yet, so this submission does not merge. Its claim stays \
+             submitted.\n",
+            claim.0,
+            review_reasons_text(reasons)
+        ),
+        SubmitOutcome::Refused { code, message } => {
             let code = code.map_or_else(|| "local".to_string(), |c| format!("{c:?}"));
             format!(
                 "refused ({code}):\n{}",
@@ -281,13 +367,33 @@ pub fn notice_text(notice: &Notice) -> String {
             let _ = writeln!(out, "  code {code:?}");
             out.push_str(&quote_untrusted("the coordinator", message));
         }
+        ServerMsg::Merged { claim, head } => {
+            let _ = writeln!(
+                out,
+                "  claim {} is merged; main is now at {}",
+                claim.0,
+                escape(&head.0)
+            );
+        }
+        ServerMsg::SubmitRejected { claim, reason } => {
+            let _ = writeln!(
+                out,
+                "  claim {} is active again with the same fence; fix the cause, push, and \
+                 `tessel submit` again",
+                claim.0
+            );
+            out.push_str(&quote_untrusted("the coordinator", reason));
+        }
+        ServerMsg::Uncovered { claim, scopes, .. } => {
+            out.push_str(&uncovered_text(*claim, scopes, false));
+        }
+        ServerMsg::ReviewRequired { claim, reasons } => {
+            let _ = writeln!(out, "  claim {} waits for a human to approve it:", claim.0);
+            out.push_str(&review_reasons_text(reasons));
+        }
         ServerMsg::Welcome { .. }
         | ServerMsg::Shadowed { .. }
         | ServerMsg::Accepted { .. }
-        | ServerMsg::Merged { .. }
-        | ServerMsg::SubmitRejected { .. }
-        | ServerMsg::Uncovered { .. }
-        | ServerMsg::ReviewRequired { .. }
         | ServerMsg::RaceOpened { .. }
         | ServerMsg::RaceResult { .. }
         | ServerMsg::Event { .. } => {
@@ -306,10 +412,14 @@ pub fn needs_attention(kind: NoticeKind) -> bool {
         | NoticeKind::AssumptionChallenged
         | NoticeKind::LeaseExpired
         | NoticeKind::WaitWithdrawn
+        | NoticeKind::SubmitRejected
+        | NoticeKind::Uncovered
+        | NoticeKind::ReviewRequired
         | NoticeKind::Error => true,
         NoticeKind::WaitQueued
         | NoticeKind::GrantedAfterWait
         | NoticeKind::Reconciled
+        | NoticeKind::Merged
         | NoticeKind::Unexpected => false,
     }
 }

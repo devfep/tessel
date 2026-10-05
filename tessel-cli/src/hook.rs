@@ -249,9 +249,10 @@ async fn claim_file(worktree: &Worktree, rel: String, create: bool) -> Outcome {
             outcome: ClaimOutcome::Refused { message, .. },
         } => Outcome::Refused { rel, message },
         Reply::Failed { message } => Outcome::Failed { rel, message },
-        Reply::Status { .. } | Reply::Released { .. } | Reply::Stopping { .. } => {
-            Outcome::UnexpectedReply
-        }
+        Reply::Status { .. }
+        | Reply::Released { .. }
+        | Reply::Submit { .. }
+        | Reply::Stopping { .. } => Outcome::UnexpectedReply,
     }
 }
 

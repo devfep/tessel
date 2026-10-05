@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, ErrorCode, Event, EventKind,
-    Intent, Mode, OnConflict, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event,
+    EventKind, Intent, Mode, OnConflict, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -25,7 +25,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::config::Config;
 use crate::reconcile::{self, Local, Plan, ServerClaim};
-use crate::rpc::{self, ClaimOutcome, Reply, Request};
+use crate::rpc::{self, ClaimOutcome, Reply, Request, SubmitOutcome};
 use crate::state::{append_notice, Connection, HeldClaim, Notice, NoticeKind, QueuedWait, State};
 use crate::worktree::Worktree;
 
@@ -97,6 +97,12 @@ struct PendingClaim {
     replies: Vec<oneshot::Sender<Reply>>,
 }
 
+/// A `Submit` sent and not yet answered by `Accepted`, `Uncovered`, `ReviewRequired` or `Error`.
+struct PendingSubmit {
+    claim: ClaimId,
+    reply: oneshot::Sender<Reply>,
+}
+
 /// Why a connection attempt failed.
 enum ConnectFailure {
     /// Retrying cannot help (bad token, wrong repo or URL).
@@ -118,6 +124,7 @@ struct Daemon {
     next_req: u64,
     pending: HashMap<u64, PendingClaim>,
     release_reqs: HashMap<u64, ClaimId>,
+    submits: HashMap<u64, PendingSubmit>,
     /// Claim requests whose answer was lost with the socket; their callers are still waiting.
     lost_requests: Vec<PendingClaim>,
     /// Claims released just before the socket dropped; the release may not have arrived.
@@ -259,6 +266,7 @@ impl Daemon {
             next_req: 1,
             pending: HashMap::new(),
             release_reqs: HashMap::new(),
+            submits: HashMap::new(),
             lost_requests: Vec::new(),
             lost_releases: HashSet::new(),
             fresh: HashSet::new(),
@@ -415,7 +423,7 @@ impl Daemon {
         let now = now_ms();
         let (live, lapsed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.state.claims)
             .into_iter()
-            .partition(|held| held.expires_at_ms > now);
+            .partition(|held| held.submitted || held.expires_at_ms > now);
         self.state.claims = live;
         for held in lapsed {
             self.notify(
@@ -469,6 +477,14 @@ impl Daemon {
             } else {
                 self.lost_requests.push(pending);
             }
+        }
+        // A submission in flight may have been accepted without us hearing of it; the event log
+        // read after the next welcome marks the claim submitted if it was.
+        let message = "the connection dropped before the coordinator answered; the submission may \
+                       still have arrived, so run `tessel status`: a claim shown as submitted was \
+                       accepted";
+        for (_, pending) in std::mem::take(&mut self.submits) {
+            let _ = pending.reply.send(submit_refused(None, message));
         }
         self.lost_releases
             .extend(self.release_reqs.drain().map(|(_, claim)| claim));
@@ -544,12 +560,26 @@ impl Daemon {
                 let message = message.clone();
                 self.on_error(req, code, &message, &msg);
             }
+            ServerMsg::Accepted {
+                req,
+                claim,
+                queue_position,
+            } => self.on_accepted(req, claim, queue_position),
+            ServerMsg::Merged { claim, .. } => self.on_merged(claim, msg),
+            ServerMsg::SubmitRejected { claim, .. } => self.on_submit_rejected(claim, msg),
+            ServerMsg::Uncovered {
+                req,
+                claim,
+                ref scopes,
+            } => {
+                let scopes = scopes.clone();
+                self.on_uncovered(req, claim, scopes, msg);
+            }
+            ServerMsg::ReviewRequired { claim, ref reasons } => {
+                let reasons = reasons.clone();
+                self.on_review_required(claim, reasons, msg);
+            }
             ServerMsg::Shadowed { .. }
-            | ServerMsg::Accepted { .. }
-            | ServerMsg::Merged { .. }
-            | ServerMsg::SubmitRejected { .. }
-            | ServerMsg::Uncovered { .. }
-            | ServerMsg::ReviewRequired { .. }
             | ServerMsg::RaceOpened { .. }
             | ServerMsg::RaceResult { .. }
             | ServerMsg::Event { .. } => self.unexpected("message this CLI does not use", &msg),
@@ -597,6 +627,7 @@ impl Daemon {
             expires_at_ms: now_ms().saturating_add(lease),
             race,
             scopes: pending.scopes,
+            submitted: false,
         };
         self.state.claims.push(held.clone());
         self.fresh.insert(claim);
@@ -698,6 +729,7 @@ impl Daemon {
         let Plan {
             forget,
             refresh,
+            set_submitted,
             answer_lost,
             release_again,
             adopt,
@@ -716,6 +748,28 @@ impl Daemon {
             {
                 held.fence = fence;
             }
+        }
+        for (claim, submitted) in set_submitted {
+            if let Some(held) = self
+                .state
+                .claims
+                .iter_mut()
+                .find(|held| held.claim == claim)
+            {
+                held.submitted = submitted;
+            }
+            let note = if submitted {
+                format!(
+                    "claim {} is submitted at the coordinator; it is now shown as submitted",
+                    claim.0
+                )
+            } else {
+                format!(
+                    "the merge of claim {} was refused; the claim is active again",
+                    claim.0
+                )
+            };
+            self.notify(NoticeKind::Reconciled, &note, None);
         }
         let mut lost: Vec<Option<PendingClaim>> = lost.into_iter().map(Some).collect();
         for (index, claim, server) in answer_lost {
@@ -749,6 +803,7 @@ impl Daemon {
                 expires_at_ms: 0,
                 race: None,
                 scopes: Vec::new(),
+                submitted: false,
             };
             self.send_release(&held);
             let note = format!(
@@ -772,6 +827,7 @@ impl Daemon {
             expires_at_ms: now_ms().saturating_add(self.state.lease_ms.unwrap_or(0)),
             race: server.race,
             scopes: server.scopes,
+            submitted: server.submitted,
         };
         self.state.claims.push(held.clone());
         held
@@ -806,6 +862,168 @@ impl Daemon {
         );
     }
 
+    /// The pending submit that `req` (or, from an old coordinator that omits it, `claim`) names.
+    fn take_submit(&mut self, req: Option<RequestId>, claim: ClaimId) -> Option<PendingSubmit> {
+        let key = match req {
+            Some(req) => Some(req.0),
+            None => self
+                .submits
+                .iter()
+                .find(|(_, pending)| pending.claim == claim)
+                .map(|(key, _)| *key),
+        };
+        key.and_then(|key| self.submits.remove(&key))
+    }
+
+    /// Records that the coordinator holds `claim` as submitted (or, after a rejection, active
+    /// again). A submitted claim does not expire; a rejected one gets a fresh lease estimate.
+    fn set_submitted(&mut self, claim: ClaimId, submitted: bool) {
+        let renewed = now_ms().saturating_add(self.state.lease_ms.unwrap_or(0));
+        if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
+            held.submitted = submitted;
+            if !submitted {
+                held.expires_at_ms = renewed;
+            }
+        }
+        self.fresh.insert(claim);
+        self.persist();
+    }
+
+    fn on_merged(&mut self, claim: ClaimId, msg: ServerMsg) {
+        self.state.claims.retain(|held| held.claim != claim);
+        self.notify(
+            NoticeKind::Merged,
+            &format!("claim {} was merged and is no longer held", claim.0),
+            Some(msg),
+        );
+        self.persist();
+    }
+
+    fn on_submit_rejected(&mut self, claim: ClaimId, msg: ServerMsg) {
+        self.set_submitted(claim, false);
+        self.notify(
+            NoticeKind::SubmitRejected,
+            &format!(
+                "the merge of claim {} was refused; the claim is active again with the same fence",
+                claim.0
+            ),
+            Some(msg),
+        );
+    }
+
+    fn on_accepted(&mut self, req: RequestId, claim: ClaimId, queue_position: u32) {
+        let Some(pending) = self.take_submit(Some(req), claim) else {
+            let msg = ServerMsg::Accepted {
+                req,
+                claim,
+                queue_position,
+            };
+            self.unexpected("acceptance for an unknown request", &msg);
+            return;
+        };
+        self.set_submitted(claim, true);
+        let outcome = SubmitOutcome::Accepted { queue_position };
+        let _ = pending.reply.send(Reply::Submit { outcome });
+    }
+
+    fn on_uncovered(
+        &mut self,
+        req: Option<RequestId>,
+        claim: ClaimId,
+        scopes: Vec<ScopeClaim>,
+        msg: ServerMsg,
+    ) {
+        if let Some(pending) = self.take_submit(req, claim) {
+            let outcome = SubmitOutcome::Uncovered { scopes };
+            let _ = pending.reply.send(Reply::Submit { outcome });
+        }
+        self.notify(
+            NoticeKind::Uncovered,
+            &format!(
+                "the coordinator found scopes touched by claim {} that the claim does not \
+                 cover; the claim is not submitted",
+                claim.0
+            ),
+            Some(msg),
+        );
+    }
+
+    fn on_review_required(
+        &mut self,
+        claim: ClaimId,
+        reasons: Vec<tessel_coordinator::protocol::ReviewReason>,
+        msg: ServerMsg,
+    ) {
+        if let Some(pending) = self.take_submit(None, claim) {
+            self.set_submitted(claim, true);
+            let outcome = SubmitOutcome::ReviewRequired { reasons };
+            let _ = pending.reply.send(Reply::Submit { outcome });
+        }
+        self.notify(
+            NoticeKind::ReviewRequired,
+            &format!(
+                "claim {} is held for human review; approval is not built yet, so it does not \
+                 merge",
+                claim.0
+            ),
+            Some(msg),
+        );
+    }
+
+    /// The fence to submit `claim` with, or why it cannot be submitted now.
+    fn submit_fence(&self, claim: ClaimId) -> Result<tessel_coordinator::protocol::Fence, String> {
+        if !self.is_online() {
+            let why = self
+                .state
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "not welcomed yet".to_string());
+            return Err(format!(
+                "not connected to the coordinator ({why}); retrying"
+            ));
+        }
+        let Some(held) = self.state.claims.iter().find(|held| held.claim == claim) else {
+            return Err(format!("no held claim {}", claim.0));
+        };
+        if held.submitted {
+            return Err(format!("claim {} is already submitted", claim.0));
+        }
+        Ok(held.fence)
+    }
+
+    fn start_submit(
+        &mut self,
+        claim: ClaimId,
+        fork_commit: String,
+        touched: Vec<ScopeClaim>,
+        decisions: DecisionRecord,
+        reply: oneshot::Sender<Reply>,
+    ) {
+        let fence = match self.submit_fence(claim) {
+            Ok(fence) => fence,
+            Err(message) => {
+                let _ = reply.send(submit_refused(None, &message));
+                return;
+            }
+        };
+        let req = self.next_req;
+        self.next_req += 1;
+        let msg = ClientMsg::Submit {
+            req: RequestId(req),
+            claim,
+            fence,
+            fork_commit: CommitId(fork_commit),
+            touched,
+            decisions,
+        };
+        if !self.send(msg) {
+            let message = "the connection just dropped; retrying";
+            let _ = reply.send(submit_refused(None, message));
+            return;
+        }
+        self.submits.insert(req, PendingSubmit { claim, reply });
+    }
+
     fn on_error(
         &mut self,
         req: Option<RequestId>,
@@ -821,6 +1039,15 @@ impl Daemon {
                     Some(msg.clone()),
                 );
                 answer(pending.replies, &refused(Some(code), message));
+                return;
+            }
+            if let Some(pending) = self.submits.remove(&req.0) {
+                self.notify(
+                    NoticeKind::Error,
+                    "the coordinator refused a submission",
+                    Some(msg.clone()),
+                );
+                let _ = pending.reply.send(submit_refused(Some(code), message));
                 return;
             }
             if let Some(claim) = self.release_reqs.remove(&req.0) {
@@ -855,15 +1082,25 @@ impl Daemon {
                 self.start_claim(scopes, wait, &assumptions, reply);
             }
             Request::Ensure { path, create } => self.ensure(&path, create, reply),
+            Request::Submit {
+                claim,
+                fork_commit,
+                touched,
+                decisions,
+            } => self.start_submit(claim, fork_commit, touched, decisions, reply),
             Request::Release { claim } => {
                 let _ = reply.send(self.release(claim));
             }
             Request::Stop => {
-                let unreleased = self.release_all_for_stop();
+                let (unreleased, submitted) = self.release_all_for_stop();
                 self.pending.clear();
+                self.submits.clear();
                 self.lost_requests.clear();
                 self.close_connection().await;
-                let _ = reply.send(Reply::Stopping { unreleased });
+                let _ = reply.send(Reply::Stopping {
+                    unreleased,
+                    submitted,
+                });
                 return Flow::Exit;
             }
         }
@@ -972,6 +1209,18 @@ impl Daemon {
                 message: format!("no held claim {}", id.0),
             };
         }
+        if let Some(held) = claim.and_then(|_| targets.iter().find(|held| held.submitted)) {
+            return Reply::Failed {
+                message: format!(
+                    "claim {} is submitted: the coordinator holds it until it merges or is \
+                     rejected and refuses to release it; watch `tessel inbox`",
+                    held.claim.0
+                ),
+            };
+        }
+        let (kept, targets): (Vec<_>, Vec<_>) =
+            targets.into_iter().partition(|held| held.submitted);
+        let kept_submitted: Vec<ClaimId> = kept.iter().map(|held| held.claim).collect();
         if !targets.is_empty() && !self.is_online() {
             return Reply::Failed {
                 message: "not connected to the coordinator; claims stay held until their lease \
@@ -986,7 +1235,10 @@ impl Daemon {
             released.push(held.claim);
         }
         self.persist();
-        Reply::Released { claims: released }
+        Reply::Released {
+            claims: released,
+            kept_submitted,
+        }
     }
 
     fn send_release(&mut self, held: &HeldClaim) {
@@ -1000,16 +1252,20 @@ impl Daemon {
         });
     }
 
-    /// Releases every held claim if online. Returns the claims it could not release.
-    fn release_all_for_stop(&mut self) -> Vec<ClaimId> {
-        let held = std::mem::take(&mut self.state.claims);
+    /// Releases every unsubmitted claim if online. Returns the claims it could not release, and
+    /// the submitted ones it left with the coordinator, which refuses to release them.
+    fn release_all_for_stop(&mut self) -> (Vec<ClaimId>, Vec<ClaimId>) {
+        let (submitted, held): (Vec<_>, Vec<_>) = std::mem::take(&mut self.state.claims)
+            .into_iter()
+            .partition(|claim| claim.submitted);
+        let submitted = submitted.iter().map(|claim| claim.claim).collect();
         if !self.is_online() {
-            return held.iter().map(|claim| claim.claim).collect();
+            return (held.iter().map(|claim| claim.claim).collect(), submitted);
         }
         for claim in &held {
             self.send_release(claim);
         }
-        Vec::new()
+        (Vec::new(), submitted)
     }
 
     /// Lets queued messages go out, then closes the socket and waits for its task.
@@ -1037,6 +1293,15 @@ impl Daemon {
             }
         }
         self.log("daemon stopped");
+    }
+}
+
+fn submit_refused(code: Option<ErrorCode>, message: &str) -> Reply {
+    Reply::Submit {
+        outcome: SubmitOutcome::Refused {
+            code,
+            message: message.to_string(),
+        },
     }
 }
 

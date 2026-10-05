@@ -9,6 +9,7 @@ mod render;
 mod rpc;
 mod scope;
 mod state;
+mod submit;
 mod worktree;
 
 use std::io::Write;
@@ -65,6 +66,22 @@ enum Command {
     },
     /// Release one claim, or all of them.
     Release { claim: Option<u64> },
+    /// Hand finished work to the steward to merge. Commit and push it to your fork first.
+    Submit {
+        /// The claim to submit; required when you hold several.
+        #[arg(long)]
+        claim: Option<u64>,
+        /// What shows the work is right, for example "cargo test passed (42 tests)". At least
+        /// one is required. Repeatable.
+        #[arg(long = "evidence")]
+        evidence: Vec<String>,
+        /// An approach you tried and dropped: "<approach>::<reason>". Repeatable.
+        #[arg(long = "rejected")]
+        rejected: Vec<String>,
+        /// The commit to merge, already pushed to your fork; defaults to HEAD.
+        #[arg(long)]
+        commit: Option<String>,
+    },
     /// Release everything, close the socket and stop the daemon.
     Stop,
     /// Claude Code hook integration.
@@ -129,6 +146,7 @@ fn main() -> ExitCode {
         | Command::Status { .. }
         | Command::Inbox { .. }
         | Command::Release { .. }
+        | Command::Submit { .. }
         | Command::Stop
         | Command::Hook {
             action: HookAction::Install,

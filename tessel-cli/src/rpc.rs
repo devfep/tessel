@@ -5,7 +5,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tessel_coordinator::protocol::{ClaimId, Conflict, ErrorCode, HeldAssumption, ScopeClaim};
+use tessel_coordinator::protocol::{
+    ClaimId, Conflict, DecisionRecord, ErrorCode, HeldAssumption, ReviewReason, ScopeClaim,
+};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -32,6 +34,14 @@ pub enum Request {
     Release {
         claim: Option<ClaimId>,
     },
+    /// Send a `Submit` for a held claim. The command has already computed `touched` and checked
+    /// coverage; the daemon only owns the fence and the connection.
+    Submit {
+        claim: ClaimId,
+        fork_commit: String,
+        touched: Vec<ScopeClaim>,
+        decisions: DecisionRecord,
+    },
     Stop,
 }
 
@@ -46,11 +56,21 @@ pub enum Reply {
     },
     Released {
         claims: Vec<ClaimId>,
+        /// Submitted claims a release of all claims left alone: the coordinator holds them
+        /// until they merge or are rejected.
+        #[serde(default)]
+        kept_submitted: Vec<ClaimId>,
+    },
+    Submit {
+        outcome: SubmitOutcome,
     },
     /// The daemon is stopping. `unreleased` lists claims it could not release because it was
-    /// offline; they stay held until their lease ends.
+    /// offline; they stay held until their lease ends. `submitted` lists claims it left with
+    /// the coordinator because they were submitted.
     Stopping {
         unreleased: Vec<ClaimId>,
+        #[serde(default)]
+        submitted: Vec<ClaimId>,
     },
     Failed {
         message: String,
@@ -73,6 +93,23 @@ pub enum ClaimOutcome {
         position: u32,
     },
     /// The coordinator refused the request, or it could not be sent.
+    Refused {
+        code: Option<ErrorCode>,
+        message: String,
+    },
+}
+
+/// How the coordinator answered a `Submit`. The merge itself comes later, as an inbox notice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum SubmitOutcome {
+    /// In the merge queue at this 1-based position (0 for a shadow claim, which never merges).
+    Accepted { queue_position: u32 },
+    /// Invariant 11: the coordinator found these touched scopes outside the claim.
+    Uncovered { scopes: Vec<ScopeClaim> },
+    /// Invariant 12: held for a human to approve.
+    ReviewRequired { reasons: Vec<ReviewReason> },
+    /// The coordinator or the daemon refused the request, or it could not be sent.
     Refused {
         code: Option<ErrorCode>,
         message: String,
