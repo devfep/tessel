@@ -1,0 +1,4 @@
+intent: catch the Artifacts trunk tessel-dogfood up to sprint/build aadba8b (HARNESS-1, DOGFOOD-4) as one commit
+assumes: the steward's rebase is a no-op for a commit whose parent is the trunk head
+rejected: pushing sprint/build itself (its DOGFOOD-3 commits conflict with their rebased copies on the trunk); forcing the orchestrator fork (refused; used a new fork tessel-dogfood--admin); edit_body for added files (uncovered)
+evidence: admin merge (run by Felix) merged in 136 s with the trunk gate; trunk head 8432f8c; mirrored to GitHub artifacts-trunk 6f78128..8432f8c; tree equals aadba8b
