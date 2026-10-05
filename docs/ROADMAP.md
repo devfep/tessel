@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 07:41 EDT.
+**As of:** 2026-10-05 07:44 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
 **Tip:** `sprint/build` at the IDENTITY merge `d6f127f` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
@@ -24,10 +24,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 through was refused by the session's permission classifier, so Felix runs the PROTO-FREEZE merge
 himself (his ruling, 07:19).
 
-**Agents:** PROTO-FREEZE (Sonnet, worktree `.claude/worktrees/proto-freeze`): review Yes at
-`c07956a` after one fix pass; now merging the `sprint/build` tip (IDENTITY) into its branch for a
-re-gate before Felix merges it. IDENTITY closed; its worktree and branch are reclaimed.
-**Merge queue:** empty.
+**Agents:** PROTO-FREEZE (Sonnet) idle. Review Yes at `c07956a`; `sprint/build` merged in as
+`64f6079` (one test-module conflict in `src/shell.rs`, both tests kept, checked by the orchestrator);
+re-gate 241 tests, clippy and wasm clean. IDENTITY closed and reclaimed.
+**Merge queue:** `task-proto-freeze`, waiting for Felix to merge it (predicted tree `f1eb073`).
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
