@@ -7,6 +7,8 @@ import {
   REVOKE_FAILED_MESSAGE,
   makeOutcome,
   runCloneThenTest,
+  runInstallThenTest,
+  runStepThenRevoke,
   type StepOutcome,
 } from "./run-steps";
 
@@ -147,5 +149,50 @@ describe("makeOutcome", () => {
       stderrTruncated: false,
       passed: false,
     });
+  });
+});
+
+describe("runStepThenRevoke", () => {
+  it("revokes after the step and returns its outcome", async () => {
+    const { calls, revokeToken } = harness();
+    const result = await runStepThenRevoke(async () => {
+      calls.push("start step");
+      return outcome("clone", 0);
+    }, revokeToken);
+    expect(calls).toEqual(["start step", "revoke"]);
+    expect(result.step).toBe("clone");
+  });
+
+  it("revokes when the step throws, and the step's error wins", async () => {
+    const { calls, revokeToken } = harness({ revoked: false });
+    await expect(
+      runStepThenRevoke(async () => {
+        throw new Error("exec failed");
+      }, revokeToken),
+    ).rejects.toThrow("exec failed");
+    expect(calls).toEqual(["revoke"]);
+  });
+
+  it("throws when the revocation fails, even though the step succeeded", async () => {
+    const { revokeToken } = harness({ revoked: false });
+    await expect(runStepThenRevoke(async () => outcome("clone", 0), revokeToken)).rejects.toThrow(
+      REVOKE_FAILED_MESSAGE,
+    );
+  });
+});
+
+describe("runInstallThenTest", () => {
+  it("runs the tests only after a clean dependency check", async () => {
+    const { calls, runStep } = harness();
+    const result = await runInstallThenTest(runStep);
+    expect(calls).toEqual(["start install", "start test"]);
+    expect(result.passed).toBe(true);
+  });
+
+  it("stops at the dependency check with an install outcome", async () => {
+    const { calls, runStep } = harness({ install: DEPENDENCIES_DECLARED_EXIT_CODE });
+    const result = await runInstallThenTest(runStep);
+    expect(calls).toEqual(["start install"]);
+    expect(result).toMatchObject({ step: "install", passed: false });
   });
 });

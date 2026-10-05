@@ -1,15 +1,17 @@
 import { IDENTITY_TTL_MS, isValidName, signIdentityToken } from "./identity";
 import { parsePushEvent } from "./push-event";
+import { isForkOf, parseMergeRequest } from "./merge-types";
 import { matchRoute, type Route } from "./routes";
 import type { TestRunResult } from "./test-runner";
 import { mintForkWriteToken } from "./token-policy";
 
+export { MergePushGateway, MergeReadGateway } from "./merge-gateway";
 export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 
 const AGENT_TOKEN_TTL_SECONDS = 3600;
 const USAGE =
   "POST /repos/<repo>, POST /repos/<repo>/forks/<fork>, POST /repos/<repo>/tokens, " +
-  "POST /repos/<repo>/test-runs or POST /repos/<repo>/agents/<agent>/identity";
+  "POST /repos/<repo>/test-runs, POST /repos/<repo>/merges or POST /repos/<repo>/agents/<agent>/identity";
 const NOT_A_FORK_MESSAGE =
   "write tokens are issued only for agent forks; only the steward writes the main repo";
 const TEST_REF = "main";
@@ -82,6 +84,23 @@ async function runTests(env: Env, repo: string): Promise<Response> {
   return json(result, 200);
 }
 
+async function mergeFork(env: Env, request: Request, repo: string): Promise<Response> {
+  if (!isValidName(repo)) {
+    return json({ error: INVALID_NAME_MESSAGE }, 400);
+  }
+  const parsed = parseMergeRequest(await request.json().catch(() => null));
+  if (!parsed.ok) {
+    return json({ error: parsed.error }, 400);
+  }
+  const { fork, commit } = parsed.request;
+  using handle = await env.ARTIFACTS.get(fork);
+  if (!isForkOf(repo, await handle.info())) {
+    return json({ error: `${fork} is not a fork of ${repo}` }, 400);
+  }
+  const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
+  return json(await runner.merge(repo, fork, commit), 200);
+}
+
 async function issueIdentity(env: Env, repo: string, agent: string): Promise<Response> {
   if (!isValidName(repo) || !isValidName(agent)) {
     return json({ error: INVALID_NAME_MESSAGE }, 400);
@@ -95,7 +114,7 @@ async function issueIdentity(env: Env, repo: string, agent: string): Promise<Res
   return json({ token, agent, repo, expires_at_ms: expiresAtMs }, 201);
 }
 
-function runRoute(env: Env, route: Route): Promise<Response> {
+function runRoute(env: Env, request: Request, route: Route): Promise<Response> {
   switch (route.kind) {
     case "create":
       return createRepo(env, route.repo);
@@ -105,6 +124,8 @@ function runRoute(env: Env, route: Route): Promise<Response> {
       return mintWriteToken(env, route.repo);
     case "test-run":
       return runTests(env, route.repo);
+    case "merge":
+      return mergeFork(env, request, route.repo);
     case "identity":
       return issueIdentity(env, route.repo, route.agent);
   }
@@ -130,7 +151,7 @@ export default {
       return json({ error: `expected ${USAGE}` }, 404);
     }
     try {
-      return await runRoute(env, route);
+      return await runRoute(env, request, route);
     } catch (error) {
       return failure(route, error);
     }

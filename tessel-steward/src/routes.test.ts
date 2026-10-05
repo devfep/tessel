@@ -9,6 +9,7 @@ describe("matchRoute", () => {
     ["/repos/demo/forks/demo--agent-1", { kind: "fork", repo: "demo", fork: "demo--agent-1" }],
     ["/repos/demo/test-runs", { kind: "test-run", repo: "demo" }],
     ["/repos/demo/test-runs/", { kind: "test-run", repo: "demo" }],
+    ["/repos/demo/merges", { kind: "merge", repo: "demo" }],
     ["/repos/demo/agents/a1/identity", { kind: "identity", repo: "demo", agent: "a1" }],
   ])("matches %s", (pathname, route) => {
     expect(matchRoute(pathname)).toEqual(route);
@@ -18,6 +19,8 @@ describe("matchRoute", () => {
     ["the root", "/"],
     ["another root segment", "/repo/demo/test-runs"],
     ["a missing repo", "/repos"],
+    ["merges with a trailing segment", "/repos/demo/merges/1"],
+    ["merges naming a fork", "/repos/demo/merges/demo--a1"],
     ["test-runs with a trailing segment", "/repos/demo/test-runs/1"],
     ["test-runs with a nested path", "/repos/demo/test-runs/1/log"],
     ["a misspelled action", "/repos/demo/test-run"],
