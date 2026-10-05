@@ -86,7 +86,7 @@ export async function runStep(
  */
 export const TOOLCHAIN_ENV: Record<string, string> = {
   PATH: "/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-  HOME: "/root",
+  HOME: "/home/node",
   CARGO_HOME: "/usr/local/cargo",
   RUSTUP_HOME: "/usr/local/rustup",
   CARGO_TARGET_DIR: "/opt/cargo-target",
@@ -94,6 +94,19 @@ export const TOOLCHAIN_ENV: Record<string, string> = {
   CARGO_PROFILE_DEV_DEBUG: "0",
   npm_config_store_dir: "/opt/pnpm-store",
 };
+
+/**
+ * The user every command of a configured gate runs as, git included. It is not root: some tests
+ * rely on file permissions, which root ignores, and repo code should not hold more rights than
+ * it needs. The image owns `/workspace`, the cargo home, the target directory and the pnpm store
+ * for this user.
+ */
+export const TOOLCHAIN_USER = "node";
+
+/** The `exec` options that select the user of `plan`: none for a legacy plan, which is root. */
+export function userOptions(plan: GatePlan): { user?: string } {
+  return plan.kind === "configured" ? { user: TOOLCHAIN_USER } : {};
+}
 
 function directory(dir: string): string {
   return dir === "." ? WORKSPACE : `${WORKSPACE}/${dir}`;
@@ -157,6 +170,7 @@ function runConfigured(
       execCaptured(container, step, String(timeoutSeconds), command.argv, {
         cwd: directory(command.dir),
         env: TOOLCHAIN_ENV,
+        user: TOOLCHAIN_USER,
       }),
     Date.now,
   );

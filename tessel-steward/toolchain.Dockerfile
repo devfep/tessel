@@ -34,8 +34,9 @@ RUN apt-get update \
 	&& apt-get install --yes --no-install-recommends ca-certificates git gcc libc6-dev procps \
 	&& rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/rustup /usr/local/rustup
-COPY --from=builder /usr/local/cargo /usr/local/cargo
-COPY --from=builder /opt/cargo-target /opt/cargo-target
+# The gate runs as the unprivileged node user, so what it writes to is owned by node.
+COPY --from=builder --chown=node:node /usr/local/cargo /usr/local/cargo
+COPY --from=builder --chown=node:node /opt/cargo-target /opt/cargo-target
 # Keep these in step with TOOLCHAIN_ENV in src/container-step.ts (a test compares them).
 ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	CARGO_HOME=/usr/local/cargo \
@@ -44,8 +45,11 @@ ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
 	CARGO_INCREMENTAL=0 \
 	CARGO_PROFILE_DEV_DEBUG=0 \
 	npm_config_store_dir=/opt/pnpm-store
-RUN npm install --global pnpm@12.8.1
-COPY tessel-steward/package.json tessel-steward/pnpm-lock.yaml tessel-steward/pnpm-workspace.yaml /tmp/steward-lock/
+RUN npm install --global pnpm@12.8.1 \
+	&& mkdir /workspace /opt/pnpm-store \
+	&& chown node:node /workspace /opt/pnpm-store
+COPY --chown=node:node tessel-steward/package.json tessel-steward/pnpm-lock.yaml tessel-steward/pnpm-workspace.yaml /tmp/steward-lock/
+USER node
 RUN cd /tmp/steward-lock && pnpm fetch && rm -rf /tmp/steward-lock
 WORKDIR /workspace
 CMD ["sleep", "infinity"]

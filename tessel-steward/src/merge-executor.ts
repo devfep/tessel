@@ -3,6 +3,7 @@ import {
   WORKSPACE,
   execCaptured,
   runPackageStep,
+  userOptions,
 } from "./container-step";
 import { readGatePlan, startOptions } from "./gate-plan";
 import { MAIN_BRANCH, type GitCommand } from "./merge-commands";
@@ -174,7 +175,7 @@ async function withSandbox<T>(
         forkRemote: forkInfo.remote,
         forkBranch: forkInfo.defaultBranch,
       },
-      run: (command) => runGit(container, command),
+      run: (command) => runGit(container, command, userOptions(plan)),
       revokeReadTokens,
       runPackageStep: async (step) => redactOutput(await runPackageStep(container, plan, step)),
     };
@@ -272,13 +273,17 @@ export async function executeTrial(
   );
 }
 
-async function runGit(container: Container, command: GitCommand): Promise<GitResult> {
+async function runGit(
+  container: Container,
+  command: GitCommand,
+  user: { user?: string },
+): Promise<GitResult> {
   const captured = await execCaptured(
     container,
     "git",
     String(command.timeoutSeconds),
     command.argv,
-    { env: { ...command.env, GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
+    { env: { ...command.env, GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE }, ...user },
   );
   return redactOutput(captured);
 }

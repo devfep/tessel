@@ -90,6 +90,7 @@ function build(overrides: Partial<World> = {}) {
   const ttls = new Map<string, number>();
   const reads: Array<{ repo: string; ref: string; path: string }> = [];
   const starts: unknown[] = [];
+  const execUsers: Array<{ command: string; user: string | undefined }> = [];
   let pushed = false;
 
   function repo(name: string) {
@@ -145,8 +146,9 @@ function build(overrides: Partial<World> = {}) {
     interceptOutboundHttps: async (_host: string, gateway: { name: string }) => {
       events.push(`intercept ${gateway.name}`);
     },
-    exec: async (cmd: string[]) => {
+    exec: async (cmd: string[], options?: { user?: string }) => {
       const argv = cmd.slice(3);
+      execUsers.push({ command: argv.join(" "), user: options?.user });
       const { exitCode, stdout } = respond(argv, world);
       events.push(`exec ${argv.join(" ")}`);
       if (argv.join(" ").includes(" push ")) {
@@ -166,7 +168,7 @@ function build(overrides: Partial<World> = {}) {
   };
   const ctx = { container, exports: exportsStub } as unknown as DurableObjectState;
   const env = { ARTIFACTS: { get: async (name: string) => repo(name) } } as unknown as Env;
-  return { ctx, env, events, world, ttls, pushGateway, reads, starts };
+  return { ctx, env, events, world, ttls, pushGateway, reads, starts, execUsers };
 }
 
 const request = {
@@ -459,6 +461,18 @@ describe("a repo with a tessel.toml on main", () => {
     expect(legacy.starts).toEqual([
       { image: "lite-image", enableInternet: false, instance: "lite" },
     ]);
+  });
+
+  it("runs every command of a configured gate, git included, as the unprivileged user", async () => {
+    const configured = build({ tesselToml: GATE });
+    await executeMerge(configured.ctx, configured.env, "demo", request);
+    const repoCommands = configured.execUsers.filter(({ command }) => !command.startsWith("cat "));
+    expect(repoCommands.length).toBeGreaterThan(10);
+    expect(repoCommands.filter(({ user }) => user !== "node")).toEqual([]);
+
+    const legacy = build();
+    await executeMerge(legacy.ctx, legacy.env, "demo", request);
+    expect(legacy.execUsers.filter(({ user }) => user !== undefined)).toEqual([]);
   });
 
   it("reads the gate from main at the commit the run is based on, never from the fork", async () => {

@@ -3,7 +3,13 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { isValidName } from "./identity";
 import { isAllowedGitRequest } from "./git-gateway-policy";
 import { revokeOnce } from "./revoke-once";
-import { CONTAINER_CA_CERTIFICATE, WORKSPACE, runPackageStep, runStep } from "./container-step";
+import {
+  CONTAINER_CA_CERTIFICATE,
+  WORKSPACE,
+  runPackageStep,
+  runStep,
+  userOptions,
+} from "./container-step";
 import { executeMerge, executeTrial } from "./merge-executor";
 import {
   parseMergeRequest,
@@ -183,7 +189,7 @@ export class TestRunner extends DurableObject<Env> {
             "clone",
             String(STEP_SECONDS.clone),
             ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
-            { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
+            { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE }, ...userOptions(plan) },
           );
         case "install":
         case "test":
