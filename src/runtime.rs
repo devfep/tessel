@@ -86,6 +86,13 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         ["repo", name, "ws"] if !name.is_empty() => name.to_string(),
         _ => return Response::error("expected /repo/<name>/ws", 404),
     };
+    let prefix = env
+        .var("ALLOWED_REPO_PREFIX")
+        .ok()
+        .map(|var| var.to_string());
+    if !shell::repo_allowed(prefix.as_deref(), &repo) {
+        return Response::error("this deployment does not serve that repo", 403);
+    }
     let Some(agent) = verified_agent(&req, &env, &repo)? else {
         return Response::error(UNAUTHORIZED_BODY, 401);
     };
