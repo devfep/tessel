@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 about 16:10 EDT.
+**As of:** 2026-10-05 18:05 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses production deploys, secret writes and Artifacts
 deletes, so Felix runs those from a command the orchestrator hands him (Pending 0).
@@ -18,10 +18,12 @@ textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the w
 live steward latency, and report this run's timeout as it happened.
 **Tip:** `sprint/build` at the DOGFOOD-4 merge `4793bca`, pushed. The GitHub trunk is at `29aa8fe`
 (pull request 1). The Artifacts trunk `tessel-dogfood` is at `6f78128`, the same tree as `b6b8bfb`
-(`deb0143`), mirrored to the new GitHub branch `artifacts-trunk` (first run of the new
-`tools/mirror.sh`, live). The trunk lacks HARNESS-1 and DOGFOOD-4: HARNESS-1's `Cargo.lock` change
-needs the steward's toolchain image rebuilt (README "Dogfooding gate") before an admin merge can
-carry it.
+The Artifacts trunk `tessel-dogfood` is at `8432f8c`, one catch-up commit on `6f78128` whose tree
+equals `sprint/build` `aadba8b` (HARNESS-1 and DOGFOOD-4); admin-merged with the trunk gate in
+136 s and mirrored fast-forward to GitHub `artifacts-trunk`. Lessons from the catch-up (in its
+note): replaying `sprint/build` commits onto the trunk conflicts with their rebased copies, so
+catch-ups are one commit on the trunk head; added files need `create` scopes, not `edit_body`.
+From here new work starts from `artifacts-trunk`, not `sprint/build`.
 **Milestone:** PLAN §9 Oct 6–8 delivered and checked live: CLI and dogfood v0, the steward merge
 path with review gate and coverage check, assumptions verified end to end, races (one scripted race
 live end to end). Dogfood v1 is technically ready: the first Tessel commit merged through the
@@ -44,9 +46,12 @@ parent session's hook settings), and merge notes record each late claim.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** none live. No worktrees.
+**Agents:** `impl-shadow-1` (Sonnet), dispatched 18:04 in `.claude/worktrees/shadow-1` on
+`task-shadow-1` (cut from the trunk `8432f8c`), fork `tessel-dogfood--lane-shadow-1`, agent
+`lane-shadow-1`. The first lane through the steward: claims through Tessel, pushes to its fork,
+and submits only after the Opus review. Owns `src/coordinator*`, `src/shell.rs`, `src/runtime.rs`.
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop running (started 16:05) for the steward image rebuild.
+**Background jobs:** none. Docker Desktop stopped.
 
 **Deployed** on `devfep.workers.dev`:
 - `tessel-coordinator` version `66fbe44a` (`REVIEWERS = "felix,orchestrator"`, deployed by Felix
@@ -54,22 +59,25 @@ parent session's hook settings), and merge notes record each late claim.
   missing claim); a non-reviewer gets `not_owner`.
   Every upgrade needs a steward-minted agent token. The old `COORDINATOR_TOKEN` secret is unused
   and still set; delete with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
-- `tessel-steward` version `ab61a5e9`: toolchain image (Rust, Node 22, pnpm, GNU time, tini) on
+- `tessel-steward` version `f5f3d912` (deployed by Felix about 16:15; the first attempt failed in
+  wrangler's image push, untagged mid-push, and the retry succeeded): toolchain image (Rust, Node 22, pnpm, GNU time, tini) on
   `standard-4` for repos with `tessel.toml`; the `lite` image otherwise. Admin routes need
   `STEWARD_ADMIN_TOKEN` (`tessel-steward/.dev.vars`): `POST /repos/<repo>` (create),
   `/forks/<fork>`, `/tokens` (fork write tokens), `/read-tokens`, `/agents/<agent>/identity`,
   `/test-runs`, `/merges` (admin merge; the only path that may change `tessel.toml`).
-- Artifacts (namespace `tessel`): `tessel-dogfood` (the dogfood v1 trunk, `6f78128`) and fork
-  `tessel-dogfood--orchestrator`; `demo`, `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos.
+- Artifacts (namespace `tessel`): `tessel-dogfood` (the dogfood v1 trunk, `8432f8c`) and forks
+  `tessel-dogfood--orchestrator` (at `aadba8b`, sprint/build lineage: do not submit from it),
+  `tessel-dogfood--admin` (catch-ups), `tessel-dogfood--lane-shadow-1`; `demo`, `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos.
   The stray `tessel` was deleted by Felix about 16:05 (confirmed gone from the listing). Queue `tessel-artifacts-events` with its subscriptions as before.
 - `tessel-coordinator-swarm` version `39c3a7de` (secret change on `44538ffb`;
   `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only). Live: a steward-minted token gets
   `welcome`, `tessel-dogfood` gets 403, no token gets 401.
 
 **Pending from Felix:**
-0. The steward image rebuild (a production deploy the classifier refuses), Docker already up:
-   `cd tessel-steward && npx wrangler deploy; cd ..`. Done earlier by Felix: the swarm key, the
-   coordinator deploy, the stray repo delete.
+0. Nothing blocking. Production deploys, secret writes, Artifacts deletes and forced pushes are
+   refused by the session's permission classifier; the orchestrator hands Felix a command for
+   each (done today: swarm key, coordinator deploy, stray repo delete, steward image, the
+   catch-up admin merge).
 1. At the next hand merge of `src/protocol.rs` (additive only): delete the six stale
    `cfg_attr(not(test), expect(dead_code))` lines (then drop CLI-1's
    `#[allow(unfulfilled_lint_expectations)]` on `pub mod protocol`); correct the `Summary` doc on
@@ -83,6 +91,9 @@ parent session's hook settings), and merge notes record each late claim.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
 **Known limits, recorded so nobody rediscovers them:**
+- STATE commits still go to `sprint/build` (pushing each through the steward costs a gate run),
+  so the trunk's copy of this file lags. Before the milestone pull request from `artifacts-trunk`,
+  land the current `docs/ROADMAP.md` through the steward as one commit.
 - Probe 3 left two go/no-go items unmeasured: `id -u` inside the gate was never printed (the
   numeric `1000:1000` was accepted), and `readFile` with a bogus sha was never tried.
 - The peak memory figure is written by code inside the gate and is untrusted (clamped to the
@@ -114,12 +125,11 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
 
 **Next actions on resume:**
 1. (Done 16:03: swarm deployed and checked, first live run above.)
-2. Rebuild the steward toolchain image from the `0c7a776` lockfiles (`npx wrangler deploy` in
-   `tessel-steward/`, Docker on, after the DOGFOOD-4 lane's cargo gate), then admin-merge the
-   `sprint/build` tip onto `tessel-dogfood` from fork `tessel-dogfood--orchestrator`.
-3. DOGFOOD-4's last step after 2: the first lane merge through the steward under the new
-   `docs/BUILD-PROTOCOL.md` §2 (fork, claim, push, `tessel submit`, approval as `orchestrator`),
-   then `tools/mirror.sh`.
+2. (Done about 16:20: image rebuilt, trunk caught up to `8432f8c`, mirrored.)
+3. SHADOW-1 (in progress) is DOGFOOD-4's last step: review, then `tessel submit` from the lane,
+   approval as `orchestrator` if held, `merged` in the inbox, `tools/mirror.sh`. Then SHADOW-2:
+   `SHADOW_ENABLED = "true"` for the swarm env and a shadow policy in `tessel-swarm`, so the A/B
+   table's "Conflicts prevented, verified by shadow runs" cell is measured.
 4. Shadow verification (PLAN §9 Oct 9) reusing the trial primitive; swarm and A/B runs (Oct 10);
    milestone pull request from `artifacts-trunk` with `/code-review` and `/security-review`.
 
@@ -278,6 +288,10 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   under 10 s cold; clone plus fetch under 60 s; install under 45 s; test under 200 s warm and 240 s
   cold; peak memory under 9 GiB; a full merge over the service binding under 600 s; and the gate
   self-protection (submissions touching `tessel.toml` refused, admin-only escape hatch) has landed.
+- [ ] **SHADOW-1** — PLAN §8 item 2, §9 Oct 9: when a blocking claim's work merges, the
+  coordinator has the steward trial each shadow submission it blocked against the pre- and
+  post-merge trunk (the ASSUME-1 primitive) and appends `DenialVerified`; a red baseline or a
+  trial without a result counts nothing. The first lane to land through the steward.
 - [x] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
   join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
   trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
