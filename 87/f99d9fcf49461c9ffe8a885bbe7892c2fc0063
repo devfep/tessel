@@ -1,0 +1,4 @@
+intent: merge DOGFOOD-2: run the gate as uid:gid 1000:1000 (exec rejects a user name); name the step when exec cannot start; skip the unreadable-file test where mode 000 hides nothing
+assumes: Cloudflare Containers exec requires a numeric uid:gid (docs, durable-object-container exec)
+rejected: user:node (the cause of the first probe's internal error)
+evidence: review Yes after one follow-up. Merged tree: cargo test --workspace 680, steward 546. Live on steward be9dae95, probe 2 on Artifacts tessel-dogfood (trunk 72a2959): the gate ran; cargo compiled only Tessel's crates (16.8 s, dependencies baked); test step 41.8 s wall. NO-GO: peakMemoryBytes null; 3 tessel-cli integration tests fail only in the container (condition not met within 8 s; suspected unreaped child processes); 1 expected failure (the mode-000 test, trunk predates its fix); cargo stopped at the first failing test binary. Follow-up DOGFOOD-3.
