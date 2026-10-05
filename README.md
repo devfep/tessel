@@ -25,7 +25,10 @@ as any agent.
 ## Run locally
     npx wrangler dev
     # in another terminal (install websocat, e.g. `brew install websocat`):
-    websocat -H "Authorization: Bearer $COORDINATOR_TOKEN" ws://localhost:8787/repo/demo/ws
+    websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $COORDINATOR_TOKEN"
+
+Put the `-H` option after the URL, or write it with `=` as here: a bare `-H` takes the arguments
+that follow it, including the URL.
 
 Every message is one JSON object per line. Paste:
 
@@ -39,7 +42,7 @@ Any other message before `hello` is answered with `{"type":"error",...,"code":"n
 Text that is not a valid message, binary frames and text frames over 64 KiB get `malformed`.
 
 ## Try a conflict
-Open two terminals on the same repo (both with the `-H "Authorization: ..."` option above). In the first, send `hello` as `agent-1`, then:
+Open two terminals on the same repo (both with the `-H=...` option above). In the first, send `hello` as `agent-1`, then:
 
     {"type":"claim","req":1,"intent":{"summary":"rename login","task_ref":null},"scopes":[{"scope":{"kind":"symbol","path":"src/auth.rs","qualified_name":"auth::login"},"mode":"edit_signature"}],"on_conflict":"fail"}
 
@@ -82,8 +85,8 @@ with, and changing them later has no effect on it.
 
 ## Deploy
     npx wrangler deploy
-    websocat -H "Authorization: Bearer $COORDINATOR_TOKEN" \
-      wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws
+    websocat wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws \
+      -H="Authorization: Bearer $COORDINATOR_TOKEN"
 
 ## Tests
     cargo test
