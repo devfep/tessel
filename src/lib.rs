@@ -1,6 +1,7 @@
 //! Tessel coordinator. Day-one toolchain check: a Rust Worker that routes WebSocket connections
 //! to one coordinator Durable Object per repo, and round-trips protocol JSON.
 
+mod coordinator;
 mod protocol;
 
 use protocol::{ClientMsg, CommitId, ErrorCode, ServerMsg, PROTOCOL_VERSION};

@@ -1,0 +1,1560 @@
+//! Pure coordinator core: a deterministic, in-memory state machine for claims.
+//!
+//! No clock, no randomness, no `worker` dependency: the caller passes `now_ms` and delivers the
+//! returned `Effect`s, so the whole thing is tested natively. The Durable Object wraps it.
+//!
+//! Decisions made here, beyond the protocol invariants:
+//! - An agent's own claims never conflict with each other.
+//! - Claim ids and fences start at 1 and are never reused. Event `seq` starts at 0.
+//! - `Hello` does not have to precede other messages; connection state belongs to the caller.
+//! - The lock table is derived from the claims. It is not serialized; deserializing rebuilds it.
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired into the Durable Object in COORD-4")
+)]
+
+use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
+
+use serde::{Deserialize, Serialize, Serializer};
+
+use crate::protocol::{
+    AgentId, ClaimId, ClientMsg, CommitId, Conflict, ErrorCode, Event, EventKind, Fence,
+    HeldAssumption, Intent, Lock, OnConflict, ReleaseReason, RequestId, RunId, Scope, ScopeClaim,
+    ServerMsg, PROTOCOL_VERSION,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub run: RunId,
+    pub lease_ms: u64,
+}
+
+/// Something the caller must do after `Coordinator::handle`.
+///
+/// The caller must durably persist the coordinator state and every `Log` event BEFORE delivering
+/// any `Reply` or `Notify` from the same call. A fence is persisted before its grant is sent
+/// (invariant 4, CLAUDE.md rule 6), so a restart can never hand out the same fence twice.
+#[derive(Debug, Clone)]
+pub enum Effect {
+    /// Send to the agent whose message was handled.
+    Reply(ServerMsg),
+    /// Send to another agent.
+    #[cfg_attr(
+        test,
+        expect(dead_code, reason = "first constructed in COORD-2 (expiry notices)")
+    )]
+    Notify { agent: AgentId, msg: ServerMsg },
+    /// Append to the event log. `seq` is already assigned.
+    Log(Event),
+}
+
+/// One claim as the coordinator holds it. Free text in `intent` is untrusted and only relayed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActiveClaim {
+    agent: AgentId,
+    fence: Fence,
+    intent: Intent,
+    scopes: Vec<ScopeClaim>,
+}
+
+/// One lock on one node. Carries everything a `Conflict` needs, so reporting one cannot fail.
+#[derive(Debug, Clone)]
+struct Holder {
+    claim: ClaimId,
+    agent: AgentId,
+    intent: Intent,
+    /// The claimed scope that placed this lock, and its index within the claim.
+    held: ScopeClaim,
+    slot: usize,
+    lock: Lock,
+}
+
+type LockTable = HashMap<Scope, Vec<Holder>>;
+
+/// A `Claim` message minus the conflict policy.
+struct ClaimRequest {
+    req: RequestId,
+    intent: Intent,
+    scopes: Vec<ScopeClaim>,
+}
+
+/// One blocker, with the key that orders it: (index of the requested scope in the request,
+/// blocking claim id, index of the held scope within that claim).
+struct Blocked {
+    index: usize,
+    claim: ClaimId,
+    slot: usize,
+    conflict: Conflict,
+}
+
+impl Blocked {
+    fn key(&self) -> (usize, u64, usize) {
+        (self.index, self.claim.0, self.slot)
+    }
+}
+
+/// What is persisted. Claims are keyed by claim id so iteration (and JSON) is in id order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CoordinatorState {
+    config: Config,
+    /// Main's head as the coordinator knows it. The steward will own this later.
+    head: Option<CommitId>,
+    next_claim: u64,
+    next_fence: u64,
+    next_seq: u64,
+    claims: BTreeMap<u64, ActiveClaim>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(from = "CoordinatorState")]
+pub struct Coordinator {
+    state: CoordinatorState,
+    /// Derived from `state.claims`; rebuilt on deserialize, never persisted.
+    locks: LockTable,
+}
+
+impl Serialize for Coordinator {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.state.serialize(serializer)
+    }
+}
+
+impl From<CoordinatorState> for Coordinator {
+    fn from(state: CoordinatorState) -> Self {
+        let mut locks = LockTable::new();
+        for (id, claim) in &state.claims {
+            place_locks(&mut locks, ClaimId(*id), claim);
+        }
+        Self { state, locks }
+    }
+}
+
+impl Coordinator {
+    pub fn new(config: Config) -> Self {
+        Self::from(CoordinatorState {
+            config,
+            head: None,
+            next_claim: 1,
+            next_fence: 1,
+            next_seq: 0,
+            claims: BTreeMap::new(),
+        })
+    }
+
+    /// Apply one client message from `agent`.
+    ///
+    /// `agent` is the only identity the core trusts and logs. The caller binds it to the
+    /// connection and passes it on every call, including `Hello`, whose own `agent` field must
+    /// match it.
+    pub fn handle(&mut self, agent: &AgentId, msg: ClientMsg, now_ms: u64) -> Vec<Effect> {
+        match msg {
+            ClientMsg::Hello { .. }
+            | ClientMsg::Claim { .. }
+            | ClientMsg::Amend { .. }
+            | ClientMsg::Heartbeat
+            | ClientMsg::Release { .. }
+            | ClientMsg::Submit { .. } => self.handle_lifecycle(agent, msg, now_ms),
+            ClientMsg::OpenRace { .. }
+            | ClientMsg::JoinRace { .. }
+            | ClientMsg::PickWinner { .. }
+            | ClientMsg::Review { .. }
+            | ClientMsg::Watch { .. } => Self::handle_collective(msg),
+        }
+    }
+
+    /// The claim lifecycle: connect, claim, amend, heartbeat, release, submit.
+    fn handle_lifecycle(&mut self, agent: &AgentId, msg: ClientMsg, now_ms: u64) -> Vec<Effect> {
+        match msg {
+            ClientMsg::Hello {
+                agent: declared,
+                base,
+                protocol,
+            } => self.hello(agent, &declared, base, protocol, now_ms),
+            ClientMsg::Claim {
+                req,
+                intent,
+                scopes,
+                on_conflict,
+            } => {
+                let request = ClaimRequest {
+                    req,
+                    intent,
+                    scopes,
+                };
+                self.claim(agent, on_conflict, request, now_ms)
+            }
+            ClientMsg::Release { claim, fence } => self.release(agent, claim, fence, now_ms),
+            ClientMsg::Amend { req, .. } => not_implemented(Some(req), "Amend"),
+            ClientMsg::Heartbeat => not_implemented(None, "Heartbeat"),
+            ClientMsg::Submit { req, .. } => not_implemented(Some(req), "Submit"),
+            ClientMsg::OpenRace { .. }
+            | ClientMsg::JoinRace { .. }
+            | ClientMsg::PickWinner { .. }
+            | ClientMsg::Review { .. }
+            | ClientMsg::Watch { .. } => misrouted(),
+        }
+    }
+
+    /// Races, review and watch.
+    fn handle_collective(msg: ClientMsg) -> Vec<Effect> {
+        match msg {
+            ClientMsg::OpenRace { req, .. } => not_implemented(Some(req), "OpenRace"),
+            ClientMsg::JoinRace { req, .. } => not_implemented(Some(req), "JoinRace"),
+            ClientMsg::PickWinner { req, .. } => not_implemented(Some(req), "PickWinner"),
+            ClientMsg::Review { req, .. } => not_implemented(Some(req), "Review"),
+            ClientMsg::Watch { .. } => not_implemented(None, "Watch"),
+            ClientMsg::Hello { .. }
+            | ClientMsg::Claim { .. }
+            | ClientMsg::Amend { .. }
+            | ClientMsg::Heartbeat
+            | ClientMsg::Release { .. }
+            | ClientMsg::Submit { .. } => misrouted(),
+        }
+    }
+
+    fn hello(
+        &mut self,
+        agent: &AgentId,
+        declared: &AgentId,
+        base: CommitId,
+        protocol: u16,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        if declared != agent {
+            let message = "hello agent does not match connection";
+            return vec![error(None, ErrorCode::Malformed, message)];
+        }
+        if protocol != PROTOCOL_VERSION {
+            let message = format!(
+                "client speaks protocol v{protocol}, coordinator speaks v{PROTOCOL_VERSION}"
+            );
+            return vec![error(None, ErrorCode::UnsupportedProtocol, message)];
+        }
+        let head = self.state.head.get_or_insert(base).clone();
+        let connected = self.event(
+            now_ms,
+            EventKind::AgentConnected {
+                agent: agent.clone(),
+            },
+        );
+        let welcome = ServerMsg::Welcome {
+            head,
+            lease_ms: self.state.config.lease_ms,
+            protocol: PROTOCOL_VERSION,
+        };
+        vec![connected, Effect::Reply(welcome)]
+    }
+
+    fn claim(
+        &mut self,
+        agent: &AgentId,
+        on_conflict: OnConflict,
+        request: ClaimRequest,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        if request.scopes.is_empty() {
+            return vec![error(
+                Some(request.req),
+                ErrorCode::Malformed,
+                "claim names no scopes",
+            )];
+        }
+        match on_conflict {
+            OnConflict::Fail => {}
+            OnConflict::Wait => {
+                return not_implemented(Some(request.req), "Claim with OnConflict::Wait");
+            }
+            OnConflict::Shadow => {
+                return not_implemented(Some(request.req), "Claim with OnConflict::Shadow");
+            }
+        }
+        let request = ClaimRequest {
+            scopes: without_duplicates(request.scopes),
+            ..request
+        };
+        let conflicts = self.find_conflicts(agent, &request.scopes);
+        if conflicts.is_empty() {
+            self.grant(agent, request, now_ms)
+        } else {
+            self.deny(agent, request, conflicts, now_ms)
+        }
+    }
+
+    /// Every active claim of another agent that blocks one of `scopes`. Looks only at the nodes
+    /// the requested scopes lock. The result does not depend on storage or insertion order: it is
+    /// sorted by (index of the requested scope in the request, blocking claim id, index of the
+    /// held scope within its claim). `scopes` must not repeat a `ScopeClaim`.
+    fn find_conflicts(&self, agent: &AgentId, scopes: &[ScopeClaim]) -> Vec<Conflict> {
+        let mut found = Vec::new();
+        for (index, requested) in scopes.iter().enumerate() {
+            self.collect_blockers(agent, index, requested, &mut found);
+        }
+        found.sort_by_key(Blocked::key);
+        found.into_iter().map(|blocked| blocked.conflict).collect()
+    }
+
+    fn collect_blockers(
+        &self,
+        agent: &AgentId,
+        index: usize,
+        requested: &ScopeClaim,
+        found: &mut Vec<Blocked>,
+    ) {
+        for (node, lock) in requested.locks() {
+            let Some(holders) = self.locks.get(&node) else {
+                continue;
+            };
+            for holder in holders {
+                if let Some(blocked) = blocked_by(agent, index, requested, lock, holder) {
+                    found.push(blocked);
+                }
+            }
+        }
+    }
+
+    /// Assumptions in other agents' active claims that any of `scopes` could break (invariant 8),
+    /// in claim id order.
+    fn assumptions_at_risk(&self, agent: &AgentId, scopes: &[ScopeClaim]) -> Vec<HeldAssumption> {
+        let mut out = Vec::new();
+        for (id, other) in &self.state.claims {
+            if other.agent == *agent {
+                continue;
+            }
+            for assumption in &other.intent.assumptions {
+                if scopes.iter().any(|scope| assumption.threatened_by(scope)) {
+                    out.push(HeldAssumption {
+                        agent: other.agent.clone(),
+                        claim: ClaimId(*id),
+                        assumption: assumption.clone(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    fn deny(
+        &mut self,
+        agent: &AgentId,
+        request: ClaimRequest,
+        conflicts: Vec<Conflict>,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let denied = self.event(
+            now_ms,
+            EventKind::ClaimDenied {
+                agent: agent.clone(),
+                scopes: request.scopes,
+                intent: request.intent,
+                conflicts: conflicts.clone(),
+            },
+        );
+        vec![
+            denied,
+            Effect::Reply(ServerMsg::Denied {
+                req: request.req,
+                conflicts,
+            }),
+        ]
+    }
+
+    fn grant(&mut self, agent: &AgentId, request: ClaimRequest, now_ms: u64) -> Vec<Effect> {
+        let at_risk = self.assumptions_at_risk(agent, &request.scopes);
+        let claim = ClaimId(self.state.next_claim);
+        self.state.next_claim += 1;
+        let fence = Fence(self.state.next_fence);
+        self.state.next_fence += 1;
+
+        let active = ActiveClaim {
+            agent: agent.clone(),
+            fence,
+            intent: request.intent,
+            scopes: request.scopes,
+        };
+        place_locks(&mut self.locks, claim, &active);
+        let granted = self.event(
+            now_ms,
+            EventKind::ClaimGranted {
+                agent: agent.clone(),
+                claim,
+                fence,
+                scopes: active.scopes.clone(),
+                intent: active.intent.clone(),
+                race: None,
+                at_risk: at_risk.clone(),
+            },
+        );
+        self.state.claims.insert(claim.0, active);
+        let reply = ServerMsg::Granted {
+            req: request.req,
+            claim,
+            fence,
+            expires_at_ms: now_ms.saturating_add(self.state.config.lease_ms),
+            race: None,
+            at_risk,
+        };
+        vec![granted, Effect::Reply(reply)]
+    }
+
+    fn release(
+        &mut self,
+        agent: &AgentId,
+        claim: ClaimId,
+        fence: Fence,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let btree_map::Entry::Occupied(entry) = self.state.claims.entry(claim.0) else {
+            let message = format!("claim {} is not active", claim.0);
+            return vec![error(None, ErrorCode::UnknownClaim, message)];
+        };
+        let held = entry.get();
+        if held.agent != *agent {
+            let message = format!("claim {} belongs to another agent", claim.0);
+            return vec![error(None, ErrorCode::NotOwner, message)];
+        }
+        if held.fence != fence {
+            // Never reveal the current fence: the sender is by definition not holding it.
+            let message = format!(
+                "claim {} rejected fence {}: not the current fence",
+                claim.0, fence.0
+            );
+            return vec![error(None, ErrorCode::StaleFence, message)];
+        }
+        let released = entry.remove();
+        remove_locks(&mut self.locks, claim, &released);
+        let reason = ReleaseReason::Agent;
+        vec![self.event(now_ms, EventKind::ClaimReleased { claim, reason })]
+    }
+
+    fn event(&mut self, at_ms: u64, kind: EventKind) -> Effect {
+        let seq = self.state.next_seq;
+        self.state.next_seq += 1;
+        Effect::Log(Event {
+            seq,
+            at_ms,
+            run: self.state.config.run.clone(),
+            kind,
+        })
+    }
+}
+
+/// `Some` if `holder` blocks `requested`, whose lock on the shared node is `lock`.
+fn blocked_by(
+    agent: &AgentId,
+    index: usize,
+    requested: &ScopeClaim,
+    lock: Lock,
+    holder: &Holder,
+) -> Option<Blocked> {
+    if holder.agent == *agent || !lock.conflicts_with(holder.lock) {
+        return None;
+    }
+    Some(Blocked {
+        index,
+        claim: holder.claim,
+        slot: holder.slot,
+        conflict: Conflict {
+            requested: requested.clone(),
+            held: holder.held.clone(),
+            held_by: holder.agent.clone(),
+            their_intent: holder.intent.clone(),
+            race: None,
+        },
+    })
+}
+
+fn place_locks(locks: &mut LockTable, id: ClaimId, claim: &ActiveClaim) {
+    for (slot, held) in claim.scopes.iter().enumerate() {
+        for (node, lock) in held.locks() {
+            let holder = Holder {
+                claim: id,
+                agent: claim.agent.clone(),
+                intent: claim.intent.clone(),
+                held: held.clone(),
+                slot,
+                lock,
+            };
+            locks.entry(node).or_default().push(holder);
+        }
+    }
+}
+
+/// Removes the claim's locks and prunes nodes left empty.
+fn remove_locks(locks: &mut LockTable, id: ClaimId, claim: &ActiveClaim) {
+    for held in &claim.scopes {
+        for (node, _) in held.locks() {
+            // A node shared by two of this claim's scopes is already pruned the second time.
+            let hash_map::Entry::Occupied(mut slot) = locks.entry(node) else {
+                continue;
+            };
+            slot.get_mut().retain(|holder| holder.claim != id);
+            if slot.get().is_empty() {
+                slot.remove();
+            }
+        }
+    }
+}
+
+/// Drops exact repeats, keeping first occurrences in order. The same scope in two modes is two
+/// distinct claims and both stay.
+fn without_duplicates(scopes: Vec<ScopeClaim>) -> Vec<ScopeClaim> {
+    let mut out: Vec<ScopeClaim> = Vec::with_capacity(scopes.len());
+    for scope in scopes {
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    out
+}
+
+fn error(req: Option<RequestId>, code: ErrorCode, message: impl Into<String>) -> Effect {
+    Effect::Reply(ServerMsg::Error {
+        req,
+        code,
+        message: message.into(),
+    })
+}
+
+fn not_implemented(req: Option<RequestId>, what: &str) -> Vec<Effect> {
+    vec![error(
+        req,
+        ErrorCode::Malformed,
+        format!("not implemented yet: {what}"),
+    )]
+}
+
+/// `handle` sent a message to the wrong family handler.
+fn misrouted() -> Vec<Effect> {
+    vec![error(
+        None,
+        ErrorCode::Malformed,
+        "internal error: message routed to the wrong handler",
+    )]
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+    use crate::protocol::{Assumption, CommitId, DecisionRecord, Mode, RaceId, SymbolId};
+
+    const NOW: u64 = 1_000;
+    const LEASE: u64 = 30_000;
+
+    fn coordinator() -> Coordinator {
+        Coordinator::new(Config {
+            run: RunId("test".into()),
+            lease_ms: LEASE,
+        })
+    }
+
+    fn agent(name: &str) -> AgentId {
+        AgentId(name.into())
+    }
+
+    fn dir(path: &str) -> Scope {
+        Scope::Dir { path: path.into() }
+    }
+
+    fn file(path: &str) -> Scope {
+        Scope::File { path: path.into() }
+    }
+
+    fn sym(path: &str, name: &str) -> Scope {
+        Scope::Symbol(SymbolId {
+            path: path.into(),
+            qualified_name: name.into(),
+        })
+    }
+
+    fn sc(scope: Scope, mode: Mode) -> ScopeClaim {
+        ScopeClaim { scope, mode }
+    }
+
+    fn intent(summary: &str) -> Intent {
+        Intent {
+            summary: summary.into(),
+            task_ref: None,
+            assumptions: vec![],
+        }
+    }
+
+    fn claim_msg(intent: Intent, scopes: Vec<ScopeClaim>) -> ClientMsg {
+        ClientMsg::Claim {
+            req: RequestId(1),
+            intent,
+            scopes,
+            on_conflict: OnConflict::Fail,
+        }
+    }
+
+    fn claim_with(
+        c: &mut Coordinator,
+        who: &str,
+        intent: Intent,
+        scopes: Vec<ScopeClaim>,
+    ) -> Vec<Effect> {
+        c.handle(&agent(who), claim_msg(intent, scopes), NOW)
+    }
+
+    fn claim_as(c: &mut Coordinator, who: &str, scopes: Vec<ScopeClaim>) -> Vec<Effect> {
+        claim_with(c, who, intent("test work"), scopes)
+    }
+
+    fn replies(effects: &[Effect]) -> Vec<&ServerMsg> {
+        let mut out = Vec::new();
+        for effect in effects {
+            if let Effect::Reply(msg) = effect {
+                out.push(msg);
+            }
+        }
+        out
+    }
+
+    fn logged(effects: &[Effect]) -> Vec<&Event> {
+        let mut out = Vec::new();
+        for effect in effects {
+            if let Effect::Log(event) = effect {
+                out.push(event);
+            }
+        }
+        out
+    }
+
+    fn only_reply(effects: &[Effect]) -> &ServerMsg {
+        let all = replies(effects);
+        assert_eq!(all.len(), 1, "{effects:?}");
+        all[0]
+    }
+
+    fn grant_with(
+        c: &mut Coordinator,
+        who: &str,
+        intent: Intent,
+        scopes: Vec<ScopeClaim>,
+    ) -> (ClaimId, Fence) {
+        let effects = claim_with(c, who, intent, scopes);
+        let ServerMsg::Granted { claim, fence, .. } = only_reply(&effects) else {
+            panic!("expected Granted, got {effects:?}");
+        };
+        (*claim, *fence)
+    }
+
+    fn grant(c: &mut Coordinator, who: &str, scopes: Vec<ScopeClaim>) -> (ClaimId, Fence) {
+        grant_with(c, who, intent("test work"), scopes)
+    }
+
+    fn deny(c: &mut Coordinator, who: &str, scopes: Vec<ScopeClaim>) -> Vec<Conflict> {
+        let effects = claim_as(c, who, scopes);
+        let ServerMsg::Denied { conflicts, .. } = only_reply(&effects) else {
+            panic!("expected Denied, got {effects:?}");
+        };
+        conflicts.clone()
+    }
+
+    fn welcome_head(effects: &[Effect]) -> CommitId {
+        let ServerMsg::Welcome { head, .. } = only_reply(effects) else {
+            panic!("expected Welcome, got {effects:?}");
+        };
+        head.clone()
+    }
+
+    fn only_event(effects: &[Effect]) -> &EventKind {
+        let events = logged(effects);
+        assert_eq!(events.len(), 1, "{effects:?}");
+        &events[0].kind
+    }
+
+    fn error_message(effects: &[Effect]) -> &str {
+        let ServerMsg::Error { message, .. } = only_reply(effects) else {
+            panic!("expected Error, got {effects:?}");
+        };
+        message
+    }
+
+    fn release(c: &mut Coordinator, who: &str, claim: ClaimId, fence: Fence) -> Vec<Effect> {
+        c.handle(&agent(who), ClientMsg::Release { claim, fence }, NOW)
+    }
+
+    fn hello(c: &mut Coordinator, who: &str, base: &str, protocol: u16) -> Vec<Effect> {
+        let msg = ClientMsg::Hello {
+            agent: agent(who),
+            base: CommitId(base.into()),
+            protocol,
+        };
+        c.handle(&agent(who), msg, NOW)
+    }
+
+    fn state(c: &Coordinator) -> String {
+        serde_json::to_string(c).unwrap()
+    }
+
+    fn assert_error(effects: &[Effect], expected: ErrorCode) {
+        let ServerMsg::Error { code, .. } = only_reply(effects) else {
+            panic!("expected Error({expected:?}), got {effects:?}");
+        };
+        assert_eq!(*code, expected);
+        assert!(
+            logged(effects).is_empty(),
+            "errors must not log: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn hello_welcomes_with_head_lease_and_protocol_and_logs_connection() {
+        let mut c = coordinator();
+        let effects = hello(&mut c, "a1", "abc", PROTOCOL_VERSION);
+        let ServerMsg::Welcome {
+            head,
+            lease_ms,
+            protocol,
+        } = only_reply(&effects)
+        else {
+            panic!("expected Welcome, got {effects:?}");
+        };
+        assert_eq!(head, &CommitId("abc".into()));
+        assert_eq!(*lease_ms, LEASE);
+        assert_eq!(*protocol, PROTOCOL_VERSION);
+        let events = logged(&effects);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[0].at_ms, NOW);
+        assert_eq!(events[0].run, RunId("test".into()));
+        let EventKind::AgentConnected { agent: connected } = &events[0].kind else {
+            panic!("expected AgentConnected, got {:?}", events[0].kind);
+        };
+        assert_eq!(connected, &agent("a1"));
+    }
+
+    #[test]
+    fn hello_for_another_agent_is_refused_without_logging_or_adopting_head() {
+        let mut c = coordinator();
+        let msg = ClientMsg::Hello {
+            agent: agent("someone-else"),
+            base: CommitId("spoofed".into()),
+            protocol: PROTOCOL_VERSION,
+        };
+        let effects = c.handle(&agent("a1"), msg, NOW);
+        assert_error(&effects, ErrorCode::Malformed);
+        assert_eq!(
+            error_message(&effects),
+            "hello agent does not match connection"
+        );
+        let next = hello(&mut c, "a1", "real", PROTOCOL_VERSION);
+        assert_eq!(welcome_head(&next), CommitId("real".into()));
+        assert_eq!(logged(&next)[0].seq, 0, "the refused hello must not log");
+    }
+
+    #[test]
+    fn unsupported_hello_leaves_the_head_unset() {
+        let mut c = coordinator();
+        hello(&mut c, "a1", "too-new", PROTOCOL_VERSION + 1);
+        let next = hello(&mut c, "a2", "real", PROTOCOL_VERSION);
+        assert_eq!(welcome_head(&next), CommitId("real".into()));
+    }
+
+    #[test]
+    fn hello_keeps_the_first_head_it_adopted() {
+        let mut c = coordinator();
+        hello(&mut c, "a1", "first", PROTOCOL_VERSION);
+        let effects = hello(&mut c, "a2", "second", PROTOCOL_VERSION);
+        assert_eq!(welcome_head(&effects), CommitId("first".into()));
+    }
+
+    #[test]
+    fn hello_with_unsupported_protocol_is_refused_and_logs_nothing() {
+        let mut c = coordinator();
+        let before = state(&c);
+        let effects = hello(&mut c, "a1", "abc", PROTOCOL_VERSION + 1);
+        assert_error(&effects, ErrorCode::UnsupportedProtocol);
+        assert_eq!(state(&c), before);
+    }
+
+    #[test]
+    fn grant_carries_fence_lease_expiry_and_is_logged() {
+        let mut c = coordinator();
+        let effects = claim_with(
+            &mut c,
+            "a",
+            intent("fix refresh"),
+            vec![sc(sym("src/a.rs", "f"), Mode::EditBody)],
+        );
+        let ServerMsg::Granted {
+            req,
+            expires_at_ms,
+            race,
+            at_risk,
+            ..
+        } = only_reply(&effects)
+        else {
+            panic!("expected Granted, got {effects:?}");
+        };
+        assert_eq!(*req, RequestId(1));
+        assert_eq!(*expires_at_ms, NOW + LEASE);
+        assert_eq!(*race, None);
+        assert!(at_risk.is_empty());
+        let EventKind::ClaimGranted {
+            agent: who,
+            scopes,
+            intent,
+            ..
+        } = only_event(&effects)
+        else {
+            panic!("expected ClaimGranted, got {effects:?}");
+        };
+        assert_eq!(who, &agent("a"));
+        assert_eq!(scopes, &vec![sc(sym("src/a.rs", "f"), Mode::EditBody)]);
+        assert_eq!(intent.summary, "fix refresh");
+    }
+
+    #[test]
+    fn conflicting_claim_is_denied_with_holder_scope_agent_and_intent() {
+        let mut c = coordinator();
+        let held = sc(sym("src/a.rs", "refresh"), Mode::EditSignature);
+        grant_with(&mut c, "a", intent("rename refresh"), vec![held.clone()]);
+
+        let wanted = sc(sym("src/a.rs", "refresh"), Mode::Depend);
+        let effects = claim_as(&mut c, "b", vec![wanted.clone()]);
+        let ServerMsg::Denied { req, conflicts } = only_reply(&effects) else {
+            panic!("expected Denied, got {effects:?}");
+        };
+        assert_eq!(*req, RequestId(1));
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].requested, wanted);
+        assert_eq!(conflicts[0].held, held);
+        assert_eq!(conflicts[0].held_by, agent("a"));
+        assert_eq!(conflicts[0].their_intent.summary, "rename refresh");
+        assert_eq!(conflicts[0].race, None);
+        let EventKind::ClaimDenied { agent: denied, .. } = only_event(&effects) else {
+            panic!("expected ClaimDenied, got {effects:?}");
+        };
+        assert_eq!(denied, &agent("b"));
+    }
+
+    #[test]
+    fn depend_and_edit_signature_conflict_at_every_level_in_both_orders() {
+        let symbol = sym("src/auth/session.rs", "refresh");
+        let editors = [symbol.clone(), file("src/auth/session.rs"), dir("src/auth")];
+        for editor in editors {
+            let depend = sc(symbol.clone(), Mode::Depend);
+            let edit = sc(editor.clone(), Mode::EditSignature);
+
+            let mut c = coordinator();
+            grant(&mut c, "a", vec![depend.clone()]);
+            assert_eq!(
+                deny(&mut c, "b", vec![edit.clone()]).len(),
+                1,
+                "edit {editor:?} after"
+            );
+
+            let mut c = coordinator();
+            grant(&mut c, "a", vec![edit]);
+            assert_eq!(
+                deny(&mut c, "b", vec![depend]).len(),
+                1,
+                "depend before {editor:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compatible_claims_are_both_granted() {
+        let symbol = || sym("src/a.rs", "f");
+        let pairs = [
+            (sc(symbol(), Mode::Depend), sc(symbol(), Mode::Depend)),
+            (sc(symbol(), Mode::Depend), sc(symbol(), Mode::EditBody)),
+            (sc(symbol(), Mode::EditBody), sc(symbol(), Mode::Depend)),
+            (
+                sc(file("src/a.rs"), Mode::EditSignature),
+                sc(file("src/b.rs"), Mode::EditSignature),
+            ),
+            (
+                sc(dir("src/x"), Mode::EditBody),
+                sc(dir("src/y"), Mode::EditBody),
+            ),
+        ];
+        for (first, second) in pairs {
+            let mut c = coordinator();
+            grant(&mut c, "a", vec![first.clone()]);
+            grant(&mut c, "b", vec![second.clone()]);
+        }
+    }
+
+    #[test]
+    fn denied_multi_scope_claim_places_no_locks() {
+        let mut c = coordinator();
+        let (blocker, blocker_fence) = grant(
+            &mut c,
+            "a",
+            vec![sc(file("src/one.rs"), Mode::EditSignature)],
+        );
+
+        let conflicts = deny(
+            &mut c,
+            "b",
+            vec![
+                sc(file("src/two.rs"), Mode::EditBody),
+                sc(file("src/one.rs"), Mode::EditBody),
+            ],
+        );
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(
+            conflicts[0].requested,
+            sc(file("src/one.rs"), Mode::EditBody)
+        );
+
+        let (third, third_fence) = grant(&mut c, "c", vec![sc(file("src/two.rs"), Mode::EditBody)]);
+        release(&mut c, "c", third, third_fence);
+        release(&mut c, "a", blocker, blocker_fence);
+        grant(
+            &mut c,
+            "b",
+            vec![
+                sc(file("src/two.rs"), Mode::EditBody),
+                sc(file("src/one.rs"), Mode::EditBody),
+            ],
+        );
+    }
+
+    #[test]
+    fn same_agent_overlapping_claims_are_granted() {
+        let mut c = coordinator();
+        grant(&mut c, "a", vec![sc(file("src/a.rs"), Mode::EditSignature)]);
+        grant(&mut c, "a", vec![sc(sym("src/a.rs", "f"), Mode::EditBody)]);
+        grant(&mut c, "a", vec![sc(dir("src"), Mode::Depend)]);
+        grant(&mut c, "a", vec![sc(file("src/a.rs"), Mode::EditSignature)]);
+    }
+
+    #[test]
+    fn release_frees_the_scope_and_logs_without_replying() {
+        let mut c = coordinator();
+        let scopes = vec![sc(sym("src/a.rs", "f"), Mode::EditBody)];
+        let (claim, fence) = grant(&mut c, "a", scopes.clone());
+        deny(&mut c, "b", scopes.clone());
+
+        let effects = release(&mut c, "a", claim, fence);
+        assert!(replies(&effects).is_empty(), "{effects:?}");
+        let EventKind::ClaimReleased {
+            claim: released,
+            reason,
+        } = only_event(&effects)
+        else {
+            panic!("expected ClaimReleased, got {effects:?}");
+        };
+        assert_eq!(*released, claim);
+        assert_eq!(*reason, ReleaseReason::Agent);
+
+        grant(&mut c, "b", scopes);
+    }
+
+    #[test]
+    fn stale_fence_message_does_not_reveal_the_current_fence() {
+        let mut c = coordinator();
+        let (claim, fence) = grant(&mut c, "a", vec![sc(file("src/a.rs"), Mode::EditBody)]);
+        assert_eq!((claim.0, fence.0), (1, 1));
+
+        let effects = release(&mut c, "a", claim, Fence(99));
+        assert_error(&effects, ErrorCode::StaleFence);
+        let message = error_message(&effects);
+        assert_eq!(message, "claim 1 rejected fence 99: not the current fence");
+        assert!(!message.contains("fence 1"), "{message}");
+    }
+
+    #[test]
+    fn denial_consumes_no_claim_id_or_fence() {
+        let mut with_denial = coordinator();
+        let mut without = coordinator();
+        for c in [&mut with_denial, &mut without] {
+            grant(c, "a", vec![sc(file("src/a.rs"), Mode::EditBody)]);
+        }
+        deny(
+            &mut with_denial,
+            "b",
+            vec![sc(file("src/a.rs"), Mode::EditBody)],
+        );
+
+        let next = vec![sc(file("src/other.rs"), Mode::EditBody)];
+        let after_denial = grant(&mut with_denial, "c", next.clone());
+        let baseline = grant(&mut without, "c", next);
+        assert_eq!(after_denial, baseline);
+    }
+
+    #[test]
+    fn lock_table_is_empty_after_every_claim_is_released() {
+        let mut c = coordinator();
+        let mut held = Vec::new();
+        let scopes = [
+            vec![sc(sym("src/a.rs", "f"), Mode::EditBody)],
+            vec![
+                sc(sym("src/a.rs", "g"), Mode::Depend),
+                sc(file("src/b.rs"), Mode::EditBody),
+            ],
+            vec![sc(dir("src/deep/er"), Mode::Create)],
+        ];
+        for (who, scope) in ["a", "b", "c"].into_iter().zip(scopes) {
+            held.push((who, grant(&mut c, who, scope)));
+        }
+        assert!(!c.locks.is_empty());
+        for (who, (claim, fence)) in held {
+            release(&mut c, who, claim, fence);
+        }
+        assert!(
+            c.locks.is_empty(),
+            "{:?}",
+            c.locks.keys().collect::<Vec<_>>()
+        );
+    }
+
+    fn busy_coordinator() -> Coordinator {
+        let mut c = coordinator();
+        hello(&mut c, "a", "abc", PROTOCOL_VERSION);
+        let mut held = Vec::new();
+        for n in 0..12 {
+            let who = ["a", "b", "c"][n % 3];
+            let scopes = vec![
+                sc(sym(&format!("src/f{n}.rs"), "run"), Mode::EditBody),
+                sc(dir("shared"), Mode::Depend),
+            ];
+            held.push((who, grant(&mut c, who, scopes)));
+        }
+        deny(&mut c, "d", vec![sc(file("src/f3.rs"), Mode::EditBody)]);
+        let (who, (claim, fence)) = held.swap_remove(4);
+        release(&mut c, who, claim, fence);
+        c
+    }
+
+    #[test]
+    fn identical_message_sequences_serialize_to_identical_json() {
+        let first = state(&busy_coordinator());
+        let second = state(&busy_coordinator());
+        assert_eq!(first, second);
+
+        let restored: Coordinator = serde_json::from_str(&first).unwrap();
+        assert_eq!(state(&restored), first);
+    }
+
+    #[test]
+    fn invalid_releases_are_rejected_and_change_nothing() {
+        let mut c = coordinator();
+        let scopes = vec![sc(file("src/a.rs"), Mode::EditBody)];
+        let (claim, fence) = grant(&mut c, "a", scopes.clone());
+        let before = state(&c);
+
+        let unknown = release(&mut c, "a", ClaimId(claim.0 + 100), fence);
+        assert_error(&unknown, ErrorCode::UnknownClaim);
+
+        let not_owner = release(&mut c, "b", claim, fence);
+        assert_error(&not_owner, ErrorCode::NotOwner);
+
+        let stale = release(&mut c, "a", claim, Fence(fence.0 + 1));
+        assert_error(&stale, ErrorCode::StaleFence);
+
+        assert_eq!(state(&c), before);
+        assert_eq!(
+            deny(&mut c, "b", scopes).len(),
+            1,
+            "claim must still hold its locks"
+        );
+    }
+
+    #[test]
+    fn released_claim_cannot_be_released_twice() {
+        let mut c = coordinator();
+        let (claim, fence) = grant(&mut c, "a", vec![sc(file("src/a.rs"), Mode::EditBody)]);
+        release(&mut c, "a", claim, fence);
+        assert_error(&release(&mut c, "a", claim, fence), ErrorCode::UnknownClaim);
+    }
+
+    #[test]
+    fn claim_ids_and_fences_strictly_increase_and_are_never_reused() {
+        let mut c = coordinator();
+        let mut ids = Vec::new();
+        let mut fences = Vec::new();
+        for round in 0..4 {
+            let who = if round % 2 == 0 { "a" } else { "b" };
+            let (claim, fence) = grant(&mut c, who, vec![sc(file("src/a.rs"), Mode::EditBody)]);
+            ids.push(claim.0);
+            fences.push(fence.0);
+            release(&mut c, who, claim, fence);
+        }
+        for series in [ids, fences] {
+            for pair in series.windows(2) {
+                assert!(pair[0] < pair[1], "{series:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn event_seq_is_gapless_across_mixed_operations() {
+        let mut c = coordinator();
+        let scopes = vec![sc(file("src/a.rs"), Mode::EditBody)];
+        let mut all = Vec::new();
+        all.extend(hello(&mut c, "a", "abc", PROTOCOL_VERSION));
+        all.extend(hello(&mut c, "a", "abc", PROTOCOL_VERSION + 1));
+        let first = claim_as(&mut c, "a", scopes.clone());
+        let ServerMsg::Granted { claim, fence, .. } = only_reply(&first).clone() else {
+            panic!("expected Granted");
+        };
+        all.extend(first);
+        all.extend(claim_as(&mut c, "b", scopes.clone()));
+        all.extend(claim_as(&mut c, "b", vec![]));
+        all.extend(release(&mut c, "b", claim, fence));
+        all.extend(release(&mut c, "a", claim, fence));
+        all.extend(claim_as(&mut c, "b", scopes));
+
+        let seqs: Vec<u64> = logged(&all).iter().map(|event| event.seq).collect();
+        assert_eq!(seqs, (0..5).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn at_risk_follows_claim_order_then_declared_assumption_order() {
+        let mut c = coordinator();
+        let target = sym("src/x.rs", "f");
+        let assuming = |statements: &[&str]| Intent {
+            summary: "assumes".into(),
+            task_ref: None,
+            assumptions: statements
+                .iter()
+                .map(|statement| Assumption {
+                    scope: target.clone(),
+                    statement: (*statement).into(),
+                })
+                .collect(),
+        };
+        let docs = |n: u32| vec![sc(file(&format!("docs/{n}.md")), Mode::EditBody)];
+        let (first, _) = grant_with(&mut c, "a", assuming(&["s1", "s2"]), docs(1));
+        let (second, _) = grant_with(&mut c, "b", assuming(&["s3"]), docs(2));
+        let (third, _) = grant_with(&mut c, "a", assuming(&["s4"]), docs(3));
+
+        let effects = claim_as(&mut c, "d", vec![sc(file("src/x.rs"), Mode::EditBody)]);
+        let ServerMsg::Granted { at_risk, .. } = only_reply(&effects) else {
+            panic!("expected Granted, got {effects:?}");
+        };
+        let listed: Vec<(ClaimId, &str)> = at_risk
+            .iter()
+            .map(|held| (held.claim, held.assumption.statement.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![(first, "s1"), (first, "s2"), (second, "s3"), (third, "s4")]
+        );
+    }
+
+    #[test]
+    fn threatened_assumption_is_listed_without_blocking_the_grant() {
+        let mut c = coordinator();
+        let refresh = sym("src/auth.rs", "refresh");
+        let assuming = Intent {
+            summary: "build login flow".into(),
+            task_ref: None,
+            assumptions: vec![Assumption {
+                scope: refresh.clone(),
+                statement: "returns Some after login".into(),
+            }],
+        };
+        let (owner_claim, _) = grant_with(
+            &mut c,
+            "a",
+            assuming,
+            vec![sc(file("src/login.rs"), Mode::EditBody)],
+        );
+
+        let effects = claim_as(&mut c, "b", vec![sc(refresh.clone(), Mode::EditBody)]);
+        let ServerMsg::Granted { at_risk, .. } = only_reply(&effects) else {
+            panic!("a threatened assumption must not block: {effects:?}");
+        };
+        assert_eq!(at_risk.len(), 1);
+        assert_eq!(at_risk[0].agent, agent("a"));
+        assert_eq!(at_risk[0].claim, owner_claim);
+        assert_eq!(at_risk[0].assumption.statement, "returns Some after login");
+        let EventKind::ClaimGranted {
+            at_risk: logged_at_risk,
+            ..
+        } = only_event(&effects)
+        else {
+            panic!("expected ClaimGranted, got {effects:?}");
+        };
+        assert_eq!(logged_at_risk.len(), 1);
+
+        for (who, scope) in [
+            ("c", sc(refresh.clone(), Mode::Depend)),
+            ("d", sc(sym("src/auth.rs", "logout"), Mode::EditBody)),
+        ] {
+            let effects = claim_as(&mut c, who, vec![scope]);
+            let ServerMsg::Granted { at_risk, .. } = only_reply(&effects) else {
+                panic!("expected Granted: {effects:?}");
+            };
+            assert!(at_risk.is_empty(), "{who} threatens nothing");
+        }
+    }
+
+    #[test]
+    fn an_agents_own_assumptions_are_not_at_risk_from_its_own_claims() {
+        let mut c = coordinator();
+        let refresh = sym("src/auth.rs", "refresh");
+        let assuming = Intent {
+            summary: "x".into(),
+            task_ref: None,
+            assumptions: vec![Assumption {
+                scope: refresh.clone(),
+                statement: "y".into(),
+            }],
+        };
+        grant_with(
+            &mut c,
+            "a",
+            assuming,
+            vec![sc(file("src/login.rs"), Mode::EditBody)],
+        );
+        let effects = claim_as(&mut c, "a", vec![sc(refresh, Mode::EditBody)]);
+        let ServerMsg::Granted { at_risk, .. } = only_reply(&effects) else {
+            panic!("expected Granted: {effects:?}");
+        };
+        assert!(at_risk.is_empty());
+    }
+
+    #[test]
+    fn every_blocker_is_listed_once_in_a_stable_order() {
+        let mut c = coordinator();
+        let a_scopes = vec![
+            sc(file("src/a.rs"), Mode::EditBody),
+            sc(file("src/b.rs"), Mode::EditBody),
+        ];
+        grant(&mut c, "a", a_scopes.clone());
+        grant(&mut c, "c", vec![sc(file("src/c.rs"), Mode::EditBody)]);
+
+        let whole_dir = sc(dir("src"), Mode::EditBody);
+        let conflicts = deny(&mut c, "b", vec![whole_dir.clone(), whole_dir]);
+        let held: Vec<(AgentId, ScopeClaim)> = conflicts
+            .iter()
+            .map(|x| (x.held_by.clone(), x.held.clone()))
+            .collect();
+        assert_eq!(
+            held,
+            vec![
+                (agent("a"), a_scopes[0].clone()),
+                (agent("a"), a_scopes[1].clone()),
+                (agent("c"), sc(file("src/c.rs"), Mode::EditBody)),
+            ]
+        );
+    }
+
+    #[test]
+    fn conflicts_are_ordered_by_requested_scope_before_blocking_claim() {
+        let mut c = coordinator();
+        let on_a = sc(file("src/a.rs"), Mode::EditBody);
+        let on_c = sc(file("src/c.rs"), Mode::EditBody);
+        grant(&mut c, "a", vec![on_a.clone()]);
+        grant(&mut c, "c", vec![on_c.clone()]);
+
+        let conflicts = deny(&mut c, "b", vec![on_c.clone(), on_a.clone()]);
+        let held: Vec<ScopeClaim> = conflicts.iter().map(|x| x.held.clone()).collect();
+        assert_eq!(held, vec![on_c, on_a]);
+    }
+
+    #[test]
+    fn holder_that_listed_a_scope_twice_blocks_with_one_conflict() {
+        let mut c = coordinator();
+        let held = sc(file("src/a.rs"), Mode::EditBody);
+        grant(&mut c, "a", vec![held.clone(), held.clone()]);
+        assert_eq!(deny(&mut c, "b", vec![held]).len(), 1);
+    }
+
+    #[test]
+    fn requester_that_lists_a_scope_twice_gets_one_conflict() {
+        let mut c = coordinator();
+        let wanted = sc(file("src/a.rs"), Mode::EditBody);
+        grant(&mut c, "a", vec![wanted.clone()]);
+        assert_eq!(deny(&mut c, "b", vec![wanted.clone(), wanted]).len(), 1);
+    }
+
+    #[test]
+    fn granted_claim_logs_a_repeated_scope_once() {
+        let mut c = coordinator();
+        let repeated = sc(file("src/a.rs"), Mode::EditBody);
+        let other = sc(file("src/b.rs"), Mode::EditBody);
+        let scopes = vec![repeated.clone(), other.clone(), repeated.clone()];
+        let effects = claim_as(&mut c, "a", scopes);
+        let EventKind::ClaimGranted { scopes, .. } = only_event(&effects) else {
+            panic!("expected ClaimGranted, got {effects:?}");
+        };
+        assert_eq!(scopes, &vec![repeated, other]);
+    }
+
+    #[test]
+    fn same_scope_in_two_modes_stays_two_claims() {
+        let mut c = coordinator();
+        let depend = sc(file("src/a.rs"), Mode::Depend);
+        let edit_body = sc(file("src/a.rs"), Mode::EditBody);
+        let effects = claim_as(&mut c, "a", vec![depend.clone(), edit_body.clone()]);
+        let EventKind::ClaimGranted { scopes, .. } = only_event(&effects) else {
+            panic!("expected ClaimGranted, got {effects:?}");
+        };
+        assert_eq!(scopes, &vec![depend.clone(), edit_body.clone()]);
+
+        let conflicts = deny(&mut c, "b", vec![sc(file("src/a.rs"), Mode::EditSignature)]);
+        let held: Vec<ScopeClaim> = conflicts.iter().map(|x| x.held.clone()).collect();
+        assert_eq!(held, vec![depend, edit_body]);
+    }
+
+    #[test]
+    fn claim_with_no_scopes_is_malformed() {
+        let mut c = coordinator();
+        let before = state(&c);
+        assert_error(&claim_as(&mut c, "a", vec![]), ErrorCode::Malformed);
+        assert_eq!(state(&c), before);
+    }
+
+    #[test]
+    fn restored_state_behaves_identically() {
+        let mut c = coordinator();
+        hello(&mut c, "a", "abc", PROTOCOL_VERSION);
+        let (gone, gone_fence) = grant(&mut c, "a", vec![sc(file("src/gone.rs"), Mode::EditBody)]);
+        release(&mut c, "a", gone, gone_fence);
+        let (held, held_fence) = grant(
+            &mut c,
+            "a",
+            vec![sc(sym("src/a.rs", "f"), Mode::EditSignature)],
+        );
+        deny(&mut c, "b", vec![sc(file("src/a.rs"), Mode::Depend)]);
+
+        let mut restored: Coordinator = serde_json::from_str(&state(&c)).unwrap();
+
+        let script = [
+            (
+                "b",
+                claim_msg(intent("again"), vec![sc(file("src/a.rs"), Mode::Depend)]),
+            ),
+            (
+                "c",
+                claim_msg(intent("other"), vec![sc(file("src/z.rs"), Mode::EditBody)]),
+            ),
+            (
+                "a",
+                ClientMsg::Release {
+                    claim: held,
+                    fence: held_fence,
+                },
+            ),
+            (
+                "b",
+                claim_msg(intent("after"), vec![sc(file("src/a.rs"), Mode::Depend)]),
+            ),
+            (
+                "a",
+                ClientMsg::Release {
+                    claim: held,
+                    fence: held_fence,
+                },
+            ),
+        ];
+        for (who, msg) in script {
+            let live = c.handle(&agent(who), msg.clone(), NOW);
+            let replayed = restored.handle(&agent(who), msg, NOW);
+            assert_eq!(format!("{live:?}"), format!("{replayed:?}"));
+        }
+    }
+
+    #[test]
+    fn unimplemented_messages_error_and_change_nothing() {
+        let mut c = coordinator();
+        grant(&mut c, "a", vec![sc(file("src/a.rs"), Mode::EditBody)]);
+        let before = state(&c);
+        let scopes = vec![sc(file("src/a.rs"), Mode::EditBody)];
+        let req = RequestId(7);
+        let messages = vec![
+            ClientMsg::Claim {
+                req,
+                intent: intent("w"),
+                scopes: scopes.clone(),
+                on_conflict: OnConflict::Wait,
+            },
+            ClientMsg::Claim {
+                req,
+                intent: intent("s"),
+                scopes: scopes.clone(),
+                on_conflict: OnConflict::Shadow,
+            },
+            ClientMsg::Amend {
+                req,
+                claim: ClaimId(1),
+                fence: Fence(1),
+                add: scopes.clone(),
+            },
+            ClientMsg::Heartbeat,
+            ClientMsg::Submit {
+                req,
+                claim: ClaimId(1),
+                fence: Fence(1),
+                fork_commit: CommitId("c".into()),
+                touched: scopes.clone(),
+                decisions: DecisionRecord::default(),
+            },
+            ClientMsg::OpenRace {
+                req,
+                intent: intent("r"),
+                scopes,
+                max_entrants: 2,
+                deadline_ms: 10,
+                criteria: vec![],
+            },
+            ClientMsg::JoinRace {
+                req,
+                race: RaceId(1),
+            },
+            ClientMsg::PickWinner {
+                req,
+                race: RaceId(1),
+                claim: ClaimId(1),
+            },
+            ClientMsg::Review {
+                req,
+                claim: ClaimId(1),
+                approve: true,
+                note: None,
+            },
+            ClientMsg::Watch { from_seq: 0 },
+        ];
+        for msg in messages {
+            let effects = c.handle(&agent("b"), msg.clone(), NOW);
+            let ServerMsg::Error { code, message, .. } = only_reply(&effects) else {
+                panic!("expected Error for {msg:?}");
+            };
+            assert_eq!(*code, ErrorCode::Malformed, "{msg:?}");
+            assert!(message.starts_with("not implemented yet"), "{message}");
+            assert!(logged(&effects).is_empty(), "{msg:?}");
+            assert_eq!(state(&c), before, "{msg:?}");
+        }
+    }
+
+    // ---- property: decisions match a brute-force oracle ----
+
+    fn universe() -> Vec<Scope> {
+        vec![
+            dir(""),
+            dir("d1"),
+            dir("d1/d2"),
+            dir("d3"),
+            file("f0.rs"),
+            file("d1/f1.rs"),
+            file("d1/d2/f2.rs"),
+            file("d3/f3.rs"),
+            sym("d1/f1.rs", "s1"),
+            sym("d1/f1.rs", "s2"),
+            sym("d1/d2/f2.rs", "s3"),
+            sym("d3/f3.rs", "s4"),
+        ]
+    }
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Claim { agent: u8, scopes: Vec<ScopeClaim> },
+        Release { pick: usize },
+    }
+
+    fn scope_claims() -> impl Strategy<Value = Vec<ScopeClaim>> {
+        let one = (
+            prop::sample::select(universe()),
+            prop::sample::select(Mode::ALL.to_vec()),
+        )
+            .prop_map(|(scope, mode)| ScopeClaim { scope, mode });
+        prop::collection::vec(one, 1..=3)
+    }
+
+    fn ops() -> impl Strategy<Value = Vec<Op>> {
+        let op = prop_oneof![
+            4 => (0u8..3, scope_claims()).prop_map(|(agent, scopes)| Op::Claim { agent, scopes }),
+            1 => any::<usize>().prop_map(|pick| Op::Release { pick }),
+        ];
+        prop::collection::vec(op, 1..40)
+    }
+
+    struct Active {
+        agent: AgentId,
+        claim: ClaimId,
+        fence: Fence,
+        scopes: Vec<ScopeClaim>,
+    }
+
+    type Pair = (ScopeClaim, ScopeClaim, AgentId);
+
+    /// Independent of the production helper: keeps first occurrences in order.
+    fn distinct(scopes: &[ScopeClaim]) -> Vec<ScopeClaim> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for scope in scopes {
+            if seen.insert(scope.clone()) {
+                out.push(scope.clone());
+            }
+        }
+        out
+    }
+
+    /// Two scope claims conflict iff one scope covers the other and the modes conflict.
+    /// One entry per (requested scope, blocking claim, held scope), in the documented order:
+    /// request index, then claim id (`active` is in grant order), then held index. `scopes`
+    /// must already be free of repeats.
+    fn oracle(active: &[Active], who: &AgentId, scopes: &[ScopeClaim]) -> Vec<Pair> {
+        let mut out = Vec::new();
+        for mine in scopes {
+            for other in active.iter().filter(|a| a.agent != *who) {
+                for theirs in &other.scopes {
+                    let overlap =
+                        mine.scope.covers(&theirs.scope) || theirs.scope.covers(&mine.scope);
+                    if overlap && mine.mode.conflicts_with(theirs.mode) {
+                        out.push((mine.clone(), theirs.clone(), other.agent.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    proptest! {
+        #[test]
+        fn decisions_match_brute_force_oracle(sequence in ops()) {
+            let mut c = coordinator();
+            let mut active: Vec<Active> = Vec::new();
+            for op in sequence {
+                // Every reachable state must survive a save and load, so run on the restored one.
+                c = serde_json::from_str(&state(&c)).unwrap();
+                match op {
+                    Op::Claim { agent: n, scopes: raw } => {
+                        let who = agent(&format!("agent-{n}"));
+                        let scopes = distinct(&raw);
+                        let expected = oracle(&active, &who, &scopes);
+                        let effects = c.handle(&who, claim_msg(intent("p"), raw), NOW);
+                        if expected.is_empty() {
+                            let ServerMsg::Granted { claim, fence, .. } = only_reply(&effects)
+                            else {
+                                return Err(TestCaseError::fail(format!("denied: {effects:?}")));
+                            };
+                            let (claim, fence) = (*claim, *fence);
+                            active.push(Active { agent: who, claim, fence, scopes });
+                        } else {
+                            let ServerMsg::Denied { conflicts, .. } = only_reply(&effects) else {
+                                return Err(TestCaseError::fail(format!("granted: {effects:?}")));
+                            };
+                            let mut got: Vec<Pair> = Vec::new();
+                            for x in conflicts {
+                                let (req, held) = (x.requested.clone(), x.held.clone());
+                                got.push((req, held, x.held_by.clone()));
+                            }
+                            prop_assert_eq!(got, expected);
+                        }
+                    }
+                    Op::Release { pick } => {
+                        if active.is_empty() {
+                            continue;
+                        }
+                        let gone = active.remove(pick % active.len());
+                        let msg = ClientMsg::Release { claim: gone.claim, fence: gone.fence };
+                        let effects = c.handle(&gone.agent, msg, NOW);
+                        prop_assert!(replies(&effects).is_empty(), "release failed: {effects:?}");
+                    }
+                }
+            }
+        }
+    }
+}

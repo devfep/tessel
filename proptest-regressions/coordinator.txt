@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d92b7d9ee858ad779d115953ec22dcbe1da238dd5f3a3e2d6fae09750f523048 # shrinks to sequence = [Claim { agent: 0, scopes: [ScopeClaim { scope: Dir { path: "d1" }, mode: Depend }] }, Claim { agent: 1, scopes: [ScopeClaim { scope: Dir { path: "" }, mode: EditSignature }] }]
