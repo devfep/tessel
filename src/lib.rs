@@ -23,7 +23,7 @@ use std::fmt::Display;
 
 use coordinator::{Coordinator as Core, Effect};
 use protocol::{AgentId, ClientMsg, ServerMsg};
-use shell::{keep_first, Action, ReplayStep, Session, StoreDecision, Target, Work};
+use shell::{keep_first, Action, ReplayStep, Session, StoreDecision, StoredSize, Target, Work};
 use store::{Applied, Persisted};
 use worker::*;
 
@@ -80,9 +80,8 @@ pub struct Coordinator {
     env: Env,
     /// Loaded on first use, and again after a failed write or hibernation.
     core: RefCell<Option<Core>>,
-    /// The size of the state as last stored, for the soft limit. Set whenever the core is loaded
-    /// or written.
-    stored_bytes: Cell<usize>,
+    /// The size of the state as last stored, for the soft limit.
+    stored: Cell<StoredSize>,
 }
 
 impl DurableObject for Coordinator {
@@ -91,7 +90,7 @@ impl DurableObject for Coordinator {
             state,
             env,
             core: RefCell::new(None),
-            stored_bytes: Cell::new(0),
+            stored: Cell::new(StoredSize::default()),
         }
     }
 
@@ -201,8 +200,7 @@ impl Coordinator {
         let mut slot = self.core.borrow_mut();
         if slot.is_none() {
             *slot = Some(core);
-            self.stored_bytes
-                .set(stored.as_ref().map_or(0, String::len));
+            self.stored.set(StoredSize::on_load(stored.as_deref()));
         }
         Ok(())
     }
@@ -226,8 +224,7 @@ impl Coordinator {
                 return Err(self.fail("serialize state", e));
             }
         };
-        let sizes = shell::entry_sizes(&entries, self.stored_bytes.get());
-        match shell::decide_store(work, sizes) {
+        match self.stored.get().judge(work, &entries) {
             StoreDecision::Store => Ok(Prepared::Ready(Applied {
                 entries,
                 events,
@@ -255,7 +252,7 @@ impl Coordinator {
     async fn run_expiry(&self) -> Result<()> {
         self.ensure_loaded().await?;
         let now_ms = now_ms();
-        let prepared = self.apply(Work::ExpiryOnly, |core| core.expire(now_ms))?;
+        let prepared = self.apply(Work::Plain, |core| core.expire(now_ms))?;
         let applied = self.ready(prepared, "expire leases")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
@@ -294,7 +291,7 @@ impl Coordinator {
             return Ok(());
         };
         let now_ms = now_ms();
-        let prepared = self.apply(Work::ExpiryOnly, |core| core.disconnect(&agent, now_ms))?;
+        let prepared = self.apply(Work::Plain, |core| core.disconnect(&agent, now_ms))?;
         let applied = self.ready(prepared, "withdraw queued request")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
@@ -306,7 +303,8 @@ impl Coordinator {
         let written = store::write(&self.state.storage(), applied).await;
         match written {
             Ok(persisted) => {
-                self.stored_bytes.set(persisted.state_bytes());
+                self.stored
+                    .set(self.stored.get().on_write(persisted.entries()));
                 Ok(persisted)
             }
             Err(e) => {
@@ -325,7 +323,8 @@ impl Coordinator {
     ) -> Result<()> {
         self.ensure_loaded().await?;
         let req = shell::req_of(&msg);
-        let prepared = self.apply(Work::Client, |core| core.handle(&agent, msg, now_ms()))?;
+        let work = shell::work_of(&msg);
+        let prepared = self.apply(work, |core| core.handle(&agent, msg, now_ms()))?;
         let applied = match prepared {
             Prepared::Ready(applied) => applied,
             Prepared::Refused => {

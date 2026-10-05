@@ -38,12 +38,9 @@ impl Persisted {
         self.applied.next_expiry_ms
     }
 
-    /// The size of the state that was stored.
-    pub fn state_bytes(&self) -> usize {
-        self.applied
-            .entries
-            .first()
-            .map_or(0, |(_, json)| json.len())
+    /// The (key, JSON) pairs that were stored: the state first, then each event.
+    pub fn entries(&self) -> &[(String, String)] {
+        &self.applied.entries
     }
 }
 

@@ -429,14 +429,34 @@ pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
     }
 }
 
-/// Who asked for the work whose result is about to be stored.
+/// What kind of work produced the result that is about to be stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Work {
-    /// A client message: it is the only work that may be refused for growing the state.
-    Client,
-    /// The alarm's expiry, a withdrawal on close, or the expiry that follows a refusal. Never
-    /// refused for size below `HARD_ENTRY_BYTES`: it must always be able to make progress.
-    ExpiryOnly,
+    /// A message that adds content (`Claim`, `Amend`, `Submit`): the only work that may be
+    /// refused for growing the state past `SOFT_ENTRY_BYTES`.
+    Content,
+    /// Everything else: the other client messages, the alarm's expiry, a withdrawal on close and
+    /// the expiry that follows a refusal. Never refused for size below `HARD_ENTRY_BYTES`, so a
+    /// repo over the soft limit can always make progress. No tolerance is added: it would let
+    /// small steps ratchet past the hard limit.
+    Plain,
+}
+
+/// The kind of work a client message does.
+pub fn work_of(msg: &ClientMsg) -> Work {
+    match msg {
+        ClientMsg::Claim { .. } | ClientMsg::Amend { .. } | ClientMsg::Submit { .. } => {
+            Work::Content
+        }
+        ClientMsg::Hello { .. }
+        | ClientMsg::Heartbeat
+        | ClientMsg::Release { .. }
+        | ClientMsg::OpenRace { .. }
+        | ClientMsg::JoinRace { .. }
+        | ClientMsg::PickWinner { .. }
+        | ClientMsg::Review { .. }
+        | ClientMsg::Watch { .. } => Work::Plain,
+    }
 }
 
 /// The sizes, in bytes, of one call's result.
@@ -464,7 +484,7 @@ pub enum StoreDecision {
 /// through), or when one event is over it. Past `HARD_ENTRY_BYTES`, the largest value storage
 /// accepts less a margin, nothing is stored.
 pub fn decide_store(work: Work, sizes: Sizes) -> StoreDecision {
-    if work == Work::Client {
+    if work == Work::Content {
         let grown = sizes.state > SOFT_ENTRY_BYTES && sizes.state > sizes.previous_state;
         if grown || sizes.largest_event > SOFT_ENTRY_BYTES {
             return StoreDecision::Refuse;
@@ -487,6 +507,35 @@ pub fn entry_sizes(entries: &[(String, String)], previous_state: usize) -> Sizes
         previous_state,
         state,
         largest_event,
+    }
+}
+
+/// The size of the state as last stored, which the soft limit compares growth against.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoredSize {
+    bytes: usize,
+}
+
+impl StoredSize {
+    /// The size of the stored state just read, or 0 if nothing is stored yet.
+    pub fn on_load(stored: Option<&str>) -> Self {
+        Self {
+            bytes: stored.map_or(0, str::len),
+        }
+    }
+
+    /// The size after `entries` (the state first) were written.
+    pub fn on_write(self, entries: &[(String, String)]) -> Self {
+        match entries.first() {
+            Some((_, json)) => Self { bytes: json.len() },
+            None => self,
+        }
+    }
+
+    /// Store or refuse the result `entries` of `work`. Judging changes nothing: the size moves
+    /// only when a write completes.
+    pub fn judge(self, work: Work, entries: &[(String, String)]) -> StoreDecision {
+        decide_store(work, entry_sizes(entries, self.bytes))
     }
 }
 
@@ -1370,11 +1419,11 @@ mod tests {
     fn a_client_call_up_to_the_soft_limit_is_stored() {
         let soft = SOFT_ENTRY_BYTES;
         assert_eq!(
-            decide_store(Work::Client, sizes(0, 10, 10)),
+            decide_store(Work::Content, sizes(0, 10, 10)),
             StoreDecision::Store
         );
         assert_eq!(
-            decide_store(Work::Client, sizes(0, soft, soft)),
+            decide_store(Work::Content, sizes(0, soft, soft)),
             StoreDecision::Store
         );
     }
@@ -1382,18 +1431,18 @@ mod tests {
     #[test]
     fn a_client_call_over_the_soft_limit_that_grew_the_state_is_refused() {
         let soft = SOFT_ENTRY_BYTES;
-        let decision = decide_store(Work::Client, sizes(soft, soft + 1, 10));
+        let decision = decide_store(Work::Content, sizes(soft, soft + 1, 10));
         assert_eq!(decision, StoreDecision::Refuse);
-        let from_small = decide_store(Work::Client, sizes(10, soft + 1, 10));
+        let from_small = decide_store(Work::Content, sizes(10, soft + 1, 10));
         assert_eq!(from_small, StoreDecision::Refuse);
     }
 
     #[test]
     fn a_client_call_over_the_soft_limit_that_did_not_grow_the_state_is_stored() {
         let soft = SOFT_ENTRY_BYTES;
-        let same = decide_store(Work::Client, sizes(soft + 1, soft + 1, 10));
+        let same = decide_store(Work::Content, sizes(soft + 1, soft + 1, 10));
         assert_eq!(same, StoreDecision::Store);
-        let shrunk = decide_store(Work::Client, sizes(soft + 500, soft + 1, 10));
+        let shrunk = decide_store(Work::Content, sizes(soft + 500, soft + 1, 10));
         assert_eq!(shrunk, StoreDecision::Store);
     }
 
@@ -1401,25 +1450,22 @@ mod tests {
     fn expiry_only_work_is_stored_over_the_soft_limit_up_to_the_hard_limit() {
         let (soft, hard) = (SOFT_ENTRY_BYTES, HARD_ENTRY_BYTES);
         let grown = sizes(soft, hard, soft + 1);
-        assert_eq!(decide_store(Work::ExpiryOnly, grown), StoreDecision::Store);
+        assert_eq!(decide_store(Work::Plain, grown), StoreDecision::Store);
         let at_hard = sizes(0, hard, hard);
-        assert_eq!(
-            decide_store(Work::ExpiryOnly, at_hard),
-            StoreDecision::Store
-        );
+        assert_eq!(decide_store(Work::Plain, at_hard), StoreDecision::Store);
     }
 
     #[test]
     fn nothing_is_stored_over_the_hard_limit() {
         let hard = HARD_ENTRY_BYTES;
         assert!(hard < 2 * 1024 * 1024);
-        let state = decide_store(Work::ExpiryOnly, sizes(0, hard + 1, 10));
+        let state = decide_store(Work::Plain, sizes(0, hard + 1, 10));
         assert_eq!(state, StoreDecision::OverHard);
-        let event = decide_store(Work::ExpiryOnly, sizes(0, 10, hard + 1));
+        let event = decide_store(Work::Plain, sizes(0, 10, hard + 1));
         assert_eq!(event, StoreDecision::OverHard);
-        let kept_big = decide_store(Work::Client, sizes(hard + 9, hard + 1, 10));
+        let kept_big = decide_store(Work::Content, sizes(hard + 9, hard + 1, 10));
         assert_eq!(kept_big, StoreDecision::OverHard);
-        let grown = decide_store(Work::Client, sizes(0, hard + 1, 10));
+        let grown = decide_store(Work::Content, sizes(0, hard + 1, 10));
         assert_eq!(grown, StoreDecision::Refuse);
     }
 
@@ -1442,11 +1488,8 @@ mod tests {
         let measured = entry_sizes(&entries, entries[0].1.len());
         assert!(measured.state < SOFT_ENTRY_BYTES);
         assert!(measured.largest_event > SOFT_ENTRY_BYTES);
-        assert_eq!(decide_store(Work::Client, measured), StoreDecision::Refuse);
-        assert_eq!(
-            decide_store(Work::ExpiryOnly, measured),
-            StoreDecision::Store
-        );
+        assert_eq!(decide_store(Work::Content, measured), StoreDecision::Refuse);
+        assert_eq!(decide_store(Work::Plain, measured), StoreDecision::Store);
     }
 
     #[test]
@@ -1532,8 +1575,9 @@ mod tests {
         entry_sizes(&persist_entries(core, &events).unwrap(), previous)
     }
 
-    #[test]
-    fn expiry_that_grows_the_state_past_the_soft_limit_never_wedges_the_repo() {
+    /// A core one root claim holds against 50 waiters, filled to 50 bytes under the soft limit,
+    /// and its stored JSON. Letting the root claim go grants every waiter, which grows the state.
+    fn near_soft_core() -> (Core, String) {
         let mut core = new_core();
         let root = ScopeClaim {
             scope: Scope::Dir {
@@ -1567,18 +1611,46 @@ mod tests {
         core.handle(&agent("fill"), waiting_msg(99, "fill.rs", filler), NOW);
         let stored = serde_json::to_string(&core).unwrap();
         assert_eq!(stored.len(), SOFT_ENTRY_BYTES - 50);
+        (core, stored)
+    }
 
+    #[test]
+    fn a_release_whose_grants_grow_the_state_over_soft_is_stored_but_a_claim_is_not() {
+        let (mut core, stored) = near_soft_core();
+        let release = ClientMsg::Release {
+            claim: ClaimId(1),
+            fence: Fence(1),
+        };
+        assert_eq!(work_of(&release), Work::Plain);
+        let effects = core.handle(&agent("a"), release, NOW);
+        let grown = measured(&core, effects, stored.len());
+        assert!(
+            grown.state > SOFT_ENTRY_BYTES && grown.state > stored.len(),
+            "{grown:?}"
+        );
+        assert_eq!(
+            decide_store(work_of(&ClientMsg::Heartbeat), grown),
+            StoreDecision::Store
+        );
+        assert_eq!(decide_store(Work::Content, grown), StoreDecision::Refuse);
+    }
+
+    #[test]
+    fn expiry_that_grows_the_state_past_the_soft_limit_never_wedges_the_repo() {
+        let (core, stored) = near_soft_core();
         let late = NOW + LEASE_MS;
         let mut client = core.clone();
-        let effects = client.handle(&agent("zz"), ClientMsg::Heartbeat, late);
+        let claim = waiting_msg(500, "zz.rs", "z".into());
+        assert_eq!(work_of(&claim), Work::Content);
+        let effects = client.handle(&agent("zz"), claim, late);
         let refused = measured(&client, effects, stored.len());
         assert!(refused.state > SOFT_ENTRY_BYTES, "{refused:?}");
-        assert_eq!(decide_store(Work::Client, refused), StoreDecision::Refuse);
+        assert_eq!(decide_store(Work::Content, refused), StoreDecision::Refuse);
 
         let mut recovered = load_core(Some(&stored), None, None).unwrap();
         let effects = recovered.expire(late);
         let freed = measured(&recovered, effects, stored.len());
-        assert_eq!(decide_store(Work::ExpiryOnly, freed), StoreDecision::Store);
+        assert_eq!(decide_store(Work::Plain, freed), StoreDecision::Store);
         let after_expiry = serde_json::to_string(&recovered).unwrap();
         assert_eq!(after_expiry.len(), freed.state);
 
@@ -1590,12 +1662,136 @@ mod tests {
         let after_release = measured(&recovered, effects, after_expiry.len());
         assert!(after_release.state < after_expiry.len());
         assert_eq!(
-            decide_store(Work::Client, after_release),
+            decide_store(Work::Content, after_release),
+            StoreDecision::Store
+        );
+        assert_eq!(
+            decide_store(Work::Plain, after_release),
             StoreDecision::Store
         );
         let effects = recovered.expire(late + 1);
         let next = measured(&recovered, effects, after_release.state);
-        assert_eq!(decide_store(Work::ExpiryOnly, next), StoreDecision::Store);
+        assert_eq!(decide_store(Work::Plain, next), StoreDecision::Store);
+    }
+
+    #[test]
+    fn only_messages_that_add_content_are_judged_by_the_soft_limit() {
+        let content = [
+            claim("fail", "depend"),
+            msg(r#"{"type":"amend","req":3,"claim":1,"fence":1,"add":[]}"#),
+            msg(r#"{"type":"submit","req":4,"claim":1,"fence":1,
+                "fork_commit":"c","touched":[]}"#),
+        ];
+        for message in &content {
+            assert_eq!(work_of(message), Work::Content, "{message:?}");
+        }
+        let plain = [
+            hello("a1"),
+            msg(r#"{"type":"heartbeat"}"#),
+            msg(r#"{"type":"release","claim":1,"fence":1}"#),
+            msg(
+                r#"{"type":"open_race","req":5,"intent":{"summary":"s","task_ref":null},
+                "scopes":[],"max_entrants":1,"deadline_ms":1,"criteria":[]}"#,
+            ),
+            msg(r#"{"type":"join_race","req":6,"race":1}"#),
+            msg(r#"{"type":"pick_winner","req":7,"race":1,"claim":1}"#),
+            msg(r#"{"type":"review","req":8,"claim":1,"approve":true,"note":null}"#),
+            msg(r#"{"type":"watch","from_seq":0}"#),
+        ];
+        for message in &plain {
+            assert_eq!(work_of(message), Work::Plain, "{message:?}");
+        }
+    }
+
+    #[test]
+    fn over_the_soft_limit_a_hello_that_grows_the_state_by_a_byte_is_stored() {
+        let soft = SOFT_ENTRY_BYTES;
+        let grown = sizes(soft + 5, soft + 6, 10);
+        assert_eq!(
+            decide_store(work_of(&hello("a1")), grown),
+            StoreDecision::Store
+        );
+        for message in [
+            claim("fail", "depend"),
+            msg(r#"{"type":"amend","req":3,"claim":1,"fence":1,"add":[]}"#),
+            msg(r#"{"type":"submit","req":4,"claim":1,"fence":1,
+                "fork_commit":"c","touched":[]}"#),
+        ] {
+            assert_eq!(
+                decide_store(work_of(&message), grown),
+                StoreDecision::Refuse
+            );
+        }
+    }
+
+    #[test]
+    fn a_content_message_that_does_not_grow_the_state_is_stored_over_the_soft_limit() {
+        let soft = SOFT_ENTRY_BYTES;
+        let same = sizes(soft + 5, soft + 5, 10);
+        assert_eq!(
+            decide_store(work_of(&claim("fail", "depend")), same),
+            StoreDecision::Store
+        );
+    }
+
+    #[test]
+    fn every_kind_of_work_is_refused_or_failed_over_the_hard_limit() {
+        let hard = HARD_ENTRY_BYTES;
+        for work in [Work::Content, Work::Plain] {
+            let grown = decide_store(work, sizes(0, hard + 1, 10));
+            assert_ne!(grown, StoreDecision::Store, "{work:?}");
+            let event = decide_store(work, sizes(0, 10, hard + 1));
+            assert_ne!(event, StoreDecision::Store, "{work:?}");
+        }
+    }
+
+    fn state_entries(len: usize) -> Vec<(String, String)> {
+        vec![(STATE_KEY.to_string(), "x".repeat(len))]
+    }
+
+    #[test]
+    fn with_nothing_stored_the_size_is_zero_and_a_small_first_write_is_stored() {
+        let size = StoredSize::on_load(None);
+        assert_eq!(size, StoredSize::default());
+        assert_eq!(
+            size.judge(Work::Content, &state_entries(10)),
+            StoreDecision::Store
+        );
+        let over = state_entries(SOFT_ENTRY_BYTES + 1);
+        assert_eq!(size.judge(Work::Content, &over), StoreDecision::Refuse);
+    }
+
+    #[test]
+    fn a_loaded_state_sets_the_size_growth_is_compared_with() {
+        let stored = "x".repeat(SOFT_ENTRY_BYTES + 10);
+        let size = StoredSize::on_load(Some(&stored));
+        let same = state_entries(SOFT_ENTRY_BYTES + 10);
+        assert_eq!(size.judge(Work::Content, &same), StoreDecision::Store);
+        let grown = state_entries(SOFT_ENTRY_BYTES + 11);
+        assert_eq!(size.judge(Work::Content, &grown), StoreDecision::Refuse);
+    }
+
+    #[test]
+    fn after_a_write_the_next_decision_compares_with_the_new_size() {
+        let size = StoredSize::on_load(None);
+        let big = state_entries(SOFT_ENTRY_BYTES + 100);
+        let size = size.on_write(&big);
+        assert_eq!(size.judge(Work::Content, &big), StoreDecision::Store);
+        let grown = state_entries(SOFT_ENTRY_BYTES + 101);
+        assert_eq!(size.judge(Work::Content, &grown), StoreDecision::Refuse);
+        let shrunk = size.on_write(&state_entries(10));
+        let regrown = state_entries(SOFT_ENTRY_BYTES + 1);
+        assert_eq!(shrunk.judge(Work::Content, &regrown), StoreDecision::Refuse);
+        assert_eq!(size.on_write(&[]), size, "an empty write changes nothing");
+    }
+
+    #[test]
+    fn a_refusal_leaves_the_size_unchanged() {
+        let size = StoredSize::on_load(Some("abc"));
+        let over = state_entries(SOFT_ENTRY_BYTES + 1);
+        assert_eq!(size.judge(Work::Content, &over), StoreDecision::Refuse);
+        assert_eq!(size, StoredSize::on_load(Some("abc")));
+        assert_eq!(size.judge(Work::Content, &over), StoreDecision::Refuse);
     }
 
     fn multibyte_hello(bytes: usize) -> String {
