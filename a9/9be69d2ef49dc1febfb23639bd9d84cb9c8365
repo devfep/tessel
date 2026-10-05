@@ -1,0 +1,4 @@
+intent: CLI-2a, tessel submit with file-level touched scopes from git, local coverage check, evidence required, submitted claims tracked by the daemon and reconcile
+assumes: the steward verifies the commit on the fork <repo>--<agent>; SubmitRejected re-activates the claim with the same fence; Merged ends it
+rejected: one claim per mode combination via the CLI: a change needing create plus edit-body cannot be covered by one claim yet (no per-scope mode in tessel claim)
+evidence: cargo test -p tessel-cli 60 unit + 60 cli + 18 submit passed; clippy -D warnings clean; dogfood: claims 1-14 on tessel-dogfood
