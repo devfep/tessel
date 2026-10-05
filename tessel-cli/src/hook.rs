@@ -2,43 +2,153 @@
 //! edit when the claim is denied. `install` writes the hook entry into the worktree's
 //! `.claude/settings.local.json`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tessel_coordinator::protocol::Conflict;
 use thiserror::Error;
 
 use crate::render::{denial_text, escape, one_line, quote_untrusted};
 use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request};
 use crate::scope::{locate, Located};
 use crate::state::write_atomic;
-use crate::worktree::Worktree;
+use crate::worktree::{Worktree, WorktreeError};
 
 const HOOK_TIMEOUT: Duration = Duration::from_secs(15);
 const HOOK_MATCHER: &str = "Edit|MultiEdit|Write|NotebookEdit";
 const HOOK_SUBCOMMAND: &str = "hook pre-edit";
 
-/// What the hook tells Claude Code: exit 0 lets the tool run, exit 2 blocks it and feeds
-/// `message` (stderr) back to the agent.
+/// Exit code that lets the tool run.
+const EXIT_ALLOW: u8 = 0;
+/// Exit code that blocks the tool and feeds stderr back to the agent. Any other non-zero code
+/// would let the edit through, so every failure maps here.
+pub const EXIT_BLOCK: u8 = 2;
+
+/// What the hook tells Claude Code: `exit` 0 lets the tool run, 2 blocks it and feeds `message`
+/// (stderr) back to the agent.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Verdict {
-    pub allow: bool,
+    pub exit: u8,
     pub message: String,
 }
 
-impl Verdict {
-    fn allow() -> Self {
-        Self {
-            allow: true,
-            message: String::new(),
-        }
-    }
+/// Every way one `PreToolUse` event can end. `verdict` is the only place that turns an outcome
+/// into an exit code, and it matches exhaustively: the first five variants allow the edit, every
+/// other variant blocks it.
+#[derive(Debug)]
+enum Outcome {
+    Covered,
+    Granted,
+    OutsideWorktree,
+    IgnoredPath,
+    NotAnEditTool,
+    UnreadableInput(String),
+    MissingPath {
+        tool: String,
+        key: &'static str,
+    },
+    PathNotUtf8(String),
+    NoRoot,
+    CwdUnusable(String),
+    Worktree(WorktreeError),
+    NoDaemon(PathBuf),
+    DaemonUnreachable(ClientError),
+    Denied {
+        rel: String,
+        conflicts: Vec<Conflict>,
+    },
+    Queued {
+        rel: String,
+    },
+    Refused {
+        rel: String,
+        message: String,
+    },
+    Failed {
+        rel: String,
+        message: String,
+    },
+    UnexpectedReply,
+}
 
-    fn block(message: String) -> Self {
-        Self {
-            allow: false,
+impl Outcome {
+    fn verdict(self) -> Verdict {
+        let block = |message: String| Verdict {
+            exit: EXIT_BLOCK,
             message,
+        };
+        match self {
+            Self::Covered
+            | Self::Granted
+            | Self::OutsideWorktree
+            | Self::IgnoredPath
+            | Self::NotAnEditTool => Verdict {
+                exit: EXIT_ALLOW,
+                message: String::new(),
+            },
+            Self::UnreadableInput(why) => block(format!(
+                "tessel hook: cannot read the hook input ({why}); blocking the edit rather than \
+                 letting it through unclaimed\n"
+            )),
+            Self::MissingPath { tool, key } => block(format!(
+                "tessel hook: {tool} came without `{key}`; blocking the edit\n"
+            )),
+            Self::PathNotUtf8(raw) => block(format!(
+                "tessel hook: {} names a path that is not valid UTF-8, which cannot be claimed; \
+                 blocking the edit\n",
+                escape(&raw)
+            )),
+            Self::NoRoot => block(
+                "tessel hook: this hook does not know which worktree it guards (no `--root` and \
+                 no $CLAUDE_PROJECT_DIR); blocking the edit. Run `tessel hook install` again in \
+                 the worktree.\n"
+                    .to_string(),
+            ),
+            Self::CwdUnusable(cwd) => block(format!(
+                "tessel hook: the working directory {} is not usable, so the edited path cannot \
+                 be resolved; blocking the edit\n",
+                escape(&cwd)
+            )),
+            Self::Worktree(e) => block(format!(
+                "tessel hook: cannot set up the guarded worktree ({}); blocking the edit rather \
+                 than letting it through unclaimed. If the worktree moved, run `tessel hook \
+                 install` again in it.\n",
+                one_line(&e.to_string())
+            )),
+            Self::NoDaemon(sock) => block(format!(
+                "tessel: no daemon is running for this worktree (nothing listens on {}), so edits \
+                 cannot be claimed. Run `tessel start \"<what you are about to do>\"` and \
+                 retry.\n",
+                escape(&sock.display().to_string())
+            )),
+            Self::DaemonUnreachable(e) => block(format!("tessel: cannot reach the daemon: {e}\n")),
+            Self::Denied { rel, conflicts } => {
+                let hint = format!("tessel claim {} --wait", escape(&rel));
+                block(format!(
+                    "tessel: cannot edit {}; another agent holds it.\n{}",
+                    escape(&rel),
+                    denial_text(&conflicts, &hint)
+                ))
+            }
+            Self::Queued { rel } => block(format!(
+                "tessel: {} is queued behind another agent; wait for the grant in `tessel inbox`\n",
+                escape(&rel)
+            )),
+            Self::Refused { rel, message } => block(format!(
+                "tessel: could not claim {}.\n{}",
+                escape(&rel),
+                quote_untrusted("the coordinator", &message)
+            )),
+            Self::Failed { rel, message } => block(format!(
+                "tessel: could not claim {}: {}\n",
+                escape(&rel),
+                one_line(&message)
+            )),
+            Self::UnexpectedReply => {
+                block("tessel: the daemon answered with something unexpected\n".to_string())
+            }
         }
     }
 }
@@ -51,104 +161,96 @@ struct HookInput {
     cwd: Option<String>,
 }
 
-/// Decides one `PreToolUse` event. `stdin` is the hook JSON; `process_cwd` is used when the
-/// event carries no `cwd`.
-pub async fn pre_edit(stdin: &str, process_cwd: &Path) -> Verdict {
-    let input: HookInput = match serde_json::from_str(stdin) {
+/// Decides one `PreToolUse` event. `stdin` is the hook JSON as read from standard input;
+/// `process_cwd` is used when the event carries no `cwd`. `root` is the guarded worktree: whether
+/// an edit is inside it is decided from the edited file's resolved path, never from the cwd.
+pub async fn pre_edit(
+    stdin: std::io::Result<Vec<u8>>,
+    process_cwd: &Path,
+    root: Option<&Path>,
+) -> Verdict {
+    decide(stdin, process_cwd, root).await.verdict()
+}
+
+async fn decide(
+    stdin: std::io::Result<Vec<u8>>,
+    process_cwd: &Path,
+    root: Option<&Path>,
+) -> Outcome {
+    let bytes = match stdin {
+        Ok(bytes) => bytes,
+        Err(e) => return Outcome::UnreadableInput(e.to_string()),
+    };
+    let input: HookInput = match serde_json::from_slice(&bytes) {
         Ok(input) => input,
-        Err(e) => {
-            return Verdict::block(format!(
-                "tessel hook: cannot read the hook input ({e}); blocking the edit rather than \
-                 letting it through unclaimed\n"
-            ))
-        }
+        Err(e) => return Outcome::UnreadableInput(e.to_string()),
     };
     let key = match input.tool_name.as_str() {
         "Edit" | "MultiEdit" | "Write" => "file_path",
         "NotebookEdit" => "notebook_path",
-        _ => return Verdict::allow(),
+        _ => return Outcome::NotAnEditTool,
     };
     let Some(raw) = input.tool_input.get(key).and_then(Value::as_str) else {
-        return Verdict::block(format!(
-            "tessel hook: {} came without `{key}`; blocking the edit\n",
-            input.tool_name
-        ));
+        return Outcome::MissingPath {
+            tool: input.tool_name,
+            key,
+        };
     };
     let cwd = input
         .cwd
         .map_or_else(|| process_cwd.to_path_buf(), Into::into);
-    let Ok(worktree) = Worktree::discover(&cwd) else {
-        return Verdict::allow();
+    let Some(root) = root else {
+        return Outcome::NoRoot;
     };
+    let worktree = match Worktree::discover(root) {
+        Ok(worktree) => worktree,
+        Err(e) => return Outcome::Worktree(e),
+    };
+    if Path::new(raw).is_relative() && !(cwd.is_absolute() && cwd.is_dir()) {
+        return Outcome::CwdUnusable(cwd.display().to_string());
+    }
     let rel = match locate(&worktree.root, &cwd, raw) {
         Located::Inside(rel) => rel,
-        Located::Outside => return Verdict::allow(),
-        Located::NotUtf8 => {
-            return Verdict::block(format!(
-                "tessel hook: {} names a path that is not valid UTF-8, which cannot be claimed; \
-                 blocking the edit\n",
-                escape(raw)
-            ));
-        }
+        Located::Outside => return Outcome::OutsideWorktree,
+        Located::NotUtf8 => return Outcome::PathNotUtf8(raw.to_string()),
     };
     let internal = |dir: &str| rel == dir || rel.starts_with(&format!("{dir}/"));
     if internal(".tessel") || internal(".git") {
-        return Verdict::allow();
+        return Outcome::IgnoredPath;
     }
     let create = !worktree.root.join(&rel).exists();
-    claim_file(&worktree, &rel, create).await
+    claim_file(&worktree, rel, create).await
 }
 
-async fn claim_file(worktree: &Worktree, rel: &str, create: bool) -> Verdict {
+async fn claim_file(worktree: &Worktree, rel: String, create: bool) -> Outcome {
     let request = Request::Ensure {
-        path: rel.to_string(),
+        path: rel.clone(),
         create,
     };
     let reply = match rpc::call(&worktree.sock(), &request, HOOK_TIMEOUT).await {
         Ok(reply) => reply,
-        Err(ClientError::NotRunning) => {
-            return Verdict::block(
-                "tessel: no daemon is running for this worktree, so edits cannot be claimed. \
-                 Run `tessel start \"<what you are about to do>\"` and retry.\n"
-                    .to_string(),
-            )
-        }
-        Err(e) => return Verdict::block(format!("tessel: cannot reach the daemon: {e}\n")),
+        Err(ClientError::NotRunning) => return Outcome::NoDaemon(worktree.sock()),
+        Err(e) => return Outcome::DaemonUnreachable(e),
     };
     match reply {
         Reply::Claim {
-            outcome: ClaimOutcome::Granted { .. } | ClaimOutcome::Covered,
-        } => Verdict::allow(),
+            outcome: ClaimOutcome::Granted { .. },
+        } => Outcome::Granted,
+        Reply::Claim {
+            outcome: ClaimOutcome::Covered,
+        } => Outcome::Covered,
         Reply::Claim {
             outcome: ClaimOutcome::Denied { conflicts },
-        } => {
-            let hint = format!("tessel claim {} --wait", escape(rel));
-            Verdict::block(format!(
-                "tessel: cannot edit {}; another agent holds it.\n{}",
-                escape(rel),
-                denial_text(&conflicts, &hint)
-            ))
-        }
+        } => Outcome::Denied { rel, conflicts },
         Reply::Claim {
             outcome: ClaimOutcome::Queued { .. },
-        } => Verdict::block(format!(
-            "tessel: {} is queued behind another agent; wait for the grant in `tessel inbox`\n",
-            escape(rel)
-        )),
+        } => Outcome::Queued { rel },
         Reply::Claim {
             outcome: ClaimOutcome::Refused { message, .. },
-        } => Verdict::block(format!(
-            "tessel: could not claim {}.\n{}",
-            escape(rel),
-            quote_untrusted("the coordinator", &message)
-        )),
-        Reply::Failed { message } => Verdict::block(format!(
-            "tessel: could not claim {}: {}\n",
-            escape(rel),
-            one_line(&message)
-        )),
+        } => Outcome::Refused { rel, message },
+        Reply::Failed { message } => Outcome::Failed { rel, message },
         Reply::Status { .. } | Reply::Released { .. } | Reply::Stopping { .. } => {
-            Verdict::block("tessel: the daemon answered with something unexpected\n".to_string())
+            Outcome::UnexpectedReply
         }
     }
 }
@@ -191,9 +293,16 @@ pub fn install(worktree: &Worktree, exe: &Path) -> Result<Installed, InstallErro
             })
         }
     };
+    let (Some(exe), Some(root)) = (exe.to_str(), worktree.root.to_str()) else {
+        return Err(InstallError::Shape {
+            path: shown,
+            reason: "the tessel binary or the worktree path is not valid UTF-8".into(),
+        });
+    };
     let command = format!(
-        "{} {HOOK_SUBCOMMAND}",
-        shell_quote(&exe.display().to_string())
+        "{} {HOOK_SUBCOMMAND} --root {}",
+        shell_quote(exe),
+        shell_quote(root)
     );
     let shape = |reason: &str| InstallError::Shape {
         path: shown.clone(),
@@ -237,7 +346,7 @@ fn merge_entry(doc: &mut Value, command: &str) -> Result<Installed, &'static str
             let ours = hook
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(|c| c.contains("tessel") && c.trim_end().ends_with(HOOK_SUBCOMMAND));
+                .is_some_and(is_our_command);
             if !ours {
                 continue;
             }
@@ -261,6 +370,13 @@ fn merge_entry(doc: &mut Value, command: &str) -> Result<Installed, &'static str
         "hooks": [{ "type": "command", "command": command }],
     }));
     Ok(Installed::Added)
+}
+
+/// Our hook, in the old form (`<exe> hook pre-edit`) or the current one (`... --root <dir>`).
+fn is_our_command(command: &str) -> bool {
+    command
+        .find(HOOK_SUBCOMMAND)
+        .is_some_and(|at| command[..at].contains("tessel"))
 }
 
 fn shell_quote(text: &str) -> String {
@@ -297,6 +413,19 @@ mod tests {
         assert_eq!(doc, once);
         assert_eq!(doc["permissions"]["allow"][0], "Bash(ls)");
         assert_eq!(doc["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn merge_upgrades_an_old_entry_without_root_in_place() {
+        let mut doc = json!({});
+        merge_entry(&mut doc, "/bin/tessel hook pre-edit").unwrap();
+        let new = "/bin/tessel hook pre-edit --root /work/a";
+        assert_eq!(merge_entry(&mut doc, new), Ok(Installed::Updated));
+        assert_eq!(doc["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(1));
+        assert_eq!(doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"], new);
+        assert_eq!(merge_entry(&mut doc, new), Ok(Installed::AlreadyPresent));
+        let moved = "/bin/tessel hook pre-edit --root /work/b";
+        assert_eq!(merge_entry(&mut doc, moved), Ok(Installed::Updated));
     }
 
     #[test]

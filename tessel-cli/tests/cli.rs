@@ -8,6 +8,7 @@
 
 mod support;
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -65,6 +66,14 @@ fn claim_ids(agent: &Agent) -> Result<Vec<u64>> {
 fn run(seen: &mut String, agent: &Agent, args: &[&str]) -> Result<()> {
     seen.push_str(&agent.tessel(args)?.all());
     Ok(())
+}
+
+fn socket_of(agent: &Agent) -> Result<std::path::PathBuf> {
+    let status = agent.status()?;
+    let socket = status["state"]["socket"]
+        .as_str()
+        .context("state.json names no socket")?;
+    Ok(std::path::PathBuf::from(socket))
 }
 
 fn alive(pid: u64) -> bool {
@@ -263,10 +272,11 @@ async fn stop_releases_claims_closes_the_socket_and_ends_the_daemon() -> Result<
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     let pid = a1.status()?["state"]["pid"].as_u64().context("no pid")?;
     assert!(alive(pid));
+    assert!(socket_of(&a1)?.exists());
 
     let stopped = a1.tessel(&["stop"])?;
     assert_eq!(stopped.code, 0, "{}", stopped.all());
-    assert!(!a1.root().join(".tessel/sock").exists());
+    assert!(!socket_of(&a1)?.exists());
     assert!(!a1.root().join(".tessel/daemon.pid").exists());
     eventually(SHORT, || Ok((!alive(pid)).then_some(()))).await?;
     assert!(a1.tessel(&["status"])?.stdout.contains("not running"));
@@ -676,6 +686,378 @@ async fn the_hook_refuses_input_it_cannot_read() -> Result<()> {
     Ok(())
 }
 
+const DEEP: &str = "a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-long-dir/\
+                    a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-long-dir";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worktree_too_deep_for_the_old_socket_path_works_end_to_end() -> Result<()> {
+    let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    let a1 = Agent::nested(&fake, "a1", TOK1, DEEP)?;
+    assert!(
+        a1.root().join(".tessel/sock").as_os_str().len() > 100,
+        "the worktree is not deep enough to break the old scheme"
+    );
+    a1.start("deep worktree")?;
+    let socket = socket_of(&a1)?;
+    assert!(socket.as_os_str().len() <= 100, "{}", socket.display());
+    assert!(!socket.starts_with(a1.root()), "{}", socket.display());
+    let done = a1.hook("Edit", "file_path", "src/a.rs")?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(a1.held_claims()?, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_worktrees_get_different_sockets() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a1.start("one")?;
+    a2.start("two")?;
+    let (one, two) = (socket_of(&a1)?, socket_of(&a2)?);
+    assert_ne!(one, two);
+    assert_eq!(one.parent(), two.parent());
+    Ok(())
+}
+
+/// A runtime directory whose path is so long that no socket fits under it.
+fn too_long_runtime_dir() -> Result<tempfile::TempDir> {
+    let base = tempfile::tempdir()?;
+    std::fs::create_dir_all(base.path().join("x".repeat(100)))?;
+    Ok(base)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_socket_path_that_cannot_fit_stops_start_and_blocks_the_hook() -> Result<()> {
+    let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    let base = too_long_runtime_dir()?;
+    let long = base.path().join("x".repeat(100));
+    let a1 =
+        Agent::new(&fake, "a1", TOK1)?.with_env("XDG_RUNTIME_DIR", &long.display().to_string());
+    let started = a1.tessel(&["start", "never"])?;
+    assert_eq!(started.code, 1, "{}", started.all());
+    assert!(started.stderr.contains("too long"), "{}", started.stderr);
+    let done = a1.hook("Edit", "file_path", "src/a.rs")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("too long"), "{}", done.stderr);
+    assert!(done.stderr.contains("blocking the edit"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_socket_directory_with_the_wrong_mode_is_refused_by_start_and_the_hook() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    let runtime = tempfile::tempdir()?;
+    let a1 = Agent::new(&fake, "a1", TOK1)?
+        .with_env("XDG_RUNTIME_DIR", &runtime.path().display().to_string());
+    assert_eq!(a1.tessel(&["status"])?.code, 0);
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(runtime.path())? {
+        let path = entry?.path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    let [dir] = dirs.as_slice() else {
+        anyhow::bail!("expected one socket directory, found {dirs:?}");
+    };
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
+
+    let started = a1.tessel(&["start", "never"])?;
+    assert_eq!(started.code, 1, "{}", started.all());
+    assert!(started.stderr.contains("755"), "{}", started.stderr);
+    let done = a1.hook("Edit", "file_path", "src/a.rs")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("755"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_when_the_configuration_is_invalid_or_unreadable() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let (_fake, a1, _a2) = world(30_000).await?;
+    let config = a1.root().join(".tessel/config.toml");
+    std::fs::create_dir_all(a1.root().join(".tessel"))?;
+
+    std::fs::write(&config, "this is = = not toml")?;
+    let started = a1.tessel(&["start", "never"])?;
+    assert_eq!(started.code, 1, "{}", started.all());
+    let done = a1.hook("Edit", "file_path", "src/a.rs")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("tessel start"), "{}", done.stderr);
+
+    std::fs::write(&config, "")?;
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000))?;
+    let started = a1.tessel(&["start", "never"])?;
+    let done = a1.hook("Write", "file_path", "src/new.rs")?;
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
+    assert_eq!(started.code, 1, "{}", started.all());
+    assert_eq!(done.code, 2, "{}", done.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_input_that_is_not_utf8() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    let done =
+        a1.tessel_with_stdin_bytes(&["hook", "pre-edit"], b"{\"tool_name\":\"Edit\",\xff\xfe}")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("blocking the edit"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_when_the_daemon_answers_wrongly() -> Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("to find the socket")?;
+    let socket = socket_of(&a1)?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    let server = std::thread::spawn(move || -> Result<()> {
+        for reply in [
+            "{\"reply\":\"released\",\"claims\":[]}",
+            "this is not json",
+            "{\"reply\":\"failed\",\"message\":\"boom\"}",
+            "{\"reply\":\"claim\",\"outcome\":{\"outcome\":\"queued\",\"position\":2}}",
+        ] {
+            let (mut stream, _) = listener.accept()?;
+            let mut line = String::new();
+            BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+            stream.write_all(format!("{reply}\n").as_bytes())?;
+        }
+        Ok(())
+    });
+    let unexpected = a1.hook("Edit", "file_path", "src/a.rs")?;
+    let unreadable = a1.hook("Edit", "file_path", "src/a.rs")?;
+    let failed = a1.hook("Edit", "file_path", "src/a.rs")?;
+    let queued = a1.hook("Edit", "file_path", "src/a.rs")?;
+    server
+        .join()
+        .map_err(|_| anyhow::anyhow!("server panicked"))??;
+    std::fs::remove_file(&socket)?;
+    assert_eq!(unexpected.code, 2, "{}", unexpected.all());
+    assert!(
+        unexpected.stderr.contains("unexpected"),
+        "{}",
+        unexpected.stderr
+    );
+    assert_eq!(queued.code, 2, "{}", queued.all());
+    assert!(
+        queued.stderr.contains("is queued behind"),
+        "{}",
+        queued.stderr
+    );
+    assert_eq!(failed.code, 2, "{}", failed.all());
+    assert!(failed.stderr.contains("boom"), "{}", failed.stderr);
+    assert_eq!(unreadable.code, 2, "{}", unreadable.all());
+    assert!(
+        unreadable.stderr.contains("unreadable"),
+        "{}",
+        unreadable.stderr
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_when_it_cannot_read_standard_input() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    let root = a1.root().display().to_string();
+    let done = a1.tessel_with_unreadable_stdin(&["hook", "pre-edit", "--root", &root])?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("blocking the edit"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_when_the_process_has_no_working_directory() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    let root = a1.root().display().to_string();
+    let event = serde_json::json!({
+        "tool_name": "Edit",
+        "tool_input": { "file_path": "src/a.rs" },
+        "cwd": a1.root(),
+    });
+    let done =
+        a1.tessel_in_deleted_cwd(&["hook", "pre-edit", "--root", &root], &event.to_string())?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_a_path_whose_name_cannot_be_claimed() -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("odd names")?;
+    let target = std::ffi::OsStr::from_bytes(b"src/\xff.rs");
+    std::os::unix::fs::symlink(target, a1.root().join("link.rs"))?;
+    let done = a1.hook("Edit", "file_path", "link.rs")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("not valid UTF-8"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_an_agent_that_is_queued() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a1.start("holder")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("waiter")?;
+    let queued = a2.tessel(&["claim", "src/a.rs", "--wait"])?;
+    assert_eq!(queued.code, 4, "{}", queued.all());
+    let done = a2.hook("Edit", "file_path", "src/b.rs")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("queued"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_working_directory_never_lets_an_edit_inside_the_worktree_through() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a1.start("holder")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("intruder")?;
+    let root = a2.root();
+    let root_arg = root.display().to_string();
+    let inside = root.join("src/a.rs").display().to_string();
+    let elsewhere = tempfile::tempdir()?;
+    let other_repo = tempfile::tempdir()?;
+    git(other_repo.path(), &["init", "-q"])?;
+    let nested = root.join("nested/deeper");
+    std::fs::create_dir_all(&nested)?;
+    git(&nested, &["init", "-q"])?;
+    let missing = root.join("does-not-exist");
+
+    let cases = [
+        (
+            "a cwd that is not a repository",
+            elsewhere.path(),
+            inside.as_str(),
+        ),
+        (
+            "a cwd in another repository",
+            other_repo.path(),
+            inside.as_str(),
+        ),
+        ("a missing cwd", missing.as_path(), inside.as_str()),
+        ("a nested repository", nested.as_path(), "../../src/a.rs"),
+    ];
+    for (label, cwd, path) in cases {
+        let done = a2.hook_at("Edit", "file_path", path, cwd, &["--root", &root_arg])?;
+        assert_eq!(done.code, 2, "{label}: {}", done.all());
+        assert!(
+            done.stderr.contains("a1"),
+            "{label} was not denied: {}",
+            done.stderr
+        );
+    }
+    assert_eq!(a2.held_claims()?, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relative_path_needs_a_usable_working_directory() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("relative")?;
+    let root_arg = a1.root().display().to_string();
+    let missing = a1.root().join("does-not-exist");
+    for cwd in [missing.as_path(), Path::new("relative/dir")] {
+        let done = a1.hook_at("Edit", "file_path", "src/a.rs", cwd, &["--root", &root_arg])?;
+        assert_eq!(done.code, 2, "{}", done.all());
+        assert!(done.stderr.contains("not usable"), "{}", done.stderr);
+    }
+    assert_eq!(a1.held_claims()?, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_without_a_root_blocks_unless_claude_names_the_project() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("holder")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("intruder")?;
+    let bare = a2.hook_at("Edit", "file_path", "src/a.rs", &a2.root(), &[])?;
+    assert_eq!(bare.code, 2, "{}", bare.all());
+    assert!(bare.stderr.contains("hook install"), "{}", bare.stderr);
+    // Tools that are not edits need no root.
+    let read = a2.hook_at("Read", "file_path", "src/a.rs", &a2.root(), &[])?;
+    assert_eq!(read.code, 0, "{}", read.all());
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tessel"));
+    let event = serde_json::json!({
+        "tool_name": "Edit",
+        "tool_input": { "file_path": "src/a.rs" },
+        "cwd": a2.root(),
+    });
+    command
+        .args(["hook", "pre-edit"])
+        .current_dir(a2.root())
+        .env("CLAUDE_PROJECT_DIR", a2.root())
+        .env("TESSEL_COORDINATOR", &fake.url)
+        .env("TESSEL_REPO", "demo")
+        .env("TESSEL_AGENT", "a2")
+        .env("TESSEL_TOKEN", TOK2)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    std::io::Write::write_all(
+        &mut child.stdin.take().context("no stdin")?,
+        event.to_string().as_bytes(),
+    )?;
+    let output = child.wait_with_output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("a1"), "{stderr}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hook_install_upgrades_an_old_entry_to_pin_the_root() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    let settings = a1.root().join(".claude/settings.local.json");
+    std::fs::create_dir_all(settings.parent().context("no parent")?)?;
+    let old = serde_json::json!({"hooks": {"PreToolUse": [{
+        "matcher": "Edit",
+        "hooks": [{"type": "command",
+                   "command": format!("{} hook pre-edit", env!("CARGO_BIN_EXE_tessel"))}]
+    }]}});
+    std::fs::write(&settings, old.to_string())?;
+    let done = a1.tessel(&["hook", "install"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.stdout.contains("updated"), "{}", done.stdout);
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&settings)?)?;
+    let entries = doc["hooks"]["PreToolUse"].as_array().context("no hooks")?;
+    assert_eq!(entries.len(), 1);
+    let command = entries[0]["hooks"][0]["command"]
+        .as_str()
+        .context("no command")?;
+    assert!(
+        command.ends_with(&format!("hook pre-edit --root {}", a1.root().display())),
+        "{command}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_reads_a_state_file_written_before_the_socket_was_recorded() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("old state")?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    let path = a1.root().join(".tessel/state.json");
+    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    state
+        .as_object_mut()
+        .context("state is not an object")?
+        .remove("socket")
+        .context("state had no socket")?;
+    std::fs::write(&path, state.to_string())?;
+    let done = a1.tessel(&["status", "--json"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let parsed: Value = serde_json::from_str(&done.stdout)?;
+    assert_eq!(parsed["state"]["agent"], "a1");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parallel_hooks_for_one_file_make_one_claim() -> Result<()> {
     let (_fake, a1, _a2) = world(30_000).await?;
@@ -721,7 +1103,13 @@ async fn hook_install_merges_and_is_idempotent() -> Result<()> {
     let command = entries[0]["hooks"][0]["command"]
         .as_str()
         .context("no command")?;
-    assert!(command.ends_with("tessel hook pre-edit"), "{command}");
+    assert!(
+        command.ends_with(&format!(
+            "tessel hook pre-edit --root {}",
+            a1.root().display()
+        )),
+        "{command}"
+    );
     assert_eq!(entries[0]["matcher"], "Edit|MultiEdit|Write|NotebookEdit");
     Ok(())
 }

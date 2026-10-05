@@ -185,6 +185,7 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         summary: args.summary,
         task_ref: args.task_ref,
         base,
+        socket: sock.display().to_string(),
         connection: Connection::Connecting,
         lease_ms: None,
         last_error: None,
