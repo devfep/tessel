@@ -1,0 +1,4 @@
+intent: merge DOGFOOD-4: orchestrator joins production REVIEWERS, mirror.sh mirrors tessel-dogfood to GitHub artifacts-trunk (create once, then fast-forward only), BUILD-PROTOCOL.md describes the steward flow
+assumes: wrangler artifacts repos delete exists as documented (help output checked by lane and reviewer)
+rejected: a reviewer field on ReviewDecided (protocol frozen; proposed to Felix); the note carries who approved meanwhile
+evidence: review Yes after one fix pass. Merged tree: only docs, tools/mirror.sh, wrangler.toml changed (cargo test 745 on the branch); shellcheck and shfmt clean; mirror harnesses 7/7 plus reviewer's extended cases, 9 of 9 mutants killed. Late claims: wrangler.toml, tools/mirror.sh, docs/BUILD-PROTOCOL.md, README.md were not claimed through Tessel. Not live yet: coordinator deploy (refused by the session's permission classifier, handed to Felix), mirror run, repo delete.
