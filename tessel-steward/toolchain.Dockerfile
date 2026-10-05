@@ -29,8 +29,9 @@ RUN cargo chef cook --tests --workspace --locked --recipe-path /recipe.json \
 	&& cargo fetch --locked
 
 FROM node:22.23.3-trixie-slim
+# procps provides /bin/kill, which the CLI's tests use to probe their daemons.
 RUN apt-get update \
-	&& apt-get install --yes --no-install-recommends ca-certificates git gcc libc6-dev \
+	&& apt-get install --yes --no-install-recommends ca-certificates git gcc libc6-dev procps \
 	&& rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/rustup /usr/local/rustup
 COPY --from=builder /usr/local/cargo /usr/local/cargo

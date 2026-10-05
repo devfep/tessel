@@ -8,11 +8,13 @@ export const PACKAGE_JSON_INVALID_EXIT_CODE = 5;
 /**
  * Script for `node -e`, run in the repo root: exits 0 when `package.json` declares no
  * dependencies of any kind, 3 when it declares any, 4 when it is missing and 5 when it is not
- * a JSON object. A key that is present but neither an empty object nor an empty array counts
+ * a JSON object. The built-in module is not `require`d: from Node 22.23.3 on, `require` reads the
+ * nearest `package.json` first, so an unparsable one would end the script with exit 1 before any
+ * check ran. A key that is present but neither an empty object nor an empty array counts
  * as declaring dependencies, because the repo is not in a shape this runner supports.
  */
 export const DEPENDENCY_CHECK_SCRIPT = `
-const fs = require("fs");
+const fs = process.getBuiltinModule("fs");
 const keys = [
   "dependencies",
   "devDependencies",
