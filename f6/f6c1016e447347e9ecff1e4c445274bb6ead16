@@ -1,0 +1,5 @@
+intent: the A7 mutant (settled removed) survived; add a unit test of settled
+assumes: none
+rejected: none
+evidence: see mutant rerun
+dogfood: agent harness-1, claim 30
