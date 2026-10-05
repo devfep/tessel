@@ -1,0 +1,4 @@
+intent: property compares the live lock table with one rebuilt from claims; expire collects due claims with retain; document that the clock advances on errors
+assumes: BTreeMap::retain visits keys in order
+rejected: none
+evidence: cargo test 78 passed, clippy 0 hits in coordinator.rs, rustfmt clean, wasm 10 warnings, m02 and reversed-announcement mutants caught
