@@ -1,0 +1,4 @@
+intent: fix pass 1 - property covers Wait and Amend, monotonic clock_ms, reject lease_ms 0, no unreachable lookups
+assumes: callers pass now_ms from possibly different clocks (alarm vs message); the core clamps to the latest seen
+rejected: checking tests with lock-table node counts (misses leftover holders); a second claim lookup after authorize (unreachable branch)
+evidence: cargo test 78 passed x5 runs, clippy 0 hits in coordinator.rs, rustfmt clean, wasm 10 warnings, 6 mutants each caught
