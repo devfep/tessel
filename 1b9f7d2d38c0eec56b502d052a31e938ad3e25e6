@@ -1,0 +1,4 @@
+intent: fix bind_on_welcome dropping the verified agent, align the name rule across Rust and TS, test the identity route handler, add deny.toml
+assumes: none
+rejected: none
+evidence: cargo test 232 passed; pnpm test 163 passed; cargo deny check licenses exit 0; mutants fail the new tests
