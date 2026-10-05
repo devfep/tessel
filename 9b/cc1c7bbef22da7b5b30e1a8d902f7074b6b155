@@ -1,0 +1,4 @@
+intent: peakMemoryBytes comes from a file the gate's own code can write: clamp it to the instance memory (named table beside the instance list), document it as untrusted and never a pass/fail input; delete the cgroup memory.peak read, which found no file, and keep the legacy value null
+assumes: none
+rejected: renaming the field (the orchestrator's probe reads it); a root-owned file (durable_object processes keep root's capabilities)
+evidence: steward vitest 549 pass, typecheck, oxlint, oxfmt clean; clamp test and legacy-null test added
