@@ -104,6 +104,11 @@ describe("TailBuffer", () => {
     });
   });
 
+  it("skips at most three continuation bytes, as no UTF-8 sequence has more", () => {
+    const bytes = Uint8Array.of(0x41, 0x80, 0x80, 0x80, 0x80, 0x80);
+    expect(tailOf(5, bytes)).toEqual({ text: "\uFFFD\uFFFD", truncated: true });
+  });
+
   it("rejects a limit that is not a positive integer", () => {
     expect(() => new TailBuffer(0)).toThrow("positive integer");
     expect(() => new TailBuffer(1.5)).toThrow("positive integer");
