@@ -1,0 +1,5 @@
+intent: wrap every line over 100 characters in files this task touched (data strings via concat!)
+assumes: src/shell.rs:1 and :387 are not this task's lines and stay as they are
+rejected: none
+evidence: awk length>100 clean over touched files; swarm tests 64 passed; clippy -D warnings and fmt clean
+dogfood: agent harness-1, claim 33, fence 58
