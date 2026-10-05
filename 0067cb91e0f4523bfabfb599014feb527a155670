@@ -1,0 +1,4 @@
+intent: leases, heartbeat, expiry, Amend and the Wait queue in the pure coordinator core (COORD-2)
+assumes: caller persists state and Log effects before delivering Reply/Notify; waiters never expire; Queued has no protocol event so nothing is logged
+rejected: re-running the walk until a fixpoint after grants (a grant only adds locks, so one FIFO pass suffices); removing then re-placing locks per amend instead of an incremental slot offset (simpler, same result)
+evidence: cargo test 73 passed (50 before + 23 new), clippy 0 hits in coordinator.rs, rustfmt clean, wasm build 10 warnings, 5 mutants each caught
