@@ -1,0 +1,4 @@
+intent: wrap the pure coordinator core in a Durable Object shell with persist-before-send
+assumes: input gates keep other events out while a storage op is pending; KV transaction() is atomic on SQLite-backed DOs
+rejected: SQL API (atomicity only implicit, no transactionSync binding in worker 0.8.7); put_multiple (128-key cap)
+evidence: cargo test 107 pass; clippy 0 hits in lib/shell; wrangler dev runs (a)-(g) pass; 4 mutants, 3 caught, send-before-persist not caught
