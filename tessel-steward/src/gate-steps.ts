@@ -80,6 +80,24 @@ export async function runWithinBudget(
   return last;
 }
 
+const RSS_LINE_PATTERN = /^[0-9]{1,12}$/;
+
+/**
+ * Parses the file `/usr/bin/time -f %M -a -o` appends to: one line of kilobytes of maximum
+ * resident set per command, which covers the command's child processes. Other lines (GNU time
+ * also notes a non-zero exit) and anything repo code wrote are ignored. Returns the largest, in
+ * bytes, or null when no line is a plain number.
+ */
+export function parsePeakRss(text: string): number | null {
+  let peakKilobytes: number | null = null;
+  for (const line of text.split("\n")) {
+    if (RSS_LINE_PATTERN.test(line)) {
+      peakKilobytes = Math.max(peakKilobytes ?? 0, Number(line));
+    }
+  }
+  return peakKilobytes === null ? null : peakKilobytes * 1024;
+}
+
 const PEAK_MEMORY_PATTERN = /^[0-9]{1,15}\n?$/;
 
 /**

@@ -3,6 +3,7 @@ import type { GatePlan } from "./gate-plan";
 import {
   installCommands,
   parsePeakMemory,
+  parsePeakRss,
   runWithinBudget,
   testCommands,
   type PlannedCommand,
@@ -105,6 +106,10 @@ export async function runStep(
   );
 }
 
+/** GNU `time` (installed in the toolchain image) appends each command's max RSS in KB here. */
+export const RSS_FILE = "/tmp/tessel-peak-rss";
+export const TIME_PREFIX = ["/usr/bin/time", "-f", "%M", "-a", "-o", RSS_FILE] as const;
+
 /**
  * The environment of the toolchain image (`toolchain.Dockerfile`), repeated for every command of
  * a configured gate so that it does not depend on how `exec` treats the image's own. A test pins
@@ -148,20 +153,29 @@ function stepFromCaptured(step: StepOutcome["step"], captured: Captured): StepOu
   );
 }
 
+/** Where a step's peak memory is read from: the cgroup (legacy) or GNU time's file (configured). */
+type MemorySource = "cgroup" | "rss";
+
 /**
- * Peak memory of the whole container since it started, from the cgroup. Best effort: null when
- * the file is missing or unreadable, because a measurement must never fail a run.
+ * Peak memory of the test step. A configured gate wraps each command in GNU `time` and reports
+ * the largest max RSS of any process; a legacy gate reads the cgroup's `memory.peak`, which the
+ * container may not expose. Best effort: null when unreadable, because a measurement must never
+ * fail a run.
  */
-async function readPeakMemory(container: Container): Promise<number | null> {
+async function readPeakMemory(container: Container, source: MemorySource): Promise<number | null> {
+  const file = source === "rss" ? RSS_FILE : MEMORY_PEAK_FILE;
   try {
     const read = await execCaptured(
       container,
       "memory",
       MEMORY_PEAK_TIMEOUT_SECONDS,
-      ["cat", MEMORY_PEAK_FILE],
+      ["cat", file],
       {},
     );
-    return read.exitCode === 0 ? parsePeakMemory(read.stdout) : null;
+    if (read.exitCode !== 0) {
+      return null;
+    }
+    return source === "rss" ? parsePeakRss(read.stdout) : parsePeakMemory(read.stdout);
   } catch (error) {
     console.warn(
       JSON.stringify({
@@ -173,15 +187,17 @@ async function readPeakMemory(container: Container): Promise<number | null> {
   }
 }
 
-/** Adds the wall time of `run` and the container's peak memory to the outcome it returns. */
+/** Adds the wall time of `run` and its peak memory to the outcome it returns. */
 async function measured(
   container: Container,
+  source: MemorySource,
   run: () => Promise<StepOutcome>,
 ): Promise<StepOutcome> {
   const started = Date.now();
   const outcome = await run();
   const wallMs = Date.now() - started;
-  return { ...outcome, measurement: { wallMs, peakMemoryBytes: await readPeakMemory(container) } };
+  const peakMemoryBytes = await readPeakMemory(container, source);
+  return { ...outcome, measurement: { wallMs, peakMemoryBytes } };
 }
 
 function runConfigured(
@@ -194,11 +210,17 @@ function runConfigured(
     commands,
     budgetSeconds,
     (command, timeoutSeconds) =>
-      execCaptured(container, step, String(timeoutSeconds), command.argv, {
-        cwd: directory(command.dir),
-        env: TOOLCHAIN_ENV,
-        user: TOOLCHAIN_USER,
-      }),
+      execCaptured(
+        container,
+        step,
+        String(timeoutSeconds),
+        step === "test" ? [...TIME_PREFIX, ...command.argv] : command.argv,
+        {
+          cwd: directory(command.dir),
+          env: TOOLCHAIN_ENV,
+          user: TOOLCHAIN_USER,
+        },
+      ),
     Date.now,
   );
 }
@@ -209,7 +231,7 @@ async function runConfiguredStep(
   step: "install" | "test",
 ): Promise<StepOutcome> {
   if (step === "test") {
-    return measured(container, async () =>
+    return measured(container, "rss", async () =>
       stepFromCaptured(
         "test",
         await runConfigured(container, "test", testCommands(config), STEP_SECONDS.test),
@@ -231,7 +253,7 @@ async function runConfiguredStep(
 
 async function runLegacyStep(container: Container, step: "install" | "test"): Promise<StepOutcome> {
   if (step === "test") {
-    return measured(container, () =>
+    return measured(container, "cgroup", () =>
       runStep(container, "test", String(STEP_SECONDS.test - KILL_AFTER_SECONDS), ["npm", "test"], {
         cwd: WORKSPACE,
       }),
