@@ -5,8 +5,10 @@ import {
   commitExistsCommand,
   conflictsCommand,
   fetchForkCommand,
+  forkHeadCommand,
   headCommand,
   mergeBaseCommand,
+  onMainCommand,
   parseNulSeparated,
   pushCommand,
   rebaseCommand,
@@ -20,7 +22,13 @@ import {
   uncoveredPaths,
   type ClaimedScope,
 } from "./merge-coverage";
-import { parseSha, type GitResult, type MergeOutcome, type Sha } from "./merge-types";
+import {
+  parseSha,
+  type GitResult,
+  type MergeOutcome,
+  type Sha,
+  type TrialOutcome,
+} from "./merge-types";
 import { runInstallThenTest, runStepThenRevoke, type StepOutcome } from "./run-steps";
 
 /** The one update the write token may be used for: main from `base` to `head`. */
@@ -29,8 +37,11 @@ export interface PushUpdate {
   head: Sha;
 }
 
-/** Everything `runMerge` needs from the outside world: the sandbox, the tokens and main. */
-export interface MergeDeps {
+/**
+ * What a trial needs from the outside world: the sandbox and the read tokens. It has no way to
+ * push and no way to mint a write token, so `runTrial` cannot do either.
+ */
+export interface TrialDeps {
   sources: MergeSources;
   /** Runs one git command in the sandbox. */
   run(command: GitCommand): Promise<GitResult>;
@@ -38,6 +49,10 @@ export interface MergeDeps {
   revokeReadTokens(): Promise<boolean>;
   /** Runs the dependency check ("install") or `npm test` ("test"); no write token is live. */
   runPackageStep(step: "install" | "test"): Promise<StepOutcome>;
+}
+
+/** Everything `runMerge` needs from the outside world: a trial's boundaries, plus main. */
+export interface MergeDeps extends TrialDeps {
   /**
    * Mints the write token for main, lets `use` push exactly `update`, and revokes the token when
    * `use` ends, whether it returned or threw. Called only after the tests passed.
@@ -53,6 +68,9 @@ interface Rebased {
   head: Sha;
 }
 
+type VerifyFailure = Extract<MergeOutcome, { outcome: "commit_not_in_fork" | "git_failed" }>;
+type RebaseFailure = Extract<MergeOutcome, { outcome: "conflict" | "git_failed" }>;
+
 function shaOf(result: GitResult): Sha | undefined {
   return result.exitCode === 0 ? parseSha(result.stdout.trim()) : undefined;
 }
@@ -61,7 +79,7 @@ function asCloneStep(result: GitResult): StepOutcome {
   return { step: "clone", ...result, passed: false };
 }
 
-async function fetchSources(deps: MergeDeps): Promise<StepOutcome> {
+async function fetchSources(deps: TrialDeps): Promise<StepOutcome> {
   const clone = await deps.run(cloneCommand(deps.sources));
   if (clone.exitCode !== 0) {
     return asCloneStep(clone);
@@ -70,7 +88,7 @@ async function fetchSources(deps: MergeDeps): Promise<StepOutcome> {
 }
 
 /** Checks that the commit exists in the fetched fork and is reachable from its default branch. */
-async function verifyCommit(deps: MergeDeps, commit: Sha): Promise<MergeOutcome | undefined> {
+async function verifyCommit(deps: TrialDeps, commit: Sha): Promise<VerifyFailure | undefined> {
   const { sources } = deps;
   const exists = await deps.run(commitExistsCommand(sources.workspace, commit));
   if (exists.exitCode === 1) {
@@ -87,10 +105,10 @@ async function verifyCommit(deps: MergeDeps, commit: Sha): Promise<MergeOutcome 
 }
 
 async function rebaseOntoMain(
-  deps: MergeDeps,
+  deps: TrialDeps,
   base: Sha,
   commit: Sha,
-): Promise<Rebased | MergeOutcome> {
+): Promise<Rebased | RebaseFailure> {
   const { workspace } = deps.sources;
   const mergeBaseResult = await deps.run(mergeBaseCommand(workspace, base, commit));
   const mergeBase = shaOf(mergeBaseResult);
@@ -221,4 +239,82 @@ export async function runMerge(
     return { outcome: "tests_failed", base, head, result: tested };
   }
   return pushToMain(deps, base, head);
+}
+
+/** Resolves the head of the fork's default branch as fetched, or says why it could not. */
+async function forkHead(deps: TrialDeps): Promise<Sha | TrialOutcome> {
+  const result = await deps.run(forkHeadCommand(deps.sources));
+  return shaOf(result) ?? { outcome: "git_failed", result };
+}
+
+/** Checks that `main` is a commit on main's history, so a trial is against a real state of main. */
+async function pinMain(deps: TrialDeps, main: Sha): Promise<TrialOutcome | undefined> {
+  const onMain = await deps.run(onMainCommand(deps.sources.workspace, main));
+  return onMain.exitCode === 0 ? undefined : { outcome: "git_failed", result: onMain };
+}
+
+/**
+ * Tries a fork's commit on main as it was at `main`: the steps of `runMerge` up to and including
+ * the tests, and nothing after them. It does not push, does not touch the write token (`deps`
+ * cannot) and does not check coverage: it verifies, it does not merge.
+ *
+ * Order, which the tests pin:
+ * 1. Clone main and fetch the fork with read tokens, then revoke both before anything else runs.
+ * 2. Check that `main` is on main's history.
+ * 3. Take `commit`, or the head of the fork's default branch if there is none, and verify it is
+ *    reachable from that branch.
+ * 4. Rebase `merge-base..commit` onto `main` with the fixed committer, as a merge does.
+ * 5. Run the dependency check and the tests.
+ *
+ * @param deps The sandbox and read-token boundaries.
+ * @param main The sha of main to try the commit on.
+ * @param commit The commit to try, or `undefined` for the fork's head.
+ * @returns The outcome. Which outcomes are evidence is documented on `TrialOutcome`.
+ * @throws If a read token cannot be revoked, or a boundary throws.
+ */
+export async function runTrial(
+  deps: TrialDeps,
+  main: Sha,
+  commit: Sha | undefined,
+): Promise<TrialOutcome> {
+  const fetched = await runStepThenRevoke(() => fetchSources(deps), deps.revokeReadTokens);
+  if (fetched.exitCode !== 0) {
+    return { outcome: "clone", result: fetched };
+  }
+  const unpinned = await pinMain(deps, main);
+  if (unpinned !== undefined) {
+    return unpinned;
+  }
+  const tried = commit ?? (await forkHead(deps));
+  if (typeof tried !== "string") {
+    return tried;
+  }
+  const unverified = await verifyCommit(deps, tried);
+  if (unverified !== undefined) {
+    return unverified;
+  }
+  const rebased = await rebaseOntoMain(deps, main, tried);
+  switch (rebased.outcome) {
+    case "conflict":
+      return { ...rebased, commit: tried };
+    case "git_failed":
+      return rebased;
+    case "rebased":
+      return testRebased(deps, rebased, tried);
+  }
+}
+
+async function testRebased(deps: TrialDeps, rebased: Rebased, commit: Sha): Promise<TrialOutcome> {
+  const { base, head } = rebased;
+  if (head === base) {
+    return { outcome: "nothing_to_test", base, commit };
+  }
+  const tested = await runInstallThenTest((step) => deps.runPackageStep(step));
+  if (tested.step === "install") {
+    return { outcome: "install", base, head, commit, result: tested };
+  }
+  if (!tested.passed) {
+    return { outcome: "tests_failed", base, head, commit, result: tested };
+  }
+  return { outcome: "clean", base, head, commit };
 }

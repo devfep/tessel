@@ -5,7 +5,7 @@ import {
   runPackageStep,
 } from "./container-step";
 import { MAIN_BRANCH, NETWORK_TIMEOUT_SECONDS, type GitCommand } from "./merge-commands";
-import { runMerge, type MergeDeps } from "./merge-steps";
+import { runMerge, runTrial, type MergeDeps, type TrialDeps } from "./merge-steps";
 import {
   isForkOf,
   isSafeBranchName,
@@ -14,6 +14,8 @@ import {
   type MergeOutcome,
   type MergeRequest,
   type Sha,
+  type TrialOutcome,
+  type TrialRequest,
 } from "./merge-types";
 import { redactTokens } from "./redact";
 import { revokeOnce } from "./revoke-once";
@@ -50,6 +52,23 @@ export function redactOutcome(outcome: MergeOutcome): MergeOutcome {
   }
 }
 
+/** Redacts Artifacts tokens from every stream of the trial outcome before it leaves the Worker. */
+export function redactTrialOutcome(outcome: TrialOutcome): TrialOutcome {
+  switch (outcome.outcome) {
+    case "tests_failed":
+    case "install":
+    case "clone":
+      return { ...outcome, result: redactOutput(outcome.result) };
+    case "git_failed":
+      return { ...outcome, result: redactOutput(outcome.result) };
+    case "clean":
+    case "conflict":
+    case "nothing_to_test":
+    case "commit_not_in_fork":
+      return outcome;
+  }
+}
+
 function reportRevokeFailure(repo: string, tokenId: string): (reason: string) => void {
   return (reason) =>
     console.error(
@@ -62,46 +81,46 @@ function reportRevokeFailure(repo: string, tokenId: string): (reason: string) =>
     );
 }
 
+/** What a run inside the sandbox is given: the boundaries of a trial, and the pieces a push needs. */
+interface Sandbox {
+  deps: TrialDeps;
+  container: Container;
+  main: ArtifactsRepo;
+  mainRemote: string;
+  host: string;
+}
+
 /**
- * Merges the fork's commit into main inside the DO's container. See `runMerge` for the order of
- * steps and `MergeOutcome` for the results.
- *
- * The sandbox has no Internet and no credentials. Read tokens live in `MergeReadGateway` until
- * the fetch ends. The write token is minted by `withPushAccess` after the tests passed, lives
- * in `MergePushGateway` for the one push, and is revoked straight after. Call this on a Durable
- * Object instance with a new random name for each merge.
- *
- * Known limit: the repo's tests run as the same user as the rest of the container, so a process
- * they detach (setsid, nohup) can outlive `timeout` and still run when the write token is minted.
- * It cannot use the token: the token is held by `MergePushGateway`, which forwards only the one
- * pinned update, and the outcome is decided by a read of main made by the Worker, not by the
- * sandbox. Isolating the tests under another uid is not built.
+ * Starts the sandbox for `forkName` of `repo`, calls `use`, and always tears it down. Read tokens
+ * for main and the fork are minted first and live in `MergeReadGateway` until the fetch ends.
+ * The sandbox has no Internet and no credentials.
  *
  * @throws If the fork is not a fork of `repo`, a repo is missing, the container cannot start,
  *   or a read token could not be revoked (no repo code runs in that case).
  */
-export async function executeMerge(
+async function withSandbox<T>(
   ctx: DurableObjectState,
   env: Env,
   repo: string,
-  request: MergeRequest,
-): Promise<MergeOutcome> {
+  forkName: string,
+  use: (sandbox: Sandbox) => Promise<T>,
+): Promise<T> {
   const container = ctx.container;
   if (!container) {
     throw new Error("The container binding is not configured");
   }
   using main = await env.ARTIFACTS.get(repo);
-  using fork = await env.ARTIFACTS.get(request.fork);
+  using fork = await env.ARTIFACTS.get(forkName);
   const [mainInfo, forkInfo] = await Promise.all([main.info(), fork.info()]);
   if (!isForkOf(repo, forkInfo)) {
-    throw new Error(`${request.fork} is not a fork of ${repo}`);
+    throw new Error(`${forkName} is not a fork of ${repo}`);
   }
   if (!isSafeBranchName(forkInfo.defaultBranch)) {
-    throw new Error(`${request.fork} has an unusable default branch name`);
+    throw new Error(`${forkName} has an unusable default branch name`);
   }
   const host = new URL(mainInfo.remote).hostname;
   if (new URL(forkInfo.remote).hostname !== host) {
-    throw new Error(`${repo} and ${request.fork} are not on the same git host`);
+    throw new Error(`${repo} and ${forkName} are not on the same git host`);
   }
   const image = container.images["tests"];
   if (image === undefined) {
@@ -117,7 +136,7 @@ export async function executeMerge(
     const routes: Array<{ remote: string; token: string }> = [];
     for (const [handle, remote, name] of [
       [main, mainInfo.remote, repo],
-      [fork, forkInfo.remote, request.fork],
+      [fork, forkInfo.remote, forkName],
     ] as const) {
       const token = await handle.createToken("read", READ_TOKEN_TTL_SECONDS);
       revokers.push(
@@ -131,7 +150,7 @@ export async function executeMerge(
     );
     container.start({ image, enableInternet: false });
 
-    const deps: MergeDeps = {
+    const deps: TrialDeps = {
       sources: {
         workspace: WORKSPACE,
         mainRemote: mainInfo.remote,
@@ -141,35 +160,90 @@ export async function executeMerge(
       run: (command) => runGit(container, command),
       revokeReadTokens,
       runPackageStep: async (step) => redactOutput(await runPackageStep(container, step)),
-      withPushAccess: async (update, use) => {
-        const token = await main.createToken("write", WRITE_TOKEN_TTL_SECONDS);
-        const revoke = revokeOnce(
-          () => main.revokeToken(token.id),
-          reportRevokeFailure(repo, token.id),
-        );
-        try {
-          const gateway = ctx.exports.MergePushGateway({
-            props: {
-              remote: mainInfo.remote,
-              ref: `refs/heads/${MAIN_BRANCH}`,
-              old: update.base,
-              new: update.head,
-              token: token.plaintext,
-            },
-          });
-          await container.interceptOutboundHttps(host, gateway);
-          return await use();
-        } finally {
-          await revoke();
-        }
-      },
-      currentMain: () => readMainHead(main),
     };
-    return redactOutcome(await runMerge(deps, request.commit, request.scopes));
+    return await use({ deps, container, main, mainRemote: mainInfo.remote, host });
   } finally {
     await destroyContainer(container, repo);
     await revokeReadTokens();
   }
+}
+
+/**
+ * Merges the fork's commit into main inside the DO's container. See `runMerge` for the order of
+ * steps and `MergeOutcome` for the results.
+ *
+ * The write token is minted by `withPushAccess` after the tests passed, lives in
+ * `MergePushGateway` for the one push, and is revoked straight after. Call this on a Durable
+ * Object instance with a new random name for each merge. See `withSandbox` for the rest.
+ *
+ * Known limit: the repo's tests run as the same user as the rest of the container, so a process
+ * they detach (setsid, nohup) can outlive `timeout` and still run when the write token is minted.
+ * It cannot use the token: the token is held by `MergePushGateway`, which forwards only the one
+ * pinned update, and the outcome is decided by a read of main made by the Worker, not by the
+ * sandbox. Isolating the tests under another uid is not built.
+ *
+ * @throws As `withSandbox` does.
+ */
+export async function executeMerge(
+  ctx: DurableObjectState,
+  env: Env,
+  repo: string,
+  request: MergeRequest,
+): Promise<MergeOutcome> {
+  return withSandbox(
+    ctx,
+    env,
+    repo,
+    request.fork,
+    async ({ deps, container, main, mainRemote, host }) => {
+      const mergeDeps: MergeDeps = {
+        ...deps,
+        withPushAccess: async (update, use) => {
+          const token = await main.createToken("write", WRITE_TOKEN_TTL_SECONDS);
+          const revoke = revokeOnce(
+            () => main.revokeToken(token.id),
+            reportRevokeFailure(repo, token.id),
+          );
+          try {
+            const gateway = ctx.exports.MergePushGateway({
+              props: {
+                remote: mainRemote,
+                ref: `refs/heads/${MAIN_BRANCH}`,
+                old: update.base,
+                new: update.head,
+                token: token.plaintext,
+              },
+            });
+            await container.interceptOutboundHttps(host, gateway);
+            return await use();
+          } finally {
+            await revoke();
+          }
+        },
+        currentMain: () => readMainHead(main),
+      };
+      return redactOutcome(await runMerge(mergeDeps, request.commit, request.scopes));
+    },
+  );
+}
+
+/**
+ * Tries the fork's commit on main at `request.main` inside the DO's container and tests it. See
+ * `runTrial` for the steps and `TrialOutcome` for the results. Nothing is pushed and no write
+ * token is created: this function never calls `createToken("write")`, and the deps it passes
+ * have no way to. Call this on a Durable Object instance with a new random name for each trial.
+ *
+ * @throws As `withSandbox` does.
+ */
+export async function executeTrial(
+  ctx: DurableObjectState,
+  env: Env,
+  repo: string,
+  request: TrialRequest,
+): Promise<TrialOutcome> {
+  return withSandbox(ctx, env, repo, request.fork, async ({ deps }) =>
+    redactTrialOutcome(await runTrial(deps, request.main, request.commit)),
+  );
 }
 
 async function runGit(container: Container, command: GitCommand): Promise<GitResult> {

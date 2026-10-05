@@ -71,6 +71,22 @@ export function baseCommand(workspace: string): GitCommand {
   return local(workspace, ["rev-parse", "--verify", `refs/remotes/origin/${MAIN_BRANCH}^{commit}`]);
 }
 
+/** Stdout is the sha of the head of the fork's default branch as fetched. */
+export function forkHeadCommand(sources: MergeSources): GitCommand {
+  const { workspace, forkBranch } = sources;
+  return local(workspace, ["rev-parse", "--verify", `${forkRef(forkBranch)}^{commit}`]);
+}
+
+/** Exit 0 when `main` is a commit on main's history as cloned. */
+export function onMainCommand(workspace: string, main: Sha): GitCommand {
+  return local(workspace, [
+    "merge-base",
+    "--is-ancestor",
+    main,
+    `refs/remotes/origin/${MAIN_BRANCH}`,
+  ]);
+}
+
 /** Exit 0 when the commit object was fetched, 1 when it was not. */
 export function commitExistsCommand(workspace: string, commit: Sha): GitCommand {
   return local(workspace, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);

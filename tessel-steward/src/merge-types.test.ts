@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { isForkOf, isSafeBranchName, parseMergeRequest, parseSha } from "./merge-types";
+import {
+  isForkOf,
+  isSafeBranchName,
+  parseMergeRequest,
+  parseSha,
+  parseTrialRequest,
+} from "./merge-types";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const SCOPES = [{ scope: { kind: "dir", path: "" }, mode: "edit_body" }] as const;
@@ -77,5 +83,34 @@ describe("isSafeBranchName", () => {
 
   it.each(["", "-main", "a..b", "a b", "a;b", "a:b", "dir/", "a\nb"])("rejects %j", (name) => {
     expect(isSafeBranchName(name)).toBe(false);
+  });
+});
+
+describe("parseTrialRequest", () => {
+  it("accepts a fork, a main sha and a commit sha", () => {
+    expect(parseTrialRequest({ fork: "demo--a1", main: SHA, commit: SHA })).toEqual({
+      ok: true,
+      request: { fork: "demo--a1", main: SHA, commit: SHA },
+    });
+  });
+
+  it("accepts a request without a commit, or with a null one, as 'the fork's head'", () => {
+    const expected = { ok: true, request: { fork: "demo--a1", main: SHA } };
+    expect(parseTrialRequest({ fork: "demo--a1", main: SHA })).toEqual(expected);
+    expect(parseTrialRequest({ fork: "demo--a1", main: SHA, commit: null })).toEqual(expected);
+  });
+
+  it.each([
+    ["a missing body", null],
+    ["a string body", "x"],
+    ["a missing fork", { main: SHA }],
+    ["a fork that is not a name", { fork: "../x", main: SHA }],
+    ["a missing main", { fork: "demo--a1" }],
+    ["a main that is a ref name", { fork: "demo--a1", main: "main" }],
+    ["a commit that is a ref name", { fork: "demo--a1", main: SHA, commit: "main" }],
+    ["a commit that is an empty string", { fork: "demo--a1", main: SHA, commit: "" }],
+    ["a commit that is an option", { fork: "demo--a1", main: SHA, commit: `--${SHA}` }],
+  ])("rejects %s", (_label, body) => {
+    expect(parseTrialRequest(body)).toMatchObject({ ok: false });
   });
 });

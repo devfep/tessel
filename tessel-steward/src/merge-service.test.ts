@@ -20,6 +20,7 @@ function build(
   merge = vi.fn(),
   artifacts?: { get: () => Promise<never> },
 ) {
+  const trial = vi.fn();
   const env = {
     ARTIFACTS: artifacts ?? {
       get: async (name: string) => {
@@ -32,16 +33,83 @@ function build(
         };
       },
     },
-    TEST_RUNNER: { getByName: () => ({ merge }) },
+    TEST_RUNNER: { getByName: () => ({ merge, trial }) },
   } as unknown as Env;
   const Service = MergeService as unknown as new (ctx: unknown, env: Env) => MergeService;
-  return { service: new Service({}, env), merge };
+  return { service: new Service({}, env), merge, trial };
 }
 
 function post(body: unknown): Request {
   const text = typeof body === "string" ? body : JSON.stringify(body);
   return new Request("https://steward.internal/merge", { method: "POST", body: text });
 }
+
+function postTrial(body: unknown): Request {
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  return new Request("https://steward.internal/trial", { method: "POST", body: text });
+}
+
+describe("MergeService /trial", () => {
+  const MAIN = "c".repeat(40);
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("runs a trial of the fork's commit on the given main, and never a merge", async () => {
+    const outcome = { outcome: "clean", base: MAIN, head: COMMIT, commit: COMMIT };
+    const { service, merge, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
+    trial.mockResolvedValue(outcome);
+    const response = await service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", main: MAIN, commit: COMMIT }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(outcome);
+    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, COMMIT);
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it("passes no commit when the request names none, so the steward reads the fork's head", async () => {
+    const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
+    trial.mockResolvedValue({ outcome: "commit_not_in_fork" });
+    await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", main: MAIN }));
+    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, undefined);
+  });
+
+  it("refuses a fork that is not a fork of the repo without running a trial", async () => {
+    const { service, trial } = build({ "other--a1": "artifacts:tessel/other" });
+    const response = await service.fetch(
+      postTrial({ repo: "demo", fork: "other--a1", main: MAIN, commit: COMMIT }),
+    );
+    expect(response.status).toBe(400);
+    expect(trial).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a body that is not JSON", "not json"],
+    ["a body without a main", { repo: "demo", fork: "demo--a1", commit: COMMIT }],
+    ["a main that is a ref", { repo: "demo", fork: "demo--a1", main: "main" }],
+    ["a commit that is not a sha", { repo: "demo", fork: "demo--a1", main: MAIN, commit: "x" }],
+  ])("answers 400 for %s", async (_label, body) => {
+    const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
+    expect((await service.fetch(postTrial(body))).status).toBe(400);
+    expect(trial).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 for a missing fork, and 502 with a fixed message when the trial throws", async () => {
+    const missing = build({});
+    const gone = await missing.service.fetch(
+      postTrial({ repo: "demo", fork: "demo--ghost", main: MAIN }),
+    );
+    expect(gone.status).toBe(404);
+
+    const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
+    trial.mockRejectedValue(new Error("boom art_v1_secret"));
+    const response = await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", main: MAIN }));
+    expect(response.status).toBe(502);
+    expect(JSON.stringify(await response.json())).not.toContain("secret");
+  });
+});
 
 describe("MergeService", () => {
   beforeEach(() => {
@@ -50,13 +118,14 @@ describe("MergeService", () => {
 
   it("merges the fork's commit and returns the outcome as JSON", async () => {
     const merge = vi.fn(async () => ({ outcome: "already_merged", base: COMMIT }));
-    const { service } = build({ "demo--a1": "artifacts:tessel/demo" }, merge);
+    const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" }, merge);
     const response = await service.fetch(
       post({ repo: "demo", fork: "demo--a1", commit: COMMIT, scopes: SCOPES }),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: "already_merged", base: COMMIT });
     expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES);
+    expect(trial).not.toHaveBeenCalled();
   });
 
   it("refuses a fork that is not a fork of the repo without merging", async () => {

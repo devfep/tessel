@@ -54,6 +54,45 @@ export function parseMergeRequest(body: unknown): ParsedMergeRequest {
 }
 
 /**
+ * A request to try `commit` of `fork` on top of main as it was at `main`, without merging it.
+ * Without `commit` the trial uses the head of the fork's default branch, and the outcome says
+ * which commit that was.
+ */
+export interface TrialRequest {
+  fork: string;
+  main: Sha;
+  commit?: Sha;
+}
+
+export type ParsedTrialRequest = { ok: true; request: TrialRequest } | { ok: false; error: string };
+
+/**
+ * Validates `{ "fork": <repo name>, "main": <sha>, "commit"?: <sha> }`. A `commit` that is present
+ * must be a sha: it is never taken to mean "the fork's head".
+ */
+export function parseTrialRequest(body: unknown): ParsedTrialRequest {
+  if (typeof body !== "object" || body === null) {
+    return { ok: false, error: 'expected a JSON object {"fork", "main", "commit"?}' };
+  }
+  const { fork, main, commit } = body as { fork?: unknown; main?: unknown; commit?: unknown };
+  if (typeof fork !== "string" || !isValidName(fork)) {
+    return { ok: false, error: "fork must be a repo name" };
+  }
+  const mainSha = parseSha(main);
+  if (mainSha === undefined) {
+    return { ok: false, error: "main must be 40 lowercase hex characters" };
+  }
+  if (commit === undefined || commit === null) {
+    return { ok: true, request: { fork, main: mainSha } };
+  }
+  const commitSha = parseSha(commit);
+  if (commitSha === undefined) {
+    return { ok: false, error: "commit must be 40 lowercase hex characters when present" };
+  }
+  return { ok: true, request: { fork, main: mainSha, commit: commitSha } };
+}
+
+/**
  * Whether `info` describes a fork of the Artifacts repo `repo`. An imported repo, a non-fork and
  * a fork of any other repo are not. The namespace in `source` is not compared: both repos come
  * from this Worker's one ARTIFACTS binding.
@@ -119,3 +158,34 @@ export type MergeOutcome =
   | { outcome: "git_failed"; result: GitResult }
   | { outcome: "install"; base: Sha; head: Sha; result: StepOutcome }
   | { outcome: "push_failed"; base: Sha; head: Sha; result: GitResult };
+
+/**
+ * The result of one trial: `commit` replayed onto main at `base`, tested, and nothing else. A
+ * trial never pushes and never has a write token. Exactly one variant. `commit` is the commit that
+ * was tried: the request's, or the fork's head when the request named none.
+ *
+ * Evidence (CLAUDE.md rule 7):
+ * - `clean`: the rebased `head` passed the repo's own `npm test`.
+ * - `conflict`: replaying the commit onto `base` stopped with these files unmerged.
+ * - `tests_failed`: the repo's tests ran on the rebased `head` and did not exit 0. Exit code 124
+ *   or 137 means it timed out or was killed, which is not a failing assertion.
+ *
+ * Not evidence about the code, but true statements about this attempt:
+ * - `nothing_to_test`: replaying the commit left main unchanged, so the commit adds nothing to
+ *   test. Running main's own tests here would blame the commit for main.
+ * - `commit_not_in_fork`: the commit is not reachable from the fork's default branch.
+ *
+ * Infrastructure (the attempt did not finish): `clone`, `git_failed` (including a `main` that is
+ * not on main's history) and `install`.
+ *
+ * `stdout`/`stderr` in any `result` come from the repo or from git and are untrusted data.
+ */
+export type TrialOutcome =
+  | { outcome: "clean"; base: Sha; head: Sha; commit: Sha }
+  | { outcome: "conflict"; base: Sha; commit: Sha; files: string[] }
+  | { outcome: "tests_failed"; base: Sha; head: Sha; commit: Sha; result: StepOutcome }
+  | { outcome: "nothing_to_test"; base: Sha; commit: Sha }
+  | { outcome: "commit_not_in_fork" }
+  | { outcome: "clone"; result: StepOutcome }
+  | { outcome: "git_failed"; result: GitResult }
+  | { outcome: "install"; base: Sha; head: Sha; commit: Sha; result: StepOutcome };

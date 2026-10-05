@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { NETWORK_TIMEOUT_SECONDS } from "./merge-commands";
-import { executeMerge, redactOutcome } from "./merge-executor";
-import { parseSha, type MergeOutcome, type Sha } from "./merge-types";
+import { executeMerge, executeTrial, redactOutcome, redactTrialOutcome } from "./merge-executor";
+import { parseSha, type MergeOutcome, type Sha, type TrialOutcome } from "./merge-types";
 
 function sha(character: string): Sha {
   const parsed = parseSha(character.repeat(40));
@@ -16,6 +16,8 @@ const BASE = sha("1");
 const MERGE_BASE = sha("2");
 const COMMIT = sha("3");
 const HEAD = sha("4");
+const MAIN_AT_TRIAL = sha("6");
+const FORK_HEAD = sha("7");
 const encoder = new TextEncoder();
 
 interface World {
@@ -42,6 +44,7 @@ function textStream(text: string): ReadableStream<Uint8Array> {
 function respond(argv: string[], world: World): { exitCode: number; stdout: string } {
   const text = argv.join(" ");
   const answers: Array<[string, { exitCode: number; stdout: string }]> = [
+    ["fork/main^{commit}", { exitCode: 0, stdout: `${FORK_HEAD}\n` }],
     ["origin/main^{commit}", { exitCode: 0, stdout: `${BASE}\n` }],
     ["--name-status", { exitCode: 0, stdout: world.changed }],
     ["merge-base --is-ancestor", { exitCode: 0, stdout: "" }],
@@ -126,13 +129,14 @@ function build(overrides: Partial<World> = {}) {
       };
     },
   };
+  const pushGateway = vi.fn(() => ({ name: "push-gateway" }));
   const exportsStub = {
     MergeReadGateway: () => ({ name: "read-gateway" }),
-    MergePushGateway: () => ({ name: "push-gateway" }),
+    MergePushGateway: pushGateway,
   };
   const ctx = { container, exports: exportsStub } as unknown as DurableObjectState;
   const env = { ARTIFACTS: { get: async (name: string) => repo(name) } } as unknown as Env;
-  return { ctx, env, events, world, ttls };
+  return { ctx, env, events, world, ttls, pushGateway };
 }
 
 const request = {
@@ -264,6 +268,99 @@ describe("executeMerge", () => {
       expected: BASE,
       actual: racer,
     });
+  });
+});
+
+describe("executeTrial", () => {
+  const trialRequest = { fork: "demo--a1", main: MAIN_AT_TRIAL, commit: COMMIT };
+
+  it("tests the commit on the given main and tears the sandbox down", async () => {
+    const { ctx, env, events } = build();
+    const outcome = await executeTrial(ctx, env, "demo", trialRequest);
+
+    expect(outcome).toEqual({ outcome: "clean", base: MAIN_AT_TRIAL, head: HEAD, commit: COMMIT });
+    expect(events.at(-1)).toBe("destroy");
+    expect(events.filter((event) => event.startsWith("mint read"))).toHaveLength(2);
+    expect(events).toContain("revoke demo-read");
+    expect(events).toContain("revoke demo--a1-read");
+  });
+
+  it("never mints a write token, installs the push gateway or pushes, whatever the tests say", async () => {
+    for (const testExit of [0, 1, 124]) {
+      const { ctx, env, events, pushGateway } = build({ testExit });
+      await executeTrial(ctx, env, "demo", trialRequest);
+      expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
+      expect(events.some((event) => event.includes(" push "))).toBe(false);
+      expect(events).not.toContain("intercept push-gateway");
+      expect(pushGateway).not.toHaveBeenCalled();
+    }
+  });
+
+  it("classifies failing tests as tests_failed, not as a merge result", async () => {
+    const { ctx, env } = build({ testExit: 1 });
+    expect(await executeTrial(ctx, env, "demo", trialRequest)).toMatchObject({
+      outcome: "tests_failed",
+      base: MAIN_AT_TRIAL,
+      commit: COMMIT,
+    });
+  });
+
+  it("does not check coverage: a change to any file is tried", async () => {
+    const { ctx, env, events } = build({ changed: "A\0docs/new.md\0" });
+    expect(await executeTrial(ctx, env, "demo", trialRequest)).toMatchObject({
+      outcome: "clean",
+    });
+    expect(events.some((event) => event.includes("--name-status"))).toBe(false);
+  });
+
+  it("names the fork's head as the commit when the request names none", async () => {
+    const { ctx, env } = build();
+    const outcome = await executeTrial(ctx, env, "demo", { fork: "demo--a1", main: MAIN_AT_TRIAL });
+    expect(outcome).toMatchObject({ outcome: "clean", commit: FORK_HEAD });
+  });
+
+  it("refuses a repo that is not a fork of the main repo before creating any token", async () => {
+    for (const forkSource of [null, "github:owner/demo", "artifacts:tessel/other"]) {
+      const { ctx, env, events } = build({ forkSource });
+      await expect(executeTrial(ctx, env, "demo", trialRequest)).rejects.toThrow("not a fork");
+      expect(events).toEqual([]);
+    }
+  });
+
+  it("redacts tokens that the repo's tests print", async () => {
+    const { ctx, env } = build({ testExit: 1, testOutput: "using art_v1_secret-demo-read now" });
+    const outcome = await executeTrial(ctx, env, "demo", trialRequest);
+    expect(JSON.stringify(outcome)).not.toContain("secret-demo-read");
+  });
+});
+
+describe("redactTrialOutcome", () => {
+  const leaked = {
+    exitCode: 1,
+    stdout: "art_v1_aaa",
+    stderr: "art_v1_bbb",
+    stdoutTruncated: false,
+    stderrTruncated: false,
+  };
+
+  it("redacts every outcome that carries output", () => {
+    const step = { ...leaked, step: "test" as const, passed: false };
+    const outcomes: TrialOutcome[] = [
+      { outcome: "git_failed", result: leaked },
+      { outcome: "tests_failed", base: BASE, head: HEAD, commit: COMMIT, result: step },
+      { outcome: "install", base: BASE, head: HEAD, commit: COMMIT, result: step },
+      { outcome: "clone", result: step },
+    ];
+    for (const outcome of outcomes) {
+      const text = JSON.stringify(redactTrialOutcome(outcome));
+      expect(text).not.toContain("aaa");
+      expect(text).not.toContain("bbb");
+    }
+  });
+
+  it("returns outcomes without output unchanged", () => {
+    const clean: TrialOutcome = { outcome: "clean", base: BASE, head: HEAD, commit: COMMIT };
+    expect(redactTrialOutcome(clean)).toBe(clean);
   });
 });
 

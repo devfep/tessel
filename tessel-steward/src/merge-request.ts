@@ -1,5 +1,5 @@
 import { INVALID_NAME_MESSAGE, isValidName } from "./identity";
-import { isForkOf, parseMergeRequest } from "./merge-types";
+import { isForkOf, parseMergeRequest, parseTrialRequest } from "./merge-types";
 
 function json(body: unknown, status: number): Response {
   return Response.json(body, { status });
@@ -25,4 +25,26 @@ export async function handleMergeRequest(env: Env, repo: string, body: unknown):
   }
   const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
   return json(await runner.merge(repo, fork, commit, scopes), 200);
+}
+
+/**
+ * Validates `{ "fork", "main", "commit"? }` for `repo`, checks that the fork is a fork of `repo`,
+ * and runs a trial in a fresh test runner: the commit (or the fork's head) tested on main at
+ * `main`, never merged. Answers 200 with the `TrialOutcome` or 400 with an error.
+ */
+export async function handleTrialRequest(env: Env, repo: string, body: unknown): Promise<Response> {
+  if (!isValidName(repo)) {
+    return json({ error: INVALID_NAME_MESSAGE }, 400);
+  }
+  const parsed = parseTrialRequest(body);
+  if (!parsed.ok) {
+    return json({ error: parsed.error }, 400);
+  }
+  const { fork, main, commit } = parsed.request;
+  using handle = await env.ARTIFACTS.get(fork);
+  if (!isForkOf(repo, await handle.info())) {
+    return json({ error: `${fork} is not a fork of ${repo}` }, 400);
+  }
+  const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
+  return json(await runner.trial(repo, fork, main, commit), 200);
 }
