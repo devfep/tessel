@@ -1,0 +1,4 @@
+intent: replace the shared COORDINATOR_TOKEN with per-agent HMAC tokens signed by the steward, verified at the upgrade, binding the socket to one agent
+assumes: Workers WebCrypto HMAC and the Rust hmac/sha2 crates agree on HMAC-SHA256 over the payload string; both sides share IDENTITY_SIGNING_KEY
+rejected: a new protocol field for the identity (protocol.rs frozen); trusting the hello agent name
+evidence: cargo test 232 passed; pnpm test 152 passed; fixed token vector asserted in Rust and vitest
