@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 03:33 EDT.
+**As of:** 2026-10-05 03:39 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` at the FIX-STEWARD merge `7de5ff3` (plus this docs commit), pushed. Pull request 1 to `main` is open.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-fix-rust | FIX-RUST | `.claude/worktrees/fix-rust` / `task-fix-rust` | reported at `222e499` (199 tests, local run a–g); holding → fix pass if any |
-| cq-fix-rust | FIX-RUST review | same worktree; live probes on port 8796 | reviewing `1e126f2..222e499` → verdict |
+| impl-fix-rust | FIX-RUST | `.claude/worktrees/fix-rust` / `task-fix-rust` | fix pass 1 (7 items) → re-check |
+| cq-fix-rust | FIX-RUST review | same worktree; live probes on port 8796 | "With fixes" on `222e499` (1 Important, 6 Minor; 24 of 25 mutants killed) → re-check |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -46,6 +46,11 @@ to Felix at FREEZE.
 13. COORD-4 fix pass: sending requires a `Persisted` token that only a completed write returns, so
    persist-before-send is enforced by the types; delivery order is a pure, tested function; a failed
    send to another socket closes that socket only; a second `Watch` on a watching socket is refused.
+14. FIX-RUST: the 1 MiB state limit refuses only growth caused by a client message; expiry-only work
+   (the alarm, a disconnect, and the expiry run after a refused message) may store up to the storage
+   cap, so a repo near the limit keeps making progress. A disconnect withdraws the agent's queued
+   request before expiry runs. The only deployed coordinator versions that ran the core (6a493efd,
+   f661b66f) had `SHADOW_ENABLED = "false"`, so no stored state holds a shadow claim.
 
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is running for the steward lane and the redeploy; stop it with `docker desktop stop` when FREEZE closes (quitting the window leaves the backend running).
