@@ -105,7 +105,18 @@ the Artifacts binding, never from a fork). Tessel's own is at the repository roo
   an admin merge may change it"). The admin route `POST /repos/<repo>/merges` may merge such a
   change: the head's file must pass the validation below (else `gate_invalid`), and a diff that
   touches only `tessel.toml` is judged by the head's file alone, with no install or tests, so a
-  broken trunk gate can be repaired. A diff that also changes code runs the trunk's gate.
+  broken trunk gate can be repaired. A diff that also changes code runs the trunk's gate. The
+  claim's scopes still have to cover `tessel.toml`.
+- **Recovery from a broken trunk gate.** A gate-only admin merge pushes **without running any
+  tests**; that is the point, and the admin takes responsibility for the file. Steps, with
+  `STEWARD_ADMIN_TOKEN` as the bearer token:
+  1. `POST /repos/tessel/forks/tessel--admin` creates a fork.
+  2. `POST /repos/tessel--admin/tokens` mints a write token for it.
+  3. Push one commit that changes only `tessel.toml` to the fork's default branch.
+  4. `POST /repos/tessel/merges` with `{"fork":"tessel--admin","commit":"<sha>","scopes":
+     [{"scope":{"kind":"file","path":"tessel.toml"},"mode":"edit_body"}]}`. The answer is
+     `merged`, or `gate_invalid` if the new file does not pass the validation above.
+  5. `POST /repos/tessel/test-runs` should answer `step: "test"` again.
 - **Allowed commands:** `pnpm test`, `npm test`, or `cargo test` with only `--workspace --locked
   --offline --no-fail-fast --all-targets --all-features --release --lib --bins --tests`. Nothing
   that can pick another toolchain, config or compiler (`+nightly`, `--config`, `-Z`,

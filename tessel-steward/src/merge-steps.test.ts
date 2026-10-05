@@ -311,6 +311,21 @@ describe("runMerge", () => {
       expect(events.some((event) => event.startsWith("mint-write"))).toBe(true);
     });
 
+    it("still enforces the claim's coverage on a diff of only tessel.toml", async () => {
+      const elsewhere: ClaimedScope[] = [
+        { scope: { kind: "dir", path: "src" }, mode: "edit_body" },
+      ];
+      const { deps, events } = harness({
+        git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0" } },
+      });
+      expect(await runMerge(deps, COMMIT, elsewhere, ADMIN)).toMatchObject({
+        outcome: "uncovered",
+        files: ["tessel.toml"],
+        total: 1,
+      });
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    });
+
     it("still enforces the claim's coverage", async () => {
       const narrow: ClaimedScope[] = [
         { scope: { kind: "file", path: "tessel.toml" }, mode: "edit_body" },
