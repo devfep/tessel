@@ -325,10 +325,17 @@ pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
 pub const MAX_DATE_MS: f64 = 8.64e15;
 
 /// The absolute time the alarm should fire, in milliseconds since the epoch, or `None` to clear
-/// it. Clamped to the largest valid `Date`. A time in the past fires at once.
-pub fn alarm_at_ms(next_expiry_ms: Option<u64>) -> Option<f64> {
-    let next = next_expiry_ms?;
+/// it. The core picks the earliest of a lease expiry and a merge dispatch. Clamped to the largest
+/// valid `Date`. A time in the past fires at once.
+pub fn alarm_at_ms(next_alarm_ms: Option<u64>) -> Option<f64> {
+    let next = next_alarm_ms?;
     Some((next as f64).min(MAX_DATE_MS))
+}
+
+/// Whether a stored in-flight merge was cut off by a restart. It was not if this instance is
+/// itself waiting on the steward: recovery must then do nothing.
+pub fn merge_cut_off(merging_here: bool, in_flight: bool) -> bool {
+    in_flight && !merging_here
 }
 
 /// Remember the first error of a series of attempts: record `result` in `slot` unless an earlier
@@ -966,6 +973,17 @@ mod tests {
         let sessions = [Session::default(), watcher.clone(), bound("a1"), watcher];
         assert_eq!(watcher_indexes(&sessions, 0), vec![1, 3]);
         assert!(watcher_indexes(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn a_stored_merge_is_cut_off_only_when_this_instance_is_not_running_it() {
+        assert!(merge_cut_off(false, true));
+        assert!(
+            !merge_cut_off(true, true),
+            "recovery is a no-op while merging"
+        );
+        assert!(!merge_cut_off(false, false));
+        assert!(!merge_cut_off(true, false));
     }
 
     #[test]

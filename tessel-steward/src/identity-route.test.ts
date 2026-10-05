@@ -6,6 +6,7 @@ import steward from "./index";
 // test-runner imports "cloudflare:workers", which only the Workers runtime provides.
 vi.mock("./test-runner", () => ({ ArtifactsGitGateway: vi.fn(), TestRunner: vi.fn() }));
 vi.mock("./merge-gateway", () => ({ MergePushGateway: vi.fn(), MergeReadGateway: vi.fn() }));
+vi.mock("./merge-service", () => ({ MergeService: vi.fn() }));
 
 const NOW_MS = 1_790_000_000_000;
 const ADMIN = "admin-token";
