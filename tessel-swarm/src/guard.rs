@@ -49,7 +49,10 @@ pub fn check_coordinator(url: &str) -> Result<()> {
         .next()
         .is_some_and(|label| label == SWARM_COORDINATOR);
     if !(local || swarm) {
-        bail!("{host} is not the swarm coordinator ({SWARM_COORDINATOR}.<account>.workers.dev) or a local dev server");
+        bail!(
+            "{host} is not the swarm coordinator ({SWARM_COORDINATOR}.<account>.workers.dev) \
+             or a local dev server"
+        );
     }
     Ok(())
 }
@@ -62,7 +65,10 @@ impl ScratchRepo {
     /// hyphen is refused because it separates a repo from an agent in fork names.
     pub fn parse(name: &str) -> Result<Self> {
         if PROTECTED.contains(&name) {
-            bail!("{name:?} is a protected repository; the swarm only targets {PREFIX}* scratch repos");
+            bail!(
+                "{name:?} is a protected repository; the swarm only targets {PREFIX}* scratch \
+                 repos"
+            );
         }
         let Some(suffix) = name.strip_prefix(PREFIX) else {
             bail!("{name:?} is not a scratch repository: the name must start with {PREFIX:?}");
@@ -150,6 +156,13 @@ mod tests {
         ] {
             assert!(check_coordinator(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn credentials_in_the_coordinator_url_are_refused_as_such() {
+        let url = "wss://user:pw@tessel-coordinator-swarm.devfep.workers.dev";
+        let message = check_coordinator(url).unwrap_err().to_string();
+        assert!(message.contains("credentials"), "{message}");
     }
 
     #[test]

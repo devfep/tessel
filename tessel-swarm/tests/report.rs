@@ -52,6 +52,7 @@ fn on_result() -> OnResult {
         rejected_in_log: 0,
         waits_in_log: 1,
         reviews_approved: 0,
+        reviews_rejected: 0,
         reviews_held: 2,
         scripted_reviewer: false,
         results: vec![TaskResult {
@@ -226,15 +227,18 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
     row("of which textual conflict", "2", "n/a");
     row("of which broke the build", "1", "n/a");
     row("of which broke the tests", "4", "n/a");
-    row("Not finished (starved, timed out, failed)", "0", "2");
+    row(
+        "Not finished (starved, timed out, failed, not run)",
+        "0",
+        "2",
+    );
     row("Landed per minute", "3.0", "12.0");
     row("Wall time (ms)", "60000", "30000");
     row("Agent-minutes of work later rejected", "0.500", "0.100");
     row("Agent-minutes of work in total", "2.000", "1.500");
     row("Held for review (not approved)", "n/a", "2");
-    assert!(cells(&table, "Approved by scripted reviewer")[2].starts_with("n/a"));
-    on.scripted_reviewer = true;
     on.reviews_approved = 5;
+    on.reviews_rejected = 1;
     let table = ab_markdown(
         &header_of(&config(), 9, 10, 0.5),
         "local",
@@ -242,5 +246,7 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
         &off,
         &on,
     );
-    assert_eq!(cells(&table, "Approved by scripted reviewer")[2], "5");
+    let approvals = "Review approvals (the only reviewer is the script)";
+    assert_eq!(cells(&table, approvals)[2], "5");
+    assert_eq!(cells(&table, "Review rejections")[2], "1");
 }

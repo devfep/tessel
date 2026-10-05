@@ -49,7 +49,8 @@ pub fn off_json(header: &Header, off: &OffResult) -> Value {
         "merges": off.merges,
         "counts": off.counts,
         "measured_agent_ms": {
-            "note": "per task: the configured work_ms plus the measured time to edit, test and commit",
+            "note": "per task: the configured work_ms plus the measured time to edit, test and \
+                     commit, from when the agent could start",
             "work_total": off.work_ms,
             "on_work_later_rejected": off.wasted_ms,
         },
@@ -69,11 +70,13 @@ pub fn on_json(header: &Header, target: &str, policy: Policy, on: &OnResult) -> 
         "rejected_in_event_log": on.rejected_in_log,
         "queued_waits_in_event_log": on.waits_in_log,
         "held_for_review_not_approved": on.reviews_held,
-        "approved_in_event_log": on.reviews_approved,
+        "review_approvals_in_event_log": on.reviews_approved,
+        "review_rejections_in_event_log": on.reviews_rejected,
         "scripted_reviewer": on.scripted_reviewer,
         "tasks": on.results,
         "measured_agent_ms": {
-            "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, summed over attempts",
+            "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, \
+                     summed over attempts",
             "work_total": on.work_ms_total,
             "on_work_later_rejected": on.wasted_ms,
             "waiting": on.waited_ms,
@@ -133,7 +136,7 @@ fn table_rows(header: &Header, off: &OffResult, on: &OnResult) -> Vec<[String; 3
         row("of which broke the build", &n(counts.build_failed), "n/a"),
         row("of which broke the tests", &n(counts.tests_failed), "n/a"),
         row(
-            "Not finished (starved, timed out, failed)",
+            "Not finished (starved, timed out, failed, not run)",
             "0",
             &unfinished.to_string(),
         ),
@@ -154,14 +157,11 @@ fn table_rows(header: &Header, off: &OffResult, on: &OnResult) -> Vec<[String; 3
         ),
         row("Held for review (not approved)", "n/a", &n(on.reviews_held)),
         row(
-            "Approved by scripted reviewer",
+            "Review approvals (the only reviewer is the script)",
             "n/a",
-            &if on.scripted_reviewer {
-                n(on.reviews_approved)
-            } else {
-                "n/a (no scripted reviewer)".to_string()
-            },
+            &n(on.reviews_approved),
         ),
+        row("Review rejections", "n/a", &n(on.reviews_rejected)),
         row("Wall time (ms)", &n(off.wall_ms), &n(on.wall_ms)),
         row(
             "Landed per minute",
@@ -198,7 +198,8 @@ fn notes(off: &OffResult, on: &OnResult) -> Vec<String> {
              for.",
             on.events.len()
         ),
-        "- `off` models `--agents` agents working at once: task i branches from the trunk after tasks \
+        "- `off` models `--agents` agents working at once: task i branches from the trunk after \
+         tasks \
          1 to i minus agents were merged, as an agent that pulls before its next task would, and \
          does not see work still in flight. Red merges are rolled back, so this harness does not \
          measure how long main stayed green."
@@ -234,8 +235,8 @@ pub fn ab_markdown(
         ),
         String::new(),
         format!(
-            "| Metric | off: no coordination, plain git, red merges rolled back, local replay | on: Tessel ({target} \
-             coordinator, policy {}) |",
+            "| Metric | off: no coordination, plain git, red merges rolled back, local replay | \
+             on: Tessel ({target} coordinator, policy {}) |",
             policy_name(policy)
         ),
         "|---|---|---|".into(),

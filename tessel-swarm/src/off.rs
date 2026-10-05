@@ -116,6 +116,12 @@ pub async fn run_off(tasks: &[Task], scratch: &Path, config: OffConfig) -> Resul
     }
     let merged = merge_all(&trunk, tasks, branches, &heads_tx, agents).await;
     drop(heads_tx);
+    if let Err(error) = merged {
+        for builder in &builders {
+            builder.abort();
+        }
+        return Err(error);
+    }
     for builder in builders {
         builder.await.context("a simulated agent panicked")??;
     }
@@ -126,9 +132,15 @@ pub async fn run_off(tasks: &[Task], scratch: &Path, config: OffConfig) -> Resul
 
 /// One agent's task: wait until the trunk has the merges it would have pulled, work, then build
 /// the branch.
-async fn build_one(job: Job, done: oneshot::Sender<Branch>) -> Result<()> {
+async fn build_one(job: Job, done: oneshot::Sender<Result<Branch>>) -> Result<()> {
+    let _ = done.send(ready_branch(job).await);
+    Ok(())
+}
+
+/// Waits for the merges this agent would have pulled, then does the work. The clock starts after
+/// the wait: idle time before an agent can start is not work, in `on` as well.
+async fn ready_branch(job: Job) -> Result<Branch> {
     let branched_after = (job.index + 1).saturating_sub(job.agents);
-    let started = Instant::now();
     let sha = {
         let mut heads = job.heads.clone();
         let guard = heads
@@ -137,12 +149,12 @@ async fn build_one(job: Job, done: oneshot::Sender<Branch>) -> Result<()> {
             .map_err(|_| anyhow!("the trunk stopped before {branched_after} was merged"))?;
         guard[branched_after].clone()
     };
+    let started = Instant::now();
     tokio::time::sleep(Duration::from_millis(job.work_ms)).await;
     let mut branch = tokio::task::spawn_blocking(move || build_branch(&job, &sha)).await??;
     branch.branched_after = branched_after;
     branch.measured_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let _ = done.send(branch);
-    Ok(())
+    Ok(branch)
 }
 
 /// Cuts a branch from `sha` in the agent's own directory, applies the task, runs the tests the
@@ -173,7 +185,7 @@ fn build_branch(job: &Job, sha: &str) -> Result<Branch> {
 async fn merge_all(
     trunk: &Git,
     tasks: &[Task],
-    branches: Vec<oneshot::Receiver<Branch>>,
+    branches: Vec<oneshot::Receiver<Result<Branch>>>,
     heads: &watch::Sender<Vec<String>>,
     agents: usize,
 ) -> Result<(Vec<(MergeRecord, String)>, Vec<u64>)> {
@@ -182,7 +194,7 @@ async fn merge_all(
     for (task, ready) in tasks.iter().zip(branches) {
         let branch = ready
             .await
-            .map_err(|_| anyhow!("{} produced no branch", task.label()))?;
+            .map_err(|_| anyhow!("{} produced no branch", task.label()))??;
         work_ms.push(branch.measured_ms);
         let (repo, id) = (trunk.clone(), task.id);
         let (record, head) =
@@ -401,6 +413,19 @@ mod tests {
         assert_eq!(
             one.counts.clean, 3,
             "an agent that pulls before each task never conflicts with itself"
+        );
+    }
+
+    #[test]
+    fn agent_work_time_leaves_out_the_wait_for_earlier_merges() {
+        let tasks = [body(1, "restock"), body(2, "taxFor"), body(3, "available")];
+        let result = run_with(&tasks, 1, 0);
+        assert_eq!(result.counts.clean, 3);
+        assert!(
+            result.work_ms < result.wall_ms,
+            "{} ms of work in a {} ms run where each agent waited for the one before",
+            result.work_ms,
+            result.wall_ms
         );
     }
 

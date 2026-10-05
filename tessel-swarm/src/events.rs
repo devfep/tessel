@@ -5,9 +5,6 @@ use std::collections::{HashMap, HashSet};
 
 use tessel_coordinator::protocol::{AgentId, ClaimId, Event, EventKind};
 
-/// The note the scripted reviewer puts on every approval, which marks the approvals as its own.
-pub const SCRIPTED_NOTE: &str = "scripted reviewer: approves every held submission";
-
 /// Counts taken from the log itself, next to what `Summary::from_events` gives.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogCounts {
@@ -15,8 +12,10 @@ pub struct LogCounts {
     pub rejected: u64,
     /// `WaitQueued` events: claims that queued behind a holder.
     pub waits: u64,
-    /// `ReviewDecided` approvals carrying `SCRIPTED_NOTE`: given by the scripted reviewer.
-    pub scripted_approvals: u64,
+    /// `ReviewDecided` events with `approve: true`.
+    pub approvals: u64,
+    /// `ReviewDecided` events with `approve: false`.
+    pub review_rejections: u64,
     /// Claims that were flagged for review and never decided.
     pub held_for_review: u64,
     /// `task_ref` of the claims that were merged, by the intent they were granted with.
@@ -52,14 +51,12 @@ pub fn count(events: &[Event]) -> LogCounts {
             EventKind::ReviewRequested { claim, .. } => {
                 requested.insert(*claim);
             }
-            EventKind::ReviewDecided {
-                claim,
-                approve,
-                note,
-            } => {
+            EventKind::ReviewDecided { claim, approve, .. } => {
                 decided.insert(*claim);
-                if *approve && note.as_deref() == Some(SCRIPTED_NOTE) {
-                    counts.scripted_approvals += 1;
+                if *approve {
+                    counts.approvals += 1;
+                } else {
+                    counts.review_rejections += 1;
                 }
             }
             EventKind::AgentConnected { .. }
@@ -149,6 +146,27 @@ mod tests {
     }
 
     #[test]
+    fn approvals_and_rejections_are_counted_apart_whatever_the_note_says() {
+        let decided = |seq, claim, approve, note: &str| {
+            event(
+                seq,
+                EventKind::ReviewDecided {
+                    claim: ClaimId(claim),
+                    approve,
+                    note: Some(note.to_string()),
+                },
+            )
+        };
+        let log = [
+            decided(0, 1, true, "anything"),
+            decided(1, 2, true, ""),
+            decided(2, 3, false, "scripted reviewer"),
+        ];
+        let counts = count(&log);
+        assert_eq!((counts.approvals, counts.review_rejections), (2, 1));
+    }
+
+    #[test]
     fn held_claims_are_the_requested_ones_nobody_decided() {
         let log = [
             event(
@@ -184,10 +202,8 @@ mod tests {
         let counts = count(&log);
         assert_eq!(counts.rejected, 1);
         assert_eq!(counts.waits, 0);
-        assert_eq!(
-            counts.scripted_approvals, 0,
-            "an approval without the script's note is not the script's"
-        );
+        assert_eq!(counts.approvals, 1);
+        assert_eq!(counts.review_rejections, 0);
         assert_eq!(counts.held_for_review, 1);
         assert_eq!(review_requested(&log[0].kind), Some(ClaimId(1)));
         assert_eq!(review_requested(&log[2].kind), None);

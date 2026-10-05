@@ -95,6 +95,10 @@ route.
 The live swarm coordinator is a separate deployment of the same code, `tessel-coordinator-swarm`,
 whose only reviewer is the script (`REVIEWERS = "swarm-reviewer"`). The production coordinator's
 reviewer stays `felix`, so the script can approve work on the swarm deployment and nowhere else.
+The swarm Worker also serves only repos named `swarm-*` (its `ALLOWED_REPO_PREFIX` var; production
+leaves it unset and serves all). The signing key is shared, so without that a `tessel-dogfood`
+token would open a socket on the swarm Worker, and a merge there would land on the dogfood trunk
+through the shared steward. Any other repo gets a 403 before the token is looked at.
 `--target live` refuses the production host `tessel-coordinator.devfep.workers.dev` by name, and any
 host that is not `tessel-coordinator-swarm.*` or a local dev server.
 

@@ -52,7 +52,8 @@ enum Mode {
 enum Target {
     /// The real coordinator core and a git steward, in this process.
     Local,
-    /// A deployed coordinator and steward. Needs --coordinator (the swarm deployment, never production), --steward and `STEWARD_ADMIN_TOKEN`.
+    /// A deployed coordinator and steward. Needs --coordinator (the swarm deployment, never
+    /// production), --steward and `STEWARD_ADMIN_TOKEN`.
     Live,
 }
 

@@ -302,7 +302,10 @@ async fn a_rejected_submission_releases_its_claim_for_the_next_agent() {
     let granted = |label: &str| {
         events
             .iter()
-            .position(|e| matches!(&e.kind, EventKind::ClaimGranted { intent, .. } if intent.summary.starts_with(label)))
+            .position(|e| match &e.kind {
+                EventKind::ClaimGranted { intent, .. } => intent.summary.starts_with(label),
+                _ => false,
+            })
             .unwrap()
     };
     let restock_claim = events.iter().find_map(|e| match &e.kind {

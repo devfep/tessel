@@ -102,9 +102,10 @@ pub struct OnResult {
     pub rejected_in_log: u64,
     /// `WaitQueued` events: claims that queued behind a holder. `Summary` has no field for them.
     pub waits_in_log: u64,
-    /// Approvals in the log that carry the scripted reviewer's note. The swarm coordinator has no
-    /// other reviewer.
+    /// Approvals in the log. The only reviewer is the script.
     pub reviews_approved: u64,
+    /// Rejections in the log.
+    pub reviews_rejected: u64,
     /// Claims flagged for review that were never decided.
     pub reviews_held: u64,
     pub scripted_reviewer: bool,
@@ -231,7 +232,8 @@ fn summarize(
         summary,
         rejected_in_log: counts.rejected,
         waits_in_log: counts.waits,
-        reviews_approved: counts.scripted_approvals,
+        reviews_approved: counts.approvals,
+        reviews_rejected: counts.review_rejections,
         reviews_held: counts.held_for_review,
         scripted_reviewer,
         work_ms_total: results.iter().map(|r| r.work_ms).sum(),
@@ -242,9 +244,9 @@ fn summarize(
     }
 }
 
-/// An agent that stops waiting leaves its submission with the coordinator, which may still decide it
-/// before the log is read. The log is the record, so a timed-out task whose claim the log shows as
-/// merged or rejected is counted as that, and the table cannot count it twice.
+/// An agent that stops waiting leaves its submission with the coordinator, which may still decide
+/// it before the log is read. The log is the record, so a timed-out task whose claim the log
+/// shows as merged or rejected is counted as that, and the table cannot count it twice.
 fn settled(results: Vec<TaskResult>, counts: &events::LogCounts) -> Vec<TaskResult> {
     let mut results = results;
     for r in results
@@ -268,8 +270,9 @@ fn settled(results: Vec<TaskResult>, counts: &events::LogCounts) -> Vec<TaskResu
     results
 }
 
-/// Approves every submission held for review, as a configured reviewer would. Only the local
-/// target starts it, and only when asked to. It ends when told to stop, so its errors surface.
+/// Approves every submission held for review. It runs on the local target and on the swarm
+/// coordinator (live included), where it is the only reviewer. It ends when told to stop, so its
+/// errors surface.
 async fn review_loop(ctx: Arc<Ctx>, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let token = ctx.endpoint.token_of(REVIEWER)?;
     let mut conn = Conn::open(&ctx.endpoint.ws_url, token).await?;
@@ -289,7 +292,7 @@ async fn review_loop(ctx: Arc<Ctx>, mut stop: tokio::sync::watch::Receiver<bool>
         };
         if decided.insert(claim) {
             let req = conn.next_req();
-            let note = Some(events::SCRIPTED_NOTE.to_string());
+            let note = Some("scripted reviewer".to_string());
             conn.send(&ClientMsg::Review {
                 req,
                 claim,

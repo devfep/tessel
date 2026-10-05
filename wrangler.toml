@@ -47,6 +47,7 @@ new_sqlite_classes = ["Coordinator"]
 RUN = "swarm"
 SHADOW_ENABLED = "false"
 REVIEWERS = "swarm-reviewer"
+ALLOWED_REPO_PREFIX = "swarm-"
 
 [[env.swarm.services]]
 binding = "STEWARD"
