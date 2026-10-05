@@ -440,6 +440,7 @@ impl Coordinator {
     /// Races, review and watch.
     fn handle_collective(msg: ClientMsg) -> Vec<Effect> {
         match msg {
+            // When OpenRace is implemented, its scopes must go through `claim_fault`.
             ClientMsg::OpenRace { req, .. } => not_implemented(Some(req), "OpenRace"),
             ClientMsg::JoinRace { req, .. } => not_implemented(Some(req), "JoinRace"),
             ClientMsg::PickWinner { req, .. } => not_implemented(Some(req), "PickWinner"),
@@ -1241,8 +1242,8 @@ fn without_duplicates(scopes: Vec<ScopeClaim>) -> Vec<ScopeClaim> {
 const MAX_SCOPES_PER_MESSAGE: usize = 256;
 
 const SCOPE_NOT_CANONICAL: &str = "a scope is not valid: paths must be repo-relative, \
-    '/'-separated, without empty, '.' or '..' segments, names must not be empty or padded with whitespace, \
-    and no part may contain a control character";
+    '/'-separated, without empty, '.' or '..' segments, names must not be empty or padded \
+    with whitespace, and no part may contain a control or text-direction character";
 
 /// Why a `Claim` is malformed beyond having no scopes: its scopes or the scopes of its intent's
 /// assumptions are refused. A fixed text that never echoes a path.
@@ -1285,15 +1286,27 @@ fn is_canonical(scope: &Scope) -> bool {
     }
 }
 
-/// A non-empty symbol name with no leading or trailing whitespace and no control character.
+/// Whether a character could hide or rewrite text when scope text is shown to an agent or a
+/// terminal: Unicode control characters (C0, DEL, C1), line and paragraph separators, and the
+/// bidirectional controls that reorder displayed text.
+fn is_display_hazard(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}'
+                | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// A non-empty symbol name with no leading or trailing whitespace and no display hazard.
 fn is_canonical_name(name: &str) -> bool {
-    !name.is_empty() && name.trim() == name && !name.chars().any(char::is_control)
+    !name.is_empty() && name.trim() == name && !name.chars().any(is_display_hazard)
 }
 
 /// A non-empty path with no leading or trailing `/`, no empty, `.` or `..` segment, no backslash
-/// and no control character (C0, DEL, C1). Scope text is shown to other agents and terminals.
+/// and no display hazard. Scope text is shown to other agents and terminals.
 fn is_canonical_path(path: &str) -> bool {
-    if path.contains('\\') || path.chars().any(char::is_control) {
+    if path.contains('\\') || path.chars().any(is_display_hazard) {
         return false;
     }
     for segment in path.split('/') {
@@ -4180,6 +4193,12 @@ mod tests {
             file("src/a\x7f.rs"),
             file("src/a\u{85}.rs"),
             file("src/a\t.rs"),
+            file("src/a\u{2028}.rs"),
+            file("src/a\u{2029}.rs"),
+            file("src/\u{202e}gnp.rs"),
+            file("src/a\u{200f}.rs"),
+            file("src/a\u{61c}.rs"),
+            file("src/a\u{2066}.rs"),
             file(""),
             dir("src/\nb"),
             dir("sr\x1bc"),
@@ -4203,6 +4222,12 @@ mod tests {
             sym("src/a.rs", "f "),
             sym("src/a.rs", "\u{a0}f"),
             sym("src/a.rs", "   "),
+            sym("src/a.rs", "f\u{2028}g"),
+            sym("src/a.rs", "f\u{2029}g"),
+            sym("src/a.rs", "f\u{202e}g"),
+            sym("src/a.rs", "f\u{200e}g"),
+            sym("src/a.rs", "f\u{61c}g"),
+            sym("src/a.rs", "f\u{2069}g"),
         ]
     }
 
@@ -4319,8 +4344,15 @@ mod tests {
         #[test]
         fn any_control_character_in_a_scope_text_is_refused(
             head in "[a-z]{0,4}",
-            control in proptest::char::range('\0', '\u{9f}')
-                .prop_filter("control", |c| c.is_control()),
+            control in prop_oneof![
+                proptest::char::range('\0', '\u{1f}'),
+                Just('\u{7f}'),
+                proptest::char::range('\u{80}', '\u{9f}'),
+                Just('\u{61c}'),
+                proptest::char::range('\u{200e}', '\u{200f}'),
+                proptest::char::range('\u{2028}', '\u{202e}'),
+                proptest::char::range('\u{2066}', '\u{2069}'),
+            ],
             tail in "[a-z]{0,4}",
         ) {
             let text = format!("{head}{control}{tail}");
