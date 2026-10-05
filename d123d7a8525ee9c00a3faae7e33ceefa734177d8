@@ -1,0 +1,4 @@
+intent: run the build hands-off with an orchestrator, Sonnet implementers and Opus reviewers, as in the pantry-app repo
+assumes: subagents follow the brief rules in docs/BUILD-PROTOCOL.md section 4
+rejected: leaving milestone pull requests for Felix to merge; he asked for the orchestrator to handle every merge
+evidence: shellcheck and shfmt clean on tools/merge-one.sh; script exercised in a throwaway repo (clean merge, conflict, frozen-file change and deletion refused with HEAD unchanged)
