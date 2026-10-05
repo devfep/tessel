@@ -4,7 +4,7 @@
 //! `Summary::from_events`; the harness adds only what the log cannot hold (wall time and the
 //! time agents spent on work that was later rejected).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
 use tessel_coordinator::protocol::{
-    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, Fence, Intent,
-    OnConflict, ScopeClaim, ServerMsg, Summary,
+    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, EventKind, Fence,
+    Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
 };
 
 use crate::conn::{read_log, Conn};
@@ -428,7 +428,7 @@ impl Step {
     }
 
     fn waited(mut self, waited_ms: u64) -> Self {
-        self.waited_ms = waited_ms;
+        self.waited_ms += waited_ms;
         self
     }
 }
@@ -540,6 +540,7 @@ async fn work_and_submit(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, held: Held) 
     if !held.shadow {
         tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
     }
+    // A shadow agent submits first and spends its work time afterwards (`finish_shadow`).
     let pushed = commit_and_push(ctx, job.work, job.agent, &after, job.task).await;
     let sha = match pushed {
         Ok(sha) => sha,
@@ -552,17 +553,96 @@ async fn work_and_submit(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, held: Held) 
             ));
         }
     };
+    if held.shadow {
+        let pushed = Pushed {
+            sha,
+            touched,
+            granted,
+        };
+        return finish_shadow(ctx, conn, &held, pushed).await;
+    }
     let work_ms = millis(granted);
-    let end = if held.shadow {
-        submit_shadow(conn, &held, &sha, touched, timeout).await?
-    } else {
-        submit_and_wait(conn, &held, &sha, touched, timeout).await?
-    };
+    let end = submit_and_wait(conn, &held, &sha, touched, timeout).await?;
     Ok(Step {
         end: End::Done(end.0, end.1),
         work_ms,
         waited_ms: 0,
     })
+}
+
+/// A shadow agent's commit, pushed to its fork, and when its claim was answered.
+struct Pushed {
+    sha: String,
+    touched: Vec<ScopeClaim>,
+    granted: Instant,
+}
+
+/// Submits the shadow work at once, so that it is on record before the work that blocked it can
+/// merge, then spends the task's work time like any agent. It then waits for the trial of its own
+/// claim before it returns: the next task force-pushes this agent's fork, and the trial needs the
+/// commit that was submitted to still be there. The wait is counted as waiting, not as work.
+async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) -> Result<Step> {
+    let timeout = ctx.config.task_timeout;
+    let Pushed {
+        sha,
+        touched,
+        granted,
+    } = pushed;
+    let (resolution, note) = submit_shadow(conn, held, &sha, touched, timeout).await?;
+    if resolution != Resolution::Shadowed {
+        let note = note.unwrap_or_default();
+        return Ok(Step::done(resolution, note, millis(granted)));
+    }
+    tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
+    let work_ms = millis(granted);
+    let waiting = Instant::now();
+    await_own_trial(conn, held.claim, timeout).await?;
+    Ok(Step {
+        end: End::Done(resolution, note),
+        work_ms,
+        waited_ms: millis(waiting),
+    })
+}
+
+/// Reads the log on the agent's own connection until the trial of `claim` is in it, no trial can
+/// run for it any more (its blocker ended unmerged, or merged before it submitted), or `limit`
+/// has passed. Whatever is still owed then stays owed and the report counts it as never verified.
+async fn await_own_trial(conn: &mut Conn, claim: ClaimId, limit: Duration) -> Result<()> {
+    conn.send(&ClientMsg::Watch { from_seq: 0 }).await?;
+    let deadline = Instant::now() + limit;
+    let mut log: BTreeMap<u64, Event> = BTreeMap::new();
+    loop {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok(());
+        };
+        let Some(msg) = conn.recv(left).await? else {
+            return Ok(());
+        };
+        let ServerMsg::Event { event } = msg else {
+            continue;
+        };
+        log.insert(event.seq, event);
+        if trial_settled(&log, claim) {
+            return Ok(());
+        }
+    }
+}
+
+/// The part of the log read so far is gap-free from seq 0, holds the claim's submission, and owes
+/// the claim nothing.
+fn trial_settled(log: &BTreeMap<u64, Event>, claim: ClaimId) -> bool {
+    let complete = log
+        .keys()
+        .next_back()
+        .is_some_and(|last| last + 1 == log.len() as u64);
+    if !complete {
+        return false;
+    }
+    let events: Vec<Event> = log.values().cloned().collect();
+    let submitted = events
+        .iter()
+        .any(|e| matches!(&e.kind, EventKind::Submitted { claim: c, .. } if *c == claim));
+    submitted && events::awaiting_verification_of(&events, claim) == 0
 }
 
 /// Brings the working directory to the trunk's head and applies the task to it.

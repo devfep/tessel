@@ -112,6 +112,17 @@ pub fn count(events: &[Event]) -> LogCounts {
 /// claim was made. A shadow claim that submitted only after its blocker merged is never tried
 /// (the coordinator has no baseline for it), so it is not owed anything.
 pub fn awaiting_verification(events: &[Event]) -> usize {
+    owed_trials(events).len()
+}
+
+/// The trials `awaiting_verification` counts that are for `shadow` alone.
+pub fn awaiting_verification_of(events: &[Event], shadow: ClaimId) -> usize {
+    let owed = owed_trials(events);
+    owed.iter().filter(|(claim, _)| *claim == shadow).count()
+}
+
+/// (shadow claim, blocking claim) pairs whose trial the log owes.
+fn owed_trials(events: &[Event]) -> Vec<(ClaimId, ClaimId)> {
     let mut latest_grant: HashMap<&AgentId, ClaimId> = HashMap::new();
     let mut pairs: Vec<(ClaimId, ClaimId)> = Vec::new();
     let mut submitted: HashMap<ClaimId, u64> = HashMap::new();
@@ -166,7 +177,7 @@ pub fn awaiting_verification(events: &[Event]) -> usize {
             | EventKind::ReplayMerged { .. } => {}
         }
     }
-    let owed = |&&(shadow, blocker): &&(ClaimId, ClaimId)| {
+    let owed = |&(shadow, blocker): &(ClaimId, ClaimId)| {
         let Some(&submitted_at) = submitted.get(&shadow) else {
             return false;
         };
@@ -178,7 +189,7 @@ pub fn awaiting_verification(events: &[Event]) -> usize {
             None => !ended.contains(&blocker),
         }
     };
-    pairs.iter().filter(owed).count()
+    pairs.into_iter().filter(owed).collect()
 }
 
 /// The agent a `AgentConnected` event is about.
@@ -406,6 +417,16 @@ mod tests {
         );
         log.push(verified(5, Outcome::TextualConflict));
         assert_eq!(awaiting_verification(&log), 0);
+    }
+
+    #[test]
+    fn a_trial_owed_to_another_shadow_claim_is_not_owed_to_this_one() {
+        let mut log = shadowed_pair();
+        log.push(submitted(2, 2));
+        assert_eq!(awaiting_verification_of(&log, ClaimId(2)), 1);
+        assert_eq!(awaiting_verification_of(&log, ClaimId(7)), 0);
+        log.push(verified(3, Outcome::Clean));
+        assert_eq!(awaiting_verification_of(&log, ClaimId(2)), 0);
     }
 
     #[test]

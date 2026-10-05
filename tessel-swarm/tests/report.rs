@@ -296,9 +296,46 @@ fn other_policies_cannot_produce_the_shadow_row_whatever_the_summary_holds() {
         );
         assert_eq!(
             cells(&table, SHADOW_ROW)[2],
-            "n/a (this policy makes no shadow run)"
+            "n/a (no shadow run in this harness)"
+        );
+        assert!(
+            !table.contains("shadow work") && !table.contains("not comparable"),
+            "the wait and skip tables carry nothing of the shadow policy: {table}"
         );
     }
+}
+
+#[test]
+fn the_shadow_policy_adds_its_own_rows_and_a_note_about_landed_counts() {
+    let mut on = shadow_result();
+    for (task, ms) in [(2, 60_000), (3, 30_000)] {
+        let mut shadowed = result(task, Resolution::Shadowed);
+        shadowed.work_ms = ms;
+        on.results.push(shadowed);
+    }
+    let table = ab_markdown(
+        &header_of(&config(), 9, 2, 0.5),
+        "local",
+        Policy::Shadow,
+        &off_result(),
+        &on,
+    );
+    let shadow_work = "Run as shadow work (submitted for verification, never to merge)";
+    assert_eq!(cells(&table, shadow_work)[2], "2");
+    assert_eq!(
+        cells(&table, "Agent-minutes on shadow work (never merged)")[2],
+        "1.500"
+    );
+    let unfinished = "Not finished (starved, timed out, failed, not run)";
+    assert_eq!(
+        cells(&table, unfinished)[2],
+        "0",
+        "shadow work is not unfinished work"
+    );
+    assert!(
+        table.contains("not comparable with the `wait` or `skip` policies"),
+        "{table}"
+    );
 }
 
 #[test]

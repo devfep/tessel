@@ -63,7 +63,7 @@ pub fn off_json(header: &Header, off: &OffResult) -> Value {
 /// coordinator's log: a denial is never counted here, only a `DenialVerified` conflict.
 fn shadow_cell(policy: Policy, on: &OnResult) -> String {
     match policy {
-        Policy::Wait | Policy::Skip => "n/a (this policy makes no shadow run)".into(),
+        Policy::Wait | Policy::Skip => "n/a (no shadow run in this harness)".into(),
         Policy::Shadow => format!(
             "verified preventions {}, false alarms {} (shadow claims {}: inconclusive {}, never \
              verified {})",
@@ -145,15 +145,10 @@ fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -
                 && r.result != Resolution::Shadowed
         })
         .count();
-    let shadowed = on
-        .results
-        .iter()
-        .filter(|r| r.result == Resolution::Shadowed)
-        .count();
     let counts = &off.counts;
     let off_rejected = counts.textual_conflicts + counts.build_failed + counts.tests_failed;
     let n = |value: u64| value.to_string();
-    vec![
+    let mut rows = vec![
         row(
             "Tasks",
             &header.tasks.to_string(),
@@ -180,11 +175,6 @@ fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -
             "Not finished (starved, timed out, failed, not run)",
             "0",
             &unfinished.to_string(),
-        ),
-        row(
-            "Run as shadow work (submitted for verification, never to merge)",
-            "n/a",
-            &shadowed.to_string(),
         ),
         row(
             "Claims denied outright (a denial is not a prevented conflict)",
@@ -224,11 +214,43 @@ fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -
             &minutes(off.work_ms),
             &minutes(on.work_ms_total),
         ),
-    ]
+    ];
+    if policy == Policy::Shadow {
+        add_shadow_rows(&mut rows, on);
+    }
+    rows
 }
 
-fn notes(off: &OffResult, on: &OnResult) -> Vec<String> {
-    vec![
+/// Rows that only the shadow policy has: how many tasks ended as shadow work, and the agent time
+/// they took, which is part of "work in total" but never lands.
+fn add_shadow_rows(rows: &mut Vec<[String; 3]>, on: &OnResult) {
+    let shadow = || {
+        on.results
+            .iter()
+            .filter(|r| r.result == Resolution::Shadowed)
+    };
+    let at = rows
+        .iter()
+        .position(|r| r[0].starts_with("Claims denied outright"))
+        .unwrap_or(rows.len());
+    rows.insert(
+        at,
+        row(
+            "Run as shadow work (submitted for verification, never to merge)",
+            "n/a",
+            &shadow().count().to_string(),
+        ),
+    );
+    let shadow_ms: u64 = shadow().map(|r| r.work_ms).sum();
+    rows.push(row(
+        "Agent-minutes on shadow work (never merged)",
+        "n/a",
+        &minutes(shadow_ms),
+    ));
+}
+
+fn notes(policy: Policy, off: &OffResult, on: &OnResult) -> Vec<String> {
+    let mut notes = vec![
         format!(
             "- `off` is a local replay. Its numbers are computed here from plain-git merges onto a \
              trunk in task order with the tests run after each merge, and are not sent to any \
@@ -258,7 +280,17 @@ fn notes(off: &OffResult, on: &OnResult) -> Vec<String> {
          why a steward rejected a submission only as text, which the harness does not parse, so \
          `on` has no split of its rejections."
             .into(),
-    ]
+    ];
+    if policy == Policy::Shadow {
+        notes.push(
+            "- Under the `shadow` policy a denied task is run as shadow work and never lands, so \
+             \"Landed on the trunk\" and \"Landed per minute\" are not comparable with the `wait` \
+             or `skip` policies, which land every task they can. Shadow work counts in the \
+             agent-minutes of work in total."
+                .into(),
+        );
+    }
+    notes
 }
 
 /// The side-by-side table. `target` is `local` or `live`: where the `on` run happened.
@@ -291,6 +323,6 @@ pub fn ab_markdown(
         lines.push(format!("| {metric} | {off_cell} | {on_cell} |"));
     }
     lines.push(String::new());
-    lines.extend(notes(off, on));
+    lines.extend(notes(policy, off, on));
     lines.join("\n") + "\n"
 }

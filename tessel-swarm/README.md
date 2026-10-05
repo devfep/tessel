@@ -67,12 +67,22 @@ harness.
 With `--policy shadow` an agent whose claim conflicts claims with `OnConflict::Shadow`. It is
 denied for real, but it still does its task in its own fork, pushes and submits, as a granted
 agent does. A shadow submission is recorded and never queued, so the agent never waits for a
-merge; the task is recorded as `shadowed`, not as landed or rejected. It skips the simulated work
-time, so the submission is on record before the work that blocked it can merge.
+merge; the task is recorded as `shadowed`, not as landed or rejected. The agent submits first, so
+the work is on record before the work that blocked it can merge, and only then spends the task's
+work time. That time counts in the agent-minutes, with its own row for shadow work.
 
-When the blocking work merges, the steward tries each submitted shadow commit against it and the
-coordinator logs `DenialVerified`. After the agents finish, the run polls the log until every
-trial the log still owes is there, for at most `--task-timeout-s`, and only then computes the table.
+Before it takes another task, a shadow agent waits (counted as waiting) until the trial of its
+claim is logged or can no longer run, up to `--task-timeout-s`. Its next push replaces the fork's
+`main`, and the trial needs the submitted commit to still be there.
+
+Landed counts under `shadow` are not comparable with `wait` and `skip`: a denied task becomes
+shadow work and never lands. The table says so, and only the shadow policy has these rows.
+
+When the blocking work merges, the steward tries each submitted shadow commit against it, first
+on the trunk as it was before the merge (work that already fails there is inconclusive) and then
+after, and the coordinator logs `DenialVerified`. After the agents finish, the run polls the log
+until every trial the log still owes is there, for at most `--task-timeout-s`, and only then
+computes the table.
 
 The row "Conflicts prevented, verified by shadow runs" is `Summary::from_events` over the
 coordinator's log: verified preventions (a conflict), false alarms (clean), and beside them the

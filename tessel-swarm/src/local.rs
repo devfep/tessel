@@ -535,3 +535,121 @@ fn close_socket(hub: &Hub, id: u64, session: &Session) {
     let (events, outbound) = shell::split_effects(effects);
     state.flush(None, events, outbound);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::demo;
+    use crate::tasks::{self, Kind, Task};
+    use tessel_coordinator::merge::TrialVerdict;
+    use tessel_coordinator::protocol::Outcome;
+
+    struct Fixture {
+        _scratch: tempfile::TempDir,
+        trunk: PathBuf,
+        forks: PathBuf,
+        commit: String,
+        start: String,
+        broken: String,
+        later: String,
+    }
+
+    /// A trunk, an agent's fork holding a `restock` edit made on the starting trunk, and two more
+    /// trunk commits: the first breaks `unitPrice`'s tests, the second is harmless.
+    fn fixture() -> Fixture {
+        let scratch = tempfile::tempdir().unwrap();
+        let trunk = scratch.path().join("trunk");
+        let forks = scratch.path().join("forks");
+        std::fs::create_dir_all(&trunk).unwrap();
+        std::fs::create_dir_all(forks.join("a01.git")).unwrap();
+        Git::new(&forks.join("a01.git"))
+            .run(&["init", "-q", "--bare", "-b", "main"])
+            .unwrap();
+        let base = demo::base_tree();
+        let trunk_git = Git::new(&trunk);
+        let start = git::init_repo(&trunk_git, &base).unwrap();
+        Git::new(scratch.path())
+            .run(&["clone", "-q", &trunk.to_string_lossy(), "work"])
+            .unwrap();
+        let work = Git::new(&scratch.path().join("work"));
+        let task = Task {
+            id: 2,
+            func: "restock".into(),
+            kind: Kind::Body,
+        };
+        git::write_tree(&work.dir, &tasks::apply(&task, &base).unwrap()).unwrap();
+        let commit = work.commit_all("shadow work").unwrap();
+        let fork = forks.join("a01.git").to_string_lossy().into_owned();
+        work.run(&["push", "-q", &fork, "HEAD:main"]).unwrap();
+        let pricing = trunk.join("src/pricing.ts");
+        let text = std::fs::read_to_string(&pricing).unwrap();
+        std::fs::write(
+            &pricing,
+            text.replace("return base * qty;", "return base * qty + 1;"),
+        )
+        .unwrap();
+        let broken = trunk_git.commit_all("break unitPrice").unwrap();
+        std::fs::write(
+            &pricing,
+            std::fs::read_to_string(&pricing).unwrap() + "// later\n",
+        )
+        .unwrap();
+        let later = trunk_git.commit_all("later").unwrap();
+        Fixture {
+            _scratch: scratch,
+            trunk,
+            forks,
+            commit,
+            start,
+            broken,
+            later,
+        }
+    }
+
+    fn dispatch(fixture: &Fixture, before: &str, main: &str) -> VerifyDispatch {
+        VerifyDispatch {
+            id: 1,
+            agent: AgentId("a01".into()),
+            commit: Some(CommitId(fixture.commit.clone())),
+            before: CommitId(before.to_string()),
+            main: CommitId(main.to_string()),
+            attempt: 1,
+        }
+    }
+
+    #[test]
+    fn work_that_already_fails_on_main_before_the_merge_is_inconclusive_not_a_prevention() {
+        let f = fixture();
+        let red = trial(&f.trunk, &f.forks, &dispatch(&f, &f.broken, &f.later));
+        assert_eq!(red.before, Some(TrialOutcome::TestsFailed {}));
+        assert_eq!(
+            red.after, None,
+            "main is only tried when the baseline was clean"
+        );
+        assert_eq!(red.verdict(), TrialVerdict::Decided(Outcome::Inconclusive));
+    }
+
+    #[test]
+    fn work_that_was_clean_before_and_fails_after_the_merge_is_a_real_conflict() {
+        let f = fixture();
+        let report = trial(&f.trunk, &f.forks, &dispatch(&f, &f.start, &f.broken));
+        assert_eq!(report.before, Some(TrialOutcome::Clean {}));
+        assert_eq!(report.after, Some(TrialOutcome::TestsFailed {}));
+        assert_eq!(
+            report.verdict(),
+            TrialVerdict::Decided(Outcome::TestsFailed)
+        );
+    }
+
+    #[test]
+    fn a_commit_missing_from_the_fork_is_inconclusive() {
+        let f = fixture();
+        let mut gone = dispatch(&f, &f.start, &f.later);
+        gone.commit = Some(CommitId("0".repeat(40)));
+        let report = trial(&f.trunk, &f.forks, &gone);
+        assert_eq!(
+            report.verdict(),
+            TrialVerdict::Decided(Outcome::Inconclusive)
+        );
+    }
+}

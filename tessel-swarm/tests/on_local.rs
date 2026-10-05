@@ -465,6 +465,75 @@ async fn a_blocker_that_never_merges_leaves_the_denial_unverified_and_prevents_n
     run.server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
+    // Four rewrites of one function on two agents: an agent shadowed on one task goes on to the
+    // next and pushes again. The trial of the first shadow commit needs it to still be on the fork.
+    let tasks = [
+        body(1, "unitPrice"),
+        body(2, "unitPrice"),
+        body(3, "unitPrice"),
+        body(4, "unitPrice"),
+    ];
+    let run = run(&tasks, config(2, Policy::Shadow, 1500)).await;
+    let summary = &run.result.summary;
+    let trials = run.result.shadow_trials;
+    assert!(trials.claims >= 1, "{:?}", run.result.results);
+    assert_eq!(
+        (
+            summary.conflicts_prevented_verified,
+            trials.inconclusive,
+            trials.never_verified
+        ),
+        (trials.claims, 0, 0),
+        "every shadow claim conflicts with its blocker and was tried: {:?}",
+        run.result.results
+    );
+    assert_eq!(summary.false_alarms, 0);
+    assert_eq!(summary.denials, trials.claims);
+    assert_eq!(*summary, Summary::from_events(&run.result.events));
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted() {
+    let work_ms = 4000;
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let run = run(&tasks, config(2, Policy::Shadow, work_ms)).await;
+    let events = &run.result.events;
+    let shadows = shadow_claims(&run);
+    assert_eq!(shadows.len(), 1, "{:?}", run.result.results);
+    let shadow = shadows[0];
+    let find = |wanted: &dyn Fn(&EventKind) -> bool| events.iter().find(|e| wanted(&e.kind));
+    let claimed = find(&|k| matches!(k, EventKind::ClaimShadowed { .. })).unwrap();
+    let submitted =
+        find(&|k| matches!(k, EventKind::Submitted { claim, .. } if *claim == shadow)).unwrap();
+    let merged = find(&|k| matches!(k, EventKind::Merged { .. })).unwrap();
+    assert!(
+        submitted.seq < merged.seq,
+        "the submission precedes the blocker's merge"
+    );
+    assert!(
+        submitted.at_ms - claimed.at_ms < work_ms - 500,
+        "the shadow work is submitted before its work time has passed: {} ms",
+        submitted.at_ms - claimed.at_ms
+    );
+    let shadowed = run
+        .result
+        .results
+        .iter()
+        .find(|r| r.result == Resolution::Shadowed)
+        .unwrap();
+    assert!(shadowed.work_ms >= work_ms, "{shadowed:?}");
+    assert!(
+        run.result.work_ms_total >= 2 * work_ms,
+        "{}",
+        run.result.work_ms_total
+    );
+    assert_eq!(run.result.summary.conflicts_prevented_verified, 1);
+    run.server.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_closes_open_connections() {
     let scratch = tempfile::tempdir().unwrap();
