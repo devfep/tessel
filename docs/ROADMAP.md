@@ -34,7 +34,7 @@ STEWARD-1 closed and reclaimed.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `57e82531`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `ff1dd858`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
@@ -159,6 +159,9 @@ two Workers are approved.
   (`<repo>--<agent>`) and commit to the steward merge executor through a service binding (not
   public), and applies the outcome (`Merged` / `SubmitRejected`, `BaseMoved`,
   `AssumptionChallenged`); `tessel submit` in the CLI. After CLI-1 merges.
-- [ ] **COORD-HARDEN** — from the CLI-1 review: the coordinator refuses control characters (C0, DEL,
+- [x] **COORD-HARDEN** — from the CLI-1 review: the coordinator refuses control characters (C0, DEL,
   C1) in scope paths and qualified names, as defence in depth behind the CLI's escaping. Touches
   `src/coordinator.rs` only.
+  CLOSED 2026-10-05 at `a5a5f96` (review "Yes" after one fix pass, which added the Unicode
+  Bidi_Control characters and U+2028/9). `cargo test` 244. Live on `ff1dd858`: newline, ESC, U+202E
+  and a padded name are refused as malformed; a clean scope is granted.
