@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 09:32 EDT.
+**As of:** 2026-10-05 09:46 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
 **Tip:** `sprint/build` at the CLI-FIX merge `36abdb3` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
@@ -26,19 +26,22 @@ except ruling 3, which lands with the steward merge path:
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
 **Agents:**
-- SUBMIT-1 (Sonnet, `.claude/worktrees/submit-1`): review "With fixes" (one merge per alarm, a
-  timeout on the steward call, steward 4xx as agent errors, sha checked at Submit); fix pass 1.
-- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): part a, `tessel submit`; dogfooded on
-  `tessel-dogfood`.
+- SUBMIT-1 (Sonnet, `.claude/worktrees/submit-1`): merged at `c8e7820` on review "Yes" after two
+  fix passes and deployed (steward `20a409ee`, coordinator `5dd92057`). The live end-to-end check
+  FAILED: the coordinator passes alarm time 0 for "merge now", `setAlarm` rejects it, no merge is
+  dispatched, and the failed write closes the client socket. Fix pass 3 running. Affects only repos
+  with a submitted claim (today the scratch repo `gate9-1791207721`). Task stays open.
+- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): `tessel submit` plus the missing-cwd hook fix;
+  dogfooded on `tessel-dogfood`.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `b3681796`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `5dd92057` (SUBMIT-1, alarm bug above): every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
-- `tessel-steward` version `0b6da38d`, with the `TestRunner` container; admin routes need
+- `tessel-steward` version `20a409ee` (adds the `MergeService` entrypoint), with the `TestRunner` container; admin routes need
   `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/merges` runs the merge
   executor (STEWARD-1). `POST /repos/<repo>/agents/<agent>/identity`
   mints a 24 h agent token.
