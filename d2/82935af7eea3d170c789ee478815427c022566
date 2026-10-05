@@ -1,0 +1,4 @@
+intent: merge SKILL-1: skills/tessel/SKILL.md and AGENTS.md for forks, describing only the shipped CLI
+assumes: the CLI surface of task-cli-1 at 3a27e7a (merged in the same session)
+rejected: none
+evidence: review Yes after one fix pass; every command, flag and exit code checked against task-cli-1 by the reviewer.
