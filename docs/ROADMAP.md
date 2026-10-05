@@ -5,16 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 13:35 EDT.
+**As of:** 2026-10-05 14:15 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the RACE-1 merge `fe57323` plus this STATE commit; the GitHub trunk at
+**Tip:** `sprint/build` at the DOGFOOD-1 merge `72a2959` plus STATE commits; the GitHub trunk at
 `29aa8fe` (pull request 1).
-**Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
-steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
-v0 ran on `tessel-dogfood` (agent `cli-2`, claims 1–19, every edit claimed first; record in the
-CLI-2 merge note). Limit, stated honestly: subagents share the parent session's hook settings, so
-the pre-edit hook does not enforce claims for lanes; they claim by hand following the skill.
-PLAN §9 Oct 8 "assumptions end to end" is delivered and checked live (ASSUME-1); races remain.
+**Milestone:** PLAN §9 Oct 6–8 delivered and checked live: CLI and dogfood v0, the steward merge
+path with review gate and coverage check, assumptions verified end to end, and races (one scripted
+race run live end to end). Dogfood v1 is NOT live: the first probe of the toolchain path failed
+(DOGFOOD-2 diagnosing); `merge-one.sh` stays. Lanes claim through the coordinator (`tessel-dogfood`);
+subagents share the parent session's hook settings, so claims are made by hand following the skill,
+and the merge notes record each late claim.
 
 **Felix's rulings, 2026-10-05 07:00 EDT** (the four items pending at FREEZE), all now delivered
 except ruling 3, which lands with the steward merge path:
@@ -32,28 +32,31 @@ is recorded with the first Tessel commit merged by the steward.
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents** (cargo capped at 3 jobs under `nice`):
-- DOGFOOD-1: review "With fixes" (gate self-protection, time budget, honest timeout outcome);
-  fix pass 1 running.
-- HARNESS-1: built (662 tests); in review (Opus), including how a live swarm handles review
-  without a global rubber-stamp reviewer.
-- RACE-FIX (`.claude/worktrees/race-1`): found live; judge a race early only when it is full.
-RACE-1 merged and deployed.
+**Agents** (cargo capped at 3 jobs under `nice`; load is mostly Felix's simulator):
+- DOGFOOD-2 (`.claude/worktrees/dogfood-1`, branch `task-dogfood-2`): diagnose the probe failure
+  (`test-runs` on `tessel-dogfood` returns a Cloudflare internal error after about 20 s; the legacy
+  `lite` path still passes).
+- HARNESS-1 (`.claude/worktrees/harness-1`): fix pass done; a short commit for the scripted
+  reviewer on the swarm coordinator, then re-review.
+DOGFOOD-1, RACE-1 and RACE-FIX merged and deployed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `55309dff` (races; see RACE-FIX): every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `6411b1db`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
-- `tessel-steward` version `d340c69a` (merge executor checks coverage; trial runs for assumptions), with the `TestRunner` container; admin routes need
+- `tessel-steward` version `96f778b9` (toolchain image for `tessel.toml` repos; `lite` image otherwise), with the `TestRunner` container; admin routes need
   `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/merges` runs the merge
   executor (STEWARD-1). `POST /repos/<repo>/agents/<agent>/identity`
   mints a 24 h agent token.
 - Queue `tessel-artifacts-events` with subscriptions `tessel-repo-lifecycle` and
   `tessel-push-demo--agent-1` (the fork subscription goes once the Submit path lands). Artifacts
-  repos `demo` and `demo--agent-1` in namespace `tessel`.
+  repos `demo` and `demo--agent-1` in namespace `tessel`. Artifacts repo `tessel-dogfood` holds
+  Tessel at `72a2959` (the dogfood v1 trunk, not yet used). Artifacts repo `tessel` was created
+  first by mistake (the name must match the coordinator repo) and is unused; Felix decides whether
+  to delete it.
 
 **Pending from Felix:**
 1. At the next hand merge of `src/protocol.rs`: delete the six `cfg_attr(not(test), expect(dead_code))`
@@ -110,10 +113,11 @@ attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZ
 two Workers are approved.
 
 **Next actions:**
-1. DOGFOOD-1, starting with a measured probe in a scratch `standard-4` container (cold and warm
-   build time and peak memory) against the time budget recorded in the task.
-2. RACE-1 (PLAN §9 Oct 8): races with deterministic ranking; one scripted race at minimum (§11).
-3. Milestone pull request to the GitHub trunk (full gate, `/code-review`, `/security-review`).
+1. DOGFOOD-2: find the cause of the probe failure, fix, redeploy, rerun the probe against the
+   go/no-go list (container start limit is now 60 s, the budget's reservation).
+2. HARNESS-1 re-review; then deploy `tessel-coordinator-swarm` (Felix approved) and a first small
+   live swarm run.
+3. Shadow verification (PLAN §9 Oct 9) reusing the trial primitive; milestone pull request.
 
 ## Tasks
 
@@ -225,7 +229,7 @@ two Workers are approved.
   CLOSED 2026-10-05 at `4a4644e` (review "Yes" after three fix passes). Workspace tests 595, steward
   445. Live, with the real CLI: a1 assumed `greet() returns 1`; a2's body edit was flagged at risk,
   held for review, approved, merged; `assumption_verified` = `tests_failed` for a1's claim.
-- [ ] **DOGFOOD-1** — dogfood v1 (PLAN §7, §9 Oct 8; Felix approved): the steward runs Tessel's
+- [x] **DOGFOOD-1** — dogfood v1 (PLAN §7, §9 Oct 8; Felix approved): the steward runs Tessel's
   own gate. Test image with the Rust toolchain (wasm target) and pnpm; an install step for repos
   with dependencies (lockfile only, scripts disabled); per-repo test command; Tessel imported into
   Artifacts as `tessel`, one fork per lane, lanes push and `tessel submit`; the Artifacts trunk
@@ -239,6 +243,11 @@ two Workers are approved.
   mirror with a local fast-forward-only script (no GitHub credential in Cloudflare). Probe first:
   build time and memory, the Docker build context, a 5-minute merge over the service binding, and
   image storage (50 GB per account).
+  MERGED 2026-10-05 at `72a2959` (review "Yes" after one fix pass; a semantic conflict with RACE-1
+  was caught at compile time by the exhaustive-match rule and fixed on the branch). Not closed as
+  dogfood v1: the first live probe failed. See DOGFOOD-2.
+- [ ] **DOGFOOD-2** — diagnose and fix the failed probe, then rerun it against the go/no-go list;
+  switch lanes to merging through the steward only if every threshold is met.
   Time budget (from the ASSUME-1 review): one merge's worst case is clone 240 s + fetch 240 s +
   rebase 120 s + dependency check 30 s + tests 600 s, about 20 minutes, above the 13-minute steward
   call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
