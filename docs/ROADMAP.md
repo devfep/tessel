@@ -52,6 +52,10 @@ SUBMIT-1 closed and reclaimed.
 1. At the next hand merge of `src/protocol.rs`: delete the six `cfg_attr(not(test), expect(dead_code))`
    lines (no wire change; the items are public now that the CLI uses the crate), so CLI-1's
    `#[allow(unfulfilled_lint_expectations)]` on `pub mod protocol` can go.
+   In the same merge: the `Summary` doc says "merges - reviews_requested = merged without review",
+   which stopped being true with REVIEW-1 (a rejected and resubmitted change is requested twice and
+   a rejected one never merges). Correct the doc; optionally add `reviews_approved` with
+   `#[serde(default)]` if the dashboard needs "merged after approval".
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
