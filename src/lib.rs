@@ -18,23 +18,23 @@ mod protocol;
 mod shell;
 mod store;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 
 use coordinator::{Coordinator as Core, Effect};
 use protocol::{AgentId, ClientMsg, ServerMsg};
-use shell::EntriesError;
-use shell::{keep_first, Action, ReplayStep, Session, Target};
+use shell::{keep_first, Action, ReplayStep, Session, StoreDecision, Target, Work};
 use store::{Applied, Persisted};
 use worker::*;
 
 /// The fixed body of the refusal of a request without the coordinator token.
 const UNAUTHORIZED_BODY: &str = "unauthorized";
 
-/// What `apply` made of a call: something to store and send, or a refusal for the sender.
+/// What `apply` made of a call: something to store and send, or a client call that is refused
+/// because it would grow the state too far.
 enum Prepared {
     Ready(Applied),
-    Refused(ServerMsg),
+    Refused,
 }
 
 /// Route: GET /repo/<name>/ws  (WebSocket upgrade) -> coordinator for <name>, for a request
@@ -80,6 +80,9 @@ pub struct Coordinator {
     env: Env,
     /// Loaded on first use, and again after a failed write or hibernation.
     core: RefCell<Option<Core>>,
+    /// The size of the state as last stored, for the soft limit. Set whenever the core is loaded
+    /// or written.
+    stored_bytes: Cell<usize>,
 }
 
 impl DurableObject for Coordinator {
@@ -88,6 +91,7 @@ impl DurableObject for Coordinator {
             state,
             env,
             core: RefCell::new(None),
+            stored_bytes: Cell::new(0),
         }
     }
 
@@ -130,12 +134,7 @@ impl DurableObject for Coordinator {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        self.ensure_loaded().await?;
-        let now_ms = now_ms();
-        let prepared = self.apply(|core| core.expire(now_ms))?;
-        let applied = self.ready(prepared, "expire leases")?;
-        let persisted = self.persist(applied).await?;
-        self.settle(&persisted, None).await?;
+        self.run_expiry().await?;
         Response::ok("")
     }
 }
@@ -202,14 +201,17 @@ impl Coordinator {
         let mut slot = self.core.borrow_mut();
         if slot.is_none() {
             *slot = Some(core);
+            self.stored_bytes
+                .set(stored.as_ref().map_or(0, String::len));
         }
         Ok(())
     }
 
     /// Run `step` on the core and serialize the result. Nothing is stored or sent yet. If
-    /// serialization fails the core is dropped, because it has moved on from storage. If the
-    /// state or an event is too large to store, the core is dropped too and the call is refused.
-    fn apply(&self, step: impl FnOnce(&mut Core) -> Vec<Effect>) -> Result<Prepared> {
+    /// serialization fails the core is dropped, because it has moved on from storage. A client
+    /// call that would grow the state or log an event past the soft limit is refused and the core
+    /// is dropped too. Any work past the hard limit is an error and drops the core.
+    fn apply(&self, work: Work, step: impl FnOnce(&mut Core) -> Vec<Effect>) -> Result<Prepared> {
         let mut slot = self.core.borrow_mut();
         let Some(core) = slot.as_mut() else {
             return Err(self.fail("apply", "core is not loaded"));
@@ -217,27 +219,46 @@ impl Coordinator {
         let effects = step(core);
         let next_expiry_ms = core.next_expiry_ms();
         let (events, outbound) = shell::split_effects(effects);
-        match shell::persist_entries(core, &events) {
-            Ok(entries) => Ok(Prepared::Ready(Applied {
+        let entries = match shell::persist_entries(core, &events) {
+            Ok(entries) => entries,
+            Err(e) => {
+                *slot = None;
+                return Err(self.fail("serialize state", e));
+            }
+        };
+        let sizes = shell::entry_sizes(&entries, self.stored_bytes.get());
+        match shell::decide_store(work, sizes) {
+            StoreDecision::Store => Ok(Prepared::Ready(Applied {
                 entries,
                 events,
                 outbound,
                 next_expiry_ms,
             })),
-            Err(EntriesError::TooLarge) => {
+            StoreDecision::Refuse => {
                 *slot = None;
                 console_error!(
                     "coordinator {}: {}",
                     self.repo(),
                     shell::STATE_LIMIT_MESSAGE
                 );
-                Ok(Prepared::Refused(shell::state_limit_reply()))
+                Ok(Prepared::Refused)
             }
-            Err(e @ EntriesError::Serialize(_)) => {
+            StoreDecision::OverHard => {
                 *slot = None;
-                Err(self.fail("serialize state", e))
+                Err(self.fail("store state", "state is over the storage limit"))
             }
         }
+    }
+
+    /// Expire leases on their own, store the result under the hard limit and deliver it. Used by
+    /// the alarm and after a refused client call, so a refusal never leaves expiry un-run.
+    async fn run_expiry(&self) -> Result<()> {
+        self.ensure_loaded().await?;
+        let now_ms = now_ms();
+        let prepared = self.apply(Work::ExpiryOnly, |core| core.expire(now_ms))?;
+        let applied = self.ready(prepared, "expire leases")?;
+        let persisted = self.persist(applied).await?;
+        self.settle(&persisted, None).await
     }
 
     /// The `Applied` of a call that has no sender to refuse (the alarm, a closing socket): a
@@ -245,7 +266,7 @@ impl Coordinator {
     fn ready(&self, prepared: Prepared, operation: &str) -> Result<Applied> {
         match prepared {
             Prepared::Ready(applied) => Ok(applied),
-            Prepared::Refused(_) => Err(self.fail(operation, shell::STATE_LIMIT_MESSAGE)),
+            Prepared::Refused => Err(self.fail(operation, shell::STATE_LIMIT_MESSAGE)),
         }
     }
 
@@ -260,12 +281,20 @@ impl Coordinator {
             .filter(|socket| socket != closing)
             .collect();
         let others = self.read_sessions(&open);
-        let Some(agent) = shell::agent_to_withdraw(&session, &others) else {
+        if session.agent.is_none() {
+            return Ok(());
+        }
+        self.ensure_loaded().await?;
+        let queued = |agent: &AgentId| {
+            let slot = self.core.borrow();
+            slot.as_ref()
+                .is_some_and(|core| core.has_queued_request(agent))
+        };
+        let Some(agent) = shell::agent_to_withdraw(&session, &others, queued) else {
             return Ok(());
         };
-        self.ensure_loaded().await?;
         let now_ms = now_ms();
-        let prepared = self.apply(|core| core.disconnect(&agent, now_ms))?;
+        let prepared = self.apply(Work::ExpiryOnly, |core| core.disconnect(&agent, now_ms))?;
         let applied = self.ready(prepared, "withdraw queued request")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
@@ -276,7 +305,10 @@ impl Coordinator {
     async fn persist(&self, applied: Applied) -> Result<Persisted> {
         let written = store::write(&self.state.storage(), applied).await;
         match written {
-            Ok(persisted) => Ok(persisted),
+            Ok(persisted) => {
+                self.stored_bytes.set(persisted.state_bytes());
+                Ok(persisted)
+            }
             Err(e) => {
                 *self.core.borrow_mut() = None;
                 Err(self.fail("persist state and events", e))
@@ -292,10 +324,16 @@ impl Coordinator {
         msg: ClientMsg,
     ) -> Result<()> {
         self.ensure_loaded().await?;
-        let prepared = self.apply(|core| core.handle(&agent, msg, now_ms()))?;
+        let req = shell::req_of(&msg);
+        let prepared = self.apply(Work::Client, |core| core.handle(&agent, msg, now_ms()))?;
         let applied = match prepared {
             Prepared::Ready(applied) => applied,
-            Prepared::Refused(reply) => return send(ws, &reply),
+            Prepared::Refused => {
+                let recovered = self.run_expiry().await;
+                let sent = send(ws, &shell::state_limit_reply(req));
+                recovered?;
+                return sent;
+            }
         };
         let persisted = self.persist(applied).await?;
         let bound = self.bind(ws, session, &agent, &persisted);

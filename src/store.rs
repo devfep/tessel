@@ -37,6 +37,14 @@ impl Persisted {
     pub fn next_expiry_ms(&self) -> Option<u64> {
         self.applied.next_expiry_ms
     }
+
+    /// The size of the state that was stored.
+    pub fn state_bytes(&self) -> usize {
+        self.applied
+            .entries
+            .first()
+            .map_or(0, |(_, json)| json.len())
+    }
 }
 
 /// Store `applied.entries` in one transaction: all of them or none.

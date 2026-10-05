@@ -93,6 +93,9 @@ struct ActiveClaim {
     scopes: Vec<ScopeClaim>,
     /// The lease runs out at this instant: the claim is expired when `now_ms >= expires_at_ms`.
     expires_at_ms: u64,
+    /// A claim stored before 2026-10-05 carries `shadow` instead of `kind` and loads as `Real`.
+    /// That is safe: shadow claims were never enabled on a deployed coordinator
+    /// (`SHADOW_ENABLED` has been "false" since it was introduced), so no stored state holds one.
     #[serde(default)]
     kind: ClaimKind,
     /// The submission's ordinal, set once the claim is submitted. A submitted claim never expires
@@ -305,17 +308,19 @@ impl Coordinator {
         effects
     }
 
-    /// An agent's last socket closed: withdraw its queued request, if any, and grant the waiters
-    /// that were behind it and are now unblocked.
+    /// An agent's last socket closed: withdraw its queued request, if any, then expire leases and
+    /// grant the waiters that were behind it and are now unblocked.
     ///
-    /// Leases are expired first and `now_ms` is clamped, as in `handle`. The agent's active
-    /// claims stay under their lease. Withdrawing is not logged: the protocol has no event for it.
+    /// The request is withdrawn first, so an expiry in the same call can never grant it to a
+    /// socket that is gone. `now_ms` is clamped, as in `handle`. The agent's active claims stay
+    /// under their lease. Withdrawing is not logged: the protocol has no event for it.
     pub fn disconnect(&mut self, agent: &AgentId, now_ms: u64) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
-        let mut effects = self.expire(now_ms);
         let queued = self.state.waiting.len();
         self.state.waiting.retain(|waiter| waiter.agent != *agent);
-        if self.state.waiting.len() != queued {
+        let withdrew = self.state.waiting.len() != queued;
+        let mut effects = self.expire(now_ms);
+        if withdrew {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
         effects
@@ -499,7 +504,7 @@ impl Coordinator {
         if let Some(message) = claim_fault(request) {
             return Some(error(req, ErrorCode::Malformed, message));
         }
-        if self.is_waiting(agent) {
+        if self.has_queued_request(agent) {
             let message = "agent has a queued request and may not claim until it is granted";
             return Some(error(req, ErrorCode::WaitWhileHolding, message));
         }
@@ -510,7 +515,8 @@ impl Coordinator {
         None
     }
 
-    fn is_waiting(&self, agent: &AgentId) -> bool {
+    /// Whether `agent` has a request in the Wait queue.
+    pub fn has_queued_request(&self, agent: &AgentId) -> bool {
         self.state
             .waiting
             .iter()
@@ -4148,6 +4154,43 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_withdraws_before_expiry_so_the_leaving_request_is_never_granted() {
+        let mut c = coordinator();
+        let (claim, fence) = grant(&mut c, "a", vec![x_edit()]);
+        wait_for(&mut c, "b", 7, vec![x_edit()]);
+        wait_for(&mut c, "c", 8, vec![x_edit()]);
+
+        let effects = c.disconnect(&agent("b"), NOW + LEASE);
+        assert_eq!(expired_notices(&effects), vec![(agent("a"), claim, fence)]);
+        let expected = vec![(agent("c"), 8, ClaimId(2), Fence(2), NOW + 2 * LEASE)];
+        assert_eq!(
+            granted_notices(&effects),
+            expected,
+            "only c is granted, never b"
+        );
+        assert!(!c.has_queued_request(&agent("b")));
+        let mut granted = Vec::new();
+        for event in logged(&effects) {
+            if let EventKind::ClaimGranted { claim, .. } = &event.kind {
+                granted.push(*claim);
+            }
+        }
+        assert_eq!(granted, vec![ClaimId(2)]);
+    }
+
+    #[test]
+    fn has_queued_request_is_true_only_while_the_agent_waits() {
+        let mut c = coordinator();
+        grant(&mut c, "a", vec![x_edit()]);
+        assert!(!c.has_queued_request(&agent("b")));
+        wait_for(&mut c, "b", 7, vec![x_edit()]);
+        assert!(c.has_queued_request(&agent("b")));
+        assert!(!c.has_queued_request(&agent("a")), "a holder is not queued");
+        c.disconnect(&agent("b"), NOW);
+        assert!(!c.has_queued_request(&agent("b")));
+    }
+
+    #[test]
     fn disconnect_leaves_the_agents_active_claims_under_their_lease() {
         let mut c = coordinator();
         let (claim, fence) = grant(&mut c, "a", vec![x_edit()]);
@@ -4274,6 +4317,11 @@ mod tests {
         Release {
             pick: usize,
         },
+        /// The agent's last socket closed: its queued request is withdrawn first, then leases
+        /// expire.
+        Disconnect {
+            agent: u8,
+        },
         /// Probe a claim that is gone (released or expired): its fence is retired.
         Gone {
             pick: usize,
@@ -4316,6 +4364,7 @@ mod tests {
             3 => (0u8..4, scope_claims()).prop_map(|(agent, scopes)| Op::Wait { agent, scopes }),
             2 => any::<usize>().prop_map(|pick| Op::Release { pick }),
             2 => any::<usize>().prop_map(|pick| Op::Gone { pick }),
+            2 => (0u8..4).prop_map(|agent| Op::Disconnect { agent }),
             2 => (any::<usize>(), scope_claims())
                 .prop_map(|(pick, scopes)| Op::Amend { pick, scopes }),
             2 => (prop::sample::select(jumps), any::<bool>())
@@ -4608,6 +4657,20 @@ mod tests {
         assert_announced(&effects, &lapse, &granted);
     }
 
+    fn step_disconnect(c: &mut Coordinator, m: &mut Model, n: u8) {
+        let who = who_is(n);
+        let withdrew = m.is_queued(&who);
+        m.queue.retain(|w| w.agent != who);
+        let mut lapse = m.lapse();
+        if withdrew {
+            lapse.granted.extend(m.walk());
+        }
+        let effects = c.disconnect(&who, m.now);
+        assert!(replies(&effects).is_empty(), "{effects:?}");
+        assert_announced(&effects, &lapse, &[]);
+        assert!(!c.has_queued_request(&who));
+    }
+
     /// A claim id that was never issued is unknown; one that is gone has a retired fence, whoever
     /// asks and whatever else is sent. Neither changes anything.
     fn step_gone(c: &mut Coordinator, m: &mut Model, pick: usize) {
@@ -4623,20 +4686,22 @@ mod tests {
         if m.gone.is_empty() {
             return;
         }
-        let (who, claim, fence) = m.gone[pick % m.gone.len()].clone();
+        let (former, claim, fence) = m.gone[pick % m.gone.len()].clone();
         let settled = state_value(c);
-        let probes = [
-            ClientMsg::Release { claim, fence },
-            ClientMsg::Amend {
-                req: RequestId(900),
-                claim,
-                fence,
-                add: Vec::new(),
-            },
-            submit_msg(claim, fence, Vec::new()),
-        ];
-        for probe in probes {
-            assert_refused(&c.handle(&who, probe, m.now), ErrorCode::StaleFence);
+        for who in [former, who_is((pick % 4) as u8)] {
+            let probes = [
+                ClientMsg::Release { claim, fence },
+                ClientMsg::Amend {
+                    req: RequestId(900),
+                    claim,
+                    fence,
+                    add: Vec::new(),
+                },
+                submit_msg(claim, fence, Vec::new()),
+            ];
+            for probe in probes {
+                assert_refused(&c.handle(&who, probe, m.now), ErrorCode::StaleFence);
+            }
         }
         assert_eq!(
             state_value(c),
@@ -4805,6 +4870,7 @@ mod tests {
             | Op::Wait { .. }
             | Op::Release { .. }
             | Op::Gone { .. }
+            | Op::Disconnect { .. }
             | Op::Amend { .. }
             | Op::Submit { .. } => {
                 unreachable!("not a clock operation: {op:?}")
@@ -4819,6 +4885,7 @@ mod tests {
             Op::Wait { agent, scopes } => step_claim(c, m, agent, scopes, true),
             Op::Release { pick } => step_release(c, m, pick),
             Op::Gone { pick } => step_gone(c, m, pick),
+            Op::Disconnect { agent } => step_disconnect(c, m, agent),
             Op::Amend { pick, scopes } => step_amend(c, m, pick, scopes),
             Op::Submit { pick, own, touched } => step_submit(c, m, pick, own, touched),
             Op::Advance { .. } | Op::Heartbeat { .. } => return step_time(c, m, &op),
