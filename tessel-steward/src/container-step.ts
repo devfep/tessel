@@ -92,7 +92,7 @@ export const TOOLCHAIN_ENV: Record<string, string> = {
   CARGO_TARGET_DIR: "/opt/cargo-target",
   CARGO_INCREMENTAL: "0",
   CARGO_PROFILE_DEV_DEBUG: "0",
-  npm_config_store_dir: "/opt/pnpm-store",
+  pnpm_config_store_dir: "/opt/pnpm-store",
 };
 
 /**

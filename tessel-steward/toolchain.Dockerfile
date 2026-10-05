@@ -44,7 +44,7 @@ ENV PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
 	CARGO_TARGET_DIR=/opt/cargo-target \
 	CARGO_INCREMENTAL=0 \
 	CARGO_PROFILE_DEV_DEBUG=0 \
-	npm_config_store_dir=/opt/pnpm-store
+	pnpm_config_store_dir=/opt/pnpm-store
 RUN npm install --global pnpm@12.8.1 \
 	&& mkdir /workspace /opt/pnpm-store \
 	&& chown node:node /workspace /opt/pnpm-store
