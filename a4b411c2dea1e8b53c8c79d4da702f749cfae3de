@@ -1,0 +1,4 @@
+intent: merge SPIKE-3, the sandbox test runner for Artifacts repos
+assumes: Cloudflare Containers exec and outbound HTTPS intercept behave as documented on 2026-09-30; Artifacts read tokens work as Bearer for git-upload-pack
+rejected: putting the repo token in the clone URL or the sandbox environment
+evidence: Opus review Yes after two fix passes; vitest 67 passed, tsc/oxlint/oxfmt clean, cargo test 17 passed on the merged tree; deployed version 7be0d0c7: POST /repos/demo/test-runs passed true (exit 0, 18s), a deliberately failing test on demo--agent-1 returned exit 1 passed false (2 tests, 1 fail) and passed again after the revert, missing repo 404, no auth 401
