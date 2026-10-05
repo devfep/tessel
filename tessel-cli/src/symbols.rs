@@ -23,11 +23,27 @@ pub struct Symbol {
     /// The `SymbolId` name: `auth::session::Session::refresh` for Rust, `Session.refresh` for
     /// TypeScript.
     pub name: String,
-    /// The whole definition.
+    /// The whole definition, from its first leading attribute, decorator or doc comment.
     pub range: Range<usize>,
-    /// Everything before the body. A definition with no body (a struct, a constant, a trait
-    /// method without a default) is all signature, so any change to it is a signature change.
+    /// Everything before the body, leading attributes, decorators and doc comments included. A
+    /// definition with no body (a struct, a constant, a trait method without a default) is all
+    /// signature, so any change to it is a signature change.
     pub signature: Range<usize>,
+    /// The doc comments inside `signature`. They stay in `range`, but a change to them alone
+    /// is a body change.
+    pub docs: Vec<Range<usize>>,
+    /// The header of the Rust `impl` or `trait` block or TypeScript class around a member
+    /// (generics, bounds, trait, decorators). It is part of the signature of every member,
+    /// though it lies outside `range`.
+    pub header: Option<Header>,
+}
+
+/// The head of a container, up to its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Header {
+    pub range: Range<usize>,
+    /// The doc comments inside `range`.
+    pub docs: Vec<Range<usize>>,
 }
 
 impl Symbol {
@@ -64,7 +80,7 @@ pub fn extract(path: &str, source: &str) -> Option<Vec<Symbol>> {
     }
     let mut out = Vec::new();
     match language {
-        Language::Rust => rust_items(root, source, &rust_module_path(path), &mut out),
+        Language::Rust => rust_items(root, source, &rust_module_path(path), None, &mut out),
         Language::TypeScript | Language::Tsx => ts_items(root, source, "", &mut out),
     }
     if out.iter().any(|symbol| !is_canonical_name(&symbol.name)) {
@@ -112,21 +128,84 @@ fn join(prefix: &str, separator: &str, name: &str) -> String {
     }
 }
 
+/// What sits above a definition and changes its contract: attributes, decorators and doc
+/// comments. A plain comment between them is inside the range, but not a part that counts.
+struct Lead {
+    start: usize,
+    /// The doc and plain comments among them. A change to these alone is a body change, not a
+    /// signature change: it would otherwise send every typo fix to review.
+    docs: Vec<Range<usize>>,
+}
+
+fn leading(node: Node<'_>, source: &str) -> Lead {
+    let mut lead = Lead {
+        start: node.start_byte(),
+        docs: Vec::new(),
+    };
+    let mut plain: Vec<Range<usize>> = Vec::new();
+    let mut current = node;
+    while let Some(previous) = current.prev_sibling() {
+        current = previous;
+        if previous.kind().ends_with("comment") && !is_doc(previous, source) {
+            plain.push(previous.byte_range());
+            continue;
+        }
+        if is_doc(previous, source) {
+            lead.docs.push(previous.byte_range());
+        } else if !is_attribute(previous) {
+            break;
+        }
+        lead.docs.append(&mut plain);
+        lead.start = previous.start_byte();
+    }
+    lead.docs.sort_by_key(|doc| doc.start);
+    lead
+}
+
+fn is_attribute(node: Node<'_>) -> bool {
+    matches!(node.kind(), "attribute_item" | "decorator")
+}
+
+fn is_doc(node: Node<'_>, source: &str) -> bool {
+    let comment = text(node, source);
+    match node.kind() {
+        "line_comment" => comment.starts_with("///") && !comment.starts_with("////"),
+        "block_comment" | "comment" => comment.starts_with("/**") && !comment.starts_with("/**/"),
+        _ => false,
+    }
+}
+
 /// A symbol whose signature ends where `body` starts.
-fn with_body(name: String, outer: Node<'_>, body: Node<'_>) -> Symbol {
+fn with_body(name: String, outer: Node<'_>, body: Node<'_>, source: &str) -> Symbol {
+    let lead = leading(outer, source);
     Symbol {
         name,
-        range: outer.byte_range(),
-        signature: outer.start_byte()..body.start_byte(),
+        range: lead.start..outer.end_byte(),
+        signature: lead.start..body.start_byte(),
+        docs: lead.docs,
+        header: None,
     }
 }
 
 /// A symbol that is all signature.
-fn whole(name: String, outer: Node<'_>) -> Symbol {
+fn whole(name: String, outer: Node<'_>, source: &str) -> Symbol {
+    let lead = leading(outer, source);
+    let range = lead.start..outer.end_byte();
     Symbol {
         name,
-        range: outer.byte_range(),
-        signature: outer.byte_range(),
+        range: range.clone(),
+        signature: range,
+        docs: lead.docs,
+        header: None,
+    }
+}
+
+/// The header of a container: from its leading attributes or decorators to its body.
+fn header_of(outer: Node<'_>, body: Node<'_>, source: &str) -> Header {
+    let lead = leading(outer, source);
+    Header {
+        range: lead.start..body.start_byte(),
+        docs: lead.docs,
     }
 }
 
@@ -150,16 +229,24 @@ fn rust_module_path(path: &str) -> String {
     names.join("::")
 }
 
-fn rust_items(container: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Symbol>) {
+/// `header` is the `impl` or `trait` header around `container`, if it is one of their bodies.
+fn rust_items(
+    container: Node<'_>,
+    source: &str,
+    prefix: &str,
+    header: Option<&Header>,
+    out: &mut Vec<Symbol>,
+) {
     let mut cursor = container.walk();
     for item in container.named_children(&mut cursor) {
+        let before = out.len();
         match item.kind() {
             "function_item" => {
                 if let (Some(name), Some(body)) = (
                     field_text(item, "name", source),
                     item.child_by_field_name("body"),
                 ) {
-                    out.push(with_body(join(prefix, "::", name), item, body));
+                    out.push(with_body(join(prefix, "::", name), item, body, source));
                 }
             }
             "function_signature_item"
@@ -171,7 +258,7 @@ fn rust_items(container: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Sym
             | "static_item"
             | "macro_definition" => {
                 if let Some(name) = field_text(item, "name", source) {
-                    out.push(whole(join(prefix, "::", name), item));
+                    out.push(whole(join(prefix, "::", name), item, source));
                 }
             }
             "mod_item" | "trait_item" => {
@@ -179,7 +266,10 @@ fn rust_items(container: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Sym
                     field_text(item, "name", source),
                     item.child_by_field_name("body"),
                 ) {
-                    rust_items(body, source, &join(prefix, "::", name), out);
+                    let container_header =
+                        (item.kind() == "trait_item").then(|| header_of(item, body, source));
+                    let prefix = join(prefix, "::", name);
+                    rust_items(body, source, &prefix, container_header.as_ref(), out);
                 }
             }
             "impl_item" => {
@@ -187,10 +277,20 @@ fn rust_items(container: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Sym
                     rust_impl_label(item, source),
                     item.child_by_field_name("body"),
                 ) {
-                    rust_items(body, source, &join(prefix, "::", &label), out);
+                    let impl_header = header_of(item, body, source);
+                    rust_items(
+                        body,
+                        source,
+                        &join(prefix, "::", &label),
+                        Some(&impl_header),
+                        out,
+                    );
                 }
             }
             _ => {}
+        }
+        for symbol in &mut out[before..] {
+            symbol.header = symbol.header.take().or_else(|| header.cloned());
         }
     }
 }
@@ -257,7 +357,7 @@ fn ts_item(item: Node<'_>, outer: Node<'_>, source: &str, prefix: &str, out: &mu
                 field_text(item, "name", source),
                 item.child_by_field_name("body"),
             ) {
-                out.push(with_body(join(prefix, ".", name), outer, body));
+                out.push(with_body(join(prefix, ".", name), outer, body, source));
             }
         }
         "function_signature"
@@ -265,7 +365,7 @@ fn ts_item(item: Node<'_>, outer: Node<'_>, source: &str, prefix: &str, out: &mu
         | "type_alias_declaration"
         | "enum_declaration" => {
             if let Some(name) = field_text(item, "name", source) {
-                out.push(whole(join(prefix, ".", name), outer));
+                out.push(whole(join(prefix, ".", name), outer, source));
             }
         }
         "class_declaration" | "abstract_class_declaration" => {
@@ -273,7 +373,8 @@ fn ts_item(item: Node<'_>, outer: Node<'_>, source: &str, prefix: &str, out: &mu
                 field_text(item, "name", source),
                 item.child_by_field_name("body"),
             ) {
-                ts_members(body, source, &join(prefix, ".", name), out);
+                let header = header_of(outer, body, source);
+                ts_members(body, source, &join(prefix, ".", name), &header, out);
             }
         }
         "internal_module" => {
@@ -307,8 +408,8 @@ fn ts_variable(item: Node<'_>, outer: Node<'_>, source: &str, prefix: &str, out:
     };
     let name = join(prefix, ".", name);
     match ts_function_body(declarator.child_by_field_name("value")) {
-        Some(body) => out.push(with_body(name, outer, body)),
-        None => out.push(whole(name, outer)),
+        Some(body) => out.push(with_body(name, outer, body, source)),
+        None => out.push(whole(name, outer, source)),
     }
 }
 
@@ -323,9 +424,10 @@ fn ts_function_body(value: Option<Node<'_>>) -> Option<Node<'_>> {
     }
 }
 
-fn ts_members(body: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Symbol>) {
+fn ts_members(body: Node<'_>, source: &str, prefix: &str, header: &Header, out: &mut Vec<Symbol>) {
     let mut cursor = body.walk();
     for member in body.named_children(&mut cursor) {
+        let before = out.len();
         let Some(name) = field_text(member, "name", source) else {
             continue;
         };
@@ -333,17 +435,22 @@ fn ts_members(body: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Symbol>)
         match member.kind() {
             "method_definition" => {
                 if let Some(body) = member.child_by_field_name("body") {
-                    out.push(with_body(name, member, body));
+                    out.push(with_body(name, member, body, source));
                 }
             }
-            "method_signature" | "abstract_method_signature" => out.push(whole(name, member)),
+            "method_signature" | "abstract_method_signature" => {
+                out.push(whole(name, member, source));
+            }
             "public_field_definition" => {
                 match ts_function_body(member.child_by_field_name("value")) {
-                    Some(body) => out.push(with_body(name, member, body)),
-                    None => out.push(whole(name, member)),
+                    Some(body) => out.push(with_body(name, member, body, source)),
+                    None => out.push(whole(name, member, source)),
                 }
             }
             _ => {}
+        }
+        for symbol in &mut out[before..] {
+            symbol.header = Some(header.clone());
         }
     }
 }
@@ -710,6 +817,44 @@ class Panel extends React.Component {
         assert!(extract("src/a.rs", "fn ok() {}\n").is_some());
     }
 
+    #[test]
+    fn leading_attributes_decorators_and_doc_comments_are_in_the_signature() {
+        let source = "/// Doc.\n#[derive(Debug)]\n\
+             // plain\nfn f() {}\n\n/// Other.\n#[inline]\nfn g() {\n    1;\n}\n";
+        let g = find("src/a.rs", source, "a::g");
+        assert_eq!(
+            &source[g.signature.clone()],
+            "/// Other.\n#[inline]\nfn g() "
+        );
+        assert_eq!(g.range.start, g.signature.start);
+        let f = find("src/a.rs", source, "a::f");
+        assert_eq!(
+            &source[f.signature],
+            "/// Doc.\n#[derive(Debug)]\n// plain\nfn f() "
+        );
+
+        let ts = "/** Doc. */\nclass A {\n  @Get()\n  m() {}\n}\n";
+        let m = find("a.ts", ts, "A.m");
+        assert_eq!(&ts[m.signature], "@Get()\n  m() ");
+    }
+
+    #[test]
+    fn a_member_carries_the_header_of_its_impl_or_class() {
+        let source = "#[cfg(unix)]\nimpl<T: Clone> W<T> {\n    fn get(&self) {}\n}\nfn free() {}\n";
+        let get = find("src/a.rs", source, "a::W::get");
+        assert_eq!(
+            &source[get.header.unwrap().range],
+            "#[cfg(unix)]\nimpl<T: Clone> W<T> "
+        );
+        assert!(find("src/a.rs", source, "a::free").header.is_none());
+
+        let ts = "@Injectable()\nexport class A<T> extends B {\n  m() {}\n}\n";
+        let m = find("a.ts", ts, "A.m");
+        assert_eq!(
+            &ts[m.header.unwrap().range],
+            "@Injectable()\nexport class A<T> extends B "
+        );
+    }
     #[test]
     fn a_language_without_a_grammar_gives_no_symbols() {
         assert!(extract("README.md", "# title\n").is_none());

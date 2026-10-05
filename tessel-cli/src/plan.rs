@@ -75,6 +75,22 @@ struct Shape {
     residual: String,
 }
 
+/// `source[range]` without the doc comments inside it, and those comments apart. The whitespace
+/// after each comment goes with it, so adding or removing a doc leaves the rest unchanged.
+fn split_docs(source: &str, range: &Range<usize>, docs: &[Range<usize>]) -> (String, String) {
+    let (mut rest, mut documented) = (String::new(), String::new());
+    let mut at = range.start;
+    for doc in docs {
+        rest.push_str(&source[at..doc.start]);
+        documented.push_str(&source[doc.clone()]);
+        documented.push('\0');
+        let after = &source[doc.end..range.end];
+        at = doc.end + (after.len() - after.trim_start().len());
+    }
+    rest.push_str(&source[at..range.end]);
+    (rest, documented)
+}
+
 fn shape(path: &str, source: &str) -> Option<Shape> {
     let found = extract(path, source)?;
     let mut symbols: BTreeMap<String, Parts> = BTreeMap::new();
@@ -85,8 +101,15 @@ fn shape(path: &str, source: &str) -> Option<Shape> {
         residual.push('\0');
         at = symbol.range.end;
         let parts = symbols.entry(symbol.name.clone()).or_default();
-        parts.signature.push_str(&source[symbol.signature.clone()]);
+        if let Some(header) = &symbol.header {
+            let (head, _) = split_docs(source, &header.range, &header.docs);
+            parts.signature.push_str(&head);
+            parts.signature.push('\0');
+        }
+        let (signature, docs) = split_docs(source, &symbol.signature, &symbol.docs);
+        parts.signature.push_str(&signature);
         parts.signature.push('\0');
+        parts.body.push_str(&docs);
         parts.body.push_str(&source[symbol.body()]);
         parts.body.push('\0');
     }
@@ -160,7 +183,8 @@ fn file_fallback(path: &str, current: &str, edits: &[Replace<'_>]) -> Vec<ScopeC
     let signatures: Vec<Range<usize>> = extract(path, current)
         .unwrap_or_default()
         .into_iter()
-        .map(|symbol: Symbol| symbol.signature)
+        .flat_map(|symbol: Symbol| [Some(symbol.signature), symbol.header.map(|h| h.range)])
+        .flatten()
         .collect();
     let touches_signature = edits.iter().filter(|e| !e.old.is_empty()).any(|edit| {
         current.match_indices(edit.old).any(|(at, hit)| {
@@ -705,6 +729,255 @@ fn check(user: &str) -> bool {
                 scope: symbol_scope("src/lib.rs", "f"),
                 mode: Mode::EditBody
             }]
+        );
+    }
+
+    const ATTRIBUTED: &str = "\
+/// Starts a session.
+#[derive(Debug)]
+pub struct Session {
+    id: u32,
+}
+
+impl Session {
+    pub fn refresh(&self) -> u32 {
+        self.id
+    }
+}
+
+#[must_use]
+pub fn open() -> Session {
+    Session { id: 1 }
+}
+
+pub fn other() {}
+";
+
+    fn changed(before: &str, after: &str) -> Vec<ScopeClaim> {
+        changed_scopes("src/lib.rs", before, after).unwrap()
+    }
+
+    #[test]
+    fn adding_a_derive_is_a_signature_change() {
+        let after = ATTRIBUTED.replace("#[derive(Debug)]", "#[derive(Debug, Clone)]");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
+        );
+        let bare = ATTRIBUTED.replace("#[derive(Debug)]\n", "");
+        assert_eq!(
+            changed(ATTRIBUTED, &bare),
+            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn changing_an_attribute_is_a_signature_change() {
+        let after = ATTRIBUTED.replace("#[must_use]", "#[must_use = \"drop closes it\"]");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "open", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn changing_a_doc_comment_is_a_body_change() {
+        let after = ATTRIBUTED.replace("Starts a session.", "Opens a session.");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "Session", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn a_plain_comment_between_an_attribute_and_its_item_does_not_hide_the_attribute() {
+        let before = "#[derive(Debug)]\n// why\nstruct S;\n";
+        let after = before.replace("Debug", "Debug, Clone");
+        assert_eq!(
+            changed(before, &after),
+            [sym_in("src/lib.rs", "S", Mode::EditSignature)]
+        );
+        let ts = "class A {\n  @Get()\n  // why\n  m() {}\n}\n";
+        assert_eq!(
+            changed_scopes("src/a.ts", ts, &ts.replace("@Get()", "@Post()")).unwrap(),
+            [sym_in("src/a.ts", "A.m", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn editing_a_plain_comment_between_an_attribute_and_its_item_is_a_body_change() {
+        let before = "#[derive(Debug)]\n// why\nstruct S;\n";
+        assert_eq!(
+            changed(before, &before.replace("why", "because")),
+            [sym_in("src/lib.rs", "S", Mode::EditBody)]
+        );
+    }
+    #[test]
+    fn changing_a_trait_header_or_its_attribute_is_a_signature_change_of_its_methods() {
+        let before = "#[async_trait]\ntrait T: Send {\n    fn m(&self);\n    fn n(&self) {}\n}\n";
+        let wider = before.replace("Send", "Send + Sync");
+        let got = changed(before, &wider);
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "T::m", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "T::n", Mode::EditSignature)),
+            "{got:?}"
+        );
+        let bare = before.replace("#[async_trait]\n", "");
+        let got = changed(before, &bare);
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "T::n", Mode::EditSignature)),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn adding_or_removing_a_doc_comment_is_a_body_change() {
+        let documented = "/// Doc.\n#[derive(Debug)]\nstruct S;\n";
+        let bare = "#[derive(Debug)]\nstruct S;\n";
+        let want = [sym_in("src/lib.rs", "S", Mode::EditBody)];
+        assert_eq!(changed(documented, bare), want);
+        assert_eq!(changed(bare, documented), want);
+        let ts = "class A {\n  /** Doc. */\n  m() {}\n}\n";
+        assert_eq!(
+            changed_scopes("src/a.ts", ts, &ts.replace("Doc.", "Docs.")).unwrap(),
+            [sym_in("src/a.ts", "A.m", Mode::EditBody)]
+        );
+        let both = documented
+            .replace("Doc.", "Docs.")
+            .replace("Debug", "Clone");
+        assert_eq!(
+            changed(documented, &both),
+            [sym_in("src/lib.rs", "S", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn four_slashes_and_empty_block_comments_are_not_docs() {
+        for (before, after) in [
+            ("//// a\nfn f() {}\n", "//// b\nfn f() {}\n"),
+            ("/**/ fn f() {}\n", "/* */ fn f() {}\n"),
+        ] {
+            assert_eq!(
+                changed(before, after),
+                [file_in("src/lib.rs", Mode::EditBody)]
+            );
+        }
+    }
+
+    #[test]
+    fn an_ambiguous_edit_on_an_impl_header_is_a_signature_edit_of_the_file() {
+        let source = "impl<T: Clone> A<T> {\n    fn a(&self) {}\n}\n\n\
+            impl<T: Clone> B<T> {\n    fn b(&self) {}\n}\n";
+        let edits = one("<T: Clone>", "<T: Copy>");
+        assert_eq!(
+            plan_edit("src/lib.rs", source, &edits),
+            [file_in("src/lib.rs", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn a_plain_comment_above_a_symbol_is_not_part_of_it() {
+        let before = "// note\nfn a() {}\n";
+        let after = "// other note\nfn a() {}\n";
+        assert_eq!(
+            changed(before, after),
+            [file_in("src/lib.rs", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn an_attribute_on_another_symbol_leaves_this_one_alone() {
+        let after = ATTRIBUTED.replace("#[must_use]", "#[inline]");
+        let got = changed(ATTRIBUTED, &after);
+        assert_eq!(got, [sym_in("src/lib.rs", "open", Mode::EditSignature)]);
+        assert!(!got.contains(&sym_in("src/lib.rs", "Session", Mode::EditSignature)));
+        assert!(!got.contains(&sym_in("src/lib.rs", "other", Mode::EditSignature)));
+    }
+
+    #[test]
+    fn a_body_only_change_is_still_edit_body() {
+        let after = ATTRIBUTED.replace("Session { id: 1 }", "Session { id: 2 }");
+        assert_eq!(
+            changed(ATTRIBUTED, &after),
+            [sym_in("src/lib.rs", "open", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn an_impl_bound_change_is_a_signature_change_of_its_methods() {
+        let before = "impl<T: Clone> Wrapper<T> {\n    fn get(&self) {}\n    fn put(&self) {}\n}\n\
+            \nfn z() {}\n";
+        let after = before.replace("T: Clone", "T: Clone + Send");
+        let got = changed(before, &after);
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "Wrapper::get", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&sym_in("src/lib.rs", "Wrapper::put", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(!got
+            .iter()
+            .any(|c| c.scope == symbol_scope("src/lib.rs", "z")));
+    }
+
+    #[test]
+    fn a_where_clause_change_is_a_signature_change() {
+        let before = "fn f<T>(t: T) where T: Clone {\n    drop(t);\n}\n";
+        let after = before.replace("T: Clone", "T: Copy");
+        assert_eq!(
+            changed(before, &after),
+            [sym_in("src/lib.rs", "f", Mode::EditSignature)]
+        );
+        let impl_before = "impl<T> W<T>\nwhere\n    T: Clone,\n{\n    fn g(&self) {}\n}\n";
+        let impl_after = impl_before.replace("T: Clone", "T: Copy");
+        assert!(changed(impl_before, &impl_after).contains(&sym_in(
+            "src/lib.rs",
+            "W::g",
+            Mode::EditSignature
+        )));
+    }
+
+    #[test]
+    fn a_typescript_decorator_is_part_of_the_signature() {
+        let before = "class Api {\n  @Get('/a')\n  list() {\n    return 1;\n  }\n  other() {}\n}\n";
+        let after = before.replace("@Get('/a')", "@Get('/b')");
+        assert_eq!(
+            changed_scopes("src/api.ts", before, &after).unwrap(),
+            [sym_in("src/api.ts", "Api.list", Mode::EditSignature)]
+        );
+        let added = before.replace("  @Get('/a')\n", "");
+        assert_eq!(
+            changed_scopes("src/api.ts", &added, before).unwrap(),
+            [sym_in("src/api.ts", "Api.list", Mode::EditSignature)]
+        );
+    }
+
+    #[test]
+    fn a_typescript_class_decorator_is_the_signature_of_its_members() {
+        let before = "@Injectable()\nexport class Api {\n  list() {}\n  show() {}\n}\n";
+        let after = before.replace("@Injectable()", "@Injectable({ scope: 'x' })");
+        let got = changed_scopes("src/api.ts", before, &after).unwrap();
+        assert!(
+            got.contains(&sym_in("src/api.ts", "Api.list", Mode::EditSignature)),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&sym_in("src/api.ts", "Api.show", Mode::EditSignature)),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn the_hook_claims_the_symbol_for_a_derive_edit() {
+        let edits = one("#[derive(Debug)]", "#[derive(Debug, Clone)]");
+        assert_eq!(
+            plan_edit("src/lib.rs", ATTRIBUTED, &edits),
+            [sym_in("src/lib.rs", "Session", Mode::EditSignature)]
         );
     }
 
