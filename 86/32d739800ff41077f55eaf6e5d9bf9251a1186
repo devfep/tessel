@@ -1,0 +1,4 @@
+intent: merge SUBMIT-1 fix pass 3: absolute alarm times; a failed alarm write no longer closes the client socket
+assumes: setAlarm accepts any time >= now+1
+rejected: rolling the coordinator back while fixing (only a scratch repo had a submitted claim)
+evidence: review Yes. Merged tree: cargo test --workspace 386. Live on coordinator e9d00c31 + steward 20a409ee, repo gate9-1791208310, through the agent Submit: a1 clean change merged in 18 s (trunk moved to the merged head 0e5963b); a2 failing test rejected 'tests failed (exit code 1)' in 15 s; a3 conflicting README rejected 'conflicts with main in 1 file(s)'; log seq 0..12 gap-free. The repo stalled by the alarm-0 bug (gate9-1791207721) merged its queued claim on the next hello; a watch connection alone did not wake it.
