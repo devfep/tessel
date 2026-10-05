@@ -1,0 +1,4 @@
+intent: each side of a baseline trial runs in its own test runner (own container, tokens, work tree) so leftovers from the first run cannot fail the second; a queued verification is replaced only by a merge that started from its main
+assumes: Worker-level orchestration (a new TestRunner DO per side) gives a fresh container each
+rejected: resetting the work tree between runs in one container (cannot clear /tmp, HOME or processes); keeping the oldest baseline across unrelated merges (a break by an unrelated merge would count)
+evidence: cargo test -p tessel-coordinator 341 passed; steward 446 passed; clippy, typecheck, oxlint clean
