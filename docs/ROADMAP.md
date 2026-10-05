@@ -54,6 +54,9 @@ hand (his ruling, 07:19), with the orchestrator handing him the command and the 
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
 **Known limits, recorded so nobody rediscovers them:**
+- OPEN BUG, fix in progress in CLI-2 (found by the CLI-FIX reviewer after the merge at `36abdb3`):
+  when the hook's stdin JSON has no `cwd`, a relative `file_path` is resolved against the hook
+  process's cwd and can exit 0 unclaimed. Claude Code always sends `cwd`; no lane runs the hook yet.
 - A submitted claim is held until a merge outcome is reported; that path arrives with the steward
   merge work (Oct 7). Add then: a test that queue positions follow the submission ordinal once
   merged claims are removed.
