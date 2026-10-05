@@ -1,0 +1,4 @@
+intent: merge COORD-3: Submit with fence and coverage checks, assumption challenges at submit, shadow claims for experiment runs
+assumes: the steward will report merge outcomes for submitted claims (Oct 7); shadow_enabled is set only for experiment runs
+rejected: a claim status enum (shadow and submitted combine); logging untrusted text in SubmitRejected reasons
+evidence: Opus review Yes after two fix passes, 24 + 10 reviewer mutants (one survivor that cannot be killed until merged claims are removed); on the merged tree cargo test 104 passed, clippy 0 hits in coordinator.rs, rustfmt clean, no line over 100 characters, wasm build compiles, src/protocol.rs unchanged; one over-long commit subject reworded before merge with an identical tree
