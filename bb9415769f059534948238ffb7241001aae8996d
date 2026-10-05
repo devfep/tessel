@@ -1,0 +1,4 @@
+intent: close SPIKE-3 in the roadmap and rewrite STATE
+assumes: none
+rejected: none
+evidence: docs only; gate evidence is in the note on a4b411c
