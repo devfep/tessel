@@ -1,0 +1,4 @@
+intent: keep an end-to-end check of terminal-safe output after COORD-HARDEN made the server refuse hostile scopes
+assumes: the fake coordinator may send strings the real one now rejects; the CLI must stay safe against that
+rejected: dropping the end-to-end test, because the renderer must not depend on the server filtering
+evidence: cargo test -p tessel-cli --test cli 39 passed
