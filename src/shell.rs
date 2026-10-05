@@ -325,10 +325,11 @@ pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
 pub const MAX_DATE_MS: f64 = 8.64e15;
 
 /// The absolute time the alarm should fire, in milliseconds since the epoch, or `None` to clear
-/// it. The core picks the earliest of a lease expiry and a merge dispatch. Clamped to the largest
-/// valid `Date`. A time in the past fires at once.
-pub fn alarm_at_ms(next_alarm_ms: Option<u64>) -> Option<f64> {
-    let next = next_alarm_ms?;
+/// it. The core picks the earliest of a lease expiry and a merge dispatch. This is the one place
+/// the time is clamped: `setAlarm` refuses a time that is not after 0, so it is at least
+/// `now_ms + 1` (it fires at once), and at most the largest valid `Date`.
+pub fn alarm_at_ms(next_alarm_ms: Option<u64>, now_ms: u64) -> Option<f64> {
+    let next = next_alarm_ms?.max(now_ms.saturating_add(1));
     Some((next as f64).min(MAX_DATE_MS))
 }
 
@@ -988,23 +989,35 @@ mod tests {
 
     #[test]
     fn alarm_is_cleared_without_an_expiry() {
-        assert_eq!(alarm_at_ms(None), None);
+        assert_eq!(alarm_at_ms(None, 5), None);
     }
 
     #[test]
     fn alarm_time_is_the_absolute_expiry() {
         assert_eq!(
-            alarm_at_ms(Some(1_791_180_000_000)),
+            alarm_at_ms(Some(1_791_180_000_000), 1_791_000_000_000),
             Some(1_791_180_000_000.0)
         );
-        assert_eq!(alarm_at_ms(Some(0)), Some(0.0));
+    }
+
+    #[test]
+    fn a_due_or_past_alarm_is_set_just_after_now_never_at_or_before_zero() {
+        let now = 1_791_000_000_000;
+        assert_eq!(alarm_at_ms(Some(0), now), Some(now as f64 + 1.0));
+        assert_eq!(alarm_at_ms(Some(now), now), Some(now as f64 + 1.0));
+        assert_eq!(alarm_at_ms(Some(now - 5), now), Some(now as f64 + 1.0));
+        assert_eq!(alarm_at_ms(Some(0), 0), Some(1.0));
     }
 
     #[test]
     fn an_absurdly_distant_expiry_is_clamped_to_a_valid_date() {
-        assert_eq!(alarm_at_ms(Some(u64::MAX)), Some(MAX_DATE_MS));
-        assert_eq!(alarm_at_ms(Some(MAX_DATE_MS as u64 + 1)), Some(MAX_DATE_MS));
-        assert_eq!(alarm_at_ms(Some(MAX_DATE_MS as u64)), Some(MAX_DATE_MS));
+        assert_eq!(alarm_at_ms(Some(u64::MAX), 5), Some(MAX_DATE_MS));
+        assert_eq!(
+            alarm_at_ms(Some(MAX_DATE_MS as u64 + 1), 5),
+            Some(MAX_DATE_MS)
+        );
+        assert_eq!(alarm_at_ms(Some(MAX_DATE_MS as u64), 5), Some(MAX_DATE_MS));
+        assert_eq!(alarm_at_ms(Some(10), u64::MAX), Some(MAX_DATE_MS));
     }
 
     #[test]
