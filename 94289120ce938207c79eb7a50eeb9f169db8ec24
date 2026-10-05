@@ -1,0 +1,4 @@
+intent: close COORD-3 in the roadmap and correct the STATE clock
+assumes: none
+rejected: none
+evidence: docs only; gate evidence is in the note on a10a680
