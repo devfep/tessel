@@ -1,0 +1,4 @@
+intent: fix pass 1: refuse hazardous symbol names, collapse over 256 scopes, claim create through syntax errors, exit-9 advice, mutant-gap tests
+assumes: src/coordinator.rs is_canonical_name and MAX_SCOPES_PER_MESSAGE stay as copied
+rejected: a Watch on the review socket to confirm (the log re-read is simpler); collapsing symbols whenever a file claim is held (would drop symbol detail needlessly, so only over the limit)
+evidence: cargo test --workspace 547 passed (predicted 547), clippy -D warnings, fmt, deny, wasm 0 warnings; dogfood: claim 21 fence 32 on tessel-dogfood
