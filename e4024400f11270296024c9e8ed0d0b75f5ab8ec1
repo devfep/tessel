@@ -1,0 +1,4 @@
+intent: merge PROTO-FREEZE (merged by Felix): wait_queued/wait_withdrawn events, req on Release and Uncovered, protocol.rs clippy/rustfmt clean, Mode::permits exhaustive
+assumes: no deployed client depends on the absence of the two new event variants (none exist yet)
+rejected: letting tools/merge-one.sh pass approved protocol changes (refused by the permission classifier; Felix merged by hand)
+evidence: review Yes after one fix pass (8 + 5 reviewer mutants killed). Merged tree e402440 equals the reviewed tree 7f92d17: cargo test 241 passed, clippy -D warnings 0, rustfmt clean on src/*.rs. Live on coordinator 57e82531: a2 wait claim logged wait_queued req 5 position 1 and wait_withdrawn on close; release req 7 with unknown claim answered unknown_claim with req 7; log seq 0..4 gap-free.
