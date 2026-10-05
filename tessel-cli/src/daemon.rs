@@ -39,6 +39,10 @@ const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const SNAPSHOT_LIMIT: Duration = Duration::from_secs(5);
 /// Until the coordinator's `Welcome` says otherwise.
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(10);
+/// How long an `Accepted` waits for a `ReviewRequired` before the submit command is told. The
+/// coordinator sends the two back to back, so one read sooner than this would announce a merge
+/// queue place for work that is waiting for a human.
+const SUBMIT_SETTLE: Duration = Duration::from_millis(250);
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -101,6 +105,9 @@ struct PendingClaim {
 struct PendingSubmit {
     claim: ClaimId,
     reply: oneshot::Sender<Reply>,
+    /// The queue position from `Accepted`, once it arrived; the caller is told when `SUBMIT_SETTLE`
+    /// passes without a `ReviewRequired`.
+    accepted: Option<u32>,
 }
 
 /// Why a connection attempt failed.
@@ -125,6 +132,7 @@ struct Daemon {
     pending: HashMap<u64, PendingClaim>,
     release_reqs: HashMap<u64, ClaimId>,
     submits: HashMap<u64, PendingSubmit>,
+    settle_at: Option<Instant>,
     /// Claim requests whose answer was lost with the socket; their callers are still waiting.
     lost_requests: Vec<PendingClaim>,
     /// Claims released just before the socket dropped; the release may not have arrived.
@@ -267,6 +275,7 @@ impl Daemon {
             pending: HashMap::new(),
             release_reqs: HashMap::new(),
             submits: HashMap::new(),
+            settle_at: None,
             lost_requests: Vec::new(),
             lost_releases: HashSet::new(),
             fresh: HashSet::new(),
@@ -318,6 +327,7 @@ impl Daemon {
         loop {
             let online = self.is_online();
             let reconnect_at = self.reconnect_at;
+            let settle_at = self.settle_at;
             tokio::select! {
                 Some(command) = cmd_rx.recv() => {
                     if let Flow::Exit = self.on_command(command).await {
@@ -330,6 +340,9 @@ impl Daemon {
                 }
                 () = sleep_until_some(reconnect_at), if reconnect_at.is_some() => {
                     self.try_connect().await?;
+                }
+                () = sleep_until_some(settle_at), if settle_at.is_some() => {
+                    self.settle_submits();
                 }
                 () = tokio::time::sleep_until(self.next_housekeeping) => {
                     if let Flow::Exit = self.housekeeping() {
@@ -483,8 +496,12 @@ impl Daemon {
         let message = "the connection dropped before the coordinator answered; the submission may \
                        still have arrived, so run `tessel status`: a claim shown as submitted was \
                        accepted";
+        self.settle_at = None;
         for (_, pending) in std::mem::take(&mut self.submits) {
-            let _ = pending.reply.send(submit_refused(None, message));
+            let _ = pending.reply.send(match pending.accepted {
+                Some(queue_position) => accepted_reply(queue_position),
+                None => submit_refused(None, message),
+            });
         }
         self.lost_releases
             .extend(self.release_reqs.drain().map(|(_, claim)| claim));
@@ -912,7 +929,7 @@ impl Daemon {
     }
 
     fn on_accepted(&mut self, req: RequestId, claim: ClaimId, queue_position: u32) {
-        let Some(pending) = self.take_submit(Some(req), claim) else {
+        let Some(pending) = self.submits.get_mut(&req.0) else {
             let msg = ServerMsg::Accepted {
                 req,
                 claim,
@@ -921,9 +938,30 @@ impl Daemon {
             self.unexpected("acceptance for an unknown request", &msg);
             return;
         };
+        pending.accepted = Some(queue_position);
+        self.settle_at = Some(Instant::now() + SUBMIT_SETTLE);
         self.set_submitted(claim, true);
-        let outcome = SubmitOutcome::Accepted { queue_position };
-        let _ = pending.reply.send(Reply::Submit { outcome });
+    }
+
+    /// Tells every submit command whose `Accepted` has not been followed by a `ReviewRequired`.
+    fn settle_submits(&mut self) {
+        self.settle_at = None;
+        let settled: Vec<u64> = self
+            .submits
+            .iter()
+            .filter(|(_, pending)| pending.accepted.is_some())
+            .map(|(req, _)| *req)
+            .collect();
+        for req in settled {
+            if let Some(PendingSubmit {
+                reply,
+                accepted: Some(queue_position),
+                ..
+            }) = self.submits.remove(&req)
+            {
+                let _ = reply.send(accepted_reply(queue_position));
+            }
+        }
     }
 
     fn on_uncovered(
@@ -1021,7 +1059,14 @@ impl Daemon {
             let _ = reply.send(submit_refused(None, message));
             return;
         }
-        self.submits.insert(req, PendingSubmit { claim, reply });
+        self.submits.insert(
+            req,
+            PendingSubmit {
+                claim,
+                reply,
+                accepted: None,
+            },
+        );
     }
 
     fn on_error(
@@ -1293,6 +1338,12 @@ impl Daemon {
             }
         }
         self.log("daemon stopped");
+    }
+}
+
+fn accepted_reply(queue_position: u32) -> Reply {
+    Reply::Submit {
+        outcome: SubmitOutcome::Accepted { queue_position },
     }
 }
 

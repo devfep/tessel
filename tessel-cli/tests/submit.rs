@@ -149,7 +149,7 @@ async fn an_added_file_is_sent_as_create() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_deleted_file_is_sent_as_edit_signature_with_a_review_warning() -> Result<()> {
+async fn a_deleted_file_is_sent_as_edit_signature_and_held_for_review() -> Result<()> {
     let (fake, a1) = world().await?;
     a1.start("delete a file")?;
     assert_eq!(
@@ -160,7 +160,16 @@ async fn a_deleted_file_is_sent_as_edit_signature_with_a_review_warning() -> Res
     git(&a1.root(), &["rm", "-q", "src/b.rs"])?;
     git(&a1.root(), &["commit", "-q", "-m", "delete b"])?;
     let done = a1.tessel(&["submit", "--evidence", "tests passed"])?;
-    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(done.code, 7, "{}", done.all());
+    assert!(done.stdout.contains("review required"), "{}", done.stdout);
+    assert!(done.stdout.contains("src/b.rs"), "{}", done.stdout);
+    assert_eq!(first_claim(&a1)?["submitted"], true);
+    let inbox = a1.tessel(&["inbox"])?;
+    assert!(
+        inbox.stdout.contains("[review_required]"),
+        "{}",
+        inbox.stdout
+    );
     assert!(
         done.stdout.contains("note:"),
         "review warning:\n{}",
