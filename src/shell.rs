@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::coordinator::{Config, Coordinator as Core, Effect, InvalidConfig};
-use crate::protocol::{AgentId, ClientMsg, ErrorCode, Event, RunId, ServerMsg};
+use crate::protocol::{AgentId, ClientMsg, ErrorCode, Event, RequestId, RunId, ServerMsg};
 
 /// Lease length for every claim. A fixed value: nothing needs to tune it yet.
 pub const LEASE_MS: u64 = 30_000;
@@ -18,6 +18,21 @@ pub const LEASE_MS: u64 = 30_000;
 /// The longest agent id a `Hello` may carry. A socket attachment holds at most 2 KiB, and the id
 /// is stored in it.
 pub const MAX_AGENT_ID_BYTES: usize = 128;
+
+/// The longest text frame the shell parses. Larger frames are refused with `Malformed`.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// The size past which a client call may not grow the stored state, and the largest single event
+/// a client call may log.
+pub const SOFT_ENTRY_BYTES: usize = 1024 * 1024;
+
+/// The largest value stored in one entry. Durable Object storage rejects values over 2 MiB; the
+/// margin keeps the expiry that frees a repo from being rejected.
+pub const HARD_ENTRY_BYTES: usize = 2 * 1024 * 1024 - 64 * 1024;
+
+/// The largest integer a JavaScript number holds exactly. A socket attachment cannot store a
+/// larger `u64`, and no event will ever have a higher `seq`.
+pub const MAX_SAFE_SEQ: u64 = (1 << 53) - 1;
 
 /// Storage key of the serialized core.
 pub const STATE_KEY: &str = "core";
@@ -31,12 +46,10 @@ pub struct Session {
     /// Set by the first `Hello` the core answered with `Welcome`.
     #[serde(default)]
     pub agent: Option<AgentId>,
-    /// Set once a `Watch` replay has finished.
+    /// Set once a `Watch` replay has finished: live events below this `seq` are not sent.
+    /// `None` means the socket is not watching.
     #[serde(default)]
-    pub watcher: bool,
-    /// The `from_seq` of the `Watch`: live events below it are not sent. 0 if absent.
-    #[serde(default)]
-    pub watch_from: u64,
+    pub watch_from: Option<u64>,
 }
 
 /// What the shell does with one parsed client message.
@@ -133,9 +146,33 @@ pub fn load_core(
     })
 }
 
-/// Parse one text frame. The reason is dropped on purpose: parse errors quote the input.
-pub fn parse_client_msg(text: &str) -> Option<ClientMsg> {
-    serde_json::from_str(text).ok()
+/// Why a text frame is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFault {
+    /// Over `MAX_FRAME_BYTES`; refused before it is parsed.
+    TooLarge,
+    NotAMessage,
+}
+
+impl FrameFault {
+    /// The reply to send. A fixed text, never the input.
+    pub fn reply(self) -> ServerMsg {
+        match self {
+            FrameFault::TooLarge => {
+                let message = format!("frame is larger than {MAX_FRAME_BYTES} bytes");
+                error_msg(ErrorCode::Malformed, &message)
+            }
+            FrameFault::NotAMessage => malformed_reply(),
+        }
+    }
+}
+
+/// Parse one text frame. The parse error is dropped on purpose: it quotes the input.
+pub fn parse_client_msg(text: &str) -> Result<ClientMsg, FrameFault> {
+    if text.len() > MAX_FRAME_BYTES {
+        return Err(FrameFault::TooLarge);
+    }
+    serde_json::from_str(text).map_err(|_| FrameFault::NotAMessage)
 }
 
 /// The reply to a text frame that is not a valid message. A fixed text, never the input.
@@ -163,12 +200,12 @@ fn error_msg(code: ErrorCode, message: &str) -> ServerMsg {
 /// core refuses a `Hello` that names someone else.
 pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
     match msg {
-        ClientMsg::Watch { .. } if session.watcher => Action::Reject(error_msg(
+        ClientMsg::Watch { .. } if session.watch_from.is_some() => Action::Reject(error_msg(
             ErrorCode::Malformed,
             "this socket is already watching",
         )),
         ClientMsg::Watch { from_seq } => Action::Watch {
-            from_seq: *from_seq,
+            from_seq: clamp_watch_from(*from_seq),
         },
         ClientMsg::Hello { agent, .. } => {
             if let Some(rejection) = check_agent_id(agent) {
@@ -195,6 +232,11 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
             )),
         },
     }
+}
+
+/// The stored watch start: `from_seq` limited to `MAX_SAFE_SEQ`, so the attachment can hold it.
+pub fn clamp_watch_from(from_seq: u64) -> u64 {
+    from_seq.min(MAX_SAFE_SEQ)
 }
 
 /// `Malformed` for an agent id that is empty or too long to store in a socket attachment.
@@ -233,7 +275,6 @@ pub fn bind_on_welcome(
         if let Outbound::Reply(ServerMsg::Welcome { .. }) = item {
             return Some(Session {
                 agent: Some(agent.clone()),
-                watcher: session.watcher,
                 watch_from: session.watch_from,
             });
         }
@@ -256,7 +297,10 @@ pub fn bound_indexes(agent: &AgentId, sessions: &[Session]) -> Vec<usize> {
 pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
     let mut found = Vec::new();
     for (index, session) in sessions.iter().enumerate() {
-        if session.watcher && seq >= session.watch_from {
+        let Some(from) = session.watch_from else {
+            continue;
+        };
+        if seq >= from {
             found.push(index);
         }
     }
@@ -355,6 +399,146 @@ pub fn event_key(seq: u64) -> String {
     format!("{EVENT_PREFIX}{seq:020}")
 }
 
+/// The text of the `Malformed` reply when a client call would grow the stored state too far.
+pub const STATE_LIMIT_MESSAGE: &str = "repo state limit reached";
+
+/// The reply to the sender of a client call that was refused for size. It carries the message's
+/// `req` so the client can match it.
+pub fn state_limit_reply(req: Option<RequestId>) -> ServerMsg {
+    ServerMsg::Error {
+        req,
+        code: ErrorCode::Malformed,
+        message: STATE_LIMIT_MESSAGE.to_string(),
+    }
+}
+
+/// The `req` a client message carries, if any.
+pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
+    match msg {
+        ClientMsg::Claim { req, .. }
+        | ClientMsg::Amend { req, .. }
+        | ClientMsg::Submit { req, .. }
+        | ClientMsg::OpenRace { req, .. }
+        | ClientMsg::JoinRace { req, .. }
+        | ClientMsg::PickWinner { req, .. }
+        | ClientMsg::Review { req, .. } => Some(*req),
+        ClientMsg::Hello { .. }
+        | ClientMsg::Heartbeat
+        | ClientMsg::Release { .. }
+        | ClientMsg::Watch { .. } => None,
+    }
+}
+
+/// What kind of work produced the result that is about to be stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Work {
+    /// A message that adds content (`Claim`, `Amend`, `Submit`): the only work that may be
+    /// refused for growing the state past `SOFT_ENTRY_BYTES`.
+    Content,
+    /// Everything else: the other client messages, the alarm's expiry, a withdrawal on close and
+    /// the expiry that follows a refusal. Never refused for size below `HARD_ENTRY_BYTES`, so a
+    /// repo over the soft limit can always make progress. No tolerance is added: it would let
+    /// small steps ratchet past the hard limit.
+    Plain,
+}
+
+/// The kind of work a client message does.
+pub fn work_of(msg: &ClientMsg) -> Work {
+    match msg {
+        ClientMsg::Claim { .. } | ClientMsg::Amend { .. } | ClientMsg::Submit { .. } => {
+            Work::Content
+        }
+        ClientMsg::Hello { .. }
+        | ClientMsg::Heartbeat
+        | ClientMsg::Release { .. }
+        | ClientMsg::OpenRace { .. }
+        | ClientMsg::JoinRace { .. }
+        | ClientMsg::PickWinner { .. }
+        | ClientMsg::Review { .. }
+        | ClientMsg::Watch { .. } => Work::Plain,
+    }
+}
+
+/// The sizes, in bytes, of one call's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sizes {
+    /// The state as last stored.
+    pub previous_state: usize,
+    pub state: usize,
+    /// The largest single event entry of the call, 0 if it logged none.
+    pub largest_event: usize,
+}
+
+/// What to do with a call's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreDecision {
+    Store,
+    /// A client call that would grow the state or log an event past `SOFT_ENTRY_BYTES`.
+    Refuse,
+    /// Past `HARD_ENTRY_BYTES`: storage would reject it.
+    OverHard,
+}
+
+/// Store or refuse. A client call is refused when the new state is over `SOFT_ENTRY_BYTES` and
+/// larger than the stored one (anything that does not grow the state, a `release` for one, goes
+/// through), or when one event is over it. Past `HARD_ENTRY_BYTES`, the largest value storage
+/// accepts less a margin, nothing is stored.
+pub fn decide_store(work: Work, sizes: Sizes) -> StoreDecision {
+    if work == Work::Content {
+        let grown = sizes.state > SOFT_ENTRY_BYTES && sizes.state > sizes.previous_state;
+        if grown || sizes.largest_event > SOFT_ENTRY_BYTES {
+            return StoreDecision::Refuse;
+        }
+    }
+    if sizes.state > HARD_ENTRY_BYTES || sizes.largest_event > HARD_ENTRY_BYTES {
+        return StoreDecision::OverHard;
+    }
+    StoreDecision::Store
+}
+
+/// The sizes of `entries` (the state first, then one per event) against the stored state.
+pub fn entry_sizes(entries: &[(String, String)], previous_state: usize) -> Sizes {
+    let state = entries.first().map_or(0, |(_, json)| json.len());
+    let mut largest_event = 0;
+    for (_, json) in entries.iter().skip(1) {
+        largest_event = largest_event.max(json.len());
+    }
+    Sizes {
+        previous_state,
+        state,
+        largest_event,
+    }
+}
+
+/// The size of the state as last stored, which the soft limit compares growth against.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoredSize {
+    bytes: usize,
+}
+
+impl StoredSize {
+    /// The size of the stored state just read, or 0 if nothing is stored yet.
+    pub fn on_load(stored: Option<&str>) -> Self {
+        Self {
+            bytes: stored.map_or(0, str::len),
+        }
+    }
+
+    /// The size after `entries` (the state first) were written.
+    pub fn on_write(self, entries: &[(String, String)]) -> Self {
+        match entries.first() {
+            Some((_, json)) => Self { bytes: json.len() },
+            None => self,
+        }
+    }
+
+    /// Store or refuse the result `entries` of `work`. Judging changes nothing: the size moves
+    /// only when a write completes.
+    pub fn judge(self, work: Work, entries: &[(String, String)]) -> StoreDecision {
+        decide_store(work, entry_sizes(entries, self.bytes))
+    }
+}
+
 /// Everything one call writes, as (key, JSON) pairs: the core state first, then each event.
 pub fn persist_entries(
     core: &Core,
@@ -368,10 +552,72 @@ pub fn persist_entries(
     Ok(entries)
 }
 
+/// Whether delivery must read the other sockets' sessions: only a notification or an event can
+/// go to a socket other than the sender.
+pub fn needs_sessions(outbound: &[Outbound], events: &[Event]) -> bool {
+    if !events.is_empty() {
+        return true;
+    }
+    for item in outbound {
+        match item {
+            Outbound::Reply(_) => {}
+            Outbound::Notify { .. } => return true,
+        }
+    }
+    false
+}
+
+/// The agent whose queued request to withdraw when a socket in `closing` goes away: the bound
+/// agent, unless another open socket (`others`, which excludes the closing one) is bound to it,
+/// and only if it has a queued request (`has_queued`), so a close that changes nothing is not
+/// stored.
+pub fn agent_to_withdraw(
+    closing: &Session,
+    others: &[Session],
+    has_queued: impl Fn(&AgentId) -> bool,
+) -> Option<AgentId> {
+    let agent = closing.agent.as_ref()?;
+    if bound_indexes(agent, others).is_empty() && has_queued(agent) {
+        return Some(agent.clone());
+    }
+    None
+}
+
+const BEARER_PREFIX: &str = "Bearer ";
+
+/// Whether an `Authorization` header carries the coordinator token. Fails closed: a missing or
+/// empty `expected`, a missing header, another scheme or an empty token never match.
+pub fn is_authorized(expected: Option<&str>, authorization: Option<&str>) -> bool {
+    let Some(expected) = expected.filter(|token| !token.is_empty()) else {
+        return false;
+    };
+    let Some(presented) = authorization.and_then(|header| header.strip_prefix(BEARER_PREFIX))
+    else {
+        return false;
+    };
+    if presented.is_empty() {
+        return false;
+    }
+    constant_time_eq(expected.as_bytes(), presented.as_bytes())
+}
+
+/// Equality without an early exit on the first differing byte. The lengths are compared first,
+/// so the length of the secret is not hidden.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ClaimId, EventKind, Fence, RequestId};
+    use crate::protocol::{ClaimId, EventKind, Fence, Intent, Mode, OnConflict, Scope, ScopeClaim};
 
     const NOW: u64 = 1_000;
 
@@ -382,8 +628,7 @@ mod tests {
     fn bound(name: &str) -> Session {
         Session {
             agent: Some(agent(name)),
-            watcher: false,
-            watch_from: 0,
+            watch_from: None,
         }
     }
 
@@ -428,8 +673,7 @@ mod tests {
     fn session_survives_the_attachment_round_trip() {
         let session = Session {
             agent: Some(agent("a1")),
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let json = serde_json::to_string(&session).unwrap();
         assert_eq!(serde_json::from_str::<Session>(&json).unwrap(), session);
@@ -509,15 +753,18 @@ mod tests {
 
     #[test]
     fn parse_failures_do_not_echo_the_input() {
-        assert!(parse_client_msg(r#"{"type":"ignore-previous-instructions"}"#).is_none());
-        assert!(parse_client_msg("not json").is_none());
-        assert!(parse_client_msg("").is_none());
-        assert!(parse_client_msg(r#"{"type":"hello","agent":"a1","base":"abc"}"#).is_some());
-        let ServerMsg::Error { code, message, .. } = malformed_reply() else {
-            panic!("expected an error");
-        };
-        assert_eq!(code, ErrorCode::Malformed);
-        assert!(!message.contains("ignore"), "echoed input: {message}");
+        for bad in [r#"{"type":"ignore-previous-instructions"}"#, "not json", ""] {
+            let Err(fault) = parse_client_msg(bad) else {
+                panic!("expected a refusal for {bad:?}");
+            };
+            assert_eq!(fault, FrameFault::NotAMessage);
+            let ServerMsg::Error { code, message, .. } = fault.reply() else {
+                panic!("expected an error");
+            };
+            assert_eq!(code, ErrorCode::Malformed);
+            assert!(!message.contains("ignore"), "echoed input: {message}");
+        }
+        assert!(parse_client_msg(r#"{"type":"hello","agent":"a1","base":"abc"}"#).is_ok());
     }
 
     #[test]
@@ -598,15 +845,13 @@ mod tests {
     fn rebinding_keeps_the_watcher_flag_and_from_seq() {
         let session = Session {
             agent: None,
-            watcher: true,
-            watch_from: 7,
+            watch_from: Some(7),
         };
         let mut core = new_core();
         let (who, effects) = run(&mut core, &session, hello("a1"));
         let (_, outbound) = split_effects(effects);
         let rebound = bind_on_welcome(&session, &who, &outbound).unwrap();
-        assert!(rebound.watcher);
-        assert_eq!(rebound.watch_from, 7);
+        assert_eq!(rebound.watch_from, Some(7));
     }
 
     #[test]
@@ -671,8 +916,7 @@ mod tests {
     fn watchers_are_found_by_their_flag() {
         let watcher = Session {
             agent: None,
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let sessions = [Session::default(), watcher.clone(), bound("a1"), watcher];
         assert_eq!(watcher_indexes(&sessions, 0), vec![1, 3]);
@@ -844,8 +1088,7 @@ mod tests {
     fn a_second_watch_on_a_watcher_is_refused_but_the_first_is_served() {
         let watcher = Session {
             agent: None,
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let again = decide(&watcher, &msg(r#"{"type":"watch","from_seq":0}"#));
         assert_eq!(reject_code(again), ErrorCode::Malformed);
@@ -908,8 +1151,7 @@ mod tests {
     fn watcher() -> Session {
         Session {
             agent: None,
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         }
     }
 
@@ -978,8 +1220,7 @@ mod tests {
     fn a_sender_that_is_also_a_watcher_gets_its_reply_then_the_events() {
         let sender = Session {
             agent: Some(agent("a1")),
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let outbound = [Outbound::Reply(binary_rejection())];
         let plan = plan_delivery(&outbound, &[event_at(0), event_at(1)], &[sender]);
@@ -995,8 +1236,7 @@ mod tests {
     fn watcher_from(watch_from: u64) -> Session {
         Session {
             agent: None,
-            watcher: true,
-            watch_from,
+            watch_from: Some(watch_from),
         }
     }
 
@@ -1044,10 +1284,16 @@ mod tests {
     }
 
     #[test]
-    fn an_old_attachment_without_from_seq_watches_from_zero() {
-        let session: Session = serde_json::from_str(r#"{"agent":"a1","watcher":true}"#).unwrap();
-        assert_eq!(session.watch_from, 0);
-        assert!(session.watcher);
+    fn an_attachment_without_watch_from_is_not_watching() {
+        let session: Session = serde_json::from_str(r#"{"agent":"a1"}"#).unwrap();
+        assert_eq!(session.watch_from, None);
+    }
+
+    #[test]
+    fn a_stored_watch_from_of_zero_is_watching_not_absent() {
+        let session: Session = serde_json::from_str(r#"{"watch_from":0}"#).unwrap();
+        assert_eq!(session.watch_from, Some(0));
+        assert_eq!(watcher_indexes(&[session], 0), vec![0]);
     }
 
     #[test]
@@ -1059,5 +1305,622 @@ mod tests {
         keep_first(&mut slot, Ok(()));
         keep_first(&mut slot, Err("second".to_string()));
         assert_eq!(slot.as_deref(), Some("first"));
+    }
+
+    const TOKEN: &str = "s3cret-token-value";
+
+    fn bearer(token: &str) -> String {
+        format!("Bearer {token}")
+    }
+
+    #[test]
+    fn the_right_bearer_token_is_authorized() {
+        assert!(is_authorized(Some(TOKEN), Some(&bearer(TOKEN))));
+    }
+
+    #[test]
+    fn a_different_token_of_the_same_length_is_refused() {
+        let last = format!("{}X", &TOKEN[..TOKEN.len() - 1]);
+        let first = format!("X{}", &TOKEN[1..]);
+        for wrong in [last, first] {
+            assert_eq!(wrong.len(), TOKEN.len());
+            assert!(
+                !is_authorized(Some(TOKEN), Some(&bearer(&wrong))),
+                "{wrong}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_token_of_another_length_is_refused() {
+        let shorter = &TOKEN[..TOKEN.len() - 1];
+        let longer = format!("{TOKEN}x");
+        assert!(!is_authorized(Some(TOKEN), Some(&bearer(shorter))));
+        assert!(!is_authorized(Some(TOKEN), Some(&bearer(&longer))));
+    }
+
+    #[test]
+    fn a_missing_or_empty_secret_refuses_every_request() {
+        for expected in [None, Some("")] {
+            for header in [None, Some("Bearer "), Some("Bearer x"), Some("")] {
+                assert!(!is_authorized(expected, header), "{expected:?} {header:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_presented_token_is_refused() {
+        assert!(!is_authorized(Some(TOKEN), Some("Bearer ")));
+    }
+
+    #[test]
+    fn a_missing_authorization_header_is_refused() {
+        assert!(!is_authorized(Some(TOKEN), None));
+    }
+
+    #[test]
+    fn another_scheme_or_spelling_is_refused() {
+        let basic = format!("Basic {TOKEN}");
+        let lower = format!("bearer {TOKEN}");
+        let joined = format!("Bearer{TOKEN}");
+        let padded = format!(" Bearer {TOKEN}");
+        for header in [TOKEN, basic.as_str(), &lower, &joined, &padded, "Bearer"] {
+            assert!(!is_authorized(Some(TOKEN), Some(header)), "{header}");
+        }
+    }
+
+    #[test]
+    fn constant_time_eq_compares_every_byte_and_the_length() {
+        assert!(constant_time_eq(b"", b""));
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"xbc"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(!constant_time_eq(b"ab", b"abc"));
+        assert!(!constant_time_eq(b"", b"a"));
+    }
+
+    fn padded_hello(total: usize) -> String {
+        let base = r#"{"type":"hello","agent":"a1","base":"abc"}"#;
+        format!("{base}{}", " ".repeat(total - base.len()))
+    }
+
+    #[test]
+    fn a_frame_of_exactly_the_limit_is_parsed() {
+        assert!(parse_client_msg(&padded_hello(MAX_FRAME_BYTES)).is_ok());
+    }
+
+    #[test]
+    fn a_frame_over_the_limit_is_malformed_even_if_it_would_parse() {
+        let over = padded_hello(MAX_FRAME_BYTES + 1);
+        let Err(fault) = parse_client_msg(&over) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(fault, FrameFault::TooLarge);
+        let ServerMsg::Error { code, message, .. } = fault.reply() else {
+            panic!("expected an error");
+        };
+        assert_eq!(code, ErrorCode::Malformed);
+        assert!(message.contains("larger"), "{message}");
+        let junk = "ignore".repeat(MAX_FRAME_BYTES);
+        assert_eq!(parse_client_msg(&junk).unwrap_err(), FrameFault::TooLarge);
+        assert!(!message.contains("ignore"), "echoed input");
+    }
+
+    fn sizes(previous_state: usize, state: usize, largest_event: usize) -> Sizes {
+        Sizes {
+            previous_state,
+            state,
+            largest_event,
+        }
+    }
+
+    #[test]
+    fn a_client_call_up_to_the_soft_limit_is_stored() {
+        let soft = SOFT_ENTRY_BYTES;
+        assert_eq!(
+            decide_store(Work::Content, sizes(0, 10, 10)),
+            StoreDecision::Store
+        );
+        assert_eq!(
+            decide_store(Work::Content, sizes(0, soft, soft)),
+            StoreDecision::Store
+        );
+    }
+
+    #[test]
+    fn a_client_call_over_the_soft_limit_that_grew_the_state_is_refused() {
+        let soft = SOFT_ENTRY_BYTES;
+        let decision = decide_store(Work::Content, sizes(soft, soft + 1, 10));
+        assert_eq!(decision, StoreDecision::Refuse);
+        let from_small = decide_store(Work::Content, sizes(10, soft + 1, 10));
+        assert_eq!(from_small, StoreDecision::Refuse);
+    }
+
+    #[test]
+    fn a_client_call_over_the_soft_limit_that_did_not_grow_the_state_is_stored() {
+        let soft = SOFT_ENTRY_BYTES;
+        let same = decide_store(Work::Content, sizes(soft + 1, soft + 1, 10));
+        assert_eq!(same, StoreDecision::Store);
+        let shrunk = decide_store(Work::Content, sizes(soft + 500, soft + 1, 10));
+        assert_eq!(shrunk, StoreDecision::Store);
+    }
+
+    #[test]
+    fn expiry_only_work_is_stored_over_the_soft_limit_up_to_the_hard_limit() {
+        let (soft, hard) = (SOFT_ENTRY_BYTES, HARD_ENTRY_BYTES);
+        let grown = sizes(soft, hard, soft + 1);
+        assert_eq!(decide_store(Work::Plain, grown), StoreDecision::Store);
+        let at_hard = sizes(0, hard, hard);
+        assert_eq!(decide_store(Work::Plain, at_hard), StoreDecision::Store);
+    }
+
+    #[test]
+    fn nothing_is_stored_over_the_hard_limit() {
+        let hard = HARD_ENTRY_BYTES;
+        assert!(hard < 2 * 1024 * 1024);
+        let state = decide_store(Work::Plain, sizes(0, hard + 1, 10));
+        assert_eq!(state, StoreDecision::OverHard);
+        let event = decide_store(Work::Plain, sizes(0, 10, hard + 1));
+        assert_eq!(event, StoreDecision::OverHard);
+        let kept_big = decide_store(Work::Content, sizes(hard + 9, hard + 1, 10));
+        assert_eq!(kept_big, StoreDecision::OverHard);
+        let grown = decide_store(Work::Content, sizes(0, hard + 1, 10));
+        assert_eq!(grown, StoreDecision::Refuse);
+    }
+
+    fn claim_with_summary(summary: &str, on_conflict: &str) -> ClientMsg {
+        msg(&format!(
+            r#"{{"type":"claim","req":1,"intent":{{"summary":"{summary}","task_ref":null}},
+            "scopes":[{{"scope":{{"kind":"symbol","path":"a.rs","qualified_name":"f"}},
+            "mode":"edit_signature"}}],"on_conflict":"{on_conflict}"}}"#
+        ))
+    }
+
+    #[test]
+    fn one_event_over_the_soft_limit_refuses_a_client_call_though_the_state_is_small() {
+        let mut core = new_core();
+        run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
+        let huge = "x".repeat(SOFT_ENTRY_BYTES + 1);
+        let (_, effects) = run(&mut core, &bound("a2"), claim_with_summary(&huge, "fail"));
+        let (events, _) = split_effects(effects);
+        let entries = persist_entries(&core, &events).unwrap();
+        let measured = entry_sizes(&entries, entries[0].1.len());
+        assert!(measured.state < SOFT_ENTRY_BYTES);
+        assert!(measured.largest_event > SOFT_ENTRY_BYTES);
+        assert_eq!(decide_store(Work::Content, measured), StoreDecision::Refuse);
+        assert_eq!(decide_store(Work::Plain, measured), StoreDecision::Store);
+    }
+
+    #[test]
+    fn entry_sizes_take_the_state_first_and_the_largest_event() {
+        let entry = |len: usize| ("k".to_string(), "x".repeat(len));
+        assert_eq!(entry_sizes(&[], 5), sizes(5, 0, 0));
+        assert_eq!(entry_sizes(&[entry(7)], 5), sizes(5, 7, 0));
+        let many = [entry(100), entry(3), entry(9), entry(4)];
+        assert_eq!(entry_sizes(&many, 0), sizes(0, 100, 9));
+    }
+
+    #[test]
+    fn the_state_limit_reply_is_a_fixed_malformed_error_with_the_req() {
+        let ServerMsg::Error { req, code, message } = state_limit_reply(Some(RequestId(116)))
+        else {
+            panic!("expected an error");
+        };
+        assert_eq!((req, code), (Some(RequestId(116)), ErrorCode::Malformed));
+        assert_eq!(message, "repo state limit reached");
+        let ServerMsg::Error { req, .. } = state_limit_reply(None) else {
+            panic!("expected an error");
+        };
+        assert_eq!(req, None);
+    }
+
+    #[test]
+    fn every_client_message_with_a_req_reports_it() {
+        let with_req = [
+            (claim("fail", "depend"), Some(1)),
+            (
+                msg(r#"{"type":"amend","req":3,"claim":1,"fence":1,"add":[]}"#),
+                Some(3),
+            ),
+            (
+                msg(r#"{"type":"submit","req":4,"claim":1,"fence":1,
+                    "fork_commit":"c","touched":[]}"#),
+                Some(4),
+            ),
+            (
+                msg(
+                    r#"{"type":"open_race","req":5,"intent":{"summary":"s","task_ref":null},
+                "scopes":[],"max_entrants":1,"deadline_ms":1,"criteria":[]}"#,
+                ),
+                Some(5),
+            ),
+            (msg(r#"{"type":"join_race","req":6,"race":1}"#), Some(6)),
+            (
+                msg(r#"{"type":"pick_winner","req":7,"race":1,"claim":1}"#),
+                Some(7),
+            ),
+            (
+                msg(r#"{"type":"review","req":8,"claim":1,"approve":true,"note":null}"#),
+                Some(8),
+            ),
+            (hello("a1"), None),
+            (msg(r#"{"type":"heartbeat"}"#), None),
+            (msg(r#"{"type":"release","claim":1,"fence":1}"#), None),
+            (msg(r#"{"type":"watch","from_seq":0}"#), None),
+        ];
+        for (message, expected) in with_req {
+            assert_eq!(req_of(&message), expected.map(RequestId), "{message:?}");
+        }
+    }
+
+    fn waiting_msg(req: u64, path: &str, summary: String) -> ClientMsg {
+        ClientMsg::Claim {
+            req: RequestId(req),
+            intent: Intent {
+                summary,
+                task_ref: None,
+                assumptions: vec![],
+            },
+            scopes: vec![ScopeClaim {
+                scope: Scope::File { path: path.into() },
+                mode: Mode::EditBody,
+            }],
+            on_conflict: OnConflict::Wait,
+        }
+    }
+
+    fn measured(core: &Core, effects: Vec<Effect>, previous: usize) -> Sizes {
+        let (events, _) = split_effects(effects);
+        entry_sizes(&persist_entries(core, &events).unwrap(), previous)
+    }
+
+    /// A core one root claim holds against 50 waiters, filled to 50 bytes under the soft limit,
+    /// and its stored JSON. Letting the root claim go grants every waiter, which grows the state.
+    fn near_soft_core() -> (Core, String) {
+        let mut core = new_core();
+        let root = ScopeClaim {
+            scope: Scope::Dir {
+                path: String::new(),
+            },
+            mode: Mode::EditBody,
+        };
+        let holder = ClientMsg::Claim {
+            req: RequestId(1),
+            intent: Intent {
+                summary: "holds the root".into(),
+                task_ref: None,
+                assumptions: vec![],
+            },
+            scopes: vec![root],
+            on_conflict: OnConflict::Fail,
+        };
+        core.handle(&agent("a"), holder, NOW);
+        for index in 0..50 {
+            let waiter = waiting_msg(10 + index, &format!("f{index}.rs"), "w".into());
+            core.handle(&agent(&format!("w{index}")), waiter, NOW);
+        }
+        let mut probe = core.clone();
+        probe.handle(
+            &agent("fill"),
+            waiting_msg(99, "fill.rs", String::new()),
+            NOW,
+        );
+        let base = serde_json::to_string(&probe).unwrap().len();
+        let filler = "x".repeat(SOFT_ENTRY_BYTES - 50 - base);
+        core.handle(&agent("fill"), waiting_msg(99, "fill.rs", filler), NOW);
+        let stored = serde_json::to_string(&core).unwrap();
+        assert_eq!(stored.len(), SOFT_ENTRY_BYTES - 50);
+        (core, stored)
+    }
+
+    #[test]
+    fn a_release_whose_grants_grow_the_state_over_soft_is_stored_but_a_claim_is_not() {
+        let (mut core, stored) = near_soft_core();
+        let release = ClientMsg::Release {
+            claim: ClaimId(1),
+            fence: Fence(1),
+        };
+        assert_eq!(work_of(&release), Work::Plain);
+        let effects = core.handle(&agent("a"), release, NOW);
+        let grown = measured(&core, effects, stored.len());
+        assert!(
+            grown.state > SOFT_ENTRY_BYTES && grown.state > stored.len(),
+            "{grown:?}"
+        );
+        assert_eq!(
+            decide_store(work_of(&ClientMsg::Heartbeat), grown),
+            StoreDecision::Store
+        );
+        assert_eq!(decide_store(Work::Content, grown), StoreDecision::Refuse);
+    }
+
+    #[test]
+    fn expiry_that_grows_the_state_past_the_soft_limit_never_wedges_the_repo() {
+        let (core, stored) = near_soft_core();
+        let late = NOW + LEASE_MS;
+        let mut client = core.clone();
+        let claim = waiting_msg(500, "zz.rs", "z".into());
+        assert_eq!(work_of(&claim), Work::Content);
+        let effects = client.handle(&agent("zz"), claim, late);
+        let refused = measured(&client, effects, stored.len());
+        assert!(refused.state > SOFT_ENTRY_BYTES, "{refused:?}");
+        assert_eq!(decide_store(Work::Content, refused), StoreDecision::Refuse);
+
+        let mut recovered = load_core(Some(&stored), None, None).unwrap();
+        let effects = recovered.expire(late);
+        let freed = measured(&recovered, effects, stored.len());
+        assert_eq!(decide_store(Work::Plain, freed), StoreDecision::Store);
+        let after_expiry = serde_json::to_string(&recovered).unwrap();
+        assert_eq!(after_expiry.len(), freed.state);
+
+        let release = ClientMsg::Release {
+            claim: ClaimId(2),
+            fence: Fence(2),
+        };
+        let effects = recovered.handle(&agent("w0"), release, late);
+        let after_release = measured(&recovered, effects, after_expiry.len());
+        assert!(after_release.state < after_expiry.len());
+        assert_eq!(
+            decide_store(Work::Content, after_release),
+            StoreDecision::Store
+        );
+        assert_eq!(
+            decide_store(Work::Plain, after_release),
+            StoreDecision::Store
+        );
+        let effects = recovered.expire(late + 1);
+        let next = measured(&recovered, effects, after_release.state);
+        assert_eq!(decide_store(Work::Plain, next), StoreDecision::Store);
+    }
+
+    #[test]
+    fn a_content_message_that_refills_what_expiry_freed_is_refused_after_the_expiry_step() {
+        const LEN: usize = 2_000;
+        let mut core = new_core();
+        let held = |summary: String, path: &str| waiting_msg(1, path, summary);
+        core.handle(&agent("a"), held("x".repeat(LEN), "x.rs"), NOW);
+        let mut probe = core.clone();
+        probe.handle(&agent("f"), held(String::new(), "f.rs"), NOW + 1);
+        let base = serde_json::to_string(&probe).unwrap().len();
+        let filler = "f".repeat(SOFT_ENTRY_BYTES + 100 - base);
+        core.handle(&agent("f"), held(filler, "f.rs"), NOW + 1);
+        core.handle(&agent("f"), ClientMsg::Heartbeat, NOW + 1);
+        let stored = serde_json::to_string(&core).unwrap();
+        assert_eq!(stored.len(), SOFT_ENTRY_BYTES + 100);
+
+        let late = NOW + LEASE_MS;
+        let refill = held("w".repeat(LEN - 2), "y.rs");
+        let size = StoredSize::on_load(Some(&stored));
+
+        let mut together = core.clone();
+        let effects = together.handle(&agent("w"), refill.clone(), late);
+        let (events, _) = split_effects(effects);
+        let entries = persist_entries(&together, &events).unwrap();
+        assert!(
+            entries[0].1.len() <= stored.len(),
+            "the lapsed claim is refilled"
+        );
+        let joint = size.judge(work_of(&refill), &entries);
+        assert_eq!(
+            joint,
+            StoreDecision::Store,
+            "judged with its own expiry it looks like no growth"
+        );
+
+        let mut stepped = core.clone();
+        assert!(stepped.has_due_expiry(late));
+        let effects = stepped.expire(late);
+        let (events, _) = split_effects(effects);
+        let expiry = persist_entries(&stepped, &events).unwrap();
+        assert_eq!(size.judge(Work::Plain, &expiry), StoreDecision::Store);
+        let size = size.on_write(&expiry);
+        assert!(
+            !stepped.has_due_expiry(late),
+            "the message's own lazy expiry is a no-op"
+        );
+        let effects = stepped.handle(&agent("w"), refill.clone(), late);
+        let (events, _) = split_effects(effects);
+        let message = persist_entries(&stepped, &events).unwrap();
+        assert!(message[0].1.len() > SOFT_ENTRY_BYTES);
+        assert_eq!(
+            size.judge(work_of(&refill), &message),
+            StoreDecision::Refuse
+        );
+    }
+
+    #[test]
+    fn only_messages_that_add_content_are_judged_by_the_soft_limit() {
+        let content = [
+            claim("fail", "depend"),
+            msg(r#"{"type":"amend","req":3,"claim":1,"fence":1,"add":[]}"#),
+            msg(r#"{"type":"submit","req":4,"claim":1,"fence":1,
+                "fork_commit":"c","touched":[]}"#),
+        ];
+        for message in &content {
+            assert_eq!(work_of(message), Work::Content, "{message:?}");
+        }
+        let plain = [
+            hello("a1"),
+            msg(r#"{"type":"heartbeat"}"#),
+            msg(r#"{"type":"release","claim":1,"fence":1}"#),
+            msg(
+                r#"{"type":"open_race","req":5,"intent":{"summary":"s","task_ref":null},
+                "scopes":[],"max_entrants":1,"deadline_ms":1,"criteria":[]}"#,
+            ),
+            msg(r#"{"type":"join_race","req":6,"race":1}"#),
+            msg(r#"{"type":"pick_winner","req":7,"race":1,"claim":1}"#),
+            msg(r#"{"type":"review","req":8,"claim":1,"approve":true,"note":null}"#),
+            msg(r#"{"type":"watch","from_seq":0}"#),
+        ];
+        for message in &plain {
+            assert_eq!(work_of(message), Work::Plain, "{message:?}");
+        }
+    }
+
+    #[test]
+    fn over_the_soft_limit_a_hello_that_grows_the_state_by_a_byte_is_stored() {
+        let soft = SOFT_ENTRY_BYTES;
+        let grown = sizes(soft + 5, soft + 6, 10);
+        assert_eq!(
+            decide_store(work_of(&hello("a1")), grown),
+            StoreDecision::Store
+        );
+        for message in [
+            claim("fail", "depend"),
+            msg(r#"{"type":"amend","req":3,"claim":1,"fence":1,"add":[]}"#),
+            msg(r#"{"type":"submit","req":4,"claim":1,"fence":1,
+                "fork_commit":"c","touched":[]}"#),
+        ] {
+            assert_eq!(
+                decide_store(work_of(&message), grown),
+                StoreDecision::Refuse
+            );
+        }
+    }
+
+    #[test]
+    fn a_content_message_that_does_not_grow_the_state_is_stored_over_the_soft_limit() {
+        let soft = SOFT_ENTRY_BYTES;
+        let same = sizes(soft + 5, soft + 5, 10);
+        assert_eq!(
+            decide_store(work_of(&claim("fail", "depend")), same),
+            StoreDecision::Store
+        );
+    }
+
+    #[test]
+    fn every_kind_of_work_is_refused_or_failed_over_the_hard_limit() {
+        let hard = HARD_ENTRY_BYTES;
+        for work in [Work::Content, Work::Plain] {
+            let grown = decide_store(work, sizes(0, hard + 1, 10));
+            assert_ne!(grown, StoreDecision::Store, "{work:?}");
+            let event = decide_store(work, sizes(0, 10, hard + 1));
+            assert_ne!(event, StoreDecision::Store, "{work:?}");
+        }
+    }
+
+    fn state_entries(len: usize) -> Vec<(String, String)> {
+        vec![(STATE_KEY.to_string(), "x".repeat(len))]
+    }
+
+    #[test]
+    fn with_nothing_stored_the_size_is_zero_and_a_small_first_write_is_stored() {
+        let size = StoredSize::on_load(None);
+        assert_eq!(size, StoredSize::default());
+        assert_eq!(
+            size.judge(Work::Content, &state_entries(10)),
+            StoreDecision::Store
+        );
+        let over = state_entries(SOFT_ENTRY_BYTES + 1);
+        assert_eq!(size.judge(Work::Content, &over), StoreDecision::Refuse);
+    }
+
+    #[test]
+    fn a_loaded_state_sets_the_size_growth_is_compared_with() {
+        let stored = "x".repeat(SOFT_ENTRY_BYTES + 10);
+        let size = StoredSize::on_load(Some(&stored));
+        let same = state_entries(SOFT_ENTRY_BYTES + 10);
+        assert_eq!(size.judge(Work::Content, &same), StoreDecision::Store);
+        let grown = state_entries(SOFT_ENTRY_BYTES + 11);
+        assert_eq!(size.judge(Work::Content, &grown), StoreDecision::Refuse);
+    }
+
+    #[test]
+    fn after_a_write_the_next_decision_compares_with_the_new_size() {
+        let size = StoredSize::on_load(None);
+        let big = state_entries(SOFT_ENTRY_BYTES + 100);
+        let size = size.on_write(&big);
+        assert_eq!(size.judge(Work::Content, &big), StoreDecision::Store);
+        let grown = state_entries(SOFT_ENTRY_BYTES + 101);
+        assert_eq!(size.judge(Work::Content, &grown), StoreDecision::Refuse);
+        let shrunk = size.on_write(&state_entries(10));
+        let regrown = state_entries(SOFT_ENTRY_BYTES + 1);
+        assert_eq!(shrunk.judge(Work::Content, &regrown), StoreDecision::Refuse);
+        assert_eq!(size.on_write(&[]), size, "an empty write changes nothing");
+    }
+
+    #[test]
+    fn a_refusal_leaves_the_size_unchanged() {
+        let size = StoredSize::on_load(Some("abc"));
+        let over = state_entries(SOFT_ENTRY_BYTES + 1);
+        assert_eq!(size.judge(Work::Content, &over), StoreDecision::Refuse);
+        assert_eq!(size, StoredSize::on_load(Some("abc")));
+        assert_eq!(size.judge(Work::Content, &over), StoreDecision::Refuse);
+    }
+
+    fn multibyte_hello(bytes: usize) -> String {
+        let base = r#"{"type":"hello","agent":"é","base":"abc"}"#;
+        format!("{base}{}", " ".repeat(bytes - base.len()))
+    }
+
+    #[test]
+    fn the_frame_limit_counts_bytes_not_characters() {
+        let at = multibyte_hello(MAX_FRAME_BYTES);
+        assert_eq!(at.len(), MAX_FRAME_BYTES);
+        assert!(at.chars().count() < MAX_FRAME_BYTES);
+        assert!(parse_client_msg(&at).is_ok());
+        let two_byte = "é".repeat(MAX_FRAME_BYTES / 2 + 1);
+        assert!(two_byte.chars().count() < MAX_FRAME_BYTES);
+        assert_eq!(
+            parse_client_msg(&two_byte).unwrap_err(),
+            FrameFault::TooLarge
+        );
+    }
+
+    #[test]
+    fn a_watch_start_is_kept_up_to_the_largest_exact_integer() {
+        assert_eq!(MAX_SAFE_SEQ, 9_007_199_254_740_991);
+        assert_eq!(clamp_watch_from(0), 0);
+        assert_eq!(clamp_watch_from(MAX_SAFE_SEQ - 1), MAX_SAFE_SEQ - 1);
+        assert_eq!(clamp_watch_from(MAX_SAFE_SEQ), MAX_SAFE_SEQ);
+        assert_eq!(clamp_watch_from(MAX_SAFE_SEQ + 1), MAX_SAFE_SEQ);
+        assert_eq!(clamp_watch_from(u64::MAX), MAX_SAFE_SEQ);
+    }
+
+    #[test]
+    fn a_watch_with_a_huge_from_seq_is_served_from_the_clamped_start() {
+        let huge = msg(&format!(r#"{{"type":"watch","from_seq":{}}}"#, u64::MAX));
+        let Action::Watch { from_seq } = decide(&Session::default(), &huge) else {
+            panic!("expected a watch");
+        };
+        assert_eq!(from_seq, MAX_SAFE_SEQ);
+    }
+
+    #[test]
+    fn delivery_reads_sessions_only_for_notifications_and_events() {
+        let reply = Outbound::Reply(binary_rejection());
+        assert!(!needs_sessions(&[], &[]));
+        assert!(!needs_sessions(&[reply.clone(), reply.clone()], &[]));
+        assert!(needs_sessions(&[reply.clone(), queued("a2")], &[]));
+        assert!(needs_sessions(&[reply], &[event_at(0)]));
+        assert!(needs_sessions(&[], &[event_at(0)]));
+    }
+
+    #[test]
+    fn a_closing_socket_withdraws_its_agent_only_when_it_was_the_last_one() {
+        let closing = bound("a1");
+        let queued = |_: &AgentId| true;
+        assert_eq!(agent_to_withdraw(&closing, &[], queued), Some(agent("a1")));
+        let elsewhere = [bound("a2"), watcher(), Session::default()];
+        let last = agent_to_withdraw(&closing, &elsewhere, queued);
+        assert_eq!(last, Some(agent("a1")));
+        let twin = [bound("a2"), bound("a1")];
+        assert_eq!(agent_to_withdraw(&closing, &twin, queued), None);
+    }
+
+    #[test]
+    fn closing_an_unbound_socket_withdraws_nobody() {
+        let queued = |_: &AgentId| true;
+        assert_eq!(agent_to_withdraw(&Session::default(), &[], queued), None);
+        assert_eq!(agent_to_withdraw(&watcher(), &[bound("a1")], queued), None);
+    }
+
+    #[test]
+    fn a_close_of_an_agent_with_no_queued_request_withdraws_nobody() {
+        let queued_only_a2 = |who: &AgentId| *who == agent("a2");
+        assert_eq!(agent_to_withdraw(&bound("a1"), &[], queued_only_a2), None);
+        let to_withdraw = agent_to_withdraw(&bound("a2"), &[], queued_only_a2);
+        assert_eq!(to_withdraw, Some(agent("a2")));
     }
 }

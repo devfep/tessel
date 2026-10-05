@@ -37,6 +37,11 @@ impl Persisted {
     pub fn next_expiry_ms(&self) -> Option<u64> {
         self.applied.next_expiry_ms
     }
+
+    /// The (key, JSON) pairs that were stored: the state first, then each event.
+    pub fn entries(&self) -> &[(String, String)] {
+        &self.applied.entries
+    }
 }
 
 /// Store `applied.entries` in one transaction: all of them or none.
