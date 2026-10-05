@@ -19,7 +19,7 @@ new_sqlite_classes = ["Coordinator"]
 [vars]
 RUN = "dogfood"
 SHADOW_ENABLED = "false"
-REVIEWERS = "felix"
+REVIEWERS = "felix,orchestrator"
 
 [[services]]
 binding = "STEWARD"
