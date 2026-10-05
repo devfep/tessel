@@ -1,0 +1,4 @@
+intent: fix pass 1 for review CLI: zeros base never head, only not-a-repo falls back, subdirectory root-config test
+assumes: all-zeros hello base is never a real commit id
+rejected: none
+evidence: pending gate
