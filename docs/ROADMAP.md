@@ -39,7 +39,7 @@ CLI-2b closed and reclaimed.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `493e4466`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `9c086d45`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
@@ -203,8 +203,10 @@ two Workers are approved.
   Part b CLOSED 2026-10-05 at `3fb687b` (review "Yes" after two fix passes). Workspace tests 551.
   Live: the hook claimed `src/lib.rs::greet` for a body edit and amended `edit-signature` for a
   signature edit; the submit was held for review; `tessel review` approved it and it merged.
-- [ ] **REVIEW-CLI-FIX** — found live: `tessel review` fails in a directory whose git repo has no
+- [x] **REVIEW-CLI-FIX** — found live: `tessel review` fails in a directory whose git repo has no
   commit, because it reads HEAD for its hello. A reviewer needs no checkout; send a fixed base.
+  CLOSED 2026-10-05 at `125cb3a` (review "Yes" after one fix pass; the coordinator now ignores an
+  all-zeros base). Live: review from outside any repo is refused cleanly; head stays real.
 - [ ] **DOGFOOD-1** — dogfood v1 (PLAN §7, §9 Oct 8; Felix approved): the steward runs Tessel's
   own gate. Test image with the Rust toolchain (wasm target) and pnpm; an install step for repos
   with dependencies (lockfile only, scripts disabled); per-repo test command; Tessel imported into
