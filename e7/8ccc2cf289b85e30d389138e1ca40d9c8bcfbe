@@ -1,0 +1,4 @@
+intent: tighten the log-read marker and close the dangling-symlink and surviving-mutant findings from the re-review
+assumes: the Durable Object handles a queued Hello only after the whole Watch replay (input gate closed during storage reads); a mid-replay Hello would give a gap-free prefix the CLI cannot detect. Not verified on the deployed Worker
+rejected: none
+evidence: cargo test --workspace 324 passed (36 CLI unit, 44 CLI end-to-end, 244 coordinator); clippy -D warnings clean
