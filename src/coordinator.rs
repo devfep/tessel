@@ -8,10 +8,16 @@
 //! - Claim ids and fences start at 1 and are never reused. Event `seq` starts at 0.
 //! - `Hello` does not have to precede other messages; connection state belongs to the caller.
 //! - The lock table is derived from the claims. It is not serialized; deserializing rebuilds it.
-//! - A submitted claim stops expiring and keeps its locks until a later task reports its merge
+//! - A submitted claim stops expiring and keeps its locks until the steward reports its merge
 //!   outcome. Submissions are numbered, which fixes their order in the merge queue.
+//! - A submitted claim is merged by the steward, one at a time, in submission order (see `merging`).
+//!   A submission that needs review (invariant 12) is held and never dispatched.
 //! - A shadow claim (invariant 10) is a real claim with an id, a fence and a lease that places no
 //!   lock, so it blocks nobody. Submitting one records it for verification and never queues it.
+
+mod merging;
+
+pub use merging::MergeDispatch;
 
 use std::collections::{hash_map, BTreeMap, HashMap};
 use std::sync::Arc;
@@ -19,9 +25,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::protocol::{
-    uncovered, AgentId, ClaimId, ClientMsg, CommitId, Conflict, DecisionRecord, ErrorCode, Event,
-    EventKind, Fence, HeldAssumption, Intent, Lock, OnConflict, ReleaseReason, RequestId, RunId,
-    Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    review_reasons, uncovered, AgentId, ClaimId, ClientMsg, CommitId, Conflict, DecisionRecord,
+    ErrorCode, Event, EventKind, Fence, HeldAssumption, Intent, Lock, OnConflict, ReleaseReason,
+    RequestId, RunId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +108,51 @@ struct ActiveClaim {
     /// (invariant 5); the ordinal fixes its place in the merge queue.
     #[serde(default)]
     submitted: Option<u64>,
+    /// What the steward is asked to merge, set with `submitted` and cleared with it.
+    #[serde(default)]
+    work: Option<Submission>,
+}
+
+/// The work of a submitted claim, kept until the steward answers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Submission {
+    fork_commit: CommitId,
+    /// What the submission changed; it decides who is told that main moved.
+    touched: Vec<ScopeClaim>,
+    /// Invariant 12: a human must approve this before it is dispatched. Nothing clears it yet,
+    /// because `Review` is not implemented, so such a submission is held.
+    awaiting_review: bool,
+    /// `main_moved` answers so far.
+    #[serde(default)]
+    moved: u32,
+    /// Infrastructure failures so far.
+    #[serde(default)]
+    infra_failures: u32,
+    /// Not dispatched before this instant: the backoff after an infrastructure failure.
+    #[serde(default)]
+    retry_at_ms: Option<u64>,
+}
+
+impl Submission {
+    fn new(fork_commit: CommitId, touched: Vec<ScopeClaim>, awaiting_review: bool) -> Self {
+        Self {
+            fork_commit,
+            touched,
+            awaiting_review,
+            moved: 0,
+            infra_failures: 0,
+            retry_at_ms: None,
+        }
+    }
+}
+
+/// The one merge in flight: persisted before the steward is called, so a restart re-dispatches it
+/// instead of starting another.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InFlight {
+    claim: ClaimId,
+    /// 1 for the first dispatch of the submission.
+    attempt: u32,
 }
 
 /// A `Submit` message minus the sender.
@@ -183,6 +234,9 @@ struct CoordinatorState {
     /// Every call advances it, including calls that return an error: "errors change nothing"
     /// means no claim, queue, counter or event changes, not the clock (time is not a decision).
     clock_ms: u64,
+    /// The merge the steward is running, if any. At most one per repo.
+    #[serde(default)]
+    merge_in_flight: Option<InFlight>,
     claims: BTreeMap<u64, ActiveClaim>,
     /// The Wait queue, oldest first (invariant 2).
     ///
@@ -239,6 +293,7 @@ impl Coordinator {
             next_seq: 0,
             next_submission: 0,
             clock_ms: 0,
+            merge_in_flight: None,
             claims: BTreeMap::new(),
             waiting: Vec::new(),
         }))
@@ -828,6 +883,7 @@ impl Coordinator {
             expires_at_ms,
             kind: ClaimKind::Shadow,
             submitted: None,
+            work: None,
         };
         self.state.claims.insert(claim.0, active);
         let shadowed = self.event(
@@ -875,6 +931,7 @@ impl Coordinator {
             expires_at_ms,
             kind: ClaimKind::Real,
             submitted: None,
+            work: None,
         };
         place_locks(&mut self.locks, claim, &active);
         let granted = self.event(
@@ -961,6 +1018,7 @@ impl Coordinator {
             return self.reject_uncovered(req, claim, missing, now_ms);
         }
         let kind = held.kind;
+        let has_evidence = !decisions.evidence.is_empty();
         let ordinal = take_next(&mut self.state.next_submission);
         let submitted = ActiveClaim {
             submitted: Some(ordinal),
@@ -976,10 +1034,20 @@ impl Coordinator {
                 decisions,
             },
         )];
+        let mut review = None;
         let queue_position = match kind {
             ClaimKind::Shadow => 0,
             ClaimKind::Real => {
-                effects.extend(self.challenge_assumptions(agent, &fork_commit, &touched, now_ms));
+                let (challenges, threatened) =
+                    self.challenge_assumptions(agent, &fork_commit, &touched, now_ms);
+                effects.extend(challenges);
+                let reasons = review_reasons(&touched, threatened, has_evidence, &[]);
+                review = (!reasons.is_empty()).then_some(reasons);
+                let awaiting_review = review.is_some();
+                self.queue_for_merge(
+                    claim,
+                    Submission::new(fork_commit, touched, awaiting_review),
+                );
                 self.queue_position(ordinal)
             }
         };
@@ -989,7 +1057,22 @@ impl Coordinator {
             queue_position,
         };
         effects.push(Effect::Reply(accepted));
+        if let Some(reasons) = review {
+            let requested = EventKind::ReviewRequested {
+                claim,
+                reasons: reasons.clone(),
+            };
+            effects.push(self.event(now_ms, requested));
+            effects.push(Effect::Reply(ServerMsg::ReviewRequired { claim, reasons }));
+        }
         effects
+    }
+
+    /// Record what the steward is to merge for a submitted claim.
+    fn queue_for_merge(&mut self, claim: ClaimId, submission: Submission) {
+        if let Some(held) = self.state.claims.get_mut(&claim.0) {
+            held.work = Some(submission);
+        }
     }
 
     /// Answer a submission that touched scopes outside its claim (invariant 11).
@@ -1017,14 +1100,15 @@ impl Coordinator {
     /// agents' active non-shadow claims, in claim id order, then each claim's assumptions in
     /// declared order. Already submitted claims are included: their work has not merged yet.
     /// Each (claim, assumption) is challenged once however many touched scopes threaten it.
-    /// Challenges are notices and are logged; they never block the submission.
+    /// Challenges are notices and are logged; they never block the submission. Also returns how
+    /// many assumptions were challenged, which is an input to the review policy (invariant 12).
     fn challenge_assumptions(
         &mut self,
         submitter: &AgentId,
         fork_commit: &CommitId,
         touched: &[ScopeClaim],
         now_ms: u64,
-    ) -> Vec<Effect> {
+    ) -> (Vec<Effect>, u32) {
         let mut challenged = Vec::new();
         for (id, other) in &self.state.claims {
             if other.agent == *submitter || !other.kind.places_locks() {
@@ -1036,6 +1120,7 @@ impl Coordinator {
                 }
             }
         }
+        let count = u32::try_from(challenged.len()).unwrap_or(u32::MAX);
         let mut effects = Vec::new();
         for (assuming, claim, assumption) in challenged {
             let kind = EventKind::AssumptionChallenged {
@@ -1055,7 +1140,7 @@ impl Coordinator {
                 },
             });
         }
-        effects
+        (effects, count)
     }
 
     /// The 1-based place of the submission numbered `ordinal`: the number of submitted
@@ -3206,6 +3291,14 @@ mod tests {
         .unwrap()
     }
 
+    /// A record with test evidence, so a clean submission is not held for review (invariant 12).
+    fn tested() -> DecisionRecord {
+        DecisionRecord {
+            evidence: vec!["tests passed".into()],
+            ..DecisionRecord::default()
+        }
+    }
+
     fn submit_msg(claim: ClaimId, fence: Fence, touched: Vec<ScopeClaim>) -> ClientMsg {
         ClientMsg::Submit {
             req: RequestId(9),
@@ -3213,7 +3306,7 @@ mod tests {
             fence,
             fork_commit: CommitId("fork".into()),
             touched,
-            decisions: DecisionRecord::default(),
+            decisions: tested(),
         }
     }
 
@@ -3227,12 +3320,14 @@ mod tests {
         handle_at(c, who, submit_msg(claim, fence, touched), NOW)
     }
 
+    /// The position in the `Accepted` reply, which comes first; a flagged submission is also
+    /// answered with `ReviewRequired`.
     fn accepted_position(effects: &[Effect], claim: ClaimId) -> u32 {
         let ServerMsg::Accepted {
             req,
             claim: accepted,
             queue_position,
-        } = only_reply(effects)
+        } = replies(effects)[0]
         else {
             panic!("expected Accepted, got {effects:?}");
         };
@@ -3579,10 +3674,14 @@ mod tests {
             fence: b_fence,
             fork_commit: CommitId("fork-b".into()),
             touched: vec![edit],
-            decisions: DecisionRecord::default(),
+            decisions: tested(),
         };
         let effects = handle_at(&mut c, "b", msg, NOW);
-        assert_eq!(kinds(&effects), ["log", "log", "notify", "reply"]);
+        // A challenged assumption is also a reason for review (invariant 12).
+        assert_eq!(
+            kinds(&effects),
+            ["log", "log", "notify", "reply", "log", "reply"]
+        );
         assert_eq!(accepted_position(&effects, b), 1);
         let expected: Challenge = (
             holder,

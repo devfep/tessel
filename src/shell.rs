@@ -325,9 +325,10 @@ pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
 pub const MAX_DATE_MS: f64 = 8.64e15;
 
 /// The absolute time the alarm should fire, in milliseconds since the epoch, or `None` to clear
-/// it. Clamped to the largest valid `Date`. A time in the past fires at once.
-pub fn alarm_at_ms(next_expiry_ms: Option<u64>) -> Option<f64> {
-    let next = next_expiry_ms?;
+/// it. The core picks the earliest of a lease expiry and a merge dispatch. Clamped to the largest
+/// valid `Date`. A time in the past fires at once.
+pub fn alarm_at_ms(next_alarm_ms: Option<u64>) -> Option<f64> {
+    let next = next_alarm_ms?;
     Some((next as f64).min(MAX_DATE_MS))
 }
 

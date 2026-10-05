@@ -19,3 +19,8 @@ new_sqlite_classes = ["Coordinator"]
 [vars]
 RUN = "dogfood"
 SHADOW_ENABLED = "false"
+
+[[services]]
+binding = "STEWARD"
+service = "tessel-steward"
+entrypoint = "MergeService"

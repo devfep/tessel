@@ -3,6 +3,11 @@
 //! the core, binds sockets to agents, delivers messages and sets the lease alarm. Decisions that
 //! need no runtime live in `shell`; storage access lives in `store`.
 //!
+//! Merges: a submission that passed the core's checks is merged by the steward, reached through the
+//! `STEWARD` service binding. The alarm drives it: `drive_merges` stores the in-flight marker, then
+//! calls the steward with the dispatch the stored call carries, then stores the answer. The marker
+//! is stored first, so a restart re-dispatches the same claim instead of starting a second merge.
+//!
 //! Persist before send (CLAUDE.md rule 6): `apply` runs the core and returns an `Applied`;
 //! `persist` stores its state and events in one transaction and returns a `store::Persisted`;
 //! `deliver` and `settle` require that token, so sending before the write does not type-check.
@@ -19,9 +24,10 @@
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 
-use crate::coordinator::{Coordinator as Core, Effect};
+use crate::coordinator::{Coordinator as Core, Effect, MergeDispatch};
 use crate::identity;
-use crate::protocol::{AgentId, ClientMsg, ServerMsg};
+use crate::merge::{self, MergeOutcome};
+use crate::protocol::{AgentId, ClaimId, ClientMsg, ServerMsg};
 use crate::shell::{
     self, keep_first, Action, ReplayStep, Session, StoreDecision, StoredSize, Target, Work,
 };
@@ -38,6 +44,13 @@ const UNAUTHORIZED_BODY: &str = "unauthorized";
 /// Worker overwrites it on every request, and the Durable Object is reachable only through the
 /// Worker, so a caller cannot choose its value.
 const VERIFIED_AGENT_HEADER: &str = "X-Tessel-Verified-Agent";
+
+/// The service binding to the steward's `MergeService` entrypoint (wrangler.toml).
+const STEWARD_BINDING: &str = "STEWARD";
+
+/// The URL the steward is asked at. A service binding ignores the host; only the path and method
+/// matter to `MergeService`.
+const STEWARD_MERGE_URL: &str = "https://steward.internal/merge";
 
 /// What `apply` made of a call: something to store and send, or a client call that is refused
 /// because it would grow the state too far.
@@ -99,6 +112,9 @@ pub struct Coordinator {
     core: RefCell<Option<Core>>,
     /// The size of the state as last stored, for the soft limit.
     stored: Cell<StoredSize>,
+    /// The claim whose merge this instance is waiting on. Memory only: a restart forgets it, which
+    /// is when the stored marker has to be dispatched again.
+    merging: Cell<Option<ClaimId>>,
 }
 
 impl DurableObject for Coordinator {
@@ -108,6 +124,7 @@ impl DurableObject for Coordinator {
             env,
             core: RefCell::new(None),
             stored: Cell::new(StoredSize::default()),
+            merging: Cell::new(None),
         }
     }
 
@@ -158,7 +175,7 @@ impl DurableObject for Coordinator {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        self.run_expiry().await?;
+        self.run_alarm().await?;
         Response::ok("")
     }
 }
@@ -247,7 +264,7 @@ impl Coordinator {
             return Err(self.fail("apply", "core is not loaded"));
         };
         let effects = step(core);
-        let next_expiry_ms = core.next_expiry_ms();
+        let next_alarm_ms = core.next_alarm_ms();
         let (events, outbound) = shell::split_effects(effects);
         let entries = match shell::persist_entries(core, &events) {
             Ok(entries) => entries,
@@ -261,7 +278,8 @@ impl Coordinator {
                 entries,
                 events,
                 outbound,
-                next_expiry_ms,
+                next_alarm_ms,
+                dispatch: None,
             })),
             StoreDecision::Refuse => {
                 *slot = None;
@@ -279,11 +297,74 @@ impl Coordinator {
         }
     }
 
-    /// The alarm: expire leases on their own, store the result under the hard limit and deliver
-    /// it.
-    async fn run_expiry(&self) -> Result<()> {
+    /// The alarm: expire leases, then run the merges that are due. Each step stores its result
+    /// under the hard limit and delivers it.
+    async fn run_alarm(&self) -> Result<()> {
         self.ensure_loaded().await?;
-        self.expire_at(now_ms()).await
+        self.expire_at(now_ms()).await?;
+        self.drive_merges().await
+    }
+
+    /// Run the next merge the core offers, one at a time, until none is due. The in-flight marker
+    /// is stored before the steward is called; the answer is stored before anyone is told.
+    async fn drive_merges(&self) -> Result<()> {
+        loop {
+            let started_ms = now_ms();
+            let mut dispatch = None;
+            let prepared = self.apply(Work::Plain, |core| {
+                dispatch = core.begin_merge(started_ms);
+                Vec::new()
+            })?;
+            let Some(dispatch) = dispatch else {
+                return Ok(());
+            };
+            let mut applied = self.ready(prepared, "start merge")?;
+            applied.dispatch = Some(dispatch);
+            let persisted = self.persist(applied).await?;
+            self.settle(&persisted, None).await?;
+            let Some(dispatch) = persisted.dispatch() else {
+                return Err(self.fail("start merge", "the stored call lost its dispatch"));
+            };
+            if self.merging.get() == Some(dispatch.claim) {
+                return Ok(());
+            }
+            self.merging.set(Some(dispatch.claim));
+            let outcome = self.ask_steward(dispatch).await;
+            self.merging.set(None);
+            let claim = dispatch.claim;
+            let prepared = self.apply(Work::Plain, |core| {
+                core.merge_outcome(claim, &outcome, now_ms())
+            })?;
+            let applied = self.ready(prepared, "apply merge outcome")?;
+            let persisted = self.persist(applied).await?;
+            self.settle(&persisted, None).await?;
+        }
+    }
+
+    /// Ask the steward to merge. A failed call, a non-200 and an answer that is not a known
+    /// outcome are all `ServiceUnavailable`: infrastructure, retried with backoff by the core.
+    async fn ask_steward(&self, dispatch: &MergeDispatch) -> MergeOutcome {
+        match self.call_steward(dispatch).await {
+            Ok((status, body)) => MergeOutcome::from_response(status, &body),
+            Err(e) => {
+                console_error!("coordinator {}: steward call failed: {e}", self.repo());
+                MergeOutcome::ServiceUnavailable
+            }
+        }
+    }
+
+    async fn call_steward(&self, dispatch: &MergeDispatch) -> Result<(u16, String)> {
+        let body = merge::request_body(&self.repo(), &dispatch.agent, &dispatch.fork_commit);
+        let headers = Headers::new();
+        headers.set("Content-Type", "application/json")?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_headers(headers)
+            .with_body(Some(wasm_bindgen::JsValue::from_str(&body)));
+        let request = Request::new_with_init(STEWARD_MERGE_URL, &init)?;
+        let steward = self.env.service(STEWARD_BINDING)?;
+        let mut response = steward.fetch_request(request).await?;
+        Ok((response.status_code(), response.text().await?))
     }
 
     /// The expiry step that runs before a client message, so the message is judged against the
@@ -406,7 +487,7 @@ impl Coordinator {
     /// the first error.
     async fn settle(&self, persisted: &Persisted, reply_to: Option<&WebSocket>) -> Result<()> {
         let delivered = self.deliver(persisted, reply_to);
-        let rescheduled = self.reschedule(persisted.next_expiry_ms()).await;
+        let rescheduled = self.reschedule(persisted.next_alarm_ms()).await;
         delivered?;
         rescheduled
     }
@@ -466,9 +547,9 @@ impl Coordinator {
         sessions
     }
 
-    async fn reschedule(&self, next_expiry_ms: Option<u64>) -> Result<()> {
+    async fn reschedule(&self, next_alarm_ms: Option<u64>) -> Result<()> {
         let storage = self.state.storage();
-        let result = match shell::alarm_at_ms(next_expiry_ms) {
+        let result = match shell::alarm_at_ms(next_alarm_ms) {
             Some(at_ms) => {
                 let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(at_ms));
                 storage.set_alarm(ScheduledTime::new(date)).await
