@@ -1,0 +1,4 @@
+intent: fix pass 1: cover loading stored state that has no denial field; drop the unused Default on Denial; remove an impossible case from the verifying docs
+assumes: serde treats a missing Option field as None, so the serde(default) on denial is redundant but matches work/submitted
+rejected: proving the test with the serde(default) deleted (the mutant is equivalent for an Option field; test still passes)
+evidence: cargo test --workspace 761 passed; clippy -D warnings clean; fmt clean; wasm build 0 warnings
