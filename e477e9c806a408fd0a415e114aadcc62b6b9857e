@@ -1,0 +1,4 @@
+intent: turn the code review and security review findings into two fix tasks and record their dispatch
+assumes: none
+rejected: one combined task (the Rust and TypeScript fixes touch disjoint files and can run in parallel)
+evidence: docs only
