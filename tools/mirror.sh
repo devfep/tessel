@@ -11,8 +11,8 @@
 # in a curl config read from stdin and in git's environment, never in an argument list, and the
 # script prints only shas and fixed messages.
 #
-# Test seam: MIRROR_ALLOW_LOCAL_REMOTES=1 skips the GitHub and https checks on the two remotes so
-# a test can use local bare repos. Never set it in real use.
+# Test seam: MIRROR_ALLOW_LOCAL_REMOTES=1 (exactly 1) skips the GitHub and https checks on the
+# two remotes so a test can use local bare repos, and warns on stderr. Never set it in real use.
 set -euo pipefail
 
 readonly ARTIFACTS_REPO="${ARTIFACTS_REPO:-tessel-dogfood}"
@@ -41,8 +41,10 @@ command -v jq >/dev/null || fail "jq is required"
 
 cd "$(git rev-parse --show-toplevel)"
 origin_url="$(git remote get-url origin)"
-if [ -z "${MIRROR_ALLOW_LOCAL_REMOTES:-}" ]; then
+if [ "${MIRROR_ALLOW_LOCAL_REMOTES:-}" != 1 ]; then
   [[ "$origin_url" =~ $GITHUB_PATTERN ]] || fail "origin is not a GitHub remote"
+else
+  echo "WARNING: MIRROR_ALLOW_LOCAL_REMOTES=1: GitHub and https checks are off" >&2
 fi
 
 cleanup() {
@@ -58,7 +60,7 @@ minted="$(
 remote="$(jq -er '.remote' <<<"$minted")" || fail "the steward's answer has no remote"
 token="$(jq -er '.token' <<<"$minted")" || fail "the steward's answer has no token"
 unset minted
-if [ -z "${MIRROR_ALLOW_LOCAL_REMOTES:-}" ]; then
+if [ "${MIRROR_ALLOW_LOCAL_REMOTES:-}" != 1 ]; then
   [[ "$remote" =~ $HTTPS_PATTERN ]] || fail "the steward's remote is not an https URL"
 fi
 
