@@ -19,6 +19,17 @@ pub const LEASE_MS: u64 = 30_000;
 /// is stored in it.
 pub const MAX_AGENT_ID_BYTES: usize = 128;
 
+/// The longest text frame the shell parses. Larger frames are refused with `Malformed`.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024;
+
+/// The largest value written to storage in one entry (the state or one event). Durable Object
+/// storage rejects values over 2 MiB; the shell stops at half of that.
+pub const MAX_STORED_ENTRY_BYTES: usize = 1024 * 1024;
+
+/// The largest integer a JavaScript number holds exactly. A socket attachment cannot store a
+/// larger `u64`, and no event will ever have a higher `seq`.
+pub const MAX_SAFE_SEQ: u64 = (1 << 53) - 1;
+
 /// Storage key of the serialized core.
 pub const STATE_KEY: &str = "core";
 
@@ -31,12 +42,10 @@ pub struct Session {
     /// Set by the first `Hello` the core answered with `Welcome`.
     #[serde(default)]
     pub agent: Option<AgentId>,
-    /// Set once a `Watch` replay has finished.
+    /// Set once a `Watch` replay has finished: live events below this `seq` are not sent.
+    /// `None` means the socket is not watching.
     #[serde(default)]
-    pub watcher: bool,
-    /// The `from_seq` of the `Watch`: live events below it are not sent. 0 if absent.
-    #[serde(default)]
-    pub watch_from: u64,
+    pub watch_from: Option<u64>,
 }
 
 /// What the shell does with one parsed client message.
@@ -133,9 +142,33 @@ pub fn load_core(
     })
 }
 
-/// Parse one text frame. The reason is dropped on purpose: parse errors quote the input.
-pub fn parse_client_msg(text: &str) -> Option<ClientMsg> {
-    serde_json::from_str(text).ok()
+/// Why a text frame is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFault {
+    /// Over `MAX_FRAME_BYTES`; refused before it is parsed.
+    TooLarge,
+    NotAMessage,
+}
+
+impl FrameFault {
+    /// The reply to send. A fixed text, never the input.
+    pub fn reply(self) -> ServerMsg {
+        match self {
+            FrameFault::TooLarge => {
+                let message = format!("frame is larger than {MAX_FRAME_BYTES} bytes");
+                error_msg(ErrorCode::Malformed, &message)
+            }
+            FrameFault::NotAMessage => malformed_reply(),
+        }
+    }
+}
+
+/// Parse one text frame. The parse error is dropped on purpose: it quotes the input.
+pub fn parse_client_msg(text: &str) -> Result<ClientMsg, FrameFault> {
+    if text.len() > MAX_FRAME_BYTES {
+        return Err(FrameFault::TooLarge);
+    }
+    serde_json::from_str(text).map_err(|_| FrameFault::NotAMessage)
 }
 
 /// The reply to a text frame that is not a valid message. A fixed text, never the input.
@@ -163,12 +196,12 @@ fn error_msg(code: ErrorCode, message: &str) -> ServerMsg {
 /// core refuses a `Hello` that names someone else.
 pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
     match msg {
-        ClientMsg::Watch { .. } if session.watcher => Action::Reject(error_msg(
+        ClientMsg::Watch { .. } if session.watch_from.is_some() => Action::Reject(error_msg(
             ErrorCode::Malformed,
             "this socket is already watching",
         )),
         ClientMsg::Watch { from_seq } => Action::Watch {
-            from_seq: *from_seq,
+            from_seq: clamp_watch_from(*from_seq),
         },
         ClientMsg::Hello { agent, .. } => {
             if let Some(rejection) = check_agent_id(agent) {
@@ -195,6 +228,11 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
             )),
         },
     }
+}
+
+/// The stored watch start: `from_seq` limited to `MAX_SAFE_SEQ`, so the attachment can hold it.
+pub fn clamp_watch_from(from_seq: u64) -> u64 {
+    from_seq.min(MAX_SAFE_SEQ)
 }
 
 /// `Malformed` for an agent id that is empty or too long to store in a socket attachment.
@@ -233,7 +271,6 @@ pub fn bind_on_welcome(
         if let Outbound::Reply(ServerMsg::Welcome { .. }) = item {
             return Some(Session {
                 agent: Some(agent.clone()),
-                watcher: session.watcher,
                 watch_from: session.watch_from,
             });
         }
@@ -256,7 +293,10 @@ pub fn bound_indexes(agent: &AgentId, sessions: &[Session]) -> Vec<usize> {
 pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
     let mut found = Vec::new();
     for (index, session) in sessions.iter().enumerate() {
-        if session.watcher && seq >= session.watch_from {
+        let Some(from) = session.watch_from else {
+            continue;
+        };
+        if seq >= from {
             found.push(index);
         }
     }
@@ -355,17 +395,114 @@ pub fn event_key(seq: u64) -> String {
     format!("{EVENT_PREFIX}{seq:020}")
 }
 
+/// Why a call's entries cannot be stored.
+#[derive(Debug)]
+pub enum EntriesError {
+    Serialize(serde_json::Error),
+    /// The state or one event is over `MAX_STORED_ENTRY_BYTES`.
+    TooLarge,
+}
+
+impl std::fmt::Display for EntriesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntriesError::Serialize(e) => write!(f, "{e}"),
+            EntriesError::TooLarge => write!(f, "{STATE_LIMIT_MESSAGE}"),
+        }
+    }
+}
+
+/// The text of the `Malformed` reply when a call would grow the stored state past its limit.
+pub const STATE_LIMIT_MESSAGE: &str = "repo state limit reached";
+
+/// The reply to the sender of a call whose entries are too large to store.
+pub fn state_limit_reply() -> ServerMsg {
+    error_msg(ErrorCode::Malformed, STATE_LIMIT_MESSAGE)
+}
+
+/// Whether any entry's value, the state or a single event, is over `MAX_STORED_ENTRY_BYTES`.
+pub fn exceeds_entry_limit(entries: &[(String, String)]) -> bool {
+    for (_, json) in entries {
+        if json.len() > MAX_STORED_ENTRY_BYTES {
+            return true;
+        }
+    }
+    false
+}
+
 /// Everything one call writes, as (key, JSON) pairs: the core state first, then each event.
+/// Nothing is returned for a state or event over the storage limit: the call must not be stored.
 pub fn persist_entries(
     core: &Core,
     events: &[Event],
-) -> Result<Vec<(String, String)>, serde_json::Error> {
+) -> Result<Vec<(String, String)>, EntriesError> {
     let mut entries = Vec::with_capacity(events.len() + 1);
-    entries.push((STATE_KEY.to_string(), serde_json::to_string(core)?));
+    let state = serde_json::to_string(core).map_err(EntriesError::Serialize)?;
+    entries.push((STATE_KEY.to_string(), state));
     for event in events {
-        entries.push((event_key(event.seq), serde_json::to_string(event)?));
+        let json = serde_json::to_string(event).map_err(EntriesError::Serialize)?;
+        entries.push((event_key(event.seq), json));
+    }
+    if exceeds_entry_limit(&entries) {
+        return Err(EntriesError::TooLarge);
     }
     Ok(entries)
+}
+
+/// Whether delivery must read the other sockets' sessions: only a notification or an event can
+/// go to a socket other than the sender.
+pub fn needs_sessions(outbound: &[Outbound], events: &[Event]) -> bool {
+    if !events.is_empty() {
+        return true;
+    }
+    for item in outbound {
+        match item {
+            Outbound::Reply(_) => {}
+            Outbound::Notify { .. } => return true,
+        }
+    }
+    false
+}
+
+/// The agent whose queued request to withdraw when a socket in `closing` goes away: the bound
+/// agent, unless another open socket (`others`, which excludes the closing one) is bound to it.
+pub fn agent_to_withdraw(closing: &Session, others: &[Session]) -> Option<AgentId> {
+    let agent = closing.agent.as_ref()?;
+    if bound_indexes(agent, others).is_empty() {
+        return Some(agent.clone());
+    }
+    None
+}
+
+const BEARER_PREFIX: &str = "Bearer ";
+
+/// Whether an `Authorization` header carries the coordinator token. Fails closed: a missing or
+/// empty `expected`, a missing header, another scheme or an empty token never match.
+pub fn is_authorized(expected: Option<&str>, authorization: Option<&str>) -> bool {
+    let Some(expected) = expected.filter(|token| !token.is_empty()) else {
+        return false;
+    };
+    let Some(presented) = authorization.and_then(|header| header.strip_prefix(BEARER_PREFIX))
+    else {
+        return false;
+    };
+    if presented.is_empty() {
+        return false;
+    }
+    constant_time_eq(expected.as_bytes(), presented.as_bytes())
+}
+
+/// Equality without an early exit on the first differing byte. The lengths are compared first,
+/// so the length of the secret is not hidden.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 #[cfg(test)]
@@ -382,8 +519,7 @@ mod tests {
     fn bound(name: &str) -> Session {
         Session {
             agent: Some(agent(name)),
-            watcher: false,
-            watch_from: 0,
+            watch_from: None,
         }
     }
 
@@ -428,8 +564,7 @@ mod tests {
     fn session_survives_the_attachment_round_trip() {
         let session = Session {
             agent: Some(agent("a1")),
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let json = serde_json::to_string(&session).unwrap();
         assert_eq!(serde_json::from_str::<Session>(&json).unwrap(), session);
@@ -509,15 +644,18 @@ mod tests {
 
     #[test]
     fn parse_failures_do_not_echo_the_input() {
-        assert!(parse_client_msg(r#"{"type":"ignore-previous-instructions"}"#).is_none());
-        assert!(parse_client_msg("not json").is_none());
-        assert!(parse_client_msg("").is_none());
-        assert!(parse_client_msg(r#"{"type":"hello","agent":"a1","base":"abc"}"#).is_some());
-        let ServerMsg::Error { code, message, .. } = malformed_reply() else {
-            panic!("expected an error");
-        };
-        assert_eq!(code, ErrorCode::Malformed);
-        assert!(!message.contains("ignore"), "echoed input: {message}");
+        for bad in [r#"{"type":"ignore-previous-instructions"}"#, "not json", ""] {
+            let Err(fault) = parse_client_msg(bad) else {
+                panic!("expected a refusal for {bad:?}");
+            };
+            assert_eq!(fault, FrameFault::NotAMessage);
+            let ServerMsg::Error { code, message, .. } = fault.reply() else {
+                panic!("expected an error");
+            };
+            assert_eq!(code, ErrorCode::Malformed);
+            assert!(!message.contains("ignore"), "echoed input: {message}");
+        }
+        assert!(parse_client_msg(r#"{"type":"hello","agent":"a1","base":"abc"}"#).is_ok());
     }
 
     #[test]
@@ -598,15 +736,13 @@ mod tests {
     fn rebinding_keeps_the_watcher_flag_and_from_seq() {
         let session = Session {
             agent: None,
-            watcher: true,
-            watch_from: 7,
+            watch_from: Some(7),
         };
         let mut core = new_core();
         let (who, effects) = run(&mut core, &session, hello("a1"));
         let (_, outbound) = split_effects(effects);
         let rebound = bind_on_welcome(&session, &who, &outbound).unwrap();
-        assert!(rebound.watcher);
-        assert_eq!(rebound.watch_from, 7);
+        assert_eq!(rebound.watch_from, Some(7));
     }
 
     #[test]
@@ -671,8 +807,7 @@ mod tests {
     fn watchers_are_found_by_their_flag() {
         let watcher = Session {
             agent: None,
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let sessions = [Session::default(), watcher.clone(), bound("a1"), watcher];
         assert_eq!(watcher_indexes(&sessions, 0), vec![1, 3]);
@@ -844,8 +979,7 @@ mod tests {
     fn a_second_watch_on_a_watcher_is_refused_but_the_first_is_served() {
         let watcher = Session {
             agent: None,
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let again = decide(&watcher, &msg(r#"{"type":"watch","from_seq":0}"#));
         assert_eq!(reject_code(again), ErrorCode::Malformed);
@@ -908,8 +1042,7 @@ mod tests {
     fn watcher() -> Session {
         Session {
             agent: None,
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         }
     }
 
@@ -978,8 +1111,7 @@ mod tests {
     fn a_sender_that_is_also_a_watcher_gets_its_reply_then_the_events() {
         let sender = Session {
             agent: Some(agent("a1")),
-            watcher: true,
-            watch_from: 0,
+            watch_from: Some(0),
         };
         let outbound = [Outbound::Reply(binary_rejection())];
         let plan = plan_delivery(&outbound, &[event_at(0), event_at(1)], &[sender]);
@@ -995,8 +1127,7 @@ mod tests {
     fn watcher_from(watch_from: u64) -> Session {
         Session {
             agent: None,
-            watcher: true,
-            watch_from,
+            watch_from: Some(watch_from),
         }
     }
 
@@ -1044,10 +1175,16 @@ mod tests {
     }
 
     #[test]
-    fn an_old_attachment_without_from_seq_watches_from_zero() {
-        let session: Session = serde_json::from_str(r#"{"agent":"a1","watcher":true}"#).unwrap();
-        assert_eq!(session.watch_from, 0);
-        assert!(session.watcher);
+    fn an_attachment_without_watch_from_is_not_watching() {
+        let session: Session = serde_json::from_str(r#"{"agent":"a1"}"#).unwrap();
+        assert_eq!(session.watch_from, None);
+    }
+
+    #[test]
+    fn a_stored_watch_from_of_zero_is_watching_not_absent() {
+        let session: Session = serde_json::from_str(r#"{"watch_from":0}"#).unwrap();
+        assert_eq!(session.watch_from, Some(0));
+        assert_eq!(watcher_indexes(&[session], 0), vec![0]);
     }
 
     #[test]
@@ -1059,5 +1196,227 @@ mod tests {
         keep_first(&mut slot, Ok(()));
         keep_first(&mut slot, Err("second".to_string()));
         assert_eq!(slot.as_deref(), Some("first"));
+    }
+
+    const TOKEN: &str = "s3cret-token-value";
+
+    fn bearer(token: &str) -> String {
+        format!("Bearer {token}")
+    }
+
+    #[test]
+    fn the_right_bearer_token_is_authorized() {
+        assert!(is_authorized(Some(TOKEN), Some(&bearer(TOKEN))));
+    }
+
+    #[test]
+    fn a_different_token_of_the_same_length_is_refused() {
+        let last = format!("{}X", &TOKEN[..TOKEN.len() - 1]);
+        let first = format!("X{}", &TOKEN[1..]);
+        for wrong in [last, first] {
+            assert_eq!(wrong.len(), TOKEN.len());
+            assert!(
+                !is_authorized(Some(TOKEN), Some(&bearer(&wrong))),
+                "{wrong}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_token_of_another_length_is_refused() {
+        let shorter = &TOKEN[..TOKEN.len() - 1];
+        let longer = format!("{TOKEN}x");
+        assert!(!is_authorized(Some(TOKEN), Some(&bearer(shorter))));
+        assert!(!is_authorized(Some(TOKEN), Some(&bearer(&longer))));
+    }
+
+    #[test]
+    fn a_missing_or_empty_secret_refuses_every_request() {
+        for expected in [None, Some("")] {
+            for header in [None, Some("Bearer "), Some("Bearer x"), Some("")] {
+                assert!(!is_authorized(expected, header), "{expected:?} {header:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_presented_token_is_refused() {
+        assert!(!is_authorized(Some(TOKEN), Some("Bearer ")));
+    }
+
+    #[test]
+    fn a_missing_authorization_header_is_refused() {
+        assert!(!is_authorized(Some(TOKEN), None));
+    }
+
+    #[test]
+    fn another_scheme_or_spelling_is_refused() {
+        let basic = format!("Basic {TOKEN}");
+        let lower = format!("bearer {TOKEN}");
+        let joined = format!("Bearer{TOKEN}");
+        let padded = format!(" Bearer {TOKEN}");
+        for header in [TOKEN, basic.as_str(), &lower, &joined, &padded, "Bearer"] {
+            assert!(!is_authorized(Some(TOKEN), Some(header)), "{header}");
+        }
+    }
+
+    #[test]
+    fn constant_time_eq_compares_every_byte_and_the_length() {
+        assert!(constant_time_eq(b"", b""));
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"xbc"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(!constant_time_eq(b"ab", b"abc"));
+        assert!(!constant_time_eq(b"", b"a"));
+    }
+
+    fn padded_hello(total: usize) -> String {
+        let base = r#"{"type":"hello","agent":"a1","base":"abc"}"#;
+        format!("{base}{}", " ".repeat(total - base.len()))
+    }
+
+    #[test]
+    fn a_frame_of_exactly_the_limit_is_parsed() {
+        assert!(parse_client_msg(&padded_hello(MAX_FRAME_BYTES)).is_ok());
+    }
+
+    #[test]
+    fn a_frame_over_the_limit_is_malformed_even_if_it_would_parse() {
+        let over = padded_hello(MAX_FRAME_BYTES + 1);
+        let Err(fault) = parse_client_msg(&over) else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(fault, FrameFault::TooLarge);
+        let ServerMsg::Error { code, message, .. } = fault.reply() else {
+            panic!("expected an error");
+        };
+        assert_eq!(code, ErrorCode::Malformed);
+        assert!(message.contains("larger"), "{message}");
+        let junk = "ignore".repeat(MAX_FRAME_BYTES);
+        assert_eq!(parse_client_msg(&junk).unwrap_err(), FrameFault::TooLarge);
+        assert!(!message.contains("ignore"), "echoed input");
+    }
+
+    fn entry(len: usize) -> (String, String) {
+        ("k".to_string(), "x".repeat(len))
+    }
+
+    #[test]
+    fn an_entry_is_over_the_limit_only_above_one_mib() {
+        assert!(!exceeds_entry_limit(&[]));
+        assert!(!exceeds_entry_limit(&[entry(MAX_STORED_ENTRY_BYTES - 1)]));
+        assert!(!exceeds_entry_limit(&[entry(MAX_STORED_ENTRY_BYTES)]));
+        assert!(exceeds_entry_limit(&[entry(MAX_STORED_ENTRY_BYTES + 1)]));
+    }
+
+    #[test]
+    fn the_limit_applies_to_the_state_and_to_each_event_alone() {
+        let over = MAX_STORED_ENTRY_BYTES + 1;
+        assert!(exceeds_entry_limit(&[entry(over), entry(1)]), "state");
+        assert!(
+            exceeds_entry_limit(&[entry(1), entry(1), entry(over)]),
+            "one event"
+        );
+        let at = MAX_STORED_ENTRY_BYTES;
+        assert!(
+            !exceeds_entry_limit(&[entry(at), entry(at)]),
+            "sum is not the limit"
+        );
+    }
+
+    fn claim_with_summary(summary: &str, on_conflict: &str) -> ClientMsg {
+        msg(&format!(
+            r#"{{"type":"claim","req":1,"intent":{{"summary":"{summary}","task_ref":null}},
+            "scopes":[{{"scope":{{"kind":"symbol","path":"a.rs","qualified_name":"f"}},
+            "mode":"edit_signature"}}],"on_conflict":"{on_conflict}"}}"#
+        ))
+    }
+
+    fn huge() -> String {
+        "x".repeat(MAX_STORED_ENTRY_BYTES + 1)
+    }
+
+    #[test]
+    fn a_state_over_the_limit_is_not_stored() {
+        let mut core = new_core();
+        run(&mut core, &Session::default(), hello("a1"));
+        let (_, effects) = run(&mut core, &bound("a1"), claim_with_summary(&huge(), "fail"));
+        let (events, _) = split_effects(effects);
+        let heartbeat = run(&mut core, &bound("a1"), msg(r#"{"type":"heartbeat"}"#)).1;
+        assert!(split_effects(heartbeat).0.is_empty());
+        let err = persist_entries(&core, &[]).unwrap_err();
+        let EntriesError::TooLarge = err else {
+            panic!("expected TooLarge for the state, got {err}");
+        };
+        assert!(persist_entries(&core, &events).is_err());
+    }
+
+    #[test]
+    fn one_event_over_the_limit_is_not_stored_though_the_state_is_small() {
+        let mut core = new_core();
+        run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
+        let (_, effects) = run(&mut core, &bound("a2"), claim_with_summary(&huge(), "fail"));
+        let (events, _) = split_effects(effects);
+        assert!(serde_json::to_string(&core).unwrap().len() < MAX_STORED_ENTRY_BYTES);
+        let err = persist_entries(&core, &events).unwrap_err();
+        let EntriesError::TooLarge = err else {
+            panic!("expected TooLarge for the event, got {err}");
+        };
+        assert_eq!(err.to_string(), STATE_LIMIT_MESSAGE);
+    }
+
+    #[test]
+    fn the_state_limit_reply_is_a_fixed_malformed_error() {
+        let ServerMsg::Error { req, code, message } = state_limit_reply() else {
+            panic!("expected an error");
+        };
+        assert_eq!((req, code), (None, ErrorCode::Malformed));
+        assert_eq!(message, "repo state limit reached");
+    }
+
+    #[test]
+    fn a_watch_start_is_kept_up_to_the_largest_exact_integer() {
+        assert_eq!(MAX_SAFE_SEQ, 9_007_199_254_740_991);
+        assert_eq!(clamp_watch_from(0), 0);
+        assert_eq!(clamp_watch_from(MAX_SAFE_SEQ - 1), MAX_SAFE_SEQ - 1);
+        assert_eq!(clamp_watch_from(MAX_SAFE_SEQ), MAX_SAFE_SEQ);
+        assert_eq!(clamp_watch_from(MAX_SAFE_SEQ + 1), MAX_SAFE_SEQ);
+        assert_eq!(clamp_watch_from(u64::MAX), MAX_SAFE_SEQ);
+    }
+
+    #[test]
+    fn a_watch_with_a_huge_from_seq_is_served_from_the_clamped_start() {
+        let huge = msg(&format!(r#"{{"type":"watch","from_seq":{}}}"#, u64::MAX));
+        let Action::Watch { from_seq } = decide(&Session::default(), &huge) else {
+            panic!("expected a watch");
+        };
+        assert_eq!(from_seq, MAX_SAFE_SEQ);
+    }
+
+    #[test]
+    fn delivery_reads_sessions_only_for_notifications_and_events() {
+        let reply = Outbound::Reply(binary_rejection());
+        assert!(!needs_sessions(&[], &[]));
+        assert!(!needs_sessions(&[reply.clone(), reply.clone()], &[]));
+        assert!(needs_sessions(&[reply.clone(), queued("a2")], &[]));
+        assert!(needs_sessions(&[reply], &[event_at(0)]));
+        assert!(needs_sessions(&[], &[event_at(0)]));
+    }
+
+    #[test]
+    fn a_closing_socket_withdraws_its_agent_only_when_it_was_the_last_one() {
+        let closing = bound("a1");
+        assert_eq!(agent_to_withdraw(&closing, &[]), Some(agent("a1")));
+        let elsewhere = [bound("a2"), watcher(), Session::default()];
+        assert_eq!(agent_to_withdraw(&closing, &elsewhere), Some(agent("a1")));
+        let twin = [bound("a2"), bound("a1")];
+        assert_eq!(agent_to_withdraw(&closing, &twin), None);
+    }
+
+    #[test]
+    fn closing_an_unbound_socket_withdraws_nobody() {
+        assert_eq!(agent_to_withdraw(&Session::default(), &[]), None);
+        assert_eq!(agent_to_withdraw(&watcher(), &[bound("a1")]), None);
     }
 }

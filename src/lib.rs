@@ -7,7 +7,11 @@
 //! `persist` stores its state and events in one transaction and returns a `store::Persisted`;
 //! `deliver` and `settle` require that token, so sending before the write does not type-check.
 //! If the write fails the cached core is dropped, because it is ahead of storage, and the next
-//! call reloads from storage.
+//! call reloads from storage. So is a core whose state or event is too large to store.
+//!
+//! Authentication: the Worker serves `/repo/<name>/ws` only to a request that carries
+//! `Authorization: Bearer <COORDINATOR_TOKEN>`; anything else is refused before the Durable
+//! Object is reached. `agent` in `hello` is then the only identity the core trusts.
 
 mod coordinator;
 mod protocol;
@@ -19,11 +23,22 @@ use std::fmt::Display;
 
 use coordinator::{Coordinator as Core, Effect};
 use protocol::{AgentId, ClientMsg, ServerMsg};
+use shell::EntriesError;
 use shell::{keep_first, Action, ReplayStep, Session, Target};
 use store::{Applied, Persisted};
 use worker::*;
 
-/// Route: GET /repo/<name>/ws  (WebSocket upgrade) -> coordinator for <name>.
+/// The fixed body of the refusal of a request without the coordinator token.
+const UNAUTHORIZED_BODY: &str = "unauthorized";
+
+/// What `apply` made of a call: something to store and send, or a refusal for the sender.
+enum Prepared {
+    Ready(Applied),
+    Refused(ServerMsg),
+}
+
+/// Route: GET /repo/<name>/ws  (WebSocket upgrade) -> coordinator for <name>, for a request
+/// that carries the coordinator token.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
@@ -34,12 +49,29 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         ["repo", name, "ws"] if !name.is_empty() => name.to_string(),
         _ => return Response::error("expected /repo/<name>/ws", 404),
     };
+    if !authorized(&req, &env)? {
+        return Response::error(UNAUTHORIZED_BODY, 401);
+    }
 
     let stub = env
         .durable_object("COORDINATOR")?
         .id_from_name(&repo)?
         .get_stub()?;
     stub.fetch_with_request(req).await
+}
+
+/// Whether the request carries the `COORDINATOR_TOKEN` secret. A missing secret refuses every
+/// request. The token is never logged or echoed.
+fn authorized(req: &Request, env: &Env) -> Result<bool> {
+    let expected = env
+        .secret("COORDINATOR_TOKEN")
+        .ok()
+        .map(|secret| secret.to_string());
+    let presented = req.headers().get("Authorization")?;
+    Ok(shell::is_authorized(
+        expected.as_deref(),
+        presented.as_deref(),
+    ))
 }
 
 #[durable_object]
@@ -85,22 +117,23 @@ impl DurableObject for Coordinator {
 
     async fn websocket_close(
         &self,
-        _ws: WebSocket,
+        ws: WebSocket,
         _code: usize,
         _reason: String,
         _was_clean: bool,
     ) -> Result<()> {
-        Ok(())
+        self.withdraw(&ws).await
     }
 
-    async fn websocket_error(&self, _ws: WebSocket, _error: Error) -> Result<()> {
-        Ok(())
+    async fn websocket_error(&self, ws: WebSocket, _error: Error) -> Result<()> {
+        self.withdraw(&ws).await
     }
 
     async fn alarm(&self) -> Result<Response> {
         self.ensure_loaded().await?;
         let now_ms = now_ms();
-        let applied = self.apply(|core| core.expire(now_ms))?;
+        let prepared = self.apply(|core| core.expire(now_ms))?;
+        let applied = self.ready(prepared, "expire leases")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await?;
         Response::ok("")
@@ -133,8 +166,9 @@ impl Coordinator {
             WebSocketIncomingMessage::String(text) => text,
             WebSocketIncomingMessage::Binary(_) => return send(ws, &shell::binary_rejection()),
         };
-        let Some(msg) = shell::parse_client_msg(&text) else {
-            return send(ws, &shell::malformed_reply());
+        let msg = match shell::parse_client_msg(&text) {
+            Ok(msg) => msg,
+            Err(fault) => return send(ws, &fault.reply()),
         };
         let session = self.read_session(ws)?;
         match shell::decide(&session, &msg) {
@@ -173,8 +207,9 @@ impl Coordinator {
     }
 
     /// Run `step` on the core and serialize the result. Nothing is stored or sent yet. If
-    /// serialization fails the core is dropped, because it has moved on from storage.
-    fn apply(&self, step: impl FnOnce(&mut Core) -> Vec<Effect>) -> Result<Applied> {
+    /// serialization fails the core is dropped, because it has moved on from storage. If the
+    /// state or an event is too large to store, the core is dropped too and the call is refused.
+    fn apply(&self, step: impl FnOnce(&mut Core) -> Vec<Effect>) -> Result<Prepared> {
         let mut slot = self.core.borrow_mut();
         let Some(core) = slot.as_mut() else {
             return Err(self.fail("apply", "core is not loaded"));
@@ -183,17 +218,57 @@ impl Coordinator {
         let next_expiry_ms = core.next_expiry_ms();
         let (events, outbound) = shell::split_effects(effects);
         match shell::persist_entries(core, &events) {
-            Ok(entries) => Ok(Applied {
+            Ok(entries) => Ok(Prepared::Ready(Applied {
                 entries,
                 events,
                 outbound,
                 next_expiry_ms,
-            }),
-            Err(e) => {
+            })),
+            Err(EntriesError::TooLarge) => {
+                *slot = None;
+                console_error!(
+                    "coordinator {}: {}",
+                    self.repo(),
+                    shell::STATE_LIMIT_MESSAGE
+                );
+                Ok(Prepared::Refused(shell::state_limit_reply()))
+            }
+            Err(e @ EntriesError::Serialize(_)) => {
                 *slot = None;
                 Err(self.fail("serialize state", e))
             }
         }
+    }
+
+    /// The `Applied` of a call that has no sender to refuse (the alarm, a closing socket): a
+    /// refusal is an error to log.
+    fn ready(&self, prepared: Prepared, operation: &str) -> Result<Applied> {
+        match prepared {
+            Prepared::Ready(applied) => Ok(applied),
+            Prepared::Refused(_) => Err(self.fail(operation, shell::STATE_LIMIT_MESSAGE)),
+        }
+    }
+
+    /// A socket closed or failed. If it was bound and no other open socket is bound to the same
+    /// agent, withdraw the agent's queued request: nobody is left to receive its grant.
+    async fn withdraw(&self, closing: &WebSocket) -> Result<()> {
+        let session = self.read_session(closing)?;
+        let open: Vec<WebSocket> = self
+            .state
+            .get_websockets()
+            .into_iter()
+            .filter(|socket| socket != closing)
+            .collect();
+        let others = self.read_sessions(&open);
+        let Some(agent) = shell::agent_to_withdraw(&session, &others) else {
+            return Ok(());
+        };
+        self.ensure_loaded().await?;
+        let now_ms = now_ms();
+        let prepared = self.apply(|core| core.disconnect(&agent, now_ms))?;
+        let applied = self.ready(prepared, "withdraw queued request")?;
+        let persisted = self.persist(applied).await?;
+        self.settle(&persisted, None).await
     }
 
     /// Store the call's state and events in one transaction. On failure the cached core is
@@ -217,7 +292,11 @@ impl Coordinator {
         msg: ClientMsg,
     ) -> Result<()> {
         self.ensure_loaded().await?;
-        let applied = self.apply(|core| core.handle(&agent, msg, now_ms()))?;
+        let prepared = self.apply(|core| core.handle(&agent, msg, now_ms()))?;
+        let applied = match prepared {
+            Prepared::Ready(applied) => applied,
+            Prepared::Refused(reply) => return send(ws, &reply),
+        };
         let persisted = self.persist(applied).await?;
         let bound = self.bind(ws, session, &agent, &persisted);
         let settled = self.settle(&persisted, Some(ws)).await;
@@ -252,7 +331,11 @@ impl Coordinator {
     /// message is an error. A failed send to any other socket closes that socket and delivery
     /// goes on, so one dead watcher cannot close the sender or make an alarm retry.
     fn deliver(&self, persisted: &Persisted, reply_to: Option<&WebSocket>) -> Result<()> {
-        let sockets = self.state.get_websockets();
+        let sockets = if shell::needs_sessions(persisted.outbound(), persisted.events()) {
+            self.state.get_websockets()
+        } else {
+            Vec::new()
+        };
         let sessions = self.read_sessions(&sockets);
         let mut sender_error = None;
         for (target, msg) in
@@ -336,8 +419,7 @@ impl Coordinator {
                 ReplayStep::Done => break,
             }
         }
-        session.watcher = true;
-        session.watch_from = from_seq;
+        session.watch_from = Some(from_seq);
         self.write_session(ws, &session)
     }
 
