@@ -26,6 +26,7 @@ interface World {
   mainNow: Sha;
   forkHost: string;
   mainReadFails: boolean;
+  changed: string;
 }
 
 function textStream(text: string): ReadableStream<Uint8Array> {
@@ -42,6 +43,7 @@ function respond(argv: string[], world: World): { exitCode: number; stdout: stri
   const text = argv.join(" ");
   const answers: Array<[string, { exitCode: number; stdout: string }]> = [
     ["origin/main^{commit}", { exitCode: 0, stdout: `${BASE}\n` }],
+    ["--name-status", { exitCode: 0, stdout: world.changed }],
     ["merge-base --is-ancestor", { exitCode: 0, stdout: "" }],
     [" merge-base ", { exitCode: 0, stdout: `${MERGE_BASE}\n` }],
     ["HEAD^{commit}", { exitCode: 0, stdout: `${HEAD}\n` }],
@@ -61,6 +63,7 @@ function build(overrides: Partial<World> = {}) {
     mainNow: HEAD,
     forkHost: "git.example",
     mainReadFails: false,
+    changed: "M\0src/a.ts\0",
     ...overrides,
   };
   const events: string[] = [];
@@ -132,7 +135,11 @@ function build(overrides: Partial<World> = {}) {
   return { ctx, env, events, world, ttls };
 }
 
-const request = { fork: "demo--a1", commit: COMMIT };
+const request = {
+  fork: "demo--a1",
+  commit: COMMIT,
+  scopes: [{ scope: { kind: "dir" as const, path: "src" }, mode: "edit_body" as const }],
+};
 
 describe("executeMerge", () => {
   it("merges, minting the write token only after the tests ran and revoking it after the push", async () => {
@@ -169,6 +176,24 @@ describe("executeMerge", () => {
     const outcome = await executeMerge(ctx, env, "demo", request);
     expect(outcome.outcome).toBe("tests_failed");
     expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
+    expect(events.some((event) => event.includes(" push "))).toBe(false);
+    expect(events).toContain("destroy");
+  });
+
+  it("rejects an uncovered change before the install and the tests, minting no write token", async () => {
+    const { ctx, env, events } = build({ changed: "M\0src/a.ts\0A\0docs/new.md\0" });
+    const outcome = await executeMerge(ctx, env, "demo", request);
+
+    expect(outcome).toEqual({
+      outcome: "uncovered",
+      base: BASE,
+      head: HEAD,
+      files: ["docs/new.md"],
+      total: 1,
+    });
+    expect(events.some((event) => event.includes("npm"))).toBe(false);
+    expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
+    expect(events).not.toContain("intercept push-gateway");
     expect(events.some((event) => event.includes(" push "))).toBe(false);
     expect(events).toContain("destroy");
   });

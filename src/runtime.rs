@@ -404,7 +404,12 @@ impl Coordinator {
     }
 
     async fn call_steward(&self, dispatch: &MergeDispatch) -> Result<(u16, String)> {
-        let body = merge::request_body(&self.repo(), &dispatch.agent, &dispatch.fork_commit);
+        let body = merge::request_body(
+            &self.repo(),
+            &dispatch.agent,
+            &dispatch.fork_commit,
+            &dispatch.scopes,
+        );
         let headers = Headers::new();
         headers.set("Content-Type", "application/json")?;
         let mut init = RequestInit::new();

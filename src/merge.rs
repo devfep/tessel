@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::protocol::{AgentId, CommitId};
+use crate::protocol::{AgentId, CommitId, ScopeClaim};
 
 /// A `main_moved` outcome re-dispatches the claim at once; this many in a row reject it.
 pub const MAX_MAIN_MOVED: u32 = 5;
@@ -36,12 +36,20 @@ pub fn infra_backoff_ms(retry: u32) -> u64 {
     INFRA_BACKOFF_BASE_MS.saturating_mul(factor)
 }
 
-/// What the coordinator sends the steward: merge `commit` from the agent's fork into main.
-pub fn request_body(repo: &str, agent: &AgentId, commit: &CommitId) -> String {
+/// What the coordinator sends the steward: merge `commit` from the agent's fork into main, for a
+/// claim that holds `scopes`. The steward checks the merged change against them (invariant 11);
+/// it refuses a request without `scopes`, so the check cannot be skipped.
+pub fn request_body(
+    repo: &str,
+    agent: &AgentId,
+    commit: &CommitId,
+    scopes: &[ScopeClaim],
+) -> String {
     serde_json::json!({
         "repo": repo,
         "fork": fork_name(repo, agent),
         "commit": commit.0,
+        "scopes": scopes,
     })
     .to_string()
 }
@@ -79,6 +87,11 @@ pub enum MergeOutcome {
     /// The repo's own tests ran on the rebased commit and did not pass.
     TestsFailed {
         result: StepExit,
+    },
+    /// The commit rebased onto main changes `total` files that the claim does not cover
+    /// (invariant 11). The file names are untrusted and are not read.
+    Uncovered {
+        total: u64,
     },
     /// Another write reached main after the steward read it; try again.
     MainMoved {},
@@ -142,6 +155,11 @@ impl MergeOutcome {
             MergeOutcome::TestsFailed { result } => Verdict::Rejected {
                 reason: tests_reason(result.exit_code),
             },
+            MergeOutcome::Uncovered { total } => Verdict::Rejected {
+                reason: format!(
+                    "the merged change touches {total} file(s) the claim does not cover"
+                ),
+            },
             MergeOutcome::CommitNotInFork {} => Verdict::Rejected {
                 reason: "the submitted commit is not on your fork's default branch".to_string(),
             },
@@ -170,6 +188,7 @@ fn tests_reason(exit_code: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{Mode, Scope, SymbolId};
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -213,6 +232,12 @@ mod tests {
             MergeOutcome::TestsFailed {
                 result: StepExit { exit_code: 1 }
             }
+        );
+        assert_eq!(
+            parse(&format!(
+                r#"{{"outcome":"uncovered","base":"{SHA_A}","head":"{SHA_B}","files":["x"],"total":3}}"#
+            )),
+            MergeOutcome::Uncovered { total: 3 }
         );
         assert_eq!(
             parse(&format!(
@@ -285,12 +310,59 @@ mod tests {
     }
 
     #[test]
-    fn the_request_names_the_agents_fork_and_the_commit() {
-        let body = request_body("demo", &AgentId("a1".into()), &CommitId(SHA_A.into()));
+    fn the_request_names_the_agents_fork_the_commit_and_the_claims_scopes() {
+        let scopes = [
+            ScopeClaim {
+                scope: Scope::Dir {
+                    path: String::new(),
+                },
+                mode: Mode::Depend,
+            },
+            ScopeClaim {
+                scope: Scope::File {
+                    path: "src/a.rs".into(),
+                },
+                mode: Mode::EditBody,
+            },
+            ScopeClaim {
+                scope: Scope::Symbol(SymbolId {
+                    path: "src/a.rs".into(),
+                    qualified_name: "a::f".into(),
+                }),
+                mode: Mode::EditSignature,
+            },
+        ];
+        let body = request_body(
+            "demo",
+            &AgentId("a1".into()),
+            &CommitId(SHA_A.into()),
+            &scopes,
+        );
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
             value,
-            serde_json::json!({"repo": "demo", "fork": "demo--a1", "commit": SHA_A})
+            serde_json::json!({
+                "repo": "demo",
+                "fork": "demo--a1",
+                "commit": SHA_A,
+                "scopes": [
+                    {"scope": {"kind": "dir", "path": ""}, "mode": "depend"},
+                    {"scope": {"kind": "file", "path": "src/a.rs"}, "mode": "edit_body"},
+                    {
+                        "scope": {"kind": "symbol", "path": "src/a.rs", "qualified_name": "a::f"},
+                        "mode": "edit_signature"
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn an_uncovered_change_is_rejected_in_fixed_form_without_paths() {
+        let reason = rejected(&MergeOutcome::Uncovered { total: 2 });
+        assert_eq!(
+            reason,
+            "the merged change touches 2 file(s) the claim does not cover"
         );
     }
 

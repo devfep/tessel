@@ -40,6 +40,8 @@ pub struct MergeDispatch {
     pub claim: ClaimId,
     pub agent: AgentId,
     pub fork_commit: CommitId,
+    /// The scopes the claim holds, which the steward checks the merged change against.
+    pub scopes: Vec<ScopeClaim>,
     /// 1 for the first dispatch of this submission, counting every retry.
     pub attempt: u32,
 }
@@ -232,6 +234,7 @@ impl Coordinator {
             claim,
             agent: held.agent.clone(),
             fork_commit: work.fork_commit.clone(),
+            scopes: held.scopes.clone(),
             attempt,
         })
     }
@@ -866,6 +869,71 @@ mod tests {
             "the same fence submits again: {again:?}"
         );
         assert_eq!(c.begin_merge(NOW + 502).map(|d| d.claim), Some(claim.0));
+    }
+
+    #[test]
+    fn the_dispatch_carries_the_scopes_the_claim_holds() {
+        let mut c = core();
+        let scopes = vec![edit("src/a.rs"), sc(file("src/b.rs"), Mode::Create)];
+        let claim = grant(&mut c, "a", scopes.clone());
+        submit_with(&mut c, "a", claim, vec![edit("src/a.rs")], true);
+
+        let sent = c.begin_merge(NOW).expect("dispatched");
+
+        assert_eq!(sent.scopes, scopes);
+        let again = c
+            .begin_merge(NOW + 1)
+            .expect("the same merge, still in flight");
+        assert_eq!(again.scopes, scopes, "a re-dispatch carries them too");
+    }
+
+    #[test]
+    fn the_dispatch_after_an_amend_carries_the_added_scopes() {
+        let mut c = core();
+        let (claim, old) = grant(&mut c, "a", vec![edit("src/a.rs")]);
+        let added = sc(file("src/b.rs"), Mode::Create);
+        let amend = ClientMsg::Amend {
+            req: RequestId(7),
+            claim,
+            fence: old,
+            add: vec![added.clone()],
+        };
+        let effects = c.handle(&agent("a"), amend, NOW);
+        let Some(ServerMsg::Granted { fence: new, .. }) = replies(&effects).into_iter().next()
+        else {
+            panic!("expected Granted, got {effects:?}");
+        };
+        submit(&mut c, "a", (claim, *new), "src/a.rs");
+
+        let sent = c.begin_merge(NOW).expect("dispatched");
+
+        assert_eq!(sent.scopes, vec![edit("src/a.rs"), added]);
+    }
+
+    #[test]
+    fn an_uncovered_change_rejects_the_submission_and_reactivates_the_claim() {
+        let mut c = core();
+        let claim = grant(&mut c, "a", vec![edit("src/a.rs")]);
+        submit(&mut c, "a", claim, "src/a.rs");
+        assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(claim.0));
+
+        let effects = c.merge_outcome(claim.0, &MergeOutcome::Uncovered { total: 2 }, NOW + 500);
+
+        let to_a = notices(&effects, "a");
+        let [ServerMsg::SubmitRejected { claim: id, reason }] = &to_a[..] else {
+            panic!("expected SubmitRejected, got {to_a:?}");
+        };
+        assert_eq!(*id, claim.0);
+        assert_eq!(
+            reason,
+            "the merged change touches 2 file(s) the claim does not cover"
+        );
+        assert!(logged(&effects)
+            .iter()
+            .any(|k| matches!(k, EventKind::SubmitRejected { .. })));
+        assert_eq!(c.next_expiry_ms(), Some(NOW + 500 + LEASE), "a fresh lease");
+        assert_eq!(c.begin_merge(NOW + 501), None, "no longer queued");
+        assert!(!can_claim(&mut c, "b", "src/a.rs"), "the locks are kept");
     }
 
     #[test]

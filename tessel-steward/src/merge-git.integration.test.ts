@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { GitCommand } from "./merge-commands";
+import type { ClaimedScope } from "./merge-coverage";
 import { runMerge, type MergeDeps } from "./merge-steps";
 import { parseSha, type GitResult, type Sha } from "./merge-types";
 import type { StepOutcome } from "./run-steps";
@@ -21,6 +22,11 @@ const PASSING: StepOutcome = {
   stderrTruncated: false,
   passed: true,
 };
+
+const WHOLE_REPO: ClaimedScope[] = [
+  { scope: { kind: "dir", path: "" }, mode: "edit_signature" },
+  { scope: { kind: "dir", path: "" }, mode: "create" },
+];
 
 const scratch: string[] = [];
 
@@ -146,7 +152,7 @@ describe("runMerge against real git", () => {
     const forked = divergedWithoutConflict(repos);
     const mainBefore = repos.mainHead();
 
-    const outcome = await runMerge(repos.deps(), forked);
+    const outcome = await runMerge(repos.deps(), forked, WHOLE_REPO);
 
     expect(outcome).toMatchObject({ outcome: "merged", base: mainBefore });
     expect(repos.mainHead()).toBe(outcome.outcome === "merged" ? outcome.head : "");
@@ -159,12 +165,12 @@ describe("runMerge against real git", () => {
     const repos = new Repos();
     const forked = divergedWithoutConflict(repos);
     const mainBefore = repos.mainHead();
-    expect((await runMerge(repos.deps(), forked)).outcome).toBe("merged");
+    expect((await runMerge(repos.deps(), forked, WHOLE_REPO)).outcome).toBe("merged");
     const first = repos.mainHead();
 
     git(repos.main, "update-ref", "refs/heads/main", mainBefore);
     await new Promise((resolve) => setTimeout(resolve, 1100));
-    expect((await runMerge(repos.deps(), forked)).outcome).toBe("merged");
+    expect((await runMerge(repos.deps(), forked, WHOLE_REPO)).outcome).toBe("merged");
 
     expect(repos.mainHead()).toBe(first);
   });
@@ -179,7 +185,7 @@ describe("runMerge against real git", () => {
     repos.push(repos.main);
     const mainBefore = repos.mainHead();
 
-    const outcome = await runMerge(repos.deps(), forked);
+    const outcome = await runMerge(repos.deps(), forked, WHOLE_REPO);
 
     expect(outcome).toEqual({ outcome: "conflict", base: mainBefore, files: ["a.txt"] });
     expect(repos.mainHead()).toBe(mainBefore);
@@ -191,8 +197,12 @@ describe("runMerge against real git", () => {
     const onlyOnMain = repos.mainHead();
     const unknown = sha("1".repeat(40));
 
-    expect(await runMerge(repos.deps(), onlyOnMain)).toEqual({ outcome: "commit_not_in_fork" });
-    expect(await runMerge(repos.deps(), unknown)).toEqual({ outcome: "commit_not_in_fork" });
+    expect(await runMerge(repos.deps(), onlyOnMain, WHOLE_REPO)).toEqual({
+      outcome: "commit_not_in_fork",
+    });
+    expect(await runMerge(repos.deps(), unknown, WHOLE_REPO)).toEqual({
+      outcome: "commit_not_in_fork",
+    });
   });
 
   it("does not overwrite main when it moved after the clone", async () => {
@@ -209,7 +219,7 @@ describe("runMerge against real git", () => {
       },
     });
 
-    const outcome = await runMerge(deps, forked);
+    const outcome = await runMerge(deps, forked, WHOLE_REPO);
 
     expect(outcome).toEqual({ outcome: "main_moved", expected: base, actual: racer });
     expect(repos.mainHead()).toBe(racer);
@@ -222,8 +232,95 @@ describe("runMerge against real git", () => {
     repos.push(repos.main);
     const mainBefore = repos.mainHead();
 
-    const outcome = await runMerge(repos.deps(), forked);
+    const outcome = await runMerge(repos.deps(), forked, WHOLE_REPO);
 
     expect(outcome).toEqual({ outcome: "already_merged", base: mainBefore });
+  });
+});
+
+function fileScope(path: string, mode: ClaimedScope["mode"]): ClaimedScope {
+  return { scope: { kind: "file", path }, mode };
+}
+
+describe("runMerge coverage against real git", () => {
+  it("rejects a fork commit that touches an unclaimed file as uncovered, running nothing", async () => {
+    const repos = new Repos();
+    const forked = divergedWithoutConflict(repos);
+    const mainBefore = repos.mainHead();
+    const steps: string[] = [];
+    const deps = repos.deps({
+      runPackageStep: async (step) => {
+        steps.push(step);
+        return PASSING;
+      },
+      withPushAccess: async () => {
+        steps.push("push access");
+        throw new Error("must not push");
+      },
+    });
+
+    const outcome = await runMerge(deps, forked, [fileScope("a.txt", "edit_body")]);
+
+    expect(outcome).toMatchObject({
+      outcome: "uncovered",
+      base: mainBefore,
+      files: ["b.txt"],
+      total: 1,
+    });
+    expect(steps).toEqual([]);
+    expect(repos.mainHead()).toBe(mainBefore);
+  });
+
+  it("judges the rebased range, not the fork's diff against its own base: main's files are not the commit's", async () => {
+    const repos = new Repos();
+    const forked = divergedWithoutConflict(repos);
+
+    const outcome = await runMerge(repos.deps(), forked, [fileScope("b.txt", "create")]);
+
+    expect(outcome).toMatchObject({ outcome: "merged" });
+  });
+
+  it("needs edit_signature on the old path and create on the new path for a real rename", async () => {
+    const repos = new Repos();
+    git(repos.work, "mv", "a.txt", "renamed.txt");
+    git(repos.work, "commit", "-m", "rename");
+    const forked = sha(git(repos.work, "rev-parse", "HEAD"));
+    repos.push(repos.fork);
+    git(repos.work, "reset", "--hard", "HEAD~1");
+
+    const onlyOld = await runMerge(repos.deps(), forked, [fileScope("a.txt", "edit_signature")]);
+    expect(onlyOld).toMatchObject({ outcome: "uncovered", files: ["renamed.txt"] });
+
+    const both = await runMerge(repos.deps(), forked, [
+      fileScope("a.txt", "edit_signature"),
+      fileScope("renamed.txt", "create"),
+    ]);
+    expect(both).toMatchObject({ outcome: "merged" });
+  });
+
+  it("maps a real delete to edit_signature, so edit_body does not cover it", async () => {
+    const repos = new Repos();
+    git(repos.work, "rm", "a.txt");
+    git(repos.work, "commit", "-m", "delete");
+    const forked = sha(git(repos.work, "rev-parse", "HEAD"));
+    repos.push(repos.fork);
+    git(repos.work, "reset", "--hard", "HEAD~1");
+
+    const weak = await runMerge(repos.deps(), forked, [fileScope("a.txt", "edit_body")]);
+    expect(weak).toMatchObject({ outcome: "uncovered", files: ["a.txt"] });
+    const strong = await runMerge(repos.deps(), forked, [fileScope("a.txt", "edit_signature")]);
+    expect(strong).toMatchObject({ outcome: "merged" });
+  });
+
+  it("carries a file name with a space, a newline and non-ASCII characters as data", async () => {
+    const repos = new Repos();
+    const odd = "we ird\nnaïve $(x).txt";
+    const forked = repos.commit(odd, "x\n", "odd name");
+    repos.push(repos.fork);
+    repos.resetTo("HEAD~1");
+
+    const outcome = await runMerge(repos.deps(), forked, []);
+
+    expect(outcome).toMatchObject({ outcome: "uncovered", files: [odd], total: 1 });
   });
 });

@@ -125,6 +125,22 @@ export function conflictsCommand(workspace: string): GitCommand {
   return local(workspace, ["diff", "--name-only", "--diff-filter=U", "-z"]);
 }
 
+/**
+ * Stdout is the NUL-separated `git diff --name-status` records of `base..head`, with renames
+ * detected. `-z` keeps paths unquoted; they are untrusted data and are never put in a command.
+ */
+export function changedFilesCommand(workspace: string, base: Sha, head: Sha): GitCommand {
+  return local(workspace, [
+    "diff",
+    "--name-status",
+    "-z",
+    "-M",
+    "--no-ext-diff",
+    `${base}..${head}`,
+    "--",
+  ]);
+}
+
 /** Stdout is the sha HEAD points at. */
 export function headCommand(workspace: string): GitCommand {
   return local(workspace, ["rev-parse", "--verify", "HEAD^{commit}"]);
