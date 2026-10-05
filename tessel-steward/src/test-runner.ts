@@ -2,7 +2,8 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 import { isAllowedGitRequest } from "./git-gateway-policy";
 import { revokeOnce } from "./revoke-once";
-import { DEPENDENCIES_DECLARED_EXIT_CODE, runCloneThenTest, type StepOutcome } from "./run-steps";
+import { DEPENDENCY_CHECK_SCRIPT } from "./dependency-check";
+import { makeOutcome, runCloneThenTest, type StepOutcome } from "./run-steps";
 import { captureTail } from "./tail-capture";
 
 const CLONE_TIMEOUT_SECONDS = "240";
@@ -62,22 +63,6 @@ export class ArtifactsGitGateway extends WorkerEntrypoint<Env, GatewayProps> {
   }
 }
 
-// Exits 0 when package.json declares no dependencies, 3 when it declares any, 4 when it is
-// missing and 5 when it is not valid JSON.
-const DEPENDENCY_CHECK_SCRIPT = `
-const fs = require("fs");
-let pkg;
-try {
-  pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-} catch (error) {
-  process.exit(error.code === "ENOENT" ? 4 : 5);
-}
-const count = (key) =>
-  pkg && typeof pkg[key] === "object" && pkg[key] !== null ? Object.keys(pkg[key]).length : 0;
-const declared = count("dependencies") + count("devDependencies") > 0;
-process.exit(declared ? ${DEPENDENCIES_DECLARED_EXIT_CODE} : 0);
-`;
-
 async function runStep(
   container: Container,
   step: TestRunResult["step"],
@@ -98,15 +83,7 @@ async function runStep(
     captureTail(stderr, OUTPUT_LIMIT_BYTES),
     process.exitCode,
   ]);
-  return {
-    step,
-    exitCode,
-    stdout: out.text,
-    stderr: err.text,
-    stdoutTruncated: out.truncated,
-    stderrTruncated: err.truncated,
-    passed: step === "test" && exitCode === 0,
-  };
+  return makeOutcome(step, exitCode, out, err);
 }
 
 /** Runs a repo's test suite in a sandbox that holds no credentials and has no Internet. */
@@ -114,13 +91,16 @@ export class TestRunner extends DurableObject<Env> {
   /**
    * Clones `ref` of an Artifacts repo into a fresh sandbox and runs `npm test` there.
    *
-   * Output is untrusted data from the repo and is returned unchanged. Call this on a Durable
-   * Object instance with a new random name for each run.
+   * Output is untrusted data from the repo, capped at 256 KiB per stream (the end is kept). Call
+   * this on a Durable Object instance with a new random name for each run. The token is revoked
+   * after the clone and before any repo code runs.
    *
    * @param repo Name of the Artifacts repo.
    * @param ref Branch or tag to clone.
-   * @returns The result of the clone step if it failed, otherwise of the test step.
-   * @throws If the repo does not exist or the container cannot start.
+   * @returns The clone outcome if the clone failed, an "install" outcome if the repo declares
+   *   dependencies (or the dependency check did not complete), otherwise the test outcome.
+   * @throws If the repo does not exist, the container cannot start, or the token could not be
+   *   revoked (no repo code runs in that case).
    */
   async runTests(repo: string, ref: string): Promise<TestRunResult> {
     const container = this.ctx.container;

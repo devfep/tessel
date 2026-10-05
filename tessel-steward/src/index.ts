@@ -1,7 +1,7 @@
 import { parsePushEvent } from "./push-event";
 import { matchRoute, type Route } from "./routes";
 import type { TestRunResult } from "./test-runner";
-import { isForkRepo } from "./token-policy";
+import { mintForkWriteToken } from "./token-policy";
 
 export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 
@@ -64,13 +64,12 @@ async function forkRepo(env: Env, repo: string, fork: string): Promise<Response>
 
 async function mintWriteToken(env: Env, repo: string): Promise<Response> {
   using handle = await env.ARTIFACTS.get(repo);
-  const info = await handle.info();
-  if (!isForkRepo(info)) {
+  const minted = await mintForkWriteToken(handle, AGENT_TOKEN_TTL_SECONDS);
+  if (!minted.minted) {
     return json({ error: NOT_A_FORK_MESSAGE }, 403);
   }
-  const token = await handle.createToken("write", AGENT_TOKEN_TTL_SECONDS);
-  const { remote } = info;
-  const { plaintext, scope, expiresAt } = token;
+  const { remote } = minted.info;
+  const { plaintext, scope, expiresAt } = minted.token;
   return json({ repo, remote, token: plaintext, scope, expiresAt }, 201);
 }
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import { DEPENDENCIES_DECLARED_EXIT_CODE } from "./dependency-check";
 import {
-  DEPENDENCIES_DECLARED_EXIT_CODE,
   DEPENDENCIES_UNKNOWN_MESSAGE,
   DEPENDENCIES_UNSUPPORTED_MESSAGE,
   REVOKE_FAILED_MESSAGE,
+  makeOutcome,
   runCloneThenTest,
   type StepOutcome,
 } from "./run-steps";
@@ -71,7 +72,7 @@ describe("runCloneThenTest", () => {
     });
   });
 
-  it("refuses with a different message when the dependency check cannot read package.json", async () => {
+  it("refuses with a different message when the dependency check did not complete", async () => {
     const { calls, runStep, revokeToken } = harness({ install: 4 });
     const result = await runCloneThenTest(runStep, revokeToken);
     expect(calls).toEqual(["start clone", "revoke", "start install"]);
@@ -83,6 +84,12 @@ describe("runCloneThenTest", () => {
 
   it("throws when the revoke fails and runs neither the check nor the tests", async () => {
     const { calls, runStep, revokeToken } = harness({ revoked: false });
+    await expect(runCloneThenTest(runStep, revokeToken)).rejects.toThrow(REVOKE_FAILED_MESSAGE);
+    expect(calls).toEqual(["start clone", "revoke"]);
+  });
+
+  it("throws the revoke error, not the clone failure, when both fail", async () => {
+    const { calls, runStep, revokeToken } = harness({ clone: 128, revoked: false });
     await expect(runCloneThenTest(runStep, revokeToken)).rejects.toThrow(REVOKE_FAILED_MESSAGE);
     expect(calls).toEqual(["start clone", "revoke"]);
   });
@@ -116,5 +123,29 @@ describe("runCloneThenTest", () => {
   it("reports passed true for a test step that exits 0", async () => {
     const { runStep, revokeToken } = harness();
     expect(await runCloneThenTest(runStep, revokeToken)).toEqual(outcome("test", 0));
+  });
+});
+
+describe("makeOutcome", () => {
+  const empty = { text: "", truncated: false };
+  const steps: StepOutcome["step"][] = ["clone", "install", "test"];
+
+  it.each(steps)("sets passed only for step test with exit code 0 (%s)", (step) => {
+    expect(makeOutcome(step, 0, empty, empty).passed).toBe(step === "test");
+    expect(makeOutcome(step, 1, empty, empty).passed).toBe(false);
+  });
+
+  it("copies the captured text and truncation flags of each stream", () => {
+    const stdout = { text: "out", truncated: true };
+    const stderr = { text: "err", truncated: false };
+    expect(makeOutcome("test", 2, stdout, stderr)).toEqual({
+      step: "test",
+      exitCode: 2,
+      stdout: "out",
+      stderr: "err",
+      stdoutTruncated: true,
+      stderrTruncated: false,
+      passed: false,
+    });
   });
 });

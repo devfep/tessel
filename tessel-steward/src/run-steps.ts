@@ -1,3 +1,6 @@
+import type { TailCapture } from "./tail-capture";
+import { DEPENDENCIES_DECLARED_EXIT_CODE } from "./dependency-check";
+
 export interface StepOutcome {
   step: "clone" | "install" | "test";
   exitCode: number;
@@ -14,10 +17,29 @@ export const DEPENDENCIES_UNSUPPORTED_MESSAGE =
   "This repo declares dependencies, and dependency installation is not supported by this " +
   "runner yet; the tests were not run";
 export const DEPENDENCIES_UNKNOWN_MESSAGE =
-  "The dependency check could not read the package.json of this repo; the tests were not run";
+  "The dependency check did not complete, so it is unknown whether this repo declares " +
+  "dependencies; the tests were not run";
 
-/** Exit code of the dependency check when `package.json` declares any dependency. */
-export const DEPENDENCIES_DECLARED_EXIT_CODE = 3;
+/**
+ * Builds the outcome of a step that ran. `passed` is true only for step "test" with exit code 0:
+ * "clone" and "install" are infrastructure outcomes, never test evidence.
+ */
+export function makeOutcome(
+  step: StepOutcome["step"],
+  exitCode: number,
+  stdout: TailCapture,
+  stderr: TailCapture,
+): StepOutcome {
+  return {
+    step,
+    exitCode,
+    stdout: stdout.text,
+    stderr: stderr.text,
+    stdoutTruncated: stdout.truncated,
+    stderrTruncated: stderr.truncated,
+    passed: step === "test" && exitCode === 0,
+  };
+}
 
 function refusal(check: StepOutcome): StepOutcome {
   const declared = check.exitCode === DEPENDENCIES_DECLARED_EXIT_CODE;

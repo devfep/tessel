@@ -4,7 +4,7 @@ import { captureTail, TailBuffer } from "./tail-capture";
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 
-function streamOf(chunks: Uint8Array[]): ReadableStream {
+function streamOf(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
       for (const chunk of chunks) {
@@ -15,63 +15,93 @@ function streamOf(chunks: Uint8Array[]): ReadableStream {
   });
 }
 
+function tailOf(limit: number, ...chunks: Uint8Array[]) {
+  const buffer = new TailBuffer(limit);
+  for (const chunk of chunks) {
+    buffer.push(chunk);
+  }
+  return buffer.result();
+}
+
 describe("TailBuffer", () => {
   it("keeps everything under the limit", () => {
-    const buffer = new TailBuffer(10);
-    buffer.push(encode("abc"));
-    expect(buffer.result()).toEqual({ text: "abc", truncated: false });
+    expect(tailOf(10, encode("abc"))).toEqual({ text: "abc", truncated: false });
   });
 
   it("keeps everything exactly at the limit and does not flag it", () => {
-    const buffer = new TailBuffer(5);
-    buffer.push(encode("abcde"));
-    expect(buffer.result()).toEqual({ text: "abcde", truncated: false });
+    expect(tailOf(5, encode("abcde"))).toEqual({ text: "abcde", truncated: false });
   });
 
   it("keeps the end, not the start, one byte over the limit", () => {
-    const buffer = new TailBuffer(5);
-    buffer.push(encode("abcdef"));
-    expect(buffer.result()).toEqual({ text: "bcdef", truncated: true });
+    expect(tailOf(5, encode("abcdef"))).toEqual({ text: "bcdef", truncated: true });
   });
 
   it("keeps the end across many chunks", () => {
-    const buffer = new TailBuffer(4);
-    for (const piece of ["ab", "cd", "e", "fgh", "i"]) {
-      buffer.push(encode(piece));
-    }
-    expect(buffer.result()).toEqual({ text: "fghi", truncated: true });
+    const chunks = ["ab", "cd", "e", "fgh", "i"].map(encode);
+    expect(tailOf(4, ...chunks)).toEqual({ text: "fghi", truncated: true });
   });
 
   it("handles one chunk larger than the limit after smaller ones", () => {
-    const buffer = new TailBuffer(3);
-    buffer.push(encode("xy"));
-    buffer.push(encode("0123456789"));
-    expect(buffer.result()).toEqual({ text: "789", truncated: true });
+    expect(tailOf(3, encode("xy"), encode("0123456789"))).toEqual({
+      text: "789",
+      truncated: true,
+    });
   });
 
   it("returns empty text for no input", () => {
-    expect(new TailBuffer(3).result()).toEqual({ text: "", truncated: false });
+    expect(tailOf(3)).toEqual({ text: "", truncated: false });
   });
 
-  it("drops a multi-byte character split by the cut instead of emitting garbage", () => {
-    const buffer = new TailBuffer(4);
-    buffer.push(encode("a€bc"));
-    const { text, truncated } = buffer.result();
-    expect(truncated).toBe(true);
-    expect(text).toBe("bc");
-    expect(text).not.toContain("�");
+  it("keeps the exact end after many small chunks far beyond the limit", () => {
+    const limit = 1000;
+    const chunks: Uint8Array[] = [];
+    let all = "";
+    for (let index = 0; index < 5000; index += 1) {
+      const piece = `${index % 10}`.repeat((index % 7) + 1);
+      all += piece;
+      chunks.push(encode(piece));
+    }
+    expect(tailOf(limit, ...chunks)).toEqual({ text: all.slice(-limit), truncated: true });
   });
 
-  it("keeps a whole multi-byte character that fits exactly", () => {
-    const buffer = new TailBuffer(5);
-    buffer.push(encode("a€bc"));
-    expect(buffer.result().text).toBe("€bc");
+  it("is correct when a push lands exactly on the compaction boundary", () => {
+    const text = tailOf(4, encode("abcd"), encode("efgh"), encode("i"), encode("jkl"));
+    expect(text).toEqual({ text: "ijkl", truncated: true });
   });
 
-  it("decodes a cut inside a four-byte character without throwing", () => {
-    const buffer = new TailBuffer(3);
-    buffer.push(encode("😀z"));
-    expect(buffer.result().text).not.toContain("�");
+  it("drops the rest of a 4-byte character cut after its lead byte", () => {
+    expect(tailOf(4, encode("😀z"))).toEqual({ text: "z", truncated: true });
+  });
+
+  it("drops the rest of a 3-byte character cut after its lead byte", () => {
+    expect(tailOf(3, encode("a€b"))).toEqual({ text: "b", truncated: true });
+  });
+
+  it("drops the last byte of a 2-byte character cut after its lead byte", () => {
+    expect(tailOf(2, encode("éz"))).toEqual({ text: "z", truncated: true });
+  });
+
+  it("drops two continuation bytes when the cut leaves a 4-byte character's last two", () => {
+    expect(tailOf(4, encode("😀"), encode("zz"))).toEqual({ text: "zz", truncated: true });
+  });
+
+  it("drops no character when the cut falls on a character boundary", () => {
+    expect(tailOf(4, encode("a€b"))).toEqual({ text: "€b", truncated: true });
+  });
+
+  it("keeps a multi-byte character split across chunks that fits whole", () => {
+    const bytes = encode("a€bc");
+    expect(tailOf(6, bytes.subarray(0, 2), bytes.subarray(2))).toEqual({
+      text: "a€bc",
+      truncated: false,
+    });
+  });
+
+  it("passes untruncated input that begins with continuation bytes through unchanged", () => {
+    expect(tailOf(10, Uint8Array.of(0x80, 0x80, 0x41))).toEqual({
+      text: "��A",
+      truncated: false,
+    });
   });
 
   it("rejects a limit that is not a positive integer", () => {

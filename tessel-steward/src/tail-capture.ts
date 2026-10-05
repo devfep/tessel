@@ -9,44 +9,52 @@ export interface TailCapture {
 }
 
 /**
- * Keeps the last `limit` bytes of a stream of chunks without holding more than `limit` bytes
- * plus one chunk.
+ * Keeps the last `limit` bytes of a stream of chunks.
  *
- * When bytes were dropped, the kept tail starts at the first complete UTF-8 character, so the
- * text never begins with a partial character.
+ * Bytes accumulate in a buffer of twice the limit and are compacted only when it fills, so each
+ * byte is copied at most about twice and memory stays at 2 x limit plus one chunk. When bytes
+ * were dropped, the kept tail starts at the first complete UTF-8 character, so the text never
+ * begins with a partial character. Input that was not truncated is decoded as is.
  */
 export class TailBuffer {
-  private tail = new Uint8Array(0);
-  private dropped = false;
+  private readonly buffer: Uint8Array;
+  private length = 0;
+  private total = 0;
 
   constructor(private readonly limit: number) {
     if (!Number.isInteger(limit) || limit < 1) {
       throw new Error(`TailBuffer limit must be a positive integer, got ${limit}`);
     }
+    this.buffer = new Uint8Array(limit * 2);
   }
 
   push(chunk: Uint8Array): void {
-    const joined = new Uint8Array(this.tail.length + chunk.length);
-    joined.set(this.tail);
-    joined.set(chunk, this.tail.length);
-    if (joined.length > this.limit) {
-      this.dropped = true;
-      this.tail = joined.slice(joined.length - this.limit);
-    } else {
-      this.tail = joined;
+    this.total += chunk.length;
+    if (chunk.length >= this.limit) {
+      this.buffer.set(chunk.subarray(chunk.length - this.limit));
+      this.length = this.limit;
+      return;
     }
+    if (this.length + chunk.length > this.buffer.length) {
+      this.buffer.copyWithin(0, this.length - this.limit, this.length);
+      this.length = this.limit;
+    }
+    this.buffer.set(chunk, this.length);
+    this.length += chunk.length;
   }
 
   result(): TailCapture {
-    let start = 0;
-    if (this.dropped) {
-      const scanEnd = Math.min(this.tail.length, UTF8_MAX_SEQUENCE_LENGTH - 1);
-      while (start < scanEnd && isContinuationByte(this.tail[start])) {
+    const truncated = this.total > this.limit;
+    const end = this.length;
+    let start = Math.max(0, end - this.limit);
+    if (truncated) {
+      const scanEnd = Math.min(end, start + UTF8_MAX_SEQUENCE_LENGTH - 1);
+      while (start < scanEnd && isContinuationByte(this.buffer[start])) {
         start += 1;
       }
     }
-    const text = new TextDecoder().decode(this.tail.subarray(start));
-    return { text, truncated: this.dropped };
+    const text = new TextDecoder().decode(this.buffer.subarray(start, end));
+    return { text, truncated };
   }
 }
 
@@ -60,7 +68,10 @@ function isContinuationByte(byte: number | undefined): boolean {
  * @param stream Process output stream.
  * @param limit Maximum number of bytes kept.
  */
-export async function captureTail(stream: ReadableStream, limit: number): Promise<TailCapture> {
+export async function captureTail(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<TailCapture> {
   const buffer = new TailBuffer(limit);
   const reader = stream.getReader();
   try {
