@@ -1,0 +1,4 @@
+intent: merge IDENTITY (d6f127f) into task-proto-freeze
+assumes: none
+rejected: none
+evidence: one conflict in src/shell.rs tests (both sides added a test at one spot); kept both. cargo test 241 passed
