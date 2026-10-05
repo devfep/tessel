@@ -9,7 +9,8 @@
 //! - Merged work leaves the claim released and its fence retired. `Merged` goes to the submitter,
 //!   `BaseMoved` to every other agent with a claim that overlaps what was touched.
 //! - Assumptions are challenged once, at submit time (invariant 8). A merge does not challenge them
-//!   again: the evidence counters count every `AssumptionChallenged` event.
+//!   again: the evidence counters count every `AssumptionChallenged` event. A merge does record
+//!   what the submission challenged for verification (see `verifying`).
 //! - A verified rejection returns the claim to active and unsubmitted with a fresh lease, the same
 //!   fence and its locks, so the agent can fix the work and submit again.
 //! - A claim whose submission waits for review is skipped, not waited for: it does not hold up
@@ -148,12 +149,14 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        match outcome.verdict() {
-            Verdict::Landed { head } => self.land(claim, &held, head, now_ms),
+        let effects = match outcome.verdict() {
+            Verdict::Landed { base, head } => self.land(claim, &held, (base, head), now_ms),
             Verdict::Rejected { reason } => self.reject_work(claim, held, reason, now_ms),
             Verdict::MainMoved => self.retry_after_move(claim, held, now_ms),
             Verdict::Infrastructure => self.retry_after_infrastructure(claim, held, now_ms),
-        }
+        };
+        self.drop_ended_verifications();
+        effects
     }
 
     /// Decide a submission held for review (invariant 12). Only a configured reviewer may, never
@@ -239,6 +242,25 @@ impl Coordinator {
         })
     }
 
+    /// Whether the merge queue has something to do at `now_ms`: a merge in flight, or a submission
+    /// ready to be dispatched (not held for review, not in backoff). Verifications wait for it.
+    pub(super) fn merge_pending_at(&self, now_ms: u64) -> bool {
+        if self.state.merge_in_flight.is_some() {
+            return true;
+        }
+        let Some(claim) = self.next_to_merge() else {
+            return false;
+        };
+        let due = self
+            .state
+            .claims
+            .get(&claim.0)
+            .and_then(|held| held.work.as_ref())
+            .and_then(|work| work.retry_at_ms)
+            .unwrap_or(0);
+        due <= now_ms
+    }
+
     /// The earliest submission that may be dispatched: submitted and not held for review. Only real
     /// claims have `work`, so shadow claims never qualify.
     fn next_to_merge(&self) -> Option<ClaimId> {
@@ -263,7 +285,7 @@ impl Coordinator {
         &mut self,
         claim: ClaimId,
         held: &ActiveClaim,
-        head: CommitId,
+        (base, head): (CommitId, CommitId),
         now_ms: u64,
     ) -> Vec<Effect> {
         let touched = held
@@ -299,6 +321,12 @@ impl Coordinator {
         ];
         effects.extend(self.notify_base_moved(&held.agent, &head, &touched, now_ms));
         effects.extend(self.grant_unblocked_waiters(now_ms));
+        let challenged = held
+            .work
+            .as_ref()
+            .map(|work| work.challenged.clone())
+            .unwrap_or_default();
+        self.record_verifications(&challenged, &base, &head);
         effects
     }
 

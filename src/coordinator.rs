@@ -13,12 +13,17 @@
 //! - A submitted claim is merged by the steward, one at a time, in submission order (see `merging`).
 //!   A submission that needs review (invariant 12) is held and never dispatched until a reviewer
 //!   named by `set_reviewers` approves it; a rejection returns the claim to active.
+//! - A merge that landed work which had challenged assumptions queues a verification of each still
+//!   live assuming claim; the steward tries that agent's work on the new main, one at a time,
+//!   only while no merge is due (see `verifying`).
 //! - A shadow claim (invariant 10) is a real claim with an id, a fence and a lease that places no
 //!   lock, so it blocks nobody. Submitting one records it for verification and never queues it.
 
 mod merging;
+mod verifying;
 
 pub use merging::MergeDispatch;
+pub use verifying::VerifyDispatch;
 
 use std::collections::{hash_map, BTreeMap, HashMap};
 use std::sync::Arc;
@@ -127,6 +132,10 @@ struct Submission {
     /// meaning no request id is known.
     #[serde(default)]
     submit_req: Option<RequestId>,
+    /// The assumptions this submission challenged at submit time (invariant 8). When it merges,
+    /// each one whose assuming claim is still live is verified against the new main.
+    #[serde(default)]
+    challenged: Vec<verifying::Challenged>,
     /// `main_moved` answers so far.
     #[serde(default)]
     moved: u32,
@@ -144,12 +153,14 @@ impl Submission {
         touched: Vec<ScopeClaim>,
         awaiting_review: bool,
         submit_req: RequestId,
+        challenged: Vec<verifying::Challenged>,
     ) -> Self {
         Self {
             fork_commit,
             touched,
             awaiting_review,
             submit_req: Some(submit_req),
+            challenged,
             moved: 0,
             infra_failures: 0,
             retry_at_ms: None,
@@ -260,6 +271,16 @@ struct CoordinatorState {
     /// The merge the steward is running, if any. At most one per repo.
     #[serde(default)]
     merge_in_flight: Option<InFlight>,
+    /// Verifications still to run, oldest first. Persisted when a merge records them, before
+    /// anything is sent. Only verifications of live claims are kept.
+    #[serde(default)]
+    verifications: Vec<verifying::Verification>,
+    /// The verification the steward is running, if any. At most one per repo.
+    #[serde(default)]
+    verification_in_flight: Option<verifying::VerifyFlight>,
+    /// Id of the next verification; starts at 0 and is never reused.
+    #[serde(default)]
+    next_verification: u64,
     claims: BTreeMap<u64, ActiveClaim>,
     /// The Wait queue, oldest first (invariant 2).
     ///
@@ -324,6 +345,9 @@ impl Coordinator {
             next_submission: 0,
             clock_ms: 0,
             merge_in_flight: None,
+            verifications: Vec::new(),
+            verification_in_flight: None,
+            next_verification: 0,
             claims: BTreeMap::new(),
             waiting: Vec::new(),
         }))
@@ -352,6 +376,7 @@ impl Coordinator {
         let now_ms = self.advance_clock(now_ms);
         let mut effects = self.expire(now_ms);
         effects.extend(self.route(agent, msg, now_ms));
+        self.drop_ended_verifications();
         effects
     }
 
@@ -390,6 +415,7 @@ impl Coordinator {
         if any_expired {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
+        self.drop_ended_verifications();
         effects
     }
 
@@ -1093,15 +1119,16 @@ impl Coordinator {
         let queue_position = match kind {
             ClaimKind::Shadow => 0,
             ClaimKind::Real => {
-                let (challenges, threatened) =
+                let (challenges, challenged) =
                     self.challenge_assumptions(agent, &fork_commit, &touched, now_ms);
                 effects.extend(challenges);
+                let threatened = u32::try_from(challenged.len()).unwrap_or(u32::MAX);
                 let reasons = review_reasons(&touched, threatened, has_evidence, &[]);
                 review = (!reasons.is_empty()).then_some(reasons);
                 let awaiting_review = review.is_some();
                 self.queue_for_merge(
                     claim,
-                    Submission::new(fork_commit, touched, awaiting_review, req),
+                    Submission::new(fork_commit, touched, awaiting_review, req, challenged),
                 );
                 self.queue_position(ordinal)
             }
@@ -1156,15 +1183,16 @@ impl Coordinator {
     /// agents' active non-shadow claims, in claim id order, then each claim's assumptions in
     /// declared order. Already submitted claims are included: their work has not merged yet.
     /// Each (claim, assumption) is challenged once however many touched scopes threaten it.
-    /// Challenges are notices and are logged; they never block the submission. Also returns how
-    /// many assumptions were challenged, which is an input to the review policy (invariant 12).
+    /// Challenges are notices and are logged; they never block the submission. Also returns what
+    /// was challenged: its length is an input to the review policy (invariant 12), and the
+    /// submission keeps it so that a merge knows what to verify.
     fn challenge_assumptions(
         &mut self,
         submitter: &AgentId,
         fork_commit: &CommitId,
         touched: &[ScopeClaim],
         now_ms: u64,
-    ) -> (Vec<Effect>, u32) {
+    ) -> (Vec<Effect>, Vec<verifying::Challenged>) {
         let mut challenged = Vec::new();
         for (id, other) in &self.state.claims {
             if other.agent == *submitter || !other.kind.places_locks() {
@@ -1176,9 +1204,13 @@ impl Coordinator {
                 }
             }
         }
-        let count = u32::try_from(challenged.len()).unwrap_or(u32::MAX);
         let mut effects = Vec::new();
+        let mut kept = Vec::with_capacity(challenged.len());
         for (assuming, claim, assumption) in challenged {
+            kept.push(verifying::Challenged {
+                claim,
+                assumption: assumption.clone(),
+            });
             let kind = EventKind::AssumptionChallenged {
                 claim,
                 assumption: assumption.clone(),
@@ -1196,7 +1228,7 @@ impl Coordinator {
                 },
             });
         }
-        (effects, count)
+        (effects, kept)
     }
 
     /// The 1-based place of the submission numbered `ordinal`: the number of submitted

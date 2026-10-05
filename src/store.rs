@@ -7,7 +7,7 @@
 //! The pure parts (what a replay reads, how a stored event is decoded) are plain functions with
 //! native tests. `write` and `read_events` are glue; they need a real storage to run.
 
-use crate::coordinator::MergeDispatch;
+use crate::coordinator::{MergeDispatch, VerifyDispatch};
 use crate::protocol::Event;
 use crate::shell::{self, Outbound};
 use worker::{js_sys, Error, ListOptions, Result, Storage};
@@ -18,11 +18,17 @@ pub struct Applied {
     pub entries: Vec<(String, String)>,
     pub events: Vec<Event>,
     pub outbound: Vec<Outbound>,
-    /// The next alarm: the earliest lease expiry or merge dispatch.
+    /// The next alarm: the earliest lease expiry, merge dispatch or verification.
     pub next_alarm_ms: Option<u64>,
-    /// The merge to ask the steward for once this is stored. It travels with the stored call so
+    /// The call to make to the steward once this is stored. It travels with the stored call so
     /// the steward is never called for a marker that is not persisted.
-    pub dispatch: Option<MergeDispatch>,
+    pub dispatch: Option<Dispatch>,
+}
+
+/// What the steward is to be asked, once the marker for it is stored.
+pub enum Dispatch {
+    Merge(MergeDispatch),
+    Verify(VerifyDispatch),
 }
 
 /// An `Applied` that is stored. The field is private: `write` is the only constructor.
@@ -43,7 +49,7 @@ impl Persisted {
         self.applied.next_alarm_ms
     }
 
-    pub fn dispatch(&self) -> Option<&MergeDispatch> {
+    pub fn dispatch(&self) -> Option<&Dispatch> {
         self.applied.dispatch.as_ref()
     }
 

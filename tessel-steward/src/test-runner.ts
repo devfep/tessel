@@ -4,8 +4,13 @@ import { isValidName } from "./identity";
 import { isAllowedGitRequest } from "./git-gateway-policy";
 import { revokeOnce } from "./revoke-once";
 import { CONTAINER_CA_CERTIFICATE, WORKSPACE, runPackageStep, runStep } from "./container-step";
-import { executeMerge } from "./merge-executor";
-import { parseMergeRequest, type MergeOutcome } from "./merge-types";
+import { executeMerge, executeTrial } from "./merge-executor";
+import {
+  parseMergeRequest,
+  parseTrialSide,
+  type MergeOutcome,
+  type TrialOutcome,
+} from "./merge-types";
 import { runCloneThenTest, type StepOutcome } from "./run-steps";
 
 const CLONE_TIMEOUT_SECONDS = "240";
@@ -79,6 +84,25 @@ export class TestRunner extends DurableObject<Env> {
       );
     }
     return executeMerge(this.ctx, this.env, repo, parsed.request);
+  }
+
+  /**
+   * Tries `commit` of `fork` on main of `repo` as it
+   * was at `main`, and runs its tests. Never merges, never pushes, never has a write token. See
+   * `TrialOutcome` for the results and `executeTrial` for the sandbox.
+   *
+   * Call this on a Durable Object instance with a new random name for each trial: that is what
+   * gives each run its own container.
+   *
+   * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
+   *   start, or a read token could not be revoked.
+   */
+  async trial(repo: string, fork: string, main: string, commit: string): Promise<TrialOutcome> {
+    const parsed = parseTrialSide({ fork, main, commit });
+    if (!parsed.ok || !isValidName(repo)) {
+      throw new Error("trial needs a repo name, a fork name, a 40-hex main and a 40-hex commit");
+    }
+    return executeTrial(this.ctx, this.env, repo, parsed.request);
   }
 
   /**
