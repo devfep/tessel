@@ -23,6 +23,11 @@ use crate::daemon::{open_socket, read_log, ConnectFailure, Socket};
 /// The longest note a reviewer may attach. A longer one is refused here rather than cut.
 pub const MAX_NOTE_BYTES: usize = 1024;
 
+/// The `Hello` base of a reviewer with no commit to offer. The coordinator adopts the first base
+/// it is told as the repository head only while it has none. A submission awaiting review means
+/// an agent has already told it one, and a reviewer holds no claims, so this is never used.
+pub const NO_BASE: &str = "0000000000000000000000000000000000000000";
+
 const REVIEW_REQ: RequestId = RequestId(1);
 /// How long to wait for an `Error` before taking the silence as acceptance.
 const REFUSAL_WAIT: Duration = Duration::from_secs(2);
@@ -51,8 +56,8 @@ pub fn check_note(note: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-/// Sends the decision and reports how it ended. `base` is any commit of this repository: the
-/// `Hello` needs one.
+/// Sends the decision and reports how it ended. `base` is a commit of this repository or
+/// `NO_BASE`: the `Hello` needs one.
 pub async fn decide(
     config: &Config,
     base: &str,

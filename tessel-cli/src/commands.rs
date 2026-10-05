@@ -386,9 +386,15 @@ async fn review(
     note: Option<String>,
 ) -> anyhow::Result<ExitCode> {
     review::check_note(note.as_deref())?;
-    let worktree = Worktree::discover(cwd)?;
-    let config = load_config(&worktree)?;
-    let base = submit::resolve_commit(&worktree.root, None)?;
+    // A reviewer needs no checkout: the decision is about a claim the coordinator holds.
+    let worktree = Worktree::discover(cwd).ok();
+    let config_dir = worktree
+        .as_ref()
+        .map_or(cwd, |worktree| worktree.root.as_path());
+    let config = Config::load(config_dir, |name| std::env::var(name).ok())?;
+    let base = worktree
+        .and_then(|worktree| submit::resolve_commit(&worktree.root, None).ok())
+        .unwrap_or_else(|| review::NO_BASE.to_string());
     let verdict = if approve { "approved" } else { "rejected" };
     let decision = review::decide(&config, &base, ClaimId(claim), approve, note).await?;
     match decision {

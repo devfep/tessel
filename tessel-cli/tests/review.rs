@@ -175,3 +175,50 @@ async fn an_older_decision_on_the_claim_does_not_confirm_a_new_one() -> Result<(
     );
     Ok(())
 }
+
+fn hello_bases(fake: &Fake, agent: &str) -> Vec<String> {
+    fake.received(agent)
+        .into_iter()
+        .filter_map(|msg| match msg {
+            ClientMsg::Hello { base, .. } => Some(base.0),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reviewer_outside_any_git_repository_can_decide() -> Result<()> {
+    let (fake, _a1, _r1, claim) = held_submission().await?;
+    let nowhere = Agent::without_repo(&fake, "r1", TOK_R)?;
+    let done = nowhere.tessel(&["review", &claim.to_string(), "--approve"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.stdout.contains("approved"), "{}", done.stdout);
+    assert_eq!(reviews(&fake, "r1"), [(true, None)]);
+    assert!(hello_bases(&fake, "r1")
+        .iter()
+        .all(|base| base == "0".repeat(40).as_str()));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reviewer_in_a_repository_with_no_commit_can_decide() -> Result<()> {
+    let (fake, _a1, _r1, claim) = held_submission().await?;
+    let unborn = Agent::without_commits(&fake, "r1", TOK_R)?;
+    let done = unborn.tessel(&["review", &claim.to_string(), "--reject"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.stdout.contains("rejected"), "{}", done.stdout);
+    assert_eq!(reviews(&fake, "r1"), [(false, None)]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reviewer_in_a_worktree_still_sends_its_head_as_the_base() -> Result<()> {
+    let (fake, _a1, r1, claim) = held_submission().await?;
+    let head = git(&r1.root(), &["rev-parse", "HEAD"])?;
+    let done = r1.tessel(&["review", &claim.to_string(), "--approve"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(hello_bases(&fake, "r1")
+        .iter()
+        .all(|base| base == head.trim()));
+    Ok(())
+}
