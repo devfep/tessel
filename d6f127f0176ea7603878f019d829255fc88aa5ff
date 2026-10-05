@@ -1,0 +1,4 @@
+intent: merge IDENTITY: steward-signed per-agent tokens replace COORDINATOR_TOKEN; socket bound to the token's agent
+assumes: IDENTITY_SIGNING_KEY is identical on tessel-coordinator and tessel-steward
+rejected: none
+evidence: review Yes after one fix pass (9 reviewer mutants, 1 survivor fixed by the pass). Merged tree: cargo test 232 passed; steward typecheck/oxlint/oxfmt 0, pnpm test 163 passed; cargo deny licenses ok. Live on coordinator 4426eafc, steward dfed7cbe: mint 201; hello a1 welcome; hello a2 on a1 token not_owner; wrong repo, no auth, garbage, old COORDINATOR_TOKEN, forged X-Tessel-Verified-Agent all 401; bad name 400; mint without admin 401; watch replays. Not observed: close code 1008.
