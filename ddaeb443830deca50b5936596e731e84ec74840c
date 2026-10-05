@@ -1,0 +1,4 @@
+intent: spike 2, prove Artifacts fork + repo-scoped token + push event via Queue from a TypeScript steward Worker
+assumes: Artifacts binding and Queues event subscriptions behave as in the Oct 2026 open beta; push subscriptions are per repo and created over REST
+rejected: creating the push subscription with wrangler 4.147.0 (cannot pass namespace/repo_name)
+evidence: vitest 15 passed; tsc, oxlint, oxfmt clean; cargo test 17 passed; live on tessel-steward.devfep.workers.dev: create, fork, 1h write token, git push 67f346f..38b0e94, pushed event logged by the queue consumer about 6s later
