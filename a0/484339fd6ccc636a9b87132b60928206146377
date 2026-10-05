@@ -1,0 +1,4 @@
+intent: close CLI-BASE and DOGFOOD-4: the first lane change merged through Tessel's steward
+assumes: none
+rejected: none
+evidence: orchestrator gate on archived 0118731: 751 passed 0 failed; event 201 review_decided approve by orchestrator; submitted touched = 4 files; trunk 8432f8c..0118731 fast-forward; coordinator welcome head 0118731; mirrored to artifacts-trunk
