@@ -1,0 +1,4 @@
+intent: the toolchain test-run failed with 'internal error; reference' because exec was given user 'node'; the runtime accepts only numeric uid:gid and rejects a name with an internal error. Use 1000:1000 and rethrow exec start failures naming the step.
+assumes: the image's node user is 1000:1000 (node:22 base)
+rejected: dropping the user option (files would be root-owned in /workspace owned by node)
+evidence: docs containers/api/durable-object-container (exec user); steward vitest 546 pass, typecheck, oxlint clean; legacy path (no user) works live
