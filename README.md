@@ -44,11 +44,19 @@ A third socket needs no `hello`:
     {"type":"watch","from_seq":0}
 
 It receives every stored event with `seq >= from_seq`, in order, as `{"type":"event",...}`, then
-every new event as it is stored.
+every new event as it is stored. A second `watch` on the same socket is refused with `malformed`.
 
 ## Configuration
-`RUN` in `wrangler.toml` names the run that events are tagged with. The coordinator refuses to
-start without it.
+Set in `wrangler.toml` under `[vars]`:
+
+- `RUN` names the run that events are tagged with. Required.
+- `SHADOW_ENABLED` is `"true"` or `"false"` (default `"false"`; unset means false). It allows
+  `on_conflict: "shadow"` claims, which are for experiment runs only. With it off, such a claim
+  gets `shadow_disabled`.
+
+The coordinator refuses to start on a missing `RUN` or any other `SHADOW_ENABLED` value. Both are
+read only when a repo has no stored state yet; an existing repo keeps the values it was created
+with, and changing them later has no effect on it.
 
 ## Deploy
     npx wrangler deploy

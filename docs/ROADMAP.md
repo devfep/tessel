@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 02:36 EDT.
+**As of:** 2026-10-05 02:17 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
-**Tip:** `sprint/build` at the COORD-2 merge `8b50045` (plus this docs commit), pushed. `main` at `9211b67`.
+**Tip:** `sprint/build` at the COORD-3 merge `a10a680` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
 to Felix at FREEZE.
 
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-3 | COORD-3 | `.claude/worktrees/coord-3` / `task-coord-3` | implementing from `8b50045` → review |
-| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | implementing from `8b50045`; local dev on port 8797 → review |
+| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | fix pass 1 (12 items, incl. merging the tip for `shadow_enabled`) → re-check |
+| cq-coord-4 | COORD-4 review | same worktree; live probes on port 8796 | "With fixes" on `b2cc7c7` (1 Important, 9 Minor; 12 mutants killed) → re-check |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -41,6 +41,11 @@ to Felix at FREEZE.
 11. COORD-4: one atomic write of state plus events before any send; identity bound per socket on
    `Welcome`; `Notify` to an agent with no open socket is dropped; `Watch` is served by the shell.
    COORD-4 merges after COORD-3 and sets `shadow_enabled` from a `SHADOW_ENABLED` variable.
+12. The 75-character subject on COORD-3 commit `2e760b1` is reworded by the orchestrator at merge
+   time, with a tree-equality check and the note carried over.
+13. COORD-4 fix pass: sending requires a `Persisted` token that only a completed write returns, so
+   persist-before-send is enforced by the types; delivery order is a pure, tested function; a failed
+   send to another socket closes that socket only; a second `Watch` on a watching socket is refused.
 
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
@@ -97,11 +102,11 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   CLOSED 2026-10-05 at `8b50045` (merge of `task-coord-2`; review "Yes" after two fix passes; one
   equivalent mutant survived out of 41). `cargo test` 78 passed on the merged tree, including a
   model-based property test over claims, waits, amends, releases, heartbeats and time.
-- [ ] **COORD-3** — `Submit` with fence and coverage checks, and shadow claims
-  (invariants 5, 10, 11).
-  Files: `src/coordinator.rs`.
-  Verify: uncovered submissions are rejected with the list; shadow claims place no locks and
-  cannot merge.
+- [x] **COORD-3** — `Submit` with fence and coverage checks, assumption challenges, and shadow
+  claims (invariants 5, 8, 10, 11).
+  CLOSED 2026-10-05 at `a10a680` (merge of `task-coord-3`; review "Yes" after two fix passes).
+  `cargo test` 104 passed on the merged tree. Left for the steward task: the merge-outcome path, and
+  a test that queue positions follow the submission ordinal once merged claims are removed.
 - [ ] **COORD-4** — Durable Object shell: persist state and events before sending, alarms for lease
   expiry, WebSocket sessions, `Watch` replay from the event store, deploy.
   Files: `src/lib.rs`, `wrangler.toml`, `README.md`.

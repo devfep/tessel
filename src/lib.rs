@@ -1,23 +1,26 @@
 //! Tessel coordinator Worker: routes WebSocket connections to one Durable Object per repo. The
 //! Durable Object is a thin shell around the pure core in `coordinator`: it loads and stores
 //! the core, binds sockets to agents, delivers messages and sets the lease alarm. Decisions that
-//! need no runtime live in `shell`.
+//! need no runtime live in `shell`; storage access lives in `store`.
 //!
-//! Persist before send (CLAUDE.md rule 6): `apply` runs the core and returns an `Applied`; the
-//! only way to deliver from it is after `persist` has stored its state and events in one
-//! transaction. If the write fails the cached core is dropped, because it is ahead of storage,
-//! and the next call reloads from storage.
+//! Persist before send (CLAUDE.md rule 6): `apply` runs the core and returns an `Applied`;
+//! `persist` stores its state and events in one transaction and returns a `store::Persisted`;
+//! `deliver` and `settle` require that token, so sending before the write does not type-check.
+//! If the write fails the cached core is dropped, because it is ahead of storage, and the next
+//! call reloads from storage.
 
 mod coordinator;
 mod protocol;
 mod shell;
+mod store;
 
 use std::cell::RefCell;
 use std::fmt::Display;
 
 use coordinator::{Coordinator as Core, Effect};
 use protocol::{AgentId, ClientMsg, Event, ServerMsg};
-use shell::{Action, Outbound, Session};
+use shell::{Action, Outbound, ReplayStep, Session, Target};
+use store::Persisted;
 use worker::*;
 
 /// Route: GET /repo/<name>/ws  (WebSocket upgrade) -> coordinator for <name>.
@@ -84,9 +87,7 @@ impl DurableObject for Coordinator {
         let result = self.dispatch(&ws, message).await;
         if let Err(e) = &result {
             console_error!("coordinator {}: closing socket: {e}", self.repo());
-            if let Err(close_error) = ws.close(Some(1011), Some("coordinator error")) {
-                console_error!("coordinator {}: close failed: {close_error}", self.repo());
-            }
+            self.close_socket(&ws, "coordinator error");
         }
         result
     }
@@ -109,8 +110,8 @@ impl DurableObject for Coordinator {
         self.ensure_loaded().await?;
         let now_ms = now_ms();
         let applied = self.apply(|core| core.expire(now_ms))?;
-        self.persist(&applied).await?;
-        self.settle(None, &applied, now_ms).await?;
+        let persisted = self.persist(&applied).await?;
+        self.settle(&persisted, None, &applied).await?;
         Response::ok("")
     }
 }
@@ -130,6 +131,12 @@ impl Coordinator {
         ))
     }
 
+    fn close_socket(&self, ws: &WebSocket, reason: &str) {
+        if let Err(e) = ws.close(Some(1011), Some(reason)) {
+            console_error!("coordinator {}: close failed: {e}", self.repo());
+        }
+    }
+
     async fn dispatch(&self, ws: &WebSocket, message: WebSocketIncomingMessage) -> Result<()> {
         let text = match message {
             WebSocketIncomingMessage::String(text) => text,
@@ -147,7 +154,8 @@ impl Coordinator {
     }
 
     /// Load the core from storage, or create it for the configured run. Fails loudly on corrupt
-    /// state or a bad config; never starts empty over stored data.
+    /// state or a bad config; never starts empty over stored data. `RUN` and `SHADOW_ENABLED`
+    /// matter only when nothing is stored yet.
     async fn ensure_loaded(&self) -> Result<()> {
         if self.core.borrow().is_some() {
             return Ok(());
@@ -159,7 +167,12 @@ impl Coordinator {
             .await
             .map_err(|e| self.fail("load state", e))?;
         let run = self.env.var("RUN").ok().map(|var| var.to_string());
-        let core = shell::load_core(stored.as_deref(), run.as_deref())
+        let shadow = self
+            .env
+            .var("SHADOW_ENABLED")
+            .ok()
+            .map(|var| var.to_string());
+        let core = shell::load_core(stored.as_deref(), run.as_deref(), shadow.as_deref())
             .map_err(|e| self.fail("load state", e))?;
         let mut slot = self.core.borrow_mut();
         if slot.is_none() {
@@ -193,24 +206,16 @@ impl Coordinator {
     }
 
     /// Store the call's state and events in one transaction. On failure the cached core is
-    /// dropped and the caller must send nothing.
-    async fn persist(&self, applied: &Applied) -> Result<()> {
-        let entries = applied.entries.clone();
-        let written = self
-            .state
-            .storage()
-            .transaction(move |txn| async move {
-                for (key, json) in entries {
-                    txn.put(&key, json).await?;
-                }
-                Ok(())
-            })
-            .await;
-        if let Err(e) = written {
-            *self.core.borrow_mut() = None;
-            return Err(self.fail("persist state and events", e));
+    /// dropped and the caller must send nothing: there is no `Persisted` to send with.
+    async fn persist(&self, applied: &Applied) -> Result<Persisted> {
+        let written = store::write(&self.state.storage(), applied.entries.clone()).await;
+        match written {
+            Ok(persisted) => Ok(persisted),
+            Err(e) => {
+                *self.core.borrow_mut() = None;
+                Err(self.fail("persist state and events", e))
+            }
         }
-        Ok(())
     }
 
     async fn call(
@@ -221,11 +226,10 @@ impl Coordinator {
         msg: ClientMsg,
     ) -> Result<()> {
         self.ensure_loaded().await?;
-        let now_ms = now_ms();
-        let applied = self.apply(|core| core.handle(&agent, msg, now_ms))?;
-        self.persist(&applied).await?;
+        let applied = self.apply(|core| core.handle(&agent, msg, now_ms()))?;
+        let persisted = self.persist(&applied).await?;
         let bound = self.bind(ws, session, &agent, &applied);
-        let settled = self.settle(Some(ws), &applied, now_ms).await;
+        let settled = self.settle(&persisted, Some(ws), &applied).await;
         bound?;
         settled
     }
@@ -244,91 +248,110 @@ impl Coordinator {
         self.write_session(ws, &bound)
     }
 
-    /// Deliver a persisted call, then reschedule the alarm even if a send failed. Returns the
-    /// first error.
+    /// Deliver a persisted call, then reschedule the alarm even if the delivery failed. Returns
+    /// the first error.
     async fn settle(
         &self,
+        persisted: &Persisted,
         reply_to: Option<&WebSocket>,
         applied: &Applied,
-        now_ms: u64,
     ) -> Result<()> {
-        let delivered = self.deliver(reply_to, applied);
-        let rescheduled = self.reschedule(applied.next_expiry_ms, now_ms).await;
+        let delivered = self.deliver(persisted, reply_to, applied);
+        let rescheduled = self.reschedule(applied.next_expiry_ms).await;
         delivered?;
         rescheduled
     }
 
-    /// Send replies to `reply_to`, notifications to the sockets bound to the named agent (none
-    /// open means dropped), and every new event to the watchers. Tries every send.
-    fn deliver(&self, reply_to: Option<&WebSocket>, applied: &Applied) -> Result<()> {
+    /// Send what `shell::plan_delivery` plans. Only a failed send to the socket that sent the
+    /// message is an error. A failed send to any other socket closes that socket and delivery
+    /// goes on, so one dead watcher cannot close the sender or make an alarm retry.
+    fn deliver(
+        &self,
+        _persisted: &Persisted,
+        reply_to: Option<&WebSocket>,
+        applied: &Applied,
+    ) -> Result<()> {
         let sockets = self.state.get_websockets();
-        let mut sessions = Vec::with_capacity(sockets.len());
-        for socket in &sockets {
-            sessions.push(self.read_session(socket)?);
-        }
-        let mut first_error = None;
-        for item in &applied.outbound {
-            match item {
-                Outbound::Reply(msg) => {
-                    if let Some(ws) = reply_to {
-                        keep_first(&mut first_error, send(ws, msg));
-                    }
+        let sessions = self.read_sessions(&sockets);
+        let mut sender_error = None;
+        for (target, msg) in shell::plan_delivery(&applied.outbound, &applied.events, &sessions) {
+            match target {
+                Target::Sender => {
+                    let Some(ws) = reply_to else {
+                        return Err(self.fail("deliver", "a reply has no sender socket"));
+                    };
+                    keep_first(&mut sender_error, send(ws, &msg));
                 }
-                Outbound::Notify { agent, msg } => {
-                    for index in shell::bound_indexes(agent, &sessions) {
-                        keep_first(&mut first_error, send(&sockets[index], msg));
+                Target::Socket(index) => {
+                    let Some(ws) = sockets.get(index) else {
+                        return Err(self.fail("deliver", "plan names a socket that is not open"));
+                    };
+                    if let Err(e) = send(ws, &msg) {
+                        console_error!("coordinator {}: send to a socket failed: {e}", self.repo());
+                        self.close_socket(ws, "send failed");
                     }
                 }
             }
         }
-        for event in &applied.events {
-            let msg = ServerMsg::Event {
-                event: event.clone(),
-            };
-            for index in shell::watcher_indexes(&sessions) {
-                keep_first(&mut first_error, send(&sockets[index], &msg));
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        sender_error.map_or(Ok(()), Err)
     }
 
-    async fn reschedule(&self, next_expiry_ms: Option<u64>, now_ms: u64) -> Result<()> {
+    /// The session of each open socket. A socket whose attachment cannot be read is closed and
+    /// counts as unbound, so it receives nothing.
+    fn read_sessions(&self, sockets: &[WebSocket]) -> Vec<Session> {
+        let mut sessions = Vec::with_capacity(sockets.len());
+        for socket in sockets {
+            match self.read_session(socket) {
+                Ok(session) => sessions.push(session),
+                Err(e) => {
+                    console_error!("coordinator {}: {e}", self.repo());
+                    self.close_socket(socket, "unreadable session");
+                    sessions.push(Session::default());
+                }
+            }
+        }
+        sessions
+    }
+
+    async fn reschedule(&self, next_expiry_ms: Option<u64>) -> Result<()> {
         let storage = self.state.storage();
-        let result = match shell::alarm_offset_ms(next_expiry_ms, now_ms) {
-            Some(offset_ms) => storage.set_alarm(offset_ms).await,
+        let result = match shell::alarm_at_ms(next_expiry_ms) {
+            Some(at_ms) => {
+                let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(at_ms));
+                storage.set_alarm(ScheduledTime::new(date)).await
+            }
             None => storage.delete_alarm().await,
         };
         result.map_err(|e| self.fail("set alarm", e))
     }
 
-    /// Replay every stored event with `seq >= from_seq`, then mark the socket a watcher. The
-    /// replay and the marking have no yielding await between the storage read and the mark, and
-    /// a call's events are sent in the same turn that its write completes, so an event is
-    /// either in the replay or sent live, never both and never neither.
+    /// Replay the stored events with `seq >= from_seq` a page at a time, then mark the socket a
+    /// watcher.
+    ///
+    /// An event is either in the replay or sent live, never both and never neither, because of
+    /// the Durable Object's input gates: while a storage operation is in flight no other event
+    /// (message or alarm) is delivered, and `deliver` runs in the same turn that its write
+    /// completes. Every await in this function is a storage read for that reason. Do not add
+    /// an await of any other kind (a `fetch`, a timer) between the first read and the mark.
     async fn watch(&self, ws: &WebSocket, mut session: Session, from_seq: u64) -> Result<()> {
-        let first_key = shell::event_key(from_seq);
-        let options = ListOptions::new()
-            .prefix(shell::EVENT_PREFIX)
-            .start(&first_key);
-        let stored = self
-            .state
-            .storage()
-            .list_with_options(options)
-            .await
-            .map_err(|e| self.fail("read events", e))?;
-        let mut first_error = None;
-        for entry in stored.values() {
-            let json = entry
-                .map_err(|e| self.fail("read events", format!("{e:?}")))?
-                .as_string()
-                .ok_or_else(|| self.fail("read events", "stored event is not a string"))?;
-            let event: Event =
-                serde_json::from_str(&json).map_err(|e| self.fail("parse stored event", e))?;
-            keep_first(&mut first_error, send(ws, &ServerMsg::Event { event }));
+        let storage = self.state.storage();
+        let mut start_seq = from_seq;
+        loop {
+            let page = store::read_events(&storage, start_seq, shell::REPLAY_PAGE)
+                .await
+                .map_err(|e| self.fail("read events", e))?;
+            let last_seq = page.last().map(|event| event.seq);
+            let page_len = page.len();
+            for event in page {
+                send(ws, &ServerMsg::Event { event })?;
+            }
+            match shell::after_page(page_len, last_seq) {
+                ReplayStep::Next { start_seq: next } => start_seq = next,
+                ReplayStep::Done => break,
+            }
         }
         session.watcher = true;
-        self.write_session(ws, &session)?;
-        first_error.map_or(Ok(()), Err)
+        self.write_session(ws, &session)
     }
 
     fn read_session(&self, ws: &WebSocket) -> Result<Session> {
