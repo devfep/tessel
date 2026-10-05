@@ -1,0 +1,4 @@
+intent: merge COORD-HARDEN: the coordinator refuses control and text-direction characters in scope paths and qualified names, and padded names
+assumes: no live claim depends on such a path (stored state still loads; such claims stay until release or expiry)
+rejected: a new error code (protocol frozen; Malformed reused)
+evidence: review Yes after one fix pass (8 reviewer mutants killed). Merged tree: cargo test 244, clippy -D warnings 0. Live on coordinator ff1dd858: newline, ESC, U+202E in a name and a padded name each refused malformed with the req echoed and the path not echoed; a clean scope granted.
