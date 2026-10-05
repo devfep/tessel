@@ -1,0 +1,4 @@
+intent: a decided Review answers the reviewer with nothing; the submitter gets Accepted or SubmitRejected, watchers see ReviewDecided
+assumes: no client waits for a reply to a successful Review
+rejected: Accepted to the reviewer (it means the sender's submission is queued)
+evidence: cargo test --workspace 402 passed; clippy clean
