@@ -28,7 +28,8 @@ entrypoint = "MergeService"
 
 # A second deployment for the scripted swarm harness (tessel-swarm), so that its reviewer can
 # approve there and nowhere else. Wrangler does not inherit bindings, vars, services, secrets or
-# migrations into an environment, so each is repeated. Deploy with `npx wrangler deploy --env swarm`.
+# migrations into an environment, so each is repeated.
+# Deploy with `npx wrangler deploy --env swarm`.
 [env.swarm]
 name = "tessel-coordinator-swarm"
 

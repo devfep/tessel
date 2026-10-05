@@ -182,7 +182,10 @@ fn imports_of(module: &str) -> &'static str {
             "import { cartTotal } from \"./cart.ts\";\nimport { taxFor } from \"./pricing.ts\";\n\n"
         }
         "checkout" => {
-            "import { invoiceTotal } from \"./invoice.ts\";\nimport { shippingCost } from \"./shipping.ts\";\n\n"
+            concat!(
+                "import { invoiceTotal } from \"./invoice.ts\";\n",
+                "import { shippingCost } from \"./shipping.ts\";\n\n",
+            )
         }
         _ => "",
     }

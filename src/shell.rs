@@ -172,9 +172,10 @@ pub fn is_agent_id(agent: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// Whether the Worker serves `repo`. `prefix` is the `ALLOWED_REPO_PREFIX` var: unset or empty serves
-/// every repo; otherwise only repos whose name starts with it. A deployment that shares its signing
-/// key with others sets it, so a token minted for another deployment's repo opens nothing here.
+/// Whether the Worker serves `repo`. `prefix` is the `ALLOWED_REPO_PREFIX` var: unset or empty
+/// serves every repo; otherwise only repos whose name starts with it. A deployment that shares its
+/// signing key with others sets it, so a token minted for another deployment's repo opens nothing
+/// here.
 pub fn repo_allowed(prefix: Option<&str>, repo: &str) -> bool {
     prefix.is_none_or(|p| repo.starts_with(p))
 }

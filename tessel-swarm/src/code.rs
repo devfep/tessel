@@ -159,7 +159,13 @@ pub fn name_the_result(src: &str, name: &str, var: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const SRC: &str = "import { a } from \"./a.ts\";\n\nexport function unitPrice(base: number, qty: number): number {\n  return base * qty;\n}\n\nexport function cartTotal(base: number, qty: number): number {\n  const x = 1;\n  return unitPrice(base, qty) + x;\n}\n";
+    const SRC: &str = concat!(
+        "import { a } from \"./a.ts\";\n\n",
+        "export function unitPrice(base: number, qty: number): number {\n",
+        "  return base * qty;\n}\n\n",
+        "export function cartTotal(base: number, qty: number): number {\n",
+        "  const x = 1;\n  return unitPrice(base, qty) + x;\n}\n",
+    );
 
     #[test]
     fn finds_functions_and_counts_parameters() {

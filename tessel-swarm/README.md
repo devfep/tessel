@@ -21,11 +21,11 @@ Overlapping tasks conflict textually (two edits to one line) or semantically: a 
 `rename` plus an `add` that calls the old shape merge cleanly in git and then fail the build or the
 tests. Each task alone is valid against the starting repository.
 
-**`off`** has no claims. `--agents` agents work at once; task i branches from the trunk after tasks 1
-to i minus agents were merged (an agent pulls before its next task) and does not see work still in
-flight. Branches are built in parallel, one directory per agent. They are then merged onto the trunk
-with plain git, in task order, and the tests run after each merge. Each merge is recorded as
-clean, a textual conflict, a broken build (a missing export or module) or broken tests. A merge
+**`off`** has no claims. `--agents` agents work at once; task i branches from the trunk after
+tasks 1 to i minus agents were merged (an agent pulls before its next
+task) and does not see work still in flight. Branches are built in parallel, one directory per
+agent. They are then merged onto the trunk with plain git, in task order, and the tests run after
+each merge. Each merge is recorded as clean, a textual conflict, a broken build (a missing export or module) or broken tests. A merge
 that breaks the build or tests is rolled back, so every merge is judged on a green trunk.
 
 **`on`** runs N agents as tokio tasks speaking the real protocol over WebSocket: claim (symbol
@@ -81,7 +81,8 @@ event log the numbers came from) and `seed<N>-ab.md`.
 ```
 export STEWARD_ADMIN_TOKEN=...   # the steward's admin token; never printed
 target/debug/tessel-swarm run --target live --seed 1 --tasks 10 --agents 6 \
-  --coordinator wss://tessel-coordinator-swarm.<account>.workers.dev --steward https://<steward host>
+  --coordinator wss://tessel-coordinator-swarm.<account>.workers.dev \
+  --steward https://<steward host>
 ```
 
 This creates a new scratch repository through the steward admin routes (`swarm-s<seed>-<time>`, or
