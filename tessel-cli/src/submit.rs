@@ -110,18 +110,27 @@ pub fn resolve_commit(root: &Path, rev: Option<&str>) -> anyhow::Result<String> 
     Ok(sha)
 }
 
-/// The commit to diff `work` from: the coordinator's head when it is `work` or in its history, else
-/// the commit the daemon was started at when that is. The coordinator's head is preferred so a
-/// lane that merged the trunk into its branch is not charged with other agents' changes. It goes
+/// The commit to diff `work` from, in order: the coordinator's head when it is `work` or in its
+/// history; else the fork point of that head and `work` when the commit the daemon started at is
+/// at or before it; else the start commit when that is in `work`'s history. The coordinator's
+/// head is preferred so a lane that merged the trunk into its branch is not charged with other
+/// agents' changes, and its fork point serves a lane whose trunk has since moved on. The head goes
 /// stale when work lands outside the coordinator, and every worktree shares one object store, so
-/// a stale head can exist locally on another line of history; a diff from there would list
-/// everything between that line and `work`, so it is skipped. Neither moves when the connection
-/// drops (the `Hello` base does, so it is never used here). Fails when neither is an ancestor,
+/// a stale head can exist locally on another line of history; its fork point with `work` is then
+/// older than the start commit, so the start commit is used instead. Neither moves when the
+/// connection drops (the `Hello` base does, so it is never used here). Fails when none applies,
 /// because a diff from the wrong commit hides or invents changed files.
 pub fn diff_base(root: &Path, state: &State, work: &str) -> anyhow::Result<String> {
     if let Some(head) = state.coordinator_head.as_deref() {
         if is_ancestor(root, head, work) {
             return Ok(head.to_string());
+        }
+        if is_commit(root, head) && is_commit(root, work) {
+            if let Ok(fork_point) = merge_base(root, head, work) {
+                if is_ancestor(root, &state.start_base, &fork_point) {
+                    return Ok(fork_point);
+                }
+            }
         }
     }
     if is_ancestor(root, &state.start_base, work) {
@@ -599,6 +608,36 @@ mod tests {
             got,
             vec![symbol("src/edit.rs", "edit::edit", Mode::EditBody)]
         );
+    }
+
+    #[test]
+    fn a_coordinator_head_ahead_of_the_work_diffs_from_its_fork_point() {
+        let dir = repo();
+        let root = dir.path();
+        let start = head(root);
+        let merged_trunk = commit_file(root, "src/keep.rs", "pub fn keep() { 9; }\n");
+        let trunk_moved_on = commit_on_side_branch(root, "src/side.rs");
+        let work = commit_file(root, "src/edit.rs", "pub fn edit() { 9; }\n");
+        let state = state_with(&start, Some(&trunk_moved_on));
+        let base = diff_base(root, &state, &work).unwrap();
+        assert_eq!(base, merged_trunk);
+        let got = touched(root, &base, &work).unwrap();
+        assert_eq!(
+            got,
+            vec![symbol("src/edit.rs", "edit::edit", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn the_error_names_both_commits_when_they_differ() {
+        let dir = repo();
+        let root = dir.path();
+        let unrelated = commit_on_side_branch(root, "src/side.rs");
+        let work = commit_file(root, "src/edit.rs", "pub fn edit() { 9; }\n");
+        let absent = "1".repeat(40);
+        let state = state_with(&absent, Some(&unrelated));
+        let err = diff_base(root, &state, &work).unwrap_err().to_string();
+        assert!(err.contains(&absent) && err.contains(&unrelated), "{err}");
     }
 
     #[test]
