@@ -1,0 +1,4 @@
+intent: Submit now ends in a steward merge: the core queues submissions in order, persists an in-flight marker, the alarm calls the steward, and the outcome releases, rejects or retries the claim
+assumes: the steward answers a re-dispatch of a landed commit with already_merged (STEWARD-1 live check); alarms run one at a time per Durable Object
+rejected: re-sending AssumptionChallenged at merge (submit already sends it and Summary counts events, so it would inflate the counter); skipping past a claim in backoff (breaks strict order)
+evidence: cargo test --workspace 349 passed (324 base + 25 new); clippy -D warnings clean; rustfmt --check clean; wasm release build 0 warnings; cargo deny licenses ok
