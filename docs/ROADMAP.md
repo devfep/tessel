@@ -52,8 +52,11 @@ the trunk `8432f8c`), fork `tessel-dogfood--lane-shadow-1`, agent `lane-shadow-1
 guard blocks any push naming `main`, and every Artifacts fork's branch is `main`. Felix chose to
 exempt Artifacts URLs (hook change done by Felix 18:3x); the session's classifier also needs a
 project allow rule `Bash(git push https://1e40d7b5aed4b7049e5b83bc07a5264c.artifacts.cloudflare.net/git/tessel/tessel-dogfood--*)`
-(Pending 0). Then: lane claims all four touched files again (claim 35 expired; 36 covers only two),
-pushes with the literal fork URL, `tessel submit`, approval as `orchestrator` if held.
+Felix added it 18:3x; checked by a dry run. The lane pushed `401d8d0` to its fork (claim 36 now
+covers all four files), but `tessel submit` refused locally: CLI-BASE below. SHADOW-1 waits, daemon
+stopped, until CLI-BASE merges through the coordinator (which also refreshes its head).
+`impl-cli-base` (Sonnet), dispatched 18:41 in `.claude/worktrees/cli-base` on `task-cli-base` from
+`8432f8c`, fork `tessel-dogfood--lane-cli-base`; owns `tessel-cli/src/submit.rs` and CLI tests.
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop stopped.
 
@@ -78,7 +81,7 @@ pushes with the literal fork URL, `tessel submit`, approval as `orchestrator` if
   `welcome`, `tessel-dogfood` gets 403, no token gets 401.
 
 **Pending from Felix:**
-0. Add the fork-push allow rule above to `.claude/settings.local.json` (command handed to Felix).
+0. Nothing blocking. The fork-push allow rule is in `.claude/settings.local.json` (Felix, 18:3x).
    Note: the existing `Bash(npx wrangler deploy *)` rule does not match a deploy piped through
    other commands; the orchestrator runs deploys bare. Production deploys, secret writes, Artifacts deletes and forced pushes are
    refused by the session's permission classifier; the orchestrator hands Felix a command for
@@ -298,6 +301,15 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   coordinator has the steward trial each shadow submission it blocked against the pre- and
   post-merge trunk (the ASSUME-1 primitive) and appends `DenialVerified`; a red baseline or a
   trial without a result counts nothing. The first lane to land through the steward.
+- [ ] **CLI-BASE** — found landing SHADOW-1: `tessel submit` diffed from the coordinator's head
+  `36abdb3`, which exists locally (shared object store) but is not an ancestor of the work, and
+  listed 244 unrelated scopes. `diff_base` uses the coordinator's head only when it is an ancestor
+  of HEAD, else the start commit, else fails. In progress (`impl-cli-base`, fork
+  `tessel-dogfood--lane-cli-base`); it submits with its own fixed CLI.
+- [ ] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
+  (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
+  the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
+  trunk on every merge outcome. Design it before the next admin merge.
 - [ ] **CLI-LIVENESS** — found while dogfooding SHADOW-1: claim 35 expired while the lane's daemon
   was running. Heartbeats get no reply (`src/coordinator.rs:824`); `send_heartbeat`
   (`tessel-cli/src/daemon.rs:426-436`) pushes the local expiry forward once the frame is queued,
