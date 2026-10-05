@@ -1,0 +1,5 @@
+intent: close a mutant gap: a non-reviewer pick was only refused for entrants
+assumes: none
+rejected: none
+evidence: mutant M05 (anyone may pick) now fails the pick test; cargo test --lib 402 passed
+dogfood: claim 24 still held src/coordinator/racing.rs
