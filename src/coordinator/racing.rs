@@ -20,8 +20,11 @@
 //!   dispatched, challenges nothing and is not reviewed. A loser never merges, so flagging it would
 //!   ask a human to read discarded work. The winner passes the assumption challenge and the review
 //!   gate (invariant 12) when it is promoted, and merges at its original submission order.
-//! - The race is judged when every entrant has submitted, or at its deadline. An entrant that has
-//!   not submitted by then is cut off and released. Tests are tried by the verification queue (see
+//! - The race is judged at its deadline, or earlier once it is full (as many entrants as
+//!   `max_entrants`) and every entrant has submitted. This refines invariant 7's "when every
+//!   entrant has submitted": with room left, the first joiner to submit would end the race and
+//!   shut out everyone else. Joining stays open until the race is full or the deadline passes.
+//!   When judging starts, an entrant that has not submitted is cut off and released. Tests are tried by the verification queue (see
 //!   `verifying`), one entry at a time with merges first, all on the head when judging began. A
 //!   trial that never runs to a result leaves `tests_passed` as `None`. `risk_bp` and `diff_lines`
 //!   are never measured, so `LowestRisk` and `SmallestDiff` are refused at `OpenRace`: ranking by
@@ -149,8 +152,12 @@ impl Race {
         }
     }
 
-    fn all_submitted(&self) -> bool {
-        !self.entrants.is_empty() && self.entrants.iter().all(|e| e.entered.is_some())
+    /// Whether the race can be judged before its deadline: it is full and every entrant has
+    /// submitted. A race with room is still taking entrants, so the first joiner to submit does
+    /// not end it.
+    fn ready_to_judge(&self) -> bool {
+        let full = u32::try_from(self.entrants.len()).is_ok_and(|held| held == self.max_entrants);
+        full && self.entrants.iter().all(|e| e.entered.is_some())
     }
 
     /// The submitted entries, in join order.
@@ -450,14 +457,14 @@ impl Coordinator {
             submitted_at_ms: now_ms,
             tests_passed: None,
         };
-        let mut everyone_in = false;
+        let mut ready = false;
         if let Some(race) = self.state.races.get_mut(&race_id.0) {
             for entrant in &mut race.entrants {
                 if entrant.claim == claim {
                     entrant.entered = Some(entered.clone());
                 }
             }
-            everyone_in = race.all_submitted();
+            ready = race.ready_to_judge();
         }
         let submitted = EventKind::Submitted {
             claim,
@@ -472,7 +479,7 @@ impl Coordinator {
             queue_position: 0,
         };
         effects.push(Effect::Reply(accepted));
-        if everyone_in {
+        if ready {
             effects.extend(self.begin_judging(race_id, now_ms));
         }
         effects
@@ -494,7 +501,7 @@ impl Coordinator {
             Phase::Judging | Phase::AwaitingPick { .. } => return Vec::new(),
         }
         race.entrants.retain(|entrant| entrant.claim != claim);
-        if race.all_submitted() {
+        if race.ready_to_judge() {
             return self.begin_judging(race_id, now_ms);
         }
         Vec::new()
@@ -947,8 +954,10 @@ mod tests {
         c.handle(&agent("felix"), msg, NOW)
     }
 
-    fn open(c: &mut Coordinator, criteria: Vec<Criterion>) -> RaceId {
-        let effects = open_effects(c, criteria);
+    /// A race with room for `max` entrants.
+    fn open_for(c: &mut Coordinator, max: u32, criteria: Vec<Criterion>) -> RaceId {
+        let msg = open_msg(vec![edit("src/a.rs")], max, DEADLINE, criteria);
+        let effects = c.handle(&agent("felix"), msg, NOW);
         let [ServerMsg::RaceOpened { race, .. }] = replies(&effects)[..] else {
             panic!("expected RaceOpened, got {effects:?}");
         };
@@ -1156,7 +1165,7 @@ mod tests {
     #[test]
     fn an_outsider_who_waits_for_a_race_is_queued() {
         let mut c = core();
-        open(&mut c, vec![Criterion::FirstSubmitted]);
+        open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let effects = claim_as(&mut c, "outsider", "src/a.rs", OnConflict::Wait);
         assert!(matches!(
             replies(&effects)[..],
@@ -1167,7 +1176,7 @@ mod tests {
     #[test]
     fn the_race_blocks_its_opener_too_and_a_second_race_over_it_is_denied() {
         let mut c = core();
-        open(&mut c, vec![Criterion::FirstSubmitted]);
+        open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let own = claim_as(&mut c, "felix", "src/a.rs", OnConflict::Fail);
         assert_eq!(denial_race(&own), Some(RaceId(1)));
 
@@ -1203,7 +1212,7 @@ mod tests {
     #[test]
     fn joining_grants_a_fenced_entry_on_exactly_the_races_scopes() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let effects = join_effects(&mut c, "a1", race, NOW + 5);
 
         let [ServerMsg::Granted {
@@ -1241,7 +1250,7 @@ mod tests {
     #[test]
     fn entrants_never_conflict_with_each_other() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 3, vec![Criterion::FirstSubmitted]);
         let first = join(&mut c, "a1", race);
         let second = join(&mut c, "a2", race);
         let third = join(&mut c, "a3", race);
@@ -1252,7 +1261,7 @@ mod tests {
     #[test]
     fn an_entry_cannot_amend_its_scopes() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let (claim, fence) = join(&mut c, "a1", race);
         let before = state(&c);
         let amend = ClientMsg::Amend {
@@ -1270,7 +1279,7 @@ mod tests {
     #[test]
     fn joining_an_unknown_race_is_refused() {
         let mut c = core();
-        open(&mut c, vec![Criterion::FirstSubmitted]);
+        open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let before = state(&c);
         for id in [0, 2, 99] {
             let effects = join_effects(&mut c, "a1", RaceId(id), NOW);
@@ -1306,7 +1315,7 @@ mod tests {
     #[test]
     fn joining_the_same_race_twice_is_refused() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         join(&mut c, "a1", race);
         let before = state(&c);
         let effects = join_effects(&mut c, "a1", race, NOW);
@@ -1317,7 +1326,7 @@ mod tests {
     #[test]
     fn joining_a_decided_race_or_one_past_its_deadline_is_closed() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let late = join_effects(&mut c, "a1", race, DEADLINE);
         assert_eq!(
             error_code(&late),
@@ -1330,9 +1339,53 @@ mod tests {
     }
 
     #[test]
+    fn a_submission_into_a_race_with_room_does_not_end_it() {
+        let mut c = core();
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+
+        assert_eq!(c.begin_verification(NOW + 2), None, "nothing is judged yet");
+        assert!(c.state.races.contains_key(&race.0));
+        let two = join(&mut c, "a2", race);
+        submit_at(&mut c, "a2", two, NOW + 3);
+        let first = c
+            .begin_verification(NOW + 4)
+            .expect("full and submitted: judged");
+        assert_eq!(first.agent, agent("a1"));
+    }
+
+    #[test]
+    fn a_full_race_with_every_entry_submitted_is_judged_at_once() {
+        let mut c = core();
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        let two = join(&mut c, "a2", race);
+        submit_at(&mut c, "a2", two, NOW + 1);
+        assert_eq!(c.begin_verification(NOW + 2), None, "a1 has not submitted");
+        submit_at(&mut c, "a1", one, NOW + 3);
+        assert!(c.begin_verification(NOW + 4).is_some());
+        let closed = join_effects(&mut c, "a3", race, NOW + 4);
+        assert_eq!(error_code(&closed), ErrorCode::RaceClosed);
+    }
+
+    #[test]
+    fn at_its_deadline_a_race_with_room_and_one_entry_is_judged() {
+        let mut c = core();
+        let race = open_for(&mut c, 3, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        assert_eq!(c.begin_verification(NOW + 2), None);
+        c.expire(DEADLINE);
+        let effects = run_trials(&mut c, DEADLINE, &[("a1", passed())]);
+        let (winner, _, _) = result_for(&effects, "a1").expect("decided");
+        assert_eq!(winner, Some(one.0));
+    }
+
+    #[test]
     fn joining_a_race_that_is_being_judged_is_closed() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let entry = join(&mut c, "a1", race);
         submit_at(&mut c, "a1", entry, NOW + 1);
         let effects = join_effects(&mut c, "a2", race, NOW + 2);
@@ -1342,7 +1395,7 @@ mod tests {
     #[test]
     fn an_agent_holding_claims_may_join_but_one_with_a_queued_request_may_not() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
         let held = claim_as(&mut c, "a1", "src/other.rs", OnConflict::Fail);
         assert!(is_granted(&held));
         join(&mut c, "a1", race);
@@ -1360,7 +1413,7 @@ mod tests {
     #[test]
     fn an_entrant_may_not_wait_for_another_claim() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         join(&mut c, "a1", race);
         let blocker = claim_as(&mut c, "b1", "src/b.rs", OnConflict::Fail);
         assert!(is_granted(&blocker));
@@ -1485,7 +1538,7 @@ mod tests {
     #[test]
     fn an_entry_is_checked_like_any_submission_and_never_dispatched() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
         let (claim, fence) = join(&mut c, "a1", race);
         join(&mut c, "a2", race);
 
@@ -1532,8 +1585,9 @@ mod tests {
     #[test]
     fn a_race_is_judged_when_every_entrant_has_submitted() {
         let mut c = core();
-        let race = open(
+        let race = open_for(
             &mut c,
+            2,
             vec![Criterion::TestsPass, Criterion::FirstSubmitted],
         );
         let one = join(&mut c, "a1", race);
@@ -1580,7 +1634,7 @@ mod tests {
     #[test]
     fn the_winner_merges_and_the_losers_are_rejected_with_a_fixed_reason() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         let two = join(&mut c, "a2", race);
         submit_at(&mut c, "a1", one, NOW + 1);
@@ -1640,7 +1694,7 @@ mod tests {
     #[test]
     fn the_winner_holds_the_scopes_until_it_merges() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         submit_at(&mut c, "a1", one, NOW + 1);
         run_trials(&mut c, NOW + 2, &[("a1", passed())]);
@@ -1661,7 +1715,7 @@ mod tests {
     #[test]
     fn a_race_is_judged_at_its_deadline_and_a_slow_entrant_is_cut_off() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         let two = join(&mut c, "a2", race);
         submit_at(&mut c, "a1", one, NOW + 1);
@@ -1689,7 +1743,7 @@ mod tests {
     fn the_wake_up_follows_the_deadline_of_an_open_race_only() {
         let mut c = core();
         assert_eq!(c.next_wake_ms(false, false, NOW), None);
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         assert_eq!(c.next_wake_ms(false, false, NOW), Some(DEADLINE));
         let one = join(&mut c, "a1", race);
         submit_at(&mut c, "a1", one, NOW + 1);
@@ -1704,7 +1758,7 @@ mod tests {
     #[test]
     fn a_race_nobody_entered_is_decided_with_no_winner_and_frees_its_scopes() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let waiting = claim_as(&mut c, "w1", "src/a.rs", OnConflict::Wait);
         assert!(matches!(replies(&waiting)[..], [ServerMsg::Queued { .. }]));
 
@@ -1725,12 +1779,13 @@ mod tests {
     }
 
     #[test]
-    fn a_lease_that_runs_out_removes_the_entrant_and_the_rest_are_judged() {
+    fn a_lease_that_runs_out_removes_the_entrant_and_the_race_waits_for_its_deadline() {
         let mut c = core();
+        let deadline = NOW + MAX_RACE_MS;
         let msg = open_msg(
             vec![edit("src/a.rs")],
-            4,
-            NOW + MAX_RACE_MS,
+            2,
+            deadline,
             vec![Criterion::FirstSubmitted],
         );
         c.handle(&agent("felix"), msg, NOW);
@@ -1739,8 +1794,6 @@ mod tests {
         join(&mut c, "a2", race);
         submit_at(&mut c, "a1", one, NOW + 1);
 
-        let hb = c.handle(&agent("a1"), ClientMsg::Heartbeat, NOW + 1);
-        assert!(hb.is_empty());
         let expired = c.expire(NOW + LEASE);
         assert!(logged(&expired).iter().any(|k| matches!(
             k,
@@ -1749,10 +1802,17 @@ mod tests {
                 ..
             }
         )));
-        assert!(
-            c.begin_verification(NOW + LEASE).is_some(),
-            "a1 is the only entrant left and has submitted, so its tests are due"
+        assert_eq!(
+            c.begin_verification(NOW + LEASE),
+            None,
+            "the race has room again, so it is not judged yet"
         );
+        join(&mut c, "a3", race);
+        c.expire(deadline);
+        let trial = c
+            .begin_verification(deadline)
+            .expect("judged at the deadline");
+        assert_eq!(trial.agent, agent("a1"));
     }
 
     #[test]
@@ -1792,7 +1852,7 @@ mod tests {
     #[test]
     fn first_submitted_ranks_by_submission_not_by_joining() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         let two = join(&mut c, "a2", race);
         submit_at(&mut c, "a2", two, NOW + 1);
@@ -1828,8 +1888,9 @@ mod tests {
             after: None,
         };
         let mut c = core();
-        let race = open(
+        let race = open_for(
             &mut c,
+            3,
             vec![Criterion::TestsPass, Criterion::FirstSubmitted],
         );
         let one = join(&mut c, "a1", race);
@@ -1850,7 +1911,7 @@ mod tests {
     #[test]
     fn without_tests_pass_a_failing_entry_can_still_win_and_is_recorded_as_failing() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         let two = join(&mut c, "a2", race);
         submit_at(&mut c, "a1", one, NOW + 1);
@@ -1864,7 +1925,7 @@ mod tests {
     #[test]
     fn no_eligible_entry_rejects_everyone_and_frees_the_scopes() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::TestsPass]);
+        let race = open_for(&mut c, 2, vec![Criterion::TestsPass]);
         let one = join(&mut c, "a1", race);
         let two = join(&mut c, "a2", race);
         submit_at(&mut c, "a1", one, NOW + 1);
@@ -1895,7 +1956,7 @@ mod tests {
     #[test]
     fn trials_wait_for_merges() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         let other = claim_as(&mut c, "x1", "src/x.rs", OnConflict::Fail);
         let [ServerMsg::Granted { claim, fence, .. }] = replies(&other)[..] else {
@@ -1937,7 +1998,7 @@ mod tests {
     #[test]
     fn a_trial_that_keeps_failing_to_run_leaves_the_tests_unknown() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         submit_at(&mut c, "a1", one, NOW + 1);
         let down = TrialReport::stopped(TrialOutcome::ServiceUnavailable);
@@ -1960,7 +2021,7 @@ mod tests {
         let mut c = bare_core();
         let msg = open_msg(
             vec![edit("src/a.rs")],
-            4,
+            1,
             DEADLINE,
             vec![Criterion::TestsPass],
         );
@@ -1982,7 +2043,7 @@ mod tests {
 
     fn human_race() -> (Coordinator, [(ClaimId, Fence); 3]) {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::TestsPass, Criterion::HumanPick]);
+        let race = open_for(&mut c, 3, vec![Criterion::TestsPass, Criterion::HumanPick]);
         let one = join(&mut c, "a1", race);
         let two = join(&mut c, "a2", race);
         let three = join(&mut c, "a3", race);
@@ -2210,7 +2271,7 @@ mod tests {
     #[test]
     fn a_winner_without_test_evidence_waits_for_review_before_it_is_dispatched() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         let bare = submit_effects(&mut c, "a1", one, false, NOW + 1);
         assert!(matches!(
@@ -2247,7 +2308,7 @@ mod tests {
     #[test]
     fn a_passing_trial_counts_as_test_evidence_for_the_review_gate() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         submit_effects(&mut c, "a1", one, false, NOW + 1);
         let effects = run_trials(&mut c, NOW + 3, &[("a1", passed())]);
@@ -2262,7 +2323,7 @@ mod tests {
     #[test]
     fn a_failing_trial_is_not_test_evidence() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         submit_effects(&mut c, "a1", one, false, NOW + 1);
         let effects = run_trials(&mut c, NOW + 3, &[("a1", failed())]);
@@ -2274,7 +2335,7 @@ mod tests {
     #[test]
     fn the_winner_keeps_its_submission_order_in_the_merge_queue() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         submit_at(&mut c, "a1", one, NOW + 1);
         let held = claim_as(&mut c, "x1", "src/x.rs", OnConflict::Fail);
@@ -2313,7 +2374,13 @@ mod tests {
     #[test]
     fn races_decided_counts_each_decided_race_once() {
         let mut c = core();
-        let opened = open_effects(&mut c, vec![Criterion::FirstSubmitted]);
+        let msg = open_msg(
+            vec![edit("src/a.rs")],
+            1,
+            DEADLINE,
+            vec![Criterion::FirstSubmitted],
+        );
+        let opened = c.handle(&agent("felix"), msg, NOW);
         let joined = join_effects(&mut c, "a1", RaceId(1), NOW);
         let [ServerMsg::Granted { claim, fence, .. }] = replies(&joined)[..] else {
             panic!("expected Granted");
@@ -2331,7 +2398,7 @@ mod tests {
     #[test]
     fn a_race_survives_a_save_and_load_at_every_stage() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::TestsPass, Criterion::HumanPick]);
+        let race = open_for(&mut c, 2, vec![Criterion::TestsPass, Criterion::HumanPick]);
         let one = join(&mut c, "a1", race);
         let two = join(&mut c, "a2", race);
         let mut stages = vec![state(&c)];
@@ -2363,7 +2430,7 @@ mod tests {
     #[test]
     fn an_open_race_still_advertises_itself_after_a_restore() {
         let mut c = core();
-        open(&mut c, vec![Criterion::FirstSubmitted]);
+        open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let mut restored: Coordinator = serde_json::from_str(&state(&c)).unwrap();
         let denied = claim_as(&mut restored, "outsider", "src/a.rs", OnConflict::Fail);
         assert_eq!(denial_race(&denied), Some(RaceId(1)));
@@ -2410,7 +2477,7 @@ mod tests {
     #[test]
     fn an_entry_is_stored_with_its_race() {
         let mut c = core();
-        let race = open(&mut c, vec![Criterion::FirstSubmitted]);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         join(&mut c, "a1", race);
         let stored = state(&c);
         assert!(stored.contains("\"kind\":{\"entry\":1}"), "{stored}");
@@ -2419,7 +2486,7 @@ mod tests {
     #[test]
     fn a_waiter_blocked_by_a_race_is_granted_when_the_race_ends_without_a_winner() {
         let mut c = core();
-        open(&mut c, vec![Criterion::TestsPass]);
+        open_for(&mut c, 1, vec![Criterion::TestsPass]);
         let queued = claim_as(&mut c, "w1", "src/a.rs", OnConflict::Wait);
         assert!(matches!(replies(&queued)[..], [ServerMsg::Queued { .. }]));
         let one = join(&mut c, "a1", RaceId(1));
@@ -2433,7 +2500,7 @@ mod tests {
     #[test]
     fn a_waiter_stays_queued_while_the_winner_waits_to_merge() {
         let mut c = core();
-        open(&mut c, vec![Criterion::FirstSubmitted]);
+        open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         claim_as(&mut c, "w1", "src/a.rs", OnConflict::Wait);
         let one = join(&mut c, "a1", RaceId(1));
         submit_at(&mut c, "a1", one, NOW + 1);
@@ -2445,7 +2512,7 @@ mod tests {
     #[test]
     fn a_winner_rejected_by_the_steward_gets_its_claim_back_as_any_claim_would() {
         let mut c = core();
-        open(&mut c, vec![Criterion::FirstSubmitted]);
+        open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", RaceId(1));
         submit_at(&mut c, "a1", one, NOW + 1);
         run_trials(&mut c, NOW + 2, &[("a1", passed())]);
@@ -2496,7 +2563,7 @@ mod tests {
         };
         let granted = c.handle(&agent("dep"), held, NOW);
         assert!(is_granted(&granted));
-        open(&mut c, vec![Criterion::FirstSubmitted]);
+        open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", RaceId(1));
         let entry_reply = submit_effects(&mut c, "a1", one, true, NOW + 1);
         assert!(
