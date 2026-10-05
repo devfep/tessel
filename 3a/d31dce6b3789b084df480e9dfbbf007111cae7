@@ -1,0 +1,4 @@
+intent: a failure counts as an assumption broken only if the same commit was clean on main before the challenging merge; commit resolved at dispatch; unreachable main is final; trial type cannot mint tokens
+assumes: the oldest challenging merge's base is the right baseline when merges dedupe
+rejected: rebase --abort before the second run (the second run happens only after a clean first, so no rebase is in progress); keeping the redundant prune calls (every claim-removing path already prunes)
+evidence: cargo test -p tessel-coordinator 340 passed, clippy clean; steward 443 passed, typecheck, oxlint, oxfmt clean
