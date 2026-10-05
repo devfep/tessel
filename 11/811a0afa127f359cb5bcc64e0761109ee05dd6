@@ -1,0 +1,4 @@
+intent: keep added lines within 100 characters
+assumes: none
+rejected: none
+evidence: awk length>101 on the added lines of the diff against the base prints nothing; fmt clean
