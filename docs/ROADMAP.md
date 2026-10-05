@@ -238,6 +238,13 @@ two Workers are approved.
   call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
   measure the real numbers in the probe, then set the step timeouts so their sum stays under the
   call timeout with margin, or move the merge off the alarm's wall clock.
+  Go/no-go for the live probe on `standard-4` (from the DOGFOOD-1 review; any miss is a no-go and
+  `merge-one.sh` stays): `exec` runs the gate as uid 1000; `memory.peak` is non-null; `readFile`
+  with a 40-hex ref returns the blob and a bogus sha returns null without throwing; the deployed
+  image build with `build_context ..` succeeds; `cargo test` compiles no dependency; container start
+  under 10 s cold; clone plus fetch under 60 s; install under 45 s; test under 200 s warm and 240 s
+  cold; peak memory under 9 GiB; a full merge over the service binding under 600 s; and the gate
+  self-protection (submissions touching `tessel.toml` refused, admin-only escape hatch) has landed.
 - [ ] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
   join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
   trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
