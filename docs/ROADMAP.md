@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 01:36 EDT.
+**As of:** 2026-10-05 01:52 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
-**Tip:** `sprint/build` at the SPIKE-3 merge `a4b411c` (plus this docs commit), pushed. `main` at `9211b67`.
+**Tip:** `sprint/build` at the COORD-1 merge `e3e2847` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
 to Felix at FREEZE.
 
@@ -15,21 +15,20 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-1 | COORD-1 | `.claude/worktrees/coord-1` / `task-coord-1` | fix pass 1 committed at `5c43340` → re-check |
-| cq-coord-1 | COORD-1 review | same worktree, read-only | "With fixes" on `4862f59` (2 Important, 5 Minor) → re-check `5c43340` |
+| impl-coord-2 | COORD-2 | `.claude/worktrees/coord-2` / `task-coord-2` | implementing from `e3e2847` → review |
 
-**Rulings for COORD-1 fix pass 1** (sent with the reviewer's findings as one brief):
-1. `Hello` identity: the core uses the `agent` argument of `handle` for the reply and the log. A
-   `Hello` whose message agent differs from the argument is `Malformed` and logs nothing. The shell
-   passes the connection's agent, which for the first `Hello` is the one the message names.
-2. Dispatch complexity: `handle` routes by message family to two functions (claim lifecycle; races,
-   review and watch), each an exhaustive match with every variant named and no wildcard, so all three
-   stay at or under complexity 8 as later tasks fill in the arms.
-3. The current fence never appears in an error message (a stale holder could retry with it).
-4. Claims live in a `BTreeMap`; the lock table is derived state, rebuilt on load and not persisted;
+**Rulings carried into COORD-2..4** (from the COORD-1 reviews):
+1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
+   another agent is `Malformed`. The shell binds identity per connection.
+2. `handle` routes by message family to two functions, each naming every variant with no wildcard.
+3. The current fence never appears in an error message.
+4. Claims live in a `BTreeMap`; the lock table is derived state, rebuilt on load, never persisted;
    serialized state is byte-identical across identical replays; conflicts are sorted explicitly.
-5. `Watch` replay belongs to the Durable Object shell, which owns the event store: it moves from
-   COORD-3 to COORD-4.
+5. Exact-duplicate scopes in a request are dropped once, up front.
+6. `Watch` replay belongs to the shell, which owns the event store (COORD-4).
+7. COORD-2: an agent with a queued `Wait` request may make no other claim; waiters are served FIFO
+   and never jump an earlier waiter they conflict with; queueing logs nothing because the protocol
+   has no event for it (proposed below).
 
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
@@ -47,13 +46,18 @@ subscriptions `tessel-repo-lifecycle` and `tessel-push-demo--agent-1`. Artifacts
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) appeared in the repo root on Oct 3. Not created
    by this build; left untracked.
+4. Protocol gaps found while building the core, all additive, for a decision at the freeze: no
+   event for a queued `Wait` request (invariant 10 says every state change is logged); `Release`
+   errors carry no `req`; `Conflict` carries no claim id; `ClaimId` and `Scope` lack `Ord`.
+5. `cargo clippy -D warnings` fails on `src/protocol.rs` itself (14 doc-list lints and unused items).
+   New code is clean; fixing the protocol file means editing it.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
 attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Workers are approved.
 
 **Next actions:**
 1. On each report: dispatch the Opus reviewer, run fix passes, merge on "Yes", gate, close.
-2. Dispatch COORD-2 when COORD-1 merges; COORD-3 and COORD-4 follow in order.
+2. COORD-3 when COORD-2 merges, then COORD-4, then FREEZE.
 
 ## Tasks
 
@@ -67,10 +71,11 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   steward tests). Live on version `7be0d0c7`: `demo` passed in 18 s, a deliberately failing test on
   `demo--agent-1` returned exit 1 and `passed: false`, then passed after the revert. The token stays
   in the Worker and is revoked straight after the clone.
-- [ ] **COORD-1** — Pure coordinator core: hello, claims with `Fail`, release, lock table, fences,
+- [x] **COORD-1** — Pure coordinator core: hello, claims with `Fail`, release, lock table, fences,
   event log, at-risk assumptions.
-  Files: `src/coordinator.rs`, `src/lib.rs` (module line), `Cargo.toml`, `Cargo.lock`.
-  Verify: `cargo test`, including a property test against a brute-force conflict oracle.
+  CLOSED 2026-10-05 at `e3e2847` (merge of `task-coord-1`; review "Yes" after two fix passes, 15
+  reviewer mutants killed). `cargo test` 50 passed on the merged tree, including a property test
+  against a brute-force oracle with save-and-reload before every operation.
 - [ ] **COORD-2** — Leases, heartbeat, expiry, `Amend`, and the `Wait` queue (invariants 2, 3, 4).
   Files: `src/coordinator.rs`.
   Verify: an expired lease retires its fence; a stale fence is rejected; no hold-and-wait.
