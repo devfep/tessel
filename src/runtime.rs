@@ -236,7 +236,8 @@ impl Coordinator {
 
     /// Load the core from storage, or create it for the configured run. Fails loudly on corrupt
     /// state or a bad config; never starts empty over stored data. `RUN` and `SHADOW_ENABLED`
-    /// matter only when nothing is stored yet.
+    /// matter only when nothing is stored yet; `REVIEWERS` is applied on every load, and a bad
+    /// one leaves nobody able to review.
     async fn ensure_loaded(&self) -> Result<()> {
         if self.core.borrow().is_some() {
             return Ok(());
@@ -253,8 +254,17 @@ impl Coordinator {
             .var("SHADOW_ENABLED")
             .ok()
             .map(|var| var.to_string());
-        let core = shell::load_core(stored.as_deref(), run.as_deref(), shadow.as_deref())
-            .map_err(|e| self.fail("load state", e))?;
+        let reviewers = self.env.var("REVIEWERS").ok().map(|var| var.to_string());
+        let reviewers = shell::reviewers_or_none(reviewers.as_deref(), |e| {
+            console_error!("coordinator {}: {e}; nobody can review", self.repo());
+        });
+        let core = shell::load_core(
+            stored.as_deref(),
+            run.as_deref(),
+            shadow.as_deref(),
+            reviewers,
+        )
+        .map_err(|e| self.fail("load state", e))?;
         let mut slot = self.core.borrow_mut();
         if slot.is_none() {
             *slot = Some(core);
