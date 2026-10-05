@@ -236,7 +236,8 @@ impl Coordinator {
 
     /// Load the core from storage, or create it for the configured run. Fails loudly on corrupt
     /// state or a bad config; never starts empty over stored data. `RUN` and `SHADOW_ENABLED`
-    /// matter only when nothing is stored yet.
+    /// matter only when nothing is stored yet; `REVIEWERS` is applied on every load, and a bad
+    /// one leaves nobody able to review.
     async fn ensure_loaded(&self) -> Result<()> {
         if self.core.borrow().is_some() {
             return Ok(());
@@ -253,8 +254,17 @@ impl Coordinator {
             .var("SHADOW_ENABLED")
             .ok()
             .map(|var| var.to_string());
-        let core = shell::load_core(stored.as_deref(), run.as_deref(), shadow.as_deref())
-            .map_err(|e| self.fail("load state", e))?;
+        let reviewers = self.env.var("REVIEWERS").ok().map(|var| var.to_string());
+        let reviewers = shell::reviewers_or_none(reviewers.as_deref(), |e| {
+            console_error!("coordinator {}: {e}; nobody can review", self.repo());
+        });
+        let core = shell::load_core(
+            stored.as_deref(),
+            run.as_deref(),
+            shadow.as_deref(),
+            reviewers,
+        )
+        .map_err(|e| self.fail("load state", e))?;
         let mut slot = self.core.borrow_mut();
         if slot.is_none() {
             *slot = Some(core);
@@ -313,7 +323,8 @@ impl Coordinator {
         self.ensure_loaded().await?;
         self.expire_at(now_ms()).await?;
         self.recover_cut_off_merge().await?;
-        self.run_one_merge().await
+        self.run_one_merge().await?;
+        self.ensure_alarm().await
     }
 
     /// A merge marked in flight while this instance is not waiting on the steward was cut off by a
@@ -523,12 +534,27 @@ impl Coordinator {
     }
 
     /// Deliver a persisted call, then reschedule the alarm even if the delivery failed. Returns
-    /// the first error.
+    /// the delivery error. A failed alarm write is logged and not returned: the call is already
+    /// stored and answered, and an error here would close the client's socket. The next call
+    /// reschedules, and the alarm handler ends by rescheduling with its error returned.
     async fn settle(&self, persisted: &Persisted, reply_to: Option<&WebSocket>) -> Result<()> {
         let delivered = self.deliver(persisted, reply_to);
-        let rescheduled = self.reschedule(persisted.next_alarm_ms()).await;
-        delivered?;
-        rescheduled
+        if let Err(e) = self.reschedule(persisted.next_alarm_ms()).await {
+            console_error!("coordinator {}: {e}", self.repo());
+        }
+        delivered
+    }
+
+    /// Set the alarm from the core as it is now. An error is for the alarm handler to return, so
+    /// the runtime runs the alarm again.
+    async fn ensure_alarm(&self) -> Result<()> {
+        let next = {
+            let slot = self.core.borrow();
+            let merging_here = self.merging.get().is_some();
+            slot.as_ref()
+                .and_then(|core| core.next_alarm_ms(merging_here, now_ms()))
+        };
+        self.reschedule(next).await
     }
 
     /// Send what `shell::plan_delivery` plans. Only a failed send to the socket that sent the
@@ -588,7 +614,7 @@ impl Coordinator {
 
     async fn reschedule(&self, next_alarm_ms: Option<u64>) -> Result<()> {
         let storage = self.state.storage();
-        let result = match shell::alarm_at_ms(next_alarm_ms) {
+        let result = match shell::alarm_at_ms(next_alarm_ms, now_ms()) {
             Some(at_ms) => {
                 let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(at_ms));
                 storage.set_alarm(ScheduledTime::new(date)).await

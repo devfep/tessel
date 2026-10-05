@@ -5,14 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 09:32 EDT.
+**As of:** 2026-10-05 10:16 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the CLI-FIX merge `36abdb3` plus this STATE commit; `main` at `29aa8fe`
+**Tip:** `sprint/build` at the REVIEW-1 merge `38e5ff8` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
-**Milestone:** PLAN §9 Oct 6 delivered. Dogfood v0 has started: CLI-2 is the first lane that
-claims its files through the live coordinator (repo `tessel-dogfood`, agent `cli-2`). Limit, stated
-honestly: subagents share the parent session's hook settings, so the pre-edit hook does not enforce
-claims for lanes; they claim by hand following the skill. Oct 7 work in progress (SUBMIT-1).
+**Milestone:** PLAN §9 Oct 7 "work lands automatically in order" is reached for the merge path:
+an agent's `Submit` is merged by the steward and the outcome comes back, checked live (clean merge,
+failing test, conflict). The review gate's approval path is live too (REVIEW-1). Dogfood
+v0 has run once (CLI-2 claimed 14 files on `tessel-dogfood`). Limit, stated honestly: subagents
+share the parent session's hook settings, so the pre-edit hook does not enforce claims for lanes;
+they claim by hand following the skill.
 
 **Felix's rulings, 2026-10-05 07:00 EDT** (the four items pending at FREEZE), all now delivered
 except ruling 3, which lands with the steward merge path:
@@ -26,19 +28,19 @@ except ruling 3, which lands with the steward merge path:
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
 **Agents:**
-- SUBMIT-1 (Sonnet, `.claude/worktrees/submit-1`): review "With fixes" (one merge per alarm, a
-  timeout on the steward call, steward 4xx as agent errors, sha checked at Submit); fix pass 1.
-- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): part a, `tessel submit`; dogfooded on
-  `tessel-dogfood`.
+- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): review "No" (reconnect reset the submit diff base, so
+  an unclaimed file could escape `touched`); fix pass 1 running: base from the commit graph, one
+  claim per agent through `Amend`, a deterministic submit reply, `stop` confirming releases.
+SUBMIT-1 and REVIEW-1 closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `b3681796`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `9f75140a`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
-- `tessel-steward` version `0b6da38d`, with the `TestRunner` container; admin routes need
+- `tessel-steward` version `20a409ee` (adds the `MergeService` entrypoint), with the `TestRunner` container; admin routes need
   `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/merges` runs the merge
   executor (STEWARD-1). `POST /repos/<repo>/agents/<agent>/identity`
   mints a 24 h agent token.
@@ -50,6 +52,10 @@ hand (his ruling, 07:19), with the orchestrator handing him the command and the 
 1. At the next hand merge of `src/protocol.rs`: delete the six `cfg_attr(not(test), expect(dead_code))`
    lines (no wire change; the items are public now that the CLI uses the crate), so CLI-1's
    `#[allow(unfulfilled_lint_expectations)]` on `pub mod protocol` can go.
+   In the same merge: the `Summary` doc says "merges - reviews_requested = merged without review",
+   which stopped being true with REVIEW-1 (a rejected and resubmitted change is requested twice and
+   a rejected one never merges). Correct the doc; optionally add `reviews_approved` with
+   `#[serde(default)]` if the dashboard needs "merged after approval".
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
@@ -72,18 +78,26 @@ hand (his ruling, 07:19), with the orchestrator handing him the command and the 
   update, and the outcome comes from a Worker-side read of the trunk. Isolating the tests under
   their own uid would close it.
 - Merge executor: pushes over 1 MiB (git's probe request) are not exercised live.
-- Scratch repos `gate6-*` in Artifacts hold test state only.
+- Scratch repos `gate6-*`, `gate7-*`, `gate8-*` and `gate9-*` hold test state only.
+- A `watch` connection does not reschedule the alarm; a repo whose queue stalled (only possible
+  before `8632d73`) resumes on the next agent message or lease alarm.
+- `Summary.reviews_requested` counts review requests, not reviewed merges (see Pending item 1).
+- A submission held for review keeps its locks until a reviewer in `REVIEWERS` decides it; it never
+  expires. The CLI has no `review` command yet (raw `review` message only).
+- Five lines over 100 characters predate REVIEW-1: `src/coordinator.rs:13`,
+  `src/coordinator/merging.rs:629` and `:825`, `src/identity.rs:153`, `src/shell.rs:1`.
+- A claim takes one mode, so a change that both edits and adds files, or a rename, cannot be
+  covered by one claim and `tessel submit` exits 5 (uncovered). Fix candidates for CLI-2b.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
 attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZE. Deploys of the
 two Workers are approved.
 
 **Next actions:**
-1. Review SUBMIT-1 and CLI-2 as they report; deploy SUBMIT-1 (steward first) and check a clean
-   merge, a conflict and a failing test end to end through `Submit`.
-2. REVIEW-1 after SUBMIT-1 merges: `Review` approve/reject for held submissions; note that
-   `Summary.reviews_requested` now counts held submissions too; a held submission keeps its locks.
-3. CLI-2b: tree-sitter symbol claims in the hook and symbol-level `touched`.
+1. Re-review CLI-2 after its fix pass; merge; live-check `tessel submit` end to end through the
+   steward, dogfooded.
+2. CLI-2b: tree-sitter symbol claims and mode escalation; `tessel review` for reviewers.
+3. PLAN §9 Oct 8: assumptions end to end (verified), races; dashboard (agents' lane per PLAN §7).
 
 ## Tasks
 
@@ -171,11 +185,18 @@ two Workers are approved.
   file and allows a path outside.
 - [ ] **CLI-2** — part a: `tessel submit` (file-level `touched`, local coverage check, evidence
   required). Part b (CLI-2b): tree-sitter symbol claims and mode escalation in the hook.
-- [ ] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
-- [ ] **SUBMIT-1** — Felix's ruling 3: on `Submit`, the coordinator sends the claim's fork
+- [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
+  CLOSED 2026-10-05 at `38e5ff8` (review "Yes" after one fix pass; flagged submissions now get
+  `ReviewRequired` before any `Accepted`). Workspace tests 404. Live on `9f75140a`: held submit,
+  non-reviewer refused, approval merged, rejection with a fixed reason that never carries the note.
+- [x] **SUBMIT-1** — Felix's ruling 3: on `Submit`, the coordinator sends the claim's fork
   (`<repo>--<agent>`) and commit to the steward merge executor through a service binding (not
   public), and applies the outcome (`Merged` / `SubmitRejected`, `BaseMoved`,
   `AssumptionChallenged`). The CLI command is in CLI-2.
+  CLOSED 2026-10-05 at `8632d73` (review "Yes" after three fix passes; the third came from the live
+  check: an alarm time of 0 meant no merge was ever dispatched). Workspace tests 386, steward 317.
+  Live on coordinator `e9d00c31`: through `Submit`, a clean change merged in 18 s, a failing test
+  and a conflict were rejected with fixed-form reasons, and the trunk moved only for the merge.
 - [x] **COORD-HARDEN** — from the CLI-1 review: the coordinator refuses control characters (C0, DEL,
   C1) in scope paths and qualified names, as defence in depth behind the CLI's escaping. Touches
   `src/coordinator.rs` only.

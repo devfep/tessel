@@ -11,7 +11,8 @@
 //! - A submitted claim stops expiring and keeps its locks until the steward reports its merge
 //!   outcome. Submissions are numbered, which fixes their order in the merge queue.
 //! - A submitted claim is merged by the steward, one at a time, in submission order (see `merging`).
-//!   A submission that needs review (invariant 12) is held and never dispatched.
+//!   A submission that needs review (invariant 12) is held and never dispatched until a reviewer
+//!   named by `set_reviewers` approves it; a rejection returns the claim to active.
 //! - A shadow claim (invariant 10) is a real claim with an id, a fence and a lease that places no
 //!   lock, so it blocks nobody. Submitting one records it for verification and never queues it.
 
@@ -119,9 +120,13 @@ struct Submission {
     fork_commit: CommitId,
     /// What the submission changed; it decides who is told that main moved.
     touched: Vec<ScopeClaim>,
-    /// Invariant 12: a human must approve this before it is dispatched. Nothing clears it yet,
-    /// because `Review` is not implemented, so such a submission is held.
+    /// Invariant 12: a reviewer must approve this before it is dispatched.
     awaiting_review: bool,
+    /// The `req` of the `Submit`, echoed on the `Accepted` a later approval sends. `None` for a
+    /// submission stored before this field existed: that `Accepted` carries `RequestId(0)`,
+    /// meaning no request id is known.
+    #[serde(default)]
+    submit_req: Option<RequestId>,
     /// `main_moved` answers so far.
     #[serde(default)]
     moved: u32,
@@ -134,11 +139,17 @@ struct Submission {
 }
 
 impl Submission {
-    fn new(fork_commit: CommitId, touched: Vec<ScopeClaim>, awaiting_review: bool) -> Self {
+    fn new(
+        fork_commit: CommitId,
+        touched: Vec<ScopeClaim>,
+        awaiting_review: bool,
+        submit_req: RequestId,
+    ) -> Self {
         Self {
             fork_commit,
             touched,
             awaiting_review,
+            submit_req: Some(submit_req),
             moved: 0,
             infra_failures: 0,
             retry_at_ms: None,
@@ -163,6 +174,14 @@ struct SubmitRequest {
     fork_commit: CommitId,
     touched: Vec<ScopeClaim>,
     decisions: DecisionRecord,
+}
+
+/// A `Review` message minus the sender.
+struct ReviewRequest {
+    req: RequestId,
+    claim: ClaimId,
+    approve: bool,
+    note: Option<String>,
 }
 
 /// One lock on one node. Carries everything a `Conflict` needs, so reporting one cannot fail.
@@ -222,6 +241,10 @@ impl Blocked {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CoordinatorState {
     config: Config,
+    /// Agents who may decide a flagged submission (invariant 12). Empty means nobody may, so
+    /// flagged work is held. A deployment setting: the shell sets it on every load.
+    #[serde(default)]
+    reviewers: Vec<AgentId>,
     /// Main's head as the coordinator knows it. The steward will own this later.
     head: Option<CommitId>,
     next_claim: u64,
@@ -277,6 +300,12 @@ impl From<CoordinatorState> for Coordinator {
 }
 
 impl Coordinator {
+    /// Replace the agents who may review (invariant 12). They come from the Worker's `REVIEWERS`
+    /// variable and are applied on every load, so a stored state follows the deployment.
+    pub fn set_reviewers(&mut self, reviewers: Vec<AgentId>) {
+        self.state.reviewers = reviewers;
+    }
+
     /// Fails if `config.lease_ms` is zero: every grant would already be due, so the shell's
     /// expiry alarm would fire forever.
     pub fn new(config: Config) -> Result<Self, InvalidConfig> {
@@ -287,6 +316,7 @@ impl Coordinator {
         }
         Ok(Self::from(CoordinatorState {
             config,
+            reviewers: Vec::new(),
             head: None,
             next_claim: 1,
             next_fence: 1,
@@ -419,10 +449,23 @@ impl Coordinator {
             | ClientMsg::Heartbeat
             | ClientMsg::Release { .. }
             | ClientMsg::Submit { .. } => self.handle_lifecycle(agent, msg, now_ms),
+            ClientMsg::Review {
+                req,
+                claim,
+                approve,
+                note,
+            } => {
+                let request = ReviewRequest {
+                    req,
+                    claim,
+                    approve,
+                    note,
+                };
+                self.review(agent, request, now_ms)
+            }
             ClientMsg::OpenRace { .. }
             | ClientMsg::JoinRace { .. }
             | ClientMsg::PickWinner { .. }
-            | ClientMsg::Review { .. }
             | ClientMsg::Watch { .. } => Self::handle_collective(msg),
         }
     }
@@ -492,21 +535,21 @@ impl Coordinator {
         }
     }
 
-    /// Races, review and watch.
+    /// Races and watch.
     fn handle_collective(msg: ClientMsg) -> Vec<Effect> {
         match msg {
             // When OpenRace is implemented, its scopes must go through `claim_fault`.
             ClientMsg::OpenRace { req, .. } => not_implemented(Some(req), "OpenRace"),
             ClientMsg::JoinRace { req, .. } => not_implemented(Some(req), "JoinRace"),
             ClientMsg::PickWinner { req, .. } => not_implemented(Some(req), "PickWinner"),
-            ClientMsg::Review { req, .. } => not_implemented(Some(req), "Review"),
             ClientMsg::Watch { .. } => watch_not_served(),
             ClientMsg::Hello { .. }
             | ClientMsg::Claim { .. }
             | ClientMsg::Amend { .. }
             | ClientMsg::Heartbeat
             | ClientMsg::Release { .. }
-            | ClientMsg::Submit { .. } => misrouted(),
+            | ClientMsg::Submit { .. }
+            | ClientMsg::Review { .. } => misrouted(),
         }
     }
 
@@ -986,6 +1029,9 @@ impl Coordinator {
     /// marked submitted, which stops its lease and holds it for the steward; it keeps its locks.
     /// A rejected submission changes nothing but the event log, and the claim stays submittable.
     ///
+    /// A flagged submission (invariant 12) is answered with `ReviewRequired` alone; its `Accepted`
+    /// follows when a reviewer approves it, so the first reply says whether it is held.
+    ///
     /// `Accepted::queue_position` is the 1-based place among submitted non-shadow claims, in
     /// submission order (see `queue_position`). For a shadow claim it is 0, meaning "recorded
     /// for verification, never queued for merge": the protocol has no dedicated reply for that.
@@ -1050,25 +1096,26 @@ impl Coordinator {
                 let awaiting_review = review.is_some();
                 self.queue_for_merge(
                     claim,
-                    Submission::new(fork_commit, touched, awaiting_review),
+                    Submission::new(fork_commit, touched, awaiting_review, req),
                 );
                 self.queue_position(ordinal)
             }
         };
-        let accepted = ServerMsg::Accepted {
-            req,
-            claim,
-            queue_position,
-        };
-        effects.push(Effect::Reply(accepted));
-        if let Some(reasons) = review {
-            let requested = EventKind::ReviewRequested {
+        let Some(reasons) = review else {
+            let accepted = ServerMsg::Accepted {
+                req,
                 claim,
-                reasons: reasons.clone(),
+                queue_position,
             };
-            effects.push(self.event(now_ms, requested));
-            effects.push(Effect::Reply(ServerMsg::ReviewRequired { claim, reasons }));
-        }
+            effects.push(Effect::Reply(accepted));
+            return effects;
+        };
+        let requested = EventKind::ReviewRequested {
+            claim,
+            reasons: reasons.clone(),
+        };
+        effects.push(self.event(now_ms, requested));
+        effects.push(Effect::Reply(ServerMsg::ReviewRequired { claim, reasons }));
         effects
     }
 
@@ -1335,6 +1382,9 @@ fn is_commit_sha(commit: &str) -> bool {
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
+
+/// The longest `note` a `Review` may carry. The note is untrusted text kept in the event log.
+const MAX_REVIEW_NOTE_BYTES: usize = 1024;
 
 /// The most scope entries one `Claim`, `Amend` or `Submit` may carry.
 const MAX_SCOPES_PER_MESSAGE: usize = 256;
@@ -2404,12 +2454,6 @@ mod tests {
                 race: RaceId(1),
                 claim: ClaimId(1),
             },
-            ClientMsg::Review {
-                req,
-                claim: ClaimId(1),
-                approve: true,
-                note: None,
-            },
         ];
         for msg in messages {
             let effects = c.handle(&agent("b"), msg.clone(), NOW);
@@ -3335,8 +3379,7 @@ mod tests {
         handle_at(c, who, submit_msg(claim, fence, touched), NOW)
     }
 
-    /// The position in the `Accepted` reply, which comes first; a flagged submission is also
-    /// answered with `ReviewRequired`.
+    /// The position in the `Accepted` reply, the only reply to an unflagged submission.
     fn accepted_position(effects: &[Effect], claim: ClaimId) -> u32 {
         let ServerMsg::Accepted {
             req,
@@ -3595,7 +3638,13 @@ mod tests {
             sc(sym("src/deep/x.rs", "f"), Mode::EditSignature),
         ];
         let effects = submit(&mut c, "a", a, fence, touched);
-        assert_eq!(accepted_position(&effects, a), 1);
+        assert!(
+            matches!(
+                replies(&effects)[..],
+                [ServerMsg::ReviewRequired { claim, .. }] if *claim == a
+            ),
+            "covered, so not Uncovered; a signature change is held for review: {effects:?}"
+        );
         let (b, b_fence) = grant(&mut c, "b", vec![sc(file("lib/x.rs"), Mode::EditBody)]);
         let outside = submit(
             &mut c,
@@ -3693,11 +3742,14 @@ mod tests {
         };
         let effects = handle_at(&mut c, "b", msg, NOW);
         // A challenged assumption is also a reason for review (invariant 12).
-        assert_eq!(
-            kinds(&effects),
-            ["log", "log", "notify", "reply", "log", "reply"]
+        assert_eq!(kinds(&effects), ["log", "log", "notify", "log", "reply"]);
+        assert!(
+            matches!(
+                replies(&effects)[..],
+                [ServerMsg::ReviewRequired { claim, .. }] if *claim == b
+            ),
+            "{effects:?}"
         );
-        assert_eq!(accepted_position(&effects, b), 1);
         let expected: Challenge = (
             holder,
             Assumption {
@@ -5345,7 +5397,14 @@ mod tests {
             return;
         }
         m.active[idx].submitted = true;
-        assert_eq!(accepted_position(&effects, claim), m.submitted_count());
+        if matches!(replies(&effects)[..], [ServerMsg::ReviewRequired { .. }]) {
+            assert_eq!(
+                m.active[idx].claim, claim,
+                "held for review, not accepted yet"
+            );
+        } else {
+            assert_eq!(accepted_position(&effects, claim), m.submitted_count());
+        }
         let again = handle_m(c, m, &who, submit_msg(claim, fence, touched));
         assert_refused(&again, ErrorCode::AlreadySubmitted);
     }
