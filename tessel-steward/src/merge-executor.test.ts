@@ -66,6 +66,10 @@ function respond(argv: string[], world: World): { exitCode: number; stdout: stri
     ["cargo fetch", { exitCode: world.installExit, stdout: "" }],
     ["pnpm install", { exitCode: world.installExit, stdout: "" }],
     ["memory.peak", { exitCode: 0, stdout: "123456\n" }],
+    [
+      "cat /tmp/tessel-peak-rss",
+      { exitCode: 0, stdout: "2048\nCommand exited with non-zero status 1\n98304\n" },
+    ],
     [" push ", { exitCode: world.pushExit, stdout: "" }],
     ["--quiet", { exitCode: 0, stdout: `${COMMIT}\n` }],
   ];
@@ -458,7 +462,12 @@ describe("a repo with a tessel.toml on main", () => {
     const configured = build({ tesselToml: GATE });
     await executeMerge(configured.ctx, configured.env, "demo", request, false);
     expect(configured.starts).toEqual([
-      { image: "toolchain-image", enableInternet: false, instance: "standard-4" },
+      {
+        image: "toolchain-image",
+        enableInternet: false,
+        instance: "standard-4",
+        entrypoint: ["/usr/bin/tini", "--", "sleep", "infinity"],
+      },
     ]);
 
     const legacy = build();
@@ -514,8 +523,9 @@ describe("a repo with a tessel.toml on main", () => {
     const at = (needle: string) => commands.findIndex((command) => command.includes(needle));
     expect(commands).toContain("cargo fetch --locked --offline");
     expect(commands).toContain("pnpm install --offline --frozen-lockfile --ignore-scripts");
-    expect(commands).toContain("cargo test --workspace --locked --offline");
-    expect(commands).toContain("pnpm test");
+    const timed = "/usr/bin/time -f %M -a -o /tmp/tessel-peak-rss";
+    expect(commands).toContain(`${timed} cargo test --workspace --locked --offline`);
+    expect(commands).toContain(`${timed} pnpm test`);
     expect(commands.includes("npm test")).toBe(false);
     expect(at("cargo fetch")).toBeLessThan(at("pnpm install"));
     expect(at("pnpm install")).toBeLessThan(at("cargo test"));
@@ -580,7 +590,7 @@ describe("a repo with a tessel.toml on main", () => {
       result: { step: "test", exitCode: 1 },
     });
     const { result } = outcome as Extract<MergeOutcome, { outcome: "tests_failed" }>;
-    expect(result.measurement?.peakMemoryBytes).toBe(123456);
+    expect(result.measurement?.peakMemoryBytes).toBe(98304 * 1024);
     expect(result.measurement?.wallMs).toBeGreaterThanOrEqual(0);
   });
 

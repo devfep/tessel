@@ -69,7 +69,15 @@ export interface StartOptions {
   image: string;
   enableInternet: false;
   instance: "lite" | GateInstance;
+  entrypoint?: string[];
 }
+
+/**
+ * PID 1 of the toolchain container: `tini` reaps the processes the gate's tests detach (a daemon
+ * whose parent exits is reparented to PID 1). Without a reaper a killed child stays a zombie that
+ * `kill -0` still reports alive, and tests that wait for a process to go never finish.
+ */
+export const TOOLCHAIN_ENTRYPOINT = ["/usr/bin/tini", "--", "sleep", "infinity"];
 
 /**
  * The image and instance for a plan. The `durable_object` scheduling policy defaults to `lite`
@@ -83,6 +91,13 @@ export function startOptions(plan: GatePlan, images: Record<string, string>): St
   if (image === undefined) {
     throw new Error(`The container image "${name}" is not configured`);
   }
-  const instance = plan.kind === "configured" ? plan.config.instance : "lite";
-  return { image, enableInternet: false, instance };
+  if (plan.kind === "configured") {
+    return {
+      image,
+      enableInternet: false,
+      instance: plan.config.instance,
+      entrypoint: TOOLCHAIN_ENTRYPOINT,
+    };
+  }
+  return { image, enableInternet: false, instance: "lite" };
 }

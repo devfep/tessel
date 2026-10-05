@@ -30,7 +30,7 @@ cargo = true
 pnpm = ["tessel-steward"]
 
 [[test]]
-argv = ["cargo", "test", "--workspace", "--locked", "--offline"]
+argv = ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast"]
 
 [[test]]
 dir = "tessel-steward"

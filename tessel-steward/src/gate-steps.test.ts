@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Captured } from "./container-step";
 import {
   BUDGET_EXHAUSTED_MESSAGE,
+  parsePeakRss,
   installCommands,
   parsePeakMemory,
   runWithinBudget,
@@ -138,6 +139,20 @@ describe("parsePeakMemory", () => {
   it("returns null for anything else, since the sandbox ran repo code", () => {
     for (const text of ["", "max\n", "-1", "1e9", "12 34", "9".repeat(16), "1\n\n", " 5"]) {
       expect(parsePeakMemory(text), text).toBeNull();
+    }
+  });
+});
+
+describe("parsePeakRss", () => {
+  it("returns the largest line in bytes and skips GNU time's other notes", () => {
+    expect(parsePeakRss("2048\nCommand exited with non-zero status 1\n98304\n512\n")).toBe(
+      98304 * 1024,
+    );
+  });
+
+  it("returns null when no line is a plain number, since repo code can write the file", () => {
+    for (const text of ["", "\n", "max\n", "-5\n", "1e9\n", "1 2\n", " 7\n", "9".repeat(13)]) {
+      expect(parsePeakRss(text), text).toBeNull();
     }
   });
 });

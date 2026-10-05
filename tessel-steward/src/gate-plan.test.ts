@@ -106,6 +106,7 @@ describe("startOptions", () => {
       image: "toolchain-ref",
       enableInternet: false,
       instance: "standard-4",
+      entrypoint: ["/usr/bin/tini", "--", "sleep", "infinity"],
     });
   });
 
