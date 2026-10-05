@@ -1,0 +1,4 @@
+intent: pin that a deduped verification keeps the oldest challenging merge's baseline
+assumes: none
+rejected: none
+evidence: mutant that keeps the newest baseline now fails the dedupe test
