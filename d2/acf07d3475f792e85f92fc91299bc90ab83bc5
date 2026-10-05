@@ -1,0 +1,4 @@
+intent: the CLI test that chmods a file to 000 cannot pass as root; run the gate as an unprivileged user (image USER node plus exec user)
+assumes: exec accepts user: node on the Containers runtime (ContainerExecOptions.user)
+rejected: editing the CLI test to skip when root (hides a real difference between a lane's Mac and the gate)
+evidence: steward vitest, typecheck, oxlint pass; container rerun below
