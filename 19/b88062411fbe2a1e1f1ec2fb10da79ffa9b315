@@ -1,0 +1,5 @@
+intent: Felix approved a separate swarm coordinator; add [env.swarm] to wrangler.toml (REVIEWERS=swarm-reviewer), refuse the production host and any non-swarm host for --target live, scripted reviewer on by default with --no-reviewer, approvals counted by the reviewer's note
+assumes: wrangler does not inherit vars, bindings, services, secrets or migrations into an env (Wrangler docs, environments page); IDENTITY_SIGNING_KEY shared, tokens carry repo and agent only
+rejected: adding the script to the production REVIEWERS; identifying the script's approvals by agent (ReviewDecided has no agent field)
+evidence: wrangler deploy --env swarm --dry-run lists COORDINATOR, STEWARD, RUN, SHADOW_ENABLED, REVIEWERS=swarm-reviewer; tessel-swarm tests 60 passed
+dogfood: agent harness-1, claim 31 on tessel-swarm/ and wrangler.toml, fence 52
