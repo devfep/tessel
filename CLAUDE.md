@@ -6,11 +6,13 @@ Read `PLAN.md` before starting work: it's the single source of truth for scope, 
 
 ## Layout
 - `src/protocol.rs`: the wire protocol, shared by CLI and coordinator. **Read its invariants (top of file) before changing anything that touches claims, fences, merging or evidence.**
-- `src/lib.rs`: coordinator Worker + Durable Object (Rust, workers-rs).
-- Planned: `tessel-cli/` (Rust, native), `tessel-steward/` (TypeScript Worker: Artifacts, Sandbox, Queues, dashboard).
+- `src/lib.rs`: crate root. `protocol`, `coordinator` and `shell` are public and build natively; `runtime`, `store` and `identity` are the Worker glue, behind the default `runtime` feature (the CLI depends on the crate without it).
+- `src/runtime.rs`: coordinator Worker + Durable Object (Rust, workers-rs).
+- `tessel-cli/`: the native `tessel` CLI and per-worktree daemon (Cargo workspace member). Its tests run the real binary against a fake coordinator driving the real core.
+- Planned: `tessel-steward/` (TypeScript Worker: Artifacts, Sandbox, Queues, dashboard).
 
 ## Commands
-- `cargo test`: protocol tests. Must pass before every commit.
+- `cargo test --workspace`: protocol, coordinator and CLI tests. Must pass before every commit.
 - `npx wrangler dev`: run the coordinator locally on :8787.
 - Get a token: `POST /repos/demo/agents/a1/identity` on the steward with `Authorization: Bearer $STEWARD_ADMIN_TOKEN`, using the same `IDENTITY_SIGNING_KEY` as the coordinator. Then `websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $AGENT_TOKEN"`, and send `{"type":"hello","agent":"a1","base":"abc"}`; expect `welcome`.
 - `npx wrangler deploy`: deploy.
