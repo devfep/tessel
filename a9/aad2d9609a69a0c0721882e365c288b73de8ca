@@ -1,0 +1,4 @@
+intent: close the fix-pass-2 findings: a truncated log read must not adopt dead claims; fences must not go backwards; dot-dot after a symlink
+assumes: the Durable Object handles Hello on the read socket only after the Watch replay finished (it reads storage one message at a time), and sends the Welcome reply before the events it caused (shell::plan_delivery documents that order); the fake coordinator reproduces both. Not verified against the deployed Worker
+rejected: ending the read on quiet, because a stall after an old grant and before its release adopted a dead claim; a different marker, because the orchestrator asked to stop if Hello does not mark the end. Cf is a hand-listed range set from Unicode 16, since std has no category lookup and a crate was not worth it
+evidence: cargo test --workspace 321 passed (35 CLI unit, 42 CLI end-to-end, 244 coordinator); clippy -D warnings clean
