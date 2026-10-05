@@ -12,10 +12,6 @@
 //!   outcome. Submissions are numbered, which fixes their order in the merge queue.
 //! - A shadow claim (invariant 10) is a real claim with an id, a fence and a lease that places no
 //!   lock, so it blocks nobody. Submitting one records it for verification and never queues it.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into the Durable Object in COORD-4")
-)]
 
 use std::collections::{hash_map, BTreeMap, HashMap};
 
@@ -382,7 +378,7 @@ impl Coordinator {
             ClientMsg::JoinRace { req, .. } => not_implemented(Some(req), "JoinRace"),
             ClientMsg::PickWinner { req, .. } => not_implemented(Some(req), "PickWinner"),
             ClientMsg::Review { req, .. } => not_implemented(Some(req), "Review"),
-            ClientMsg::Watch { .. } => not_implemented(None, "Watch"),
+            ClientMsg::Watch { .. } => watch_not_served(),
             ClientMsg::Hello { .. }
             | ClientMsg::Claim { .. }
             | ClientMsg::Amend { .. }
@@ -1140,6 +1136,16 @@ fn not_implemented(req: Option<RequestId>, what: &str) -> Vec<Effect> {
         req,
         ErrorCode::Malformed,
         format!("not implemented yet: {what}"),
+    )]
+}
+
+/// `Watch` is served by the Durable Object shell, which replays the stored log; the core keeps no
+/// events, so a `Watch` that reaches it is a shell bug.
+fn watch_not_served() -> Vec<Effect> {
+    vec![error(
+        None,
+        ErrorCode::Malformed,
+        "watch is served by the Durable Object shell and never reaches the core",
     )]
 }
 
@@ -2014,7 +2020,6 @@ mod tests {
                 approve: true,
                 note: None,
             },
-            ClientMsg::Watch { from_seq: 0 },
         ];
         for msg in messages {
             let effects = c.handle(&agent("b"), msg.clone(), NOW);
@@ -2026,6 +2031,18 @@ mod tests {
             assert!(logged(&effects).is_empty(), "{msg:?}");
             assert_eq!(state(&c), before, "{msg:?}");
         }
+
+        let effects = c.handle(&agent("b"), ClientMsg::Watch { from_seq: 0 }, NOW);
+        let ServerMsg::Error { code, message, .. } = only_reply(&effects) else {
+            panic!("expected Error for watch");
+        };
+        assert_eq!(*code, ErrorCode::Malformed);
+        assert!(
+            message.contains("served by the Durable Object shell"),
+            "{message}"
+        );
+        assert!(logged(&effects).is_empty());
+        assert_eq!(state(&c), before);
     }
 
     // ---- leases, heartbeat, expiry, amend and the wait queue ----

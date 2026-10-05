@@ -12,3 +12,7 @@ class_name = "Coordinator"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Coordinator"]
+
+[vars]
+RUN = "dogfood"
+SHADOW_ENABLED = "false"
