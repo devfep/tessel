@@ -1,0 +1,487 @@
+//! Test support: a fake coordinator that drives the crate's real `Coordinator` core behind a
+//! local WebSocket server, and helpers that run the real `tessel` binary in temp git repos.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::{bail, Context, Result};
+use futures_util::{SinkExt, StreamExt};
+use tempfile::TempDir;
+use tessel_coordinator::coordinator::{Config, Coordinator};
+use tessel_coordinator::protocol::{AgentId, ClientMsg, RunId, ServerMsg};
+use tessel_coordinator::shell::{self, Action, Outbound, Session};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, watch};
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::Message;
+
+pub const REPO: &str = "demo";
+
+fn now_ms() -> u64 {
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+}
+
+struct SocketEntry {
+    id: u64,
+    bound: Option<AgentId>,
+    tx: mpsc::UnboundedSender<ServerMsg>,
+}
+
+struct Inner {
+    core: Mutex<Coordinator>,
+    sockets: Mutex<Vec<SocketEntry>>,
+    received: Mutex<Vec<(AgentId, ClientMsg)>>,
+    tokens: HashMap<String, String>,
+    next_socket: Mutex<u64>,
+}
+
+impl Inner {
+    fn deliver(&self, origin: Option<u64>, outbound: Vec<Outbound>) {
+        let sockets = self
+            .sockets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for item in outbound {
+            match item {
+                Outbound::Reply(msg) => {
+                    if let Some(entry) = sockets.iter().find(|s| Some(s.id) == origin) {
+                        let _ = entry.tx.send(msg);
+                    }
+                }
+                Outbound::Notify { agent, msg } => {
+                    for entry in sockets.iter().filter(|s| s.bound.as_ref() == Some(&agent)) {
+                        let _ = entry.tx.send(msg.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A coordinator on 127.0.0.1 that accepts exactly the tokens it was given.
+pub struct Fake {
+    pub url: String,
+    inner: Arc<Inner>,
+    kill: watch::Sender<u64>,
+}
+
+impl Fake {
+    /// `agents` maps each agent name to the token the fake accepts for it.
+    pub async fn start(lease_ms: u64, agents: &[(&str, &str)]) -> Result<Self> {
+        let config = Config {
+            run: RunId("test".into()),
+            lease_ms,
+            shadow_enabled: false,
+        };
+        let inner = Arc::new(Inner {
+            core: Mutex::new(Coordinator::new(config)?),
+            sockets: Mutex::new(Vec::new()),
+            received: Mutex::new(Vec::new()),
+            tokens: agents
+                .iter()
+                .map(|(agent, token)| ((*token).to_string(), (*agent).to_string()))
+                .collect(),
+            next_socket: Mutex::new(0),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("ws://{}", listener.local_addr()?);
+        let (kill, kill_rx) = watch::channel(0);
+        tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx));
+        tokio::spawn(expire_loop(Arc::clone(&inner)));
+        Ok(Self { url, inner, kill })
+    }
+
+    /// Cuts every open socket without a close frame, as a network failure would.
+    pub fn drop_connections(&self) {
+        self.kill.send_modify(|generation| *generation += 1);
+    }
+
+    /// Sends `msg` to every open socket bound to `agent`.
+    pub fn push(&self, agent: &str, msg: ServerMsg) {
+        let notify = Outbound::Notify {
+            agent: AgentId(agent.into()),
+            msg,
+        };
+        self.inner.deliver(None, vec![notify]);
+    }
+
+    /// Every message `agent` has sent, in order.
+    pub fn received(&self, agent: &str) -> Vec<ClientMsg> {
+        let log = self
+            .inner
+            .received
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        log.iter()
+            .filter(|(who, _)| who.0 == agent)
+            .map(|(_, msg)| msg.clone())
+            .collect()
+    }
+}
+
+async fn expire_loop(inner: Arc<Inner>) {
+    loop {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let effects = {
+            let mut core = inner
+                .core
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            core.expire(now_ms())
+        };
+        let (_, outbound) = shell::split_effects(effects);
+        inner.deliver(None, outbound);
+    }
+}
+
+async fn accept(listener: TcpListener, inner: Arc<Inner>, kill: watch::Receiver<u64>) {
+    while let Ok((stream, _)) = listener.accept().await {
+        tokio::spawn(serve(stream, Arc::clone(&inner), kill.clone()));
+    }
+}
+
+async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<u64>) {
+    // Only a drop requested after this socket opened may close it.
+    kill.borrow_and_update();
+    let verified: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&verified);
+    let tokens = inner.tokens.clone();
+    #[expect(
+        clippy::result_large_err,
+        reason = "the handshake callback fixes this signature"
+    )]
+    let check = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+        let expected = format!("/repo/{REPO}/ws");
+        let bearer = request
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        let agent = bearer.and_then(|token| tokens.get(token));
+        match agent {
+            Some(agent) if request.uri().path() == expected => {
+                *seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(AgentId(agent.clone()));
+                Ok(response)
+            }
+            Some(_) | None => {
+                let mut refusal = ErrorResponse::new(Some("unauthorized".to_string()));
+                *refusal.status_mut() = StatusCode::UNAUTHORIZED;
+                Err(refusal)
+            }
+        }
+    };
+    let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, check).await else {
+        return;
+    };
+    let Some(agent) = verified.lock().ok().and_then(|v| v.clone()) else {
+        return;
+    };
+    let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
+    let id = {
+        let mut next = inner
+            .next_socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *next += 1;
+        *next
+    };
+    inner
+        .sockets
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(SocketEntry {
+            id,
+            bound: None,
+            tx,
+        });
+    let mut session = Session {
+        verified: Some(agent),
+        ..Session::default()
+    };
+    loop {
+        tokio::select! {
+            _ = kill.changed() => break,
+            outgoing = rx.recv() => {
+                let Some(msg) = outgoing else { break };
+                let Ok(text) = serde_json::to_string(&msg) else { break };
+                if socket.send(Message::text(text)).await.is_err() {
+                    break;
+                }
+            }
+            frame = socket.next() => match frame {
+                Some(Ok(Message::Text(text))) => {
+                    if let Some(parsed) = handle_text(&inner, id, &mut session, &text) {
+                        if parsed.close {
+                            break;
+                        }
+                    }
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            },
+        }
+    }
+    close_socket(&inner, id, &session);
+}
+
+struct Handled {
+    close: bool,
+}
+
+fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Option<Handled> {
+    let msg = match shell::parse_client_msg(text) {
+        Ok(msg) => msg,
+        Err(fault) => {
+            inner.deliver(Some(id), vec![Outbound::Reply(fault.reply())]);
+            return None;
+        }
+    };
+    match shell::decide(session, &msg) {
+        Action::Reject(reply) => inner.deliver(Some(id), vec![Outbound::Reply(reply)]),
+        Action::RejectAndClose(reply) => {
+            inner.deliver(Some(id), vec![Outbound::Reply(reply)]);
+            return Some(Handled { close: true });
+        }
+        Action::Watch { .. } => {}
+        Action::Call { agent } => {
+            inner
+                .received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((agent.clone(), msg.clone()));
+            let effects = {
+                let mut core = inner
+                    .core
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                core.handle(&agent, msg, now_ms())
+            };
+            let (_, outbound) = shell::split_effects(effects);
+            if let Some(bound) = shell::bind_on_welcome(session, &agent, &outbound) {
+                *session = bound;
+                let mut sockets = inner
+                    .sockets
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
+                    entry.bound.clone_from(&session.agent);
+                }
+            }
+            inner.deliver(Some(id), outbound);
+        }
+    }
+    None
+}
+
+fn close_socket(inner: &Inner, id: u64, session: &Session) {
+    let others_bound = {
+        let mut sockets = inner
+            .sockets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sockets.retain(|s| s.id != id);
+        session
+            .agent
+            .as_ref()
+            .is_some_and(|agent| sockets.iter().any(|s| s.bound.as_ref() == Some(agent)))
+    };
+    let Some(agent) = session.agent.as_ref().filter(|_| !others_bound) else {
+        return;
+    };
+    let effects = {
+        let mut core = inner
+            .core
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        core.disconnect(agent, now_ms())
+    };
+    let (_, outbound) = shell::split_effects(effects);
+    inner.deliver(None, outbound);
+}
+
+// ---------- agents: real git repos running the real binary ----------
+
+/// One agent's worktree: a temp git repo with two source files and its own `tessel` config.
+pub struct Agent {
+    pub name: String,
+    pub token: String,
+    pub dir: TempDir,
+    url: String,
+}
+
+impl Agent {
+    pub fn new(fake: &Fake, name: &str, token: &str) -> Result<Self> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src"))?;
+        std::fs::write(root.join("src/a.rs"), "pub fn a() {}\n")?;
+        std::fs::write(root.join("src/b.rs"), "pub fn b() {}\n")?;
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@example.test"],
+            vec!["config", "user.name", "Test"],
+            vec!["add", "src"],
+            vec!["commit", "-q", "-m", "initial"],
+        ] {
+            git(root, &args)?;
+        }
+        Ok(Self {
+            name: name.into(),
+            token: token.into(),
+            dir,
+            url: fake.url.clone(),
+        })
+    }
+
+    pub fn root(&self) -> PathBuf {
+        self.dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| self.dir.path().to_path_buf())
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tessel"));
+        command
+            .args(args)
+            .current_dir(self.dir.path())
+            .env("TESSEL_COORDINATOR", &self.url)
+            .env("TESSEL_REPO", REPO)
+            .env("TESSEL_AGENT", &self.name)
+            .env("TESSEL_TOKEN", &self.token)
+            .stdin(Stdio::null());
+        command
+    }
+
+    /// Runs `tessel args...` and waits for it to finish.
+    pub fn tessel(&self, args: &[&str]) -> Result<Done> {
+        let output = self.command(args).output().context("cannot run tessel")?;
+        Ok(Done::from(output))
+    }
+
+    /// Runs `tessel args...` with `stdin` as its standard input.
+    pub fn tessel_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Done> {
+        use std::io::Write;
+        let mut child = self
+            .command(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut pipe) = child.stdin.take() {
+            pipe.write_all(stdin.as_bytes())?;
+        }
+        Ok(Done::from(child.wait_with_output()?))
+    }
+
+    /// Starts the daemon and requires it to come online.
+    pub fn start(&self, intent: &str) -> Result<()> {
+        let done = self.tessel(&["start", intent])?;
+        if done.code != 0 {
+            bail!(
+                "start failed ({}): {}{}",
+                done.code,
+                done.stdout,
+                done.stderr
+            );
+        }
+        Ok(())
+    }
+
+    /// The hook JSON Claude Code would send for `tool` editing `path`.
+    pub fn hook(&self, tool: &str, key: &str, path: &str) -> Result<Done> {
+        let event = serde_json::json!({
+            "tool_name": tool,
+            "tool_input": { key: path },
+            "cwd": self.dir.path(),
+        });
+        self.tessel_with_stdin(&["hook", "pre-edit"], &event.to_string())
+    }
+
+    /// `tessel status --json`, parsed.
+    pub fn status(&self) -> Result<serde_json::Value> {
+        let done = self.tessel(&["status", "--json"])?;
+        Ok(serde_json::from_str(&done.stdout)?)
+    }
+
+    pub fn held_claims(&self) -> Result<usize> {
+        let status = self.status()?;
+        Ok(status["state"]["claims"].as_array().map_or(0, Vec::len))
+    }
+
+    /// Everything under `.tessel/` as text, for scanning.
+    pub fn tessel_files(&self) -> Result<String> {
+        let mut all = String::new();
+        for entry in std::fs::read_dir(self.root().join(".tessel"))? {
+            let path = entry?.path();
+            if path.is_file() {
+                all.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+        Ok(all)
+    }
+}
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        // Best effort: a failed test must not leave a daemon behind.
+        let _ = self.command(&["stop"]).output();
+    }
+}
+
+pub struct Done {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl From<Output> for Done {
+    fn from(output: Output) -> Self {
+        Self {
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+}
+
+impl Done {
+    pub fn all(&self) -> String {
+        format!("{}{}", self.stdout, self.stderr)
+    }
+}
+
+pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git").arg("-C").arg(dir).args(args).output()?;
+    if !output.status.success() {
+        bail!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Polls `check` every 25 ms for up to `limit`, returning the first `Some`.
+pub async fn eventually<T>(
+    limit: Duration,
+    mut check: impl FnMut() -> Result<Option<T>>,
+) -> Result<T> {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if let Some(found) = check()? {
+            return Ok(found);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            bail!("condition not met within {limit:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}

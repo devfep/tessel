@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "tessel-cli"]
+resolver = "2"
+
 [package]
 name = "tessel-coordinator"
 version = "0.1.0"
