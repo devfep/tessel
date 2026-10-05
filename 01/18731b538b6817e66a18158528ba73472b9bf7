@@ -1,0 +1,4 @@
+intent: a coordinator head in the work's history but older than the start commit no longer wins, so the lane is not charged with work between that head and its start
+assumes: head and start diverged inside the history keep the head (neither is newer)
+rejected: lead's literal condition (!anc(start,work) || anc(start,head)), which would switch to the start commit for diverged pairs and lose the merged-trunk preference
+evidence: cargo test --workspace 751 passed 0 failed; new test fails on 3448ad0; mutant removing the start_is_newer guard killed; clippy and rustfmt clean
