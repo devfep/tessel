@@ -1,0 +1,4 @@
+intent: detect half-open coordinator links and stop advancing the local lease expiry on queued heartbeats
+assumes: the coordinator's WebSocket layer answers pings with pongs (verified against the deployed coordinator by the lane's own daemon, see report)
+rejected: a protocol heartbeat ack (frozen protocol; any inbound frame after a ping serves as proof)
+evidence: cargo test --workspace 771 passed 0 failed; clippy -D warnings clean on touched targets; 4 new liveness tests fail on old code except the healthy-link guard; mutants M1-M4 killed
