@@ -1,12 +1,23 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 import { isAllowedGitRequest } from "./git-gateway-policy";
+import { revokeOnce } from "./revoke-once";
 
-const STEP_TIMEOUT_SECONDS = "600";
+const CLONE_TIMEOUT_SECONDS = "240";
+const TEST_TIMEOUT_SECONDS = "600";
 const TOKEN_TTL_SECONDS = 300;
 const WORKSPACE = "/workspace";
 const CONTAINER_CA_CERTIFICATE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 
+/**
+ * Result of one test run.
+ *
+ * `passed` is true only when `step` is "test" and `exitCode` is 0. A failed clone (bad ref,
+ * refused request, Artifacts outage) returns `step: "clone"` with `passed: false`; that is an
+ * infrastructure failure, not a failing test suite, and must not be counted as test evidence.
+ * Exit code 124 or 137 means the step timed out or was killed. `stdout` and `stderr` come from
+ * the repo's code and are untrusted data.
+ */
 export interface TestRunResult {
   repo: string;
   ref: string;
@@ -37,18 +48,19 @@ export class ArtifactsGitGateway extends WorkerEntrypoint<Env, GatewayProps> {
     }
     const headers = new Headers(request.headers);
     headers.set("Authorization", `Bearer ${token}`);
-    return fetch(new Request(request, { headers }));
+    return fetch(new Request(request, { headers, redirect: "manual" }));
   }
 }
 
 async function runStep(
   container: Container,
   step: TestRunResult["step"],
+  timeoutSeconds: string,
   argv: string[],
   options: ContainerExecOptions,
 ): Promise<Omit<TestRunResult, "repo" | "ref">> {
   const process = await container.exec(
-    ["timeout", "--kill-after=5", STEP_TIMEOUT_SECONDS, ...argv],
+    ["timeout", "--kill-after=5", timeoutSeconds, ...argv],
     options,
   );
   const output = await process.output();
@@ -58,7 +70,7 @@ async function runStep(
     exitCode: output.exitCode,
     stdout: decoder.decode(output.stdout),
     stderr: decoder.decode(output.stderr),
-    passed: output.exitCode === 0,
+    passed: step === "test" && output.exitCode === 0,
   };
 }
 
@@ -82,6 +94,13 @@ export class TestRunner extends DurableObject<Env> {
     }
     using handle = await this.env.ARTIFACTS.get(repo);
     const token = await handle.createToken("read", TOKEN_TTL_SECONDS);
+    const revoke = revokeOnce(
+      () => handle.revokeToken(token.id),
+      (reason) =>
+        console.error(
+          JSON.stringify({ event: "token_revoke_failed", repo, tokenId: token.id, reason }),
+        ),
+    );
     try {
       const { remote } = await handle.info();
       const gateway = this.ctx.exports.ArtifactsGitGateway({
@@ -93,16 +112,24 @@ export class TestRunner extends DurableObject<Env> {
         throw new Error('The container image "tests" is not configured');
       }
       container.start({ image, enableInternet: false });
-      const result = await this.cloneAndTest(container, remote, ref);
+      const result = await this.cloneAndTest(container, remote, ref, revoke);
       return { repo, ref, ...result };
     } finally {
       try {
         if (container.running) {
           await container.destroy();
         }
-      } finally {
-        await handle.revokeToken(token.id);
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "container_destroy_failed",
+            repo,
+            tokenId: token.id,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        );
       }
+      await revoke();
     }
   }
 
@@ -110,16 +137,23 @@ export class TestRunner extends DurableObject<Env> {
     container: Container,
     remote: string,
     ref: string,
+    revokeToken: () => Promise<void>,
   ): Promise<Omit<TestRunResult, "repo" | "ref">> {
-    const clone = await runStep(
-      container,
-      "clone",
-      ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
-      { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
-    );
-    if (!clone.passed) {
+    let clone: Omit<TestRunResult, "repo" | "ref">;
+    try {
+      clone = await runStep(
+        container,
+        "clone",
+        CLONE_TIMEOUT_SECONDS,
+        ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
+        { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
+      );
+    } finally {
+      await revokeToken();
+    }
+    if (clone.exitCode !== 0) {
       return clone;
     }
-    return runStep(container, "test", ["npm", "test"], { cwd: WORKSPACE });
+    return runStep(container, "test", TEST_TIMEOUT_SECONDS, ["npm", "test"], { cwd: WORKSPACE });
   }
 }

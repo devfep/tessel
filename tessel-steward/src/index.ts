@@ -81,7 +81,7 @@ function runRoute(env: Env, route: Route): Promise<Response> {
       return forkRepo(env, route.repo, route.fork);
     case "token":
       return mintWriteToken(env, route.repo);
-    case "test":
+    case "test-run":
       return runTests(env, route.repo);
   }
 }

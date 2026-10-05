@@ -2,7 +2,7 @@ export type Route =
   | { kind: "create"; repo: string }
   | { kind: "fork"; repo: string; fork: string }
   | { kind: "token"; repo: string }
-  | { kind: "test"; repo: string };
+  | { kind: "test-run"; repo: string };
 
 export function matchRoute(pathname: string): Route | undefined {
   const [root, repo, action, fork, ...rest] = pathname.split("/").filter(Boolean);
@@ -16,7 +16,7 @@ export function matchRoute(pathname: string): Route | undefined {
     return { kind: "token", repo };
   }
   if (action === "test-runs" && fork === undefined) {
-    return { kind: "test", repo };
+    return { kind: "test-run", repo };
   }
   if (action === "forks" && fork !== undefined) {
     return { kind: "fork", repo, fork };

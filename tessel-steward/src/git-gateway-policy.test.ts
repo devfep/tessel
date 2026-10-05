@@ -61,6 +61,9 @@ describe("isAllowedGitRequest", () => {
       "GET",
       `${REMOTE}/../other.git/info/refs?service=git-upload-pack`,
     ],
+    ["a trailing slash on info/refs", "GET", `${REMOTE}/info/refs/?service=git-upload-pack`],
+    ["a trailing slash on git-upload-pack", "POST", `${UPLOAD_PACK}/`],
+    ["a double slash in the repo path", "POST", `${HOST}/git/tessel//demo.git/git-upload-pack`],
     ["the remote root", "GET", REMOTE],
   ])("denies %s", (_label, method, url) => {
     expect(allowed(method, url)).toBe(false);
