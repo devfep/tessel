@@ -805,6 +805,13 @@ async fn the_hook_blocks_when_the_configuration_is_invalid_or_unreadable() -> Re
 
     std::fs::write(&config, "")?;
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000))?;
+    if std::fs::read(&config).is_ok() {
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
+        eprintln!(
+            "this process can read a mode-000 file (root or CAP_DAC_OVERRIDE), so the unreadable case can't be set up here"
+        );
+        return Ok(());
+    }
     let started = a1.tessel(&["start", "never"])?;
     let done = a1.hook("Write", "file_path", "src/new.rs")?;
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;

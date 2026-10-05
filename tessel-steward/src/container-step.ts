@@ -14,6 +14,7 @@ import {
   type StepOutcome,
 } from "./run-steps";
 import { KILL_AFTER_SECONDS, STEP_SECONDS, isTimedOut } from "./step-budget";
+import { redactTokens } from "./redact";
 import { captureTail } from "./tail-capture";
 import type { GateConfig } from "./tessel-config";
 
@@ -34,6 +35,26 @@ export interface Captured {
 }
 
 /**
+ * Starts a process. The runtime rejects a process it cannot start with a bare "internal error;
+ * reference = ..." (for example a `user` that is not `uid:gid`), which says neither which step
+ * nor why, so the rejection is rethrown naming the step.
+ */
+async function startExec(
+  container: Container,
+  label: string,
+  args: Parameters<Container["exec"]>,
+): Promise<ExecProcess> {
+  try {
+    return await container.exec(...args);
+  } catch (error) {
+    const reason = redactTokens(error instanceof Error ? error.message : String(error));
+    throw new Error(`The ${label} step could not be started in the container: ${reason}`, {
+      cause: error,
+    });
+  }
+}
+
+/**
  * Runs `argv` in the container under `timeout`, keeping the last 256 KiB of each stream.
  *
  * @param label Names the command in the error thrown when the container gives no output streams.
@@ -46,10 +67,10 @@ export async function execCaptured(
   argv: string[],
   options: ContainerExecOptions,
 ): Promise<Captured> {
-  const process = await container.exec(
+  const process = await startExec(container, label, [
     ["timeout", `--kill-after=${KILL_AFTER_SECONDS}`, timeoutSeconds, ...argv],
     options,
-  );
+  ]);
   const { stdout, stderr } = process;
   if (stdout === null || stderr === null) {
     throw new Error(`The ${label} step has no output streams`);
@@ -101,12 +122,13 @@ export const TOOLCHAIN_ENV: Record<string, string> = {
 };
 
 /**
- * The user every command of a configured gate runs as, git included. It is not root: some tests
- * rely on file permissions, which root ignores, and repo code should not hold more rights than
- * it needs. The image owns `/workspace`, the cargo home, the target directory and the pnpm store
- * for this user.
+ * The user every command of a configured gate runs as, git included: `uid:gid` of the image's
+ * `node` user. The runtime accepts only numeric ids (a name makes `exec` reject with an internal
+ * error), and with the `durable_object` scheduling policy the ids only set the owner of the files
+ * a process creates: they are not a privilege boundary. The image owns `/workspace`, the cargo
+ * home, the target directory and the pnpm store for this user.
  */
-export const TOOLCHAIN_USER = "node";
+export const TOOLCHAIN_USER = "1000:1000";
 
 /** The `exec` options that select the user of `plan`: none for a legacy plan, which is root. */
 export function userOptions(plan: GatePlan): { user?: string } {

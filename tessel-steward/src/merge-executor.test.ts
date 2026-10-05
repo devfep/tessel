@@ -468,12 +468,12 @@ describe("a repo with a tessel.toml on main", () => {
     ]);
   });
 
-  it("runs every command of a configured gate, git included, as the unprivileged user", async () => {
+  it("runs every command of a configured gate, git included, as uid:gid 1000:1000", async () => {
     const configured = build({ tesselToml: GATE });
     await executeMerge(configured.ctx, configured.env, "demo", request, false);
     const repoCommands = configured.execUsers.filter(({ command }) => !command.startsWith("cat "));
     expect(repoCommands.length).toBeGreaterThan(10);
-    expect(repoCommands.filter(({ user }) => user !== "node")).toEqual([]);
+    expect(repoCommands.filter(({ user }) => user !== "1000:1000")).toEqual([]);
 
     const legacy = build();
     await executeMerge(legacy.ctx, legacy.env, "demo", request, false);

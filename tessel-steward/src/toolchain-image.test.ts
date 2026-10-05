@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { TOOLCHAIN_ENV, WORKSPACE } from "./container-step";
+import { TOOLCHAIN_ENV, TOOLCHAIN_USER, WORKSPACE, execCaptured } from "./container-step";
 import { TOOLCHAIN_IMAGE } from "./gate-plan";
 
 const steward = (name: string) => join(import.meta.dirname, "..", name);
@@ -23,6 +23,23 @@ function finalEnv(): Record<string, string> {
 }
 
 describe("the toolchain image", () => {
+  it("runs commands as numeric uid:gid, the only form the runtime accepts", () => {
+    expect(TOOLCHAIN_USER).toMatch(/^\d+:\d+$/);
+    expect(dockerfile).toContain("--chown=node:node");
+  });
+
+  it("names the step when the runtime cannot start a process, and redacts tokens", async () => {
+    const container = {
+      exec: async () => {
+        throw new Error("internal error; reference = abc art_v1_secret");
+      },
+    } as unknown as Container;
+    const failure = execCaptured(container, "clone", "60", ["git", "clone"], {});
+    await expect(failure).rejects.toThrow("The clone step could not be started");
+    await expect(failure).rejects.not.toThrow("art_v1_secret");
+    await expect(failure).rejects.toThrow("internal error; reference = abc");
+  });
+
   it("sets the environment the steward repeats on every command", () => {
     const env = finalEnv();
     for (const [key, value] of Object.entries(TOOLCHAIN_ENV)) {
