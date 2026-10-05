@@ -1,0 +1,4 @@
+intent: mutant removing the blob size guard survived; pin it with a blob whose bytes must not be read
+assumes: none
+rejected: deleting the guard (it avoids decoding a large blob)
+evidence: vitest 515 pass; mutant rerun below
