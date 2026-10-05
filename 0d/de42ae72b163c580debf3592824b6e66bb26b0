@@ -1,0 +1,4 @@
+intent: fix pass 1 for review CLI: zeros base never head, only not-a-repo falls back, subdirectory root-config test
+assumes: all-zeros hello base is never a real commit id
+rejected: none
+evidence: cargo test --workspace 558 pass; clippy -D warnings, fmt, wasm build clean; mutants for zeros head, swallowed errors, cwd config each fail the new tests
