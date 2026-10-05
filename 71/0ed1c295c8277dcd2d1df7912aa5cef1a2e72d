@@ -1,0 +1,4 @@
+intent: tessel review works outside a repo or without a commit
+assumes: coordinator adopts a hello base as head only when it has none; a held submission implies one is set
+rejected: reusing resolve_commit's hard failure for review, it needs a checkout the reviewer lacks
+evidence: cargo test --workspace 555 pass; clippy -D warnings, fmt clean; 2 new review tests fail on the old command
