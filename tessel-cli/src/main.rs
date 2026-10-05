@@ -109,20 +109,42 @@ impl From<ModeArg> for Mode {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Claude Code lets a tool run when its hook exits with anything but 2, so the pre-edit hook
+    // reports every failure as 2.
+    let failure = match cli.command {
+        Command::Hook {
+            action: HookAction::PreEdit,
+        } => hook::EXIT_BLOCK,
+        Command::Start { .. }
+        | Command::Claim { .. }
+        | Command::Status { .. }
+        | Command::Inbox { .. }
+        | Command::Release { .. }
+        | Command::Stop
+        | Command::Hook {
+            action: HookAction::Install,
+        }
+        | Command::Daemon { .. } => 1,
+    };
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(runtime) => runtime,
-        Err(e) => return fail(&anyhow::Error::new(e).context("cannot start the async runtime")),
+        Err(e) => {
+            return fail(
+                &anyhow::Error::new(e).context("cannot start the async runtime"),
+                failure,
+            )
+        }
     };
     match runtime.block_on(commands::run(cli.command)) {
         Ok(code) => code,
-        Err(e) => fail(&e),
+        Err(e) => fail(&e, failure),
     }
 }
 
-fn fail(error: &anyhow::Error) -> ExitCode {
+fn fail(error: &anyhow::Error, code: u8) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "tessel: error: {error:#}");
-    ExitCode::from(1)
+    ExitCode::from(code)
 }

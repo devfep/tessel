@@ -1,5 +1,5 @@
 //! The JSON-lines protocol between CLI commands and the per-worktree daemon, over the Unix
-//! socket `.tessel/sock`. One request and one reply per connection.
+//! socket named by `Worktree::sock`. One request and one reply per connection.
 
 use std::path::Path;
 use std::time::Duration;

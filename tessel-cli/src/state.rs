@@ -47,6 +47,8 @@ pub struct State {
     pub summary: String,
     pub task_ref: Option<String>,
     pub base: String,
+    /// Where the daemon listens; outside `.tessel/` because worktree paths can be long.
+    pub socket: String,
     pub connection: Connection,
     pub lease_ms: Option<u64>,
     pub last_error: Option<String>,

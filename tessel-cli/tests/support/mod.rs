@@ -470,14 +470,24 @@ fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
 pub struct Agent {
     pub name: String,
     pub token: String,
-    pub dir: TempDir,
+    /// Owns the directory; removed on drop.
+    _dir: TempDir,
+    /// The git worktree: `dir`, or a nested directory of it.
+    path: PathBuf,
+    env: Vec<(String, String)>,
     url: String,
 }
 
 impl Agent {
     pub fn new(fake: &Fake, name: &str, token: &str) -> Result<Self> {
+        Self::nested(fake, name, token, "")
+    }
+
+    /// Like `new`, with the worktree `nest` levels below the temp directory.
+    pub fn nested(fake: &Fake, name: &str, token: &str, nest: &str) -> Result<Self> {
         let dir = tempfile::tempdir()?;
-        let root = dir.path();
+        let path = dir.path().join(nest);
+        let root = path.as_path();
         std::fs::create_dir_all(root.join("src"))?;
         std::fs::write(root.join("src/a.rs"), "pub fn a() {}\n")?;
         std::fs::write(root.join("src/b.rs"), "pub fn b() {}\n")?;
@@ -493,23 +503,31 @@ impl Agent {
         Ok(Self {
             name: name.into(),
             token: token.into(),
-            dir,
+            _dir: dir,
+            path,
+            env: Vec::new(),
             url: fake.url.clone(),
         })
     }
 
+    /// Sets an environment variable for every command this agent runs.
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
     pub fn root(&self) -> PathBuf {
-        self.dir
-            .path()
+        self.path
             .canonicalize()
-            .unwrap_or_else(|_| self.dir.path().to_path_buf())
+            .unwrap_or_else(|_| self.path.clone())
     }
 
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_tessel"));
         command
             .args(args)
-            .current_dir(self.dir.path())
+            .current_dir(&self.path)
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
             .env("TESSEL_COORDINATOR", &self.url)
             .env("TESSEL_REPO", REPO)
             .env("TESSEL_AGENT", &self.name)
@@ -526,6 +544,11 @@ impl Agent {
 
     /// Runs `tessel args...` with `stdin` as its standard input.
     pub fn tessel_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Done> {
+        self.tessel_with_stdin_bytes(args, stdin.as_bytes())
+    }
+
+    /// Like `tessel_with_stdin`, for input that need not be valid UTF-8.
+    pub fn tessel_with_stdin_bytes(&self, args: &[&str], stdin: &[u8]) -> Result<Done> {
         use std::io::Write;
         let mut child = self
             .command(args)
@@ -534,7 +557,7 @@ impl Agent {
             .stderr(Stdio::piped())
             .spawn()?;
         if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(stdin.as_bytes())?;
+            pipe.write_all(stdin)?;
         }
         Ok(Done::from(child.wait_with_output()?))
     }
@@ -568,7 +591,7 @@ impl Agent {
         let event = serde_json::json!({
             "tool_name": tool,
             "tool_input": { key: path },
-            "cwd": self.dir.path(),
+            "cwd": self.path,
         });
         self.tessel_with_stdin(&["hook", "pre-edit"], &event.to_string())
     }
