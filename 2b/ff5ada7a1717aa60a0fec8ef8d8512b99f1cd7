@@ -1,0 +1,4 @@
+intent: when a claim that denied a shadow claim merges, queue a steward trial of each submitted shadow commit and log DenialVerified
+assumes: a submitted claim cannot be released or expire, so a queued shadow trial always has a live claim
+rejected: reusing Submission.work for shadow commits (the merge queue would pick it up); trying a shadow that submits after the merge (no pre-merge baseline)
+evidence: cargo test --workspace 760 passed; clippy -D warnings clean; fmt clean; wasm build 0 warnings
