@@ -1,0 +1,4 @@
+intent: merge REVIEW-CLI-FIX: tessel review works outside a git repo or without commits; the coordinator never adopts an all-zeros hello base as head
+assumes: Review requires Hello (shell.rs), so the reviewer sends a placeholder base
+rejected: storing the placeholder as head (a reviewer first in a fresh repo would set head to zeros)
+evidence: review Yes after one fix pass (9 reviewer mutants killed). Merged tree: cargo test --workspace 558, clippy 0. Live on coordinator 9c086d45, fresh repo gate15: tessel review from a directory outside any git repo (env config) ran and was refused cleanly (exit 8, claim not active); an agent's hello afterwards set head to its own base, not zeros. Cosmetic: the refusal reads 'untrusted text from agent the coordinator'.
