@@ -131,6 +131,8 @@ struct CoordinatorState {
     next_fence: u64,
     next_seq: u64,
     /// The latest `now_ms` the core has seen. Time never runs backwards inside the core.
+    /// Every call advances it, including calls that return an error: "errors change nothing"
+    /// means no claim, queue, counter or event changes, not the clock (time is not a decision).
     clock_ms: u64,
     claims: BTreeMap<u64, ActiveClaim>,
     /// The Wait queue, oldest first (invariant 2).
@@ -227,14 +229,17 @@ impl Coordinator {
     /// `now_ms` is clamped to the latest time the core has seen, as in `handle`.
     pub fn expire(&mut self, now_ms: u64) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
-        let mut effects = Vec::new();
-        let mut any_expired = false;
-        for (id, expired) in std::mem::take(&mut self.state.claims) {
-            if expired.expires_at_ms > now_ms {
-                self.state.claims.insert(id, expired);
-                continue;
+        let mut due = Vec::new();
+        self.state.claims.retain(|id, claim| {
+            if claim.expires_at_ms > now_ms {
+                return true;
             }
-            any_expired = true;
+            due.push((*id, claim.clone()));
+            false
+        });
+        let mut effects = Vec::new();
+        let any_expired = !due.is_empty();
+        for (id, expired) in due {
             let claim = ClaimId(id);
             remove_locks(&mut self.locks, claim, &expired);
             let reason = ReleaseReason::LeaseExpired;
@@ -2956,6 +2961,29 @@ mod tests {
         true
     }
 
+    /// The lock table as a sorted list of (node, claim id, slot, lock).
+    fn lock_dump(locks: &LockTable) -> Vec<(String, u64, usize, String)> {
+        let mut out = Vec::new();
+        for (node, holders) in locks {
+            for h in holders {
+                out.push((
+                    format!("{node:?}"),
+                    h.claim.0,
+                    h.slot,
+                    format!("{:?}", h.lock),
+                ));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// The live lock table must equal the one rebuilt from the claims.
+    fn assert_locks_match_claims(c: &Coordinator) {
+        let rebuilt = Coordinator::from(c.state.clone());
+        assert_eq!(lock_dump(&c.locks), lock_dump(&rebuilt.locks));
+    }
+
     fn assert_matches_model(c: &Coordinator, m: &Model) {
         assert_eq!(
             c.next_expiry_ms(),
@@ -2981,6 +3009,7 @@ mod tests {
                 if step(&mut c, &mut m, op) {
                     assert_matches_model(&c, &m);
                 }
+                assert_locks_match_claims(&c);
             }
         }
     }
