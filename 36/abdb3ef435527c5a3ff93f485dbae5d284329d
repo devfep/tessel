@@ -1,0 +1,4 @@
+intent: merge CLI-FIX: socket in a short per-user dir; the pre-edit hook is pinned to its worktree root and fails closed on every error
+assumes: Claude Code passes cwd in the hook's stdin and blocks only on exit 2 (hooks docs)
+rejected: a uid probe file (replaced by libc::geteuid)
+evidence: review Yes after one fix pass. Merged tree: cargo test --workspace 348, clippy -D warnings 0. Live on coordinator b3681796 from a 130-byte-deep worktree: both daemons start; grant, denial with quoted intent, reconnect after a redeploy with the claim intact. The installed hook command (with --root), run from cwd /tmp: free file auto-claimed (0), held file blocked (2), /etc/hosts allowed (0); malformed hook input blocked (2).
