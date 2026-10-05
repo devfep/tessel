@@ -1,0 +1,4 @@
+intent: merge-one.sh must leave the sprint branch untouched when the merged tree differs from the merge-tree prediction
+assumes: none
+rejected: checking the tree after committing (the review found the merge stayed in place while the script printed ABORT)
+evidence: shellcheck and shfmt clean; throwaway repo: clean merge commits, conflict aborts with HEAD unchanged, forced tree mismatch aborts with HEAD unchanged and a clean tree
