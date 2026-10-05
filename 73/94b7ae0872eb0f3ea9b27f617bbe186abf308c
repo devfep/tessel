@@ -1,0 +1,4 @@
+intent: fix pass 2 for SUBMIT-1: a merge in flight keeps a watchdog alarm (timeout + 60 s) so recovery does not depend on alarm-retry behaviour; MergeService answers 404 for a missing fork or repo so the coordinator refuses instead of retrying
+assumes: none beyond fix pass 1
+rejected: scheduling nothing while merging (relies on undocumented alarm retry)
+evidence: cargo test --workspace 360 passed (358 + 2); steward 317 passed (315 + 2); clippy, rustfmt, deny licenses, typecheck, oxlint, oxfmt clean; wasm 0 warnings
