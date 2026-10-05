@@ -80,12 +80,26 @@ export async function runWithinBudget(
   return last;
 }
 
-const PEAK_MEMORY_PATTERN = /^[0-9]{1,15}\n?$/;
+const RSS_LINE_PATTERN = /^[0-9]{1,12}$/;
 
 /**
- * Parses the cgroup file `memory.peak`: a decimal byte count. Anything else is null, because
- * the text comes from a sandbox that ran repo code.
+ * Parses the file `/usr/bin/time -f %M -a -o` appends to: one line of kilobytes of maximum
+ * resident set per command, which covers the command's child processes. Other lines (GNU time
+ * also notes a non-zero exit) and anything repo code wrote are ignored. Returns the largest, in
+ * bytes and never more than `capBytes` (the instance's memory), or null when no line is a plain
+ * number.
+ *
+ * The file is written inside the sandbox, and the gate's own code runs as the same uid (and, under
+ * the `durable_object` policy, with root's capabilities), so it can forge any line. The cap only
+ * keeps a forged value physically possible; the result is a measurement, never a pass or fail
+ * input.
  */
-export function parsePeakMemory(text: string): number | null {
-  return PEAK_MEMORY_PATTERN.test(text) ? Number(text.trim()) : null;
+export function parsePeakRss(text: string, capBytes: number): number | null {
+  let peakKilobytes: number | null = null;
+  for (const line of text.split("\n")) {
+    if (RSS_LINE_PATTERN.test(line)) {
+      peakKilobytes = Math.max(peakKilobytes ?? 0, Number(line));
+    }
+  }
+  return peakKilobytes === null ? null : Math.min(peakKilobytes * 1024, capBytes);
 }

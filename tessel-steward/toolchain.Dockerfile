@@ -29,9 +29,11 @@ RUN cargo chef cook --tests --workspace --locked --recipe-path /recipe.json \
 	&& cargo fetch --locked
 
 FROM node:22.23.3-trixie-slim
-# procps provides /bin/kill, which the CLI's tests use to probe their daemons.
+# procps provides /bin/kill, which the CLI's tests use to probe their daemons. time reports each
+# gate command's peak memory (the container exposes no cgroup file). tini is PID 1 and reaps
+# detached processes: without it a killed daemon stays a zombie that `kill -0` still sees.
 RUN apt-get update \
-	&& apt-get install --yes --no-install-recommends ca-certificates git gcc libc6-dev procps \
+	&& apt-get install --yes --no-install-recommends ca-certificates git gcc libc6-dev procps time tini \
 	&& rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/rustup /usr/local/rustup
 # The gate runs as the unprivileged node user, so what it writes to is owned by node.
@@ -52,4 +54,5 @@ COPY --chown=node:node tessel-steward/package.json tessel-steward/pnpm-lock.yaml
 USER node
 RUN cd /tmp/steward-lock && pnpm fetch && rm -rf /tmp/steward-lock
 WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sleep", "infinity"]

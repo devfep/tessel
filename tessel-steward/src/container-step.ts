@@ -2,7 +2,7 @@ import { DEPENDENCY_CHECK_SCRIPT } from "./dependency-check";
 import type { GatePlan } from "./gate-plan";
 import {
   installCommands,
-  parsePeakMemory,
+  parsePeakRss,
   runWithinBudget,
   testCommands,
   type PlannedCommand,
@@ -16,12 +16,11 @@ import {
 import { KILL_AFTER_SECONDS, STEP_SECONDS, isTimedOut } from "./step-budget";
 import { redactTokens } from "./redact";
 import { captureTail } from "./tail-capture";
-import type { GateConfig } from "./tessel-config";
+import { GATE_INSTANCE_MEMORY_BYTES, type GateConfig } from "./tessel-config";
 
 export const WORKSPACE = "/workspace";
 export const CONTAINER_CA_CERTIFICATE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 
-const MEMORY_PEAK_FILE = "/sys/fs/cgroup/memory.peak";
 const MEMORY_PEAK_TIMEOUT_SECONDS = "5";
 const OUTPUT_LIMIT_BYTES = 256 * 1024;
 
@@ -105,6 +104,10 @@ export async function runStep(
   );
 }
 
+/** GNU `time` (installed in the toolchain image) appends each command's max RSS in KB here. */
+export const RSS_FILE = "/tmp/tessel-peak-rss";
+export const TIME_PREFIX = ["/usr/bin/time", "-f", "%M", "-a", "-o", RSS_FILE] as const;
+
 /**
  * The environment of the toolchain image (`toolchain.Dockerfile`), repeated for every command of
  * a configured gate so that it does not depend on how `exec` treats the image's own. A test pins
@@ -149,19 +152,21 @@ function stepFromCaptured(step: StepOutcome["step"], captured: Captured): StepOu
 }
 
 /**
- * Peak memory of the whole container since it started, from the cgroup. Best effort: null when
- * the file is missing or unreadable, because a measurement must never fail a run.
+ * Peak memory of a configured gate's test step: the largest max RSS GNU `time` recorded for any
+ * process of any command, clamped to `capBytes`. It is reported by code inside the gate, so it is
+ * untrusted (see `parsePeakRss`). Best effort: null when unreadable, because a measurement must
+ * never fail a run.
  */
-async function readPeakMemory(container: Container): Promise<number | null> {
+async function readPeakMemory(container: Container, capBytes: number): Promise<number | null> {
   try {
     const read = await execCaptured(
       container,
       "memory",
       MEMORY_PEAK_TIMEOUT_SECONDS,
-      ["cat", MEMORY_PEAK_FILE],
+      ["cat", RSS_FILE],
       {},
     );
-    return read.exitCode === 0 ? parsePeakMemory(read.stdout) : null;
+    return read.exitCode === 0 ? parsePeakRss(read.stdout, capBytes) : null;
   } catch (error) {
     console.warn(
       JSON.stringify({
@@ -173,15 +178,16 @@ async function readPeakMemory(container: Container): Promise<number | null> {
   }
 }
 
-/** Adds the wall time of `run` and the container's peak memory to the outcome it returns. */
+/** Adds the wall time of `run` and the peak memory `peak` reads to the outcome it returns. */
 async function measured(
-  container: Container,
   run: () => Promise<StepOutcome>,
+  peak: () => Promise<number | null>,
 ): Promise<StepOutcome> {
   const started = Date.now();
   const outcome = await run();
   const wallMs = Date.now() - started;
-  return { ...outcome, measurement: { wallMs, peakMemoryBytes: await readPeakMemory(container) } };
+  const peakMemoryBytes = await peak();
+  return { ...outcome, measurement: { wallMs, peakMemoryBytes } };
 }
 
 function runConfigured(
@@ -194,11 +200,17 @@ function runConfigured(
     commands,
     budgetSeconds,
     (command, timeoutSeconds) =>
-      execCaptured(container, step, String(timeoutSeconds), command.argv, {
-        cwd: directory(command.dir),
-        env: TOOLCHAIN_ENV,
-        user: TOOLCHAIN_USER,
-      }),
+      execCaptured(
+        container,
+        step,
+        String(timeoutSeconds),
+        step === "test" ? [...TIME_PREFIX, ...command.argv] : command.argv,
+        {
+          cwd: directory(command.dir),
+          env: TOOLCHAIN_ENV,
+          user: TOOLCHAIN_USER,
+        },
+      ),
     Date.now,
   );
 }
@@ -209,11 +221,13 @@ async function runConfiguredStep(
   step: "install" | "test",
 ): Promise<StepOutcome> {
   if (step === "test") {
-    return measured(container, async () =>
-      stepFromCaptured(
-        "test",
-        await runConfigured(container, "test", testCommands(config), STEP_SECONDS.test),
-      ),
+    return measured(
+      async () =>
+        stepFromCaptured(
+          "test",
+          await runConfigured(container, "test", testCommands(config), STEP_SECONDS.test),
+        ),
+      () => readPeakMemory(container, GATE_INSTANCE_MEMORY_BYTES[config.instance]),
     );
   }
   const captured = await runConfigured(
@@ -231,10 +245,20 @@ async function runConfiguredStep(
 
 async function runLegacyStep(container: Container, step: "install" | "test"): Promise<StepOutcome> {
   if (step === "test") {
-    return measured(container, () =>
-      runStep(container, "test", String(STEP_SECONDS.test - KILL_AFTER_SECONDS), ["npm", "test"], {
-        cwd: WORKSPACE,
-      }),
+    // The legacy gate reports no peak memory: the container exposes no cgroup memory file (the
+    // probe found none) and its image has no GNU time, so `peakMemoryBytes` stays null.
+    return measured(
+      () =>
+        runStep(
+          container,
+          "test",
+          String(STEP_SECONDS.test - KILL_AFTER_SECONDS),
+          ["npm", "test"],
+          {
+            cwd: WORKSPACE,
+          },
+        ),
+      async () => null,
     );
   }
   const check = await runStep(

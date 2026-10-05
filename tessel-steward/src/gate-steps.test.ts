@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { Captured } from "./container-step";
 import {
   BUDGET_EXHAUSTED_MESSAGE,
+  parsePeakRss,
   installCommands,
-  parsePeakMemory,
   runWithinBudget,
   testCommands,
   type PlannedCommand,
 } from "./gate-steps";
-import type { GateConfig } from "./tessel-config";
+import { GATE_INSTANCE_MEMORY_BYTES, type GateConfig } from "./tessel-config";
 
 const CONFIG: GateConfig = {
   instance: "standard-4",
@@ -129,15 +129,27 @@ describe("runWithinBudget", () => {
   });
 });
 
-describe("parsePeakMemory", () => {
-  it("reads a decimal byte count", () => {
-    expect(parsePeakMemory("123456\n")).toBe(123456);
-    expect(parsePeakMemory("0")).toBe(0);
+const CAP = GATE_INSTANCE_MEMORY_BYTES["standard-4"];
+
+describe("parsePeakRss", () => {
+  it("clamps a value above the instance's memory, which only forged code could report", () => {
+    expect(CAP).toBe(12 * 1024 ** 3);
+    expect(parsePeakRss("999999999999\n", CAP)).toBe(CAP);
+    expect(parsePeakRss("999999999999\n", GATE_INSTANCE_MEMORY_BYTES["standard-1"])).toBe(
+      4 * 1024 ** 3,
+    );
+    expect(parsePeakRss("1024\n", CAP)).toBe(1024 * 1024);
   });
 
-  it("returns null for anything else, since the sandbox ran repo code", () => {
-    for (const text of ["", "max\n", "-1", "1e9", "12 34", "9".repeat(16), "1\n\n", " 5"]) {
-      expect(parsePeakMemory(text), text).toBeNull();
+  it("returns the largest line in bytes and skips GNU time's other notes", () => {
+    expect(parsePeakRss("2048\nCommand exited with non-zero status 1\n98304\n512\n", CAP)).toBe(
+      98304 * 1024,
+    );
+  });
+
+  it("returns null when no line is a plain number, since repo code can write the file", () => {
+    for (const text of ["", "\n", "max\n", "-5\n", "1e9\n", "1 2\n", " 7\n", "9".repeat(13)]) {
+      expect(parsePeakRss(text, CAP), text).toBeNull();
     }
   });
 });

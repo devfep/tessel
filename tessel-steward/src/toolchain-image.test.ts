@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { TOOLCHAIN_ENV, TOOLCHAIN_USER, WORKSPACE, execCaptured } from "./container-step";
-import { TOOLCHAIN_IMAGE } from "./gate-plan";
+import { TOOLCHAIN_ENTRYPOINT, TOOLCHAIN_IMAGE } from "./gate-plan";
 
 const steward = (name: string) => join(import.meta.dirname, "..", name);
 const dockerfile = readFileSync(steward("toolchain.Dockerfile"), "utf8");
@@ -47,6 +47,13 @@ describe("the toolchain image", () => {
         expect(env[key], key).toBe(value);
       }
     }
+  });
+
+  it("has GNU time for the peak-memory read and tini as PID 1 to reap detached processes", () => {
+    expect(dockerfile).toMatch(/apt-get install[^\n]*\btime\b/);
+    expect(dockerfile).toMatch(/apt-get install[^\n]*\btini\b/);
+    expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "--"]');
+    expect(TOOLCHAIN_ENTRYPOINT.slice(0, 2)).toEqual(["/usr/bin/tini", "--"]);
   });
 
   it("clones into the workspace directory the steward uses", () => {
