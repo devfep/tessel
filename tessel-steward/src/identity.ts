@@ -1,6 +1,9 @@
 /** How long an identity token lives. */
 export const IDENTITY_TTL_MS = 24 * 60 * 60 * 1000;
 
+export const INVALID_NAME_MESSAGE =
+  "repo and agent must each be 1 to 128 characters of A-Z a-z 0-9 . _ - starting with a letter or digit";
+
 const TOKEN_VERSION = 1;
 const MAX_NAME_LENGTH = 128;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;

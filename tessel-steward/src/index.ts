@@ -1,11 +1,12 @@
-import { IDENTITY_TTL_MS, isValidName, signIdentityToken } from "./identity";
+import { IDENTITY_TTL_MS, INVALID_NAME_MESSAGE, isValidName, signIdentityToken } from "./identity";
 import { parsePushEvent } from "./push-event";
-import { isForkOf, parseMergeRequest } from "./merge-types";
+import { handleMergeRequest } from "./merge-request";
 import { matchRoute, type Route } from "./routes";
 import type { TestRunResult } from "./test-runner";
 import { mintForkWriteToken } from "./token-policy";
 
 export { MergePushGateway, MergeReadGateway } from "./merge-gateway";
+export { MergeService } from "./merge-service";
 export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 
 const AGENT_TOKEN_TTL_SECONDS = 3600;
@@ -15,8 +16,6 @@ const USAGE =
 const NOT_A_FORK_MESSAGE =
   "write tokens are issued only for agent forks; only the steward writes the main repo";
 const TEST_REF = "main";
-const INVALID_NAME_MESSAGE =
-  "repo and agent must each be 1 to 128 characters of A-Z a-z 0-9 . _ - starting with a letter or digit";
 
 const STATUS_BY_ARTIFACTS_CODE: Record<ArtifactsErrorCode, number> = {
   ALREADY_EXISTS: 409,
@@ -85,20 +84,7 @@ async function runTests(env: Env, repo: string): Promise<Response> {
 }
 
 async function mergeFork(env: Env, request: Request, repo: string): Promise<Response> {
-  if (!isValidName(repo)) {
-    return json({ error: INVALID_NAME_MESSAGE }, 400);
-  }
-  const parsed = parseMergeRequest(await request.json().catch(() => null));
-  if (!parsed.ok) {
-    return json({ error: parsed.error }, 400);
-  }
-  const { fork, commit } = parsed.request;
-  using handle = await env.ARTIFACTS.get(fork);
-  if (!isForkOf(repo, await handle.info())) {
-    return json({ error: `${fork} is not a fork of ${repo}` }, 400);
-  }
-  const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
-  return json(await runner.merge(repo, fork, commit), 200);
+  return handleMergeRequest(env, repo, await request.json().catch(() => null));
 }
 
 async function issueIdentity(env: Env, repo: string, agent: string): Promise<Response> {
