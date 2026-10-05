@@ -1,0 +1,4 @@
+intent: cover Outcome::Queued, which a real daemon never returns for an Ensure, with a scripted daemon reply
+assumes: none
+rejected: reaching Queued through a real queued agent (the coordinator refuses its claims instead)
+evidence: mutant Queued->Granted fails the_hook_blocks_when_the_daemon_answers_wrongly; cargo test -p tessel-cli 104 passed
