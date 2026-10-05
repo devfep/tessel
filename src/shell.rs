@@ -1,4 +1,4 @@
-//! Pure helpers for the Durable Object shell in `lib.rs`: everything that can be decided without
+//! Pure helpers for the Durable Object shell in `runtime.rs`: everything that can be decided without
 //! a runtime. The shell only reads storage and sockets, calls these, and does what they say.
 //!
 //! Decisions made here:
