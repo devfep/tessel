@@ -247,11 +247,29 @@ impl Coordinator {
         }
     }
 
-    /// Expire leases on their own, store the result under the hard limit and deliver it. Used by
-    /// the alarm and after a refused client call, so a refusal never leaves expiry un-run.
+    /// The alarm: expire leases on their own, store the result under the hard limit and deliver
+    /// it.
     async fn run_expiry(&self) -> Result<()> {
         self.ensure_loaded().await?;
-        let now_ms = now_ms();
+        self.expire_at(now_ms()).await
+    }
+
+    /// The expiry step that runs before a client message, so the message is judged against the
+    /// state after expiry: a message that frees a lapsed claim and adds as much cannot look like
+    /// no growth. Nothing is written when no lease is due.
+    async fn expire_due(&self, now_ms: u64) -> Result<()> {
+        let due = self
+            .core
+            .borrow()
+            .as_ref()
+            .is_some_and(|core| core.has_due_expiry(now_ms));
+        if !due {
+            return Ok(());
+        }
+        self.expire_at(now_ms).await
+    }
+
+    async fn expire_at(&self, now_ms: u64) -> Result<()> {
         let prepared = self.apply(Work::Plain, |core| core.expire(now_ms))?;
         let applied = self.ready(prepared, "expire leases")?;
         let persisted = self.persist(applied).await?;
@@ -322,17 +340,14 @@ impl Coordinator {
         msg: ClientMsg,
     ) -> Result<()> {
         self.ensure_loaded().await?;
+        let now_ms = now_ms();
+        self.expire_due(now_ms).await?;
         let req = shell::req_of(&msg);
         let work = shell::work_of(&msg);
-        let prepared = self.apply(work, |core| core.handle(&agent, msg, now_ms()))?;
+        let prepared = self.apply(work, |core| core.handle(&agent, msg, now_ms))?;
         let applied = match prepared {
             Prepared::Ready(applied) => applied,
-            Prepared::Refused => {
-                let recovered = self.run_expiry().await;
-                let sent = send(ws, &shell::state_limit_reply(req));
-                recovered?;
-                return sent;
-            }
+            Prepared::Refused => return send(ws, &shell::state_limit_reply(req)),
         };
         let persisted = self.persist(applied).await?;
         let bound = self.bind(ws, session, &agent, &persisted);

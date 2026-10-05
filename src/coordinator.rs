@@ -326,6 +326,14 @@ impl Coordinator {
         effects
     }
 
+    /// Whether `expire(now_ms)` would expire a claim: the shell runs expiry as a step of its own
+    /// before a client message, and skips the step when nothing is due. `now_ms` is clamped to
+    /// the latest time the core has seen, as in `expire`.
+    pub fn has_due_expiry(&self, now_ms: u64) -> bool {
+        let now_ms = now_ms.max(self.state.clock_ms);
+        self.next_expiry_ms().is_some_and(|due| due <= now_ms)
+    }
+
     /// The earliest lease expiry of any unsubmitted claim, for the shell's next alarm.
     pub fn next_expiry_ms(&self) -> Option<u64> {
         self.state
@@ -4176,6 +4184,22 @@ mod tests {
             }
         }
         assert_eq!(granted, vec![ClaimId(2)]);
+    }
+
+    #[test]
+    fn expiry_is_due_exactly_when_expire_would_expire_a_claim() {
+        let mut c = coordinator();
+        assert!(!c.has_due_expiry(NOW + 10 * LEASE), "no claims");
+        let (claim, fence) = grant(&mut c, "a", vec![x_edit()]);
+        for (at, due) in [(NOW, false), (NOW + LEASE - 1, false), (NOW + LEASE, true)] {
+            assert_eq!(c.has_due_expiry(at), due, "{at}");
+            assert_eq!(!c.clone().expire(at).is_empty(), due, "{at}");
+        }
+        submit(&mut c, "a", claim, fence, vec![x_edit()]);
+        assert!(
+            !c.has_due_expiry(NOW + 10 * LEASE),
+            "a submitted claim never expires"
+        );
     }
 
     #[test]

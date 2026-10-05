@@ -1675,6 +1675,61 @@ mod tests {
     }
 
     #[test]
+    fn a_content_message_that_refills_what_expiry_freed_is_refused_after_the_expiry_step() {
+        const LEN: usize = 2_000;
+        let mut core = new_core();
+        let held = |summary: String, path: &str| waiting_msg(1, path, summary);
+        core.handle(&agent("a"), held("x".repeat(LEN), "x.rs"), NOW);
+        let mut probe = core.clone();
+        probe.handle(&agent("f"), held(String::new(), "f.rs"), NOW + 1);
+        let base = serde_json::to_string(&probe).unwrap().len();
+        let filler = "f".repeat(SOFT_ENTRY_BYTES + 100 - base);
+        core.handle(&agent("f"), held(filler, "f.rs"), NOW + 1);
+        core.handle(&agent("f"), ClientMsg::Heartbeat, NOW + 1);
+        let stored = serde_json::to_string(&core).unwrap();
+        assert_eq!(stored.len(), SOFT_ENTRY_BYTES + 100);
+
+        let late = NOW + LEASE_MS;
+        let refill = held("w".repeat(LEN - 2), "y.rs");
+        let size = StoredSize::on_load(Some(&stored));
+
+        let mut together = core.clone();
+        let effects = together.handle(&agent("w"), refill.clone(), late);
+        let (events, _) = split_effects(effects);
+        let entries = persist_entries(&together, &events).unwrap();
+        assert!(
+            entries[0].1.len() <= stored.len(),
+            "the lapsed claim is refilled"
+        );
+        let joint = size.judge(work_of(&refill), &entries);
+        assert_eq!(
+            joint,
+            StoreDecision::Store,
+            "judged with its own expiry it looks like no growth"
+        );
+
+        let mut stepped = core.clone();
+        assert!(stepped.has_due_expiry(late));
+        let effects = stepped.expire(late);
+        let (events, _) = split_effects(effects);
+        let expiry = persist_entries(&stepped, &events).unwrap();
+        assert_eq!(size.judge(Work::Plain, &expiry), StoreDecision::Store);
+        let size = size.on_write(&expiry);
+        assert!(
+            !stepped.has_due_expiry(late),
+            "the message's own lazy expiry is a no-op"
+        );
+        let effects = stepped.handle(&agent("w"), refill.clone(), late);
+        let (events, _) = split_effects(effects);
+        let message = persist_entries(&stepped, &events).unwrap();
+        assert!(message[0].1.len() > SOFT_ENTRY_BYTES);
+        assert_eq!(
+            size.judge(work_of(&refill), &message),
+            StoreDecision::Refuse
+        );
+    }
+
+    #[test]
     fn only_messages_that_add_content_are_judged_by_the_soft_limit() {
         let content = [
             claim("fail", "depend"),
