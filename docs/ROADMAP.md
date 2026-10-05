@@ -58,6 +58,8 @@ COVER-1 closed and reclaimed.
    which stopped being true with REVIEW-1 (a rejected and resubmitted change is requested twice and
    a rejected one never merges). Correct the doc; optionally add `reviews_approved` with
    `#[serde(default)]` if the dashboard needs "merged after approval".
+   Also from the ASSUME-1 review: add `#[serde(default)] commit: Option<CommitId>` to
+   `EventKind::AssumptionVerified`, so the log records which fork commit was tried.
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
