@@ -1287,6 +1287,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessel-swarm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tessel-coordinator",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -131,7 +131,9 @@ the Artifacts binding, never from a fork). Tessel's own is at the repository roo
      root) and deploys.
   2. Merge the change through the steward as usual; its install step now finds the dependencies.
   3. `POST /repos/tessel/test-runs` should answer `step: "test"`, `passed: true`.
-- **Mirror:** `tools/mirror.sh` fast-forwards the Artifacts trunk to GitHub `sprint/build`.
+- **Mirror:** `tools/mirror.sh` pushes the Artifacts trunk (`tessel-dogfood`) to the GitHub branch
+  `artifacts-trunk`, fast-forward only. The first run creates the branch; later runs abort unless
+  the push is a fast-forward. Milestone pull requests go from `artifacts-trunk`.
 
 ## Tests
     cargo test

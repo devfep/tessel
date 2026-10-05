@@ -19,9 +19,38 @@ new_sqlite_classes = ["Coordinator"]
 [vars]
 RUN = "dogfood"
 SHADOW_ENABLED = "false"
-REVIEWERS = "felix"
+REVIEWERS = "felix,orchestrator"
 
 [[services]]
+binding = "STEWARD"
+service = "tessel-steward"
+entrypoint = "MergeService"
+
+# A second deployment for the scripted swarm harness (tessel-swarm), so that its reviewer can
+# approve there and nowhere else. Wrangler does not inherit bindings, vars, services, secrets or
+# migrations into an environment, so each is repeated.
+# Deploy with `npx wrangler deploy --env swarm`.
+[env.swarm]
+name = "tessel-coordinator-swarm"
+
+[env.swarm.secrets]
+required = ["IDENTITY_SIGNING_KEY"]
+
+[[env.swarm.durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+[[env.swarm.migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]
+
+[env.swarm.vars]
+RUN = "swarm"
+SHADOW_ENABLED = "false"
+REVIEWERS = "swarm-reviewer"
+ALLOWED_REPO_PREFIX = "swarm-"
+
+[[env.swarm.services]]
 binding = "STEWARD"
 service = "tessel-steward"
 entrypoint = "MergeService"

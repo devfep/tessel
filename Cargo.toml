@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "tessel-cli"]
+members = [".", "tessel-cli", "tessel-swarm"]
 resolver = "2"
 
 [package]

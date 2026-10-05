@@ -172,6 +172,14 @@ pub fn is_agent_id(agent: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// Whether the Worker serves `repo`. `prefix` is the `ALLOWED_REPO_PREFIX` var: unset or empty
+/// serves every repo; otherwise only repos whose name starts with it. A deployment that shares its
+/// signing key with others sets it, so a token minted for another deployment's repo opens nothing
+/// here.
+pub fn repo_allowed(prefix: Option<&str>, repo: &str) -> bool {
+    prefix.is_none_or(|p| repo.starts_with(p))
+}
+
 /// `SHADOW_ENABLED`: exactly "true" or "false"; unset means false. Anything else is an error.
 fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
     match shadow {
@@ -658,6 +666,20 @@ pub fn agent_to_withdraw(
 mod tests {
     use super::*;
     use crate::protocol::{ClaimId, EventKind, Fence, Intent, Mode, OnConflict, Scope, ScopeClaim};
+
+    #[test]
+    fn repo_prefix_limits_which_repos_a_deployment_serves() {
+        for repo in ["swarm-x", "tessel-dogfood", "demo"] {
+            assert!(repo_allowed(None, repo), "unset serves everything");
+            assert!(repo_allowed(Some(""), repo), "empty serves everything");
+        }
+        assert!(repo_allowed(Some("swarm-"), "swarm-x"));
+        assert!(repo_allowed(Some("swarm-"), "swarm-"));
+        assert!(!repo_allowed(Some("swarm-"), "tessel-dogfood"));
+        assert!(!repo_allowed(Some("swarm-"), "demo"));
+        assert!(!repo_allowed(Some("swarm-"), "my-swarm-x"));
+        assert!(!repo_allowed(Some("swarm-"), "swarm"));
+    }
 
     const NOW: u64 = 1_000;
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Mirror the Artifacts trunk of Tessel to the GitHub branch sprint/build, fast-forward only.
+# Mirror the Artifacts trunk of Tessel to the GitHub branch artifacts-trunk, fast-forward only.
+# The first run creates the branch from the Artifacts trunk (nothing to fast-forward from);
+# every later run aborts unless the push is a fast-forward.
 # Run from a checkout of the GitHub repo, on a machine where `git push origin` is already
 # authorised (the local gh login). No GitHub credential ever goes to Cloudflare.
 #
@@ -8,11 +10,15 @@
 # The steward admin route mints a 10-minute read token for the Artifacts repo. The token is sent
 # in a curl config read from stdin and in git's environment, never in an argument list, and the
 # script prints only shas and fixed messages.
+#
+# Test seam: MIRROR_ALLOW_LOCAL_REMOTES=1 (exactly 1) skips the GitHub and https checks on the
+# two remotes so a test can use local bare repos, and warns on stderr. Never set it in real use.
 set -euo pipefail
 
-readonly ARTIFACTS_REPO="${ARTIFACTS_REPO:-tessel}"
+readonly ARTIFACTS_REPO="${ARTIFACTS_REPO:-tessel-dogfood}"
 readonly TRUNK_REF="refs/heads/main"
-readonly MIRROR_BRANCH="sprint/build"
+readonly MIRROR_BRANCH="artifacts-trunk"
+readonly MIRROR_REF="refs/heads/${MIRROR_BRANCH}"
 readonly STAGING_REF="refs/tessel/artifacts-trunk"
 readonly HTTPS_PATTERN='^https://'
 readonly GITHUB_PATTERN='^(https://github\.com/|git@github\.com:)'
@@ -35,7 +41,11 @@ command -v jq >/dev/null || fail "jq is required"
 
 cd "$(git rev-parse --show-toplevel)"
 origin_url="$(git remote get-url origin)"
-[[ "$origin_url" =~ $GITHUB_PATTERN ]] || fail "origin is not a GitHub remote"
+if [ "${MIRROR_ALLOW_LOCAL_REMOTES:-}" != 1 ]; then
+  [[ "$origin_url" =~ $GITHUB_PATTERN ]] || fail "origin is not a GitHub remote"
+else
+  echo "WARNING: MIRROR_ALLOW_LOCAL_REMOTES=1: GitHub and https checks are off" >&2
+fi
 
 cleanup() {
   git update-ref -d "$STAGING_REF" 2>/dev/null || true
@@ -50,7 +60,9 @@ minted="$(
 remote="$(jq -er '.remote' <<<"$minted")" || fail "the steward's answer has no remote"
 token="$(jq -er '.token' <<<"$minted")" || fail "the steward's answer has no token"
 unset minted
-[[ "$remote" =~ $HTTPS_PATTERN ]] || fail "the steward's remote is not an https URL"
+if [ "${MIRROR_ALLOW_LOCAL_REMOTES:-}" != 1 ]; then
+  [[ "$remote" =~ $HTTPS_PATTERN ]] || fail "the steward's remote is not an https URL"
+fi
 
 export GIT_TERMINAL_PROMPT=0
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
@@ -60,22 +72,36 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
 unset token
 
 new="$(git rev-parse --verify "${STAGING_REF}^{commit}")"
-git fetch --quiet --no-tags origin "+refs/heads/${MIRROR_BRANCH}:refs/remotes/origin/${MIRROR_BRANCH}" ||
-  fail "fetching origin/${MIRROR_BRANCH} failed"
-old="$(git rev-parse --verify "refs/remotes/origin/${MIRROR_BRANCH}^{commit}")"
-echo "artifacts trunk ${new:0:12}  origin/${MIRROR_BRANCH} ${old:0:12}"
 
-if [ "$new" = "$old" ]; then
-  echo "already up to date"
-  exit 0
-fi
-git merge-base --is-ancestor "$old" "$new" ||
-  fail "not a fast-forward: origin/${MIRROR_BRANCH} has commits the Artifacts trunk lacks"
+# Exit 0: the branch exists. Exit 2: it does not. Anything else is a failure to ask.
+ls_status=0
+git ls-remote --exit-code --quiet origin "$MIRROR_REF" >/dev/null || ls_status=$?
+case "$ls_status" in
+0)
+  git fetch --quiet --no-tags origin "+${MIRROR_REF}:refs/remotes/origin/${MIRROR_BRANCH}" ||
+    fail "fetching origin/${MIRROR_BRANCH} failed"
+  old="$(git rev-parse --verify "refs/remotes/origin/${MIRROR_BRANCH}^{commit}")"
+  echo "artifacts trunk ${new:0:12}  origin/${MIRROR_BRANCH} ${old:0:12}"
+  if [ "$new" = "$old" ]; then
+    echo "already up to date"
+    exit 0
+  fi
+  git merge-base --is-ancestor "$old" "$new" ||
+    fail "not a fast-forward: origin/${MIRROR_BRANCH} has commits the Artifacts trunk lacks"
+  range="${old:0:12}..${new:0:12}"
+  ;;
+2)
+  echo "artifacts trunk ${new:0:12}  origin/${MIRROR_BRANCH} does not exist"
+  echo "first run: creating ${MIRROR_BRANCH} from the Artifacts trunk (no fast-forward check)"
+  range="new branch at ${new:0:12}"
+  ;;
+*) fail "could not check origin for ${MIRROR_BRANCH} (git ls-remote exit ${ls_status})" ;;
+esac
 
 if [ -n "$dry_run" ]; then
-  git push --dry-run origin "${new}:refs/heads/${MIRROR_BRANCH}"
-  echo "dry run: would mirror ${old:0:12}..${new:0:12}"
+  git push --dry-run origin "${new}:${MIRROR_REF}"
+  echo "dry run: would mirror ${range}"
 else
-  git push origin "${new}:refs/heads/${MIRROR_BRANCH}"
-  echo "mirrored ${old:0:12}..${new:0:12}"
+  git push origin "${new}:${MIRROR_REF}"
+  echo "mirrored ${range}"
 fi
