@@ -1,0 +1,5 @@
+intent: mutant B1 survived because the not-swarm rule also refuses production; assert the by-name message
+assumes: none
+rejected: none
+evidence: B1 rerun
+dogfood: agent harness-1, claim 31
