@@ -1,0 +1,5 @@
+intent: wrap the comment and three test literals that broke the 100-character limit
+assumes: none
+rejected: none
+evidence: awk length check clean on both files, fmt --check ok, 141 bin tests pass, clippy clean
+dogfood: not claimed, as instructed for a wrap-only change
