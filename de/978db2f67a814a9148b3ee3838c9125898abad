@@ -1,0 +1,4 @@
+intent: fix pass 1: steward-flow docs (fork up to trunk, reviewer note, inbox pointer, who merges), seam only when exactly 1 and warns
+assumes: ReviewDecided names no reviewer (SKILL.md), so the --note carries who decided
+rejected: none
+evidence: test-mirror.sh and test-ext.sh pass; mutants set -x, old -z seam check and no staging cleanup each fail a case; shellcheck and shfmt clean
