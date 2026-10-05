@@ -5,16 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 11:49 EDT.
+**As of:** 2026-10-05 12:24 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the CLI-2b merge `3fb687b` plus this STATE commit; the GitHub trunk at
-`29aa8fe` (pull request 1).
+**Tip:** `sprint/build` at the ASSUME-1 merge `4a4644e` plus this STATE commit; the GitHub trunk
+at `29aa8fe` (pull request 1).
 **Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
 steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
 v0 ran on `tessel-dogfood` (agent `cli-2`, claims 1–19, every edit claimed first; record in the
 CLI-2 merge note). Limit, stated honestly: subagents share the parent session's hook settings, so
 the pre-edit hook does not enforce claims for lanes; they claim by hand following the skill.
-Next per PLAN §9 Oct 8: assumptions end to end and races.
+PLAN §9 Oct 8 "assumptions end to end" is delivered and checked live (ASSUME-1); races remain.
 
 **Felix's rulings, 2026-10-05 07:00 EDT** (the four items pending at FREEZE), all now delivered
 except ruling 3, which lands with the steward merge path:
@@ -32,18 +32,16 @@ is recorded with the first Tessel commit merged by the steward.
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** ASSUME-1 (Sonnet, `.claude/worktrees/assume-1`): review "With fixes" (no baseline:
-a work-in-progress fork that already fails would count as a confirmed break); fix pass 1 running.
-CLI-2b closed and reclaimed.
+**Agents:** none live. DOGFOOD-1 is next.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `9c086d45`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `2a7e965d`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
-- `tessel-steward` version `c43ad948` (merge executor checks coverage), with the `TestRunner` container; admin routes need
+- `tessel-steward` version `d340c69a` (merge executor checks coverage; trial runs for assumptions), with the `TestRunner` container; admin routes need
   `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/merges` runs the merge
   executor (STEWARD-1). `POST /repos/<repo>/agents/<agent>/identity`
   mints a 24 h agent token.
@@ -97,11 +95,10 @@ attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZ
 two Workers are approved.
 
 **Next actions:**
-1. Re-review ASSUME-1; merge; deploy; live-check a challenged assumption verified as broken.
-2. DOGFOOD-1, starting with a measured probe in a scratch `standard-4` container (cold and warm
-   build time and peak memory against the 600 s test timeout). Research findings are in the
-   DOGFOOD-1 task text.
-3. REVIEW-CLI-FIX, then the milestone pull request to the GitHub trunk.
+1. DOGFOOD-1, starting with a measured probe in a scratch `standard-4` container (cold and warm
+   build time and peak memory) against the time budget recorded in the task.
+2. RACE-1 (PLAN §9 Oct 8): races with deterministic ranking; one scripted race at minimum (§11).
+3. Milestone pull request to the GitHub trunk (full gate, `/code-review`, `/security-review`).
 
 ## Tasks
 
@@ -207,6 +204,12 @@ two Workers are approved.
   commit, because it reads HEAD for its hello. A reviewer needs no checkout; send a fixed base.
   CLOSED 2026-10-05 at `125cb3a` (review "Yes" after one fix pass; the coordinator now ignores an
   all-zeros base). Live: review from outside any repo is refused cleanly; head stays real.
+- [x] **ASSUME-1** — PLAN §9 Oct 8: challenged assumptions verified after the challenging merge
+  by a steward trial (no push, no write token) of the assuming agent's work on the pre-merge and
+  post-merge trunk; a break counts only when the baseline was clean.
+  CLOSED 2026-10-05 at `4a4644e` (review "Yes" after three fix passes). Workspace tests 595, steward
+  445. Live, with the real CLI: a1 assumed `greet() returns 1`; a2's body edit was flagged at risk,
+  held for review, approved, merged; `assumption_verified` = `tests_failed` for a1's claim.
 - [ ] **DOGFOOD-1** — dogfood v1 (PLAN §7, §9 Oct 8; Felix approved): the steward runs Tessel's
   own gate. Test image with the Rust toolchain (wasm target) and pnpm; an install step for repos
   with dependencies (lockfile only, scripts disabled); per-repo test command; Tessel imported into
