@@ -1,0 +1,4 @@
+intent: a bad REVIEWERS value no longer stops the DO from loading (it logs and leaves nobody able to review); a submission without a stored req gets Accepted with req 0
+assumes: console_error output is enough to notice a bad REVIEWERS
+rejected: falling back to the reviewer's req (collides with the reviewer's own request ids); failing ensure_loaded (stops every repo)
+evidence: cargo test --workspace 404 passed (402 + 2); clippy clean
