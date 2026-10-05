@@ -1,0 +1,4 @@
+intent: fix three submit integration tests that expected file-level touched scopes
+assumes: none
+rejected: none
+evidence: cargo test --workspace 536 passed; dogfood: claim 20 fences 21-31 on tessel-dogfood
