@@ -373,7 +373,8 @@ impl TrialReport {
     /// The steward then runs the commit once and reports that run as `before`, so only `before`
     /// is read; a report that stopped early has only `after`. There is no baseline to compare
     /// against, so a failure is the commit's own.
-    /// - `Clean`: `Some(true)`. `TestsFailed` (a timeout included): `Some(false)`.
+    /// - `Clean`: `Some(true)`. `TestsFailed`: `Some(false)`. `Timeout`: `None`, not `Some(false)`: a
+    ///   step that ran out of its time budget says nothing about the commit (rule 7).
     /// - A conflict with main, nothing to test, a commit that is not on the fork, an unreachable
     ///   main or a refused request: `None`. The tests did not run, so neither answer is true.
     /// - Infrastructure: `Infrastructure`, retried.
@@ -388,6 +389,7 @@ impl TrialReport {
             | TrialOutcome::NothingToTest {}
             | TrialOutcome::CommitNotInFork {}
             | TrialOutcome::MainUnreachable {}
+            | TrialOutcome::Timeout {}
             | TrialOutcome::Refused => TestsVerdict::Decided(None),
             TrialOutcome::Clone {}
             | TrialOutcome::GitFailed {}
@@ -932,6 +934,7 @@ mod tests {
             TrialOutcome::NothingToTest {},
             TrialOutcome::CommitNotInFork {},
             TrialOutcome::MainUnreachable {},
+            TrialOutcome::Timeout {},
             TrialOutcome::Refused,
         ] {
             assert_eq!(
