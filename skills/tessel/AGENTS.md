@@ -17,8 +17,12 @@ worktree:
 1. Claim before editing: `tessel claim <scope>... [--mode depend|edit-body|edit-signature|create]`.
    Your claims join one claim (a later claim amends it), so one `tessel submit` covers a mixed
    change; `--new` makes a separate claim.
-   Scopes are `dir/`, `path/file`, or `path/file::qualified::name`. The hook also claims each file
-   you edit. It cannot see edits made through shell commands, so claim those files first.
+   Scopes are `dir/`, `path/file`, or `path/file::qualified::name`. The hook also claims for you
+   before each edit: the one symbol you edit (`edit-body`, or `edit-signature` if you touch its
+   signature), else the file; a rewrite with `Write` or an edit that adds a symbol claims the file
+   too (with `create`). Past 4 symbols of one file it claims the file instead. A denied symbol
+   claim blocks the edit; it is never retried as a file claim. The hook cannot see edits made
+   through shell commands, so claim those files first.
 2. Declare what you rely on but do not own: `--assume "<behaviour>"` (repeatable).
 3. Run `tessel inbox` between steps and before finishing. Act on lines marked `!`:
    `at_risk`, `assumption_challenged`, `base_moved`, `lease_expired`, `wait_withdrawn`, `denied`,
@@ -35,15 +39,20 @@ worktree:
    `<repo>--<agent>` and run `tessel submit --evidence "<tests run and result>"` (repeat
    `--evidence`; at least one is required; `--claim <id>` if you hold several; optional
    `--rejected "<approach>::<reason>"`). One claim must cover every file the commit changed
-   (`create` for added files, `edit-body` for modified, `edit-signature` for deleted or renamed,
-   which also needs review). The merge result arrives in `tessel inbox` (`merged`,
+   (`create` for added files and added symbols, `edit-body` for modified ones, `edit-signature` for
+   a changed signature or a deleted, removed or renamed file or symbol, which also needs review;
+   `submit` scopes edits to the changed symbols). The merge result arrives in `tessel inbox` (`merged`,
    `submit_rejected`, `uncovered`, `review_required`). A submitted claim cannot be released: keep
    the daemon running until the merge result arrives. Otherwise `tessel release <id>`; `tessel
    release` with no id, and `tessel stop`, release every unsubmitted claim, and `stop` names any
    it could not release.
 7. `tessel status --json` gives machine-readable state.
+8. Reviewers only: `tessel review <claim-id> --approve|--reject [--note "<reason>"]` decides a
+   submission held for review. Exit 0 means the event log holds the decision; 8 the coordinator
+   refused it; 9 it is not in the log (look at `tessel inbox` before retrying).
 
 Exit codes: 0 ok, 1 error or refused, 2 hook blocked the edit, 3 denied, 4 queued, 5 submit not
-covered by the claim, 6 submit refused by the coordinator, 7 submit held for review.
+covered by the claim, 6 submit refused by the coordinator, 7 submit held for review, 8 review
+refused, 9 review not confirmed.
 
 Full guide: `skills/tessel/SKILL.md`.

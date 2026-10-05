@@ -61,6 +61,8 @@ pub enum Lose {
     ClaimReply,
     /// The coordinator never sees the release; the socket closes.
     Release,
+    /// The coordinator never sees the review; the socket closes.
+    Review,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -168,6 +170,12 @@ impl Fake {
         for (origin, outbound) in held {
             self.inner.deliver(Some(origin), outbound);
         }
+    }
+
+    /// Names the agents who may review (the core's `REVIEWERS`).
+    pub fn set_reviewers(&self, reviewers: &[&str]) {
+        let ids = reviewers.iter().map(|id| AgentId((*id).into())).collect();
+        lock(&self.inner.core).set_reviewers(ids);
     }
 
     /// Makes the coordinator send `ReviewRequired` before `Accepted`, as REVIEW-1 will.
@@ -509,6 +517,8 @@ fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
         Lose::ClaimReply
     } else if let ClientMsg::Release { .. } = msg {
         Lose::Release
+    } else if let ClientMsg::Review { .. } = msg {
+        Lose::Review
     } else {
         return None;
     };
@@ -645,6 +655,18 @@ impl Agent {
     pub fn hook(&self, tool: &str, key: &str, path: &str) -> Result<Done> {
         let root = self.root().display().to_string();
         self.hook_at(tool, key, path, &self.path, &["--root", &root])
+    }
+
+    /// The hook JSON for `tool` with a full `tool_input`, as Claude Code sends an `Edit` or a
+    /// `Write`.
+    pub fn hook_input(&self, tool: &str, input: &serde_json::Value) -> Result<Done> {
+        let root = self.root().display().to_string();
+        let event = serde_json::json!({
+            "tool_name": tool,
+            "tool_input": input,
+            "cwd": self.path,
+        });
+        self.tessel_with_stdin(&["hook", "pre-edit", "--root", &root], &event.to_string())
     }
 
     /// The hook JSON with no `cwd` field, run from `run_from`, which may be outside the worktree.

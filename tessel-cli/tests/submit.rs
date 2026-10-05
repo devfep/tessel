@@ -20,7 +20,7 @@ use serde_json::Value;
 use support::{eventually, git, Agent, Fake};
 use tessel_coordinator::protocol::{
     ClaimId, ClientMsg, CommitId, DecisionRecord, Fence, Mode, RequestId, ReviewReason, Scope,
-    ScopeClaim, ServerMsg,
+    ScopeClaim, ServerMsg, SymbolId,
 };
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -116,7 +116,16 @@ async fn a_covered_submission_is_accepted_and_the_claim_shows_as_submitted() -> 
         anyhow::bail!("not a submit");
     };
     assert_eq!(fork_commit, &CommitId(sha));
-    assert_eq!(touched, &vec![file("src/a.rs", Mode::EditBody)]);
+    assert_eq!(
+        touched,
+        &vec![ScopeClaim {
+            scope: Scope::Symbol(SymbolId {
+                path: "src/a.rs".into(),
+                qualified_name: "a::a".into()
+            }),
+            mode: Mode::EditBody
+        }]
+    );
     assert_eq!(decisions.evidence, vec!["cargo test passed (3 tests)"]);
     assert_eq!(decisions.rejected.len(), 1);
     assert_eq!(decisions.rejected[0].approach, "global lock");

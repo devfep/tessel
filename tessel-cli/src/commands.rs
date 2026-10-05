@@ -15,8 +15,10 @@ use crate::config::Config;
 use crate::daemon;
 use crate::hook::{self, Installed};
 use crate::render::{
-    escape, needs_attention, notice_text, outcome_text, status_text, submit_text, uncovered_text,
+    escape, needs_attention, notice_text, outcome_text, quote_untrusted, status_text, submit_text,
+    uncovered_text,
 };
+use crate::review::{self, Decision};
 use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request, SubmitOutcome};
 use crate::scope;
 use crate::state::{self, Connection, State};
@@ -35,6 +37,12 @@ const EXIT_UNCOVERED: u8 = 5;
 const EXIT_SUBMIT_REFUSED: u8 = 6;
 /// Exit code of `submit` when the coordinator holds it for human review.
 const EXIT_REVIEW_REQUIRED: u8 = 7;
+
+/// Exit code of `review` when the coordinator refused the decision (not a reviewer, the claim is
+/// not awaiting review, ...).
+const EXIT_REVIEW_REFUSED: u8 = 8;
+/// Exit code of `review` when no refusal came but the decision is not in the event log.
+const EXIT_REVIEW_UNCONFIRMED: u8 = 9;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -67,6 +75,12 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             rejected,
             commit,
         } => submit(&cwd, claim, &evidence, &rejected, commit.as_deref()).await,
+        Command::Review {
+            claim,
+            approve,
+            reject: _,
+            note,
+        } => review(&cwd, claim, approve, note).await,
         Command::Stop => stop(&cwd).await,
         Command::Hook {
             action: HookAction::PreEdit { root },
@@ -330,8 +344,8 @@ async fn submit(
     }
     if touched.iter().any(|t| t.mode == Mode::EditSignature) {
         say(
-            "note: the commit deletes or renames files (edit-signature); the coordinator holds \
-             such a change for human review, and review approval is not built yet\n",
+            "note: the commit changes signatures or deletes or renames files (edit-signature); the \
+             coordinator holds such a change for human review before it merges\n",
         );
     }
     let request = Request::Submit {
@@ -352,6 +366,44 @@ async fn submit(
         SubmitOutcome::ReviewRequired { .. } => EXIT_REVIEW_REQUIRED,
         SubmitOutcome::Refused { .. } => EXIT_SUBMIT_REFUSED,
     }))
+}
+
+/// A reviewer's decision on a held submission. Exit 0 only when the event log holds it.
+async fn review(
+    cwd: &Path,
+    claim: u64,
+    approve: bool,
+    note: Option<String>,
+) -> anyhow::Result<ExitCode> {
+    review::check_note(note.as_deref())?;
+    let worktree = Worktree::discover(cwd)?;
+    let config = load_config(&worktree)?;
+    let base = submit::resolve_commit(&worktree.root, None)?;
+    let verdict = if approve { "approved" } else { "rejected" };
+    let decision = review::decide(&config, &base, ClaimId(claim), approve, note).await?;
+    match decision {
+        Decision::Confirmed => {
+            say(&format!(
+                "claim {claim} {verdict}: the decision is in the event log\n"
+            ));
+            Ok(ExitCode::SUCCESS)
+        }
+        Decision::Refused { message, .. } => {
+            complain(&format!(
+                "tessel: claim {claim} was not {verdict}; the coordinator refused.\n{}",
+                quote_untrusted("the coordinator", &message)
+            ));
+            Ok(ExitCode::from(EXIT_REVIEW_REFUSED))
+        }
+        Decision::Unconfirmed => {
+            complain(&format!(
+                "tessel: claim {claim}: the coordinator sent no refusal, but the {verdict} \
+                 decision is not in the event log. It may still land; check with `tessel \
+                 inbox`, and do not assume it failed (a second try is refused if it landed).\n"
+            ));
+            Ok(ExitCode::from(EXIT_REVIEW_UNCONFIRMED))
+        }
+    }
 }
 
 async fn stop(cwd: &Path) -> anyhow::Result<ExitCode> {

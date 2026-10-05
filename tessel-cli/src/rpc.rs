@@ -29,10 +29,10 @@ pub enum Request {
         #[serde(default)]
         new: bool,
     },
-    /// Make sure a held claim covers this repo-relative file for editing (or creating) it.
+    /// Make sure held claims cover these scopes. Where the agent would hold too many symbols of
+    /// one file, the daemon claims the file instead (see `plan::escalate`).
     Ensure {
-        path: String,
-        create: bool,
+        wanted: Vec<ScopeClaim>,
     },
     Release {
         claim: Option<ClaimId>,
