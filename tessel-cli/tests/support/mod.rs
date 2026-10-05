@@ -122,6 +122,7 @@ pub struct Fake {
     pub url: String,
     inner: Arc<Inner>,
     kill: watch::Sender<(u64, bool)>,
+    mute: watch::Sender<u64>,
 }
 
 impl Fake {
@@ -154,9 +155,15 @@ impl Fake {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
         let (kill, kill_rx) = watch::channel((0, false));
-        tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx));
+        let (mute, mute_rx) = watch::channel(0);
+        tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx, mute_rx));
         tokio::spawn(expire_loop(Arc::clone(&inner)));
-        Ok(Self { url, inner, kill })
+        Ok(Self {
+            url,
+            inner,
+            kill,
+            mute,
+        })
     }
 
     /// Keeps the reply to the next `Claim` or `Amend` back until `release_held`.
@@ -205,6 +212,12 @@ impl Fake {
     /// Cuts every open socket without a close frame, as a network failure would.
     pub fn drop_connections(&self) {
         self.kill.send_modify(|kill| *kill = (kill.0 + 1, false));
+    }
+
+    /// Leaves every open socket open but stops reading from it and writing to it, as a link that
+    /// went half-open would: no reply, no pong, no close frame. New connections are unaffected.
+    pub fn go_silent(&self) {
+        self.mute.send_modify(|epoch| *epoch += 1);
     }
 
     /// Refuses (or accepts again) new connections with HTTP 503. Open sockets are unaffected.
@@ -291,15 +304,32 @@ async fn expire_loop(inner: Arc<Inner>) {
     }
 }
 
-async fn accept(listener: TcpListener, inner: Arc<Inner>, kill: watch::Receiver<(u64, bool)>) {
+async fn accept(
+    listener: TcpListener,
+    inner: Arc<Inner>,
+    kill: watch::Receiver<(u64, bool)>,
+    mute: watch::Receiver<u64>,
+) {
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(serve(stream, Arc::clone(&inner), kill.clone()));
+        tokio::spawn(serve(
+            stream,
+            Arc::clone(&inner),
+            kill.clone(),
+            mute.clone(),
+        ));
     }
 }
 
-async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<(u64, bool)>) {
-    // Only a drop requested after this socket opened may close it.
+async fn serve(
+    stream: TcpStream,
+    inner: Arc<Inner>,
+    mut kill: watch::Receiver<(u64, bool)>,
+    mut mute: watch::Receiver<u64>,
+) {
+    // Only a drop or a mute requested after this socket opened may affect it.
     kill.borrow_and_update();
+    mute.borrow_and_update();
+    let mut silent = false;
     let verified: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
     let seen = Arc::clone(&verified);
     let tokens = inner.tokens.clone();
@@ -367,21 +397,20 @@ async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<(
     };
     loop {
         tokio::select! {
+            _ = mute.changed() => silent = true,
             _ = kill.changed() => {
-                let (_, main_only) = *kill.borrow_and_update();
-                let reading = lock(&inner.sockets).iter().any(|s| s.id == id && s.watching);
-                if !(main_only && reading) {
+                if !keeps_open(&inner, id, *kill.borrow_and_update()) {
                     break;
                 }
             }
-            outgoing = rx.recv() => {
+            outgoing = rx.recv(), if !silent => {
                 let Some(msg) = outgoing else { break };
                 let Ok(text) = serde_json::to_string(&msg) else { break };
                 if socket.send(Message::text(text)).await.is_err() {
                     break;
                 }
             }
-            frame = socket.next() => match frame {
+            frame = socket.next(), if !silent => match frame {
                 Some(Ok(Message::Text(text))) => {
                     if let Some(parsed) = handle_text(&inner, id, &mut session, &text) {
                         if parsed.close {
@@ -395,6 +424,15 @@ async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<(
         }
     }
     close_socket(&inner, id, &session);
+}
+
+/// Whether a drop request spares this socket: only a request for the main connections does, and
+/// only for a socket that is reading the event log.
+fn keeps_open(inner: &Inner, id: u64, (_, main_only): (u64, bool)) -> bool {
+    let reading = lock(&inner.sockets)
+        .iter()
+        .any(|s| s.id == id && s.watching);
+    main_only && reading
 }
 
 struct Handled {

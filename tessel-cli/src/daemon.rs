@@ -82,6 +82,11 @@ enum Incoming {
         generation: u64,
         log: Result<LogRead, String>,
     },
+    /// Something arrived from the coordinator after the heartbeat written at `sent_ms`.
+    HeartbeatAnswered {
+        generation: u64,
+        sent_ms: u64,
+    },
 }
 
 /// What the event-log read returned.
@@ -91,8 +96,18 @@ pub(crate) struct LogRead {
     pub(crate) complete: bool,
 }
 
+/// What the daemon asks the socket task to write.
+enum Outgoing {
+    Msg(ClientMsg),
+    /// A heartbeat, with a ping behind it. The link is dead if nothing at all arrives within
+    /// `silence_limit`.
+    Heartbeat {
+        silence_limit: Duration,
+    },
+}
+
 struct Conn {
-    out: mpsc::UnboundedSender<ClientMsg>,
+    out: mpsc::UnboundedSender<Outgoing>,
     task: JoinHandle<()>,
 }
 
@@ -401,7 +416,7 @@ impl Daemon {
             base: CommitId(self.state.base.clone()),
             protocol: PROTOCOL_VERSION,
         };
-        let _ = out_tx.send(hello);
+        let _ = out_tx.send(Outgoing::Msg(hello));
         self.conn = Some(Conn { out: out_tx, task });
         self.log("connected; hello sent");
     }
@@ -418,19 +433,25 @@ impl Daemon {
 
     fn send(&mut self, msg: ClientMsg) -> bool {
         match &self.conn {
-            Some(conn) => conn.out.send(msg).is_ok(),
+            Some(conn) => conn.out.send(Outgoing::Msg(msg)).is_ok(),
             None => false,
         }
     }
 
     fn send_heartbeat(&mut self) {
         self.next_heartbeat = Instant::now() + self.heartbeat_every;
-        if !self.send(ClientMsg::Heartbeat) {
-            return;
-        }
-        let renewed = now_ms().saturating_add(self.state.lease_ms.unwrap_or(0));
+        let Some(conn) = &self.conn else { return };
+        // Half the lease: a link silent for that long cannot have kept the claims alive.
+        let silence_limit = self.heartbeat_every * 3 / 2;
+        let _ = conn.out.send(Outgoing::Heartbeat { silence_limit });
+    }
+
+    /// Moves the local expiry only on proof of delivery, measured from when the heartbeat was
+    /// written: the coordinator renewed no earlier than that.
+    fn on_heartbeat_answered(&mut self, sent_ms: u64) {
+        let renewed = sent_ms.saturating_add(self.state.lease_ms.unwrap_or(0));
         for held in &mut self.state.claims {
-            held.expires_at_ms = renewed;
+            held.expires_at_ms = held.expires_at_ms.max(renewed);
         }
         self.persist();
     }
@@ -475,7 +496,16 @@ impl Daemon {
             Incoming::Snapshot { generation, log } if generation == self.generation => {
                 self.on_snapshot(log);
             }
-            Incoming::Msg { .. } | Incoming::Closed { .. } | Incoming::Snapshot { .. } => {}
+            Incoming::HeartbeatAnswered {
+                generation,
+                sent_ms,
+            } if generation == self.generation => {
+                self.on_heartbeat_answered(sent_ms);
+            }
+            Incoming::Msg { .. }
+            | Incoming::Closed { .. }
+            | Incoming::Snapshot { .. }
+            | Incoming::HeartbeatAnswered { .. } => {}
         }
     }
 
@@ -1806,35 +1836,73 @@ fn is_connection_of(event: &Event, agent: &AgentId) -> bool {
     }
 }
 
+/// The oldest heartbeat written and not yet followed by any frame from the coordinator.
+struct Unanswered {
+    sent_ms: u64,
+    deadline: Instant,
+}
+
 /// Owns the socket: forwards frames to the daemon and daemon messages to the socket. Ends when
-/// the socket closes or the daemon drops its sender, and then reports `Closed`.
+/// the socket closes, the daemon drops its sender or the link goes silent after a heartbeat, and
+/// then reports `Closed`.
 async fn socket_task(
     mut socket: Socket,
-    mut out_rx: mpsc::UnboundedReceiver<ClientMsg>,
+    mut out_rx: mpsc::UnboundedReceiver<Outgoing>,
     in_tx: mpsc::UnboundedSender<Incoming>,
     generation: u64,
 ) {
+    let mut unanswered: Option<Unanswered> = None;
     let reason = loop {
+        let silent_from = unanswered.as_ref().map(|heartbeat| heartbeat.deadline);
         tokio::select! {
             frame = socket.next() => {
+                if let Some(Ok(message)) = &frame {
+                    if !matches!(message, Message::Close(_)) {
+                        if let Some(Unanswered { sent_ms, .. }) = unanswered.take() {
+                            let _ = in_tx.send(Incoming::HeartbeatAnswered { generation, sent_ms });
+                        }
+                    }
+                }
                 if let Some(reason) = forward_frame(frame, &in_tx, generation) {
                     break reason;
                 }
             },
-            outgoing = out_rx.recv() => {
-                if let Some(msg) = outgoing {
+            outgoing = out_rx.recv() => match outgoing {
+                Some(Outgoing::Msg(msg)) => {
                     let Ok(text) = serde_json::to_string(&msg) else { continue };
                     if let Err(e) = socket.send(Message::text(text)).await {
                         break format!("send failed: {e}");
                     }
-                } else {
+                }
+                Some(Outgoing::Heartbeat { silence_limit }) => {
+                    let sent_ms = now_ms();
+                    if let Err(e) = write_heartbeat(&mut socket).await {
+                        break format!("send failed: {e}");
+                    }
+                    unanswered.get_or_insert(Unanswered {
+                        sent_ms,
+                        deadline: Instant::now() + silence_limit,
+                    });
+                }
+                None => {
                     let _ = socket.close(None).await;
                     break "closed locally".to_string();
                 }
             },
+            () = sleep_until_some(silent_from), if silent_from.is_some() => {
+                break "no frame from the coordinator since a heartbeat; link dead".to_string();
+            },
         }
     };
     let _ = in_tx.send(Incoming::Closed { generation, reason });
+}
+
+/// The heartbeat, then a ping, so that the coordinator's pong answers it even when no server
+/// message would.
+async fn write_heartbeat(socket: &mut Socket) -> Result<(), WsError> {
+    let text = serde_json::to_string(&ClientMsg::Heartbeat).map_err(|e| WsError::Io(e.into()))?;
+    socket.send(Message::text(text)).await?;
+    socket.send(Message::Ping(Vec::new().into())).await
 }
 
 /// Passes a text frame to the daemon. Returns why the socket is over, if this frame ended it.
