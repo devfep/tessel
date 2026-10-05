@@ -183,6 +183,10 @@ two Workers are approved.
   worktree root: a cwd outside the worktree could otherwise skip the claim). Workspace tests 348.
   Live from a 130-byte-deep worktree: start works; the installed hook auto-claims, blocks a held
   file and allows a path outside.
+- [ ] **COVER-1** — invariant 11 enforced at merge, not only from the agent's `touched` list: the
+  coordinator passes the claim's scopes to the steward, which checks the rebased commit's changed
+  files against them (file level) before testing or pushing, and returns `uncovered {files}` as a
+  verified rejection. Filed from the CLI-2 reviews (a client-computed diff base kept failing open).
 - [ ] **CLI-2** — part a: `tessel submit` (file-level `touched`, local coverage check, evidence
   required). Part b (CLI-2b): tree-sitter symbol claims and mode escalation in the hook.
 - [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
