@@ -10,8 +10,11 @@ export { MergeService } from "./merge-service";
 export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 
 const AGENT_TOKEN_TTL_SECONDS = 3600;
+/** Long enough for one fetch by the mirror script; the token is read-only. */
+const MIRROR_TOKEN_TTL_SECONDS = 600;
 const USAGE =
   "POST /repos/<repo>, POST /repos/<repo>/forks/<fork>, POST /repos/<repo>/tokens, " +
+  "POST /repos/<repo>/read-tokens, " +
   "POST /repos/<repo>/test-runs, POST /repos/<repo>/merges or POST /repos/<repo>/agents/<agent>/identity";
 const NOT_A_FORK_MESSAGE =
   "write tokens are issued only for agent forks; only the steward writes the main repo";
@@ -77,6 +80,16 @@ async function mintWriteToken(env: Env, repo: string): Promise<Response> {
   return json({ repo, remote, token: plaintext, scope, expiresAt }, 201);
 }
 
+async function mintReadToken(env: Env, repo: string): Promise<Response> {
+  using handle = await env.ARTIFACTS.get(repo);
+  const { remote } = await handle.info();
+  const { plaintext, scope, expiresAt } = await handle.createToken(
+    "read",
+    MIRROR_TOKEN_TTL_SECONDS,
+  );
+  return json({ repo, remote, token: plaintext, scope, expiresAt }, 201);
+}
+
 async function runTests(env: Env, repo: string): Promise<Response> {
   const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
   const result: TestRunResult = await runner.runTests(repo, TEST_REF);
@@ -84,7 +97,7 @@ async function runTests(env: Env, repo: string): Promise<Response> {
 }
 
 async function mergeFork(env: Env, request: Request, repo: string): Promise<Response> {
-  return handleMergeRequest(env, repo, await request.json().catch(() => null));
+  return handleMergeRequest(env, repo, await request.json().catch(() => null), true);
 }
 
 async function issueIdentity(env: Env, repo: string, agent: string): Promise<Response> {
@@ -108,6 +121,8 @@ function runRoute(env: Env, request: Request, route: Route): Promise<Response> {
       return forkRepo(env, route.repo, route.fork);
     case "token":
       return mintWriteToken(env, route.repo);
+    case "read-token":
+      return mintReadToken(env, route.repo);
     case "test-run":
       return runTests(env, route.repo);
     case "merge":

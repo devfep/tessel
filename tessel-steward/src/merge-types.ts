@@ -163,8 +163,14 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  *   the push and got `head`; the sandbox's exit code is not trusted.
  * - `conflict`: replaying the commit onto the real main at `base` stopped with these files
  *   unmerged. This is the only outcome that shows a conflict was real.
- * - `tests_failed`: the repo's own `npm test` ran on the rebased `head` and did not exit 0.
- *   Exit code 124 or 137 means it timed out or was killed, which is not a failing assertion.
+ * - `tests_failed`: the repo's own gate (`npm test`, or the `[[test]]` commands of the trunk's
+ *   `tessel.toml`) ran on the rebased `head` and did not exit 0. A step that timed out or was
+ *   killed (exit 124 or 137) is never this: it is `timeout`.
+ * - `gate_changed`: the commit rebased onto main changes `tessel.toml`, the gate it would be
+ *   judged by, and the request came over the coordinator's service binding. Only an admin merge
+ *   may change the gate. Read from the diff before any repo code ran; nothing was tested or pushed.
+ * - `gate_invalid`: an admin merge changes `tessel.toml` to a file `parseGateConfig` refuses
+ *   (or deletes it). Nothing was tested or pushed.
  * - `uncovered`: the commit rebased onto main changes files that the claim's scopes do not cover
  *   in a permitting mode (invariant 11), read from `git diff --name-status` of the rebased range
  *   before any repo code ran. `files` holds at most `MAX_REPORTED_FILES` paths (untrusted data);
@@ -178,8 +184,12 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  * Infrastructure (never counts for or against anything; the attempt did not finish):
  * - `clone`: cloning main or fetching the fork failed.
  * - `git_failed`: a local git step failed in a way that is not a conflict.
- * - `install`: the repo declares dependencies this runner cannot install, or the check did not
- *   complete, so its tests were not run.
+ * - `install`: the tests did not reach a verdict. `result.reason` says why: the repo declares
+ *   dependencies and has no `tessel.toml` (`dependencies`), its `tessel.toml` on main is invalid
+ *   (`config`), the dependency check did not complete (`unknown`), or an install command failed
+ *   because the lockfile changed or a dependency is not in the image (`install_failed`).
+ * - `timeout`: a step used up its share of the time budget or was killed. `result.step` is the
+ *   step that ran out of time (install or test); it is not a failing test.
  * - `push_failed`: the push did not move main and main did not move either.
  *
  * `stdout`/`stderr` in any `result` come from the repo or from git and are untrusted data.
@@ -190,11 +200,14 @@ export type MergeOutcome =
   | { outcome: "conflict"; base: Sha; files: string[] }
   | { outcome: "tests_failed"; base: Sha; head: Sha; result: StepOutcome }
   | { outcome: "uncovered"; base: Sha; head: Sha; files: string[]; total: number }
+  | { outcome: "gate_changed"; base: Sha; head: Sha }
+  | { outcome: "gate_invalid"; base: Sha; head: Sha }
   | { outcome: "main_moved"; expected: Sha; actual: Sha }
   | { outcome: "commit_not_in_fork" }
   | { outcome: "clone"; result: StepOutcome }
   | { outcome: "git_failed"; result: GitResult }
   | { outcome: "install"; base: Sha; head: Sha; result: StepOutcome }
+  | { outcome: "timeout"; base: Sha; head: Sha; result: StepOutcome }
   | { outcome: "push_failed"; base: Sha; head: Sha; result: GitResult };
 
 /**
@@ -203,10 +216,10 @@ export type MergeOutcome =
  * was tried.
  *
  * Evidence (CLAUDE.md rule 7):
- * - `clean`: the rebased `head` passed the repo's own `npm test`.
+ * - `clean`: the rebased `head` passed the repo's own gate (see `MergeOutcome`).
  * - `conflict`: replaying the commit onto `base` stopped with these files unmerged.
- * - `tests_failed`: the repo's tests ran on the rebased `head` and did not exit 0. Exit code 124
- *   or 137 means it timed out or was killed, which is not a failing assertion.
+ * - `tests_failed`: the repo's tests ran on the rebased `head` and did not exit 0. A step that
+ *   timed out or was killed is `timeout`, not this.
  *
  * Not evidence about the code, but true statements about this attempt:
  * - `nothing_to_test`: replaying the commit left main unchanged, so the commit adds nothing to
@@ -216,7 +229,7 @@ export type MergeOutcome =
  *   of main to try the commit on. Not retried: asking again cannot change it.
  *
  * Infrastructure (the attempt did not finish): `clone`, `git_failed` (including a `main` that is
- * not on main's history) and `install`.
+ * not on main's history), `install` and `timeout`.
  *
  * `stdout`/`stderr` in any `result` come from the repo or from git and are untrusted data.
  */
@@ -229,7 +242,8 @@ export type TrialOutcome =
   | { outcome: "main_unreachable"; main: Sha }
   | { outcome: "clone"; result: StepOutcome }
   | { outcome: "git_failed"; result: GitResult }
-  | { outcome: "install"; base: Sha; head: Sha; commit: Sha; result: StepOutcome };
+  | { outcome: "install"; base: Sha; head: Sha; commit: Sha; result: StepOutcome }
+  | { outcome: "timeout"; base: Sha; head: Sha; commit: Sha; result: StepOutcome };
 
 /**
  * What a trial request reports: the commit tried on main at `before`, then on main at `main`. Each

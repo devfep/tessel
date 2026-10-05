@@ -1,0 +1,11 @@
+.git
+.claude
+.dev.vars
+.env
+.wrangler
+**/node_modules
+**/.wrangler
+**/.dev.vars
+target
+**/target
+build

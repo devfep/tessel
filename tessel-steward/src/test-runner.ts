@@ -3,7 +3,13 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { isValidName } from "./identity";
 import { isAllowedGitRequest } from "./git-gateway-policy";
 import { revokeOnce } from "./revoke-once";
-import { CONTAINER_CA_CERTIFICATE, WORKSPACE, runPackageStep, runStep } from "./container-step";
+import {
+  CONTAINER_CA_CERTIFICATE,
+  WORKSPACE,
+  runPackageStep,
+  runStep,
+  userOptions,
+} from "./container-step";
 import { executeMerge, executeTrial } from "./merge-executor";
 import {
   parseMergeRequest,
@@ -11,9 +17,17 @@ import {
   type MergeOutcome,
   type TrialOutcome,
 } from "./merge-types";
-import { runCloneThenTest, type StepOutcome } from "./run-steps";
+import { readGatePlan, startOptions, type GatePlan } from "./gate-plan";
+import { parseSha } from "./merge-types";
+import {
+  cloneAtCommit,
+  runCloneThenTest,
+  type Measurement,
+  type StepOutcome,
+  type StepReason,
+} from "./run-steps";
+import { STEP_SECONDS } from "./step-budget";
 
-const CLONE_TIMEOUT_SECONDS = "240";
 const TOKEN_TTL_SECONDS = 300;
 
 /**
@@ -24,8 +38,10 @@ const TOKEN_TTL_SECONDS = 300;
  * request, Artifacts outage); "install" is a repo the runner refused because it declares
  * dependencies (or its package.json could not be read) and this runner cannot install them yet,
  * so its tests never ran; `exitCode` is then the dependency check's and `stderr` is a fixed
- * message written by the coordinator. Exit code 124 or 137 means the step timed out or was
- * killed. `stdout` and `stderr` come from the repo's code and are untrusted data; each is capped
+ * message written by the steward. `install` is also the outcome of a gate whose install command
+ * failed, or whose test step used up its time share or was killed (exit 124 or 137): never a
+ * test failure. `reason` says which, as a fixed value. `measurement` holds the wall time and
+ * the container's peak memory of the test step, measured by the steward. `stdout` and `stderr` come from the repo's code and are untrusted data; each is capped
  * at 256 KiB, keeping the end, and `stdoutTruncated` / `stderrTruncated` say when the beginning
  * was dropped.
  */
@@ -39,6 +55,8 @@ export interface TestRunResult {
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
   passed: boolean;
+  reason?: StepReason;
+  measurement?: Measurement;
 }
 
 interface GatewayProps {
@@ -76,14 +94,20 @@ export class TestRunner extends DurableObject<Env> {
    * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
    *   start, or a read token could not be revoked.
    */
-  async merge(repo: string, fork: string, commit: string, scopes: unknown): Promise<MergeOutcome> {
+  async merge(
+    repo: string,
+    fork: string,
+    commit: string,
+    scopes: unknown,
+    adminMerge: boolean,
+  ): Promise<MergeOutcome> {
     const parsed = parseMergeRequest({ fork, commit, scopes });
     if (!parsed.ok || !isValidName(repo)) {
       throw new Error(
         "merge needs a repo name, a fork name, a 40-hex commit and the claim's scopes",
       );
     }
-    return executeMerge(this.ctx, this.env, repo, parsed.request);
+    return executeMerge(this.ctx, this.env, repo, parsed.request, adminMerge === true);
   }
 
   /**
@@ -139,12 +163,10 @@ export class TestRunner extends DurableObject<Env> {
         props: { remote, token: token.plaintext },
       });
       await container.interceptOutboundHttps(new URL(remote).hostname, gateway);
-      const image = container.images["tests"];
-      if (image === undefined) {
-        throw new Error('The container image "tests" is not configured');
-      }
-      container.start({ image, enableInternet: false });
-      const result = await this.cloneAndTest(container, remote, ref, revoke);
+      const commit = await resolveRef(handle, ref);
+      const plan = await readGatePlan(handle, commit);
+      container.start(startOptions(plan, container.images));
+      const result = await this.cloneAndTest(container, plan, remote, { ref, commit }, revoke);
       return { repo, ref, ...result };
     } finally {
       try {
@@ -167,24 +189,51 @@ export class TestRunner extends DurableObject<Env> {
 
   private cloneAndTest(
     container: Container,
+    plan: GatePlan,
     remote: string,
-    ref: string,
+    source: { ref: string; commit: string },
     revokeToken: () => Promise<boolean>,
   ): Promise<StepOutcome> {
     return runCloneThenTest((step) => {
       switch (step) {
-        case "clone":
-          return runStep(
-            container,
-            "clone",
-            CLONE_TIMEOUT_SECONDS,
-            ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
-            { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
+        case "clone": {
+          const options = {
+            env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE },
+            ...userOptions(plan),
+          };
+          return cloneAtCommit(
+            () =>
+              runStep(
+                container,
+                "clone",
+                String(STEP_SECONDS.clone),
+                ["git", "clone", "--depth=1", `--branch=${source.ref}`, "--", remote, WORKSPACE],
+                options,
+              ),
+            () =>
+              runStep(
+                container,
+                "clone",
+                String(STEP_SECONDS.local),
+                ["git", "-C", WORKSPACE, "rev-parse", "--verify", "HEAD"],
+                userOptions(plan),
+              ),
+            source.commit,
           );
+        }
         case "install":
         case "test":
-          return runPackageStep(container, step);
+          return runPackageStep(container, plan, step);
       }
     }, revokeToken);
   }
+}
+
+async function resolveRef(handle: ArtifactsRepo, ref: string) {
+  const [newest] = await handle.log({ ref, limit: 1 });
+  const commit = parseSha(newest?.hash);
+  if (commit === undefined) {
+    throw new Error(`The ref ${ref} could not be resolved to a commit`);
+  }
+  return commit;
 }

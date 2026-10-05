@@ -58,7 +58,7 @@ describe("POST /repos/<repo>/merges", () => {
     const response = await post(env, { fork: "demo--a1", commit: COMMIT, scopes: SCOPES });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: "commit_not_in_fork" });
-    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES);
+    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES, true);
   });
 
   it("answers 401 without the admin token, and runs nothing", async () => {

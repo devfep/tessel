@@ -12,6 +12,7 @@ import {
   pushCommand,
   rebaseCommand,
   reachableCommand,
+  showFileCommand,
   type GitCommand,
   type MergeSources,
 } from "./merge-commands";
@@ -21,6 +22,7 @@ import {
   uncoveredPaths,
   type ClaimedScope,
 } from "./merge-coverage";
+import { TESSEL_TOML_PATH, parseGateConfig } from "./tessel-config";
 import {
   parseSha,
   type GitResult,
@@ -46,12 +48,17 @@ export interface TrialDeps {
   run(command: GitCommand): Promise<GitResult>;
   /** Revokes the read tokens of main and of the fork; must not throw; false on failure. */
   revokeReadTokens(): Promise<boolean>;
-  /** Runs the dependency check ("install") or `npm test` ("test"); no write token is live. */
+  /** Runs the install step or the test step of the run's gate plan; no write token is live. */
   runPackageStep(step: "install" | "test"): Promise<StepOutcome>;
 }
 
 /** Everything `runMerge` needs from the outside world: a trial's boundaries, plus main. */
 export interface MergeDeps extends TrialDeps {
+  /**
+   * The commit of main whose gate (`tessel.toml`) the sandbox was started for. The merge must be
+   * based on exactly this commit; if the clone finds main elsewhere the merge is `main_moved`.
+   */
+  pinnedMain: Sha;
   /**
    * Mints the write token for main, lets `use` push exactly `update`, and revokes the token when
    * `use` ends, whether it returned or threw. Called only after the tests passed.
@@ -129,9 +136,42 @@ async function rebaseOntoMain(
     : { outcome: "rebased", base, head };
 }
 
+/** Who asks for the merge. Only the admin route may change the gate; it is never read from a body. */
+export interface MergePolicy {
+  adminMerge: boolean;
+}
+
+/**
+ * What a change to `tessel.toml` means. A submission over the service binding may not touch the
+ * gate (`gate_changed`). An admin merge may, if the head's file is one `parseGateConfig` accepts
+ * (else `gate_invalid`); when the diff touches nothing else the head's file is the whole gate
+ * (`only`), because the trunk's own may be the broken one. `untouched` and `mixed` leave the
+ * trunk's gate in charge of the tests.
+ */
+async function reviewGate(
+  deps: MergeDeps,
+  required: readonly { path: string }[],
+  range: { base: Sha; head: Sha },
+  policy: MergePolicy,
+): Promise<MergeOutcome | "untouched" | "mixed" | "only"> {
+  const { base, head } = range;
+  if (!required.some(({ path }) => path === TESSEL_TOML_PATH)) {
+    return "untouched";
+  }
+  if (!policy.adminMerge) {
+    return { outcome: "gate_changed", base, head };
+  }
+  const file = await deps.run(showFileCommand(deps.sources.workspace, head, TESSEL_TOML_PATH));
+  if (file.exitCode !== 0 || file.stdoutTruncated || !parseGateConfig(file.stdout).ok) {
+    return { outcome: "gate_invalid", base, head };
+  }
+  return required.every(({ path }) => path === TESSEL_TOML_PATH) ? "only" : "mixed";
+}
+
 /**
  * Invariant 11 on the change the steward sees: every file the rebased range `base..head` changes
- * must be covered by the claim. Runs before any repo code. A diff that fails, is cut off, or has
+ * must be covered by the claim, and none may be the gate (`tessel.toml`: a fork must not weaken the
+ * gate it is judged by; a human changes it by hand). Runs before any repo code. A diff that fails, is cut off, or has
  * a record this code does not know is `git_failed`: it is never read as covered.
  */
 async function checkCoverage(
@@ -139,16 +179,21 @@ async function checkCoverage(
   base: Sha,
   head: Sha,
   scopes: readonly ClaimedScope[],
-): Promise<MergeOutcome | undefined> {
+  policy: MergePolicy,
+): Promise<MergeOutcome | "gate_only" | undefined> {
   const diff = await deps.run(changedFilesCommand(deps.sources.workspace, base, head));
   const complete = diff.exitCode === 0 && !diff.stdoutTruncated;
   const required = complete ? parseNameStatus(diff.stdout) : undefined;
   if (required === undefined) {
     return { outcome: "git_failed", result: diff };
   }
+  const gate = await reviewGate(deps, required, { base, head }, policy);
+  if (typeof gate === "object") {
+    return gate;
+  }
   const uncovered = uncoveredPaths(required, scopes);
   if (uncovered.length === 0) {
-    return undefined;
+    return gate === "only" ? "gate_only" : undefined;
   }
   return {
     outcome: "uncovered",
@@ -187,7 +232,8 @@ async function pushToMain(deps: MergeDeps, base: Sha, head: Sha): Promise<MergeO
  * 1. Clone main and fetch the fork with read tokens, then revoke both before anything else runs
  *    (if a revocation fails, nothing runs and this throws).
  * 2. Verify the commit is reachable from the fork's default branch.
- * 3. Rebase `merge-base..commit` onto the main that was cloned, with a fixed committer.
+ * 3. Check the cloned main is the commit whose gate the sandbox started for (else `main_moved`),
+ *    and rebase `merge-base..commit` onto it, with a fixed committer.
  * 4. Check that `scopes` cover every file the rebased range changes (invariant 11), before any
  *    repo code runs. The check is file level; see `merge-coverage.ts`.
  * 5. Run the dependency check and the tests. No token of any kind is live.
@@ -197,6 +243,8 @@ async function pushToMain(deps: MergeDeps, base: Sha, head: Sha): Promise<MergeO
  * @param deps The sandbox, token and main-reading boundaries.
  * @param commit The submitted commit, already validated as a sha.
  * @param scopes The scopes the claim holds. Required: the coverage check cannot be skipped.
+ * @param policy Whether the request came over the admin route (see `reviewGate`). Defaults to
+ *   the service binding's, which may not change the gate.
  * @returns The outcome. Which outcomes are evidence is documented on `MergeOutcome`.
  * @throws If a read token cannot be revoked, or a boundary throws.
  */
@@ -204,6 +252,7 @@ export async function runMerge(
   deps: MergeDeps,
   commit: Sha,
   scopes: readonly ClaimedScope[],
+  policy: MergePolicy = { adminMerge: false },
 ): Promise<MergeOutcome> {
   const fetched = await runStepThenRevoke(() => fetchSources(deps), deps.revokeReadTokens);
   if (fetched.exitCode !== 0) {
@@ -213,6 +262,9 @@ export async function runMerge(
   const base = shaOf(baseResult);
   if (base === undefined) {
     return { outcome: "git_failed", result: baseResult };
+  }
+  if (base !== deps.pinnedMain) {
+    return { outcome: "main_moved", expected: deps.pinnedMain, actual: base };
   }
   const unverified = await verifyCommit(deps, commit);
   if (unverified !== undefined) {
@@ -226,11 +278,17 @@ export async function runMerge(
   if (head === base) {
     return { outcome: "already_merged", base };
   }
-  const uncovered = await checkCoverage(deps, base, head, scopes);
+  const uncovered = await checkCoverage(deps, base, head, scopes, policy);
+  if (uncovered === "gate_only") {
+    return pushToMain(deps, base, head);
+  }
   if (uncovered !== undefined) {
     return uncovered;
   }
   const tested = await runInstallThenTest((step) => deps.runPackageStep(step));
+  if (tested.reason === "timeout") {
+    return { outcome: "timeout", base, head, result: tested };
+  }
   if (tested.step === "install") {
     return { outcome: "install", base, head, result: tested };
   }
@@ -303,6 +361,9 @@ async function testRebased(deps: TrialDeps, rebased: Rebased, commit: Sha): Prom
     return { outcome: "nothing_to_test", base, commit };
   }
   const tested = await runInstallThenTest((step) => deps.runPackageStep(step));
+  if (tested.reason === "timeout") {
+    return { outcome: "timeout", base, head, commit, result: tested };
+  }
   if (tested.step === "install") {
     return { outcome: "install", base, head, commit, result: tested };
   }

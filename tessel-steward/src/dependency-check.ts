@@ -6,9 +6,11 @@ export const PACKAGE_JSON_MISSING_EXIT_CODE = 4;
 export const PACKAGE_JSON_INVALID_EXIT_CODE = 5;
 
 /**
- * Script for `node -e`, run in the repo root: exits 0 when `package.json` declares no
+ * Script for `node -e <script> <path to package.json>`: exits 0 when `package.json` declares no
  * dependencies of any kind, 3 when it declares any, 4 when it is missing and 5 when it is not
- * a JSON object. A key that is present but neither an empty object nor an empty array counts
+ * a JSON object. Run it from a directory other than the repo's: from Node 22.23.3 on, `node -e`
+ * reads the nearest `package.json` at startup, so an unparsable one ends the process with exit 1
+ * before the script runs. A key that is present but neither an empty object nor an empty array counts
  * as declaring dependencies, because the repo is not in a shape this runner supports.
  */
 export const DEPENDENCY_CHECK_SCRIPT = `
@@ -24,7 +26,7 @@ const keys = [
 ];
 let pkg;
 try {
-  pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 } catch (error) {
   const missing = error.code === "ENOENT";
   process.exit(missing ? ${PACKAGE_JSON_MISSING_EXIT_CODE} : ${PACKAGE_JSON_INVALID_EXIT_CODE});
