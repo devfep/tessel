@@ -1,0 +1,5 @@
+intent: A7 survived the settled unit test because it bypassed summarize; test summarize itself
+assumes: none
+rejected: none
+evidence: mutant rerun below
+dogfood: agent harness-1, claim 30
