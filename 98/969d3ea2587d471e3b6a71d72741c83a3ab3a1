@@ -1,0 +1,4 @@
+intent: start_base is HEAD at the first start in a worktree and moves only to a merged submission's fork commit; restart, stop, reconnect and lease expiry never move it
+assumes: Merged for this agent's claim means everything up to its fork_commit landed (as rebased copies)
+rejected: re-pinning to HEAD when no claims are held (hid committed, unsubmitted work after stop/start or a crash that outlasted the lease)
+evidence: cargo test --workspace 464 passed (65+75+24+300); clippy -D warnings clean; dogfood: claim 18 on tessel-dogfood
