@@ -7,6 +7,7 @@ pub mod code;
 pub mod conn;
 pub mod demo;
 pub mod endpoint;
+pub mod events;
 pub mod git;
 pub mod guard;
 pub mod live;

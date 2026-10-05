@@ -86,6 +86,7 @@ fn a_local_run_writes_its_evidence_and_leaves_nothing_behind() {
     let out = tmp.path().join("results");
     let args = [
         "run",
+        "--scripted-reviewer",
         "--seed",
         "7",
         "--tasks",
@@ -122,5 +123,29 @@ fn a_local_run_writes_its_evidence_and_leaves_nothing_behind() {
         std::fs::read_dir(&scratch).unwrap().count(),
         0,
         "temp directories were removed"
+    );
+}
+
+#[test]
+fn a_scripted_reviewer_is_refused_on_the_live_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let args = [
+        "run",
+        "--repo",
+        "swarm-x",
+        "--target",
+        "live",
+        "--scripted-reviewer",
+        "--coordinator",
+        "wss://c.invalid",
+        "--steward",
+        "https://s.invalid",
+    ];
+    let output = swarm(&args, tmp.path());
+    assert!(!output.status.success());
+    assert!(
+        text(&output).contains("local target only"),
+        "{}",
+        text(&output)
     );
 }

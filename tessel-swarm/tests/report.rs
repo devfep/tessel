@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use tessel_coordinator::protocol::Summary;
-use tessel_swarm::off::{self, OffConfig, OffResult};
+use tessel_swarm::off::{self, Counts, OffConfig, OffResult};
 use tessel_swarm::on::{OnConfig, OnResult, Policy, Resolution, TaskResult};
 use tessel_swarm::report::{ab_markdown, header_of, off_json, on_json, SCHEMA};
 use tessel_swarm::tasks::{Kind, Task};
@@ -51,6 +51,9 @@ fn on_result() -> OnResult {
         },
         rejected_in_log: 0,
         waits_in_log: 1,
+        reviews_approved: 0,
+        reviews_held: 2,
+        scripted_reviewer: false,
         results: vec![TaskResult {
             task: 1,
             agent: "a01".into(),
@@ -73,6 +76,7 @@ fn config() -> OnConfig {
         work_ms: 0,
         task_timeout: Duration::from_secs(1),
         max_denials: 1,
+        scripted_reviewer: false,
     }
 }
 
@@ -111,7 +115,7 @@ fn the_ab_table_has_two_labelled_columns_and_never_turns_a_missing_number_into_z
     let table = ab_markdown(&header, "local", Policy::Wait, &off_result(), &on_result());
     let rows: Vec<&str> = table.lines().filter(|l| l.starts_with('|')).collect();
     assert!(
-        rows[0].contains("off: no coordination, plain git, local replay"),
+        rows[0].contains("off: no coordination, plain git, red merges rolled back, local replay"),
         "{}",
         rows[0]
     );
@@ -154,4 +158,89 @@ fn the_ab_table_has_two_labelled_columns_and_never_turns_a_missing_number_into_z
     );
     assert!(table.contains("not sent to any coordinator"));
     assert!(table.contains("`Summary::from_events`"));
+}
+
+fn result(task: usize, result: Resolution) -> TaskResult {
+    TaskResult {
+        task,
+        agent: "a01".into(),
+        result,
+        denials: 0,
+        work_ms: 0,
+        waited_ms: 0,
+        note: None,
+    }
+}
+
+fn cells(table: &str, label: &str) -> Vec<String> {
+    let row = table
+        .lines()
+        .find(|l| l.starts_with(&format!("| {label} |")))
+        .unwrap_or_else(|| unreachable!("no row {label:?} in {table}"));
+    row.trim_matches('|')
+        .split('|')
+        .map(|c| c.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
+    let off = OffResult {
+        wall_ms: 60_000,
+        merges: Vec::new(),
+        counts: Counts {
+            clean: 3,
+            textual_conflicts: 2,
+            build_failed: 1,
+            tests_failed: 4,
+        },
+        events: Vec::new(),
+        summary: Summary::default(),
+        work_ms: 120_000,
+        wasted_ms: 30_000,
+    };
+    let mut on = on_result();
+    on.wall_ms = 30_000;
+    on.summary.merges = 6;
+    on.wasted_ms = 6_000;
+    on.work_ms_total = 90_000;
+    on.results = vec![
+        result(1, Resolution::Merged),
+        result(2, Resolution::TimedOut),
+        result(3, Resolution::NotRun),
+        result(4, Resolution::Rejected),
+    ];
+    let table = ab_markdown(
+        &header_of(&config(), 9, 10, 0.5),
+        "local",
+        Policy::Wait,
+        &off,
+        &on,
+    );
+    let row = |label: &str, off: &str, on: &str| {
+        assert_eq!(cells(&table, label), [label, off, on], "{label}");
+    };
+    row("Tasks", "10", "10");
+    row("Landed on the trunk", "3", "6");
+    row("Rejected after the work was done", "7", "0");
+    row("of which textual conflict", "2", "n/a");
+    row("of which broke the build", "1", "n/a");
+    row("of which broke the tests", "4", "n/a");
+    row("Not finished (starved, timed out, failed)", "0", "2");
+    row("Landed per minute", "3.0", "12.0");
+    row("Wall time (ms)", "60000", "30000");
+    row("Agent-minutes of work later rejected", "0.500", "0.100");
+    row("Agent-minutes of work in total", "2.000", "1.500");
+    row("Held for review (not approved)", "n/a", "2");
+    assert!(cells(&table, "Approved by scripted reviewer")[2].starts_with("n/a"));
+    on.scripted_reviewer = true;
+    on.reviews_approved = 5;
+    let table = ab_markdown(
+        &header_of(&config(), 9, 10, 0.5),
+        "local",
+        Policy::Wait,
+        &off,
+        &on,
+    );
+    assert_eq!(cells(&table, "Approved by scripted reviewer")[2], "5");
 }

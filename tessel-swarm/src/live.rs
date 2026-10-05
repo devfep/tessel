@@ -41,6 +41,12 @@ impl Steward {
                 "the steward URL must start with https:// (or http://localhost for a dev server)"
             );
         }
+        if base
+            .chars()
+            .any(|c| c == '"' || c == '\\' || c.is_whitespace() || c.is_control())
+        {
+            bail!("the steward URL has a quote, a backslash, a space or a control character");
+        }
         let token = admin.expose();
         if token.is_empty()
             || token
@@ -200,6 +206,15 @@ mod tests {
         assert!(Steward::new("http://localhost:8788", token()).is_ok());
         assert!(Steward::new("http://steward.example.dev", token()).is_err());
         assert!(Steward::new("https://x", Token::new(String::new())).is_err());
+        for bad in [
+            "https://x\"y",
+            "https://x\ny",
+            "https://x y",
+            "https://x\\y",
+            "https://x\u{7}",
+        ] {
+            assert!(Steward::new(bad, token()).is_err(), "{bad:?}");
+        }
         assert!(Steward::new("https://x", Token::new("a\"b".into())).is_err());
     }
 

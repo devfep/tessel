@@ -21,8 +21,10 @@ Overlapping tasks conflict textually (two edits to one line) or semantically: a 
 `rename` plus an `add` that calls the old shape merge cleanly in git and then fail the build or the
 tests. Each task alone is valid against the starting repository.
 
-**`off`** gives every agent the same starting commit and no claims. Their work is merged onto a
-trunk with plain git, in task order, and the tests run after each merge. Each merge is recorded as
+**`off`** has no claims. `--agents` agents work at once; task i branches from the trunk after tasks 1
+to i minus agents were merged (an agent pulls before its next task) and does not see work still in
+flight. Branches are built in parallel, one directory per agent. They are then merged onto the trunk
+with plain git, in task order, and the tests run after each merge. Each merge is recorded as
 clean, a textual conflict, a broken build (a missing export or module) or broken tests. A merge
 that breaks the build or tests is rolled back, so every merge is judged on a green trunk.
 
@@ -31,7 +33,13 @@ scopes where the edit allows, the way the CLI plans them), respect a denial, edi
 main stands after the grant, commit, push to a fork, `Submit`, wait for `Merged` or
 `SubmitRejected`, and release a rejected claim. `--policy wait` queues behind the holder;
 `--policy skip` puts the task back and picks other work. A reviewer connection (`swarm-reviewer`)
-approves every submission held for review, because the review gate is part of what is measured.
+is available on the local target only, behind `--scripted-reviewer` (off by default), and approves
+every submission held for review. Without it, a submission that needs review stays held and its
+agent times out; the table counts it as held. A live run never has a scripted reviewer: adding one
+to `REVIEWERS` would let it approve work in every repo. Held and approved counts come from the
+log.
+An agent that times out stops, and the tasks nobody took are recorded as not run, so every task
+is merged, rejected or not finished.
 Every count about the coordinator comes from reading its event log with `Watch` and running
 `Summary::from_events` over it. `SubmitRejected` and `WaitQueued` counts are taken from the same
 log, because `Summary` has no field for them. Wall time and agent-minutes are measured by the
@@ -45,6 +53,7 @@ harness.
   gives the replay merge and conflict counts.
 - A cell reading `n/a` is a number the run cannot produce. The table never shows zero for it.
 - Verified prevention needs shadow runs, which this harness does not make, so that row is `n/a`.
+- Waiting is the time from a claim being sent to its answer, summed over attempts.
 - Agent-minutes on both sides are the configured `--work-ms` per task plus the measured time to
   edit, test and commit.
 - In `on`, the steward reports a failed test run for both build and test failures, and the log
@@ -78,9 +87,9 @@ target/debug/tessel-swarm run --target live --seed 1 --tasks 10 --agents 6 \
 
 This creates a new scratch repository through the steward admin routes (`swarm-s<seed>-<time>`, or
 `--repo swarm-<name>`), pushes the starting commit, forks it once per agent, mints a write token
-per fork and an identity token per agent, and runs `on` against the deployed Workers. The
-coordinator's `REVIEWERS` must include `swarm-reviewer`, or submissions held for review wait until
-`--task-timeout-s` and are reported as timed out. Scratch repositories stay in the namespace; there
+per fork and an identity token per agent, and runs `on` against the deployed Workers. A
+submission held for review (a signature change, a rename) stays held and is reported as timed out
+after `--task-timeout-s`; it is counted as held, not approved. Scratch repositories stay in the namespace; there
 is no delete route.
 
 ## Safety

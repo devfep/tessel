@@ -59,6 +59,7 @@ fn config(agents: usize, policy: Policy, work_ms: u64) -> OnConfig {
         work_ms,
         task_timeout: Duration::from_secs(60),
         max_denials: 400,
+        scripted_reviewer: true,
     }
 }
 
@@ -67,14 +68,19 @@ fn config(agents: usize, policy: Policy, work_ms: u64) -> OnConfig {
 async fn run_with_hook(tasks: &[Task], config: OnConfig, hook: Option<(Duration, Hook)>) -> Run {
     let scratch = tempfile::tempdir().unwrap();
     let repo = ScratchRepo::parse("swarm-test").unwrap();
-    let names = on::principals(config.agents);
+    let names = on::principals(config.agents, config.scripted_reviewer);
+    let reviewers: Vec<String> = if config.scripted_reviewer {
+        vec![REVIEWER.to_string()]
+    } else {
+        Vec::new()
+    };
     let base = demo::base_tree();
     let server = LocalServer::start(LocalSetup {
         repo: &repo,
         scratch: &scratch.path().join("server"),
         base: &base,
         names: &names,
-        reviewers: &[REVIEWER.to_string()],
+        reviewers: &reviewers,
     })
     .await
     .unwrap();
@@ -348,7 +354,7 @@ async fn every_number_comes_from_summary_over_the_coordinators_own_log() {
 async fn shutdown_closes_open_connections() {
     let scratch = tempfile::tempdir().unwrap();
     let repo = ScratchRepo::parse("swarm-test").unwrap();
-    let names = on::principals(1);
+    let names = on::principals(1, true);
     let server = LocalServer::start(LocalSetup {
         repo: &repo,
         scratch: scratch.path(),
@@ -369,4 +375,88 @@ async fn shutdown_closes_open_connections() {
         matches!(closed, Ok(Ok(0) | Err(_))),
         "the connection was left open: {closed:?}"
     );
+}
+
+/// Every task is accounted for: merged, rejected or not finished, once each.
+fn assert_accounted(run: &Run, tasks: usize) {
+    let results = &run.result.results;
+    assert_eq!(results.len(), tasks, "{results:?}");
+    let count = |wanted: Resolution| results.iter().filter(|r| r.result == wanted).count();
+    let unfinished = tasks - count(Resolution::Merged) - count(Resolution::Rejected);
+    assert_eq!(count(Resolution::Merged) as u64, run.result.summary.merges);
+    assert_eq!(
+        count(Resolution::Rejected) as u64,
+        run.result.rejected_in_log
+    );
+    assert_eq!(
+        run.result.summary.merges + run.result.rejected_in_log + unfinished as u64,
+        tasks as u64
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tasks_left_in_the_queue_when_every_agent_has_stopped_are_still_counted() {
+    let tasks: Vec<Task> = [
+        "unitPrice",
+        "restock",
+        "taxFor",
+        "available",
+        "loyaltyPoints",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, f)| body(i + 1, f))
+    .collect();
+    let mut cfg = config(2, Policy::Wait, 0);
+    cfg.task_timeout = Duration::from_millis(30);
+    let run = run(&tasks, cfg).await;
+    let unrun = run
+        .result
+        .results
+        .iter()
+        .filter(|r| r.result == Resolution::NotRun)
+        .count();
+    assert!(
+        unrun >= 1,
+        "both agents stop at their first timeout: {:?}",
+        run.result.results
+    );
+    assert_accounted(&run, 5);
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_a_scripted_reviewer_a_held_submission_stays_held() {
+    let tasks = [signature(1, "unitPrice")];
+    let mut cfg = config(1, Policy::Wait, 0);
+    cfg.scripted_reviewer = false;
+    cfg.task_timeout = Duration::from_secs(2);
+    let held = run(&tasks, cfg).await;
+    assert_eq!(held.result.reviews_held, 1);
+    assert_eq!(held.result.reviews_approved, 0);
+    assert_eq!(held.result.summary.merges, 0);
+    assert_eq!(held.result.results[0].result, Resolution::TimedOut);
+    assert_accounted(&held, 1);
+    held.server.shutdown().await;
+
+    let approved = run(&tasks, config(1, Policy::Wait, 0)).await;
+    assert_eq!(approved.result.reviews_held, 0);
+    assert_eq!(approved.result.reviews_approved, 1);
+    assert_eq!(approved.result.summary.merges, 1);
+    assert_accounted(&approved, 1);
+    approved.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn waiting_is_the_time_from_the_claim_to_its_answer_only() {
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let run = run(&tasks, config(2, Policy::Wait, 600)).await;
+    let mut waits: Vec<u64> = run.result.results.iter().map(|r| r.waited_ms).collect();
+    waits.sort_unstable();
+    assert!(waits[0] < 400, "the holder was granted at once: {waits:?}");
+    assert!(
+        waits[1] >= 500,
+        "the second agent queued for the first one's work: {waits:?}"
+    );
+    run.server.shutdown().await;
 }

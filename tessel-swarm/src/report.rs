@@ -68,9 +68,12 @@ pub fn on_json(header: &Header, target: &str, policy: Policy, on: &OnResult) -> 
         "event_count": on.events.len(),
         "rejected_in_event_log": on.rejected_in_log,
         "queued_waits_in_event_log": on.waits_in_log,
+        "held_for_review_not_approved": on.reviews_held,
+        "approved_in_event_log": on.reviews_approved,
+        "scripted_reviewer": on.scripted_reviewer,
         "tasks": on.results,
         "measured_agent_ms": {
-            "note": "from claim grant to commit pushed; waiting is time before the grant",
+            "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, summed over attempts",
             "work_total": on.work_ms_total,
             "on_work_later_rejected": on.wasted_ms,
             "waiting": on.waited_ms,
@@ -149,10 +152,15 @@ fn table_rows(header: &Header, off: &OffResult, on: &OnResult) -> Vec<[String; 3
             "n/a",
             "n/a (no shadow run in this harness)",
         ),
+        row("Held for review (not approved)", "n/a", &n(on.reviews_held)),
         row(
-            "Submissions held for review",
+            "Approved by scripted reviewer",
             "n/a",
-            &n(on.summary.reviews_requested),
+            &if on.scripted_reviewer {
+                n(on.reviews_approved)
+            } else {
+                "n/a (no scripted reviewer)".to_string()
+            },
         ),
         row("Wall time (ms)", &n(off.wall_ms), &n(on.wall_ms)),
         row(
@@ -190,6 +198,11 @@ fn notes(off: &OffResult, on: &OnResult) -> Vec<String> {
              for.",
             on.events.len()
         ),
+        "- `off` models `--agents` agents working at once: task i branches from the trunk after tasks \
+         1 to i minus agents were merged, as an agent that pulls before its next task would, and \
+         does not see work still in flight. Red merges are rolled back, so this harness does not \
+         measure how long main stayed green."
+            .into(),
         "- Agent-minutes are the same quantity on both sides: the configured work time plus the \
          measured time to edit, run the tests and commit, per task. In `on` the clock starts when \
          the claim is granted."
@@ -221,7 +234,7 @@ pub fn ab_markdown(
         ),
         String::new(),
         format!(
-            "| Metric | off: no coordination, plain git, local replay | on: Tessel ({target} \
+            "| Metric | off: no coordination, plain git, red merges rolled back, local replay | on: Tessel ({target} \
              coordinator, policy {}) |",
             policy_name(policy)
         ),

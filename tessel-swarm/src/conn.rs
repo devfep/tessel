@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    AgentId, ClientMsg, CommitId, Event, EventKind, RequestId, ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClientMsg, CommitId, Event, RequestId, ServerMsg, PROTOCOL_VERSION,
 };
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::endpoint::Token;
+use crate::events;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Well inside the 30 s lease, so a claim held through a long wait is renewed.
@@ -143,7 +144,7 @@ pub async fn read_log(
             ServerMsg::Welcome { .. } => welcomed = true,
             ServerMsg::Event { event } => {
                 let marker = welcomed
-                    && matches!(&event.kind, EventKind::AgentConnected { agent } if agent.0 == observer);
+                    && events::connected(&event.kind).is_some_and(|agent| agent.0 == observer);
                 events.push(event);
                 if marker {
                     break;

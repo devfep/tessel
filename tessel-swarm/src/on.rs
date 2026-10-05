@@ -13,12 +13,13 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
 use tessel_coordinator::protocol::{
-    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, EventKind, Fence,
-    Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
+    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, Fence, Intent,
+    OnConflict, ScopeClaim, ServerMsg, Summary,
 };
 
 use crate::conn::{read_log, Conn};
 use crate::endpoint::Endpoint;
+use crate::events;
 use crate::git::{self, Checks, Git};
 use crate::tasks::{self, Kind, Task};
 
@@ -44,16 +45,22 @@ pub struct OnConfig {
     pub task_timeout: Duration,
     /// How often a skipped task may be denied before its agent gives up on it.
     pub max_denials: u32,
+    /// Local target only: answer every submission held for review with an approval. Off by
+    /// default; a live run never has one.
+    pub scripted_reviewer: bool,
 }
 
 pub fn agent_names(count: usize) -> Vec<String> {
     (1..=count).map(|i| format!("a{i:02}")).collect()
 }
 
-/// Every name that needs an identity token: the agents, the reviewer and the observer.
-pub fn principals(count: usize) -> Vec<String> {
+/// Every name that needs an identity token: the agents, the observer and, when one is scripted,
+/// the reviewer.
+pub fn principals(count: usize, scripted_reviewer: bool) -> Vec<String> {
     let mut names = agent_names(count);
-    names.push(REVIEWER.to_string());
+    if scripted_reviewer {
+        names.push(REVIEWER.to_string());
+    }
     names.push(OBSERVER.to_string());
     names
 }
@@ -68,6 +75,8 @@ pub enum Resolution {
     Starved,
     TimedOut,
     Failed,
+    /// No agent was left to take it: every agent had stopped.
+    NotRun,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,7 +87,8 @@ pub struct TaskResult {
     pub denials: u32,
     /// From the claim to the commit being pushed: the time that is lost if the work is rejected.
     pub work_ms: u64,
-    /// Time spent queued or retrying before the claim was granted.
+    /// Time from sending a claim to its answer (a grant, a denial or a timeout), summed over the
+    /// attempts. Time spent preparing the claim and backing off between attempts is not in it.
     pub waited_ms: u64,
     pub note: Option<String>,
 }
@@ -92,6 +102,12 @@ pub struct OnResult {
     pub rejected_in_log: u64,
     /// `WaitQueued` events: claims that queued behind a holder. `Summary` has no field for them.
     pub waits_in_log: u64,
+    /// Approvals in the log (`ReviewDecided` with `approve`). With the scripted reviewer off,
+    /// these can only come from someone else.
+    pub reviews_approved: u64,
+    /// Claims flagged for review that were never decided.
+    pub reviews_held: u64,
+    pub scripted_reviewer: bool,
     pub results: Vec<TaskResult>,
     pub work_ms_total: u64,
     pub wasted_ms: u64,
@@ -101,6 +117,7 @@ pub struct OnResult {
 struct Item {
     task: Task,
     denials: u32,
+    waited_ms: u64,
 }
 
 struct Ctx {
@@ -130,7 +147,11 @@ pub async fn run_on(
     let queue = tasks
         .iter()
         .cloned()
-        .map(|task| Item { task, denials: 0 })
+        .map(|task| Item {
+            task,
+            denials: 0,
+            waited_ms: 0,
+        })
         .collect();
     let ctx = Arc::new(Ctx {
         endpoint: endpoint.clone(),
@@ -139,7 +160,10 @@ pub async fn run_on(
         scratch: scratch.to_path_buf(),
         config: config.clone(),
     });
-    let reviewer = tokio::spawn(review_loop(Arc::clone(&ctx)));
+    let (stop_reviewer, stopped) = tokio::sync::watch::channel(false);
+    let reviewer = config
+        .scripted_reviewer
+        .then(|| tokio::spawn(review_loop(Arc::clone(&ctx), stopped)));
     let started = Instant::now();
     let mut agents = Vec::new();
     for name in agent_names(config.agents) {
@@ -152,7 +176,11 @@ pub async fn run_on(
         }
     }
     let wall_ms = millis(started);
-    reviewer.abort();
+    record_unrun(&ctx);
+    let _ = stop_reviewer.send(true);
+    if let Some(reviewer) = reviewer {
+        reviewer.await.context("the reviewer task panicked")??;
+    }
     if let Some(error) = failure {
         return Err(error);
     }
@@ -164,7 +192,22 @@ pub async fn run_on(
         Duration::from_secs(60),
     )
     .await?;
-    Ok(summarize(events, take_results(&ctx), wall_ms))
+    Ok(summarize(
+        events,
+        take_results(&ctx),
+        wall_ms,
+        config.scripted_reviewer,
+    ))
+}
+
+/// Tasks still queued when the last agent stopped (a timeout ends an agent) are not finished;
+/// they are recorded so that every task is accounted for.
+fn record_unrun(ctx: &Ctx) {
+    let left: Vec<Item> = lock(&ctx.queue).drain(..).collect();
+    for item in left {
+        let note = Some("no agent was left to take it".to_string());
+        record(ctx, "none", &item, Resolution::NotRun, 0, note);
+    }
 }
 
 fn take_results(ctx: &Ctx) -> Vec<TaskResult> {
@@ -173,22 +216,24 @@ fn take_results(ctx: &Ctx) -> Vec<TaskResult> {
     results
 }
 
-fn summarize(events: Vec<Event>, results: Vec<TaskResult>, wall_ms: u64) -> OnResult {
+fn summarize(
+    events: Vec<Event>,
+    results: Vec<TaskResult>,
+    wall_ms: u64,
+    scripted_reviewer: bool,
+) -> OnResult {
     let summary = Summary::from_events(&events);
-    let rejected_in_log = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::SubmitRejected { .. }))
-        .count() as u64;
-    let waits_in_log = events
-        .iter()
-        .filter(|e| matches!(e.kind, EventKind::WaitQueued { .. }))
-        .count() as u64;
+    let counts = events::count(&events);
+    let results = settled(results, &counts);
     let rejected = |r: &&TaskResult| r.result == Resolution::Rejected;
     OnResult {
         wall_ms,
         summary,
-        rejected_in_log,
-        waits_in_log,
+        rejected_in_log: counts.rejected,
+        waits_in_log: counts.waits,
+        reviews_approved: counts.approvals,
+        reviews_held: counts.held_for_review,
+        scripted_reviewer,
         work_ms_total: results.iter().map(|r| r.work_ms).sum(),
         wasted_ms: results.iter().filter(rejected).map(|r| r.work_ms).sum(),
         waited_ms: results.iter().map(|r| r.waited_ms).sum(),
@@ -197,19 +242,49 @@ fn summarize(events: Vec<Event>, results: Vec<TaskResult>, wall_ms: u64) -> OnRe
     }
 }
 
-/// Approves every submission held for review, as a configured reviewer would. A review gate is
-/// part of the system under test, so the harness answers it instead of skipping it.
-async fn review_loop(ctx: Arc<Ctx>) -> Result<()> {
+/// An agent that stops waiting leaves its submission with the coordinator, which may still decide it
+/// before the log is read. The log is the record, so a timed-out task whose claim the log shows as
+/// merged or rejected is counted as that, and the table cannot count it twice.
+fn settled(results: Vec<TaskResult>, counts: &events::LogCounts) -> Vec<TaskResult> {
+    let mut results = results;
+    for r in results
+        .iter_mut()
+        .filter(|r| r.result == Resolution::TimedOut)
+    {
+        let label = format!("t{:02}", r.task);
+        let (to, note) = if counts.merged_task_refs.contains(&label) {
+            (Resolution::Merged, "merged after the agent stopped waiting")
+        } else if counts.rejected_task_refs.contains(&label) {
+            (
+                Resolution::Rejected,
+                "rejected after the agent stopped waiting",
+            )
+        } else {
+            continue;
+        };
+        r.result = to;
+        r.note = Some(note.to_string());
+    }
+    results
+}
+
+/// Approves every submission held for review, as a configured reviewer would. Only the local
+/// target starts it, and only when asked to. It ends when told to stop, so its errors surface.
+async fn review_loop(ctx: Arc<Ctx>, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let token = ctx.endpoint.token_of(REVIEWER)?;
     let mut conn = Conn::open(&ctx.endpoint.ws_url, token).await?;
     conn.hello(REVIEWER, "reviewer").await?;
     conn.send(&ClientMsg::Watch { from_seq: 0 }).await?;
     let mut decided: HashSet<ClaimId> = HashSet::new();
     loop {
-        let Some(ServerMsg::Event { event }) = conn.recv(Duration::from_secs(3600)).await? else {
+        let message = tokio::select! {
+            _ = stop.changed() => return Ok(()),
+            message = conn.recv(Duration::from_secs(3600)) => message?,
+        };
+        let Some(ServerMsg::Event { event }) = message else {
             continue;
         };
-        let EventKind::ReviewRequested { claim, .. } = event.kind else {
+        let Some(claim) = events::review_requested(&event.kind) else {
             continue;
         };
         if decided.insert(claim) {
@@ -238,30 +313,21 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
         let Some(mut item) = lock(&ctx.queue).pop_front() else {
             return Ok(());
         };
-        let started = Instant::now();
         let step = run_task(&ctx, &work, &mut conn, &name, &item.task).await?;
-        let waited_ms = millis(started).saturating_sub(step.work_ms);
+        item.waited_ms += step.waited_ms;
         let work_ms = step.work_ms;
         match step.end {
             End::Denied => {
                 item.denials += 1;
                 if item.denials > ctx.config.max_denials {
-                    record(
-                        &ctx,
-                        &name,
-                        &item,
-                        Resolution::Starved,
-                        work_ms,
-                        waited_ms,
-                        None,
-                    );
+                    record(&ctx, &name, &item, Resolution::Starved, work_ms, None);
                 } else {
                     lock(&ctx.queue).push_back(item);
                     tokio::time::sleep(Duration::from_millis(30)).await;
                 }
             }
             End::Done(resolution, note) => {
-                record(&ctx, &name, &item, resolution, work_ms, waited_ms, note);
+                record(&ctx, &name, &item, resolution, work_ms, note);
                 if resolution == Resolution::TimedOut {
                     return Ok(());
                 }
@@ -276,7 +342,6 @@ fn record(
     item: &Item,
     result: Resolution,
     work_ms: u64,
-    waited_ms: u64,
     note: Option<String>,
 ) {
     lock(&ctx.results).push(TaskResult {
@@ -285,7 +350,7 @@ fn record(
         result,
         denials: item.denials,
         work_ms,
-        waited_ms,
+        waited_ms: item.waited_ms,
         note,
     });
 }
@@ -299,6 +364,7 @@ enum End {
 struct Step {
     end: End,
     work_ms: u64,
+    waited_ms: u64,
 }
 
 impl Step {
@@ -306,7 +372,13 @@ impl Step {
         Self {
             end: End::Done(resolution, Some(note.into())),
             work_ms,
+            waited_ms: 0,
         }
+    }
+
+    fn waited(mut self, waited_ms: u64) -> Self {
+        self.waited_ms = waited_ms;
+        self
     }
 }
 
@@ -359,15 +431,21 @@ async fn run_task(
         on_conflict,
     })
     .await?;
-    let mut held = match await_grant(conn, req, scopes, timeout).await? {
+    let claimed = Instant::now();
+    let answer = await_grant(conn, req, scopes, timeout).await?;
+    let waited_ms = millis(claimed);
+    let mut held = match answer {
         Grant::Granted(held) => held,
         Grant::Denied => {
             return Ok(Step {
                 end: End::Denied,
                 work_ms: 0,
+                waited_ms,
             })
         }
-        Grant::TimedOut => return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0)),
+        Grant::TimedOut => {
+            return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0).waited(waited_ms))
+        }
     };
     let granted = Instant::now();
     // Main may have moved while this agent waited: edit what is there now, not what was.
@@ -375,18 +453,17 @@ async fn run_task(
     let touched = tasks::touched(&tree, &after);
     if let Some(note) = ensure_covered(conn, &mut held, &touched).await? {
         release(conn, &held).await?;
-        return Ok(Step::done(Resolution::Failed, note, millis(granted)));
+        return Ok(Step::done(Resolution::Failed, note, millis(granted)).waited(waited_ms));
     }
     tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
     let sha = match commit_and_push(ctx, work, agent, &after, task).await {
         Ok(sha) => sha,
         Err(error) => {
             release(conn, &held).await?;
-            return Ok(Step::done(
-                Resolution::Failed,
-                format!("{error:#}"),
-                millis(granted),
-            ));
+            return Ok(
+                Step::done(Resolution::Failed, format!("{error:#}"), millis(granted))
+                    .waited(waited_ms),
+            );
         }
     };
     let work_ms = millis(granted);
@@ -394,6 +471,7 @@ async fn run_task(
     Ok(Step {
         end: End::Done(end.0, end.1),
         work_ms,
+        waited_ms,
     })
 }
 

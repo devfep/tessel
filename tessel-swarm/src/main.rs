@@ -82,6 +82,10 @@ struct RunArgs {
     /// How often a skipped task may be denied before its agent gives up on it.
     #[arg(long, default_value_t = 400)]
     max_denials: u32,
+    /// Local only: approve every submission held for review. Off by default; a held submission
+    /// otherwise stays held and its agent times out. A live run never has a scripted reviewer.
+    #[arg(long)]
+    scripted_reviewer: bool,
     /// Scratch repository name; must be `swarm-<suffix>`. Default: swarm-s<seed>-<time>.
     #[arg(long)]
     repo: Option<String>,
@@ -125,6 +129,11 @@ async fn run_command(args: &RunArgs) -> Result<()> {
     if args.agents == 0 {
         bail!("--agents must be at least 1");
     }
+    if args.scripted_reviewer && args.target == Target::Live {
+        bail!(
+            "--scripted-reviewer is for the local target only; a live run never approves reviews"
+        );
+    }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let repo = run::resolve_repo(args.repo.as_deref(), args.seed, now)?;
     let spec = Spec {
@@ -136,6 +145,7 @@ async fn run_command(args: &RunArgs) -> Result<()> {
         work_ms: args.work_ms,
         task_timeout: Duration::from_secs(args.task_timeout_s),
         max_denials: args.max_denials,
+        scripted_reviewer: args.scripted_reviewer,
     };
     let list = tasks::generate(spec.seed, spec.tasks, spec.overlap)?;
     std::fs::create_dir_all(&args.out)?;
