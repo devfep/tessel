@@ -1,0 +1,4 @@
+intent: proptest agent strategy must follow the leading-alphanumeric rule added in the previous commit
+assumes: none
+rejected: none
+evidence: cargo test 232 passed; rustfmt --check clean on identity.rs and shell.rs
