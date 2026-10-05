@@ -25,6 +25,9 @@ pub enum Request {
         scopes: Vec<ScopeClaim>,
         wait: bool,
         assumptions: Vec<String>,
+        /// Make a separate claim even when the one open claim could be amended.
+        #[serde(default)]
+        new: bool,
     },
     /// Make sure a held claim covers this repo-relative file for editing (or creating) it.
     Ensure {
@@ -83,6 +86,9 @@ pub enum ClaimOutcome {
     Granted {
         claim: HeldClaim,
         at_risk: Vec<HeldAssumption>,
+        /// The scopes were added to the claim already held (it has a new fence).
+        #[serde(default)]
+        amended: bool,
     },
     /// `Ensure` found a held claim that already permits the work.
     Covered,

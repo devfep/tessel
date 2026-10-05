@@ -50,6 +50,15 @@ pub struct State {
     pub repo: String,
     pub summary: String,
     pub task_ref: Option<String>,
+    /// HEAD when this daemon was started in the worktree. Set once and never changed by a
+    /// reconnect, so `submit` has a diff base that comes from the commit graph, not from the
+    /// connection.
+    #[serde(default)]
+    pub start_base: String,
+    /// The coordinator's head commit, from `Welcome`, `Merged` and `BaseMoved`.
+    #[serde(default)]
+    pub coordinator_head: Option<String>,
+    /// HEAD sent in the last `Hello`; it moves with every reconnect and is not a diff base.
     pub base: String,
     /// Where the daemon listens; outside `.tessel/` because worktree paths can be long.
     #[serde(default)]

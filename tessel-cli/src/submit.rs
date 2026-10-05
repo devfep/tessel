@@ -108,17 +108,51 @@ pub fn resolve_commit(root: &Path, rev: Option<&str>) -> anyhow::Result<String> 
     Ok(sha)
 }
 
+/// The commit to diff from: the coordinator's head when it exists in this repository, else the
+/// commit the daemon was started at. Both come from the commit graph or the coordinator and
+/// neither moves when the connection drops (the `Hello` base does, so it is never used here).
+/// Fails when neither is available, because a diff from the wrong commit hides changed files.
+pub fn diff_base(root: &Path, state: &State) -> anyhow::Result<String> {
+    if let Some(head) = state.coordinator_head.as_deref() {
+        if is_commit(root, head) {
+            return Ok(head.to_string());
+        }
+    }
+    if is_commit(root, &state.start_base) {
+        return Ok(state.start_base.clone());
+    }
+    bail!(
+        "cannot tell what this work is based on: neither the coordinator's head ({}) nor the \
+         commit this daemon started at ({}) exists in this repository. Fetch the coordinator's \
+         head, or run `tessel stop` and `tessel start` again",
+        state
+            .coordinator_head
+            .as_deref()
+            .map_or_else(|| "unknown".into(), escape),
+        escape(&state.start_base)
+    )
+}
+
+fn is_commit(root: &Path, rev: &str) -> bool {
+    !rev.is_empty()
+        && !rev.starts_with('-')
+        && git(root, &["cat-file", "-e", &format!("{rev}^{{commit}}")]).is_ok()
+}
+
 /// What `commit` changed since `base`, one file-level scope per change:
-/// an added file is `create`, a modified one `edit-body`, a deleted one `edit-signature` (which
-/// triggers review), and a rename is `edit-signature` on the old path plus `create` on the new.
-/// The diff runs from the merge base, so work that landed on `base`'s branch since is not counted.
+/// an added file is `create`, a modified one `edit-body`, a deleted or type-changed one
+/// `edit-signature` (which triggers review), and a rename is `edit-signature` on the old path
+/// plus `create` on the new. The diff runs from the merge base of `base` and `commit`, so work
+/// that landed on `base`'s side since the fork is not counted.
 pub fn touched(root: &Path, base: &str, commit: &str) -> anyhow::Result<Vec<ScopeClaim>> {
     let range = format!("{base}...{commit}");
     let out = git(
         root,
         &["diff", "--name-status", "-z", "-M", "--no-ext-diff", &range],
     )
-    .with_context(|| format!("cannot compute what {commit} changed since {base}"))?;
+    .with_context(|| {
+        format!("cannot compute what {commit} changed since its common ancestor with {base}")
+    })?;
     parse_name_status(&out)
 }
 
@@ -143,8 +177,9 @@ fn parse_name_status(raw: &[u8]) -> anyhow::Result<Vec<ScopeClaim>> {
         };
         match status.chars().next() {
             Some('A') => out.push(file_claim(&path()?, Mode::Create)?),
-            Some('M' | 'T') => out.push(file_claim(&path()?, Mode::EditBody)?),
-            Some('D') => out.push(file_claim(&path()?, Mode::EditSignature)?),
+            Some('M') => out.push(file_claim(&path()?, Mode::EditBody)?),
+            // A file that became a symlink or back is not a body edit.
+            Some('D' | 'T') => out.push(file_claim(&path()?, Mode::EditSignature)?),
             Some('R') => {
                 let (old, new) = (path()?, path()?);
                 out.push(file_claim(&old, Mode::EditSignature)?);
@@ -230,6 +265,12 @@ mod tests {
         resolve_commit(root, None).unwrap()
     }
 
+    fn commit_file(root: &Path, path: &str, text: &str) -> String {
+        std::fs::write(root.join(path), text).unwrap();
+        commit_all(root, "edit");
+        head(root)
+    }
+
     #[test]
     fn an_added_file_is_create_and_a_modified_one_is_edit_body() {
         let dir = repo();
@@ -288,8 +329,17 @@ mod tests {
         run(root, &["checkout", "-q", "-"]);
         std::fs::write(root.join("src/keep.rs"), "pub fn keep() { 3; }\n").unwrap();
         commit_all(root, "main moves");
-        let got = touched(root, &base, &side).unwrap();
-        assert_eq!(got, vec![claim("src/edit.rs", Mode::EditBody)]);
+        let main_tip = head(root);
+        // From the fork point and from the newer tip of the other side, only the side branch's own
+        // change counts: a two-dot diff from `main_tip` would also list main's keep.rs.
+        for from in [&base, &main_tip] {
+            let got = touched(root, from, &side).unwrap();
+            assert_eq!(
+                got,
+                vec![claim("src/edit.rs", Mode::EditBody)],
+                "from {from}"
+            );
+        }
     }
 
     #[test]
@@ -301,6 +351,66 @@ mod tests {
         commit_all(root, "odd name");
         let got = touched(root, &base, &head(root)).unwrap();
         assert_eq!(got, vec![claim("src/a::b c.rs", Mode::Create)]);
+    }
+
+    #[test]
+    fn a_file_that_becomes_a_symlink_is_edit_signature() {
+        let dir = repo();
+        let root = dir.path();
+        let base = head(root);
+        std::fs::remove_file(root.join("src/edit.rs")).unwrap();
+        std::os::unix::fs::symlink("keep.rs", root.join("src/edit.rs")).unwrap();
+        commit_all(root, "link");
+        let got = touched(root, &base, &head(root)).unwrap();
+        assert_eq!(got, vec![claim("src/edit.rs", Mode::EditSignature)]);
+    }
+
+    fn state_with(start_base: &str, coordinator_head: Option<&str>) -> State {
+        State {
+            pid: 1,
+            agent: "a1".into(),
+            repo: "demo".into(),
+            summary: String::new(),
+            task_ref: None,
+            start_base: start_base.into(),
+            coordinator_head: coordinator_head.map(str::to_string),
+            base: "moves-with-every-connection".into(),
+            socket: String::new(),
+            connection: crate::state::Connection::Online,
+            lease_ms: None,
+            last_error: None,
+            claims: Vec::new(),
+            queued: None,
+            updated_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn the_diff_base_is_the_coordinator_head_else_the_start_commit_never_the_hello_base() {
+        let dir = repo();
+        let root = dir.path();
+        let start = head(root);
+        let tip = commit_file(root, "src/keep.rs", "pub fn keep() { 9; }\n");
+        let absent = "1".repeat(40);
+        let both = state_with(&start, Some(&tip));
+        assert_eq!(diff_base(root, &both).unwrap(), tip);
+        let lagging = state_with(&start, Some(&absent));
+        assert_eq!(diff_base(root, &lagging).unwrap(), start);
+        let unknown = state_with(&start, None);
+        assert_eq!(diff_base(root, &unknown).unwrap(), start);
+    }
+
+    #[test]
+    fn with_no_usable_base_the_diff_fails_closed() {
+        let dir = repo();
+        let absent = "1".repeat(40);
+        for state in [state_with("", None), state_with(&absent, Some(&absent))] {
+            let err = diff_base(dir.path(), &state).unwrap_err().to_string();
+            assert!(
+                err.contains("cannot tell what this work is based on"),
+                "{err}"
+            );
+        }
     }
 
     #[test]

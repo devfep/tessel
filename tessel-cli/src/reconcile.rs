@@ -143,6 +143,9 @@ pub struct Plan {
     pub forget: Vec<ClaimId>,
     /// Local claims whose fence is older than the log's latest. A fence never goes backwards.
     pub refresh: Vec<(ClaimId, Fence)>,
+    /// Local claims whose scopes differ from the log's because an `Amend` reply was lost, for
+    /// claims whose fence moved on. The log's scopes replace the local ones.
+    pub rescope: Vec<(ClaimId, Vec<ScopeClaim>)>,
     /// Local claims whose submitted flag differs from the log: a submission whose reply was lost
     /// (now true), or one the steward rejected (now false). Only a complete read decides this,
     /// and never for a claim whose state changed since the new connection was welcomed.
@@ -165,6 +168,9 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
         match live.get(&held.claim.0) {
             Some(server) if server.fence > held.fence => {
                 plan.refresh.push((held.claim, server.fence));
+                if server.scopes != held.scopes {
+                    plan.rescope.push((held.claim, server.scopes.clone()));
+                }
             }
             Some(server)
                 if local.complete
@@ -479,6 +485,26 @@ mod tests {
         let events = vec![granted(0, "a1", 1, 1, "a.rs"), released(1, 1)];
         let plan = plan_incomplete(&local, &events, &[], &[]);
         assert_eq!(plan.forget, vec![ClaimId(1)]);
+    }
+
+    #[test]
+    fn a_lost_amend_reply_is_repaired_from_the_log() {
+        let local = [held(1, 1, "a.rs")];
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            event(
+                1,
+                EventKind::ClaimAmended {
+                    claim: ClaimId(1),
+                    fence: Fence(5),
+                    added: scopes("b.rs"),
+                },
+            ),
+        ];
+        let plan = plan_for(&local, &events, &[], &[]);
+        assert_eq!(plan.refresh, vec![(ClaimId(1), Fence(5))]);
+        assert_eq!(plan.rescope.len(), 1);
+        assert_eq!(plan.rescope[0].1.len(), 2);
     }
 
     #[test]

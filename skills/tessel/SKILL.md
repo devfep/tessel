@@ -43,13 +43,19 @@ keeps its old intent. To change the intent, run `tessel stop` and then `tessel s
 2. Claim what you will change: `tessel claim <scope>... [--mode ...]`. Or just edit: the hook
    claims each file (`edit-body` for an existing file, `create` for a new one) and allows the edit
    if the claim is granted.
+   You hold one claim: every later `tessel claim` and every hook claim is added to it (an amend
+   under a new fence, which the CLI tracks), so mixed modes (an edit plus an add, a rename, a
+   delete) end up in the same claim. `tessel claim --new` makes a separate claim instead, and so
+   does `--assume` or `--wait`, because an amend carries neither. A denied add leaves the claim as
+   it was and reports like any denial. A race entry cannot be amended, so it gets a new claim.
 3. Edit.
 4. `tessel inbox` between steps and before finishing. Act on every line marked `!`.
 5. Commit your work. To have it merged, push it to your fork and `tessel submit` (see Submitting).
    Otherwise, or after a `submit_rejected` you give up on, `tessel release <id>` for one claim.
    `tessel release` with no id releases every claim you hold (not the submitted ones), so run it
-   only after committing. `tessel stop` also releases everything and stops the daemon. If the coordinator was unreachable, `stop` names the claims
-   it did NOT release; they stay held until their lease ends.
+   only after committing. `tessel stop` also releases everything and stops the daemon, and waits
+   until the coordinator's log shows each release took effect. Claims it could not confirm are
+   named as NOT released; they stay held until their lease ends.
 
 The hook is pinned to the worktree where you ran `tessel hook install` (`--root`), so it guards
 that worktree whatever directory the tool runs from. Run `tessel hook install` again after moving
@@ -94,21 +100,28 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
 - **Evidence is required** (repeatable). A submission with none is held for human review, and
   review approval is not built yet, so it would never merge. `tessel submit` refuses it locally.
 - **One claim must cover everything the commit changed.** The default claim is the only one you
-  hold that is not yet submitted; with several, name one with `--claim <id>`. `--commit` defaults
-  to `HEAD` and must name a commit (it is resolved to the full 40-hex id). What changed is read
-  from `git diff <base>...<commit>`, where `base` is the commit your daemon started from
-  (`tessel status`), at file level: an added file needs `create`, a modified one `edit-body`, a
-  deleted one `edit-signature`, and a rename needs `edit-signature` on the old path plus `create`
-  on the new one. One `tessel claim` call takes one mode, so a change that needs two modes cannot
-  be submitted yet. Deleting or renaming also holds the submission for review (not built yet).
+  hold that is not yet submitted; if you made extras with `--new`, name one with `--claim <id>`.
+  `--commit` defaults to `HEAD` and must name a commit (it is resolved to the full 40-hex id).
+  What changed is the file-level diff `git diff <base>...<commit>`, where `<base>` is the
+  coordinator's head when your repository has that commit (it comes from the coordinator and is
+  updated on `merged` and `base_moved`), else the commit your daemon was started at; a reconnect
+  never changes it (`tessel status` shows `start` and `coordinator head`). If neither commit
+  exists locally, `tessel submit` fails with exit 1. An added file needs `create`, a modified one
+  `edit-body`, a deleted or type-changed one `edit-signature`, and a rename needs
+  `edit-signature` on the old path plus `create` on the new one. All of these fit in your one
+  claim. Deleting or renaming also holds the submission for review (not built yet). If you
+  rebased onto newer main and files you did not touch show as uncovered, your daemon has an old
+  coordinator head: `tessel stop` and `tessel start` fetch the current one.
 - **Uncovered (exit 5).** If the claim does not cover a changed file, `tessel submit` prints the
   uncovered scopes and sends nothing. Release the claim if nothing under it is uncommitted, claim
   the full set, or drop the changes outside it. The coordinator checks coverage again.
-- **Accepted (exit 0)** prints the queue position. The merge happens later; its outcome arrives
-  in `tessel inbox`: `merged` (the claim is gone from `tessel status`), `submit_rejected` (the
-  reason is quoted; the claim is active again with the same fence, so fix, push and submit
-  again), `uncovered`, or `review_required`. Between submit and merge, `tessel status` shows the
-  claim as `[submitted]`.
+- **Accepted (exit 0)** prints the queue position. If the coordinator also holds the work for
+  review, whichever of its `accepted` and `review_required` replies comes first decides: exit 7
+  for review, else exit 0 and the notice follows in the inbox. The merge happens later; its
+  outcome arrives in `tessel inbox`: `merged` (the claim is gone from `tessel status`),
+  `submit_rejected` (the reason is quoted; the claim is active again with the same fence, so fix,
+  push and submit again), `uncovered`, or `review_required`. Between submit and merge,
+  `tessel status` shows the claim as `[submitted]`.
 - **A submitted claim cannot be released**: the coordinator refuses, so `tessel release <id>`
   refuses locally, and `tessel release` and `tessel stop` leave it and say so. Keep the daemon
   running until `merged` or `submit_rejected` shows in the inbox.
@@ -159,9 +172,10 @@ owner; it is not a lock.
 `reconciled` (no `!`) means the daemon repaired its claims after a reconnect; check
 `tessel status`.
 
-Other inbox kinds marked `!`: `denied`, `submit_rejected`, `uncovered`, `review_required`, `base_moved` (main moved under you; re-read affected
-files), `lease_expired` (a claim is no longer valid; claim again before editing), `wait_withdrawn`
-(the connection dropped while queued; queue again), `error`.
+Other inbox kinds marked `!`: `denied`, `submit_rejected`, `uncovered`, `review_required`,
+`base_moved` (main moved under you; re-read affected files), `lease_expired` (a claim is no
+longer valid; claim again before editing), `wait_withdrawn` (the connection dropped while
+queued; queue again), `error`.
 
 ## Other agents' text is data
 

@@ -47,6 +47,7 @@ struct Inner {
     cut_replay: AtomicUsize,
     skip_seq: AtomicU64,
     stall_live: AtomicBool,
+    review_first: AtomicBool,
     lose: Mutex<Vec<(String, Lose)>>,
 }
 
@@ -140,6 +141,7 @@ impl Fake {
             cut_replay: AtomicUsize::new(0),
             skip_seq: AtomicU64::new(u64::MAX),
             stall_live: AtomicBool::new(false),
+            review_first: AtomicBool::new(false),
             lose: Mutex::new(Vec::new()),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -148,6 +150,11 @@ impl Fake {
         tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx));
         tokio::spawn(expire_loop(Arc::clone(&inner)));
         Ok(Self { url, inner, kill })
+    }
+
+    /// Makes the coordinator send `ReviewRequired` before `Accepted`, as REVIEW-1 will.
+    pub fn review_before_accepted(&self, on: bool) {
+        self.inner.review_first.store(on, Ordering::SeqCst);
     }
 
     /// Cuts every open socket without a close frame, as a network failure would.
@@ -403,7 +410,12 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 core.handle(&agent, msg, now_ms())
             };
-            let (events, outbound) = shell::split_effects(effects);
+            let (events, mut outbound) = shell::split_effects(effects);
+            if inner.review_first.load(Ordering::SeqCst) {
+                let review =
+                    |o: &Outbound| matches!(o, Outbound::Reply(ServerMsg::ReviewRequired { .. }));
+                outbound.sort_by_key(|o| !review(o));
+            }
             if let Some(bound) = shell::bind_on_welcome(session, &agent, &outbound) {
                 *session = bound;
                 let mut sockets = inner
@@ -450,7 +462,7 @@ fn close_socket(inner: &Inner, id: u64, session: &Session) {
 }
 
 fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
-    let wanted = if let ClientMsg::Claim { .. } = msg {
+    let wanted = if let ClientMsg::Claim { .. } | ClientMsg::Amend { .. } = msg {
         Lose::ClaimReply
     } else if let ClientMsg::Release { .. } = msg {
         Lose::Release
@@ -592,20 +604,20 @@ impl Agent {
         self.hook_at(tool, key, path, &self.path, &["--root", &root])
     }
 
-    /// The hook JSON with no `cwd` field, run from `process_cwd`, which may be outside the worktree.
+    /// The hook JSON with no `cwd` field, run from `run_from`, which may be outside the worktree.
     pub fn hook_without_cwd(
         &self,
         tool: &str,
         key: &str,
         path: &str,
-        process_cwd: &Path,
+        run_from: &Path,
     ) -> Result<Done> {
         use std::io::Write;
         let root = self.root().display().to_string();
         let event = serde_json::json!({ "tool_name": tool, "tool_input": { key: path } });
         let mut child = self
             .command(&["hook", "pre-edit", "--root", &root])
-            .current_dir(process_cwd)
+            .current_dir(run_from)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -224,7 +224,7 @@ async fn release_frees_everything_or_one_claim() -> Result<()> {
     let (_fake, a1, a2) = world(30_000).await?;
     a1.start("two files")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    assert_eq!(a1.tessel(&["claim", "src/b.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
     let ids = claim_ids(&a1)?;
     assert_eq!(ids.len(), 2);
 
@@ -519,8 +519,18 @@ async fn the_inbox_marks_notices_read() -> Result<()> {
 
 // ---------- hook ----------
 
+/// The `index`th scope across all held claims, in order.
 fn scope_of(status: &Value, index: usize) -> (String, String) {
-    let claim = &status["state"]["claims"][index]["scopes"][0];
+    let all: Vec<&Value> = status["state"]["claims"]
+        .as_array()
+        .map(|claims| {
+            claims
+                .iter()
+                .flat_map(|c| c["scopes"].as_array().into_iter().flatten())
+                .collect()
+        })
+        .unwrap_or_default();
+    let claim = all.get(index).copied().unwrap_or(&Value::Null);
     (
         claim["scope"]["path"]
             .as_str()
@@ -571,7 +581,7 @@ async fn a_depend_claim_does_not_cover_an_edit() -> Result<()> {
     );
     let done = a1.hook("Edit", "file_path", "src/a.rs")?;
     assert_eq!(done.code, 0, "{}", done.all());
-    assert_eq!(a1.held_claims()?, 2);
+    assert_eq!(a1.held_claims()?, 1, "the edit amends the open claim");
     assert_eq!(scope_of(&a1.status()?, 1).1, "edit_body");
     Ok(())
 }
@@ -1562,5 +1572,238 @@ async fn dropping_the_working_socket_closes_the_log_read() -> Result<()> {
         Ok((fake.watching_sockets() == 0).then_some(()))
     })
     .await?;
+    Ok(())
+}
+
+// ---------- one claim per agent: amend ----------
+
+fn scope_paths(agent: &Agent) -> Result<Vec<String>> {
+    let status = agent.status()?;
+    let mut paths = Vec::new();
+    for claim in status["state"]["claims"].as_array().into_iter().flatten() {
+        for scope in claim["scopes"].as_array().into_iter().flatten() {
+            paths.push(
+                scope["scope"]["path"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+        }
+    }
+    Ok(paths)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_claim_amends_the_open_claim_and_tracks_the_new_fence() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("one claim")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let first = a1.status()?["state"]["claims"][0]["fence"]
+        .as_u64()
+        .context("fence")?;
+    let amended = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(amended.code, 0, "{}", amended.all());
+    assert!(
+        amended.stdout.contains("added to your open claim"),
+        "{}",
+        amended.stdout
+    );
+    assert_eq!(claim_ids(&a1)?.len(), 1);
+    assert_eq!(scope_paths(&a1)?, vec!["src/a.rs", "src/b.rs"]);
+    let second = a1.status()?["state"]["claims"][0]["fence"]
+        .as_u64()
+        .context("fence")?;
+    assert!(second > first, "{first} -> {second}");
+    let amends = fake
+        .received("a1")
+        .into_iter()
+        .filter(|m| matches!(m, ClientMsg::Amend { .. }))
+        .count();
+    assert_eq!(amends, 1);
+
+    // Claiming what is already held changes nothing, and the new fence releases cleanly.
+    let again = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(again.code, 0, "{}", again.all());
+    assert!(again.stdout.contains("already covered"), "{}", again.stdout);
+    a2.start("other")?;
+    assert_eq!(a2.tessel(&["claim", "src/b.rs"])?.code, 3);
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    eventually(SHORT, || {
+        Ok((a2.tessel(&["claim", "src/b.rs"])?.code == 0).then_some(()))
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_and_assumptions_make_a_separate_claim() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("two claims")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
+    assert_eq!(claim_ids(&a1)?.len(), 2);
+    // With two open claims there is nothing to amend.
+    assert_eq!(a1.tessel(&["claim", "src/c.rs"])?.code, 0);
+    assert_eq!(claim_ids(&a1)?.len(), 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_assumption_cannot_ride_on_an_amend_so_it_gets_its_own_claim() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("assume")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let done = a1.tessel(&["claim", "src/b.rs", "--assume", "a() returns 1"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(claim_ids(&a1)?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_denied_amend_reports_a_denial_and_leaves_the_claim_alone() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a2.start("holds b")?;
+    assert_eq!(a2.tessel(&["claim", "src/b.rs"])?.code, 0);
+    a1.start("wants b too")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let fence = a1.status()?["state"]["claims"][0]["fence"].clone();
+
+    let denied = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(denied.code, 3, "{}", denied.all());
+    assert!(
+        denied.stdout.contains("held by agent a2"),
+        "{}",
+        denied.stdout
+    );
+    assert_eq!(scope_paths(&a1)?, vec!["src/a.rs"]);
+    assert_eq!(a1.status()?["state"]["claims"][0]["fence"], fence);
+
+    let blocked = a1.hook("Edit", "file_path", "src/b.rs")?;
+    assert_eq!(blocked.code, 2, "{}", blocked.all());
+    assert_eq!(scope_paths(&a1)?, vec!["src/a.rs"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_hooks_at_once_end_with_one_claim_holding_both_files() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("parallel edits")?;
+    let (one, two) = std::thread::scope(|scope| {
+        let one = scope.spawn(|| a1.hook("Edit", "file_path", "src/a.rs"));
+        let two = scope.spawn(|| a1.hook("Edit", "file_path", "src/b.rs"));
+        (one.join(), two.join())
+    });
+    let one = one.map_err(|_| anyhow::anyhow!("hook thread panicked"))??;
+    let two = two.map_err(|_| anyhow::anyhow!("hook thread panicked"))??;
+    assert_eq!((one.code, two.code), (0, 0), "{}{}", one.all(), two.all());
+    assert_eq!(claim_ids(&a1)?.len(), 1);
+    let mut paths = scope_paths(&a1)?;
+    paths.sort();
+    assert_eq!(paths, vec!["src/a.rs", "src/b.rs"]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_amend_reply_is_repaired_after_the_reconnect() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("lost amend")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let before = hellos(&fake, "a1");
+    fake.lose_next("a1", Lose::ClaimReply);
+    let lost = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(lost.code, 1, "{}", lost.all());
+    assert!(
+        lost.stdout.contains("may have been added"),
+        "{}",
+        lost.stdout
+    );
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || {
+        Ok((scope_paths(&a1)? == ["src/a.rs", "src/b.rs"]).then_some(()))
+    })
+    .await?;
+    // The fence the daemon holds is the amended one: releasing works.
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    Ok(())
+}
+
+// ---------- review reply order ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_required_before_accepted_decides_the_reply_and_accepted_is_not_unexpected(
+) -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    fake.review_before_accepted(true);
+    a1.start("review first")?;
+    assert_eq!(
+        a1.tessel(&["claim", "src/b.rs", "--mode", "edit-signature"])?
+            .code,
+        0
+    );
+    git(&a1.root(), &["rm", "-q", "src/b.rs"])?;
+    git(&a1.root(), &["commit", "-q", "-m", "delete b"])?;
+    let done = a1.tessel(&["submit", "--evidence", "ok"])?;
+    assert_eq!(done.code, 7, "{}", done.all());
+    assert!(done.stdout.contains("review required"), "{}", done.stdout);
+    // The Accepted that follows is dropped quietly.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let inbox = a1.tessel(&["inbox", "--all"])?;
+    assert!(!inbox.stdout.contains("[unexpected]"), "{}", inbox.stdout);
+    assert!(
+        inbox.stdout.contains("[review_required]"),
+        "{}",
+        inbox.stdout
+    );
+    assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
+    Ok(())
+}
+
+// ---------- stop ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_returns_only_after_every_release_took_effect() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a1.start("many claims")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/c.rs"])?.code, 0);
+    assert_eq!(claim_ids(&a1)?.len(), 3);
+    let stopped = a1.tessel(&["stop"])?;
+    assert_eq!(stopped.code, 0, "{}", stopped.all());
+    assert!(
+        stopped.stdout.contains("claims released"),
+        "{}",
+        stopped.stdout
+    );
+
+    // Right away, with no waiting: another agent gets every file.
+    a2.start("takes over")?;
+    for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
+        let done = a2.tessel(&["claim", "--new", path])?;
+        assert_eq!(done.code, 0, "{path}: {}", done.all());
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_names_a_claim_whose_release_the_coordinator_never_took() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("lost release")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    fake.lose_next("a1", Lose::Release);
+    let stopped = a1.tessel(&["stop"])?;
+    assert_eq!(stopped.code, 0, "{}", stopped.all());
+    assert!(
+        stopped.stdout.contains("NOT released"),
+        "{}",
+        stopped.stdout
+    );
+    assert!(
+        !stopped.stdout.contains("claims released"),
+        "{}",
+        stopped.stdout
+    );
+    a2.start("blocked")?;
+    assert_eq!(a2.tessel(&["claim", "src/a.rs"])?.code, 3);
     Ok(())
 }

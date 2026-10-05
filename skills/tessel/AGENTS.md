@@ -15,6 +15,8 @@ worktree:
 ## Rules
 
 1. Claim before editing: `tessel claim <scope>... [--mode depend|edit-body|edit-signature|create]`.
+   Your claims join one claim (a later claim amends it), so one `tessel submit` covers a mixed
+   change; `--new` makes a separate claim.
    Scopes are `dir/`, `path/file`, or `path/file::qualified::name`. The hook also claims each file
    you edit. It cannot see edits made through shell commands, so claim those files first.
 2. Declare what you rely on but do not own: `--assume "<behaviour>"` (repeatable).

@@ -200,8 +200,21 @@ pub fn denial_text(conflicts: &[Conflict], hint: &str) -> String {
 
 pub fn outcome_text(outcome: &ClaimOutcome, hint: &str) -> String {
     match outcome {
-        ClaimOutcome::Granted { claim, at_risk } => {
-            format!("granted {}\n{}", held_line(claim), at_risk_text(at_risk))
+        ClaimOutcome::Granted {
+            claim,
+            at_risk,
+            amended,
+        } => {
+            let note = if *amended {
+                "  (added to your open claim, which has a new fence and covers all scopes above)\n"
+            } else {
+                ""
+            };
+            format!(
+                "granted {}\n{note}{}",
+                held_line(claim),
+                at_risk_text(at_risk)
+            )
         }
         ClaimOutcome::Covered => "already covered by a held claim\n".to_string(),
         ClaimOutcome::Denied { conflicts } => denial_text(conflicts, hint),
@@ -446,7 +459,11 @@ pub fn status_text(state: &State, running: bool, unread: usize) -> String {
     if let Some(error) = &state.last_error {
         let _ = writeln!(out, "last error: {}", one_line(error));
     }
-    let _ = writeln!(out, "base: {}", state.base);
+    let _ = writeln!(out, "base: {} (sent in the last hello)", state.base);
+    let _ = writeln!(out, "start: {}", state.start_base);
+    if let Some(head) = &state.coordinator_head {
+        let _ = writeln!(out, "coordinator head: {}", escape(head));
+    }
     let _ = writeln!(out, "intent: {}", one_line(&state.summary));
     if state.claims.is_empty() {
         let _ = writeln!(out, "claims: none");

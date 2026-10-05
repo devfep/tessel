@@ -52,6 +52,9 @@ enum Command {
         /// Behaviour you rely on in the first scope but do not own. Repeatable.
         #[arg(long = "assume")]
         assume: Vec<String>,
+        /// Make a separate claim instead of adding the scopes to your one open claim.
+        #[arg(long)]
+        new: bool,
     },
     /// Daemon state, connection, held claims and unread inbox items.
     Status {

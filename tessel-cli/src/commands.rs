@@ -48,7 +48,16 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             mode,
             wait,
             assume,
-        } => claim(&cwd, &scopes, mode.into(), wait, assume).await,
+            new,
+        } => {
+            let options = ClaimOptions {
+                mode: mode.into(),
+                wait,
+                assume,
+                new,
+            };
+            claim(&cwd, &scopes, options).await
+        }
         Command::Status { json } => status(&cwd, json).await,
         Command::Inbox { all } => inbox(&cwd, all),
         Command::Release { claim } => release(&cwd, claim).await,
@@ -202,13 +211,21 @@ fn log_tail(worktree: &Worktree) -> String {
 
 // ---------- claim / release / stop ----------
 
-async fn claim(
-    cwd: &Path,
-    args: &[String],
+/// What `tessel claim` was asked besides the scopes.
+struct ClaimOptions {
     mode: Mode,
     wait: bool,
     assume: Vec<String>,
-) -> anyhow::Result<ExitCode> {
+    new: bool,
+}
+
+async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<ExitCode> {
+    let ClaimOptions {
+        mode,
+        wait,
+        assume,
+        new,
+    } = options;
     let worktree = Worktree::discover(cwd)?;
     let mut scopes = Vec::new();
     for arg in args {
@@ -221,6 +238,7 @@ async fn claim(
         scopes,
         wait,
         assumptions: assume,
+        new,
     };
     let Reply::Claim { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
@@ -289,12 +307,12 @@ async fn submit(
     };
     let held = submit::pick_claim(&state, claim)?;
     let fork_commit = submit::resolve_commit(&worktree.root, commit)?;
-    let touched = submit::touched(&worktree.root, &state.base, &fork_commit)?;
+    let base = submit::diff_base(&worktree.root, &state)?;
+    let touched = submit::touched(&worktree.root, &base, &fork_commit)?;
     if touched.is_empty() {
         bail!(
-            "commit {fork_commit} changes nothing since this worktree's base {}; commit your \
-             work first, or pass --commit",
-            state.base
+            "commit {fork_commit} changes nothing relative to {base}; commit your work first, or \
+             pass --commit"
         );
     }
     let missing = uncovered(&held.scopes, &touched);
@@ -362,8 +380,8 @@ async fn stop(cwd: &Path) -> anyhow::Result<ExitCode> {
         say("stopped: claims released, socket closed\n");
     } else {
         say(&format!(
-            "stopped, but the coordinator was unreachable: claim(s) {} were NOT released and stay \
-             held until their lease ends\n",
+            "stopped, but claim(s) {} were NOT released: the coordinator was unreachable or did not \
+             confirm the release, so they stay held until their lease ends\n",
             id_list(&unreleased)
         ));
     }
