@@ -5,13 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 09:56 EDT.
+**As of:** 2026-10-05 10:16 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the SUBMIT-1 fix merge `8632d73` plus this STATE commit; `main` at
-`29aa8fe` (pull request 1).
+**Tip:** `sprint/build` at the REVIEW-1 merge `38e5ff8` plus this STATE commit; `main` at `29aa8fe`
+(pull request 1).
 **Milestone:** PLAN §9 Oct 7 "work lands automatically in order" is reached for the merge path:
 an agent's `Submit` is merged by the steward and the outcome comes back, checked live (clean merge,
-failing test, conflict). Still open for Oct 7: the review gate's approval path (REVIEW-1). Dogfood
+failing test, conflict). The review gate's approval path is live too (REVIEW-1). Dogfood
 v0 has run once (CLI-2 claimed 14 files on `tessel-dogfood`). Limit, stated honestly: subagents
 share the parent session's hook settings, so the pre-edit hook does not enforce claims for lanes;
 they claim by hand following the skill.
@@ -28,15 +28,15 @@ except ruling 3, which lands with the steward merge path:
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
 **Agents:**
-- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): `tessel submit` done (418 tests); finishing the
-  missing-cwd hook fix it missed, then review.
-- REVIEW-1 (Sonnet, `.claude/worktrees/review-1`): dispatched.
-SUBMIT-1 closed and reclaimed.
+- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): review "No" (reconnect reset the submit diff base, so
+  an unclaimed file could escape `touched`); fix pass 1 running: base from the commit graph, one
+  claim per agent through `Amend`, a deterministic submit reply, `stop` confirming releases.
+SUBMIT-1 and REVIEW-1 closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `e9d00c31`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `9f75140a`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
@@ -81,8 +81,11 @@ SUBMIT-1 closed and reclaimed.
 - Scratch repos `gate6-*`, `gate7-*`, `gate8-*` and `gate9-*` hold test state only.
 - A `watch` connection does not reschedule the alarm; a repo whose queue stalled (only possible
   before `8632d73`) resumes on the next agent message or lease alarm.
-- Submissions flagged for review are held, keep their locks and never expire until REVIEW-1 adds
-  approval; `Summary.reviews_requested` counts them although they have not merged.
+- `Summary.reviews_requested` counts review requests, not reviewed merges (see Pending item 1).
+- A submission held for review keeps its locks until a reviewer in `REVIEWERS` decides it; it never
+  expires. The CLI has no `review` command yet (raw `review` message only).
+- Five lines over 100 characters predate REVIEW-1: `src/coordinator.rs:13`,
+  `src/coordinator/merging.rs:629` and `:825`, `src/identity.rs:153`, `src/shell.rs:1`.
 - A claim takes one mode, so a change that both edits and adds files, or a rename, cannot be
   covered by one claim and `tessel submit` exits 5 (uncovered). Fix candidates for CLI-2b.
 
@@ -91,9 +94,10 @@ attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZ
 two Workers are approved.
 
 **Next actions:**
-1. Review CLI-2 once its hook fix lands; merge; live-check `tessel submit` end to end.
-2. Review REVIEW-1.
-3. CLI-2b: tree-sitter symbol claims, mode escalation, mixed-mode claims.
+1. Re-review CLI-2 after its fix pass; merge; live-check `tessel submit` end to end through the
+   steward, dogfooded.
+2. CLI-2b: tree-sitter symbol claims and mode escalation; `tessel review` for reviewers.
+3. PLAN §9 Oct 8: assumptions end to end (verified), races; dashboard (agents' lane per PLAN §7).
 
 ## Tasks
 
@@ -181,7 +185,10 @@ two Workers are approved.
   file and allows a path outside.
 - [ ] **CLI-2** — part a: `tessel submit` (file-level `touched`, local coverage check, evidence
   required). Part b (CLI-2b): tree-sitter symbol claims and mode escalation in the hook.
-- [ ] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
+- [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
+  CLOSED 2026-10-05 at `38e5ff8` (review "Yes" after one fix pass; flagged submissions now get
+  `ReviewRequired` before any `Accepted`). Workspace tests 404. Live on `9f75140a`: held submit,
+  non-reviewer refused, approval merged, rejection with a fixed reason that never carries the note.
 - [x] **SUBMIT-1** — Felix's ruling 3: on `Submit`, the coordinator sends the claim's fork
   (`<repo>--<agent>`) and commit to the steward merge executor through a service binding (not
   public), and applies the outcome (`Merged` / `SubmitRejected`, `BaseMoved`,
