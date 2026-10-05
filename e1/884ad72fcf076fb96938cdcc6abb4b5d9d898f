@@ -1,0 +1,4 @@
+intent: record the DOGFOOD-4 merge, the first live mirror run and the steps the permission classifier refused
+assumes: none
+rejected: none
+evidence: git ls-remote origin refs/heads/artifacts-trunk = 6f78128 after tools/mirror.sh
