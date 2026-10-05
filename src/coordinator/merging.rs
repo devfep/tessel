@@ -56,10 +56,36 @@ impl Coordinator {
         self.dispatch_of(claim, attempt)
     }
 
+    /// Whether a merge is marked in flight.
+    pub fn has_merge_in_flight(&self) -> bool {
+        self.state.merge_in_flight.is_some()
+    }
+
+    /// Account for a merge that was in flight when the process died: the steward's answer is lost,
+    /// so the dispatch counts as an infrastructure failure. The claim is retried after a backoff
+    /// and rejected at the bound, so a commit that hangs the steward cannot wedge the queue.
+    pub fn recover_merge(&mut self, now_ms: u64) -> Vec<Effect> {
+        let now_ms = self.advance_clock(now_ms);
+        let Some(flight) = self.state.merge_in_flight.take() else {
+            return Vec::new();
+        };
+        let Some(held) = self.state.claims.get(&flight.claim.0).cloned() else {
+            return Vec::new();
+        };
+        if held.submitted.is_none() || held.work.is_none() {
+            return Vec::new();
+        }
+        self.retry_after_infrastructure(flight.claim, held, now_ms)
+    }
+
     /// When the shell should next run `begin_merge`, as an alarm time: `Some(0)` for "now".
-    pub fn next_merge_ms(&self) -> Option<u64> {
+    ///
+    /// `merging_here` is true while this instance is waiting for the steward. The merge in flight
+    /// then schedules nothing: its answer reschedules. Otherwise a stored marker means the process
+    /// restarted, and the alarm must recover it.
+    pub fn next_merge_ms(&self, merging_here: bool) -> Option<u64> {
         if self.state.merge_in_flight.is_some() {
-            return Some(0);
+            return (!merging_here).then_some(0);
         }
         let claim = self.next_to_merge()?;
         let work = self.state.claims.get(&claim.0)?.work.as_ref()?;
@@ -67,8 +93,8 @@ impl Coordinator {
     }
 
     /// The earliest of the next lease expiry and the next merge dispatch: the one alarm time.
-    pub fn next_alarm_ms(&self) -> Option<u64> {
-        match (self.next_expiry_ms(), self.next_merge_ms()) {
+    pub fn next_alarm_ms(&self, merging_here: bool) -> Option<u64> {
+        match (self.next_expiry_ms(), self.next_merge_ms(merging_here)) {
             (Some(expiry), Some(merge)) => Some(expiry.min(merge)),
             (Some(due), None) | (None, Some(due)) => Some(due),
             (None, None) => None,
@@ -120,14 +146,15 @@ impl Coordinator {
         })
     }
 
-    /// The earliest submission that may be dispatched: a real claim, submitted, not held for review.
+    /// The earliest submission that may be dispatched: submitted and not held for review. Only real
+    /// claims have `work`, so shadow claims never qualify.
     fn next_to_merge(&self) -> Option<ClaimId> {
         let mut next: Option<(u64, ClaimId)> = None;
         for (id, held) in &self.state.claims {
             let (Some(ordinal), Some(work)) = (held.submitted, held.work.as_ref()) else {
                 continue;
             };
-            if !held.kind.places_locks() || work.awaiting_review {
+            if work.awaiting_review {
                 continue;
             }
             if next.is_none_or(|(best, _)| ordinal < best) {
@@ -420,6 +447,12 @@ mod tests {
         (*claim, *fence)
     }
 
+    /// A distinct, valid commit id per agent name.
+    fn fork_sha(who: &str) -> String {
+        let seed = who.bytes().fold(0u8, |sum, b| sum.wrapping_add(b));
+        format!("{seed:02x}").repeat(20)
+    }
+
     fn submit_with(
         c: &mut Coordinator,
         who: &str,
@@ -439,7 +472,7 @@ mod tests {
             req: RequestId(9),
             claim: claim.0,
             fence: claim.1,
-            fork_commit: CommitId(format!("fork-{who}")),
+            fork_commit: CommitId(fork_sha(who)),
             touched,
             decisions,
         };
@@ -532,7 +565,7 @@ mod tests {
             }]
         ));
         assert_eq!(c.begin_merge(NOW + 7), None, "nothing is left to merge");
-        assert_eq!(c.next_merge_ms(), None);
+        assert_eq!(c.next_merge_ms(false), None);
     }
 
     #[test]
@@ -800,7 +833,7 @@ mod tests {
                     "{outcome:?}"
                 );
                 let wait = crate::merge::infra_backoff_ms(retry);
-                assert_eq!(c.next_merge_ms(), Some(now + wait));
+                assert_eq!(c.next_merge_ms(false), Some(now + wait));
                 assert_eq!(c.begin_merge(now + wait - 1), None, "still backing off");
                 now += wait;
                 let again = c.begin_merge(now).expect("due after the backoff");
@@ -860,7 +893,7 @@ mod tests {
         let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
 
         assert_eq!(restarted.begin_merge(NOW + 60_000), Some(sent));
-        assert_eq!(restarted.next_merge_ms(), Some(0));
+        assert_eq!(restarted.next_merge_ms(false), Some(0));
     }
 
     /// What a reviewer's approval will do: the submission may now be dispatched.
@@ -941,7 +974,11 @@ mod tests {
         submit_with(&mut c, "sig", signature, touched, true);
 
         assert_eq!(c.begin_merge(NOW), None);
-        assert_eq!(c.next_alarm_ms(), None, "no alarm for work that cannot run");
+        assert_eq!(
+            c.next_alarm_ms(false),
+            None,
+            "no alarm for work that cannot run"
+        );
 
         let clean = grant(&mut c, "clean", vec![edit("src/3.rs")]);
         submit(&mut c, "clean", clean, "src/3.rs");
@@ -975,23 +1012,27 @@ mod tests {
             true,
         );
         assert_eq!(c.begin_merge(NOW), None);
-        assert_eq!(c.next_merge_ms(), None);
+        assert_eq!(c.next_merge_ms(false), None);
     }
 
     #[test]
     fn the_alarm_is_the_earliest_of_the_lease_expiry_and_the_merge() {
         let mut c = core();
-        assert_eq!(c.next_alarm_ms(), None);
+        assert_eq!(c.next_alarm_ms(false), None);
         grant(&mut c, "idle", vec![edit("src/idle.rs")]);
-        assert_eq!(c.next_alarm_ms(), Some(NOW + LEASE), "a lease alone");
+        assert_eq!(c.next_alarm_ms(false), Some(NOW + LEASE), "a lease alone");
 
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
-        assert_eq!(c.next_alarm_ms(), Some(0), "a merge in flight is due now");
+        assert_eq!(
+            c.next_alarm_ms(false),
+            Some(0),
+            "a merge in flight is due now"
+        );
 
         c.merge_outcome(claim, &MergeOutcome::Clone {}, NOW);
         let retry = NOW + INFRA_BACKOFF_BASE_MS;
         assert_eq!(
-            c.next_alarm_ms(),
+            c.next_alarm_ms(false),
             Some(retry),
             "the backoff is earlier than the lease"
         );
@@ -1000,9 +1041,159 @@ mod tests {
         c.begin_merge(retry + crate::merge::infra_backoff_ms(2));
         c.merge_outcome(claim, &MergeOutcome::Clone {}, retry + 1_000_000);
         assert_eq!(
-            c.next_alarm_ms(),
+            c.next_alarm_ms(false),
             Some(NOW + LEASE),
             "a retry later than the lease leaves the lease first"
         );
+    }
+
+    #[test]
+    fn the_submitter_is_not_told_that_main_moved_even_with_another_overlapping_claim() {
+        let mut c = core();
+        grant(&mut c, "author", vec![sc(file("src/a.rs"), Mode::Depend)]);
+        let (claim, _) = dispatched(&mut c, "author", "src/a.rs");
+        grant(&mut c, "reader", vec![sc(file("src/a.rs"), Mode::Depend)]);
+
+        let effects = c.merge_outcome(claim, &merged_outcome(), NOW);
+
+        assert!(!notices(&effects, "author")
+            .iter()
+            .any(|m| matches!(m, ServerMsg::BaseMoved { .. })));
+        assert_eq!(notices(&effects, "reader").len(), 1);
+        let notified: Vec<&Vec<AgentId>> = logged(&effects)
+            .into_iter()
+            .filter_map(|k| match k {
+                EventKind::BaseMoved { notified, .. } => Some(notified),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notified, [&vec![agent("reader")]]);
+    }
+
+    #[test]
+    fn a_shadow_submission_never_gets_work() {
+        let mut c = core();
+        grant(&mut c, "owner", vec![edit("src/a.rs")]);
+        let msg = ClientMsg::Claim {
+            req: RequestId(1),
+            intent: intent(Vec::new()),
+            scopes: vec![edit("src/a.rs")],
+            on_conflict: OnConflict::Shadow,
+        };
+        let effects = c.handle(&agent("shadow"), msg, NOW);
+        let Some(ServerMsg::Shadowed { claim, fence, .. }) = replies(&effects).into_iter().next()
+        else {
+            panic!("expected Shadowed, got {effects:?}");
+        };
+        submit_with(
+            &mut c,
+            "shadow",
+            (*claim, *fence),
+            vec![edit("src/a.rs")],
+            true,
+        );
+        let shadow = c.state.claims.get(&claim.0).unwrap();
+        assert!(shadow.submitted.is_some() && shadow.work.is_none());
+    }
+
+    #[test]
+    fn a_4xx_from_the_steward_rejects_at_once_with_no_retry() {
+        let mut c = core();
+        let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
+        let outcome = MergeOutcome::from_response(400, "{}");
+        let effects = c.merge_outcome(claim, &outcome, NOW);
+        let [ServerMsg::SubmitRejected { reason, .. }] = &notices(&effects, "a")[..] else {
+            panic!("expected SubmitRejected, got {effects:?}");
+        };
+        assert!(reason.contains("fork missing or invalid"), "{reason}");
+        assert_eq!(c.begin_merge(NOW + 10_000_000), None, "never retried");
+    }
+
+    #[test]
+    fn a_submit_whose_commit_is_not_a_full_lowercase_sha_is_refused_and_changes_nothing() {
+        for bad in [
+            "",
+            "main",
+            "abc",
+            &"A".repeat(40),
+            &"g".repeat(40),
+            &"a".repeat(41),
+        ] {
+            let mut c = core();
+            let claim = grant(&mut c, "a", vec![edit("src/a.rs")]);
+            let before = serde_json::to_string(&c).unwrap();
+            let msg = ClientMsg::Submit {
+                req: RequestId(9),
+                claim: claim.0,
+                fence: claim.1,
+                fork_commit: CommitId(bad.to_string()),
+                touched: vec![edit("src/a.rs")],
+                decisions: DecisionRecord::default(),
+            };
+            let effects = c.handle(&agent("a"), msg, NOW);
+            assert!(
+                matches!(
+                    &effects[..],
+                    [Effect::Reply(ServerMsg::Error {
+                        code: ErrorCode::Malformed,
+                        ..
+                    })]
+                ),
+                "{bad}: {effects:?}"
+            );
+            assert_eq!(serde_json::to_string(&c).unwrap(), before, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_merge_lost_to_a_restart_counts_as_an_attempt_and_hits_the_bound() {
+        let mut c = core();
+        let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
+        let mut now = NOW;
+        for lost in 1..=crate::merge::MAX_INFRA_RETRIES {
+            assert!(c.recover_merge(now).is_empty());
+            assert!(!c.has_merge_in_flight());
+            assert_eq!(c.begin_merge(now), None, "backing off after restart {lost}");
+            now += crate::merge::infra_backoff_ms(lost);
+            let again = c.begin_merge(now).expect("due after the backoff");
+            assert_eq!((again.claim, again.attempt), (claim, lost + 1));
+        }
+        let effects = c.recover_merge(now);
+        let [ServerMsg::SubmitRejected { reason, .. }] = &notices(&effects, "a")[..] else {
+            panic!("a commit that keeps losing the process is rejected, got {effects:?}");
+        };
+        assert!(
+            reason.contains("infrastructure, not a code failure"),
+            "{reason}"
+        );
+        assert_eq!(c.begin_merge(now), None);
+    }
+
+    #[test]
+    fn recovering_with_nothing_in_flight_changes_nothing() {
+        let mut c = core();
+        let claim = grant(&mut c, "a", vec![edit("src/a.rs")]);
+        submit(&mut c, "a", claim, "src/a.rs");
+        let before = serde_json::to_string(&c).unwrap();
+        assert!(c.recover_merge(NOW).is_empty());
+        assert_eq!(serde_json::to_string(&c).unwrap(), before);
+    }
+
+    #[test]
+    fn a_merge_this_instance_is_waiting_on_schedules_only_the_lease_expiry() {
+        let mut c = core();
+        grant(&mut c, "idle", vec![edit("src/idle.rs")]);
+        dispatched(&mut c, "a", "src/a.rs");
+        assert_eq!(
+            c.next_alarm_ms(false),
+            Some(0),
+            "after a restart: recover it"
+        );
+        assert_eq!(
+            c.next_alarm_ms(true),
+            Some(NOW + LEASE),
+            "mid-merge: leases only"
+        );
+        assert_eq!(c.next_merge_ms(true), None);
     }
 }

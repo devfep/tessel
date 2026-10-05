@@ -23,6 +23,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
+use std::future::{poll_fn, Future};
+use std::pin::pin;
+use std::task::Poll;
+use std::time::Duration;
 
 use crate::coordinator::{Coordinator as Core, Effect, MergeDispatch};
 use crate::identity;
@@ -51,6 +55,11 @@ const STEWARD_BINDING: &str = "STEWARD";
 /// The URL the steward is asked at. A service binding ignores the host; only the path and method
 /// matter to `MergeService`.
 const STEWARD_MERGE_URL: &str = "https://steward.internal/merge";
+
+/// How long the coordinator waits for the steward. The steward's own test step is capped at 10
+/// minutes, so this is longer; it stays under the 15-minute wall-clock limit of an alarm. A merge
+/// that outlives it is retried: the steward answers `already_merged` if it did land.
+const STEWARD_CALL_TIMEOUT: Duration = Duration::from_secs(13 * 60);
 
 /// What `apply` made of a call: something to store and send, or a client call that is refused
 /// because it would grow the state too far.
@@ -113,7 +122,9 @@ pub struct Coordinator {
     /// The size of the state as last stored, for the soft limit.
     stored: Cell<StoredSize>,
     /// The claim whose merge this instance is waiting on. Memory only: a restart forgets it, which
-    /// is when the stored marker has to be dispatched again.
+    /// is how the alarm tells a merge cut off by a restart from one still running. While it is
+    /// set, `apply` schedules only lease expiry, so a client message cannot start a second
+    /// dispatch or a hot loop of alarms.
     merging: Cell<Option<ClaimId>>,
 }
 
@@ -264,7 +275,7 @@ impl Coordinator {
             return Err(self.fail("apply", "core is not loaded"));
         };
         let effects = step(core);
-        let next_alarm_ms = core.next_alarm_ms();
+        let next_alarm_ms = core.next_alarm_ms(self.merging.get().is_some());
         let (events, outbound) = shell::split_effects(effects);
         let entries = match shell::persist_entries(core, &events) {
             Ok(entries) => entries,
@@ -297,57 +308,87 @@ impl Coordinator {
         }
     }
 
-    /// The alarm: expire leases, then run the merges that are due. Each step stores its result
-    /// under the hard limit and delivers it.
+    /// The alarm: expire leases, recover a merge a restart cut off, then run at most one merge.
+    /// One merge per alarm keeps each invocation short and lets lease expiry run first every time.
+    /// Each step stores its result under the hard limit and delivers it.
     async fn run_alarm(&self) -> Result<()> {
         self.ensure_loaded().await?;
         self.expire_at(now_ms()).await?;
-        self.drive_merges().await
+        self.recover_cut_off_merge().await?;
+        self.run_one_merge().await
     }
 
-    /// Run the next merge the core offers, one at a time, until none is due. The in-flight marker
-    /// is stored before the steward is called; the answer is stored before anyone is told.
-    async fn drive_merges(&self) -> Result<()> {
-        loop {
-            let started_ms = now_ms();
-            let mut dispatch = None;
-            let prepared = self.apply(Work::Plain, |core| {
-                dispatch = core.begin_merge(started_ms);
-                Vec::new()
-            })?;
-            let Some(dispatch) = dispatch else {
-                return Ok(());
-            };
-            let mut applied = self.ready(prepared, "start merge")?;
-            applied.dispatch = Some(dispatch);
-            let persisted = self.persist(applied).await?;
-            self.settle(&persisted, None).await?;
-            let Some(dispatch) = persisted.dispatch() else {
-                return Err(self.fail("start merge", "the stored call lost its dispatch"));
-            };
-            if self.merging.get() == Some(dispatch.claim) {
-                return Ok(());
-            }
-            self.merging.set(Some(dispatch.claim));
-            let outcome = self.ask_steward(dispatch).await;
-            self.merging.set(None);
-            let claim = dispatch.claim;
-            let prepared = self.apply(Work::Plain, |core| {
-                core.merge_outcome(claim, &outcome, now_ms())
-            })?;
-            let applied = self.ready(prepared, "apply merge outcome")?;
-            let persisted = self.persist(applied).await?;
-            self.settle(&persisted, None).await?;
+    /// A merge marked in flight while this instance is not waiting on the steward was cut off by a
+    /// restart: its answer is lost. The core counts it as an attempt, so a commit that keeps
+    /// killing the merge is eventually rejected.
+    async fn recover_cut_off_merge(&self) -> Result<()> {
+        let cut_off = self.merging.get().is_none()
+            && self
+                .core
+                .borrow()
+                .as_ref()
+                .is_some_and(|core| core.has_merge_in_flight());
+        if !cut_off {
+            return Ok(());
         }
+        let now_ms = now_ms();
+        let prepared = self.apply(Work::Plain, |core| core.recover_merge(now_ms))?;
+        let applied = self.ready(prepared, "recover cut-off merge")?;
+        let persisted = self.persist(applied).await?;
+        self.settle(&persisted, None).await
+    }
+
+    /// Run the next merge the core offers, if one is due. The in-flight marker is stored before
+    /// the steward is called; the answer is stored before anyone is told.
+    async fn run_one_merge(&self) -> Result<()> {
+        if self.merging.get().is_some() {
+            return Ok(());
+        }
+        let started_ms = now_ms();
+        let mut dispatch = None;
+        let prepared = self.apply(Work::Plain, |core| {
+            dispatch = core.begin_merge(started_ms);
+            Vec::new()
+        })?;
+        let Some(dispatch) = dispatch else {
+            return Ok(());
+        };
+        let mut applied = self.ready(prepared, "start merge")?;
+        // The marker is stored but the answer is not in yet: only a lease expiry is scheduled.
+        applied.next_alarm_ms = self
+            .core
+            .borrow()
+            .as_ref()
+            .and_then(|core| core.next_expiry_ms());
+        applied.dispatch = Some(dispatch);
+        let persisted = self.persist(applied).await?;
+        let Some(dispatch) = persisted.dispatch() else {
+            return Err(self.fail("start merge", "the stored call lost its dispatch"));
+        };
+        self.merging.set(Some(dispatch.claim));
+        self.settle(&persisted, None).await?;
+        let outcome = self.ask_steward(dispatch).await;
+        self.merging.set(None);
+        let claim = dispatch.claim;
+        let prepared = self.apply(Work::Plain, |core| {
+            core.merge_outcome(claim, &outcome, now_ms())
+        })?;
+        let applied = self.ready(prepared, "apply merge outcome")?;
+        let persisted = self.persist(applied).await?;
+        self.settle(&persisted, None).await
     }
 
     /// Ask the steward to merge. A failed call, a non-200 and an answer that is not a known
     /// outcome are all `ServiceUnavailable`: infrastructure, retried with backoff by the core.
     async fn ask_steward(&self, dispatch: &MergeDispatch) -> MergeOutcome {
-        match self.call_steward(dispatch).await {
-            Ok((status, body)) => MergeOutcome::from_response(status, &body),
-            Err(e) => {
+        match with_timeout(self.call_steward(dispatch), STEWARD_CALL_TIMEOUT).await {
+            Some(Ok((status, body))) => MergeOutcome::from_response(status, &body),
+            Some(Err(e)) => {
                 console_error!("coordinator {}: steward call failed: {e}", self.repo());
+                MergeOutcome::ServiceUnavailable
+            }
+            None => {
+                console_error!("coordinator {}: steward call timed out", self.repo());
                 MergeOutcome::ServiceUnavailable
             }
         }
@@ -606,6 +647,22 @@ impl Coordinator {
         ws.serialize_attachment(session)
             .map_err(|e| self.fail("write socket session", e))
     }
+}
+
+/// `fut`'s output, or `None` if it is not ready within `limit`.
+async fn with_timeout<T>(fut: impl Future<Output = T>, limit: Duration) -> Option<T> {
+    let mut fut = pin!(fut);
+    let mut timer = pin!(Delay::from(limit));
+    poll_fn(|cx| {
+        if let Poll::Ready(value) = fut.as_mut().poll(cx) {
+            return Poll::Ready(Some(value));
+        }
+        if timer.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 fn now_ms() -> u64 {

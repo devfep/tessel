@@ -1005,6 +1005,10 @@ impl Coordinator {
         if held.submitted.is_some() {
             return vec![already_submitted(Some(req), claim)];
         }
+        if !is_commit_sha(&fork_commit.0) {
+            let message = "fork_commit must be 40 lowercase hex characters";
+            return vec![error(Some(req), ErrorCode::Malformed, message)];
+        }
         if touched.is_empty() {
             let message = "submit names no touched scopes";
             return vec![error(Some(req), ErrorCode::Malformed, message)];
@@ -1323,6 +1327,15 @@ fn without_duplicates(scopes: Vec<ScopeClaim>) -> Vec<ScopeClaim> {
     out
 }
 
+/// Whether `commit` is a full git object id: 40 lowercase hex characters, the only spelling the
+/// steward accepts.
+fn is_commit_sha(commit: &str) -> bool {
+    commit.len() == 40
+        && commit
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// The most scope entries one `Claim`, `Amend` or `Submit` may carry.
 const MAX_SCOPES_PER_MESSAGE: usize = 256;
 
@@ -1456,6 +1469,8 @@ mod tests {
 
     const NOW: u64 = 1_000;
     const LEASE: u64 = 30_000;
+    const FORK: &str = "f000000000000000000000000000000000000000";
+    const FORK_B: &str = "b000000000000000000000000000000000000000";
 
     fn coordinator() -> Coordinator {
         Coordinator::new(Config {
@@ -3304,7 +3319,7 @@ mod tests {
             req: RequestId(9),
             claim,
             fence,
-            fork_commit: CommitId("fork".into()),
+            fork_commit: CommitId(FORK.into()),
             touched,
             decisions: tested(),
         }
@@ -3466,7 +3481,7 @@ mod tests {
             req: RequestId(9),
             claim: b,
             fence: b_fence,
-            fork_commit: CommitId("fork-b".into()),
+            fork_commit: CommitId(FORK_B.into()),
             touched: vec![y_edit(), y_edit()],
             decisions: decisions.clone(),
         };
@@ -3482,7 +3497,7 @@ mod tests {
         else {
             panic!("expected Submitted, got {first:?}");
         };
-        assert_eq!((*claim, fork_commit), (b, &CommitId("fork-b".into())));
+        assert_eq!((*claim, fork_commit), (b, &CommitId(FORK_B.into())));
         assert_eq!(touched, &vec![y_edit()]);
         assert_eq!(format!("{logged_decisions:?}"), format!("{decisions:?}"));
 
@@ -3672,7 +3687,7 @@ mod tests {
             req: RequestId(9),
             claim: b,
             fence: b_fence,
-            fork_commit: CommitId("fork-b".into()),
+            fork_commit: CommitId(FORK_B.into()),
             touched: vec![edit],
             decisions: tested(),
         };
@@ -3690,7 +3705,7 @@ mod tests {
                 statement: "returns Some".into(),
             },
             agent("b"),
-            CommitId("fork-b".into()),
+            CommitId(FORK_B.into()),
         );
         assert_eq!(
             challenge_notices(&effects),

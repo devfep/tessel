@@ -80,6 +80,11 @@ pub enum MergeOutcome {
     GitFailed {},
     Install {},
     PushFailed {},
+    /// The steward refused the request itself (a 4xx): a missing or invalid fork. A fact about
+    /// the submission, not about the infrastructure, so it is never retried. Never read from a
+    /// response body.
+    #[serde(skip_deserializing)]
+    Refused,
     /// Infrastructure: the steward could not be reached or its answer was unusable. Never sent by
     /// the steward, so it is not read from a response.
     #[serde(skip_deserializing)]
@@ -87,9 +92,12 @@ pub enum MergeOutcome {
 }
 
 impl MergeOutcome {
-    /// The outcome a steward response means. A response that is not a 200 with a known
-    /// `MergeOutcome` is `ServiceUnavailable`; its body is never kept or quoted.
+    /// The outcome a steward response means. A 4xx is `Refused`. Any other response that is not a
+    /// 200 with a known `MergeOutcome` is `ServiceUnavailable`. A body is never kept or quoted.
     pub fn from_response(status: u16, body: &str) -> Self {
+        if (400..500).contains(&status) {
+            return MergeOutcome::Refused;
+        }
         if status != 200 {
             return MergeOutcome::ServiceUnavailable;
         }
@@ -127,6 +135,9 @@ impl MergeOutcome {
             },
             MergeOutcome::CommitNotInFork {} => Verdict::Rejected {
                 reason: "the submitted commit is not on your fork's default branch".to_string(),
+            },
+            MergeOutcome::Refused => Verdict::Rejected {
+                reason: "the steward refused the request (fork missing or invalid)".to_string(),
             },
             MergeOutcome::MainMoved {} => Verdict::MainMoved,
             MergeOutcome::Clone {}
@@ -232,14 +243,24 @@ mod tests {
             MergeOutcome::from_response(502, r#"{"error":"x"}"#),
             unavailable
         );
-        assert_eq!(
-            MergeOutcome::from_response(400, r#"{"outcome":"commit_not_in_fork"}"#),
-            unavailable
-        );
+        assert_eq!(MergeOutcome::from_response(500, ""), unavailable);
+        assert_eq!(MergeOutcome::from_response(302, ""), unavailable);
         assert_eq!(parse("not json"), unavailable);
         assert_eq!(parse(r#"{"outcome":"never_heard_of_it"}"#), unavailable);
         assert_eq!(parse(r#"{"outcome":"service_unavailable"}"#), unavailable);
         assert_eq!(parse(r#"{"outcome":"merged","base":"x"}"#), unavailable);
+    }
+
+    #[test]
+    fn a_4xx_is_a_refusal_of_the_request_whatever_the_body_says() {
+        for status in [400, 403, 404, 499] {
+            let outcome = MergeOutcome::from_response(status, r#"{"outcome":"merged"}"#);
+            assert_eq!(outcome, MergeOutcome::Refused, "{status}");
+        }
+        let Verdict::Rejected { reason } = MergeOutcome::Refused.verdict() else {
+            panic!("a refusal rejects the work");
+        };
+        assert!(reason.contains("fork missing or invalid"), "{reason}");
     }
 
     #[test]
