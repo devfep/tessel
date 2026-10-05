@@ -1,0 +1,4 @@
+intent: close pass-2 findings: watcher from_seq on live fan-out, Persisted owns Applied, send-error continuation, store tests
+assumes: none new
+rejected: fake storage for write/read glue (T2: token issued without awaiting the transaction is untestable natively)
+evidence: cargo test 158 pass; clippy 0 hits; wasm 0 warnings in own files; wrangler dev from_seq watcher, grant/deny, restart pass; 4 mutants caught
