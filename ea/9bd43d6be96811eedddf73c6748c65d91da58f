@@ -1,0 +1,4 @@
+intent: merge RACE-FIX: a race is judged early only when it is full and every entrant has submitted; otherwise at its deadline
+assumes: none
+rejected: judging as soon as all current entrants had submitted (found live: it shut out the second entrant)
+evidence: review Yes (4 reviewer mutants, 3 killed, 1 on unreachable code). Merged tree: cargo test --workspace 680. Live on coordinator 6411b1db (which includes this change), repo gate16-1791223992: felix opened race 1 (tests_pass, first_submitted, max 2); a3 denied with the race; a1 joined and submitted, then a2 joined and submitted (no early judging with one entrant); trials gave a1 tests_passed true and a2 filtered out; race_result winner a1 (claim 2); a1 merged at fd1844c; a2 submit_rejected 'lost the race'.
