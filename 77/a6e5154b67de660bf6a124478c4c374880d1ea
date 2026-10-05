@@ -1,0 +1,4 @@
+intent: wrap the one over-100-character line this task added (runtime.rs ensure_loaded doc)
+assumes: none
+rejected: wrapping lines the task did not add (coordinator.rs:13, merging.rs:629 and :825, identity.rs:153, shell.rs:1)
+evidence: awk 'length>100' on added lines finds none; clippy clean
