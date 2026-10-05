@@ -1,0 +1,4 @@
+intent: extract clone/revoke/test sequencing into a pure function so its order is unit tested
+assumes: none
+rejected: testing through TestRunner (needs workerd and a container)
+evidence: typecheck/oxlint/oxfmt clean; vitest 67 passed (expected 67); local run step test exit 0 passed true; mutants P2 and P3 turn tests red
