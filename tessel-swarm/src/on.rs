@@ -677,3 +677,41 @@ async fn submit_and_wait(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timed_out(task: usize) -> TaskResult {
+        TaskResult {
+            task,
+            agent: "a01".into(),
+            result: Resolution::TimedOut,
+            denials: 0,
+            work_ms: 0,
+            waited_ms: 0,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn a_timed_out_task_the_log_shows_decided_is_counted_as_decided() {
+        let mut counts = events::LogCounts::default();
+        counts.merged_task_refs.insert("t02".into());
+        counts.rejected_task_refs.insert("t03".into());
+        let settled = settled(vec![timed_out(2), timed_out(3), timed_out(4)], &counts);
+        let got: Vec<Resolution> = settled.iter().map(|r| r.result).collect();
+        assert_eq!(
+            got,
+            [
+                Resolution::Merged,
+                Resolution::Rejected,
+                Resolution::TimedOut
+            ]
+        );
+        assert!(settled[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("stopped waiting")));
+    }
+}
