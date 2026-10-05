@@ -17,7 +17,9 @@
 //! - Every effect here is a `Notify` or a `Log`: there is no sender to reply to.
 
 use super::{ActiveClaim, Coordinator, Effect, InFlight, Submission};
-use crate::merge::{infra_backoff_ms, MergeOutcome, Verdict, MAX_INFRA_RETRIES, MAX_MAIN_MOVED};
+use crate::merge::{
+    infra_backoff_ms, MergeOutcome, Verdict, MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
+};
 use crate::protocol::{
     AgentId, ClaimId, CommitId, EventKind, ReleaseReason, Scope, ScopeClaim, ServerMsg,
 };
@@ -81,11 +83,15 @@ impl Coordinator {
     /// When the shell should next run `begin_merge`, as an alarm time: `Some(0)` for "now".
     ///
     /// `merging_here` is true while this instance is waiting for the steward. The merge in flight
-    /// then schedules nothing: its answer reschedules. Otherwise a stored marker means the process
-    /// restarted, and the alarm must recover it.
-    pub fn next_merge_ms(&self, merging_here: bool) -> Option<u64> {
+    /// then schedules only a watchdog, `MERGE_WATCHDOG_MS` after `now_ms`: its answer reschedules,
+    /// and the watchdog fires only if the instance died first. Otherwise a stored marker means the
+    /// process restarted, and the alarm must recover it at once.
+    pub fn next_merge_ms(&self, merging_here: bool, now_ms: u64) -> Option<u64> {
         if self.state.merge_in_flight.is_some() {
-            return (!merging_here).then_some(0);
+            if merging_here {
+                return Some(now_ms.saturating_add(MERGE_WATCHDOG_MS));
+            }
+            return Some(0);
         }
         let claim = self.next_to_merge()?;
         let work = self.state.claims.get(&claim.0)?.work.as_ref()?;
@@ -93,8 +99,11 @@ impl Coordinator {
     }
 
     /// The earliest of the next lease expiry and the next merge dispatch: the one alarm time.
-    pub fn next_alarm_ms(&self, merging_here: bool) -> Option<u64> {
-        match (self.next_expiry_ms(), self.next_merge_ms(merging_here)) {
+    pub fn next_alarm_ms(&self, merging_here: bool, now_ms: u64) -> Option<u64> {
+        match (
+            self.next_expiry_ms(),
+            self.next_merge_ms(merging_here, now_ms),
+        ) {
             (Some(expiry), Some(merge)) => Some(expiry.min(merge)),
             (Some(due), None) | (None, Some(due)) => Some(due),
             (None, None) => None,
@@ -565,7 +574,7 @@ mod tests {
             }]
         ));
         assert_eq!(c.begin_merge(NOW + 7), None, "nothing is left to merge");
-        assert_eq!(c.next_merge_ms(false), None);
+        assert_eq!(c.next_merge_ms(false, NOW), None);
     }
 
     #[test]
@@ -833,7 +842,7 @@ mod tests {
                     "{outcome:?}"
                 );
                 let wait = crate::merge::infra_backoff_ms(retry);
-                assert_eq!(c.next_merge_ms(false), Some(now + wait));
+                assert_eq!(c.next_merge_ms(false, NOW), Some(now + wait));
                 assert_eq!(c.begin_merge(now + wait - 1), None, "still backing off");
                 now += wait;
                 let again = c.begin_merge(now).expect("due after the backoff");
@@ -893,7 +902,7 @@ mod tests {
         let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
 
         assert_eq!(restarted.begin_merge(NOW + 60_000), Some(sent));
-        assert_eq!(restarted.next_merge_ms(false), Some(0));
+        assert_eq!(restarted.next_merge_ms(false, NOW), Some(0));
     }
 
     /// What a reviewer's approval will do: the submission may now be dispatched.
@@ -975,7 +984,7 @@ mod tests {
 
         assert_eq!(c.begin_merge(NOW), None);
         assert_eq!(
-            c.next_alarm_ms(false),
+            c.next_alarm_ms(false, NOW),
             None,
             "no alarm for work that cannot run"
         );
@@ -1012,19 +1021,23 @@ mod tests {
             true,
         );
         assert_eq!(c.begin_merge(NOW), None);
-        assert_eq!(c.next_merge_ms(false), None);
+        assert_eq!(c.next_merge_ms(false, NOW), None);
     }
 
     #[test]
     fn the_alarm_is_the_earliest_of_the_lease_expiry_and_the_merge() {
         let mut c = core();
-        assert_eq!(c.next_alarm_ms(false), None);
+        assert_eq!(c.next_alarm_ms(false, NOW), None);
         grant(&mut c, "idle", vec![edit("src/idle.rs")]);
-        assert_eq!(c.next_alarm_ms(false), Some(NOW + LEASE), "a lease alone");
+        assert_eq!(
+            c.next_alarm_ms(false, NOW),
+            Some(NOW + LEASE),
+            "a lease alone"
+        );
 
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         assert_eq!(
-            c.next_alarm_ms(false),
+            c.next_alarm_ms(false, NOW),
             Some(0),
             "a merge in flight is due now"
         );
@@ -1032,7 +1045,7 @@ mod tests {
         c.merge_outcome(claim, &MergeOutcome::Clone {}, NOW);
         let retry = NOW + INFRA_BACKOFF_BASE_MS;
         assert_eq!(
-            c.next_alarm_ms(false),
+            c.next_alarm_ms(false, NOW),
             Some(retry),
             "the backoff is earlier than the lease"
         );
@@ -1041,7 +1054,7 @@ mod tests {
         c.begin_merge(retry + crate::merge::infra_backoff_ms(2));
         c.merge_outcome(claim, &MergeOutcome::Clone {}, retry + 1_000_000);
         assert_eq!(
-            c.next_alarm_ms(false),
+            c.next_alarm_ms(false, NOW),
             Some(NOW + LEASE),
             "a retry later than the lease leaves the lease first"
         );
@@ -1105,7 +1118,10 @@ mod tests {
         let [ServerMsg::SubmitRejected { reason, .. }] = &notices(&effects, "a")[..] else {
             panic!("expected SubmitRejected, got {effects:?}");
         };
-        assert!(reason.contains("fork missing or invalid"), "{reason}");
+        assert!(
+            reason.contains("fork missing or not a fork of this repo"),
+            "{reason}"
+        );
         assert_eq!(c.begin_merge(NOW + 10_000_000), None, "never retried");
     }
 
@@ -1185,15 +1201,25 @@ mod tests {
         grant(&mut c, "idle", vec![edit("src/idle.rs")]);
         dispatched(&mut c, "a", "src/a.rs");
         assert_eq!(
-            c.next_alarm_ms(false),
+            c.next_alarm_ms(false, NOW),
             Some(0),
             "after a restart: recover it"
         );
         assert_eq!(
-            c.next_alarm_ms(true),
+            c.next_alarm_ms(true, NOW),
             Some(NOW + LEASE),
-            "mid-merge: leases only"
+            "mid-merge: the lease comes before the watchdog"
         );
-        assert_eq!(c.next_merge_ms(true), None);
+        assert_eq!(c.next_merge_ms(true, NOW), Some(NOW + MERGE_WATCHDOG_MS));
+    }
+
+    #[test]
+    fn a_merge_in_flight_still_has_an_alarm_when_every_claim_is_submitted() {
+        let mut c = core();
+        dispatched(&mut c, "a", "src/a.rs");
+        assert_eq!(c.next_expiry_ms(), None, "no lease is running");
+        let at = c.next_alarm_ms(true, NOW + 7);
+        assert_eq!(at, Some(NOW + 7 + MERGE_WATCHDOG_MS));
+        const { assert!(MERGE_WATCHDOG_MS > crate::merge::STEWARD_CALL_TIMEOUT_MS) };
     }
 }

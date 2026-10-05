@@ -14,9 +14,13 @@ import { MergeService } from "./merge-service";
 
 const COMMIT = "b".repeat(40);
 
-function build(sources: Record<string, string | null>, merge = vi.fn()) {
+function build(
+  sources: Record<string, string | null>,
+  merge = vi.fn(),
+  artifacts?: { get: () => Promise<never> },
+) {
   const env = {
-    ARTIFACTS: {
+    ARTIFACTS: artifacts ?? {
       get: async (name: string) => {
         if (!(name in sources)) {
           throw Object.assign(new Error("not found"), { code: "NOT_FOUND" });
@@ -69,6 +73,26 @@ describe("MergeService", () => {
     const response = await service.fetch(post(body));
     expect(response.status).toBe(400);
     expect(merge).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 when the fork or the repo does not exist, so the coordinator does not retry", async () => {
+    const { service, merge } = build({});
+    const response = await service.fetch(
+      post({ repo: "demo", fork: "demo--ghost", commit: COMMIT }),
+    );
+    expect(response.status).toBe(404);
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it("answers 502 for an Artifacts failure that is not NOT_FOUND", async () => {
+    const failing = {
+      get: async () => {
+        throw Object.assign(new Error("down"), { code: "UPSTREAM_UNAVAILABLE" });
+      },
+    };
+    const { service } = build({}, vi.fn(), failing);
+    const response = await service.fetch(post({ repo: "demo", fork: "demo--a1", commit: COMMIT }));
+    expect(response.status).toBe(502);
   });
 
   it("answers 405 to anything but POST", async () => {

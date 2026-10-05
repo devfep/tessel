@@ -332,6 +332,12 @@ pub fn alarm_at_ms(next_alarm_ms: Option<u64>) -> Option<f64> {
     Some((next as f64).min(MAX_DATE_MS))
 }
 
+/// Whether a stored in-flight merge was cut off by a restart. It was not if this instance is
+/// itself waiting on the steward: recovery must then do nothing.
+pub fn merge_cut_off(merging_here: bool, in_flight: bool) -> bool {
+    in_flight && !merging_here
+}
+
 /// Remember the first error of a series of attempts: record `result` in `slot` unless an earlier
 /// one is already there. Delivery uses it to try every send and still report a failure.
 pub fn keep_first<E>(slot: &mut Option<E>, result: Result<(), E>) {
@@ -967,6 +973,17 @@ mod tests {
         let sessions = [Session::default(), watcher.clone(), bound("a1"), watcher];
         assert_eq!(watcher_indexes(&sessions, 0), vec![1, 3]);
         assert!(watcher_indexes(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn a_stored_merge_is_cut_off_only_when_this_instance_is_not_running_it() {
+        assert!(merge_cut_off(false, true));
+        assert!(
+            !merge_cut_off(true, true),
+            "recovery is a no-op while merging"
+        );
+        assert!(!merge_cut_off(false, false));
+        assert!(!merge_cut_off(true, false));
     }
 
     #[test]

@@ -18,6 +18,15 @@ pub const MAX_INFRA_RETRIES: u32 = 3;
 /// The wait before the first infrastructure retry. Each further retry waits three times longer.
 pub const INFRA_BACKOFF_BASE_MS: u64 = 10_000;
 
+/// How long the coordinator waits for the steward. The steward's own test step is capped at 10
+/// minutes, so this is longer; it stays under the 15-minute wall-clock limit of an alarm. A merge
+/// that outlives it is retried: the steward answers `already_merged` if it did land.
+pub const STEWARD_CALL_TIMEOUT_MS: u64 = 13 * 60 * 1000;
+
+/// While a merge runs, a watchdog alarm is kept this long after the call starts: past the
+/// timeout, so it fires only if the instance died without scheduling the next alarm.
+pub const MERGE_WATCHDOG_MS: u64 = STEWARD_CALL_TIMEOUT_MS + 60_000;
+
 /// The test step's exit codes that mean it timed out or was killed, not that an assertion failed.
 const TIMED_OUT_EXIT_CODES: [i64; 2] = [124, 137];
 
@@ -137,7 +146,8 @@ impl MergeOutcome {
                 reason: "the submitted commit is not on your fork's default branch".to_string(),
             },
             MergeOutcome::Refused => Verdict::Rejected {
-                reason: "the steward refused the request (fork missing or invalid)".to_string(),
+                reason: "the steward refused the request (fork missing or not a fork of this repo)"
+                    .to_string(),
             },
             MergeOutcome::MainMoved {} => Verdict::MainMoved,
             MergeOutcome::Clone {}
@@ -260,7 +270,10 @@ mod tests {
         let Verdict::Rejected { reason } = MergeOutcome::Refused.verdict() else {
             panic!("a refusal rejects the work");
         };
-        assert!(reason.contains("fork missing or invalid"), "{reason}");
+        assert!(
+            reason.contains("fork missing or not a fork of this repo"),
+            "{reason}"
+        );
     }
 
     #[test]

@@ -56,10 +56,8 @@ const STEWARD_BINDING: &str = "STEWARD";
 /// matter to `MergeService`.
 const STEWARD_MERGE_URL: &str = "https://steward.internal/merge";
 
-/// How long the coordinator waits for the steward. The steward's own test step is capped at 10
-/// minutes, so this is longer; it stays under the 15-minute wall-clock limit of an alarm. A merge
-/// that outlives it is retried: the steward answers `already_merged` if it did land.
-const STEWARD_CALL_TIMEOUT: Duration = Duration::from_secs(13 * 60);
+/// How long the coordinator waits for the steward (see `merge::STEWARD_CALL_TIMEOUT_MS`).
+const STEWARD_CALL_TIMEOUT: Duration = Duration::from_millis(merge::STEWARD_CALL_TIMEOUT_MS);
 
 /// What `apply` made of a call: something to store and send, or a client call that is refused
 /// because it would grow the state too far.
@@ -275,7 +273,7 @@ impl Coordinator {
             return Err(self.fail("apply", "core is not loaded"));
         };
         let effects = step(core);
-        let next_alarm_ms = core.next_alarm_ms(self.merging.get().is_some());
+        let next_alarm_ms = core.next_alarm_ms(self.merging.get().is_some(), now_ms());
         let (events, outbound) = shell::split_effects(effects);
         let entries = match shell::persist_entries(core, &events) {
             Ok(entries) => entries,
@@ -322,13 +320,12 @@ impl Coordinator {
     /// restart: its answer is lost. The core counts it as an attempt, so a commit that keeps
     /// killing the merge is eventually rejected.
     async fn recover_cut_off_merge(&self) -> Result<()> {
-        let cut_off = self.merging.get().is_none()
-            && self
-                .core
-                .borrow()
-                .as_ref()
-                .is_some_and(|core| core.has_merge_in_flight());
-        if !cut_off {
+        let in_flight = self
+            .core
+            .borrow()
+            .as_ref()
+            .is_some_and(|core| core.has_merge_in_flight());
+        if !shell::merge_cut_off(self.merging.get().is_some(), in_flight) {
             return Ok(());
         }
         let now_ms = now_ms();
@@ -354,12 +351,13 @@ impl Coordinator {
             return Ok(());
         };
         let mut applied = self.ready(prepared, "start merge")?;
-        // The marker is stored but the answer is not in yet: only a lease expiry is scheduled.
+        // The answer is not in yet: schedule the lease expiry and the watchdog, as for a merge
+        // this instance is waiting on.
         applied.next_alarm_ms = self
             .core
             .borrow()
             .as_ref()
-            .and_then(|core| core.next_expiry_ms());
+            .and_then(|core| core.next_alarm_ms(true, started_ms));
         applied.dispatch = Some(dispatch);
         let persisted = self.persist(applied).await?;
         let Some(dispatch) = persisted.dispatch() else {

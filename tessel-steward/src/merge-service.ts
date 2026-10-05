@@ -22,6 +22,9 @@ export class MergeService extends WorkerEntrypoint<Env> {
     try {
       return await handleMergeRequest(this.env, repo, body);
     } catch (error) {
+      if ((error as Partial<ArtifactsError>).code === "NOT_FOUND") {
+        return Response.json({ error: "fork or repo not found" }, { status: 404 });
+      }
       const reason = redactTokens(error instanceof Error ? error.message : String(error));
       console.error(JSON.stringify({ event: "merge_service_failed", repo, reason }));
       return Response.json({ error: "merge could not be run" }, { status: 502 });
