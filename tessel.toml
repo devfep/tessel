@@ -3,6 +3,15 @@
 # Every command is an argv array run without a shell. The containers have no Internet, so the
 # dependencies come from the image (tessel-steward/toolchain.Dockerfile), built from the
 # committed lockfiles: a changed lockfile or a missing dependency fails the run at `install`.
+#
+# This file is the gate, so the steward refuses any submission that changes it (outcome
+# `gate_changed`). A human changes it by hand on the trunk, like src/protocol.rs. A commands list
+# is checked strictly: `pnpm test`, `npm test`, or `cargo test` with only these flags: --workspace
+# --locked --offline --no-fail-fast --all-targets --all-features --release --lib --bins --tests.
+# An invalid file fails every run at `install` (reason `config`) until it is fixed by hand.
+#
+# A lockfile change (Cargo.lock, tessel-steward/pnpm-lock.yaml) cannot merge through the steward
+# until the image is rebuilt from it: see "Dogfooding gate" in README.md.
 instance = "standard-4"
 
 [install]

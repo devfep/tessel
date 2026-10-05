@@ -42,7 +42,7 @@ describe("readGatePlan", () => {
     expect(plan).toMatchObject({ kind: "configured", config: { instance: "standard-4" } });
   });
 
-  it("is legacy, 'missing', when main has no tessel.toml", async () => {
+  it("is legacy when main has no tessel.toml", async () => {
     expect(
       await readGatePlan(
         source(async () => null),
@@ -50,11 +50,10 @@ describe("readGatePlan", () => {
       ),
     ).toEqual({
       kind: "legacy",
-      issue: "missing",
     });
   });
 
-  it("is legacy, 'invalid', for a file that is invalid, oversized, not UTF-8, or too big to read", async () => {
+  it("is invalid, never legacy, for a file that is invalid, oversized, not UTF-8, or too big to read", async () => {
     const cases: Array<() => Promise<Blob | null>> = [
       async () => new Blob(['instance = "lite"\n']),
       async () => new Blob(["x".repeat(MAX_CONFIG_BYTES + 1)]),
@@ -65,8 +64,7 @@ describe("readGatePlan", () => {
     ];
     for (const read of cases) {
       expect(await readGatePlan(source(read), COMMIT)).toEqual({
-        kind: "legacy",
-        issue: "invalid",
+        kind: "invalid",
       });
     }
   });
@@ -86,8 +84,7 @@ describe("readGatePlan", () => {
         COMMIT,
       ),
     ).toEqual({
-      kind: "legacy",
-      issue: "invalid",
+      kind: "invalid",
     });
     expect(bytesRead).toBe(false);
   });
@@ -113,8 +110,8 @@ describe("startOptions", () => {
   });
 
   it("starts a repo without a gate on lite, naming the instance explicitly, with no Internet", () => {
-    for (const issue of ["missing", "invalid"] as const) {
-      expect(startOptions({ kind: "legacy", issue }, images)).toEqual({
+    for (const plan of [{ kind: "legacy" }, { kind: "invalid" }] as const) {
+      expect(startOptions(plan, images)).toEqual({
         image: "lite-ref",
         enableInternet: false,
         instance: "lite",
@@ -124,6 +121,6 @@ describe("startOptions", () => {
 
   it("throws when the image a plan needs is not configured", () => {
     expect(() => startOptions(configured, { [LEGACY_IMAGE]: "x" })).toThrow("toolchain");
-    expect(() => startOptions({ kind: "legacy", issue: "missing" }, {})).toThrow("tests");
+    expect(() => startOptions({ kind: "legacy" }, {})).toThrow("tests");
   });
 });

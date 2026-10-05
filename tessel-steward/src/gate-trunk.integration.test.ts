@@ -155,7 +155,7 @@ function recordingDeps(
 }
 
 describe("a fork that weakens tessel.toml", () => {
-  it("is still judged by the trunk's gate, in a merge and in a trial", async () => {
+  it("is tried by the trunk's gate and is never merged: the change to the gate is rejected", async () => {
     const w = world();
     const plan = await readGatePlan(filesOf(w.main), w.base);
     expect(plan).toMatchObject({ kind: "configured", config: { instance: "standard-4" } });
@@ -163,14 +163,15 @@ describe("a fork that weakens tessel.toml", () => {
     const seen: Array<{ commands: string[][]; treeToml: string }> = [];
     const trial = await runTrial(recordingDeps(w, plan, seen), w.base, w.commit);
     expect(trial).toMatchObject({ outcome: "clean" });
-    const merged = await runMerge(recordingDeps(w, plan, seen), w.commit, WHOLE_REPO);
-    expect(merged).toMatchObject({ outcome: "merged" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.treeToml).toBe(WEAK);
+    expect(seen[0]?.commands).toEqual([["cargo", "test", "--workspace", "--locked", "--offline"]]);
 
-    expect(seen).toHaveLength(2);
-    for (const run of seen) {
-      expect(run.treeToml).toBe(WEAK);
-      expect(run.commands).toEqual([["cargo", "test", "--workspace", "--locked", "--offline"]]);
-    }
+    const merged = await runMerge(recordingDeps(w, plan, seen), w.commit, WHOLE_REPO);
+    expect(merged).toEqual({ outcome: "gate_changed", base: w.base, head: expect.any(String) });
+    expect(seen).toHaveLength(1);
+    expect(sha(git(w.main, "rev-parse", "main"))).toBe(w.base);
+    expect(git(w.main, "show", "main:tessel.toml")).toBe(STRONG.trim());
   });
 
   it("would get the weak gate if it were read from the fork: the control for the test above", async () => {

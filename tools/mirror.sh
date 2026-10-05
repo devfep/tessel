@@ -14,6 +14,7 @@ readonly ARTIFACTS_REPO="${ARTIFACTS_REPO:-tessel}"
 readonly TRUNK_REF="refs/heads/main"
 readonly MIRROR_BRANCH="sprint/build"
 readonly STAGING_REF="refs/tessel/artifacts-trunk"
+readonly HTTPS_PATTERN='^https://'
 readonly GITHUB_PATTERN='^(https://github\.com/|git@github\.com:)'
 
 fail() {
@@ -49,11 +50,12 @@ minted="$(
 remote="$(jq -er '.remote' <<<"$minted")" || fail "the steward's answer has no remote"
 token="$(jq -er '.token' <<<"$minted")" || fail "the steward's answer has no token"
 unset minted
+[[ "$remote" =~ $HTTPS_PATTERN ]] || fail "the steward's remote is not an https URL"
 
 export GIT_TERMINAL_PROMPT=0
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
   GIT_CONFIG_VALUE_0="Authorization: Bearer ${token}" \
-  git fetch --quiet --no-tags "$remote" "+${TRUNK_REF}:${STAGING_REF}" ||
+  git fetch --quiet --no-tags -- "$remote" "+${TRUNK_REF}:${STAGING_REF}" ||
   fail "fetching the Artifacts trunk failed"
 unset token
 

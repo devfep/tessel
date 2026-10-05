@@ -3,11 +3,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  KILL_AFTER_SECONDS,
   LOCAL_GIT_COMMANDS_MAX,
   MARGIN_SECONDS,
+  RESERVED_SECONDS,
   STEP_SECONDS,
   STEWARD_CALL_TIMEOUT_SECONDS,
   isTimedOut,
+  totalReservedSeconds,
   worstCaseSeconds,
 } from "./step-budget";
 
@@ -16,11 +19,33 @@ describe("the step budget", () => {
     expect(worstCaseSeconds() + MARGIN_SECONDS).toBeLessThanOrEqual(STEWARD_CALL_TIMEOUT_SECONDS);
   });
 
-  it("counts every step once, and the local commands at their maximum", () => {
+  it("counts every step once, each single command with its kill grace, the local ones at their maximum", () => {
     const { clone, fetch, local, rebase, install, test, push } = STEP_SECONDS;
+    const singles = clone + fetch + rebase + push + 4 * KILL_AFTER_SECONDS;
     expect(worstCaseSeconds()).toBe(
-      clone + fetch + LOCAL_GIT_COMMANDS_MAX * local + rebase + install + test + push,
+      singles + LOCAL_GIT_COMMANDS_MAX * (local + KILL_AFTER_SECONDS) + install + test,
     );
+  });
+
+  it("spends the whole call timeout: steps, reserved time and margin add up exactly", () => {
+    expect(worstCaseSeconds() + totalReservedSeconds() + MARGIN_SECONDS).toBe(
+      STEWARD_CALL_TIMEOUT_SECONDS,
+    );
+  });
+
+  it("leaves the test step 327 seconds, the remainder after every other share", () => {
+    expect(STEP_SECONDS.test).toBe(327);
+  });
+
+  it("reserves time for the container start, tokens, reads, teardown and measurement", () => {
+    expect(Object.keys(RESERVED_SECONDS).toSorted()).toEqual([
+      "containerStart",
+      "measurement",
+      "reads",
+      "teardown",
+      "tokens",
+    ]);
+    expect(RESERVED_SECONDS.containerStart).toBeGreaterThanOrEqual(60);
   });
 
   it("keeps the dependency check inside the install share", () => {

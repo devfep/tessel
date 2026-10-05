@@ -7,8 +7,13 @@ import {
   testCommands,
   type PlannedCommand,
 } from "./gate-steps";
-import { makeOutcome, refuseDependencies, type StepOutcome } from "./run-steps";
-import { STEP_SECONDS, isTimedOut } from "./step-budget";
+import {
+  invalidConfigOutcome,
+  makeOutcome,
+  refuseDependencies,
+  type StepOutcome,
+} from "./run-steps";
+import { KILL_AFTER_SECONDS, STEP_SECONDS, isTimedOut } from "./step-budget";
 import { captureTail } from "./tail-capture";
 import type { GateConfig } from "./tessel-config";
 
@@ -42,7 +47,7 @@ export async function execCaptured(
   options: ContainerExecOptions,
 ): Promise<Captured> {
   const process = await container.exec(
-    ["timeout", "--kill-after=5", timeoutSeconds, ...argv],
+    ["timeout", `--kill-after=${KILL_AFTER_SECONDS}`, timeoutSeconds, ...argv],
     options,
   );
   const { stdout, stderr } = process;
@@ -199,17 +204,13 @@ async function runConfiguredStep(
   if (captured.exitCode === 0) {
     return outcome;
   }
-  return { ...outcome, reason: isTimedOut(captured.exitCode) ? "timeout" : "install_failed" };
+  return isTimedOut(captured.exitCode) ? outcome : { ...outcome, reason: "install_failed" };
 }
 
-async function runLegacyStep(
-  container: Container,
-  issue: "missing" | "invalid",
-  step: "install" | "test",
-): Promise<StepOutcome> {
+async function runLegacyStep(container: Container, step: "install" | "test"): Promise<StepOutcome> {
   if (step === "test") {
     return measured(container, () =>
-      runStep(container, "test", String(STEP_SECONDS.test), ["npm", "test"], {
+      runStep(container, "test", String(STEP_SECONDS.test - KILL_AFTER_SECONDS), ["npm", "test"], {
         cwd: WORKSPACE,
       }),
     );
@@ -221,13 +222,13 @@ async function runLegacyStep(
     ["node", "-e", DEPENDENCY_CHECK_SCRIPT, `${WORKSPACE}/package.json`],
     { cwd: "/" },
   );
-  return check.exitCode === 0 ? check : refuseDependencies(check, issue);
+  return check.exitCode === 0 ? check : refuseDependencies(check);
 }
 
 /**
  * Runs the install step or the test step of `plan` in the cloned workspace. A configured plan
- * runs the commands of the trunk's `tessel.toml`; a legacy plan runs the dependency check and
- * `npm test`. The test step carries its wall time and the container's peak memory.
+ * runs the commands of the trunk's `tessel.toml`; a legacy plan (no `tessel.toml`) runs the
+ * dependency check and `npm test`; an invalid one runs nothing and fails at `install`. The test step carries its wall time and the container's peak memory.
  */
 export function runPackageStep(
   container: Container,
@@ -238,6 +239,8 @@ export function runPackageStep(
     case "configured":
       return runConfiguredStep(container, plan.config, step);
     case "legacy":
-      return runLegacyStep(container, plan.issue, step);
+      return runLegacyStep(container, step);
+    case "invalid":
+      return Promise.resolve(invalidConfigOutcome());
   }
 }

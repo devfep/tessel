@@ -6,6 +6,9 @@ import {
   DEPENDENCIES_UNKNOWN_MESSAGE,
   DEPENDENCIES_UNSUPPORTED_MESSAGE,
   REVOKE_FAILED_MESSAGE,
+  CLONE_MOVED_MESSAGE,
+  cloneAtCommit,
+  invalidConfigOutcome,
   makeOutcome,
   refuseDependencies,
   runCloneThenTest,
@@ -66,17 +69,26 @@ describe("runCloneThenTest", () => {
     expect(result).toEqual(outcome("install", 1));
   });
 
-  it("reports a test step that timed out or was killed as an install outcome, not a failure", async () => {
+  it("marks a test step that timed out or was killed as a timeout and keeps it the test step", async () => {
     for (const test of [124, 137]) {
       const { runStep, revokeToken } = harness({ test });
       const result = await runCloneThenTest(runStep, revokeToken);
       expect(result).toMatchObject({
-        step: "install",
+        step: "test",
         exitCode: test,
         stdout: "test out",
         passed: false,
         reason: "timeout",
       });
+    }
+  });
+
+  it("marks an install step that timed out or was killed as a timeout and runs no tests", async () => {
+    for (const install of [124, 137]) {
+      const { calls, runStep, revokeToken } = harness({ install });
+      const result = await runCloneThenTest(runStep, revokeToken);
+      expect(calls).toEqual(["start clone", "revoke", "start install"]);
+      expect(result).toMatchObject({ step: "install", exitCode: install, reason: "timeout" });
     }
   });
 
@@ -204,7 +216,7 @@ const check = (exitCode: number) => outcome("install", exitCode);
 
 describe("refuseDependencies", () => {
   it("refuses a repo with dependencies and no tessel.toml with a fixed message", () => {
-    expect(refuseDependencies(check(DEPENDENCIES_DECLARED_EXIT_CODE), "missing")).toEqual({
+    expect(refuseDependencies(check(DEPENDENCIES_DECLARED_EXIT_CODE))).toEqual({
       step: "install",
       exitCode: DEPENDENCIES_DECLARED_EXIT_CODE,
       stdout: "",
@@ -216,21 +228,69 @@ describe("refuseDependencies", () => {
     });
   });
 
-  it("names an invalid tessel.toml when the repo declares dependencies", () => {
-    expect(refuseDependencies(check(DEPENDENCIES_DECLARED_EXIT_CODE), "invalid")).toMatchObject({
+  it("fails an invalid tessel.toml at install with reason config, running nothing", () => {
+    expect(invalidConfigOutcome()).toEqual({
+      step: "install",
+      exitCode: 1,
+      stdout: "",
       stderr: CONFIG_INVALID_MESSAGE,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      passed: false,
       reason: "config",
     });
   });
 
   it("refuses with a different message when the dependency check did not complete", () => {
-    for (const issue of ["missing", "invalid"] as const) {
-      expect(refuseDependencies(check(4), issue)).toMatchObject({
-        exitCode: 4,
-        stderr: DEPENDENCIES_UNKNOWN_MESSAGE,
-        passed: false,
-        reason: "unknown",
-      });
-    }
+    expect(refuseDependencies(check(4))).toMatchObject({
+      exitCode: 4,
+      stderr: DEPENDENCIES_UNKNOWN_MESSAGE,
+      passed: false,
+      reason: "unknown",
+    });
+  });
+});
+
+const head = (exitCode: number, stdout: string) => async (): Promise<StepOutcome> => ({
+  ...outcome("clone", exitCode),
+  stdout,
+});
+
+describe("cloneAtCommit", () => {
+  const WANTED = "a".repeat(40);
+
+  it("keeps the clone when HEAD is the commit whose gate was read", async () => {
+    const cloned = outcome("clone", 0);
+    expect(await cloneAtCommit(async () => cloned, head(0, `${WANTED}\n`), WANTED)).toBe(cloned);
+  });
+
+  it("fails the clone step, with a fixed message, when the branch moved", async () => {
+    const result = await cloneAtCommit(
+      async () => outcome("clone", 0),
+      head(0, `${"b".repeat(40)}\n`),
+      WANTED,
+    );
+    expect(result).toMatchObject({ step: "clone", passed: false, stderr: CLONE_MOVED_MESSAGE });
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it("fails the clone step when HEAD cannot be read", async () => {
+    const result = await cloneAtCommit(async () => outcome("clone", 0), head(128, WANTED), WANTED);
+    expect(result).toMatchObject({ step: "clone", stderr: CLONE_MOVED_MESSAGE });
+  });
+
+  it("returns a failed clone as it is, without reading HEAD", async () => {
+    let read = false;
+    const failed = outcome("clone", 128);
+    const result = await cloneAtCommit(
+      async () => failed,
+      async () => {
+        read = true;
+        return outcome("clone", 0);
+      },
+      WANTED,
+    );
+    expect(result).toBe(failed);
+    expect(read).toBe(false);
   });
 });

@@ -1,4 +1,5 @@
 import type { Captured } from "./container-step";
+import { KILL_AFTER_SECONDS } from "./step-budget";
 import type { GateConfig } from "./tessel-config";
 
 /** A command of a configured gate: `argv` run in `dir`, relative to the clone. */
@@ -40,12 +41,13 @@ export function testCommands(config: GateConfig): PlannedCommand[] {
 export const BUDGET_EXHAUSTED_MESSAGE =
   "The step used up its share of the time budget before this command could start";
 
-/** Runs one command with at most `timeoutSeconds` seconds. */
+/** Runs one command; `timeoutSeconds` is what `timeout` gets, before its kill grace. */
 export type RunCommand = (command: PlannedCommand, timeoutSeconds: number) => Promise<Captured>;
 
 /**
- * Runs `commands` one after the other inside one time budget. Each gets whatever is left of
- * `budgetSeconds`, so the commands together cannot outlast it. The first command that exits
+ * Runs `commands` one after the other inside one time budget. Each gets what is left of
+ * `budgetSeconds` minus the kill grace `timeout --kill-after` adds, so the commands together
+ * cannot outlast the budget. The first command that exits
  * non-zero ends the sequence and its output is returned; otherwise the last command's is. When
  * nothing is left before a command starts, exit 124 (a timeout) is returned without running it.
  *
@@ -66,7 +68,7 @@ export async function runWithinBudget(
     stderrTruncated: false,
   };
   for (const command of commands) {
-    const remaining = Math.floor(budgetSeconds - (now() - started) / 1000);
+    const remaining = Math.floor(budgetSeconds - (now() - started) / 1000) - KILL_AFTER_SECONDS;
     if (remaining < 1) {
       return { ...last, exitCode: 124, stderr: BUDGET_EXHAUSTED_MESSAGE, stderrTruncated: false };
     }

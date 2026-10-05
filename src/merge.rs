@@ -33,9 +33,6 @@ pub const STEWARD_CALL_TIMEOUT_MS: u64 = 13 * 60 * 1000;
 /// timeout, so it fires only if the instance died without scheduling the next alarm.
 pub const MERGE_WATCHDOG_MS: u64 = STEWARD_CALL_TIMEOUT_MS + 60_000;
 
-/// The test step's exit codes that mean it timed out or was killed, not that an assertion failed.
-const TIMED_OUT_EXIT_CODES: [i64; 2] = [124, 137];
-
 /// The wait before infrastructure retry number `retry` (1 for the first).
 pub fn infra_backoff_ms(retry: u32) -> u64 {
     let factor = 3u64.saturating_pow(retry.saturating_sub(1));
@@ -122,6 +119,9 @@ pub enum MergeOutcome {
     Uncovered {
         total: u64,
     },
+    /// The commit rebased onto main changes `tessel.toml`, the gate the steward judges by. A human
+    /// changes the gate by hand; the work is rejected, never merged.
+    GateChanged {},
     /// Another write reached main after the steward read it; try again.
     MainMoved {},
     /// The commit is not reachable from the fork's default branch.
@@ -130,6 +130,8 @@ pub enum MergeOutcome {
     Clone {},
     GitFailed {},
     Install {},
+    /// A step used up its share of the time budget or was killed: not a failing test.
+    Timeout {},
     PushFailed {},
     /// The steward refused the request itself (a 4xx): a missing or invalid fork. A fact about
     /// the submission, not about the infrastructure, so it is never retried. Never read from a
@@ -195,6 +197,10 @@ impl MergeOutcome {
                     "the merged change touches {total} file(s) the claim does not cover"
                 ),
             },
+            MergeOutcome::GateChanged {} => Verdict::Rejected {
+                reason: "changes the gate (tessel.toml); a human must change it by hand"
+                    .to_string(),
+            },
             MergeOutcome::CommitNotInFork {} => Verdict::Rejected {
                 reason: "the submitted commit is not on your fork's default branch".to_string(),
             },
@@ -206,6 +212,7 @@ impl MergeOutcome {
             MergeOutcome::Clone {}
             | MergeOutcome::GitFailed {}
             | MergeOutcome::Install {}
+            | MergeOutcome::Timeout {}
             | MergeOutcome::PushFailed {}
             | MergeOutcome::ServiceUnavailable => Verdict::Infrastructure,
         }
@@ -234,6 +241,7 @@ pub enum TrialOutcome {
     Clone {},
     GitFailed {},
     Install {},
+    Timeout {},
     /// The steward refused the request (a 4xx). A fact about the request, never retried.
     #[serde(skip_deserializing)]
     Refused,
@@ -305,6 +313,7 @@ impl TrialOutcome {
             TrialOutcome::Clone {}
             | TrialOutcome::GitFailed {}
             | TrialOutcome::Install {}
+            | TrialOutcome::Timeout {}
             | TrialOutcome::ServiceUnavailable => TrialVerdict::Infrastructure,
         }
     }
@@ -316,8 +325,8 @@ impl TrialReport {
     /// changed the result. So:
     /// - `before` clean, `after` clean: `Clean`.
     /// - `before` clean, `after` a conflict: `TextualConflict`, new after this merge.
-    /// - `before` clean, `after` failing tests: `TestsFailed`. A test step that timed out or was
-    ///   killed counts too: the same commit passed on `before`.
+    /// - `before` clean, `after` failing tests: `TestsFailed`. A test step that timed out is
+    ///   `Timeout`, infrastructure, not this.
     /// - `before` anything else (work already failing, already conflicting, nothing to test):
     ///   `Inconclusive`. So is any trial that stopped before running, and an `after` that proves
     ///   nothing (nothing to test, unreachable main).
@@ -342,11 +351,7 @@ impl TrialReport {
 }
 
 fn tests_reason(exit_code: i64) -> String {
-    if TIMED_OUT_EXIT_CODES.contains(&exit_code) {
-        format!("tests timed out or were killed (exit code {exit_code}) on the commit rebased onto main")
-    } else {
-        format!("tests failed (exit code {exit_code}) on the commit rebased onto main")
-    }
+    format!("tests failed (exit code {exit_code}) on the commit rebased onto main")
 }
 
 #[cfg(test)]
@@ -433,6 +438,16 @@ mod tests {
             )),
             MergeOutcome::PushFailed {}
         );
+        assert_eq!(
+            parse(&format!(
+                r#"{{"outcome":"timeout","base":"{SHA_A}","head":"{SHA_B}","result":{step}}}"#
+            )),
+            MergeOutcome::Timeout {}
+        );
+        assert_eq!(
+            parse(r#"{"outcome":"gate_changed","base":"a","head":"b","files":[]}"#),
+            MergeOutcome::GateChanged {}
+        );
     }
 
     #[test]
@@ -512,6 +527,10 @@ mod tests {
             (
                 format!(r#"{{"outcome":"install",{tried},"result":{step}}}"#),
                 TrialOutcome::Install {},
+            ),
+            (
+                format!(r#"{{"outcome":"timeout",{tried},"result":{step}}}"#),
+                TrialOutcome::Timeout {},
             ),
         ];
         for (json, expected) in runs {
@@ -651,6 +670,7 @@ mod tests {
             TrialOutcome::Clone {},
             TrialOutcome::GitFailed {},
             TrialOutcome::Install {},
+            TrialOutcome::Timeout {},
             TrialOutcome::ServiceUnavailable,
         ] {
             assert_eq!(
@@ -791,10 +811,10 @@ mod tests {
             result: StepExit { exit_code: 1 },
         };
         assert!(rejected(&failed).starts_with("tests failed (exit code 1)"));
-        let killed = MergeOutcome::TestsFailed {
-            result: StepExit { exit_code: 137 },
-        };
-        assert!(rejected(&killed).starts_with("tests timed out"));
+        assert_eq!(
+            rejected(&MergeOutcome::GateChanged {}),
+            "changes the gate (tessel.toml); a human must change it by hand"
+        );
     }
 
     #[test]
@@ -804,6 +824,7 @@ mod tests {
             MergeOutcome::Clone {},
             MergeOutcome::GitFailed {},
             MergeOutcome::Install {},
+            MergeOutcome::Timeout {},
             MergeOutcome::PushFailed {},
             MergeOutcome::ServiceUnavailable,
         ] {

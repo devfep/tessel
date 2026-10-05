@@ -114,9 +114,60 @@ describe("parseGateConfig", () => {
   });
 
   it("rejects a shell and any program outside the allowlist", () => {
-    for (const program of ["sh", "bash", "/bin/sh", "rm", "env", "curl", "./run.sh"]) {
+    for (const program of ["sh", "bash", "/bin/sh", "rm", "env", "curl", "./run.sh", "node"]) {
       const text = `instance = "standard-4"\n[[test]]\nargv = [${JSON.stringify(program)}, "-c"]\n`;
-      expect(rejected(text), program).toMatch(/must start with|shell characters/);
+      expect(rejected(text), program).toMatch(/must be pnpm test|shell characters/);
+    }
+  });
+
+  it("rejects every argv shape that is not pnpm test, npm test or cargo test with listed flags", () => {
+    const refused = [
+      ["cargo", "test", "--config=build.rustc-wrapper=evil"],
+      ["cargo", "test", "--config", "x"],
+      ["cargo", "test", "-Zunstable-options"],
+      ["cargo", "test", "-Z", "build-std"],
+      ["cargo", "+nightly", "test"],
+      ["cargo", "test", "--manifest-path=other/Cargo.toml"],
+      ["cargo", "test", "--target=x86_64-unknown-linux-gnu"],
+      ["cargo", "test", "--"],
+      ["cargo", "test", "--", "--nocapture"],
+      ["cargo", "build"],
+      ["cargo", "run"],
+      ["cargo"],
+      ["cargo", "test", "--workspace", "--features=x"],
+      ["RUSTC_WRAPPER=evil", "cargo", "test"],
+      ["pnpm", "test", "--filter=x"],
+      ["pnpm", "run", "test"],
+      ["pnpm", "exec", "vitest"],
+      ["pnpm"],
+      ["npm", "test", "--ignore-scripts"],
+      ["npm", "run", "test"],
+    ];
+    for (const argv of refused) {
+      const text = `instance = "standard-4"\n[[test]]\nargv = ${JSON.stringify(argv)}\n`;
+      expect(rejected(text), argv.join(" ")).toMatch(/must be pnpm test|shell characters/);
+    }
+  });
+
+  it("accepts cargo test with each listed flag, and pnpm test and npm test", () => {
+    for (const argv of [
+      ["cargo", "test"],
+      ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast"],
+      [
+        "cargo",
+        "test",
+        "--all-targets",
+        "--all-features",
+        "--release",
+        "--lib",
+        "--bins",
+        "--tests",
+      ],
+      ["pnpm", "test"],
+      ["npm", "test"],
+    ]) {
+      const text = `instance = "standard-4"\n[[test]]\nargv = ${JSON.stringify(argv)}\n`;
+      expect(parseGateConfig(text).ok, argv.join(" ")).toBe(true);
     }
   });
 

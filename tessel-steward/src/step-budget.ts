@@ -8,37 +8,70 @@ export const STEWARD_CALL_TIMEOUT_SECONDS = 13 * 60;
 /** Upper bound on the quick local git commands of one run (base, verify, merge-base, diff...). */
 export const LOCAL_GIT_COMMANDS_MAX = 8;
 
-/**
- * Seconds each step may take, whatever it is doing. These are one budget, not independent limits:
- * the worst case is every step using all of its share, and `worstCaseSeconds()` plus
- * `MARGIN_SECONDS` must stay under `STEWARD_CALL_TIMEOUT_SECONDS`. A step that runs out of its
- * share ends as an infrastructure outcome, never as a failing test (`isTimedOut`).
- *
- * - `install`: the whole install step of a configured repo, shared by its commands.
- * - `test`: the whole test step, shared by the `[[test]]` commands of a configured repo.
- * - `dependencyCheck`: the check of a repo without `tessel.toml`; it runs inside `install`.
- */
-export const STEP_SECONDS = {
-  clone: 90,
-  fetch: 45,
-  local: 8,
-  rebase: 45,
-  dependencyCheck: 10,
-  install: 90,
-  test: 300,
-  push: 45,
-} as const;
+/** Seconds `timeout --kill-after` waits after the TERM before it sends KILL, on every command. */
+export const KILL_AFTER_SECONDS = 5;
 
 /**
- * Room for what has no timeout of its own: container start, token minting and revocation, the
- * reads of main and of `tessel.toml`, container teardown.
+ * Time that no step's timeout covers, reserved by name so the sum is honest:
+ * - `containerStart`: starting the container and the first exec answering (a 2.5 GB image).
+ * - `tokens`: minting and intercepting the read tokens, the write token and its revocation.
+ * - `reads`: repo info, the head of main and `tessel.toml` through the Artifacts binding.
+ * - `teardown`: destroying the container and revoking what is left.
+ * - `measurement`: the peak-memory read after the test step.
  */
-export const MARGIN_SECONDS = 90;
+export const RESERVED_SECONDS = {
+  containerStart: 60,
+  tokens: 15,
+  reads: 10,
+  teardown: 15,
+  measurement: 5,
+} as const;
+
+/** Spare seconds on top of everything above, so a small overrun is not a timeout. */
+export const MARGIN_SECONDS = 30;
+
+const FIXED_STEP_SECONDS = {
+  clone: 60,
+  fetch: 30,
+  local: 6,
+  rebase: 30,
+  dependencyCheck: 10,
+  install: 60,
+  push: 30,
+} as const;
+
+function reservedSeconds(): number {
+  return Object.values(RESERVED_SECONDS).reduce((sum, seconds) => sum + seconds, 0);
+}
+
+/** Worst case of every step but the test: each single command also waits out its kill grace. */
+function worstCaseWithoutTest(): number {
+  const { clone, fetch, rebase, push, local, install } = FIXED_STEP_SECONDS;
+  const singles = clone + fetch + rebase + push + 4 * KILL_AFTER_SECONDS;
+  return singles + LOCAL_GIT_COMMANDS_MAX * (local + KILL_AFTER_SECONDS) + install;
+}
+
+/**
+ * Seconds each step may take, one budget and not independent limits. A single command's timeout
+ * is its share and the kill grace is added on top (counted in `worstCaseSeconds`); the commands of
+ * `install` and `test` share their step's seconds, grace included (`runWithinBudget`).
+ * `test` is whatever remains of the call timeout after the other shares, the reserved time and
+ * the margin: 327 s today. A step that runs out of its share ends as an infrastructure outcome,
+ * never as a failing test (`isTimedOut`). `dependencyCheck` runs inside `install`.
+ */
+export const STEP_SECONDS = {
+  ...FIXED_STEP_SECONDS,
+  test: STEWARD_CALL_TIMEOUT_SECONDS - MARGIN_SECONDS - reservedSeconds() - worstCaseWithoutTest(),
+} as const;
 
 /** Every step using all of its share, once per run of a merge (the longest path). */
 export function worstCaseSeconds(): number {
-  const { clone, fetch, local, rebase, install, test, push } = STEP_SECONDS;
-  return clone + fetch + LOCAL_GIT_COMMANDS_MAX * local + rebase + install + test + push;
+  return worstCaseWithoutTest() + STEP_SECONDS.test;
+}
+
+/** Seconds of the call timeout taken by the reserved items. */
+export function totalReservedSeconds(): number {
+  return reservedSeconds();
 }
 
 /** Exit codes of `timeout` for a command it terminated (124) or killed (137). */

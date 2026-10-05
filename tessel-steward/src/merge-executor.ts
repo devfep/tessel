@@ -40,6 +40,7 @@ export function redactOutcome(outcome: MergeOutcome): MergeOutcome {
   switch (outcome.outcome) {
     case "tests_failed":
     case "install":
+    case "timeout":
     case "clone":
       return { ...outcome, result: redactOutput(outcome.result) };
     case "git_failed":
@@ -49,6 +50,7 @@ export function redactOutcome(outcome: MergeOutcome): MergeOutcome {
     case "already_merged":
     case "conflict":
     case "uncovered":
+    case "gate_changed":
     case "main_moved":
     case "commit_not_in_fork":
       return outcome;
@@ -60,6 +62,7 @@ export function redactTrialOutcome(outcome: TrialOutcome): TrialOutcome {
   switch (outcome.outcome) {
     case "tests_failed":
     case "install":
+    case "timeout":
     case "clone":
       return { ...outcome, result: redactOutput(outcome.result) };
     case "git_failed":

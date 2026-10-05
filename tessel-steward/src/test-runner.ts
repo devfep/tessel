@@ -19,7 +19,13 @@ import {
 } from "./merge-types";
 import { readGatePlan, startOptions, type GatePlan } from "./gate-plan";
 import { parseSha } from "./merge-types";
-import { runCloneThenTest, type Measurement, type StepOutcome, type StepReason } from "./run-steps";
+import {
+  cloneAtCommit,
+  runCloneThenTest,
+  type Measurement,
+  type StepOutcome,
+  type StepReason,
+} from "./run-steps";
 import { STEP_SECONDS } from "./step-budget";
 
 const TOKEN_TTL_SECONDS = 300;
@@ -151,9 +157,10 @@ export class TestRunner extends DurableObject<Env> {
         props: { remote, token: token.plaintext },
       });
       await container.interceptOutboundHttps(new URL(remote).hostname, gateway);
-      const plan = await readGatePlan(handle, await resolveRef(handle, ref));
+      const commit = await resolveRef(handle, ref);
+      const plan = await readGatePlan(handle, commit);
       container.start(startOptions(plan, container.images));
-      const result = await this.cloneAndTest(container, plan, remote, ref, revoke);
+      const result = await this.cloneAndTest(container, plan, remote, { ref, commit }, revoke);
       return { repo, ref, ...result };
     } finally {
       try {
@@ -178,19 +185,36 @@ export class TestRunner extends DurableObject<Env> {
     container: Container,
     plan: GatePlan,
     remote: string,
-    ref: string,
+    source: { ref: string; commit: string },
     revokeToken: () => Promise<boolean>,
   ): Promise<StepOutcome> {
     return runCloneThenTest((step) => {
       switch (step) {
-        case "clone":
-          return runStep(
-            container,
-            "clone",
-            String(STEP_SECONDS.clone),
-            ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
-            { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE }, ...userOptions(plan) },
+        case "clone": {
+          const options = {
+            env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE },
+            ...userOptions(plan),
+          };
+          return cloneAtCommit(
+            () =>
+              runStep(
+                container,
+                "clone",
+                String(STEP_SECONDS.clone),
+                ["git", "clone", "--depth=1", `--branch=${source.ref}`, "--", remote, WORKSPACE],
+                options,
+              ),
+            () =>
+              runStep(
+                container,
+                "clone",
+                String(STEP_SECONDS.local),
+                ["git", "-C", WORKSPACE, "rev-parse", "--verify", "HEAD"],
+                userOptions(plan),
+              ),
+            source.commit,
           );
+        }
         case "install":
         case "test":
           return runPackageStep(container, plan, step);

@@ -21,6 +21,7 @@ import {
   uncoveredPaths,
   type ClaimedScope,
 } from "./merge-coverage";
+import { TESSEL_TOML_PATH } from "./tessel-config";
 import {
   parseSha,
   type GitResult,
@@ -136,7 +137,8 @@ async function rebaseOntoMain(
 
 /**
  * Invariant 11 on the change the steward sees: every file the rebased range `base..head` changes
- * must be covered by the claim. Runs before any repo code. A diff that fails, is cut off, or has
+ * must be covered by the claim, and none may be the gate (`tessel.toml`: a fork must not weaken the
+ * gate it is judged by; a human changes it by hand). Runs before any repo code. A diff that fails, is cut off, or has
  * a record this code does not know is `git_failed`: it is never read as covered.
  */
 async function checkCoverage(
@@ -150,6 +152,9 @@ async function checkCoverage(
   const required = complete ? parseNameStatus(diff.stdout) : undefined;
   if (required === undefined) {
     return { outcome: "git_failed", result: diff };
+  }
+  if (required.some(({ path }) => path === TESSEL_TOML_PATH)) {
+    return { outcome: "gate_changed", base, head };
   }
   const uncovered = uncoveredPaths(required, scopes);
   if (uncovered.length === 0) {
@@ -240,6 +245,9 @@ export async function runMerge(
     return uncovered;
   }
   const tested = await runInstallThenTest((step) => deps.runPackageStep(step));
+  if (tested.reason === "timeout") {
+    return { outcome: "timeout", base, head, result: tested };
+  }
   if (tested.step === "install") {
     return { outcome: "install", base, head, result: tested };
   }
@@ -312,6 +320,9 @@ async function testRebased(deps: TrialDeps, rebased: Rebased, commit: Sha): Prom
     return { outcome: "nothing_to_test", base, commit };
   }
   const tested = await runInstallThenTest((step) => deps.runPackageStep(step));
+  if (tested.reason === "timeout") {
+    return { outcome: "timeout", base, head, commit, result: tested };
+  }
   if (tested.step === "install") {
     return { outcome: "install", base, head, commit, result: tested };
   }

@@ -527,22 +527,43 @@ describe("a repo with a tessel.toml on main", () => {
     expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
   });
 
-  it("reports a test step that ran out of time as infrastructure, never as failing tests", async () => {
+  it("reports a test step that ran out of time as a timeout, never as failing tests", async () => {
     for (const testExit of [124, 137]) {
       const merge = build({ tesselToml: GATE, testExit });
       const merged = await executeMerge(merge.ctx, merge.env, "demo", request);
       expect(merged).toMatchObject({
-        outcome: "install",
-        result: { reason: "timeout", passed: false },
+        outcome: "timeout",
+        result: { step: "test", reason: "timeout", passed: false },
       });
       expect(merge.events.some((event) => event.startsWith("mint write"))).toBe(false);
 
       const trial = build({ tesselToml: GATE, testExit });
       expect(await executeTrial(trial.ctx, trial.env, "demo", trialRequest)).toMatchObject({
-        outcome: "install",
-        result: { reason: "timeout" },
+        outcome: "timeout",
+        result: { step: "test", reason: "timeout" },
       });
     }
+  });
+
+  it("reports an install command that ran out of time as a timeout, running no tests", async () => {
+    const { ctx, env, events } = build({ tesselToml: GATE, installExit: 124 });
+    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+      outcome: "timeout",
+      result: { step: "install", reason: "timeout" },
+    });
+    expect(events.some((event) => event.includes("cargo test"))).toBe(false);
+  });
+
+  it("rejects a submission that changes tessel.toml as gate_changed, running nothing of the repo's", async () => {
+    const { ctx, env, events } = build({ tesselToml: GATE, changed: "M\0tessel.toml\0" });
+    expect(await executeMerge(ctx, env, "demo", request)).toEqual({
+      outcome: "gate_changed",
+      base: BASE,
+      head: HEAD,
+    });
+    expect(events.some((event) => event.includes("cargo") || event.includes("pnpm"))).toBe(false);
+    expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
+    expect(events).toContain("destroy");
   });
 
   it("keeps a real test failure a test failure, with the measured wall time and peak memory", async () => {
@@ -569,9 +590,16 @@ describe("a repo with a tessel.toml on main", () => {
     expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
   });
 
-  it("refuses, at install with a fixed reason, a repo with dependencies whose tessel.toml is invalid", async () => {
-    for (const tesselToml of ['instance = "standard-4"\nshell = "sh"\n', "not toml [", ""]) {
-      const { ctx, env, starts, events } = build({ tesselToml, depsExit: 3 });
+  it("fails at install with reason config when the trunk's tessel.toml is invalid, never falling back to npm test", async () => {
+    const invalid = [
+      'instance = "standard-4"\nshell = "sh"\n',
+      "not toml [",
+      "",
+      GATE.replace('argv = ["pnpm", "test"]', 'argv = ["sh", "-c", "pnpm test"]'),
+      "x".repeat(5000),
+    ];
+    for (const tesselToml of invalid) {
+      const { ctx, env, starts, events } = build({ tesselToml, depsExit: 0 });
       const outcome = await executeMerge(ctx, env, "demo", request);
       expect(outcome).toMatchObject({
         outcome: "install",

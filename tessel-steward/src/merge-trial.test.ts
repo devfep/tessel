@@ -165,17 +165,26 @@ describe("runTrial", () => {
     });
   });
 
-  it("reports a test step that timed out as an install outcome, never a test failure", async () => {
+  it("reports a test step that timed out as a timeout that is still the test step", async () => {
     for (const test of [124, 137]) {
       const { deps } = harness({ test });
       expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({
-        outcome: "install",
+        outcome: "timeout",
         base: MAIN,
         head: HEAD,
         commit: COMMIT,
-        result: { step: "install", exitCode: test, stdout: "test out", reason: "timeout" },
+        result: { step: "test", exitCode: test, stdout: "test out", reason: "timeout" },
       });
     }
+  });
+
+  it("reports an install step that timed out as a timeout, running no tests", async () => {
+    const { deps, events } = harness({ install: 124 });
+    expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({
+      outcome: "timeout",
+      result: { step: "install", reason: "timeout" },
+    });
+    expect(events).not.toContain("package:test");
   });
 
   it("reports a stopped rebase as a conflict with the unmerged paths, and runs no tests", async () => {

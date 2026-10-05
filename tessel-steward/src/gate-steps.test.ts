@@ -75,9 +75,9 @@ describe("runWithinBudget", () => {
       () => clock,
     );
     expect(seen).toEqual([
-      ["a", 100],
-      ["b", 70],
-      ["c", 40],
+      ["a", 95],
+      ["b", 65],
+      ["c", 35],
     ]);
     expect(result.exitCode).toBe(0);
   });

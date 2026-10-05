@@ -95,5 +95,29 @@ with, and changing them later has no effect on it.
     websocat wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws \
       -H="Authorization: Bearer $AGENT_TOKEN"
 
+## Dogfooding gate
+
+The steward judges a repo by the `tessel.toml` on the trunk commit a run is based on (read through
+the Artifacts binding, never from a fork). Tessel's own is at the repository root.
+
+- **The gate is changed by hand.** A submission whose rebased diff touches `tessel.toml` is rejected
+  as `gate_changed` ("changes the gate (tessel.toml); a human must change it by hand"). Push the
+  change to the Artifacts trunk yourself.
+- **Allowed commands:** `pnpm test`, `npm test`, or `cargo test` with only `--workspace --locked
+  --offline --no-fail-fast --all-targets --all-features --release --lib --bins --tests`. Nothing
+  that can pick another toolchain, config or compiler (`+nightly`, `--config`, `-Z`,
+  `--manifest-path`, `--target`, `--`) and no shell. A `tessel.toml` that is present but invalid
+  fails every run at `install` (reason `config`); only a missing file falls back to `npm test`.
+- **Lockfile changes need a new image.** Containers have no Internet, so dependencies are baked into
+  `tessel-steward/toolchain.Dockerfile` from the committed lockfiles. A change to `Cargo.lock` or
+  `tessel-steward/pnpm-lock.yaml` fails at `install` (reason `install_failed`) until the image
+  holds it. To land one:
+  1. Push the lockfile change (with its code) to the Artifacts trunk by hand.
+  2. Start Docker, then run `npx wrangler deploy` in `tessel-steward/`: it rebuilds the
+     `toolchain` image from the new lockfiles (build context: the repository root) and deploys.
+  3. Run `POST /repos/tessel/test-runs` and check `step: "test"`, `passed: true`.
+  After that, merges through the steward pass the install step again.
+- **Mirror:** `tools/mirror.sh` fast-forwards the Artifacts trunk to GitHub `sprint/build`.
+
 ## Tests
     cargo test

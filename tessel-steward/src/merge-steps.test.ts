@@ -6,6 +6,7 @@ import type { ClaimedScope } from "./merge-coverage";
 import { runMerge, type MergeDeps } from "./merge-steps";
 import { parseSha, type GitResult, type Sha } from "./merge-types";
 import { REVOKE_FAILED_MESSAGE, makeOutcome, type StepOutcome } from "./run-steps";
+import { LOCAL_GIT_COMMANDS_MAX, STEP_SECONDS } from "./step-budget";
 
 function sha(character: string): Sha {
   const parsed = parseSha(character.repeat(40));
@@ -200,15 +201,65 @@ describe("runMerge", () => {
     });
   });
 
-  it("reports a test step that timed out as an install outcome, never a test failure", async () => {
+  it("reports a test step that timed out as a timeout that is still the test step", async () => {
     for (const test of [124, 137]) {
       const { deps, events } = harness({ test });
       const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
       expect(outcome).toMatchObject({
-        outcome: "install",
-        result: { step: "install", exitCode: test, stdout: "test out", reason: "timeout" },
+        outcome: "timeout",
+        base: BASE,
+        head: HEAD,
+        result: { step: "test", exitCode: test, stdout: "test out", reason: "timeout" },
       });
       expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    }
+  });
+
+  it("reports an install step that timed out as a timeout with reason timeout, running no tests", async () => {
+    for (const install of [124, 137]) {
+      const { deps, events } = harness({ install });
+      expect(await runMerge(deps, COMMIT, WHOLE_REPO)).toMatchObject({
+        outcome: "timeout",
+        result: { step: "install", exitCode: install, reason: "timeout" },
+      });
+      expect(events).not.toContain("package:test");
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    }
+  });
+
+  it("rejects a change to tessel.toml as gate_changed, before the coverage check and any repo code", async () => {
+    const records = [
+      "M\0tessel.toml\0",
+      "A\0src/b.ts\0M\0tessel.toml\0",
+      "D\0tessel.toml\0",
+      "R100\0tessel.toml\0gate.toml\0",
+      "R100\0old.toml\0tessel.toml\0",
+    ];
+    for (const stdout of records) {
+      const { deps, events } = harness({ git: { changed: { exitCode: 0, stdout } } });
+      const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
+      expect(outcome, stdout).toEqual({ outcome: "gate_changed", base: BASE, head: HEAD });
+      expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    }
+  });
+
+  it("does not mistake other files named like the gate for it", async () => {
+    const stdout = "M\0docs/tessel.toml\0M\0tessel.toml.bak\0M\0src/a.ts\0";
+    const { deps } = harness({ git: { changed: { exitCode: 0, stdout } } });
+    expect(await runMerge(deps, COMMIT, WHOLE_REPO)).toMatchObject({ outcome: "merged" });
+  });
+
+  it("issues at most LOCAL_GIT_COMMANDS_MAX local git commands on its longest path", async () => {
+    const paths = [
+      harness(),
+      harness({ git: { rebase: { exitCode: 1 }, conflicts: { exitCode: 0, stdout: "a\0" } } }),
+    ];
+    for (const { deps, commands } of paths) {
+      await runMerge(deps, COMMIT, WHOLE_REPO);
+      const local = commands.filter((command) => command.timeoutSeconds === STEP_SECONDS.local);
+      expect(local.length).toBeGreaterThan(0);
+      expect(local.length).toBeLessThanOrEqual(LOCAL_GIT_COMMANDS_MAX);
     }
   });
 
