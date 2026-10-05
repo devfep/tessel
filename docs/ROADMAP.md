@@ -46,10 +46,14 @@ parent session's hook settings), and merge notes record each late claim.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `impl-shadow-1` (Sonnet), dispatched 18:04 in `.claude/worktrees/shadow-1` on
-`task-shadow-1` (cut from the trunk `8432f8c`), fork `tessel-dogfood--lane-shadow-1`, agent
-`lane-shadow-1`. The first lane through the steward: claims through Tessel, pushes to its fork,
-and submits only after the Opus review. Owns `src/coordinator*`, `src/shell.rs`, `src/runtime.rs`.
+**Agents:** `impl-shadow-1` (Sonnet) in `.claude/worktrees/shadow-1` on `task-shadow-1` (cut from
+the trunk `8432f8c`), fork `tessel-dogfood--lane-shadow-1`, agent `lane-shadow-1`. `rev-shadow-1`
+(Opus) said "Yes" at `401d8d0` after one fix pass (761 tests). Waiting to push: Felix's hook
+guard blocks any push naming `main`, and every Artifacts fork's branch is `main`. Felix chose to
+exempt Artifacts URLs (hook change done by Felix 18:3x); the session's classifier also needs a
+project allow rule `Bash(git push https://1e40d7b5aed4b7049e5b83bc07a5264c.artifacts.cloudflare.net/git/tessel/tessel-dogfood--*)`
+(Pending 0). Then: lane claims all four touched files again (claim 35 expired; 36 covers only two),
+pushes with the literal fork URL, `tessel submit`, approval as `orchestrator` if held.
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop stopped.
 
@@ -74,7 +78,9 @@ and submits only after the Opus review. Owns `src/coordinator*`, `src/shell.rs`,
   `welcome`, `tessel-dogfood` gets 403, no token gets 401.
 
 **Pending from Felix:**
-0. Nothing blocking. Production deploys, secret writes, Artifacts deletes and forced pushes are
+0. Add the fork-push allow rule above to `.claude/settings.local.json` (command handed to Felix).
+   Note: the existing `Bash(npx wrangler deploy *)` rule does not match a deploy piped through
+   other commands; the orchestrator runs deploys bare. Production deploys, secret writes, Artifacts deletes and forced pushes are
    refused by the session's permission classifier; the orchestrator hands Felix a command for
    each (done today: swarm key, coordinator deploy, stray repo delete, steward image, the
    catch-up admin merge).
@@ -292,6 +298,19 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   coordinator has the steward trial each shadow submission it blocked against the pre- and
   post-merge trunk (the ASSUME-1 primitive) and appends `DenialVerified`; a red baseline or a
   trial without a result counts nothing. The first lane to land through the steward.
+- [ ] **CLI-LIVENESS** — found while dogfooding SHADOW-1: claim 35 expired while the lane's daemon
+  was running. Heartbeats get no reply (`src/coordinator.rs:824`); `send_heartbeat`
+  (`tessel-cli/src/daemon.rs:426-436`) pushes the local expiry forward once the frame is queued,
+  and the socket task never pings (`daemon.rs:1855` ignores ping/pong), so a half-open connection
+  heartbeats into nothing while the coordinator expires the claim and the daemon never notices.
+  Fix without a protocol change: send a WebSocket ping each tick; no inbound frame within about
+  lease/2 means a dead link: close, reconnect, and move the local expiry only on proof of delivery.
+  Check the lane's daemon log for a connected/closed gap around the expiry first.
+- [ ] **SHADOW-GC** — from the SHADOW-1 review: submitted shadow claims are never removed (true
+  before SHADOW-1). They hold no locks, leases or queue positions, but state grows by one claim per
+  shadow submit in experiment runs, and a shadow blocked only by a race can never be verified.
+  Drop a submitted shadow claim once none of its `blocked_by` claims is live and none of its trials
+  is queued. Before the swarm runs that use shadows at scale.
 - [x] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
   join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
   trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
