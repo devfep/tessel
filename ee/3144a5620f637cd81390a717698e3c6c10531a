@@ -1,0 +1,4 @@
+intent: first container run of Tessel's gate found /bin/kill missing (CLI tests) and node 22.23.3 failing the dependency check's require on an unparsable package.json
+assumes: process.getBuiltinModule exists in the image's Node 22.23.3
+rejected: none
+evidence: dependency-check tests 15 pass locally; container rerun below
