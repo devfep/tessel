@@ -132,8 +132,8 @@ fn join(prefix: &str, separator: &str, name: &str) -> String {
 /// comments. A plain comment between them is inside the range, but not a part that counts.
 struct Lead {
     start: usize,
-    /// The doc and plain comments among them. A change to these alone is a body change, not a signature
-    /// change: it would otherwise send every typo fix to review.
+    /// The doc and plain comments among them. A change to these alone is a body change, not a
+    /// signature change: it would otherwise send every typo fix to review.
     docs: Vec<Range<usize>>,
 }
 
@@ -819,7 +819,8 @@ class Panel extends React.Component {
 
     #[test]
     fn leading_attributes_decorators_and_doc_comments_are_in_the_signature() {
-        let source = "/// Doc.\n#[derive(Debug)]\n// plain\nfn f() {}\n\n/// Other.\n#[inline]\nfn g() {\n    1;\n}\n";
+        let source = "/// Doc.\n#[derive(Debug)]\n\
+             // plain\nfn f() {}\n\n/// Other.\n#[inline]\nfn g() {\n    1;\n}\n";
         let g = find("src/a.rs", source, "a::g");
         assert_eq!(
             &source[g.signature.clone()],

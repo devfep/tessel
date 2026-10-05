@@ -869,7 +869,8 @@ pub fn other() {}
 
     #[test]
     fn an_ambiguous_edit_on_an_impl_header_is_a_signature_edit_of_the_file() {
-        let source = "impl<T: Clone> A<T> {\n    fn a(&self) {}\n}\n\nimpl<T: Clone> B<T> {\n    fn b(&self) {}\n}\n";
+        let source = "impl<T: Clone> A<T> {\n    fn a(&self) {}\n}\n\n\
+            impl<T: Clone> B<T> {\n    fn b(&self) {}\n}\n";
         let edits = one("<T: Clone>", "<T: Copy>");
         assert_eq!(
             plan_edit("src/lib.rs", source, &edits),
@@ -907,7 +908,8 @@ pub fn other() {}
 
     #[test]
     fn an_impl_bound_change_is_a_signature_change_of_its_methods() {
-        let before = "impl<T: Clone> Wrapper<T> {\n    fn get(&self) {}\n    fn put(&self) {}\n}\n\nfn z() {}\n";
+        let before = "impl<T: Clone> Wrapper<T> {\n    fn get(&self) {}\n    fn put(&self) {}\n}\n\
+            \nfn z() {}\n";
         let after = before.replace("T: Clone", "T: Clone + Send");
         let got = changed(before, &after);
         assert!(
