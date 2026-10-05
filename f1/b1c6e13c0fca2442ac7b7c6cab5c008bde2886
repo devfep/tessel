@@ -1,0 +1,4 @@
+intent: record the stale coordinator head, the CLI diff-base bug and the CLI-BASE dispatch
+assumes: none
+rejected: hand-editing the lane's .tessel/state.json (would bypass the CLI's check instead of fixing it)
+evidence: lane report: tessel submit exit 5, 244 uncovered scopes, coordinator head 36abdb3 not an ancestor of 401d8d0
