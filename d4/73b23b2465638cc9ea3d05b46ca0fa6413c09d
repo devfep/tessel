@@ -1,0 +1,4 @@
+intent: COVER-1 fix pass 1: an M file is covered by edit_body or create (git records an added function as M); test pins --no-ext-diff; coordinator test for amended scopes in the dispatch
+assumes: symbol precision stays with the coordinator's check on touched
+rejected: documenting /merges in README (it does not describe that route; ROADMAP is the orchestrator's)
+evidence: lib 304, steward 374, clippy/rustfmt/wasm 0/deny clean, typecheck/oxlint/oxfmt clean
