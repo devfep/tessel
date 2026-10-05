@@ -1,0 +1,4 @@
+intent: soft limit only for Claim/Amend/Submit (other messages under the hard limit); size bookkeeping moved into the pure StoredSize
+assumes: none new
+rejected: a size tolerance (small steps could ratchet past the hard limit); a fake storage layer for the post-refusal expiry glue
+evidence: cargo test 217 passed; clippy 0 in the four files; 5 mutants red; local run over soft on wrangler dev
