@@ -1,0 +1,4 @@
+intent: pnpm 12 ignores npm_config_store_dir (store path stayed in the home directory); pnpm_config_store_dir is the variable it reads
+assumes: none
+rejected: none
+evidence: pnpm store path printed /opt/pnpm-store/v11 with the new variable inside the image
