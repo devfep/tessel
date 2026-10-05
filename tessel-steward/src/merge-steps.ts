@@ -105,14 +105,20 @@ async function rebaseOntoMain(
     : { outcome: "rebased", base, head };
 }
 
+/**
+ * Pushes, then decides the outcome from a read of main made by the Worker through the Artifacts
+ * binding, never from the push command's exit code: repo code ran in the sandbox and can fake
+ * it. Main at `head` is `merged`; at `base` it is `push_failed`; at anything else it is
+ * `main_moved`; unreadable is `push_failed`.
+ */
 async function pushToMain(deps: MergeDeps, base: Sha, head: Sha): Promise<MergeOutcome> {
   const result = await deps.withPushAccess({ base, head }, () =>
     deps.run(pushCommand(deps.sources, base, head)),
   );
-  if (result.exitCode === 0) {
+  const actual = await deps.currentMain();
+  if (actual === head) {
     return { outcome: "merged", base, head };
   }
-  const actual = await deps.currentMain();
   if (actual !== null && actual !== base) {
     return { outcome: "main_moved", expected: base, actual };
   }

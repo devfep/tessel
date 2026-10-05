@@ -4,7 +4,7 @@ import {
   execCaptured,
   runPackageStep,
 } from "./container-step";
-import { MAIN_BRANCH, type GitCommand } from "./merge-commands";
+import { MAIN_BRANCH, NETWORK_TIMEOUT_SECONDS, type GitCommand } from "./merge-commands";
 import { runMerge, type MergeDeps } from "./merge-steps";
 import {
   isForkOf,
@@ -18,8 +18,11 @@ import {
 import { redactTokens } from "./redact";
 import { revokeOnce } from "./revoke-once";
 
-/** Read tokens live only while main and the fork are fetched; 300 s covers the 240 s timeout. */
-const READ_TOKEN_TTL_SECONDS = 300;
+/**
+ * Both read tokens are minted before the container starts and used by two network steps in turn
+ * (clone, then fetch), each with its own timeout, so the lifetime covers both plus a margin.
+ */
+const READ_TOKEN_TTL_SECONDS = 2 * NETWORK_TIMEOUT_SECONDS + 60;
 /** The push is two requests seconds apart; 60 s is the shortest lifetime Artifacts allows. */
 const WRITE_TOKEN_TTL_SECONDS = 60;
 
@@ -65,6 +68,13 @@ function reportRevokeFailure(repo: string, tokenId: string): (reason: string) =>
  * The sandbox has no Internet and no credentials. Read tokens live in `MergeReadGateway` until
  * the fetch ends. The write token is minted by `withPushAccess` after the tests passed, lives
  * in `MergePushGateway` for the one push, and is revoked straight after. Call this on a Durable
+ * Object instance with a new random name for each merge.
+ *
+ * Known limit: the repo's tests run as the same user as the rest of the container, so a process
+ * they detach (setsid, nohup) can outlive `timeout` and still run when the write token is minted.
+ * It cannot use the token: the token is held by `MergePushGateway`, which forwards only the one
+ * pinned update, and the outcome is decided by a read of main made by the Worker, not by the
+ * sandbox. Isolating the tests under another uid is not built.
  * Object instance with a new random name for each merge.
  *
  * @throws If the fork is not a fork of `repo`, a repo is missing, the container cannot start,

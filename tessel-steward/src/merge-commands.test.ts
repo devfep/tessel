@@ -13,6 +13,7 @@ import {
   type MergeSources,
 } from "./merge-commands";
 import { parseSha, type Sha } from "./merge-types";
+import { MAX_PUSH_BODY_BYTES } from "./receive-pack-policy";
 
 function sha(character: string): Sha {
   const parsed = parseSha(character.repeat(40));
@@ -77,6 +78,13 @@ describe("git commands", () => {
       "c".repeat(40),
       "d".repeat(40),
     ]);
+  });
+
+  it("sizes git's POST buffer to the gateway's body limit so git sends no probe request", () => {
+    const { argv } = pushCommand(sources, sha("b"), sha("e"));
+    const flag = argv.indexOf(`http.postBuffer=${MAX_PUSH_BODY_BYTES}`);
+    expect(argv[flag - 1]).toBe("-c");
+    expect(flag).toBeLessThan(argv.indexOf("push"));
   });
 
   it("pushes with a lease on the sha main had when it was cloned, and never forces", () => {

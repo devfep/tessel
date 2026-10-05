@@ -1,5 +1,8 @@
 import type { Sha } from "./merge-types";
 
+/** Largest push body the push gateway forwards. */
+export const MAX_PUSH_BODY_BYTES = 16 * 1024 * 1024;
+
 const RECEIVE_PACK_SERVICE = "?service=git-receive-pack";
 const PKT_LENGTH_BYTES = 4;
 const COMMAND_PATTERN = /^([0-9a-f]{40}) ([0-9a-f]{40}) (\S+)$/;
@@ -17,8 +20,9 @@ export interface PushCommand {
  * flush packet; the pack follows and is not read).
  *
  * @returns The commands, or undefined for anything that is not a plain command list: a bad
- *   length, a line that is not `<old> <new> <ref>`, a `shallow` or `push-cert` line, text that is
- *   not UTF-8, or no flush packet.
+ *   length, a line that is not `<old> <new> <ref>`, a `shallow` or `push-cert` line, the
+ *   `push-options` capability (the option lines after the flush would go unchecked; a plain push
+ *   sends none), text that is not UTF-8, or no flush packet.
  */
 export function parsePushCommands(body: Uint8Array): PushCommand[] | undefined {
   const commands: PushCommand[] = [];
@@ -54,7 +58,7 @@ function parseCommandLine(line: Uint8Array): PushCommand | undefined {
   }
   const [command = "", ...capabilities] = text.split("\0");
   const match = COMMAND_PATTERN.exec(command.replace(/\n$/, ""));
-  if (match === null || capabilities.length > 1) {
+  if (match === null || capabilities.length > 1 || capabilities[0]?.includes("push-options")) {
     return undefined;
   }
   const [, old = "", updated = "", ref = ""] = match;

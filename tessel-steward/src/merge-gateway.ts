@@ -6,11 +6,10 @@ import {
   isReceivePackDiscovery,
   isReceivePackPost,
   parsePushCommands,
+  MAX_PUSH_BODY_BYTES,
   readBodyCapped,
   type ExpectedPush,
 } from "./receive-pack-policy";
-
-const MAX_PUSH_BODY_BYTES = 16 * 1024 * 1024;
 
 export interface ReadRoute {
   remote: string;

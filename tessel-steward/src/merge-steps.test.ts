@@ -154,6 +154,7 @@ describe("runMerge", () => {
       `mint-write ${BASE} ${HEAD}`,
       "git:push",
       "revoke-write",
+      "currentMain",
     ]);
   });
 
@@ -265,6 +266,30 @@ describe("runMerge", () => {
     expect(await runMerge(deps, COMMIT)).toEqual({ outcome: "already_merged", base: BASE });
     expect(events.some((event) => event.startsWith("package:"))).toBe(false);
     expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+  });
+
+  it("trusts the read of main, not the exit code: exit 0 with main unchanged is push_failed", async () => {
+    const { deps } = harness({ git: { push: { exitCode: 0 } }, mainAfterPush: BASE });
+    expect(await runMerge(deps, COMMIT)).toMatchObject({ outcome: "push_failed", base: BASE });
+  });
+
+  it("reports merged when the push exits non-zero but main is at head", async () => {
+    const { deps } = harness({ git: { push: { exitCode: 1 } }, mainAfterPush: HEAD });
+    expect(await runMerge(deps, COMMIT)).toEqual({ outcome: "merged", base: BASE, head: HEAD });
+  });
+
+  it("reports main_moved when the push exits 0 but main is at neither base nor head", async () => {
+    const { deps } = harness({ git: { push: { exitCode: 0 } }, mainAfterPush: RACER });
+    expect(await runMerge(deps, COMMIT)).toEqual({
+      outcome: "main_moved",
+      expected: BASE,
+      actual: RACER,
+    });
+  });
+
+  it("does not report merged when the push exits 0 and main cannot be read", async () => {
+    const { deps } = harness({ git: { push: { exitCode: 0 } }, mainAfterPush: null });
+    expect(await runMerge(deps, COMMIT)).toMatchObject({ outcome: "push_failed" });
   });
 
   it("reports main_moved with both shas when the lease rejects the push", async () => {

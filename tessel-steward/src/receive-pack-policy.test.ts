@@ -58,6 +58,12 @@ describe("parsePushCommands", () => {
     ["a length under 5", encoder.encode("0003x0000")],
     ["a shallow line", body(pkt(`shallow ${OLD}\n`), MAIN_UPDATE)],
     ["a push certificate", body(pkt("push-cert\0 report-status\n"))],
+    [
+      "the push-options capability with option lines after the flush",
+      encoder.encode(
+        `${pkt(`${OLD} ${NEW} refs/heads/main\0 report-status push-options\n`)}0000${pkt("ci.skip\n")}0000PACK`,
+      ),
+    ],
     ["a short sha", body(pkt(`${OLD.slice(1)} ${NEW} refs/heads/main\0 x\n`))],
     ["invalid UTF-8", Uint8Array.from([0x30, 0x30, 0x30, 0x38, 0xff, 0xff, 0xff, 0xff])],
   ])("rejects %s", (_label, bytes) => {

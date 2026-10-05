@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { NETWORK_TIMEOUT_SECONDS } from "./merge-commands";
 import { executeMerge, redactOutcome } from "./merge-executor";
 import { parseSha, type MergeOutcome, type Sha } from "./merge-types";
 
@@ -23,6 +24,7 @@ interface World {
   testOutput: string;
   pushExit: number;
   mainNow: Sha;
+  forkHost: string;
 }
 
 function textStream(text: string): ReadableStream<Uint8Array> {
@@ -56,22 +58,25 @@ function build(overrides: Partial<World> = {}) {
     testOutput: "ok",
     pushExit: 0,
     mainNow: HEAD,
+    forkHost: "git.example",
     ...overrides,
   };
   const events: string[] = [];
   const tokens = new Map<string, string>();
+  const ttls = new Map<string, number>();
 
   function repo(name: string) {
     return {
       info: async () => ({
-        remote: `https://git.example/git/tessel/${name}.git`,
+        remote: `https://${name === "demo" ? "git.example" : world.forkHost}/git/tessel/${name}.git`,
         defaultBranch: "main",
         source: name === "demo" ? null : world.forkSource,
       }),
-      createToken: async (scope: string) => {
+      createToken: async (scope: string, ttl: number) => {
         const id = `${name}-${scope}`;
         tokens.set(id, `art_v1_secret-${id}`);
         events.push(`mint ${scope} ${name}`);
+        ttls.set(`${scope} ${name}`, ttl);
         return { id, plaintext: `art_v1_secret-${id}`, scope };
       },
       revokeToken: async (id: string) => {
@@ -103,7 +108,7 @@ function build(overrides: Partial<World> = {}) {
     exec: async (cmd: string[]) => {
       const argv = cmd.slice(3);
       const { exitCode, stdout } = respond(argv, world);
-      events.push(`exec ${argv.slice(0, 4).join(" ")}`.trim());
+      events.push(`exec ${argv.join(" ")}`);
       return {
         stdout: textStream(stdout),
         stderr: textStream(""),
@@ -117,7 +122,7 @@ function build(overrides: Partial<World> = {}) {
   };
   const ctx = { container, exports: exportsStub } as unknown as DurableObjectState;
   const env = { ARTIFACTS: { get: async (name: string) => repo(name) } } as unknown as Env;
-  return { ctx, env, events, world };
+  return { ctx, env, events, world, ttls };
 }
 
 const request = { fork: "demo--a1", commit: COMMIT };
@@ -130,8 +135,8 @@ describe("executeMerge", () => {
     expect(outcome).toEqual({ outcome: "merged", base: BASE, head: HEAD });
     const at = (needle: string) => events.findIndex((event) => event.includes(needle));
     expect(at("mint write")).toBeGreaterThan(at("npm test"));
-    expect(at("exec git -C /workspace push")).toBeGreaterThan(at("mint write"));
-    expect(at("revoke demo-write")).toBeGreaterThan(at("exec git -C /workspace push"));
+    expect(at("postBuffer")).toBeGreaterThan(at("mint write"));
+    expect(at("revoke demo-write")).toBeGreaterThan(at("postBuffer"));
     expect(events.filter((event) => event.startsWith("mint write"))).toHaveLength(1);
   });
 
@@ -188,6 +193,27 @@ describe("executeMerge", () => {
     const outcome = await executeMerge(ctx, env, "demo", request);
     expect(JSON.stringify(outcome)).not.toContain("secret-demo-read");
     expect(outcome).toMatchObject({ outcome: "tests_failed" });
+  });
+
+  it("mints read tokens that outlive the clone and the fetch, and a short write token", async () => {
+    const { ctx, env, ttls } = build();
+    await executeMerge(ctx, env, "demo", request);
+    expect(ttls.get("read demo")).toBeGreaterThanOrEqual(2 * NETWORK_TIMEOUT_SECONDS);
+    expect(ttls.get("read demo--a1")).toBeGreaterThanOrEqual(2 * NETWORK_TIMEOUT_SECONDS);
+    expect(ttls.get("write demo")).toBe(60);
+  });
+
+  it("refuses a fork on another git host before creating any token", async () => {
+    const { ctx, env, events } = build({ forkHost: "evil.example" });
+    await expect(executeMerge(ctx, env, "demo", request)).rejects.toThrow("same git host");
+    expect(events).toEqual([]);
+  });
+
+  it("does not report merged when the push exits 0 but main did not move", async () => {
+    const { ctx, env } = build({ mainNow: BASE });
+    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+      outcome: "push_failed",
+    });
   });
 
   it("reports main_moved when the push is rejected and main has changed", async () => {

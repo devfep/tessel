@@ -1,3 +1,4 @@
+import { MAX_PUSH_BODY_BYTES } from "./receive-pack-policy";
 import { isSafeBranchName, type Sha } from "./merge-types";
 
 /** One git invocation. Every value is an argv element or an environment value, never shell text. */
@@ -21,7 +22,7 @@ export const STEWARD_COMMITTER_EMAIL = "steward@tessel.invalid";
 /** Every replayed commit gets this committer date, so a retried rebase yields the same shas. */
 export const STEWARD_COMMITTER_DATE = "2026-01-01T00:00:00Z";
 
-const NETWORK_TIMEOUT_SECONDS = 240;
+export const NETWORK_TIMEOUT_SECONDS = 240;
 const LOCAL_TIMEOUT_SECONDS = 60;
 const REBASE_TIMEOUT_SECONDS = 120;
 const PUSH_TIMEOUT_SECONDS = 120;
@@ -138,6 +139,8 @@ export function pushCommand(sources: MergeSources, base: Sha, head: Sha): GitCom
   return local(
     workspace,
     [
+      "-c",
+      `http.postBuffer=${MAX_PUSH_BODY_BYTES}`,
       "push",
       "--porcelain",
       `--force-with-lease=refs/heads/${MAIN_BRANCH}:${base}`,

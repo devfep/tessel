@@ -65,7 +65,8 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  * is known when it is returned.
  *
  * Evidence (CLAUDE.md rule 7). Only these are verified facts about the code:
- * - `merged`: main was updated to `head`, and a read of main afterwards returned `head`.
+ * - `merged`: main was updated to `head`. The Worker read main through the Artifacts binding after
+ *   the push and got `head`; the sandbox's exit code is not trusted.
  * - `conflict`: replaying the commit onto the real main at `base` stopped with these files
  *   unmerged. This is the only outcome that shows a conflict was real.
  * - `tests_failed`: the repo's own `npm test` ran on the rebased `head` and did not exit 0.
