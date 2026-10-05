@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::protocol::AgentId;
-use crate::shell::MAX_AGENT_ID_BYTES;
+use crate::shell::is_agent_id;
 
 /// The only token version this verifier accepts.
 const TOKEN_VERSION: u32 = 1;
@@ -138,21 +138,10 @@ fn new_mac(key: &[u8]) -> Result<HmacSha256, IdentityError> {
     HmacSha256::new_from_slice(key).map_err(|_| IdentityError::NoSigningKey)
 }
 
-/// Whether `agent` can be a verified agent id: also safe to carry in an HTTP header.
-fn is_agent_id(agent: &str) -> bool {
-    let Some(first) = agent.bytes().next() else {
-        return false;
-    };
-    first.is_ascii_alphanumeric()
-        && agent.len() <= MAX_AGENT_ID_BYTES
-        && agent
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::MAX_AGENT_ID_BYTES;
     use proptest::prelude::*;
 
     const KEY: &str = "test-signing-key-not-a-secret";

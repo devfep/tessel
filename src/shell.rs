@@ -84,6 +84,7 @@ pub enum Outbound {
 pub enum LoadError {
     MissingRun,
     InvalidShadowEnabled,
+    InvalidReviewers,
     InvalidConfig(InvalidConfig),
     /// Stored state that does not parse. Only the position is kept: the state holds intents.
     Corrupt {
@@ -104,6 +105,11 @@ impl std::fmt::Display for LoadError {
             LoadError::InvalidShadowEnabled => write!(
                 f,
                 "the SHADOW_ENABLED variable must be exactly \"true\" or \"false\""
+            ),
+            LoadError::InvalidReviewers => write!(
+                f,
+                "the REVIEWERS variable must be comma-separated agent ids \
+                 (letters, digits, '.', '_', '-'; at most {MAX_AGENT_ID_BYTES} bytes each)"
             ),
             LoadError::InvalidConfig(e) => write!(f, "{e}"),
             LoadError::Corrupt { line, column } => write!(
@@ -127,6 +133,35 @@ pub fn config_from_vars(run: Option<&str>, shadow: Option<&str>) -> Result<Confi
     })
 }
 
+/// `REVIEWERS`: comma-separated agent ids, spaces around an id ignored; unset or blank means
+/// nobody may review. An empty entry or an id that is not a valid agent id is an error.
+pub fn parse_reviewers(reviewers: Option<&str>) -> Result<Vec<AgentId>, LoadError> {
+    let Some(list) = reviewers.filter(|list| !list.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let mut parsed = Vec::new();
+    for entry in list.split(',') {
+        let entry = entry.trim();
+        if !is_agent_id(entry) {
+            return Err(LoadError::InvalidReviewers);
+        }
+        parsed.push(AgentId(entry.to_string()));
+    }
+    Ok(parsed)
+}
+
+/// Whether `agent` can be a verified agent id: also safe to carry in an HTTP header.
+pub fn is_agent_id(agent: &str) -> bool {
+    let Some(first) = agent.bytes().next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
+        && agent.len() <= MAX_AGENT_ID_BYTES
+        && agent
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// `SHADOW_ENABLED`: exactly "true" or "false"; unset means false. Anything else is an error.
 fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
     match shadow {
@@ -136,21 +171,27 @@ fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
     }
 }
 
-/// Restore the core from its stored state, or create it when nothing is stored yet. The variables
-/// are read only in the second case: a repo keeps the config it was created with.
+/// Restore the core from its stored state, or create it when nothing is stored yet. `RUN` and
+/// `SHADOW_ENABLED` are read only in the second case: a repo keeps the config it was created with.
+/// `REVIEWERS` is read in both: who may review is a deployment setting, not part of the run.
 pub fn load_core(
     stored: Option<&str>,
     run: Option<&str>,
     shadow: Option<&str>,
+    reviewers: Option<&str>,
 ) -> Result<Core, LoadError> {
     let Some(stored) = stored else {
         let config = config_from_vars(run, shadow)?;
-        return Core::new(config).map_err(LoadError::InvalidConfig);
+        let mut core = Core::new(config).map_err(LoadError::InvalidConfig)?;
+        core.set_reviewers(parse_reviewers(reviewers)?);
+        return Ok(core);
     };
-    serde_json::from_str(stored).map_err(|e| LoadError::Corrupt {
+    let mut core: Core = serde_json::from_str(stored).map_err(|e| LoadError::Corrupt {
         line: e.line(),
         column: e.column(),
-    })
+    })?;
+    core.set_reviewers(parse_reviewers(reviewers)?);
+    Ok(core)
 }
 
 /// Why a text frame is refused.
@@ -656,7 +697,7 @@ mod tests {
     }
 
     fn new_core() -> Core {
-        load_core(None, Some("test"), None).unwrap()
+        load_core(None, Some("test"), None, None).unwrap()
     }
 
     fn reject_code(action: Action) -> ErrorCode {
@@ -1057,7 +1098,7 @@ mod tests {
         let last = split_effects(first).0.last().map(|e| e.seq).unwrap();
         let stored = serde_json::to_string(&core).unwrap();
 
-        let mut restored = load_core(Some(&stored), Some("ignored"), Some("junk")).unwrap();
+        let mut restored = load_core(Some(&stored), Some("ignored"), Some("junk"), None).unwrap();
         let (_, denied) = run(&mut restored, &bound("a2"), claim("fail", "depend"));
         assert!(
             was_denied(&denied),
@@ -1070,7 +1111,7 @@ mod tests {
 
     #[test]
     fn no_stored_state_creates_a_core_for_the_run() {
-        let core = load_core(None, Some("dogfood"), None).unwrap();
+        let core = load_core(None, Some("dogfood"), None, None).unwrap();
         let json = serde_json::to_string(&core).unwrap();
         assert!(json.contains(r#""run":"dogfood""#), "{json}");
         assert!(
@@ -1082,11 +1123,11 @@ mod tests {
     #[test]
     fn missing_or_empty_run_fails_loudly() {
         assert_eq!(
-            load_core(None, None, None).unwrap_err(),
+            load_core(None, None, None, None).unwrap_err(),
             LoadError::MissingRun
         );
         assert_eq!(
-            load_core(None, Some(""), None).unwrap_err(),
+            load_core(None, Some(""), None, None).unwrap_err(),
             LoadError::MissingRun
         );
         assert!(config_from_vars(None, None).is_err());
@@ -1094,15 +1135,20 @@ mod tests {
 
     #[test]
     fn corrupt_stored_state_fails_without_starting_empty_or_echoing_it() {
-        let err =
-            load_core(Some(r#"{"claims":"secret-intent-text""#), Some("r"), None).unwrap_err();
+        let err = load_core(
+            Some(r#"{"claims":"secret-intent-text""#),
+            Some("r"),
+            None,
+            None,
+        )
+        .unwrap_err();
         let LoadError::Corrupt { .. } = err else {
             panic!("expected Corrupt, got {err:?}");
         };
         assert!(!err.to_string().contains("secret"));
         assert!(err.to_string().contains("refusing to start empty"));
-        assert!(load_core(Some(""), Some("r"), None).is_err());
-        assert!(load_core(Some("{}"), Some("r"), None).is_err());
+        assert!(load_core(Some(""), Some("r"), None, None).is_err());
+        assert!(load_core(Some("{}"), Some("r"), None, None).is_err());
     }
 
     #[test]
@@ -1127,7 +1173,7 @@ mod tests {
     }
 
     fn core_with_shadow(shadow: Option<&str>) -> Result<Core, LoadError> {
-        load_core(None, Some("r"), shadow)
+        load_core(None, Some("r"), shadow, None)
     }
 
     #[test]
@@ -1152,6 +1198,62 @@ mod tests {
             assert_eq!(err, LoadError::InvalidShadowEnabled, "{bad:?}");
             assert!(err.to_string().contains("SHADOW_ENABLED"));
         }
+    }
+
+    fn ids(names: &[&str]) -> Vec<AgentId> {
+        names.iter().map(|name| AgentId((*name).into())).collect()
+    }
+
+    #[test]
+    fn no_reviewers_when_the_variable_is_unset_or_blank() {
+        for blank in [None, Some(""), Some("   ")] {
+            assert_eq!(parse_reviewers(blank), Ok(Vec::new()), "{blank:?}");
+        }
+    }
+
+    #[test]
+    fn reviewers_are_split_on_commas_and_trimmed() {
+        assert_eq!(parse_reviewers(Some("felix")), Ok(ids(&["felix"])));
+        assert_eq!(
+            parse_reviewers(Some(" felix , a.b_c-1,x ")),
+            Ok(ids(&["felix", "a.b_c-1", "x"]))
+        );
+    }
+
+    #[test]
+    fn an_invalid_reviewer_list_fails_loudly_without_echoing_it() {
+        let long = "a".repeat(MAX_AGENT_ID_BYTES + 1);
+        for bad in [
+            "a,,b",
+            "a,",
+            ",a",
+            "bad id",
+            "-a",
+            "a\nb",
+            "fe/lix",
+            "ünï",
+            long.as_str(),
+        ] {
+            let err = parse_reviewers(Some(bad)).unwrap_err();
+            assert_eq!(err, LoadError::InvalidReviewers, "{bad:?}");
+            assert!(err.to_string().contains("REVIEWERS"));
+            assert!(!err.to_string().contains(bad));
+        }
+    }
+
+    #[test]
+    fn reviewers_are_taken_from_the_variable_on_every_load() {
+        let created = load_core(None, Some("r"), None, Some("felix")).unwrap();
+        let stored = serde_json::to_string(&created).unwrap();
+        let reviewers_of = |core: &Core| serde_json::to_value(core).unwrap()["reviewers"].clone();
+        assert_eq!(reviewers_of(&created), serde_json::json!(["felix"]));
+
+        let renamed = load_core(Some(&stored), None, None, Some("ana, bo")).unwrap();
+        assert_eq!(reviewers_of(&renamed), serde_json::json!(["ana", "bo"]));
+        let cleared = load_core(Some(&stored), None, None, None).unwrap();
+        assert_eq!(reviewers_of(&cleared), serde_json::json!([]));
+        let bad = load_core(Some(&stored), None, None, Some("bad id"));
+        assert_eq!(bad.unwrap_err(), LoadError::InvalidReviewers);
     }
 
     #[test]
@@ -1655,7 +1757,7 @@ mod tests {
         assert!(refused.state > SOFT_ENTRY_BYTES, "{refused:?}");
         assert_eq!(decide_store(Work::Content, refused), StoreDecision::Refuse);
 
-        let mut recovered = load_core(Some(&stored), None, None).unwrap();
+        let mut recovered = load_core(Some(&stored), None, None, None).unwrap();
         let effects = recovered.expire(late);
         let freed = measured(&recovered, effects, stored.len());
         assert_eq!(decide_store(Work::Plain, freed), StoreDecision::Store);
