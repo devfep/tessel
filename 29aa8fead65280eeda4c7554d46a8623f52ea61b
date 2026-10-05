@@ -1,0 +1,4 @@
+intent: milestone merge of sprint/build at the protocol API freeze (pull request 1)
+assumes: none
+rejected: squashing (the per-commit notes and the task merge commits carry the evidence)
+evidence: tree identical to sprint/build at 5fc47cf; cargo test 220 passed and steward vitest 119 passed on that tree; both Workers deployed from it and checked live (notes on 597f625 and 7de5ff3)
