@@ -6,12 +6,15 @@ import { redactTokens } from "./redact";
 /**
  * The entrypoint the coordinator reaches through its `STEWARD` service binding. It has no public
  * URL, so it needs no admin token: only a Worker that binds to it can call it. It accepts one
- * request, `POST` with `{ "repo", "fork", "commit" }`, and answers with the `MergeOutcome`.
+ * request, `POST` with `{ "repo", "fork", "commit", "scopes" }`, and answers with the `MergeOutcome`.
  */
 export class MergeService extends WorkerEntrypoint<Env> {
   override async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST") {
-      return Response.json({ error: "expected POST {repo, fork, commit}" }, { status: 405 });
+      return Response.json(
+        { error: "expected POST {repo, fork, commit, scopes}" },
+        { status: 405 },
+      );
     }
     const body = await request.json().catch(() => null);
     const repo =

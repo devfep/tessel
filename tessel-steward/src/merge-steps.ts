@@ -1,5 +1,6 @@
 import {
   baseCommand,
+  changedFilesCommand,
   cloneCommand,
   commitExistsCommand,
   conflictsCommand,
@@ -13,6 +14,12 @@ import {
   type GitCommand,
   type MergeSources,
 } from "./merge-commands";
+import {
+  MAX_REPORTED_FILES,
+  parseNameStatus,
+  uncoveredPaths,
+  type ClaimedScope,
+} from "./merge-coverage";
 import { parseSha, type GitResult, type MergeOutcome, type Sha } from "./merge-types";
 import { runInstallThenTest, runStepThenRevoke, type StepOutcome } from "./run-steps";
 
@@ -106,6 +113,36 @@ async function rebaseOntoMain(
 }
 
 /**
+ * Invariant 11 on the change the steward sees: every file the rebased range `base..head` changes
+ * must be covered by the claim. Runs before any repo code. A diff that fails, is cut off, or has
+ * a record this code does not know is `git_failed`: it is never read as covered.
+ */
+async function checkCoverage(
+  deps: MergeDeps,
+  base: Sha,
+  head: Sha,
+  scopes: readonly ClaimedScope[],
+): Promise<MergeOutcome | undefined> {
+  const diff = await deps.run(changedFilesCommand(deps.sources.workspace, base, head));
+  const complete = diff.exitCode === 0 && !diff.stdoutTruncated;
+  const required = complete ? parseNameStatus(diff.stdout) : undefined;
+  if (required === undefined) {
+    return { outcome: "git_failed", result: diff };
+  }
+  const uncovered = uncoveredPaths(required, scopes);
+  if (uncovered.length === 0) {
+    return undefined;
+  }
+  return {
+    outcome: "uncovered",
+    base,
+    head,
+    files: uncovered.slice(0, MAX_REPORTED_FILES),
+    total: uncovered.length,
+  };
+}
+
+/**
  * Pushes, then decides the outcome from a read of main made by the Worker through the Artifacts
  * binding, never from the push command's exit code: repo code ran in the sandbox and can fake
  * it. Main at `head` is `merged`; at `base` it is `push_failed`; at anything else it is
@@ -126,23 +163,31 @@ async function pushToMain(deps: MergeDeps, base: Sha, head: Sha): Promise<MergeO
 }
 
 /**
- * Merges `commit` of the fork into main: rebase onto main, test, push with a lease.
+ * Merges `commit` of the fork into main: rebase onto main, check coverage, test, push with a
+ * lease.
  *
  * Order, which the tests pin:
  * 1. Clone main and fetch the fork with read tokens, then revoke both before anything else runs
  *    (if a revocation fails, nothing runs and this throws).
  * 2. Verify the commit is reachable from the fork's default branch.
  * 3. Rebase `merge-base..commit` onto the main that was cloned, with a fixed committer.
- * 4. Run the dependency check and the tests. No token of any kind is live.
- * 5. Only if the tests passed: mint the write token, push with a lease on the cloned main,
+ * 4. Check that `scopes` cover every file the rebased range changes (invariant 11), before any
+ *    repo code runs. The check is file level; see `merge-coverage.ts`.
+ * 5. Run the dependency check and the tests. No token of any kind is live.
+ * 6. Only if the tests passed: mint the write token, push with a lease on the cloned main,
  *    revoke the write token.
  *
  * @param deps The sandbox, token and main-reading boundaries.
  * @param commit The submitted commit, already validated as a sha.
+ * @param scopes The scopes the claim holds. Required: the coverage check cannot be skipped.
  * @returns The outcome. Which outcomes are evidence is documented on `MergeOutcome`.
  * @throws If a read token cannot be revoked, or a boundary throws.
  */
-export async function runMerge(deps: MergeDeps, commit: Sha): Promise<MergeOutcome> {
+export async function runMerge(
+  deps: MergeDeps,
+  commit: Sha,
+  scopes: readonly ClaimedScope[],
+): Promise<MergeOutcome> {
   const fetched = await runStepThenRevoke(() => fetchSources(deps), deps.revokeReadTokens);
   if (fetched.exitCode !== 0) {
     return { outcome: "clone", result: fetched };
@@ -163,6 +208,10 @@ export async function runMerge(deps: MergeDeps, commit: Sha): Promise<MergeOutco
   const { head } = rebased;
   if (head === base) {
     return { outcome: "already_merged", base };
+  }
+  const uncovered = await checkCoverage(deps, base, head, scopes);
+  if (uncovered !== undefined) {
+    return uncovered;
   }
   const tested = await runInstallThenTest((step) => deps.runPackageStep(step));
   if (tested.step === "install") {

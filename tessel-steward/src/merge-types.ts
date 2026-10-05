@@ -1,4 +1,5 @@
 import { isValidName } from "./identity";
+import { parseScopes, type ClaimedScope } from "./merge-coverage";
 import type { StepOutcome } from "./run-steps";
 
 /** A full, lowercase, 40-hex git object id. Only `parseSha` makes one. */
@@ -12,20 +13,32 @@ export function parseSha(value: unknown): Sha | undefined {
   return typeof value === "string" && SHA_PATTERN.test(value) ? (value as Sha) : undefined;
 }
 
-/** A request to merge `commit`, which must be reachable from the default branch of `fork`. */
+/**
+ * A request to merge `commit`, which must be reachable from the default branch of `fork`, for a
+ * claim that holds `scopes`. The merged change must be covered by them (invariant 11).
+ */
 export interface MergeRequest {
   fork: string;
   commit: Sha;
+  scopes: ClaimedScope[];
 }
 
 export type ParsedMergeRequest = { ok: true; request: MergeRequest } | { ok: false; error: string };
 
-/** Validates the body of `POST /repos/<repo>/merges`: `{ "fork": <repo name>, "commit": <sha> }`. */
+/**
+ * Validates the body of `POST /repos/<repo>/merges`:
+ * `{ "fork": <repo name>, "commit": <sha>, "scopes": [{ "scope", "mode" }] }`. A request without
+ * `scopes` is invalid: the coverage check is never skipped.
+ */
 export function parseMergeRequest(body: unknown): ParsedMergeRequest {
   if (typeof body !== "object" || body === null) {
-    return { ok: false, error: 'expected a JSON object {"fork", "commit"}' };
+    return { ok: false, error: 'expected a JSON object {"fork", "commit", "scopes"}' };
   }
-  const { fork, commit } = body as { fork?: unknown; commit?: unknown };
+  const { fork, commit, scopes } = body as {
+    fork?: unknown;
+    commit?: unknown;
+    scopes?: unknown;
+  };
   if (typeof fork !== "string" || !isValidName(fork)) {
     return { ok: false, error: "fork must be a repo name" };
   }
@@ -33,7 +46,11 @@ export function parseMergeRequest(body: unknown): ParsedMergeRequest {
   if (sha === undefined) {
     return { ok: false, error: "commit must be 40 lowercase hex characters" };
   }
-  return { ok: true, request: { fork, commit: sha } };
+  const parsedScopes = parseScopes(scopes);
+  if (!parsedScopes.ok) {
+    return parsedScopes;
+  }
+  return { ok: true, request: { fork, commit: sha, scopes: parsedScopes.scopes } };
 }
 
 /**
@@ -71,6 +88,10 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  *   unmerged. This is the only outcome that shows a conflict was real.
  * - `tests_failed`: the repo's own `npm test` ran on the rebased `head` and did not exit 0.
  *   Exit code 124 or 137 means it timed out or was killed, which is not a failing assertion.
+ * - `uncovered`: the commit rebased onto main changes files that the claim's scopes do not cover
+ *   in a permitting mode (invariant 11), read from `git diff --name-status` of the rebased range
+ *   before any repo code ran. `files` holds at most `MAX_REPORTED_FILES` paths (untrusted data);
+ *   `total` counts all of them. Nothing was tested or pushed.
  *
  * Not conflict or test evidence, but true statements about this attempt:
  * - `already_merged`: the rebase left nothing to add to main.
@@ -91,6 +112,7 @@ export type MergeOutcome =
   | { outcome: "already_merged"; base: Sha }
   | { outcome: "conflict"; base: Sha; files: string[] }
   | { outcome: "tests_failed"; base: Sha; head: Sha; result: StepOutcome }
+  | { outcome: "uncovered"; base: Sha; head: Sha; files: string[]; total: number }
   | { outcome: "main_moved"; expected: Sha; actual: Sha }
   | { outcome: "commit_not_in_fork" }
   | { outcome: "clone"; result: StepOutcome }

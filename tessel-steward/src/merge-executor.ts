@@ -43,6 +43,7 @@ export function redactOutcome(outcome: MergeOutcome): MergeOutcome {
     case "merged":
     case "already_merged":
     case "conflict":
+    case "uncovered":
     case "main_moved":
     case "commit_not_in_fork":
       return outcome;
@@ -164,7 +165,7 @@ export async function executeMerge(
       },
       currentMain: () => readMainHead(main),
     };
-    return redactOutcome(await runMerge(deps, request.commit));
+    return redactOutcome(await runMerge(deps, request.commit, request.scopes));
   } finally {
     await destroyContainer(container, repo);
     await revokeReadTokens();
