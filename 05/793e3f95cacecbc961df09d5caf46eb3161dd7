@@ -1,0 +1,4 @@
+intent: merge SYM-SIG: attributes, derives, decorators, impl and trait headers count as signature changes; doc-only changes count as body
+assumes: none
+rejected: doc-only changes as signature changes (every typo fix would need human review, against PLAN section 2)
+evidence: review Yes after one fix pass (16 reviewer mutants killed across both passes). Merged tree: cargo test --workspace 614, clippy 0. CLI only, no Worker changed, so no live run. Dogfood (agent sym-sig, checked against the live log): claim 23 fence 34 was granted after the edits were written (an honest miss); claim 26 fence 43 was claimed before editing; claim 27 fence 44 (a one-line wrap) was claimed after the edit, because the orchestrator first said no claim was needed and then corrected itself. Known limit: unsafe impl on an empty impl stays file edit_body. Four lines over 100 characters in skills/tessel/SKILL.md predate this task.
