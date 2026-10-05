@@ -1,0 +1,4 @@
+intent: merge COORD-1, the pure coordinator core (hello, claims with Fail, release, lock table, fences, event log, at-risk assumptions)
+assumes: the Durable Object shell (COORD-4) binds one agent identity per connection and persists state and events before sending
+rejected: persisting the lock table (derived state); trusting the agent named in Hello; revealing the current fence in StaleFence errors
+evidence: Opus review Yes after two fix passes, 15 reviewer mutants killed; on the merged tree cargo test 50 passed (17 protocol, 32 unit, 1 property with save-and-reload before every operation), clippy 0 hits in coordinator.rs, rustfmt clean, wasm release build compiles, src/protocol.rs byte-identical to ddaeb44
