@@ -1,0 +1,4 @@
+intent: refuse C0/DEL/C1 control characters in scope paths and symbol names, and padded symbol names, at the one canonical-scope check
+assumes: the CLI escapes scope text it shows; this is defence in depth. OpenRace is still not_implemented and does not yet validate scopes
+rejected: new error code (protocol.rs is frozen); using Malformed with the existing fixed message instead
+evidence: cargo test 244 passed (base 241, +3); clippy -D warnings clean; rustfmt --check clean; wasm release 0 warnings; 4 mutants all fail tests
