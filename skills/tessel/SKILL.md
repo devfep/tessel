@@ -100,10 +100,12 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   one `--evidence` is required (repeatable): without it the work would be held for review.
 - **One claim must cover everything the commit changed.** The default is your only unsubmitted
   claim; else `--claim <id>`. `--commit` defaults to `HEAD`. The diff is `git diff
-  <base>...<commit>`, `<base>` being the coordinator's head if your repository has that commit,
-  else the commit your work started from (`start` in `tessel status`; it moves only when one of
-  your submissions merges); if neither exists locally, exit 1. Added file: `create`; deleted or
-  type-changed: `edit-signature`; rename: `edit-signature` on the old path, `create` on the new.
+  <base>...<commit>`, `<base>` being the coordinator's head if it is `<commit>` or in its history,
+  else its fork point with `<commit>` if that is at or after the commit your work started from,
+  else that start commit (`start` in `tessel status`; it moves only when one of your submissions
+  merges); if none is in `<commit>`'s history, exit 1 and merge or rebase onto one. Added file:
+  `create`; deleted or type-changed: `edit-signature`; rename: `edit-signature` on the old path,
+  `create` on the new.
   Signature changes, deletions and renames hold the submission for review.
 - **Uncovered (exit 5)** prints the uncovered scopes and sends nothing. Claim the full set
   (release first if nothing is uncommitted) or drop the changes outside it.
