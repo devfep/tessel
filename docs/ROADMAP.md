@@ -100,6 +100,10 @@ RACE-1 merged and deployed.
   this agent's `Merged`; deleting `.tessel/state.json` resets it to HEAD (documented). The steward
   also checks the rebased commit's files against the claim (COVER-1), at file level only.
 
+**Felix's ruling, 2026-10-05 13:42 EDT:** a third Worker, `tessel-coordinator-swarm` (same coordinator code,
+own Durable Objects, `REVIEWERS = "swarm-reviewer"`), may be deployed for live swarm and A/B runs,
+so the scripted reviewer never has authority over real repos. Production `REVIEWERS` stays `felix`.
+
 **Standing rules:** Sonnet implementers, Opus reviewers. Up to four lanes at once when the Mac has
 headroom (load under about 10), one Docker image build at a time, cargo under `nice`. No
 attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZE. Deploys of the
