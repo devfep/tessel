@@ -5,10 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 about 16:00 EDT.
+**As of:** 2026-10-05 about 16:10 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
-Blocked on Felix (Pending 0): the session's permission classifier refuses production deploys,
-secret writes and the Artifacts delete, so those three steps are his.
+The session's permission classifier refuses production deploys, secret writes and Artifacts
+deletes, so Felix runs those from a command the orchestrator hands him (Pending 0).
+**First live swarm run** (16:03, seed 1, 10 tasks, 6 agents, overlap 0.5, scratch repo
+`swarm-s1-tmgae3`, results in the session scratchpad `orch/swarm1/`): `on` landed 9 of 10 with 0
+rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 6 timed out after
+120 s with no grant, because merges through the live steward take tens of seconds each and the
+queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
+textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
+live steward latency, and report this run's timeout as it happened.
 **Tip:** `sprint/build` at the DOGFOOD-4 merge `4793bca`, pushed. The GitHub trunk is at `29aa8fe`
 (pull request 1). The Artifacts trunk `tessel-dogfood` is at `6f78128`, the same tree as `b6b8bfb`
 (`deb0143`), mirrored to the new GitHub branch `artifacts-trunk` (first run of the new
@@ -39,11 +46,12 @@ parent session's hook settings), and merge notes record each late claim.
 
 **Agents:** none live. No worktrees.
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop stopped.
+**Background jobs:** none. Docker Desktop running (started 16:05) for the steward image rebuild.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `6411b1db` (`REVIEWERS = "felix"`; `wrangler.toml` now says
-  `"felix,orchestrator"`, not deployed: Pending 0).
+- `tessel-coordinator` version `66fbe44a` (`REVIEWERS = "felix,orchestrator"`, deployed by Felix
+  about 16:04). Live: a review as `orchestrator` passes the reviewer check (`unknown_claim` for a
+  missing claim); a non-reviewer gets `not_owner`.
   Every upgrade needs a steward-minted agent token. The old `COORDINATOR_TOKEN` secret is unused
   and still set; delete with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
 - `tessel-steward` version `ab61a5e9`: toolchain image (Rust, Node 22, pnpm, GNU time, tini) on
@@ -52,22 +60,16 @@ parent session's hook settings), and merge notes record each late claim.
   `/forks/<fork>`, `/tokens` (fork write tokens), `/read-tokens`, `/agents/<agent>/identity`,
   `/test-runs`, `/merges` (admin merge; the only path that may change `tessel.toml`).
 - Artifacts (namespace `tessel`): `tessel-dogfood` (the dogfood v1 trunk, `6f78128`) and fork
-  `tessel-dogfood--orchestrator`; `demo`, `demo--agent-1`; scratch `gate*-*` repos; stray `tessel`
-  (no forks; to delete: Pending 0). Queue `tessel-artifacts-events` with its subscriptions as before.
-- `tessel-coordinator-swarm` version `44538ffb` (`REVIEWERS = "swarm-reviewer"`, `swarm-*` repos
-  only). Its signing key is wrong: see Pending from Felix, item 0.
+  `tessel-dogfood--orchestrator`; `demo`, `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos.
+  The stray `tessel` was deleted by Felix about 16:05 (confirmed gone from the listing). Queue `tessel-artifacts-events` with its subscriptions as before.
+- `tessel-coordinator-swarm` version `39c3a7de` (secret change on `44538ffb`;
+  `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only). Live: a steward-minted token gets
+  `welcome`, `tessel-dogfood` gets 403, no token gets 401.
 
 **Pending from Felix:**
-0. Three commands the session's permission classifier refuses (or add allow rules for them), from
-   the repo root:
-   a. Re-set the swarm signing key. The 15:42 attempt ran non-interactively and stored a wrong
-      value (a steward-minted token gets 401 on the swarm host, `welcome` on production):
-      `rg -N '^IDENTITY_SIGNING_KEY=' .dev.vars | cut -d= -f2- | tr -d '"\n' |
-      npx wrangler secret put IDENTITY_SIGNING_KEY --env swarm`.
-   b. Deploy the coordinator with `orchestrator` in `REVIEWERS`: `npx wrangler deploy`.
-   c. Delete the stray repo: `npx wrangler artifacts repos delete tessel --namespace tessel -y`.
-   Then the steward image rebuild (`npx wrangler deploy` in `tessel-steward/`, Docker on) is also a
-   production deploy and will need Felix or an allow rule.
+0. The steward image rebuild (a production deploy the classifier refuses), Docker already up:
+   `cd tessel-steward && npx wrangler deploy; cd ..`. Done earlier by Felix: the swarm key, the
+   coordinator deploy, the stray repo delete.
 1. At the next hand merge of `src/protocol.rs` (additive only): delete the six stale
    `cfg_attr(not(test), expect(dead_code))` lines (then drop CLI-1's
    `#[allow(unfulfilled_lint_expectations)]` on `pub mod protocol`); correct the `Summary` doc on
@@ -111,14 +113,11 @@ approved. In Bash, never put `git push` and the bare word "main" in one command 
 blocks it); write `HEAD:refs/heads/main` or push in a separate command.
 
 **Next actions on resume:**
-1. Once Felix sets the secret (Pending 0): deploy `tessel-coordinator-swarm`
-   (`npx wrangler deploy --env swarm`), check `/repo/tessel-dogfood/ws` on the swarm host returns
-   403, then a first small live swarm run
-   (`tessel-swarm run --target live --seed 1 --tasks 10 --agents 6`, command in its README).
+1. (Done 16:03: swarm deployed and checked, first live run above.)
 2. Rebuild the steward toolchain image from the `0c7a776` lockfiles (`npx wrangler deploy` in
    `tessel-steward/`, Docker on, after the DOGFOOD-4 lane's cargo gate), then admin-merge the
    `sprint/build` tip onto `tessel-dogfood` from fork `tessel-dogfood--orchestrator`.
-3. DOGFOOD-4's last step after 0b and 2: the first lane merge through the steward under the new
+3. DOGFOOD-4's last step after 2: the first lane merge through the steward under the new
    `docs/BUILD-PROTOCOL.md` §2 (fork, claim, push, `tessel submit`, approval as `orchestrator`),
    then `tools/mirror.sh`.
 4. Shadow verification (PLAN §9 Oct 9) reusing the trial primitive; swarm and A/B runs (Oct 10);
@@ -264,8 +263,9 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   `artifacts-trunk`, delete the stray `tessel` repo, `docs/BUILD-PROTOCOL.md` for the steward flow,
   first lane merge through the steward.
   MERGED 2026-10-05 at `4793bca` (review "Yes" after one fix pass; 9 of 9 mirror mutants killed).
-  Live: `tools/mirror.sh` created GitHub `artifacts-trunk` at `6f78128`. Open: coordinator deploy
-  and repo delete (Felix, Pending 0), then the first lane merge through the steward.
+  Live: `tools/mirror.sh` created GitHub `artifacts-trunk` at `6f78128`; coordinator `66fbe44a`
+  accepts `orchestrator` as reviewer; stray `tessel` repo deleted. Open: the first lane merge
+  through the steward (after the image rebuild and the trunk catch-up).
   Time budget (from the ASSUME-1 review): one merge's worst case is clone 240 s + fetch 240 s +
   rebase 120 s + dependency check 30 s + tests 600 s, about 20 minutes, above the 13-minute steward
   call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
