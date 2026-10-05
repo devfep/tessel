@@ -124,6 +124,8 @@ describe("parseGateConfig", () => {
     const refused = [
       ["cargo", "test", "--config=build.rustc-wrapper=evil"],
       ["cargo", "test", "--config", "x"],
+      ["cargo", "test", "--config"],
+      ["cargo", "test", "--workspace", "--config"],
       ["cargo", "test", "-Zunstable-options"],
       ["cargo", "test", "-Z", "build-std"],
       ["cargo", "+nightly", "test"],
