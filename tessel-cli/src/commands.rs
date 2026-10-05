@@ -24,7 +24,7 @@ use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request, SubmitOutcome}
 use crate::scope;
 use crate::state::{self, Connection, State};
 use crate::submit;
-use crate::worktree::Worktree;
+use crate::worktree::{Worktree, WorktreeError};
 use crate::{Command, HookAction};
 
 /// Exit code of `claim` when the coordinator denied it.
@@ -387,7 +387,11 @@ async fn review(
 ) -> anyhow::Result<ExitCode> {
     review::check_note(note.as_deref())?;
     // A reviewer needs no checkout: the decision is about a claim the coordinator holds.
-    let worktree = Worktree::discover(cwd).ok();
+    let worktree = match Worktree::discover(cwd) {
+        Ok(worktree) => Some(worktree),
+        Err(WorktreeError::NotARepo(_)) => None,
+        Err(e) => return Err(e.into()),
+    };
     let config_dir = worktree
         .as_ref()
         .map_or(cwd, |worktree| worktree.root.as_path());

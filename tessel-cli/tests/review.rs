@@ -222,3 +222,41 @@ async fn a_reviewer_in_a_worktree_still_sends_its_head_as_the_base() -> Result<(
         .all(|base| base == head.trim()));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reviewer_in_a_subdirectory_uses_the_repository_root_config() -> Result<()> {
+    let (fake, _a1, _r1, claim) = held_submission().await?;
+    let url = fake.url.clone();
+    // The environment names an agent the coordinator does not know: only the root config file
+    // names the reviewer.
+    let reviewer = Agent::new(&fake, "nobody", "tok-nobody-S3CRETvalue")?;
+    let root = reviewer.root();
+    std::fs::create_dir_all(root.join(".tessel"))?;
+    std::fs::write(
+        root.join(".tessel/config.toml"),
+        format!(
+            "coordinator = \"{url}\"\nrepo = \"{}\"\nagent = \"r1\"\ntoken = \"{TOK_R}\"\n",
+            support::REPO
+        ),
+    )?;
+    std::fs::create_dir_all(root.join("src/deep"))?;
+    let done = reviewer.tessel_in(&["review", &claim.to_string(), "--approve"], "src/deep")?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(reviews(&fake, "r1"), [(true, None)]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worktree_error_other_than_not_a_repository_is_reported() -> Result<()> {
+    let (fake, _a1, _r1, claim) = held_submission().await?;
+    let base = tempfile::tempdir()?;
+    std::fs::create_dir_all(base.path().join("x".repeat(100)))?;
+    let long = base.path().join("x".repeat(100));
+    let reviewer =
+        Agent::new(&fake, "r1", TOK_R)?.with_env("XDG_RUNTIME_DIR", &long.display().to_string());
+    let done = reviewer.tessel(&["review", &claim.to_string(), "--approve"])?;
+    assert_eq!(done.code, 1, "{}", done.all());
+    assert!(done.stderr.contains("too long"), "{}", done.stderr);
+    assert!(reviews(&fake, "r1").is_empty());
+    Ok(())
+}

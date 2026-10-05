@@ -628,6 +628,16 @@ impl Agent {
         Ok(Done::from(output))
     }
 
+    /// Runs `tessel args...` from `subdir` of the agent's directory.
+    pub fn tessel_in(&self, args: &[&str], subdir: &str) -> Result<Done> {
+        let output = self
+            .command(args)
+            .current_dir(self.path.join(subdir))
+            .output()
+            .context("cannot run tessel")?;
+        Ok(Done::from(output))
+    }
+
     /// Runs `tessel args...` with `stdin` as its standard input.
     pub fn tessel_with_stdin(&self, args: &[&str], stdin: &str) -> Result<Done> {
         self.tessel_with_stdin_bytes(args, stdin.as_bytes())

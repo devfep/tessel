@@ -23,9 +23,9 @@ use crate::daemon::{open_socket, read_log, ConnectFailure, Socket};
 /// The longest note a reviewer may attach. A longer one is refused here rather than cut.
 pub const MAX_NOTE_BYTES: usize = 1024;
 
-/// The `Hello` base of a reviewer with no commit to offer. The coordinator adopts the first base
-/// it is told as the repository head only while it has none. A submission awaiting review means
-/// an agent has already told it one, and a reviewer holds no claims, so this is never used.
+/// The `Hello` base of a reviewer with no commit to offer. The coordinator ignores an all-zeros
+/// base when it sets the repository head, so this never becomes the head, even if the reviewer
+/// connects first.
 pub const NO_BASE: &str = "0000000000000000000000000000000000000000";
 
 const REVIEW_REQ: RequestId = RequestId(1);
