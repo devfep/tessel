@@ -1,0 +1,4 @@
+intent: record both review verdicts, the fix-pass rulings, and Watch moving to COORD-4
+assumes: none
+rejected: persisting the lock table (derived state; invites divergence)
+evidence: docs only
