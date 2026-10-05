@@ -1,0 +1,4 @@
+intent: close SHADOW-1 and dispatch SHADOW-2 and CLI-LIVENESS
+assumes: none
+rejected: none
+evidence: orchestrator gate on archived 5497ebe 767 passed; event 218 approve; trunk 720094e tree == 5497ebe tree; mirrored; deploys swarm 9ce71fc0 and production 3c2e946f both load old state
