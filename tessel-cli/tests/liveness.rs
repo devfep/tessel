@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use support::{eventually, Agent, Fake};
-use tessel_coordinator::protocol::ClientMsg;
+use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, ServerMsg};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 const SHORT: Duration = Duration::from_secs(8);
@@ -69,7 +69,7 @@ async fn a_silent_link_is_dropped_after_half_a_lease_and_the_daemon_reconnects()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_healthy_link_is_kept_and_the_local_expiry_follows_the_heartbeats() -> Result<()> {
-    let (fake, a1) = claimed(1_200).await?;
+    let (fake, a1) = claimed(3_000).await?;
     let granted = expiry(&a1)?;
     let baseline = hellos(&fake);
     tokio::time::sleep(Duration::from_millis(4_000)).await;
@@ -118,6 +118,32 @@ async fn heartbeats_into_a_silent_link_do_not_extend_the_local_expiry() -> Resul
         expiry(&a1)?,
         settled,
         "a heartbeat nobody answered renewed the expiry"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_frames_without_a_pong_do_not_extend_the_local_expiry() -> Result<()> {
+    let (fake, a1) = claimed(3_000).await?;
+    fake.go_deaf();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let settled = expiry(&a1)?;
+    // Frames keep arriving across a whole heartbeat period, but none answers a heartbeat.
+    for _ in 0..11 {
+        fake.push(
+            "a1",
+            ServerMsg::BaseMoved {
+                head: CommitId("d".repeat(40)),
+                by: AgentId("a2".into()),
+                affected: Vec::new(),
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        expiry(&a1)?,
+        settled,
+        "a frame that did not answer a heartbeat renewed the expiry"
     );
     Ok(())
 }

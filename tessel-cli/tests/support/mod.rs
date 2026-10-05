@@ -19,7 +19,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+use tokio_tungstenite::WebSocketStream;
 
 pub const REPO: &str = "demo";
 
@@ -122,7 +123,7 @@ pub struct Fake {
     pub url: String,
     inner: Arc<Inner>,
     kill: watch::Sender<(u64, bool)>,
-    mute: watch::Sender<u64>,
+    mute: watch::Sender<(u64, bool)>,
 }
 
 impl Fake {
@@ -155,7 +156,7 @@ impl Fake {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
         let (kill, kill_rx) = watch::channel((0, false));
-        let (mute, mute_rx) = watch::channel(0);
+        let (mute, mute_rx) = watch::channel((0, false));
         tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx, mute_rx));
         tokio::spawn(expire_loop(Arc::clone(&inner)));
         Ok(Self {
@@ -217,7 +218,14 @@ impl Fake {
     /// Leaves every open socket open but stops reading from it and writing to it, as a link that
     /// went half-open would: no reply, no pong, no close frame. New connections are unaffected.
     pub fn go_silent(&self) {
-        self.mute.send_modify(|epoch| *epoch += 1);
+        self.mute.send_modify(|mute| *mute = (mute.0 + 1, false));
+    }
+
+    /// Stops reading from every open socket, so no ping or heartbeat is ever answered, but keeps
+    /// writing to it, as on a link that carries traffic in one direction only. Each frame it writes
+    /// is followed by pongs that answer no ping.
+    pub fn go_deaf(&self) {
+        self.mute.send_modify(|mute| *mute = (mute.0 + 1, true));
     }
 
     /// Refuses (or accepts again) new connections with HTTP 503. Open sockets are unaffected.
@@ -308,7 +316,7 @@ async fn accept(
     listener: TcpListener,
     inner: Arc<Inner>,
     kill: watch::Receiver<(u64, bool)>,
-    mute: watch::Receiver<u64>,
+    mute: watch::Receiver<(u64, bool)>,
 ) {
     while let Ok((stream, _)) = listener.accept().await {
         tokio::spawn(serve(
@@ -324,12 +332,12 @@ async fn serve(
     stream: TcpStream,
     inner: Arc<Inner>,
     mut kill: watch::Receiver<(u64, bool)>,
-    mut mute: watch::Receiver<u64>,
+    mut mute: watch::Receiver<(u64, bool)>,
 ) {
     // Only a drop or a mute requested after this socket opened may affect it.
     kill.borrow_and_update();
     mute.borrow_and_update();
-    let mut silent = false;
+    let (mut deaf, mut mute_writes) = (false, false);
     let verified: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
     let seen = Arc::clone(&verified);
     let tokens = inner.tokens.clone();
@@ -397,20 +405,21 @@ async fn serve(
     };
     loop {
         tokio::select! {
-            _ = mute.changed() => silent = true,
+            _ = mute.changed() => {
+                (deaf, mute_writes) = (true, !mute.borrow_and_update().1);
+            }
             _ = kill.changed() => {
                 if !keeps_open(&inner, id, *kill.borrow_and_update()) {
                     break;
                 }
             }
-            outgoing = rx.recv(), if !silent => {
+            outgoing = rx.recv(), if !mute_writes => {
                 let Some(msg) = outgoing else { break };
-                let Ok(text) = serde_json::to_string(&msg) else { break };
-                if socket.send(Message::text(text)).await.is_err() {
+                if write_server_msg(&mut socket, &msg, deaf).await.is_err() {
                     break;
                 }
             }
-            frame = socket.next(), if !silent => match frame {
+            frame = socket.next(), if !deaf => match frame {
                 Some(Ok(Message::Text(text))) => {
                     if let Some(parsed) = handle_text(&inner, id, &mut session, &text) {
                         if parsed.close {
@@ -424,6 +433,30 @@ async fn serve(
         }
     }
     close_socket(&inner, id, &session);
+}
+
+/// Writes `msg`, followed by stray pongs when the link is one-way.
+async fn write_server_msg(
+    socket: &mut WebSocketStream<TcpStream>,
+    msg: &ServerMsg,
+    deaf: bool,
+) -> Result<(), WsError> {
+    let text = serde_json::to_string(msg).map_err(|e| WsError::Io(e.into()))?;
+    socket.send(Message::text(text)).await?;
+    if deaf {
+        stray_pongs(socket).await?;
+    }
+    Ok(())
+}
+
+/// Pongs that echo no ping the daemon sent: one whose payload is a time far ahead (which would
+/// renew a lease far ahead if believed), and one too short to hold a payload.
+async fn stray_pongs(socket: &mut WebSocketStream<TcpStream>) -> Result<(), WsError> {
+    let ahead = now_ms() + 600_000;
+    socket
+        .send(Message::Pong(ahead.to_be_bytes().to_vec().into()))
+        .await?;
+    socket.send(Message::Pong(vec![1, 2, 3].into())).await
 }
 
 /// Whether a drop request spares this socket: only a request for the main connections does, and
