@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 02:17 EDT.
+**As of:** 2026-10-05 02:29 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` at the COORD-3 merge `a10a680` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | fix pass 1 (12 items, incl. merging the tip for `shadow_enabled`) → re-check |
-| cq-coord-4 | COORD-4 review | same worktree; live probes on port 8796 | "With fixes" on `b2cc7c7` (1 Important, 9 Minor; 12 mutants killed) → re-check |
+| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | fix pass 1 at `9eaf7c8` (148 tests, local run repeated); holding → re-check result |
+| cq-coord-4 | COORD-4 review | same worktree; live probes on port 8796 | re-checking `9eaf7c8` with a full mutant set → verdict |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
