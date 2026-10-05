@@ -5,16 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 10:16 EDT.
+**As of:** 2026-10-05 10:52 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the REVIEW-1 merge `38e5ff8` plus this STATE commit; `main` at `29aa8fe`
+**Tip:** `sprint/build` at the CLI-2 merge `5700165` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
-**Milestone:** PLAN §9 Oct 7 "work lands automatically in order" is reached for the merge path:
-an agent's `Submit` is merged by the steward and the outcome comes back, checked live (clean merge,
-failing test, conflict). The review gate's approval path is live too (REVIEW-1). Dogfood
-v0 has run once (CLI-2 claimed 14 files on `tessel-dogfood`). Limit, stated honestly: subagents
-share the parent session's hook settings, so the pre-edit hook does not enforce claims for lanes;
-they claim by hand following the skill.
+**Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
+steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
+v0 ran on `tessel-dogfood` (agent `cli-2`, claims 1–19, every edit claimed first; record in the
+CLI-2 merge note). Limit, stated honestly: subagents share the parent session's hook settings, so
+the pre-edit hook does not enforce claims for lanes; they claim by hand following the skill.
+Next per PLAN §9 Oct 8: assumptions end to end and races.
 
 **Felix's rulings, 2026-10-05 07:00 EDT** (the four items pending at FREEZE), all now delivered
 except ruling 3, which lands with the steward merge path:
@@ -27,11 +27,8 @@ except ruling 3, which lands with the steward merge path:
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:**
-- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): review "No" (reconnect reset the submit diff base, so
-  an unclaimed file could escape `touched`); fix pass 1 running: base from the commit graph, one
-  claim per agent through `Amend`, a deterministic submit reply, `stop` confirming releases.
-SUBMIT-1 and REVIEW-1 closed and reclaimed.
+**Agents:** COVER-1 (Sonnet, `.claude/worktrees/cover-1`): committed `8deeeaa`, in review (Opus).
+CLI-2 closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
@@ -60,9 +57,6 @@ SUBMIT-1 and REVIEW-1 closed and reclaimed.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
 **Known limits, recorded so nobody rediscovers them:**
-- OPEN BUG, fix in progress in CLI-2 (found by the CLI-FIX reviewer after the merge at `36abdb3`):
-  when the hook's stdin JSON has no `cwd`, a relative `file_path` is resolved against the hook
-  process's cwd and can exit 0 unclaimed. Claude Code always sends `cwd`; no lane runs the hook yet.
 - A submitted claim is held until a merge outcome is reported; that path arrives with the steward
   merge work (Oct 7). Add then: a test that queue positions follow the submission ordinal once
   merged claims are removed.
@@ -86,18 +80,19 @@ SUBMIT-1 and REVIEW-1 closed and reclaimed.
   expires. The CLI has no `review` command yet (raw `review` message only).
 - Five lines over 100 characters predate REVIEW-1: `src/coordinator.rs:13`,
   `src/coordinator/merging.rs:629` and `:825`, `src/identity.rs:153`, `src/shell.rs:1`.
-- A claim takes one mode, so a change that both edits and adds files, or a rename, cannot be
-  covered by one claim and `tessel submit` exits 5 (uncovered). Fix candidates for CLI-2b.
+- `tessel submit` computes `touched` from a base pinned at the first start and advanced only by
+  this agent's `Merged`; deleting `.tessel/state.json` resets it to HEAD (documented). COVER-1 adds
+  the server-side check.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
 attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZE. Deploys of the
 two Workers are approved.
 
 **Next actions:**
-1. Re-review CLI-2 after its fix pass; merge; live-check `tessel submit` end to end through the
-   steward, dogfooded.
+1. Review COVER-1; merge; deploy steward then coordinator; live-check an uncovered file rejected.
 2. CLI-2b: tree-sitter symbol claims and mode escalation; `tessel review` for reviewers.
-3. PLAN §9 Oct 8: assumptions end to end (verified), races; dashboard (agents' lane per PLAN §7).
+3. PLAN §9 Oct 8: assumptions end to end (verified), races. Dashboard and review screen (agents'
+   lane per PLAN §7).
 
 ## Tasks
 
@@ -187,8 +182,12 @@ two Workers are approved.
   coordinator passes the claim's scopes to the steward, which checks the rebased commit's changed
   files against them (file level) before testing or pushing, and returns `uncovered {files}` as a
   verified rejection. Filed from the CLI-2 reviews (a client-computed diff base kept failing open).
-- [ ] **CLI-2** — part a: `tessel submit` (file-level `touched`, local coverage check, evidence
+- [x] **CLI-2** — part a: `tessel submit` (file-level `touched`, local coverage check, evidence
   required). Part b (CLI-2b): tree-sitter symbol claims and mode escalation in the hook.
+  Part a CLOSED 2026-10-05 at `5700165` (review "Yes" after four fix passes: the diff base, one
+  claim per agent through `Amend`, a deterministic submit reply, `stop` confirming releases, and
+  the hook's missing-cwd fail-open). Workspace tests 468. Live with the real CLI: claim, commit,
+  push, `tessel submit`, `merged` in the inbox, trunk at the agent's commit.
 - [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
   CLOSED 2026-10-05 at `38e5ff8` (review "Yes" after one fix pass; flagged submissions now get
   `ReviewRequired` before any `Accepted`). Workspace tests 404. Live on `9f75140a`: held submit,
