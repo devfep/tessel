@@ -2,4 +2,4 @@ intent: clippy ref_option fix and SKILL.md trimmed to 174 lines
 assumes: none
 rejected: none
 evidence: clippy -D warnings clean
-dogfood: claim 23 fence 34 still held
+dogfood: claim 23 fence 34 still held; claimed after the first edits were written, not before
