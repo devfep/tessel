@@ -1,0 +1,4 @@
+intent: tests_passed gets a Timeout arm: a timed-out race trial is None (unknown), never Some(false)
+assumes: none
+rejected: Infrastructure (retry) for a timeout, as the orchestrator specified None
+evidence: cargo test --workspace passes; the no_result loop in tests_passed_reads_the_single_run_of_a_trial_on_one_sha now includes Timeout
