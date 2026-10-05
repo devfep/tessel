@@ -1,0 +1,4 @@
+intent: after REVIEW-1 the real core sends ReviewRequired and no Accepted for flagged work; the delete and rename e2e tests now require exit 7
+assumes: none
+rejected: keeping 0|7: it no longer describes the core
+evidence: cargo test -p tessel-cli --test submit 23 passed against the real core; workspace 457 passed
