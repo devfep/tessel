@@ -2,6 +2,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 import { isAllowedGitRequest } from "./git-gateway-policy";
 import { revokeOnce } from "./revoke-once";
+import { runCloneThenTest, type StepOutcome } from "./run-steps";
 
 const CLONE_TIMEOUT_SECONDS = "240";
 const TEST_TIMEOUT_SECONDS = "600";
@@ -58,7 +59,7 @@ async function runStep(
   timeoutSeconds: string,
   argv: string[],
   options: ContainerExecOptions,
-): Promise<Omit<TestRunResult, "repo" | "ref">> {
+): Promise<StepOutcome> {
   const process = await container.exec(
     ["timeout", "--kill-after=5", timeoutSeconds, ...argv],
     options,
@@ -133,27 +134,27 @@ export class TestRunner extends DurableObject<Env> {
     }
   }
 
-  private async cloneAndTest(
+  private cloneAndTest(
     container: Container,
     remote: string,
     ref: string,
     revokeToken: () => Promise<void>,
-  ): Promise<Omit<TestRunResult, "repo" | "ref">> {
-    let clone: Omit<TestRunResult, "repo" | "ref">;
-    try {
-      clone = await runStep(
-        container,
-        "clone",
-        CLONE_TIMEOUT_SECONDS,
-        ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
-        { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
-      );
-    } finally {
-      await revokeToken();
-    }
-    if (clone.exitCode !== 0) {
-      return clone;
-    }
-    return runStep(container, "test", TEST_TIMEOUT_SECONDS, ["npm", "test"], { cwd: WORKSPACE });
+  ): Promise<StepOutcome> {
+    return runCloneThenTest((step) => {
+      switch (step) {
+        case "clone":
+          return runStep(
+            container,
+            "clone",
+            CLONE_TIMEOUT_SECONDS,
+            ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
+            { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
+          );
+        case "test":
+          return runStep(container, "test", TEST_TIMEOUT_SECONDS, ["npm", "test"], {
+            cwd: WORKSPACE,
+          });
+      }
+    }, revokeToken);
   }
 }
