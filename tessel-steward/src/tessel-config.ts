@@ -8,6 +8,16 @@ export const MAX_CONFIG_BYTES = 4096;
 export const GATE_INSTANCES = ["standard-1", "standard-2", "standard-3", "standard-4"] as const;
 export type GateInstance = (typeof GATE_INSTANCES)[number];
 
+const GIB = 1024 ** 3;
+
+/** Memory of each instance (the Containers instance table). A reported peak is clamped to this. */
+export const GATE_INSTANCE_MEMORY_BYTES: Record<GateInstance, number> = {
+  "standard-1": 4 * GIB,
+  "standard-2": 6 * GIB,
+  "standard-3": 8 * GIB,
+  "standard-4": 12 * GIB,
+};
+
 /**
  * The only gate commands: `pnpm test` and `npm test` exactly, and `cargo test` followed by flags
  * from this list. Nothing that can change which toolchain, config or compiler runs is on it: no

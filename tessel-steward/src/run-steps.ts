@@ -14,7 +14,13 @@ import { DEPENDENCIES_DECLARED_EXIT_CODE } from "./dependency-check";
  */
 export type StepReason = "dependencies" | "config" | "unknown" | "install_failed" | "timeout";
 
-/** What the steward measured around the test step; `peakMemoryBytes` is null when unreadable. */
+/**
+ * What was measured around the test step. `wallMs` is the steward's own clock.
+ * `peakMemoryBytes` is reported by code inside the gate (GNU `time` run next to the repo's own
+ * tests, in a file they can write), clamped to the instance's memory: untrusted, a measurement and
+ * never a pass or fail input (rule 7). It is null when unreadable, and always null on the legacy
+ * path, which has no way to measure it.
+ */
 export interface Measurement {
   wallMs: number;
   peakMemoryBytes: number | null;

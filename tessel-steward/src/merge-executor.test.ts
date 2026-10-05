@@ -65,7 +65,6 @@ function respond(argv: string[], world: World): { exitCode: number; stdout: stri
     ["node -e", { exitCode: world.depsExit, stdout: "" }],
     ["cargo fetch", { exitCode: world.installExit, stdout: "" }],
     ["pnpm install", { exitCode: world.installExit, stdout: "" }],
-    ["memory.peak", { exitCode: 0, stdout: "123456\n" }],
     [
       "cat /tmp/tessel-peak-rss",
       { exitCode: 0, stdout: "2048\nCommand exited with non-zero status 1\n98304\n" },
@@ -592,6 +591,15 @@ describe("a repo with a tessel.toml on main", () => {
     const { result } = outcome as Extract<MergeOutcome, { outcome: "tests_failed" }>;
     expect(result.measurement?.peakMemoryBytes).toBe(98304 * 1024);
     expect(result.measurement?.wallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("reports no peak memory on the legacy path, and reads no cgroup file", async () => {
+    const { ctx, env, events } = build({ testExit: 1 });
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
+    const { result } = outcome as Extract<MergeOutcome, { outcome: "tests_failed" }>;
+    expect(result.measurement?.peakMemoryBytes).toBeNull();
+    expect(result.measurement?.wallMs).toBeGreaterThanOrEqual(0);
+    expect(events.some((event) => event.includes("/sys/fs/cgroup"))).toBe(false);
   });
 
   it("is main_moved, with nothing run, when main is not the commit the gate was read at", async () => {
