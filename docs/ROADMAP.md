@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 02:53 EDT.
+**As of:** 2026-10-05 02:57 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` at the COORD-4 merge `f0868ed` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,7 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| (none) | FREEZE | the orchestrator's checkout | milestone gate → pull request to `main` |
+| code-review | FREEZE | read-only | reviewing pull request 1 (`sprint/build` → `main`) → findings |
+| sec-identify | FREEZE | read-only | security review of `9211b67..HEAD` → findings, then false-positive checks |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -67,8 +68,15 @@ subscriptions `tessel-repo-lifecycle` and `tessel-push-demo--agent-1`. Artifacts
    errors carry no `req`; `Conflict` carries no claim id; `ClaimId` and `Scope` lack `Ord`.
 5. `cargo clippy -D warnings` fails on `src/protocol.rs` itself (14 doc-list lints and unused items).
    New code is clean; fixing the protocol file means editing it.
-6. Agents are not authenticated: any client can connect and claim under any agent name. The
-   protocol has no credential in `Hello`.
+6. Agents are not authenticated, and it is exploitable, confirmed live on the deployed coordinator on
+   2026-10-05: a socket that never sent `hello` read claim 5's fence from the `watch` stream; a second
+   socket said `hello` under the holder's name, released the claim with that fence, and took the
+   scope. Fix in two steps, neither needing a protocol change:
+   - SEC-1 (in the FREEZE gate, decided by the orchestrator, Felix may flip): the coordinator
+     refuses the WebSocket upgrade without a deployment secret, so nothing anonymous can connect.
+   - Recommended next, needs Felix's yes because the CLI and steward must issue and carry it: a
+     per-agent token signed by the steward and verified at the upgrade, binding the socket's
+     identity. With that, a fence seen on `watch` is useless to another agent (`NotOwner`).
 7. A shadow claim's `Submit` has no dedicated reply in the protocol; the core answers `Accepted`
    with `queue_position: 0`. An additive `ServerMsg` variant would be clearer.
 
@@ -113,5 +121,10 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   Live on version `f661b66f`: grant, denial with the holder's intent, queue then grant on release,
   watcher replay, expiry through the alarm, and head, counters and the full log intact after a
   redeploy. Not exercised live: close-on-failure for a send to another socket, and hibernation.
+- [ ] **SEC-1** — The coordinator refuses the WebSocket upgrade without the deployment secret.
+  Files: `src/lib.rs`, `src/shell.rs`, `wrangler.toml`, `README.md`.
+  Verify: on the deployed Worker, an upgrade without the secret is refused before any socket is
+  accepted, and the scripted two-agent run still passes with it. Bundled with the fixes from the
+  two milestone reviews as one task.
 - [ ] **FREEZE** — Milestone gate: full gate on the tip, `/code-review` and `/security-review` on
   the milestone diff, pull request `sprint/build` → `main`, report to Felix, protocol frozen.
