@@ -1,0 +1,4 @@
+intent: merge COORD-2: leases, heartbeat, lazy and explicit expiry, Amend with a new fence, FIFO wait queue without hold-and-wait
+assumes: the shell calls expire from an alarm set to next_expiry_ms and passes a millisecond clock
+rejected: logging queued requests (the protocol has no event for it); letting time move backwards inside the core; a zero lease
+evidence: Opus review Yes after two fix passes, 20 + 18 + 3 reviewer mutants (one equivalent survivor); on the merged tree cargo test 78 passed including a model-based property test over Claim, Wait, Amend, Release, Heartbeat and time with save-and-reload and a live-lock-table check after every operation; clippy 0 hits in coordinator.rs, rustfmt clean, wasm build compiles, src/protocol.rs unchanged
