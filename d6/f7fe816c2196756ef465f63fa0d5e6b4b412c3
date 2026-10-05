@@ -1,0 +1,4 @@
+intent: CLI-2b symbol-level claims, symbol-scoped submit, tessel review
+assumes: the core Review path stays silent on success and answers refusals with Error for the req
+rejected: hook guessing the symbol from the first old_string match (ambiguity must claim the file); Write to an existing file as edit_signature alone (an added symbol would then be uncovered by create)
+evidence: cargo test -p tessel-cli (all pass), clippy -D warnings clean; dogfood: claim 20 fences 21-31 on tessel-dogfood
