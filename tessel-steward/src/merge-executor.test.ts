@@ -90,7 +90,8 @@ function build(overrides: Partial<World> = {}) {
   const ttls = new Map<string, number>();
   const reads: Array<{ repo: string; ref: string; path: string }> = [];
   const starts: unknown[] = [];
-  const execUsers: Array<{ command: string; user: string | undefined }> = [];
+  const execUsers: Array<{ command: string; user: string | undefined; cwd: string | undefined }> =
+    [];
   let pushed = false;
 
   function repo(name: string) {
@@ -146,9 +147,9 @@ function build(overrides: Partial<World> = {}) {
     interceptOutboundHttps: async (_host: string, gateway: { name: string }) => {
       events.push(`intercept ${gateway.name}`);
     },
-    exec: async (cmd: string[], options?: { user?: string }) => {
+    exec: async (cmd: string[], options?: { user?: string; cwd?: string }) => {
       const argv = cmd.slice(3);
-      execUsers.push({ command: argv.join(" "), user: options?.user });
+      execUsers.push({ command: argv.join(" "), user: options?.user, cwd: options?.cwd });
       const { exitCode, stdout } = respond(argv, world);
       events.push(`exec ${argv.join(" ")}`);
       if (argv.join(" ").includes(" push ")) {
@@ -587,6 +588,14 @@ describe("a repo with a tessel.toml on main", () => {
       outcome: "install",
       result: { reason: "dependencies" },
     });
+  });
+
+  it("runs the dependency check outside the repo, so an unparsable package.json cannot stop node", async () => {
+    const { ctx, env, execUsers } = build();
+    await executeMerge(ctx, env, "demo", request);
+    const check = execUsers.find(({ command }) => command.startsWith("node -e"));
+    expect(check?.cwd).toBe("/");
+    expect(check?.command.endsWith(" /workspace/package.json")).toBe(true);
   });
 
   it("still runs npm test for a repo without dependencies and without a tessel.toml", async () => {

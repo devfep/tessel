@@ -218,8 +218,8 @@ async function runLegacyStep(
     container,
     "install",
     String(STEP_SECONDS.dependencyCheck),
-    ["node", "-e", DEPENDENCY_CHECK_SCRIPT],
-    { cwd: WORKSPACE },
+    ["node", "-e", DEPENDENCY_CHECK_SCRIPT, `${WORKSPACE}/package.json`],
+    { cwd: "/" },
   );
   return check.exitCode === 0 ? check : refuseDependencies(check, issue);
 }
