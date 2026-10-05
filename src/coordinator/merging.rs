@@ -27,7 +27,8 @@ use crate::merge::{
     infra_backoff_ms, MergeOutcome, Verdict, MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{
-    AgentId, ClaimId, CommitId, ErrorCode, EventKind, ReleaseReason, Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, CommitId, ErrorCode, EventKind, ReleaseReason, RequestId, Scope, ScopeClaim,
+    ServerMsg,
 };
 
 /// The reason a rejected review gives the submitter. Fixed: the reviewer's note is untrusted text.
@@ -156,7 +157,8 @@ impl Coordinator {
     /// Decide a submission held for review (invariant 12). Only a configured reviewer may, never
     /// on their own submission. Approval clears the hold; the submission keeps its ordinal, so it
     /// merges in its original order. Rejection returns the claim to active with a fresh lease and
-    /// the same fence. The reviewer gets no reply on success: watchers see `ReviewDecided`, refusals are errors.
+    /// the same fence. The reviewer gets no reply on success: watchers see `ReviewDecided`, and
+    /// refusals are errors.
     pub(super) fn review(
         &mut self,
         reviewer: &AgentId,
@@ -203,7 +205,7 @@ impl Coordinator {
         }
         let ordinal = held.submitted;
         let submitter = held.agent.clone();
-        let submit_req = work.submit_req.unwrap_or(req);
+        let submit_req = work.submit_req.unwrap_or(RequestId(0));
         let released = Submission {
             awaiting_review: false,
             ..work
@@ -1044,7 +1046,8 @@ mod tests {
 
         assert!(matches!(
             logged(&effects)[..],
-            [EventKind::ReviewDecided { approve: true, note: Some(note), .. }] if note == "looks fine"
+            [EventKind::ReviewDecided { approve: true, note: Some(note), .. }]
+                if note == "looks fine"
         ));
         let [ServerMsg::Accepted {
             req,
@@ -1124,7 +1127,8 @@ mod tests {
         let kinds = logged(&effects);
         assert!(matches!(
             kinds[0],
-            EventKind::ReviewDecided { approve: false, note: Some(note), .. } if note == "not this way"
+            EventKind::ReviewDecided { approve: false, note: Some(note), .. }
+                if note == "not this way"
         ));
         let [ServerMsg::SubmitRejected { claim, reason }] = notices(&effects, "held")[..] else {
             panic!("the submitter gets one SubmitRejected: {effects:?}");
@@ -1255,6 +1259,31 @@ mod tests {
             logged(&effects)[..],
             [EventKind::ReviewDecided { approve: true, .. }]
         ));
+    }
+
+    #[test]
+    fn a_submission_held_before_the_request_id_was_stored_is_accepted_with_request_zero() {
+        let mut c = core();
+        let held = held_for_review(&mut c, "held", "src/1.rs");
+        let mut state = serde_json::to_value(&c).unwrap();
+        let work = state["claims"][held.0 .0.to_string()]["work"]
+            .as_object_mut()
+            .unwrap();
+        assert!(work.remove("submit_req").is_some(), "the field is stored");
+        let mut old: Coordinator = serde_json::from_value(state).unwrap();
+
+        let effects = review(&mut old, "felix", held.0, true, None);
+
+        assert!(
+            matches!(
+                notices(&effects, "held")[..],
+                [ServerMsg::Accepted {
+                    req: RequestId(0),
+                    ..
+                }]
+            ),
+            "not the reviewer's request id: {effects:?}"
+        );
     }
 
     #[test]

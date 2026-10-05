@@ -122,7 +122,9 @@ struct Submission {
     touched: Vec<ScopeClaim>,
     /// Invariant 12: a reviewer must approve this before it is dispatched.
     awaiting_review: bool,
-    /// The `req` of the `Submit`, echoed on the `Accepted` a later approval sends.
+    /// The `req` of the `Submit`, echoed on the `Accepted` a later approval sends. `None` for a
+    /// submission stored before this field existed: that `Accepted` carries `RequestId(0)`,
+    /// meaning no request id is known.
     #[serde(default)]
     submit_req: Option<RequestId>,
     /// `main_moved` answers so far.
