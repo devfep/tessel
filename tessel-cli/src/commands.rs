@@ -134,6 +134,14 @@ async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow::Res
         ));
         return Ok(ExitCode::SUCCESS);
     }
+    // An unreadable state file would reset the submit base to HEAD and hide earlier commits.
+    if let Err(e) = State::read(&worktree) {
+        bail!(
+            "{e}. Not starting: a damaged state file would reset the submit base to HEAD and hide \
+             commits you made earlier. Repair it, or delete .tessel/state.json yourself, which \
+             resets the base to HEAD"
+        );
+    }
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

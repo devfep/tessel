@@ -96,6 +96,55 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
     live
 }
 
+/// The fork commits of this agent's submissions that the log shows merged, oldest first. A merge
+/// means everything up to that commit has landed on main, whether or not this daemon heard it.
+pub fn landed_commits(agent: &AgentId, events: &[Event]) -> Vec<String> {
+    let mut mine = HashSet::new();
+    let mut submitted = std::collections::HashMap::new();
+    let mut landed = Vec::new();
+    for event in events {
+        match &event.kind {
+            EventKind::ClaimGranted {
+                agent: owner,
+                claim,
+                ..
+            } if owner == agent => {
+                mine.insert(*claim);
+            }
+            EventKind::Submitted {
+                claim, fork_commit, ..
+            } => {
+                submitted.insert(*claim, fork_commit.0.clone());
+            }
+            EventKind::SubmitRejected { claim, .. } => {
+                submitted.remove(claim);
+            }
+            EventKind::Merged { claim, .. } if mine.contains(claim) => {
+                landed.extend(submitted.get(claim).cloned());
+            }
+            EventKind::Merged { .. }
+            | EventKind::ClaimGranted { .. }
+            | EventKind::AgentConnected { .. }
+            | EventKind::ClaimDenied { .. }
+            | EventKind::ClaimShadowed { .. }
+            | EventKind::ClaimAmended { .. }
+            | EventKind::ClaimReleased { .. }
+            | EventKind::WaitQueued { .. }
+            | EventKind::WaitWithdrawn { .. }
+            | EventKind::ReviewRequested { .. }
+            | EventKind::ReviewDecided { .. }
+            | EventKind::BaseMoved { .. }
+            | EventKind::AssumptionChallenged { .. }
+            | EventKind::RaceOpened { .. }
+            | EventKind::RaceDecided { .. }
+            | EventKind::DenialVerified { .. }
+            | EventKind::AssumptionVerified { .. }
+            | EventKind::ReplayMerged { .. } => {}
+        }
+    }
+    landed
+}
+
 /// Claims that left the live set in `events`, whatever agent held them.
 fn ended_claims(events: &[Event]) -> HashSet<ClaimId> {
     let mut ended = HashSet::new();
@@ -344,6 +393,24 @@ mod tests {
                 head: tessel_coordinator::protocol::CommitId("h".into()),
             },
         )
+    }
+
+    #[test]
+    fn landed_commits_are_this_agents_merged_submissions_in_order() {
+        let me = AgentId("a1".into());
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            granted(1, "a2", 2, 2, "b.rs"),
+            granted(2, "a1", 3, 3, "c.rs"),
+            submitted_event(3, 1, "a.rs"),
+            submitted_event(4, 2, "b.rs"),
+            submitted_event(5, 3, "c.rs"),
+            rejected_event(6, 3),
+            merged_event(7, 2),
+            merged_event(8, 1),
+            merged_event(9, 3),
+        ];
+        assert_eq!(landed_commits(&me, &events), vec!["f".to_string()]);
     }
 
     #[test]

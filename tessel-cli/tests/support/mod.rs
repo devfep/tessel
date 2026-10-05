@@ -12,7 +12,8 @@ use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tempfile::TempDir;
 use tessel_coordinator::coordinator::{Config, Coordinator};
-use tessel_coordinator::protocol::{AgentId, ClientMsg, Event, RunId, ServerMsg};
+use tessel_coordinator::merge::MergeOutcome;
+use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
@@ -172,6 +173,25 @@ impl Fake {
     /// Makes the coordinator send `ReviewRequired` before `Accepted`, as REVIEW-1 will.
     pub fn review_before_accepted(&self, on: bool) {
         self.inner.review_first.store(on, Ordering::SeqCst);
+    }
+
+    /// Runs the next queued merge to completion on the real core, as the steward would, and
+    /// sends `Merged` to the submitter if it has a socket open.
+    pub fn merge_next(&self) {
+        let effects = {
+            let mut core = lock(&self.inner.core);
+            let Some(dispatch) = core.begin_merge(now_ms()) else {
+                return;
+            };
+            let landed = MergeOutcome::Merged {
+                base: CommitId("b".repeat(40)),
+                head: CommitId("c".repeat(40)),
+            };
+            core.merge_outcome(dispatch.claim, &landed, now_ms())
+        };
+        let (events, outbound) = shell::split_effects(effects);
+        self.inner.deliver(None, outbound);
+        self.inner.publish(events);
     }
 
     /// Cuts every open socket without a close frame, as a network failure would.

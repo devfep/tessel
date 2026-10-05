@@ -1980,3 +1980,106 @@ async fn stop_gives_up_confirming_within_the_clients_patience() -> Result<()> {
     assert!(took < Duration::from_secs(22), "stop took {took:?}");
     Ok(())
 }
+
+// ---------- a Merged the daemon missed ----------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merge_that_lands_while_the_socket_is_down_still_moves_the_base() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("merged while away")?;
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_in(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    let submitted = head_of(&a1)?;
+    assert_eq!(a1.tessel(&["submit", "--evidence", "ok"])?.code, 0);
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
+
+    // Cut the daemon off, let the steward merge, and let the daemon come back.
+    let before = fake.received("a1").len();
+    fake.set_accepting(false);
+    fake.drop_connections();
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["connection"] != "online").then_some(()))
+    })
+    .await?;
+    fake.merge_next();
+    let hellos_before = hellos(&fake, "a1");
+    fake.set_accepting(true);
+    back_online(&fake, &a1, hellos_before).await?;
+    assert!(fake.received("a1").len() > before);
+
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["start_base"] == submitted.as_str()).then_some(()))
+    })
+    .await?;
+    assert_eq!(a1.held_claims()?, 0, "the merged claim is forgotten");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_damaged_state_file_refuses_to_start_and_a_missing_one_does_not() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("first")?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    let state = a1.root().join(".tessel/state.json");
+    std::fs::write(&state, "{ this is not json")?;
+    let refused = a1.tessel(&["start", "second"])?;
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(refused.stderr.contains("state.json"), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("resets the base to HEAD"),
+        "{}",
+        refused.stderr
+    );
+    assert!(a1
+        .tessel(&["claim", "src/a.rs"])?
+        .stderr
+        .contains("no daemon is running"));
+
+    std::fs::remove_file(&state)?;
+    a1.start("third")?;
+    assert_eq!(a1.status()?["state"]["start_base"], head_of(&a1)?.as_str());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merged_commit_outside_this_work_never_moves_the_base() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("unrelated merge")?;
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    // A commit on an unrelated history, which is not a descendant of the pinned base.
+    let root = a1.root();
+    git(&root, &["checkout", "-q", "--orphan", "elsewhere"])?;
+    git(&root, &["commit", "-q", "--allow-empty", "-m", "elsewhere"])?;
+    let stray = head_of(&a1)?;
+    git(&root, &["checkout", "-q", "-f", "master"])
+        .or_else(|_| git(&root, &["checkout", "-q", "-f", "main"]))?;
+    let claim = a1.status()?["state"]["claims"][0].clone();
+    fake.act(
+        "a1",
+        ClientMsg::Submit {
+            req: RequestId(777),
+            claim: ClaimId(claim["claim"].as_u64().context("claim")?),
+            fence: Fence(claim["fence"].as_u64().context("fence")?),
+            fork_commit: CommitId(stray),
+            touched: vec![ScopeClaim {
+                scope: Scope::File {
+                    path: "src/a.rs".into(),
+                },
+                mode: Mode::EditBody,
+            }],
+            decisions: tessel_coordinator::protocol::DecisionRecord {
+                evidence: vec!["ok".into()],
+                ..Default::default()
+            },
+        },
+    );
+    fake.merge_next();
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(()))).await?;
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
+    Ok(())
+}

@@ -194,9 +194,7 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
     // The diff base is pinned at the first start in a worktree and then only moves when a merge
     // lands (`on_merged`): not on a restart, a reconnect, `stop` or a lapsed lease. Deleting
     // `.tessel/state.json` resets it to HEAD.
-    let persisted = State::read(&worktree)
-        .ok()
-        .flatten()
+    let persisted = State::read(&worktree)?
         .map(|prior| prior.start_base)
         .filter(|pinned| !pinned.is_empty());
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -761,6 +759,7 @@ impl Daemon {
             }
         };
         let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
+        self.advance_base_from_log(&events);
         self.log(&format!(
             "event log read: {} events ({}), {} live claims for this agent",
             events.len(),
@@ -793,6 +792,27 @@ impl Daemon {
             answer(pending.replies, &refused(None, message));
         }
         self.apply_plan(plan, Vec::new());
+    }
+
+    /// Moves the diff base forward to the newest of this agent's submissions that the log shows
+    /// merged, for a `Merged` that arrived while the daemon was offline or stopped. A submitted
+    /// claim can only end by merging, and only a commit that descends from the base moves it.
+    fn advance_base_from_log(&mut self, events: &[Event]) {
+        let me = AgentId(self.config.agent.clone());
+        let root = self.worktree.root.clone();
+        let mut moved = false;
+        for commit in reconcile::landed_commits(&me, events) {
+            let ahead = commit != self.state.start_base
+                && crate::submit::is_ancestor(&root, &self.state.start_base, &commit);
+            if ahead {
+                self.state.start_base = commit;
+                moved = true;
+            }
+        }
+        if moved {
+            self.log("diff base advanced to a submission the log shows merged");
+            self.persist();
+        }
     }
 
     /// Brings the fences and scopes of local claims up to what the log shows.

@@ -134,6 +134,13 @@ pub fn diff_base(root: &Path, state: &State) -> anyhow::Result<String> {
     )
 }
 
+/// Whether `ancestor` is `descendant` or lies in its history.
+pub fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
+    is_commit(root, ancestor)
+        && is_commit(root, descendant)
+        && git(root, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+}
+
 fn is_commit(root: &Path, rev: &str) -> bool {
     !rev.is_empty()
         && !rev.starts_with('-')
