@@ -258,8 +258,10 @@ two Workers are approved.
   criteria refused). Workspace tests 677. Live: race opened, outsider denied with the race named,
   entry trial `tests_passed: true`, winner merged. Found live: judged as soon as the only entrant
   submitted, so a second join got `race_closed`.
-- [ ] **RACE-FIX** — judge a race early only when it is full and every entry has submitted;
+- [x] **RACE-FIX** — judge a race early only when it is full and every entry has submitted;
   otherwise at the deadline.
+  CLOSED 2026-10-05 at `ea9bd43`. Live on `6411b1db`: two entrants joined and submitted, the
+  failing entry was filtered by its trial, the winner merged, the loser got "lost the race".
 - [ ] **HARNESS-1** — PLAN §8, §9 Oct 9–10: `tessel-swarm`, a seeded workload generator and
   scripted agents in two modes: coordinated (real protocol, numbers from `Summary::from_events`)
   and uncoordinated local replay (labelled local); JSON and a Markdown A/B table. Targets only
