@@ -1,0 +1,4 @@
+intent: bring the skill files in line with task-cli-1 at 3a27e7a
+assumes: task-cli-1 merges with this surface unchanged
+rejected: listing every reconcile message, only the notice kind and the release step matter to an agent
+evidence: each change re-read against task-cli-1 source; docs only, no cargo
