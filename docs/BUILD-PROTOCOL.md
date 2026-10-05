@@ -21,25 +21,45 @@ The reviewer's first line is exactly `Ready to merge? Yes`, `No` or `With fixes`
 an adversarial review, the reviewer's own mutants, spec compliance against the task text, and a flag
 on speculative or over-engineered code.
 
-## 2. Branches, worktrees, merges
+## 2. Branches, forks, merges
 
-- Integration branch: `sprint/build`. Each task: worktree `.claude/worktrees/<task>` on branch
-  `task-<task>`, cut from the local `sprint/build` tip.
-- Lanes commit only to their task branch. They never push, never commit to `sprint/build`, never
-  `git stash`, and edit only files under their own worktree.
+Work lands through the steward into the Artifacts repo `tessel-dogfood` (the trunk). Tessel's own
+coordinator and CLI do the claiming; `skills/tessel/SKILL.md` has the full command reference.
+
+- Each lane works in a fork of the trunk named `tessel-dogfood--<agent>` and in a worktree
+  `.claude/worktrees/<task>` on branch `task-<task>`. It never edits files in another worktree and
+  never `git stash`es.
+- Before editing a file the lane claims it through `tessel` (`tessel start "<intent>"`, then
+  `tessel claim <scope>...`, or the edit hook). A denied claim is not worked around.
+- The lane commits to its task branch, pushes the commit to its fork, and runs `tessel submit
+  --evidence "<tests run and result>"`. Then it keeps its daemon running until `tessel inbox`
+  shows `merged` or `submit_rejected`, and runs `tessel stop` before reporting.
+- A submission the coordinator holds for review (a signature change, a deletion or a rename) is
+  decided by the orchestrator, acting as the agent `orchestrator`, which is listed in the
+  coordinator's `REVIEWERS`. It runs `tessel review <claim-id> --approve` only after the Opus
+  reviewer's `Yes` and a passing gate run by the orchestrator. Every decision is in the event log.
+- The steward rebases the commit onto the trunk, runs `tessel.toml`'s gate in a Sandbox and merges
+  only when it passes. Only the steward writes the trunk.
 - Before its final gate and report, a lane merges the local `sprint/build` tip into its branch, as
   its own commit: the merge is committed first and any change follows in a separate commit, so a fix
   never hides inside a merge commit.
 - The worktree has one user at a time. The orchestrator hands it from reviewer to implementer only
   after the reviewer's idle notice, not on its verdict message alone.
-- The orchestrator merges every task branch with `tools/merge-one.sh <branch>`: merge-tree guard,
-  `git merge --no-ff`, merged tree equals the predicted tree, no deletions, `src/protocol.rs`
-  unchanged. A clean merge is not a correct merge: when both sides touched a file, diff the merged
-  file against both parents.
-- After each merge and gate the orchestrator pushes `sprint/build` and the notes ref to `origin`.
-- `main` only moves by pull request from `sprint/build` at a milestone, opened and merged by the
+- After each merge the orchestrator runs `tools/mirror.sh`, which pushes the trunk to the GitHub
+  branch `artifacts-trunk`, fast-forward only: the first run creates the branch, later runs abort
+  unless the push is a fast-forward. Nothing else writes that branch.
+- `sprint/build` keeps the history from before the steward and its git-notes evidence. No history
+  is rewritten.
+- `main` only moves by pull request from `artifacts-trunk` at a milestone, opened and merged by the
   orchestrator after a full gate plus `/code-review` and `/security-review` on the milestone diff.
   Nothing is pushed to `main` directly.
+- Fallback when the steward is unavailable: the orchestrator merges the task branch onto
+  `sprint/build` with `tools/merge-one.sh <branch>` (merge-tree guard, `git merge --no-ff`, merged
+  tree equals the predicted tree, no deletions, `src/protocol.rs` unchanged), then pushes
+  `sprint/build` and the notes ref to `origin`. When both sides touched a file, diff the merged
+  file against both parents.
+- `src/protocol.rs` is frozen. A change to it is merged by hand by Felix, never through the
+  steward.
 
 ## 3. Gates
 
