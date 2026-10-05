@@ -1,7 +1,14 @@
 import { parsePushEvent } from "./push-event";
+import { matchRoute, type Route } from "./routes";
+import type { TestRunResult } from "./test-runner";
+
+export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 
 const AGENT_TOKEN_TTL_SECONDS = 3600;
-const USAGE = "POST /repos/<repo>, POST /repos/<repo>/forks/<fork> or POST /repos/<repo>/tokens";
+const USAGE =
+  "POST /repos/<repo>, POST /repos/<repo>/forks/<fork>, POST /repos/<repo>/tokens " +
+  "or POST /repos/<repo>/test-runs";
+const TEST_REF = "main";
 
 const STATUS_BY_ARTIFACTS_CODE: Record<ArtifactsErrorCode, number> = {
   ALREADY_EXISTS: 409,
@@ -19,11 +26,6 @@ const STATUS_BY_ARTIFACTS_CODE: Record<ArtifactsErrorCode, number> = {
   INTERNAL_ERROR: 502,
 };
 
-type Route =
-  | { kind: "create"; repo: string }
-  | { kind: "fork"; repo: string; fork: string }
-  | { kind: "token"; repo: string };
-
 function json(body: unknown, status: number): Response {
   return Response.json(body, { status });
 }
@@ -39,23 +41,6 @@ async function isAuthorized(request: Request, env: Env): Promise<boolean> {
     crypto.subtle.digest("SHA-256", encoder.encode(`Bearer ${env.STEWARD_ADMIN_TOKEN}`)),
   ]);
   return crypto.subtle.timingSafeEqual(presentedHash, expectedHash);
-}
-
-function matchRoute(pathname: string): Route | undefined {
-  const [root, repo, action, fork, ...rest] = pathname.split("/").filter(Boolean);
-  if (root !== "repos" || repo === undefined || rest.length > 0) {
-    return undefined;
-  }
-  if (action === undefined) {
-    return { kind: "create", repo };
-  }
-  if (action === "tokens" && fork === undefined) {
-    return { kind: "token", repo };
-  }
-  if (action === "forks" && fork !== undefined) {
-    return { kind: "fork", repo, fork };
-  }
-  return undefined;
 }
 
 async function createRepo(env: Env, repo: string): Promise<Response> {
@@ -82,6 +67,12 @@ async function mintWriteToken(env: Env, repo: string): Promise<Response> {
   return json({ repo, remote, token: plaintext, scope, expiresAt }, 201);
 }
 
+async function runTests(env: Env, repo: string): Promise<Response> {
+  const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
+  const result: TestRunResult = await runner.runTests(repo, TEST_REF);
+  return json(result, 200);
+}
+
 function runRoute(env: Env, route: Route): Promise<Response> {
   switch (route.kind) {
     case "create":
@@ -90,6 +81,8 @@ function runRoute(env: Env, route: Route): Promise<Response> {
       return forkRepo(env, route.repo, route.fork);
     case "token":
       return mintWriteToken(env, route.repo);
+    case "test-run":
+      return runTests(env, route.repo);
   }
 }
 
