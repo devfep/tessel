@@ -131,6 +131,9 @@ async fn run_command(args: &RunArgs) -> Result<()> {
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let repo = run::resolve_repo(args.repo.as_deref(), args.seed, now)?;
+    if args.target == Target::Live && args.mode != Mode::Off {
+        check_live_args(args)?;
+    }
     let spec = Spec {
         seed: args.seed,
         tasks: args.tasks,
@@ -186,6 +189,15 @@ async fn run_command(args: &RunArgs) -> Result<()> {
     write_out(&table)
 }
 
+/// Everything about a live run that can be refused without doing any work, so a refused run
+/// writes nothing.
+fn check_live_args(args: &RunArgs) -> Result<()> {
+    let (Some(coordinator), Some(_)) = (&args.coordinator, &args.steward) else {
+        bail!("--target live needs --coordinator and --steward");
+    };
+    tessel_swarm::guard::check_coordinator(coordinator)
+}
+
 async fn run_live(
     args: &RunArgs,
     spec: &Spec,
@@ -195,7 +207,6 @@ async fn run_live(
     let (Some(coordinator), Some(steward)) = (&args.coordinator, &args.steward) else {
         bail!("--target live needs --coordinator and --steward");
     };
-    tessel_swarm::guard::check_coordinator(coordinator)?;
     let admin = std::env::var("STEWARD_ADMIN_TOKEN")
         .context("set STEWARD_ADMIN_TOKEN for --target live")?;
     let steward = Steward::new(steward, Token::new(admin))?;

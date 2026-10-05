@@ -128,6 +128,7 @@ fn a_local_run_writes_its_evidence_and_leaves_nothing_behind() {
 #[test]
 fn a_live_run_refuses_the_production_coordinator_and_any_other_host() {
     let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
     for host in [
         "wss://tessel-coordinator.devfep.workers.dev",
         "wss://example.com",
@@ -142,6 +143,8 @@ fn a_live_run_refuses_the_production_coordinator_and_any_other_host() {
             host,
             "--steward",
             "https://s.invalid",
+            "--out",
+            out.to_str().unwrap(),
         ];
         let output = swarm(&args, tmp.path());
         assert!(!output.status.success(), "{host}");
@@ -151,4 +154,5 @@ fn a_live_run_refuses_the_production_coordinator_and_any_other_host() {
             "{shown}"
         );
     }
+    assert!(!out.exists(), "a refused live run writes nothing");
 }
