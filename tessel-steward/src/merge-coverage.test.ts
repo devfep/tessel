@@ -122,6 +122,13 @@ describe("uncoveredPaths", () => {
     expect(uncovered("M\0a.ts\0", [file("a.ts", "depend")])).toEqual(["a.ts"]);
   });
 
+  it("does not let create cover a delete, a type change or the old path of a rename", () => {
+    const claim = [file("x.ts", "create")];
+    expect(uncovered("D\0x.ts\0", claim)).toEqual(["x.ts"]);
+    expect(uncovered("T\0x.ts\0", claim)).toEqual(["x.ts"]);
+    expect(uncovered("R100\0x.ts\0y.ts\0", [...claim, file("y.ts", "create")])).toEqual(["x.ts"]);
+  });
+
   it("lets one scope in a permitting mode cover what another scope in a weak mode does not", () => {
     const claim = [dir("src", "depend"), file("src/a.ts", "edit_body")];
     expect(uncovered("M\0src/a.ts\0M\0src/b.ts\0", claim)).toEqual(["src/b.ts"]);
