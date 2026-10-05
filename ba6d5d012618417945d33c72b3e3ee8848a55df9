@@ -1,0 +1,4 @@
+intent: record that an unauthenticated client can read a fence from watch and act as its holder, and the two-step fix
+assumes: none
+rejected: changing the frozen protocol to carry a credential in Hello; the upgrade request can carry it
+evidence: reproduced on the deployed coordinator against a scratch repo: anonymous watch read claim 5 fence 5, a second socket said hello as the holder, released it (seq 17) and was granted the scope (claim 6)
