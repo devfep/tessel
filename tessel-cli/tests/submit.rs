@@ -160,9 +160,9 @@ async fn a_deleted_file_is_sent_as_edit_signature_and_held_for_review() -> Resul
     git(&a1.root(), &["rm", "-q", "src/b.rs"])?;
     git(&a1.root(), &["commit", "-q", "-m", "delete b"])?;
     let done = a1.tessel(&["submit", "--evidence", "tests passed"])?;
-    // 0 while the coordinator sends Accepted before ReviewRequired, 7 once it sends them the other
-    // way round; either way the notice reaches the inbox and the claim is submitted.
-    assert!(matches!(done.code, 0 | 7), "{}", done.all());
+    // The real core holds a flagged submission: ReviewRequired comes first, Accepted only after
+    // approval.
+    assert_eq!(done.code, 7, "{}", done.all());
     assert_eq!(first_claim(&a1)?["submitted"], true);
     eventually(SHORT, || {
         let inbox = a1.tessel(&["inbox", "--all"])?;
@@ -667,7 +667,7 @@ async fn a_rename_and_a_delete_fit_one_claim_and_submit_end_to_end() -> Result<(
     git(&root, &["commit", "-q", "-m", "rename a, delete b"])?;
 
     let done = a1.tessel(&["submit", "--evidence", "tests passed"])?;
-    assert!(matches!(done.code, 0 | 7), "{}", done.all());
+    assert_eq!(done.code, 7, "{}", done.all());
     let sent = submits(&fake);
     let ClientMsg::Submit { touched, .. } = &sent[0] else {
         anyhow::bail!("not a submit");
