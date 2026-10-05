@@ -1,0 +1,319 @@
+import { describe, expect, it } from "vitest";
+
+import { DEPENDENCIES_DECLARED_EXIT_CODE } from "./dependency-check";
+import type { GitCommand } from "./merge-commands";
+import { runMerge, type MergeDeps } from "./merge-steps";
+import { parseSha, type GitResult, type Sha } from "./merge-types";
+import { REVOKE_FAILED_MESSAGE, makeOutcome, type StepOutcome } from "./run-steps";
+
+function sha(character: string): Sha {
+  const parsed = parseSha(character.repeat(40));
+  if (parsed === undefined) {
+    throw new Error("bad test sha");
+  }
+  return parsed;
+}
+
+const BASE = sha("1");
+const MERGE_BASE = sha("2");
+const COMMIT = sha("3");
+const HEAD = sha("4");
+const RACER = sha("5");
+
+type GitStep =
+  | "clone"
+  | "fetch"
+  | "base"
+  | "exists"
+  | "reachable"
+  | "mergebase"
+  | "rebase"
+  | "conflicts"
+  | "head"
+  | "push";
+
+function gitStep(command: GitCommand): GitStep {
+  const text = command.argv.join(" ");
+  const matches: Array<[string, GitStep]> = [
+    [" clone ", "clone"],
+    [" fetch ", "fetch"],
+    ["origin/main^{commit}", "base"],
+    ["--quiet", "exists"],
+    ["--is-ancestor", "reachable"],
+    [" merge-base ", "mergebase"],
+    [" rebase ", "rebase"],
+    ["--diff-filter=U", "conflicts"],
+    ["HEAD^{commit}", "head"],
+    [" push ", "push"],
+  ];
+  const found = matches.find(([needle]) => text.includes(needle));
+  if (found === undefined) {
+    throw new Error(`unexpected command ${text}`);
+  }
+  return found[1];
+}
+
+interface Plan {
+  git: Partial<Record<GitStep, { exitCode: number; stdout?: string }>>;
+  install: number;
+  test: number;
+  revokedReads: boolean;
+  mainAfterPush: Sha | null;
+}
+
+function harness(overrides: Partial<Plan> = {}) {
+  const plan: Plan = {
+    git: {},
+    install: 0,
+    test: 0,
+    revokedReads: true,
+    mainAfterPush: HEAD,
+    ...overrides,
+  };
+  const defaults: Record<GitStep, { exitCode: number; stdout?: string }> = {
+    clone: { exitCode: 0 },
+    fetch: { exitCode: 0 },
+    base: { exitCode: 0, stdout: `${BASE}\n` },
+    exists: { exitCode: 0, stdout: `${COMMIT}\n` },
+    reachable: { exitCode: 0 },
+    mergebase: { exitCode: 0, stdout: `${MERGE_BASE}\n` },
+    rebase: { exitCode: 0 },
+    conflicts: { exitCode: 0, stdout: "" },
+    head: { exitCode: 0, stdout: `${HEAD}\n` },
+    push: { exitCode: 0 },
+  };
+  const events: string[] = [];
+  const commands: GitCommand[] = [];
+  const deps: MergeDeps = {
+    sources: {
+      workspace: "/workspace",
+      mainRemote: "https://git.example/demo.git",
+      forkRemote: "https://git.example/demo--a1.git",
+      forkBranch: "main",
+    },
+    run: async (command): Promise<GitResult> => {
+      const step = gitStep(command);
+      events.push(`git:${step}`);
+      commands.push(command);
+      const { exitCode, stdout = "" } = plan.git[step] ?? defaults[step];
+      return {
+        exitCode,
+        stdout,
+        stderr: `${step} err`,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      };
+    },
+    revokeReadTokens: async () => {
+      events.push("revoke-reads");
+      return plan.revokedReads;
+    },
+    runPackageStep: async (step): Promise<StepOutcome> => {
+      events.push(`package:${step}`);
+      const exitCode = plan[step];
+      return makeOutcome(
+        step,
+        exitCode,
+        { text: `${step} out`, truncated: false },
+        { text: "", truncated: false },
+      );
+    },
+    withPushAccess: async (update, use) => {
+      events.push(`mint-write ${update.base} ${update.head}`);
+      try {
+        return await use();
+      } finally {
+        events.push("revoke-write");
+      }
+    },
+    currentMain: async () => {
+      events.push("currentMain");
+      return plan.mainAfterPush;
+    },
+  };
+  return { deps, events, commands };
+}
+
+describe("runMerge", () => {
+  it("fetches, revokes the reads, verifies, rebases, tests, then mints and revokes the write token", async () => {
+    const { deps, events } = harness();
+    const outcome = await runMerge(deps, COMMIT);
+    expect(outcome).toEqual({ outcome: "merged", base: BASE, head: HEAD });
+    expect(events).toEqual([
+      "git:clone",
+      "git:fetch",
+      "revoke-reads",
+      "git:base",
+      "git:exists",
+      "git:reachable",
+      "git:mergebase",
+      "git:rebase",
+      "git:head",
+      "package:install",
+      "package:test",
+      `mint-write ${BASE} ${HEAD}`,
+      "git:push",
+      "revoke-write",
+    ]);
+  });
+
+  it("pushes the rebased head with a lease on the main that was cloned", async () => {
+    const { deps, commands } = harness();
+    await runMerge(deps, COMMIT);
+    const push = commands.find((command) => gitStep(command) === "push");
+    expect(push?.argv).toContain(`--force-with-lease=refs/heads/main:${BASE}`);
+    expect(push?.argv).toContain(`${HEAD}:refs/heads/main`);
+  });
+
+  it("rebases the submitted commit, not the fork tip, onto the cloned main", async () => {
+    const { deps, commands } = harness();
+    await runMerge(deps, COMMIT);
+    const rebase = commands.find((command) => gitStep(command) === "rebase");
+    expect(rebase?.argv.slice(-4)).toEqual(["--onto", BASE, MERGE_BASE, COMMIT]);
+  });
+
+  it("never mints a write token when the tests fail", async () => {
+    const { deps, events } = harness({ test: 1 });
+    const outcome = await runMerge(deps, COMMIT);
+    expect(outcome).toMatchObject({ outcome: "tests_failed", base: BASE, head: HEAD });
+    expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    expect(events).not.toContain("git:push");
+  });
+
+  it("returns the capped test output with a failed test", async () => {
+    const { deps } = harness({ test: 124 });
+    const outcome = await runMerge(deps, COMMIT);
+    expect(outcome).toMatchObject({
+      outcome: "tests_failed",
+      result: { step: "test", exitCode: 124, stdout: "test out", passed: false },
+    });
+  });
+
+  it("reports a stopped rebase as a conflict with the unmerged paths, and runs no tests", async () => {
+    const { deps, events } = harness({
+      git: {
+        rebase: { exitCode: 1 },
+        conflicts: { exitCode: 0, stdout: "src/a.ts\0docs/b md\0" },
+      },
+    });
+    const outcome = await runMerge(deps, COMMIT);
+    expect(outcome).toEqual({
+      outcome: "conflict",
+      base: BASE,
+      files: ["src/a.ts", "docs/b md"],
+    });
+    expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+  });
+
+  it("does not call a failed rebase a conflict when no file is unmerged", async () => {
+    const { deps } = harness({ git: { rebase: { exitCode: 128 }, conflicts: { exitCode: 0 } } });
+    expect(await runMerge(deps, COMMIT)).toMatchObject({
+      outcome: "git_failed",
+      result: { exitCode: 128 },
+    });
+  });
+
+  it.each([
+    ["the commit object is missing", { exists: { exitCode: 1 } }],
+    ["the commit is not an ancestor of the fork's default branch", { reachable: { exitCode: 1 } }],
+  ] satisfies Array<[string, Plan["git"]]>)("refuses when %s", async (_label, git) => {
+    const { deps, events } = harness({ git });
+    expect(await runMerge(deps, COMMIT)).toEqual({ outcome: "commit_not_in_fork" });
+    expect(events).not.toContain("git:rebase");
+    expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+  });
+
+  it("calls an unexpected git failure while verifying infrastructure, not a missing commit", async () => {
+    const { deps } = harness({ git: { reachable: { exitCode: 128 } } });
+    expect(await runMerge(deps, COMMIT)).toMatchObject({ outcome: "git_failed" });
+    const second = harness({ git: { exists: { exitCode: 128 } } });
+    expect(await runMerge(second.deps, COMMIT)).toMatchObject({ outcome: "git_failed" });
+  });
+
+  it("reports a failed clone or fetch as a clone outcome and verifies nothing", async () => {
+    for (const failing of ["clone", "fetch"] as const) {
+      const { deps, events } = harness({ git: { [failing]: { exitCode: 128 } } });
+      expect(await runMerge(deps, COMMIT)).toMatchObject({
+        outcome: "clone",
+        result: { step: "clone", exitCode: 128, passed: false },
+      });
+      expect(events).toContain("revoke-reads");
+      expect(events).not.toContain("git:base");
+    }
+  });
+
+  it("runs nothing after a failed revocation of the read tokens", async () => {
+    const { deps, events } = harness({ revokedReads: false });
+    await expect(runMerge(deps, COMMIT)).rejects.toThrow(REVOKE_FAILED_MESSAGE);
+    expect(events).toEqual(["git:clone", "git:fetch", "revoke-reads"]);
+  });
+
+  it("reports a repo with dependencies as an install outcome and never pushes", async () => {
+    const { deps, events } = harness({ install: DEPENDENCIES_DECLARED_EXIT_CODE });
+    expect(await runMerge(deps, COMMIT)).toMatchObject({
+      outcome: "install",
+      base: BASE,
+      head: HEAD,
+      result: { step: "install", passed: false },
+    });
+    expect(events).not.toContain("package:test");
+    expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+  });
+
+  it("reports a commit main already contains as already_merged without testing or pushing", async () => {
+    const { deps, events } = harness({ git: { head: { exitCode: 0, stdout: `${BASE}\n` } } });
+    expect(await runMerge(deps, COMMIT)).toEqual({ outcome: "already_merged", base: BASE });
+    expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+    expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+  });
+
+  it("reports main_moved with both shas when the lease rejects the push", async () => {
+    const { deps } = harness({ git: { push: { exitCode: 1 } }, mainAfterPush: RACER });
+    expect(await runMerge(deps, COMMIT)).toEqual({
+      outcome: "main_moved",
+      expected: BASE,
+      actual: RACER,
+    });
+  });
+
+  it("reports push_failed, not main_moved, when the push fails and main is unchanged", async () => {
+    const { deps } = harness({ git: { push: { exitCode: 128 } }, mainAfterPush: BASE });
+    expect(await runMerge(deps, COMMIT)).toMatchObject({
+      outcome: "push_failed",
+      base: BASE,
+      head: HEAD,
+      result: { exitCode: 128 },
+    });
+  });
+
+  it("reports push_failed when the push fails and main cannot be read", async () => {
+    const { deps } = harness({ git: { push: { exitCode: 128 } }, mainAfterPush: null });
+    expect(await runMerge(deps, COMMIT)).toMatchObject({ outcome: "push_failed" });
+  });
+
+  it("revokes the write token when the push throws", async () => {
+    const { deps, events } = harness();
+    deps.run = async (command) => {
+      if (gitStep(command) === "push") {
+        throw new Error("exec failed");
+      }
+      return {
+        exitCode: 0,
+        stdout: `${gitStep(command) === "head" ? HEAD : BASE}\n`,
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      };
+    };
+    await expect(runMerge(deps, COMMIT)).rejects.toThrow("exec failed");
+    expect(events.at(-1)).toBe("revoke-write");
+  });
+
+  it.each(["base", "mergebase", "head"] as const)(
+    "reports git_failed when %s does not print a sha",
+    async (step) => {
+      const { deps } = harness({ git: { [step]: { exitCode: 0, stdout: "not a sha\n" } } });
+      expect(await runMerge(deps, COMMIT)).toMatchObject({ outcome: "git_failed" });
+    },
+  );
+});
