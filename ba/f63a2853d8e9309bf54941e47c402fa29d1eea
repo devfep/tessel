@@ -1,0 +1,4 @@
+intent: fix the nine review findings in the skill files
+assumes: coordinator rejects claims from a queued agent (coordinator.rs:530-533) and release with no id releases all (daemon.rs:927-934)
+rejected: none
+evidence: each statement re-read against task-cli-1 3a27e7a and src/coordinator.rs; awk length check clean except the frontmatter description
