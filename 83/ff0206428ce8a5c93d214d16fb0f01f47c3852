@@ -1,0 +1,5 @@
+intent: the local server's shutdown test failed when another test's server reused the freed port; test an open connection instead and end handshakes on shutdown
+assumes: tokio io-util is already in the workspace lockfile through tessel-cli
+rejected: asserting that a new connect fails after shutdown (port reuse by a parallel test makes it flaky)
+evidence: shutdown test 3 of 3 passes; clippy -D warnings clean
+dogfood: agent harness-1, claim 25
