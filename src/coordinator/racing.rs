@@ -2041,7 +2041,7 @@ mod tests {
             NOW + 4,
             &[("a1", passed()), ("a2", passed()), ("a3", passed())],
         );
-        let stranger = pick(&mut c, "a1", one.0);
+        let stranger = pick(&mut c, "bystander", one.0);
         assert_eq!(error_code(&stranger), ErrorCode::NotOwner);
         let before = state(&c);
         c.set_reviewers(vec![agent("felix"), agent("a2")]);
