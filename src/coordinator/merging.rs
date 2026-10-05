@@ -327,6 +327,7 @@ impl Coordinator {
             .map(|work| work.challenged.clone())
             .unwrap_or_default();
         self.record_verifications(&challenged, &base, &head);
+        self.record_shadow_verifications(claim, &base, &head);
         effects
     }
 

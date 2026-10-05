@@ -397,6 +397,7 @@ impl Coordinator {
             kind: ClaimKind::Entry(race_id),
             submitted: None,
             work: None,
+            denial: None,
         };
         self.state.claims.insert(claim.0, entry);
         if let Some(held) = self.state.races.get_mut(&race_id.0) {

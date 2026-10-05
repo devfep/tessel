@@ -39,6 +39,17 @@
 //!   and reads as both sides. What the trial says is read by `TrialReport::tests_passed`, not by
 //!   `verdict`: there is no baseline to compare against. Nothing about a race trial is logged as
 //!   an `AssumptionVerified`; the race's own events are the record.
+//! - A shadow claim's denial is verified by the same queue (invariant 10). When the claim that
+//!   blocked a shadow claim merges, one trial per shadow claim it blocked is queued, with the
+//!   shadow claim's submitted commit tried on the merge's `before` and `main`; the answer is logged
+//!   as `DenialVerified`, which `Summary` counts as a prevention (a conflict) or a false alarm
+//!   (clean) and ignores when `Inconclusive`. The baseline rule is the same: work that was already
+//!   failing before the merge is `Inconclusive`, not a prevention. Nothing is queued, and nothing
+//!   is logged, when the blocker ends without merging (no work landed to conflict with), when the
+//!   shadow claim had not submitted by then (there is no commit to try; one that submits later
+//!   has no baseline from before the merge, so it is not tried either), or when the shadow claim
+//!   ended before its trial ran. A shadow claim blocked by several claims is tried once for each
+//!   that merges, each against its own baseline.
 //! - A conflict is not sent to the assuming agent as a message: no `ServerMsg` says "your
 //!   assumption broke" (`AssumptionChallenged` says "re-check it" and would be read as a second
 //!   challenge). The event is the record, and watchers receive it.
@@ -67,6 +78,8 @@ pub(super) enum Subject {
     Assumption { assumption: Assumption },
     /// The tests of a race entry (invariant 7).
     RaceEntry { race: RaceId },
+    /// A shadow claim's work, tried against the merge of the claim that blocked it (invariant 10).
+    Shadow { blocking_claim: ClaimId },
 }
 
 /// One trial to run: an assuming agent's work, or a race entry, tried on `main`.
@@ -160,6 +173,41 @@ impl Coordinator {
         }
     }
 
+    /// Queue a trial for each submitted shadow claim that `blocking` denied, now that `blocking`
+    /// has merged: the shadow claim's commit tried on `main`, with `before` as the baseline. A
+    /// shadow claim that has not submitted has nothing to try and is skipped.
+    pub(super) fn record_shadow_verifications(
+        &mut self,
+        blocking: ClaimId,
+        before: &CommitId,
+        main: &CommitId,
+    ) {
+        let mut shadows = Vec::new();
+        for (id, shadow) in &self.state.claims {
+            let Some(denial) = &shadow.denial else {
+                continue;
+            };
+            if denial.blocked_by.contains(&blocking) && denial.fork_commit.is_some() {
+                shadows.push((ClaimId(*id), shadow.agent.clone()));
+            }
+        }
+        for (claim, agent) in shadows {
+            let id = super::take_next(&mut self.state.next_verification);
+            self.state.verifications.push(Verification {
+                id,
+                agent,
+                claim,
+                subject: Subject::Shadow {
+                    blocking_claim: blocking,
+                },
+                before: before.clone(),
+                main: main.clone(),
+                infra_failures: 0,
+                retry_at_ms: None,
+            });
+        }
+    }
+
     /// Queue the tests of a race entry: `commit` of `agent`'s fork tried on `head`, which is both
     /// sides of the trial. Entries queued together see the same head.
     pub(super) fn record_race_trial(
@@ -223,6 +271,12 @@ impl Coordinator {
                 .and_then(|assuming| assuming.work.as_ref())
                 .map(|work| work.fork_commit.clone()),
             Subject::RaceEntry { race } => self.entry_commit(*race, next.claim),
+            Subject::Shadow { .. } => self
+                .state
+                .claims
+                .get(&next.claim.0)
+                .and_then(|shadow| shadow.denial.as_ref())
+                .and_then(|denial| denial.fork_commit.clone()),
         };
         let dispatch = VerifyDispatch {
             id: next.id,
@@ -313,9 +367,9 @@ impl Coordinator {
             return Vec::new();
         };
         match subject {
-            Subject::Assumption { assumption } => match report.verdict() {
+            Subject::Assumption { .. } | Subject::Shadow { .. } => match report.verdict() {
                 TrialVerdict::Decided(result) => {
-                    self.finish_verification(id, assumption, result, now_ms)
+                    self.finish_verification(id, &subject, result, now_ms)
                 }
                 TrialVerdict::Infrastructure => {
                     self.retry_verification_after_infrastructure(id, now_ms)
@@ -339,7 +393,7 @@ impl Coordinator {
     fn finish_verification(
         &mut self,
         id: u64,
-        assumption: Assumption,
+        subject: &Subject,
         result: Outcome,
         now_ms: u64,
     ) -> Vec<Effect> {
@@ -347,10 +401,18 @@ impl Coordinator {
             return Vec::new();
         };
         let done = self.state.verifications.remove(index);
-        let verified = EventKind::AssumptionVerified {
-            claim: done.claim,
-            assumption,
-            outcome: result,
+        let verified = match subject {
+            Subject::Assumption { assumption } => EventKind::AssumptionVerified {
+                claim: done.claim,
+                assumption: assumption.clone(),
+                outcome: result,
+            },
+            Subject::Shadow { blocking_claim } => EventKind::DenialVerified {
+                shadow_claim: done.claim,
+                blocking_claim: *blocking_claim,
+                outcome: result,
+            },
+            Subject::RaceEntry { .. } => return Vec::new(),
         };
         vec![self.event(now_ms, verified)]
     }
@@ -380,10 +442,10 @@ impl Coordinator {
         queued.infra_failures += 1;
         if queued.infra_failures > MAX_INFRA_RETRIES {
             return match queued.subject.clone() {
-                Subject::Assumption { assumption } => {
-                    self.finish_verification(id, assumption, Outcome::Inconclusive, now_ms)
-                }
                 Subject::RaceEntry { race } => self.finish_race_trial(id, race, None, now_ms),
+                subject @ (Subject::Assumption { .. } | Subject::Shadow { .. }) => {
+                    self.finish_verification(id, &subject, Outcome::Inconclusive, now_ms)
+                }
             };
         }
         let wait = infra_backoff_ms(queued.infra_failures);
@@ -1296,5 +1358,352 @@ mod tests {
         );
         let loaded: Verification = serde_json::from_str(&stored).unwrap();
         assert_eq!(loaded.subject, Subject::RaceEntry { race: RaceId(2) });
+    }
+
+    // ---- shadow verification (invariant 10) ----
+
+    /// `who` asks for `path` while it is blocked, with `OnConflict::Shadow`.
+    fn shadow(c: &mut Coordinator, who: &str, path: &str) -> (ClaimId, Fence) {
+        let msg = ClientMsg::Claim {
+            req: RequestId(1),
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            scopes: vec![edit(path)],
+            on_conflict: OnConflict::Shadow,
+        };
+        let effects = c.handle(&agent(who), msg, NOW);
+        let Some(ServerMsg::Shadowed { claim, fence, .. }) = replies(&effects).into_iter().next()
+        else {
+            panic!("expected Shadowed, got {effects:?}");
+        };
+        (*claim, *fence)
+    }
+
+    /// `a2` holds `src/a.rs` and has submitted it; `a1` is shadowed on it and has submitted too.
+    fn shadowed_and_submitted(c: &mut Coordinator) -> (ClaimId, ClaimId) {
+        let blocker = grant(c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(c, "a1", "src/a.rs");
+        submit(c, "a1", shadowed, "src/a.rs");
+        submit(c, "a2", blocker, "src/a.rs");
+        (shadowed.0, blocker.0)
+    }
+
+    fn denial_events(effects: &[Effect]) -> Vec<(ClaimId, ClaimId, Outcome)> {
+        logged(effects)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                EventKind::DenialVerified {
+                    shadow_claim,
+                    blocking_claim,
+                    outcome,
+                } => Some((*shadow_claim, *blocking_claim, *outcome)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn run_trial(c: &mut Coordinator, report: &TrialReport) -> Vec<Effect> {
+        let dispatch = c.begin_verification(NOW).expect("a trial is due");
+        c.verification_outcome(dispatch.id, report, NOW)
+    }
+
+    fn summary_of(steps: &[&[Effect]]) -> Summary {
+        Summary::from_events(&all_events(steps))
+    }
+
+    #[test]
+    fn a_conflict_after_the_blocker_merged_is_a_verified_prevention() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        let merged = merge_challenger(&mut c, blocker, MAIN);
+        assert_eq!(pending(&c), 1);
+        assert!(
+            denial_events(&merged).is_empty(),
+            "nothing is logged by the merge"
+        );
+
+        let effects = run_trial(&mut c, &clean_then(TrialOutcome::Conflict {}));
+
+        assert_eq!(
+            denial_events(&effects),
+            [(shadowed, blocker, Outcome::TextualConflict)]
+        );
+        let summary = summary_of(&[&merged, &effects]);
+        assert_eq!(summary.conflicts_prevented_verified, 1);
+        assert_eq!(summary.false_alarms, 0);
+        assert_eq!(pending(&c), 0);
+    }
+
+    #[test]
+    fn failing_tests_after_the_merge_count_as_a_prevention_too() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+        let effects = run_trial(&mut c, &clean_then(TrialOutcome::TestsFailed {}));
+        assert_eq!(
+            denial_events(&effects),
+            [(shadowed, blocker, Outcome::TestsFailed)]
+        );
+    }
+
+    #[test]
+    fn a_clean_trial_is_a_false_alarm_and_not_a_prevention() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+
+        let effects = run_trial(&mut c, &clean_then(TrialOutcome::Clean {}));
+
+        assert_eq!(
+            denial_events(&effects),
+            [(shadowed, blocker, Outcome::Clean)]
+        );
+        let summary = summary_of(&[&effects]);
+        assert_eq!(summary.false_alarms, 1);
+        assert_eq!(summary.conflicts_prevented_verified, 0);
+    }
+
+    #[test]
+    fn work_already_red_on_the_baseline_is_not_a_prevention() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+
+        let red = TrialReport {
+            before: Some(TrialOutcome::TestsFailed {}),
+            after: Some(TrialOutcome::TestsFailed {}),
+        };
+        let effects = run_trial(&mut c, &red);
+
+        assert_eq!(
+            denial_events(&effects),
+            [(shadowed, blocker, Outcome::Inconclusive)]
+        );
+        let summary = summary_of(&[&effects]);
+        assert_eq!(summary.conflicts_prevented_verified, 0);
+        assert_eq!(summary.false_alarms, 0);
+    }
+
+    #[test]
+    fn a_trial_that_gave_up_records_no_prevention() {
+        let mut c = core();
+        let (_, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+        let broken = clean_then(TrialOutcome::Timeout {});
+        let mut now = NOW;
+        let mut last = Vec::new();
+        for _ in 0..=MAX_INFRA_RETRIES {
+            let dispatch = c.begin_verification(now).unwrap();
+            last = c.verification_outcome(dispatch.id, &broken, now);
+            now += infra_backoff_ms(MAX_INFRA_RETRIES) + 1;
+        }
+        assert_eq!(denial_events(&last).len(), 1);
+        let summary = summary_of(&[&last]);
+        assert_eq!(summary.conflicts_prevented_verified, 0);
+        assert_eq!(summary.false_alarms, 0);
+        assert_eq!(pending(&c), 0);
+    }
+
+    #[test]
+    fn a_blocker_released_without_merging_verifies_nothing() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+        let release = ClientMsg::Release {
+            claim: blocker.0,
+            fence: blocker.1,
+            req: None,
+        };
+        c.handle(&agent("a2"), release, NOW);
+
+        assert_eq!(pending(&c), 0);
+        assert_eq!(c.begin_verification(NOW), None);
+    }
+
+    #[test]
+    fn a_shadow_claim_that_never_submitted_is_not_tried() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a2", blocker, "src/a.rs");
+
+        merge_challenger(&mut c, blocker.0, MAIN);
+
+        assert_eq!(pending(&c), 0);
+        assert_eq!(c.begin_verification(NOW), None);
+    }
+
+    #[test]
+    fn a_shadow_claim_that_submits_after_the_merge_is_not_tried() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a2", blocker, "src/a.rs");
+        merge_challenger(&mut c, blocker.0, MAIN);
+
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+
+        assert_eq!(pending(&c), 0);
+    }
+
+    #[test]
+    fn a_merge_of_a_claim_that_did_not_block_the_shadow_verifies_nothing() {
+        let mut c = core();
+        grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+
+        merge_edit(&mut c, "a3", "src/z.rs", MAIN);
+
+        assert_eq!(pending(&c), 0);
+    }
+
+    #[test]
+    fn several_shadow_claims_blocked_by_one_merge_get_one_verdict_each() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let one = shadow(&mut c, "a1", "src/a.rs");
+        let two = shadow(&mut c, "a3", "src/a.rs");
+        let three = shadow(&mut c, "a4", "src/a.rs");
+        for (who, claim) in [("a1", one), ("a3", two), ("a4", three)] {
+            submit(&mut c, who, claim, "src/a.rs");
+        }
+        submit(&mut c, "a2", blocker, "src/a.rs");
+        merge_challenger(&mut c, blocker.0, MAIN);
+        assert_eq!(pending(&c), 3);
+
+        let mut verdicts = Vec::new();
+        for report in [
+            clean_then(TrialOutcome::Conflict {}),
+            clean_then(TrialOutcome::Clean {}),
+            clean_then(TrialOutcome::Conflict {}),
+        ] {
+            verdicts.extend(denial_events(&run_trial(&mut c, &report)));
+        }
+
+        assert_eq!(
+            verdicts,
+            [
+                (one.0, blocker.0, Outcome::TextualConflict),
+                (two.0, blocker.0, Outcome::Clean),
+                (three.0, blocker.0, Outcome::TextualConflict),
+            ]
+        );
+        assert_eq!(c.begin_verification(NOW), None);
+    }
+
+    #[test]
+    fn the_trial_tries_the_shadow_commit_on_the_merges_baseline_and_main() {
+        let mut c = core();
+        let (_, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+
+        let dispatch = c.begin_verification(NOW).unwrap();
+
+        assert_eq!(dispatch.agent, agent("a1"));
+        assert_eq!(dispatch.commit, Some(CommitId(fork_sha("a1"))));
+        assert_eq!(dispatch.before, CommitId("old".into()));
+        assert_eq!(dispatch.main, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn a_shadow_claim_blocked_by_two_claims_is_tried_for_each_that_merges() {
+        let mut c = core();
+        let first = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let second = grant(&mut c, "a3", vec![edit("src/b.rs")], Vec::new());
+        let msg = ClientMsg::Claim {
+            req: RequestId(1),
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            scopes: vec![edit("src/a.rs"), edit("src/b.rs")],
+            on_conflict: OnConflict::Shadow,
+        };
+        let effects = c.handle(&agent("a1"), msg, NOW);
+        let Some(ServerMsg::Shadowed { claim, fence, .. }) = replies(&effects).into_iter().next()
+        else {
+            panic!("expected Shadowed, got {effects:?}");
+        };
+        submit(&mut c, "a1", (*claim, *fence), "src/a.rs");
+        submit(&mut c, "a2", first, "src/a.rs");
+
+        merge_challenger(&mut c, first.0, MAIN);
+        assert_eq!(pending(&c), 1, "only the claim that merged is tried so far");
+        let one = run_trial(&mut c, &clean_then(TrialOutcome::Clean {}));
+        submit(&mut c, "a3", second, "src/b.rs");
+        merge_challenger(&mut c, second.0, MAIN2);
+        let two = run_trial(&mut c, &clean_then(TrialOutcome::Conflict {}));
+
+        assert_eq!(denial_events(&one), [(*claim, first.0, Outcome::Clean)]);
+        assert_eq!(
+            denial_events(&two),
+            [(*claim, second.0, Outcome::TextualConflict)]
+        );
+    }
+
+    #[test]
+    fn a_shadow_trial_survives_a_restart_queued_and_in_flight() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+
+        let stored = serde_json::to_string(&c).unwrap();
+        let mut queued: Coordinator = serde_json::from_str(&stored).unwrap();
+        assert_eq!(pending(&queued), 1);
+        queued.begin_verification(NOW).unwrap();
+
+        let stored = serde_json::to_string(&queued).unwrap();
+        let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
+        assert!(restarted.has_verification_in_flight());
+        assert!(restarted.recover_verification(NOW).is_empty());
+        let retry = NOW + INFRA_BACKOFF_BASE_MS;
+        let dispatch = restarted.begin_verification(retry).unwrap();
+        assert_eq!(dispatch.attempt, 2);
+        let report = clean_then(TrialOutcome::Conflict {});
+        let effects = restarted.verification_outcome(dispatch.id, &report, retry);
+
+        assert_eq!(
+            denial_events(&effects),
+            [(shadowed, blocker, Outcome::TextualConflict)]
+        );
+    }
+
+    #[test]
+    fn a_shadow_submission_is_never_queued_for_merge() {
+        let mut c = core();
+        let (shadowed, _) = shadowed_and_submitted(&mut c);
+        let dispatch = c.begin_merge(NOW).unwrap();
+        assert_ne!(dispatch.claim, shadowed);
+        assert!(c.state.claims[&shadowed.0].work.is_none());
+    }
+
+    #[test]
+    fn a_shadow_verification_round_trips_and_is_not_mistaken_for_another_subject() {
+        let queued = Verification {
+            id: 1,
+            agent: agent("a1"),
+            claim: ClaimId(3),
+            subject: Subject::Shadow {
+                blocking_claim: ClaimId(2),
+            },
+            before: CommitId("old".into()),
+            main: CommitId(MAIN.into()),
+            infra_failures: 0,
+            retry_at_ms: None,
+        };
+        let stored = serde_json::to_string(&queued).unwrap();
+        let loaded: Verification = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            loaded.subject,
+            Subject::Shadow {
+                blocking_claim: ClaimId(2)
+            }
+        );
     }
 }

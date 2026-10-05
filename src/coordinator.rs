@@ -133,6 +133,21 @@ struct ActiveClaim {
     /// What the steward is asked to merge, set with `submitted` and cleared with it.
     #[serde(default)]
     work: Option<Submission>,
+    /// Shadow claims only: what the verification of the denial needs (invariant 10).
+    #[serde(default)]
+    denial: Option<Denial>,
+}
+
+/// What a shadow claim keeps so that, when the work that blocked it merges, the steward can
+/// test-merge the shadow work against it. Kept apart from `work` because a shadow claim is never
+/// queued for merge.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Denial {
+    /// The claims whose locks denied the request, in claim id order. Races are not listed: their
+    /// work lands through entries, not as a blocking claim.
+    blocked_by: Vec<ClaimId>,
+    /// The commit the shadow claim submitted, once it has.
+    fork_commit: Option<CommitId>,
 }
 
 /// The work of a submitted claim, kept until the steward answers.
@@ -947,6 +962,33 @@ impl Coordinator {
         conflicts
     }
 
+    /// The distinct claims, in id order, whose locks block `scopes`. A race's lock is not a claim.
+    fn blocking_claims(&self, agent: &AgentId, scopes: &[ScopeClaim]) -> Vec<ClaimId> {
+        let mut found = Vec::new();
+        for (index, requested) in scopes.iter().enumerate() {
+            self.collect_blockers(agent, index, requested, &mut found);
+        }
+        let mut claims: Vec<ClaimId> = Vec::new();
+        for blocked in found {
+            if blocked.race.is_none() && !claims.contains(&blocked.claim) {
+                claims.push(blocked.claim);
+            }
+        }
+        claims.sort_by_key(|claim| claim.0);
+        claims
+    }
+
+    /// Remember what a shadow claim submitted. It is never queued: this is only so that a trial
+    /// can try it when the work that blocked the claim merges (invariant 10).
+    fn keep_shadow_commit(&mut self, claim: ClaimId, fork_commit: CommitId) {
+        let Some(shadow) = self.state.claims.get_mut(&claim.0) else {
+            return;
+        };
+        if let Some(denial) = shadow.denial.as_mut() {
+            denial.fork_commit = Some(fork_commit);
+        }
+    }
+
     fn collect_blockers(
         &self,
         agent: &AgentId,
@@ -1026,6 +1068,7 @@ impl Coordinator {
         let fence = Fence(take_next(&mut self.state.next_fence));
         let expires_at_ms = now_ms.saturating_add(self.state.config.lease_ms);
         let scopes = request.scopes.clone();
+        let blocked_by = self.blocking_claims(agent, &request.scopes);
         let active = ActiveClaim {
             agent: agent.clone(),
             fence,
@@ -1035,6 +1078,10 @@ impl Coordinator {
             kind: ClaimKind::Shadow,
             submitted: None,
             work: None,
+            denial: Some(Denial {
+                blocked_by,
+                fork_commit: None,
+            }),
         };
         self.state.claims.insert(claim.0, active);
         let shadowed = self.event(
@@ -1083,6 +1130,7 @@ impl Coordinator {
             kind: ClaimKind::Real,
             submitted: None,
             work: None,
+            denial: None,
         };
         place_locks(&mut self.locks, claim, &active);
         let granted = self.event(
@@ -1208,7 +1256,11 @@ impl Coordinator {
         )];
         let mut review = None;
         let queue_position = match kind {
-            ClaimKind::Shadow | ClaimKind::Entry(_) => 0,
+            ClaimKind::Entry(_) => 0,
+            ClaimKind::Shadow => {
+                self.keep_shadow_commit(claim, fork_commit);
+                0
+            }
             ClaimKind::Real => {
                 let (challenges, challenged) =
                     self.challenge_assumptions(agent, &fork_commit, &touched, now_ms);
