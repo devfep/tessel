@@ -287,7 +287,6 @@ pub fn bind_on_welcome(
     for item in outbound {
         if let Outbound::Reply(ServerMsg::Welcome { .. }) = item {
             return Some(Session {
-                verified: None,
                 agent: Some(agent.clone()),
                 ..session.clone()
             });
@@ -719,11 +718,19 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_hello_for_the_verified_agent_is_run_as_that_agent() {
-        let Action::Call { agent: who } = decide(&bound("a1"), &hello("a1")) else {
+    fn after_welcome_a_repeated_hello_is_served_and_another_agent_is_refused() {
+        let mut core = new_core();
+        let (who, effects) = run(&mut core, &verified("a1"), hello("a1"));
+        let (_, outbound) = split_effects(effects);
+        let session = bind_on_welcome(&verified("a1"), &who, &outbound).unwrap();
+        let Action::Call { agent: again } = decide(&session, &hello("a1")) else {
             panic!("expected a core call");
         };
-        assert_eq!(who, agent("a1"));
+        assert_eq!(again, agent("a1"));
+        assert_eq!(
+            close_code(decide(&session, &hello("a2"))),
+            ErrorCode::NotOwner
+        );
     }
 
     #[test]

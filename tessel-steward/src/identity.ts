@@ -6,9 +6,8 @@ const MAX_NAME_LENGTH = 128;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
- * Whether `name` can be a repo or an agent id: 1 to 128 characters from `A-Z a-z 0-9 . _ -`,
- * starting with a letter or digit. The coordinator accepts the same characters in an agent id
- * and carries it in an HTTP header.
+ * Whether `name` can be a repo or an agent id. The rule is stated in the format doc of the
+ * coordinator's `src/identity.rs`, which enforces it on the agent id too.
  */
 export function isValidName(name: string): boolean {
   return name.length <= MAX_NAME_LENGTH && NAME_PATTERN.test(name);

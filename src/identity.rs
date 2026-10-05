@@ -10,7 +10,8 @@
 //! - `mac` is base64url without padding of HMAC-SHA256 over the bytes of the `payload` string
 //!   exactly as received, keyed with the secret `IDENTITY_SIGNING_KEY` (its UTF-8 bytes).
 //! - `exp_ms` is a Unix time in milliseconds; the token is valid while `exp_ms > now`.
-//! - `agent` is 1 to `MAX_AGENT_ID_BYTES` characters from `A-Z a-z 0-9 . _ -`.
+//! - Name rule, for `agent` here and for `repo` and `agent` in the steward: 1 to
+//!   `MAX_AGENT_ID_BYTES` characters from `A-Z a-z 0-9 . _ -`, the first a letter or digit.
 //!
 //! The MAC is verified before the payload is decoded or parsed. The steward signs in
 //! `tessel-steward/src/identity.ts`; both sides assert the same fixed vector in their tests.
@@ -139,7 +140,10 @@ fn new_mac(key: &[u8]) -> Result<HmacSha256, IdentityError> {
 
 /// Whether `agent` can be a verified agent id: also safe to carry in an HTTP header.
 fn is_agent_id(agent: &str) -> bool {
-    !agent.is_empty()
+    let Some(first) = agent.bytes().next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
         && agent.len() <= MAX_AGENT_ID_BYTES
         && agent
             .bytes()
@@ -302,7 +306,7 @@ mod tests {
     #[test]
     fn a_signed_agent_id_that_cannot_be_an_agent_id_is_refused() {
         let long = "a".repeat(MAX_AGENT_ID_BYTES + 1);
-        for agent in ["", "a b", "a\r\nb", "agent/1", "ägent", long.as_str()] {
+        for agent in ["", "a b", "a\r\nb", "agent/1", "ägent", ".a", "-a", "_a", long.as_str()] {
             let token = sign(KEY, "demo", agent, EXP);
             assert_eq!(
                 verify(&token, "demo", NOW),

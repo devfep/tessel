@@ -66,6 +66,7 @@ describe("isValidName", () => {
     ["too long", "a".repeat(129)],
     ["a leading dash", "-a"],
     ["a leading dot", ".a"],
+    ["a leading underscore", "_a"],
     ["a space", "a b"],
     ["a slash", "a/b"],
     ["a percent escape", "a%20b"],
