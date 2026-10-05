@@ -1,0 +1,4 @@
+intent: refuse bidi controls, U+2028/2029 and U+061C in scope text via one is_display_hazard predicate; wrap the long message; generate control chars directly in the proptest
+assumes: the CLI escapes scope text it shows; OpenRace still unimplemented
+rejected: none
+evidence: cargo test 244 passed (predicted 244); clippy -D warnings clean; rustfmt clean; wasm 0 warnings; 3 mutants fail tests
