@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 12:24 EDT.
+**As of:** 2026-10-05 12:54 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
 **Tip:** `sprint/build` at the ASSUME-1 merge `4a4644e` plus this STATE commit; the GitHub trunk
 at `29aa8fe` (pull request 1).
@@ -32,7 +32,15 @@ is recorded with the first Tessel commit merged by the steward.
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** none live. DOGFOOD-1 is next.
+**Agents** (four lanes on disjoint files, cargo under `nice`; Felix asked to parallelise when there
+is headroom, 12:40 EDT; the Mac had load 7.5 and about 48 GB free at dispatch):
+- DOGFOOD-1 (`.claude/worktrees/dogfood-1`): steward image, instance, install, `tessel.toml`, time
+  budget, mirror script.
+- RACE-1 (`.claude/worktrees/race-1`): races in the coordinator; agent `race-1` on `tessel-dogfood`.
+- HARNESS-1 (`.claude/worktrees/harness-1`): `tessel-swarm` crate, scripted swarm and A/B replay;
+  agent `harness-1`.
+- SYM-SIG (`.claude/worktrees/sym-sig`): attributes and decorators in the signature range; agent
+  `sym-sig`.
 **Merge queue:** empty.
 **Background jobs:** none.
 
@@ -90,7 +98,8 @@ hand (his ruling, 07:19), with the orchestrator handing him the command and the 
   this agent's `Merged`; deleting `.tessel/state.json` resets it to HEAD (documented). The steward
   also checks the rebased commit's files against the claim (COVER-1), at file level only.
 
-**Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
+**Standing rules:** Sonnet implementers, Opus reviewers. Up to four lanes at once when the Mac has
+headroom (load under about 10), one Docker image build at a time, cargo under `nice`. No
 attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZE. Deploys of the
 two Workers are approved.
 
@@ -229,6 +238,13 @@ two Workers are approved.
   call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
   measure the real numbers in the probe, then set the step timeouts so their sum stays under the
   call timeout with margin, or move the merge off the alarm's wall clock.
+- [ ] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
+  join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
+  trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
+- [ ] **HARNESS-1** — PLAN §8, §9 Oct 9–10: `tessel-swarm`, a seeded workload generator and
+  scripted agents in two modes: coordinated (real protocol, numbers from `Summary::from_events`)
+  and uncoordinated local replay (labelled local); JSON and a Markdown A/B table. Targets only
+  `swarm-*` repos.
 - [ ] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
   `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
   changes. Put leading attribute and decorator siblings in the signature range.
