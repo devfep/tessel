@@ -226,10 +226,11 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
             Some(agent) => Action::Call {
                 agent: agent.clone(),
             },
-            None => Action::Reject(error_msg(
-                ErrorCode::NoHello,
-                "send hello before any other message",
-            )),
+            None => Action::Reject(ServerMsg::Error {
+                req: req_of(msg),
+                code: ErrorCode::NoHello,
+                message: "send hello before any other message".to_string(),
+            }),
         },
     }
 }
@@ -412,7 +413,7 @@ pub fn state_limit_reply(req: Option<RequestId>) -> ServerMsg {
     }
 }
 
-/// The `req` a client message carries, if any.
+/// The `req` a client message carries, if any. `Release` carries an optional one.
 pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
     match msg {
         ClientMsg::Claim { req, .. }
@@ -422,10 +423,8 @@ pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
         | ClientMsg::JoinRace { req, .. }
         | ClientMsg::PickWinner { req, .. }
         | ClientMsg::Review { req, .. } => Some(*req),
-        ClientMsg::Hello { .. }
-        | ClientMsg::Heartbeat
-        | ClientMsg::Release { .. }
-        | ClientMsg::Watch { .. } => None,
+        ClientMsg::Release { req, .. } => *req,
+        ClientMsg::Hello { .. } | ClientMsg::Heartbeat | ClientMsg::Watch { .. } => None,
     }
 }
 
@@ -695,6 +694,26 @@ mod tests {
         for message in [claim("fail", "depend"), heartbeat, release] {
             assert_eq!(reject_code(decide(&session, &message)), ErrorCode::NoHello);
         }
+    }
+
+    #[test]
+    fn no_hello_rejection_echoes_the_req_of_every_request_carrying_message() {
+        let session = Session::default();
+        let release = msg(r#"{"type":"release","claim":1,"fence":1,"req":8}"#);
+        let old_release = msg(r#"{"type":"release","claim":1,"fence":1}"#);
+        let claim_msg = claim("fail", "depend");
+        for (message, expected) in [
+            (release, Some(RequestId(8))),
+            (old_release, None),
+            (claim_msg.clone(), req_of(&claim_msg)),
+        ] {
+            let Action::Reject(ServerMsg::Error { req, code, .. }) = decide(&session, &message)
+            else {
+                panic!("expected a rejection");
+            };
+            assert_eq!((req, code), (expected, ErrorCode::NoHello));
+        }
+        assert!(req_of(&claim_msg).is_some(), "the claim carries a req");
     }
 
     #[test]

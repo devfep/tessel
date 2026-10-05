@@ -565,7 +565,7 @@ impl Coordinator {
             )];
         }
         let req = request.req;
-        let ClaimRequest { scopes, intent, .. } = request.clone();
+        let (scopes, intent) = (request.scopes.clone(), request.intent.clone());
         self.state.waiting.push(Waiting {
             agent: agent.clone(),
             request,
@@ -1336,6 +1336,13 @@ fn misrouted() -> Vec<Effect> {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+
+    const ALL_MODES: [Mode; 4] = [
+        Mode::Depend,
+        Mode::EditBody,
+        Mode::EditSignature,
+        Mode::Create,
+    ];
 
     use super::*;
     use crate::protocol::{
@@ -4595,7 +4602,7 @@ mod tests {
     fn scope_claims() -> impl Strategy<Value = Vec<ScopeClaim>> {
         let one = (
             prop::sample::select(universe()),
-            prop::sample::select(Mode::ALL.to_vec()),
+            prop::sample::select(ALL_MODES.to_vec()),
         )
             .prop_map(|(scope, mode)| ScopeClaim { scope, mode });
         prop::collection::vec(one, 1..=3)

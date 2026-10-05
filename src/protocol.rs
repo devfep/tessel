@@ -127,13 +127,6 @@ pub enum Scope {
 }
 
 impl Scope {
-    #[cfg(test)]
-    pub fn root() -> Scope {
-        Scope::Dir {
-            path: String::new(),
-        }
-    }
-
     /// Strict ancestors, nearest first, ending at the repo root.
     pub fn ancestors(&self) -> Vec<Scope> {
         let mut out = Vec::new();
@@ -190,31 +183,31 @@ pub enum Mode {
 }
 
 impl Mode {
-    #[cfg(test)]
-    pub const ALL: [Mode; 4] = [
-        Mode::Depend,
-        Mode::EditBody,
-        Mode::EditSignature,
-        Mode::Create,
-    ];
-
-    /// Whether two claims on overlapping scopes conflict.
-    /// Deliberately exhaustive with no wildcard: adding a variant forces
-    /// a decision for every pairing.
     /// Does holding a claim in `self` authorise work done in `needed`?
     /// Invariant: if `self` permits `needed`, everything that conflicts with
     /// `needed` also conflicts with `self`, so the claim really protected the
     /// work (checked in tests).
+    /// Deliberately exhaustive with no wildcard: adding a variant forces
+    /// a decision for every pairing.
     pub fn permits(self, needed: Mode) -> bool {
         use Mode::*;
         match (self, needed) {
-            (a, b) if a == b => true,
+            (Depend, Depend)
+            | (EditBody, EditBody)
+            | (EditSignature, EditSignature)
+            | (Create, Create) => true,
             (EditSignature, EditBody) => true,
             (EditSignature | EditBody | Create, Depend) => true,
-            _ => false,
+            (Depend, EditBody | EditSignature | Create) => false,
+            (EditBody, EditSignature | Create) => false,
+            (EditSignature, Create) => false,
+            (Create, EditBody | EditSignature) => false,
         }
     }
 
+    /// Whether two claims on overlapping scopes conflict.
+    /// Deliberately exhaustive with no wildcard: adding a variant forces
+    /// a decision for every pairing.
     pub fn conflicts_with(self, other: Mode) -> bool {
         use Mode::*;
         match (self, other) {
@@ -424,10 +417,7 @@ pub struct RaceEntry {
 /// inputs always produce the same winner.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "race ranking is planned (PLAN.md section 5, invariant 7); the coordinator does not open races yet"
-    )
+    expect(dead_code, reason = "planned: races (PLAN.md section 5)")
 )]
 pub fn rank_entries(criteria: &[Criterion], entries: &[RaceEntry]) -> Vec<ClaimId> {
     let mut pool: Vec<&RaceEntry> = entries
@@ -453,10 +443,7 @@ pub fn rank_entries(criteria: &[Criterion], entries: &[RaceEntry]) -> Vec<ClaimI
 
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "race ranking is planned (PLAN.md section 5, invariant 7); the coordinator does not open races yet"
-    )
+    expect(dead_code, reason = "planned: races (PLAN.md section 5)")
 )]
 fn none_last<T: Ord>(a: Option<T>, b: Option<T>) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
@@ -701,10 +688,7 @@ pub enum ReviewReason {
 /// `sensitive` entries are path prefixes, matched against each touched scope.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "review by exception is planned (PLAN.md section 5, invariant 12); the coordinator does not use it yet"
-    )
+    expect(dead_code, reason = "planned: review by exception (PLAN.md section 5)")
 )]
 pub fn review_reasons(
     touched: &[ScopeClaim],
@@ -765,10 +749,7 @@ impl Outcome {
     /// Did this outcome show a real conflict?
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "Summary is planned for the dashboard and the A/B table (PLAN.md sections 5 and 8)"
-        )
+        expect(dead_code, reason = "planned: dashboard evidence (PLAN.md section 8)")
     )]
     pub fn is_conflict(self) -> Option<bool> {
         match self {
@@ -916,10 +897,7 @@ pub enum EventKind {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "Summary is planned for the dashboard and the A/B table (PLAN.md sections 5 and 8)"
-    )
+    expect(dead_code, reason = "planned: dashboard evidence (PLAN.md section 8)")
 )]
 pub struct Summary {
     pub claims_granted: u64,
@@ -945,10 +923,7 @@ pub struct Summary {
 impl Summary {
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "Summary is planned for the dashboard and the A/B table (PLAN.md sections 5 and 8)"
-        )
+        expect(dead_code, reason = "planned: dashboard evidence (PLAN.md section 8)")
     )]
     pub fn from_events<'a>(events: impl IntoIterator<Item = &'a Event>) -> Summary {
         let mut s = Summary::default();
@@ -1002,6 +977,19 @@ impl Summary {
 mod tests {
     use super::*;
 
+    const ALL_MODES: [Mode; 4] = [
+        Mode::Depend,
+        Mode::EditBody,
+        Mode::EditSignature,
+        Mode::Create,
+    ];
+
+    fn root() -> Scope {
+        Scope::Dir {
+            path: String::new(),
+        }
+    }
+
     fn sym(path: &str, name: &str) -> Scope {
         Scope::Symbol(SymbolId {
             path: path.into(),
@@ -1017,8 +1005,8 @@ mod tests {
 
     #[test]
     fn conflict_matrix_is_symmetric() {
-        for a in Mode::ALL {
-            for b in Mode::ALL {
+        for a in ALL_MODES {
+            for b in ALL_MODES {
                 assert_eq!(a.conflicts_with(b), b.conflicts_with(a), "{a:?} vs {b:?}");
             }
         }
@@ -1042,7 +1030,7 @@ mod tests {
             ]
         );
         assert_eq!(file("main.rs").ancestors(), vec![dir("")]);
-        assert!(Scope::root().ancestors().is_empty());
+        assert!(root().ancestors().is_empty());
     }
 
     /// With S = Depend and X = EditSignature, the generalised rule must
@@ -1073,7 +1061,7 @@ mod tests {
     #[test]
     fn lock_table_matches_definition() {
         let scopes = [
-            Scope::root(),
+            root(),
             dir("src"),
             dir("src/auth"),
             dir("src/billing"),
@@ -1085,8 +1073,8 @@ mod tests {
         ];
         for a_scope in &scopes {
             for b_scope in &scopes {
-                for a_mode in Mode::ALL {
-                    for b_mode in Mode::ALL {
+                for a_mode in ALL_MODES {
+                    for b_mode in ALL_MODES {
                         let a = ScopeClaim {
                             scope: a_scope.clone(),
                             mode: a_mode,
@@ -1273,10 +1261,10 @@ mod tests {
 
     #[test]
     fn permits_never_weakens_protection() {
-        for held in Mode::ALL {
-            for needed in Mode::ALL {
+        for held in ALL_MODES {
+            for needed in ALL_MODES {
                 if held.permits(needed) {
-                    for other in Mode::ALL {
+                    for other in ALL_MODES {
                         if needed.conflicts_with(other) {
                             assert!(
                                 held.conflicts_with(other),
@@ -1412,5 +1400,30 @@ mod tests {
             });
         }
         assert_eq!(Summary::from_events(&events), Summary::default());
+    }
+
+    #[test]
+    fn permits_matches_the_documented_truth_table() {
+        use Mode::*;
+        let permitted = [
+            (Depend, Depend),
+            (EditBody, EditBody),
+            (EditSignature, EditSignature),
+            (Create, Create),
+            (EditSignature, EditBody),
+            (EditSignature, Depend),
+            (EditBody, Depend),
+            (Create, Depend),
+        ];
+        for held in ALL_MODES {
+            for needed in ALL_MODES {
+                let expected = permitted.contains(&(held, needed));
+                assert_eq!(
+                    held.permits(needed),
+                    expected,
+                    "{held:?} permits {needed:?}"
+                );
+            }
+        }
     }
 }
