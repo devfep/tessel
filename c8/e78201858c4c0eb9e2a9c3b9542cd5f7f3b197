@@ -1,0 +1,4 @@
+intent: merge SUBMIT-1: Submit is the merge signal; one merge at a time per repo through the steward MergeService binding; outcomes applied in the core; review gate holds flagged submissions
+assumes: the DO alarm handler can run one steward merge (13 min call timeout, watchdog alarm at +14 min)
+rejected: running every queued merge in one alarm (15 min wall limit); trusting sandbox exit codes (outcome comes from the steward's trunk read)
+evidence: review Yes after two fix passes; 360 workspace + 317 steward tests. Deployed as coordinator 5dd92057 + steward 20a409ee; the live end-to-end check FAILED (setAlarm(0)), fixed in 8632d73.
