@@ -6,6 +6,7 @@ import type { ClaimedScope } from "./merge-coverage";
 import { runMerge, type MergeDeps } from "./merge-steps";
 import { parseSha, type GitResult, type Sha } from "./merge-types";
 import { REVOKE_FAILED_MESSAGE, makeOutcome, type StepOutcome } from "./run-steps";
+import { LOCAL_GIT_COMMANDS_MAX, STEP_SECONDS } from "./step-budget";
 
 function sha(character: string): Sha {
   const parsed = parseSha(character.repeat(40));
@@ -25,6 +26,9 @@ const WHOLE_REPO: ClaimedScope[] = [
   { scope: { kind: "dir", path: "" }, mode: "create" },
 ];
 
+const VALID_GATE = 'instance = "standard-4"\n[[test]]\nargv = ["pnpm", "test"]\n';
+const ADMIN = { adminMerge: true };
+
 type GitStep =
   | "clone"
   | "fetch"
@@ -36,6 +40,7 @@ type GitStep =
   | "conflicts"
   | "changed"
   | "head"
+  | "show"
   | "push";
 
 function gitStep(command: GitCommand): GitStep {
@@ -51,6 +56,7 @@ function gitStep(command: GitCommand): GitStep {
     ["--diff-filter=U", "conflicts"],
     ["--name-status", "changed"],
     ["HEAD^{commit}", "head"],
+    [" show ", "show"],
     [" push ", "push"],
   ];
   const found = matches.find(([needle]) => text.includes(needle));
@@ -88,11 +94,13 @@ function harness(overrides: Partial<Plan> = {}) {
     conflicts: { exitCode: 0, stdout: "" },
     changed: { exitCode: 0, stdout: "M\0src/a.ts\0" },
     head: { exitCode: 0, stdout: `${HEAD}\n` },
+    show: { exitCode: 0, stdout: VALID_GATE },
     push: { exitCode: 0 },
   };
   const events: string[] = [];
   const commands: GitCommand[] = [];
   const deps: MergeDeps = {
+    pinnedMain: BASE,
     sources: {
       workspace: "/workspace",
       mainRemote: "https://git.example/demo.git",
@@ -191,12 +199,170 @@ describe("runMerge", () => {
   });
 
   it("returns the capped test output with a failed test", async () => {
-    const { deps } = harness({ test: 124 });
+    const { deps } = harness({ test: 1 });
     const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
     expect(outcome).toMatchObject({
       outcome: "tests_failed",
-      result: { step: "test", exitCode: 124, stdout: "test out", passed: false },
+      result: { step: "test", exitCode: 1, stdout: "test out", passed: false },
     });
+  });
+
+  it("reports a test step that timed out as a timeout that is still the test step", async () => {
+    for (const test of [124, 137]) {
+      const { deps, events } = harness({ test });
+      const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
+      expect(outcome).toMatchObject({
+        outcome: "timeout",
+        base: BASE,
+        head: HEAD,
+        result: { step: "test", exitCode: test, stdout: "test out", reason: "timeout" },
+      });
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    }
+  });
+
+  it("reports an install step that timed out as a timeout with reason timeout, running no tests", async () => {
+    for (const install of [124, 137]) {
+      const { deps, events } = harness({ install });
+      expect(await runMerge(deps, COMMIT, WHOLE_REPO)).toMatchObject({
+        outcome: "timeout",
+        result: { step: "install", exitCode: install, reason: "timeout" },
+      });
+      expect(events).not.toContain("package:test");
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    }
+  });
+
+  it("rejects a change to tessel.toml as gate_changed, before the coverage check and any repo code", async () => {
+    const records = [
+      "M\0tessel.toml\0",
+      "A\0src/b.ts\0M\0tessel.toml\0",
+      "D\0tessel.toml\0",
+      "R100\0tessel.toml\0gate.toml\0",
+      "R100\0old.toml\0tessel.toml\0",
+    ];
+    for (const stdout of records) {
+      const { deps, events } = harness({ git: { changed: { exitCode: 0, stdout } } });
+      const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
+      expect(outcome, stdout).toEqual({ outcome: "gate_changed", base: BASE, head: HEAD });
+      expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    }
+  });
+
+  it("rejects a change to tessel.toml over the service binding even when the head's file is valid", async () => {
+    const { deps } = harness({ git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0" } } });
+    expect(await runMerge(deps, COMMIT, WHOLE_REPO, { adminMerge: false })).toEqual({
+      outcome: "gate_changed",
+      base: BASE,
+      head: HEAD,
+    });
+  });
+
+  describe("an admin merge that changes tessel.toml", () => {
+    const gateAndCode = "M\0tessel.toml\0M\0src/a.ts\0";
+
+    it("refuses a head file that is invalid, oversized or deleted, running nothing of the repo's", async () => {
+      const heads = [
+        { exitCode: 0, stdout: 'instance = "standard-4"\nshell = "sh"\n' },
+        { exitCode: 0, stdout: "not toml [" },
+        { exitCode: 0, stdout: "" },
+        { exitCode: 0, stdout: VALID_GATE.replace("pnpm", "sh") },
+        { exitCode: 128, stdout: "" },
+      ];
+      for (const show of heads) {
+        const changed = { exitCode: 0, stdout: gateAndCode };
+        const { deps, events } = harness({ git: { changed, show } });
+        expect(await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN), show.stdout).toEqual({
+          outcome: "gate_invalid",
+          base: BASE,
+          head: HEAD,
+        });
+        expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+        expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+      }
+    });
+
+    it("reads the head's file from the rebased commit", async () => {
+      const { deps, commands } = harness({
+        git: { changed: { exitCode: 0, stdout: gateAndCode } },
+      });
+      await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN);
+      const show = commands.find((command) => gitStep(command) === "show");
+      expect(show?.argv).toContain(`${HEAD}:tessel.toml`);
+    });
+
+    it("still runs the trunk's tests when the diff has code besides the gate", async () => {
+      const { deps, events } = harness({ git: { changed: { exitCode: 0, stdout: gateAndCode } } });
+      expect(await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN)).toMatchObject({ outcome: "merged" });
+      expect(events).toContain("package:test");
+    });
+
+    it("judges a diff of only tessel.toml by the head's file alone: no install, no tests, then the push", async () => {
+      const { deps, events } = harness({
+        git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0" } },
+        install: 3,
+        test: 1,
+      });
+      expect(await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN)).toMatchObject({
+        outcome: "merged",
+      });
+      expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(true);
+    });
+
+    it("still enforces the claim's coverage on a diff of only tessel.toml", async () => {
+      const elsewhere: ClaimedScope[] = [
+        { scope: { kind: "dir", path: "src" }, mode: "edit_body" },
+      ];
+      const { deps, events } = harness({
+        git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0" } },
+      });
+      expect(await runMerge(deps, COMMIT, elsewhere, ADMIN)).toMatchObject({
+        outcome: "uncovered",
+        files: ["tessel.toml"],
+        total: 1,
+      });
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    });
+
+    it("still enforces the claim's coverage", async () => {
+      const narrow: ClaimedScope[] = [
+        { scope: { kind: "file", path: "tessel.toml" }, mode: "edit_body" },
+      ];
+      const { deps } = harness({
+        git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0M\0src/a.ts\0" } },
+      });
+      expect(await runMerge(deps, COMMIT, narrow, ADMIN)).toMatchObject({ outcome: "uncovered" });
+    });
+  });
+
+  it("does not mistake other files named like the gate for it", async () => {
+    const stdout = "M\0docs/tessel.toml\0M\0tessel.toml.bak\0M\0src/a.ts\0";
+    const { deps } = harness({ git: { changed: { exitCode: 0, stdout } } });
+    expect(await runMerge(deps, COMMIT, WHOLE_REPO)).toMatchObject({ outcome: "merged" });
+  });
+
+  it("issues at most LOCAL_GIT_COMMANDS_MAX local git commands on its longest path", async () => {
+    const paths = [
+      harness(),
+      harness({ git: { rebase: { exitCode: 1 }, conflicts: { exitCode: 0, stdout: "a\0" } } }),
+    ];
+    for (const { deps, commands } of paths) {
+      await runMerge(deps, COMMIT, WHOLE_REPO);
+      const local = commands.filter((command) => command.timeoutSeconds === STEP_SECONDS.local);
+      expect(local.length).toBeGreaterThan(0);
+      expect(local.length).toBeLessThanOrEqual(LOCAL_GIT_COMMANDS_MAX);
+    }
+  });
+
+  it("is main_moved, before verifying or rebasing, when the clone finds main elsewhere", async () => {
+    const { deps, events } = harness();
+    const racer = sha("9");
+    const outcome = await runMerge({ ...deps, pinnedMain: racer }, COMMIT, WHOLE_REPO);
+    expect(outcome).toEqual({ outcome: "main_moved", expected: racer, actual: BASE });
+    expect(events).not.toContain("git:exists");
+    expect(events.some((event) => event.startsWith("package:"))).toBe(false);
   });
 
   it("reports a stopped rebase as a conflict with the unmerged paths, and runs no tests", async () => {

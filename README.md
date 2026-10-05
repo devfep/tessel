@@ -95,5 +95,43 @@ with, and changing them later has no effect on it.
     websocat wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws \
       -H="Authorization: Bearer $AGENT_TOKEN"
 
+## Dogfooding gate
+
+The steward judges a repo by the `tessel.toml` on the trunk commit a run is based on (read through
+the Artifacts binding, never from a fork). Tessel's own is at the repository root.
+
+- **Who may change the gate.** A submission over the coordinator's service binding whose rebased
+  diff touches `tessel.toml` is rejected as `gate_changed` ("changes the gate (tessel.toml); only
+  an admin merge may change it"). The admin route `POST /repos/<repo>/merges` may merge such a
+  change: the head's file must pass the validation below (else `gate_invalid`), and a diff that
+  touches only `tessel.toml` is judged by the head's file alone, with no install or tests, so a
+  broken trunk gate can be repaired. A diff that also changes code runs the trunk's gate. The
+  claim's scopes still have to cover `tessel.toml`.
+- **Recovery from a broken trunk gate.** A gate-only admin merge pushes **without running any
+  tests**; that is the point, and the admin takes responsibility for the file. Steps, with
+  `STEWARD_ADMIN_TOKEN` as the bearer token:
+  1. `POST /repos/tessel/forks/tessel--admin` creates a fork.
+  2. `POST /repos/tessel--admin/tokens` mints a write token for it.
+  3. Push one commit that changes only `tessel.toml` to the fork's default branch.
+  4. `POST /repos/tessel/merges` with `{"fork":"tessel--admin","commit":"<sha>","scopes":
+     [{"scope":{"kind":"file","path":"tessel.toml"},"mode":"edit_body"}]}`. The answer is
+     `merged`, or `gate_invalid` if the new file does not pass the validation above.
+  5. `POST /repos/tessel/test-runs` should answer `step: "test"` again.
+- **Allowed commands:** `pnpm test`, `npm test`, or `cargo test` with only `--workspace --locked
+  --offline --no-fail-fast --all-targets --all-features --release --lib --bins --tests`. Nothing
+  that can pick another toolchain, config or compiler (`+nightly`, `--config`, `-Z`,
+  `--manifest-path`, `--target`, `--`) and no shell. A `tessel.toml` that is present but invalid
+  fails every other run at `install` (reason `config`); only a missing file falls back to `npm test`.
+- **Lockfile changes need the new image first.** Containers have no Internet, so dependencies are
+  baked into `tessel-steward/toolchain.Dockerfile` from the committed lockfiles. A change to
+  `Cargo.lock` or `tessel-steward/pnpm-lock.yaml` fails at `install` (reason `install_failed`)
+  until the image holds it, and the admin route runs the same install step. To land one:
+  1. From a checkout that has the new lockfiles, start Docker and run `npx wrangler deploy` in
+     `tessel-steward/`: it rebuilds the `toolchain` image from them (build context: the repository
+     root) and deploys.
+  2. Merge the change through the steward as usual; its install step now finds the dependencies.
+  3. `POST /repos/tessel/test-runs` should answer `step: "test"`, `passed: true`.
+- **Mirror:** `tools/mirror.sh` fast-forwards the Artifacts trunk to GitHub `sprint/build`.
+
 ## Tests
     cargo test

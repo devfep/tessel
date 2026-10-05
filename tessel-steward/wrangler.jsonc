@@ -15,7 +15,13 @@
     {
       "class_name": "TestRunner",
       "scheduling_policy": "durable_object",
-      "images": { "tests": { "dockerfile": "./Dockerfile" } },
+      "images": {
+        // Repos without a tessel.toml: Node only, small enough for a `lite` instance (2 GB disk).
+        "tests": { "dockerfile": "./Dockerfile" },
+        // Repos with a tessel.toml: Rust, Node, pnpm and baked dependencies. Built from the
+        // repository root, which holds the lockfiles it bakes in.
+        "toolchain": { "dockerfile": "./toolchain.Dockerfile", "build_context": ".." },
+      },
     },
   ],
   "durable_objects": {

@@ -1008,6 +1008,7 @@ mod tests {
             MergeOutcome::Clone {},
             MergeOutcome::GitFailed {},
             MergeOutcome::Install {},
+            MergeOutcome::Timeout {},
             MergeOutcome::PushFailed {},
             MergeOutcome::ServiceUnavailable,
         ];

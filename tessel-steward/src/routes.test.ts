@@ -6,6 +6,7 @@ describe("matchRoute", () => {
   it.each([
     ["/repos/demo", { kind: "create", repo: "demo" }],
     ["/repos/demo/tokens", { kind: "token", repo: "demo" }],
+    ["/repos/demo/read-tokens", { kind: "read-token", repo: "demo" }],
     ["/repos/demo/forks/demo--agent-1", { kind: "fork", repo: "demo", fork: "demo--agent-1" }],
     ["/repos/demo/test-runs", { kind: "test-run", repo: "demo" }],
     ["/repos/demo/test-runs/", { kind: "test-run", repo: "demo" }],
@@ -27,6 +28,8 @@ describe("matchRoute", () => {
     ["forks with a trailing segment", "/repos/demo/forks/x/y"],
     ["a fork without a name", "/repos/demo/forks"],
     ["tokens with a trailing segment", "/repos/demo/tokens/x"],
+    ["read-tokens with a trailing segment", "/repos/demo/read-tokens/x"],
+    ["read-tokens naming a fork", "/repos/demo/read-tokens/demo--a1"],
     ["identity with a trailing segment", "/repos/demo/agents/a1/identity/x"],
     ["identity without an agent", "/repos/demo/agents/identity"],
     ["agents with a misspelled leaf", "/repos/demo/agents/a1/identities"],

@@ -26,7 +26,11 @@ function check(packageJson: string | undefined): number | null {
   if (packageJson !== undefined) {
     writeFileSync(join(directory, "package.json"), packageJson);
   }
-  return spawnSync(process.execPath, ["-e", DEPENDENCY_CHECK_SCRIPT], { cwd: directory }).status;
+  return spawnSync(
+    process.execPath,
+    ["-e", DEPENDENCY_CHECK_SCRIPT, join(directory, "package.json")],
+    { cwd: tmpdir() },
+  ).status;
 }
 
 function checkWith(fields: Record<string, unknown>): number | null {

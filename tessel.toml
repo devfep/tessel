@@ -1,0 +1,37 @@
+# The gate the steward runs on Tessel's own commits (tessel-steward/src/tessel-config.ts).
+# The steward reads this file from the trunk commit a run is based on, never from the fork.
+# Every command is an argv array run without a shell. The containers have no Internet, so the
+# dependencies come from the image (tessel-steward/toolchain.Dockerfile), built from the
+# committed lockfiles: a changed lockfile or a missing dependency fails the run at `install`.
+#
+# This file is the gate, so who may change it is fixed:
+# - A submission over the coordinator's service binding that touches it is rejected as
+#   `gate_changed`: "changes the gate (tessel.toml); only an admin merge may change it".
+# - The admin route POST /repos/<repo>/merges may merge a change to it. The head's file must pass
+#   the same validation as below, or the merge is rejected as `gate_invalid`.
+# - An admin merge whose diff touches only this file is judged by the head's file alone (no install
+#   or tests run), so a broken trunk gate can be repaired. A diff that also changes code is tested
+#   by the trunk's gate as usual. The claim's scopes still have to cover this file.
+# - Recovery from a broken trunk gate (the admin takes responsibility: nothing is tested):
+#   fork the repo (POST /repos/tessel/forks/tessel--admin), mint a write token for the fork
+#   (POST /repos/tessel--admin/tokens), push one commit that changes only this file, then
+#   POST /repos/tessel/merges with that commit and the scope {kind: file, path: tessel.toml}
+#   in mode edit_body. Details in README.md, "Dogfooding gate".
+# Commands are checked strictly: `pnpm test`, `npm test`, or `cargo test` with only these flags:
+# --workspace --locked --offline --no-fail-fast --all-targets --all-features --release --lib
+# --bins --tests. An invalid trunk file fails every other run at `install` (reason `config`).
+#
+# A lockfile change (Cargo.lock, tessel-steward/pnpm-lock.yaml) cannot merge through the steward
+# until the image has been rebuilt from it: see "Dogfooding gate" in README.md.
+instance = "standard-4"
+
+[install]
+cargo = true
+pnpm = ["tessel-steward"]
+
+[[test]]
+argv = ["cargo", "test", "--workspace", "--locked", "--offline"]
+
+[[test]]
+dir = "tessel-steward"
+argv = ["pnpm", "test"]

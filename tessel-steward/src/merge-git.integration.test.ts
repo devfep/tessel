@@ -97,6 +97,7 @@ class Repos {
   deps(overrides: Partial<MergeDeps> = {}): MergeDeps {
     this.runs += 1;
     return {
+      pinnedMain: this.mainHead(),
       sources: {
         workspace: join(this.root, `workspace-${this.runs}`),
         mainRemote: this.main,
