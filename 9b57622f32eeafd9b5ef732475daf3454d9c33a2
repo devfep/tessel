@@ -1,0 +1,4 @@
+intent: record the orchestrator's rulings on Hello identity and dispatch complexity before the COORD-1 fix pass
+assumes: none
+rejected: sending the fix-pass brief while the reviewer is mutating the same worktree
+evidence: docs only
