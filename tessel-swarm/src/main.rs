@@ -52,7 +52,7 @@ enum Mode {
 enum Target {
     /// The real coordinator core and a git steward, in this process.
     Local,
-    /// A deployed coordinator and steward. Needs --coordinator, --steward and `STEWARD_ADMIN_TOKEN`.
+    /// A deployed coordinator and steward. Needs --coordinator (the swarm deployment, never production), --steward and `STEWARD_ADMIN_TOKEN`.
     Live,
 }
 
@@ -82,10 +82,10 @@ struct RunArgs {
     /// How often a skipped task may be denied before its agent gives up on it.
     #[arg(long, default_value_t = 400)]
     max_denials: u32,
-    /// Local only: approve every submission held for review. Off by default; a held submission
-    /// otherwise stays held and its agent times out. A live run never has a scripted reviewer.
+    /// Do not run the scripted reviewer. A submission held for review then stays held and its
+    /// agent times out.
     #[arg(long)]
-    scripted_reviewer: bool,
+    no_reviewer: bool,
     /// Scratch repository name; must be `swarm-<suffix>`. Default: swarm-s<seed>-<time>.
     #[arg(long)]
     repo: Option<String>,
@@ -129,11 +129,6 @@ async fn run_command(args: &RunArgs) -> Result<()> {
     if args.agents == 0 {
         bail!("--agents must be at least 1");
     }
-    if args.scripted_reviewer && args.target == Target::Live {
-        bail!(
-            "--scripted-reviewer is for the local target only; a live run never approves reviews"
-        );
-    }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let repo = run::resolve_repo(args.repo.as_deref(), args.seed, now)?;
     let spec = Spec {
@@ -145,7 +140,7 @@ async fn run_command(args: &RunArgs) -> Result<()> {
         work_ms: args.work_ms,
         task_timeout: Duration::from_secs(args.task_timeout_s),
         max_denials: args.max_denials,
-        scripted_reviewer: args.scripted_reviewer,
+        scripted_reviewer: !args.no_reviewer,
     };
     let list = tasks::generate(spec.seed, spec.tasks, spec.overlap)?;
     std::fs::create_dir_all(&args.out)?;
@@ -200,6 +195,7 @@ async fn run_live(
     let (Some(coordinator), Some(steward)) = (&args.coordinator, &args.steward) else {
         bail!("--target live needs --coordinator and --steward");
     };
+    tessel_swarm::guard::check_coordinator(coordinator)?;
     let admin = std::env::var("STEWARD_ADMIN_TOKEN")
         .context("set STEWARD_ADMIN_TOKEN for --target live")?;
     let steward = Steward::new(steward, Token::new(admin))?;

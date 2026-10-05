@@ -33,11 +33,10 @@ scopes where the edit allows, the way the CLI plans them), respect a denial, edi
 main stands after the grant, commit, push to a fork, `Submit`, wait for `Merged` or
 `SubmitRejected`, and release a rejected claim. `--policy wait` queues behind the holder;
 `--policy skip` puts the task back and picks other work. A reviewer connection (`swarm-reviewer`)
-is available on the local target only, behind `--scripted-reviewer` (off by default), and approves
-every submission held for review. Without it, a submission that needs review stays held and its
-agent times out; the table counts it as held. A live run never has a scripted reviewer: adding one
-to `REVIEWERS` would let it approve work in every repo. Held and approved counts come from the
-log.
+approves every submission held for review, with a fixed note that marks its approvals in the log;
+`--no-reviewer` turns it off, and a held submission then stays held until its agent times out.
+It runs against the local target and against the swarm coordinator (below), where it is the only
+reviewer. Held and approved counts come from the log.
 An agent that times out stops, and the tasks nobody took are recorded as not run, so every task
 is merged, rejected or not finished.
 Every count about the coordinator comes from reading its event log with `Watch` and running
@@ -82,15 +81,35 @@ event log the numbers came from) and `seed<N>-ab.md`.
 ```
 export STEWARD_ADMIN_TOKEN=...   # the steward's admin token; never printed
 target/debug/tessel-swarm run --target live --seed 1 --tasks 10 --agents 6 \
-  --coordinator wss://<coordinator host> --steward https://<steward host>
+  --coordinator wss://tessel-coordinator-swarm.<account>.workers.dev --steward https://<steward host>
 ```
 
 This creates a new scratch repository through the steward admin routes (`swarm-s<seed>-<time>`, or
 `--repo swarm-<name>`), pushes the starting commit, forks it once per agent, mints a write token
-per fork and an identity token per agent, and runs `on` against the deployed Workers. A
-submission held for review (a signature change, a rename) stays held and is reported as timed out
-after `--task-timeout-s`; it is counted as held, not approved. Scratch repositories stay in the namespace; there
-is no delete route.
+per fork and an identity token per agent (the reviewer and an observer included), and runs `on`
+against the swarm coordinator. Scratch repositories stay in the namespace; there is no delete
+route.
+
+### The swarm coordinator
+
+The live swarm coordinator is a separate deployment of the same code, `tessel-coordinator-swarm`,
+whose only reviewer is the script (`REVIEWERS = "swarm-reviewer"`). The production coordinator's
+reviewer stays `felix`, so the script can approve work on the swarm deployment and nowhere else.
+`--target live` refuses the production host `tessel-coordinator.devfep.workers.dev` by name, and any
+host that is not `tessel-coordinator-swarm.*` or a local dev server.
+
+The `[env.swarm]` block of the root `wrangler.toml` defines it. Wrangler does not inherit bindings,
+vars, services, secrets or migrations into an environment, so the block repeats them. To deploy
+(not done by this crate):
+
+```
+npx wrangler secret put IDENTITY_SIGNING_KEY --env swarm   # the same value as production
+npx wrangler deploy --env swarm
+```
+
+The key is shared, so identity tokens from the steward's route verify on both deployments; a token
+names a repo and an agent, not a Worker. The swarm deployment keeps its own Durable Object
+storage, so swarm repos never mix with production ones.
 
 ## Safety
 

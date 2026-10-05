@@ -45,8 +45,8 @@ pub struct OnConfig {
     pub task_timeout: Duration,
     /// How often a skipped task may be denied before its agent gives up on it.
     pub max_denials: u32,
-    /// Local target only: answer every submission held for review with an approval. Off by
-    /// default; a live run never has one.
+    /// Answer every submission held for review with an approval. On by default, for the local
+    /// target and the swarm coordinator, where it is the only reviewer.
     pub scripted_reviewer: bool,
 }
 
@@ -102,8 +102,8 @@ pub struct OnResult {
     pub rejected_in_log: u64,
     /// `WaitQueued` events: claims that queued behind a holder. `Summary` has no field for them.
     pub waits_in_log: u64,
-    /// Approvals in the log (`ReviewDecided` with `approve`). With the scripted reviewer off,
-    /// these can only come from someone else.
+    /// Approvals in the log that carry the scripted reviewer's note. The swarm coordinator has no
+    /// other reviewer.
     pub reviews_approved: u64,
     /// Claims flagged for review that were never decided.
     pub reviews_held: u64,
@@ -231,7 +231,7 @@ fn summarize(
         summary,
         rejected_in_log: counts.rejected,
         waits_in_log: counts.waits,
-        reviews_approved: counts.approvals,
+        reviews_approved: counts.scripted_approvals,
         reviews_held: counts.held_for_review,
         scripted_reviewer,
         work_ms_total: results.iter().map(|r| r.work_ms).sum(),
@@ -289,7 +289,7 @@ async fn review_loop(ctx: Arc<Ctx>, mut stop: tokio::sync::watch::Receiver<bool>
         };
         if decided.insert(claim) {
             let req = conn.next_req();
-            let note = Some("scripted reviewer: approves every held submission".to_string());
+            let note = Some(events::SCRIPTED_NOTE.to_string());
             conn.send(&ClientMsg::Review {
                 req,
                 claim,

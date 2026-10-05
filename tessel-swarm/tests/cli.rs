@@ -86,7 +86,6 @@ fn a_local_run_writes_its_evidence_and_leaves_nothing_behind() {
     let out = tmp.path().join("results");
     let args = [
         "run",
-        "--scripted-reviewer",
         "--seed",
         "7",
         "--tasks",
@@ -127,25 +126,29 @@ fn a_local_run_writes_its_evidence_and_leaves_nothing_behind() {
 }
 
 #[test]
-fn a_scripted_reviewer_is_refused_on_the_live_target() {
+fn a_live_run_refuses_the_production_coordinator_and_any_other_host() {
     let tmp = tempfile::tempdir().unwrap();
-    let args = [
-        "run",
-        "--repo",
-        "swarm-x",
-        "--target",
-        "live",
-        "--scripted-reviewer",
-        "--coordinator",
-        "wss://c.invalid",
-        "--steward",
-        "https://s.invalid",
-    ];
-    let output = swarm(&args, tmp.path());
-    assert!(!output.status.success());
-    assert!(
-        text(&output).contains("local target only"),
-        "{}",
-        text(&output)
-    );
+    for host in [
+        "wss://tessel-coordinator.devfep.workers.dev",
+        "wss://example.com",
+    ] {
+        let args = [
+            "run",
+            "--repo",
+            "swarm-x",
+            "--target",
+            "live",
+            "--coordinator",
+            host,
+            "--steward",
+            "https://s.invalid",
+        ];
+        let output = swarm(&args, tmp.path());
+        assert!(!output.status.success(), "{host}");
+        let shown = text(&output);
+        assert!(
+            shown.contains("production coordinator") || shown.contains("not the swarm"),
+            "{shown}"
+        );
+    }
 }

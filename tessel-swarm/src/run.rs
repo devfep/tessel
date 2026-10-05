@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use crate::demo;
-use crate::guard::ScratchRepo;
+use crate::guard::{check_coordinator, ScratchRepo};
 use crate::live::{self, LiveSetup, Steward};
 use crate::local::{LocalServer, LocalSetup};
 use crate::off::{self, OffConfig, OffResult};
@@ -103,10 +103,8 @@ pub async fn run_on_live(
     coordinator: &str,
 ) -> Result<OnResult> {
     let scratch = tempfile::tempdir().context("cannot create a scratch directory")?;
-    if spec.scripted_reviewer {
-        bail!("a live run never uses a scripted reviewer: a submission held for review stays held");
-    }
-    let names = on::principals(spec.agents, false);
+    check_coordinator(coordinator)?;
+    let names = on::principals(spec.agents, spec.scripted_reviewer);
     let agents = on::agent_names(spec.agents);
     let base = demo::base_tree();
     let seed_dir = scratch.path().join("setup");
@@ -147,7 +145,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_live_run_refuses_a_scripted_reviewer_before_touching_anything() {
+    async fn a_live_run_refuses_the_production_coordinator_before_touching_anything() {
         let spec = Spec {
             seed: 1,
             tasks: 1,
@@ -160,15 +158,13 @@ mod tests {
             scripted_reviewer: true,
         };
         let repo = ScratchRepo::parse("swarm-x").unwrap();
-        let steward = Steward::new(
-            "https://steward.invalid",
-            crate::endpoint::Token::new("t".into()),
-        )
-        .unwrap();
-        let error = run_on_live(&spec, &[], &repo, &steward, "wss://coordinator.invalid").await;
+        let token = crate::endpoint::Token::new("t".into());
+        let steward = Steward::new("https://steward.invalid", token).unwrap();
+        let production = "wss://tessel-coordinator.devfep.workers.dev";
+        let error = run_on_live(&spec, &[], &repo, &steward, production).await;
         assert!(error
             .err()
-            .is_some_and(|e| e.to_string().contains("never uses a scripted reviewer")));
+            .is_some_and(|e| e.to_string().contains("production coordinator")));
     }
 
     #[test]

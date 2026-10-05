@@ -12,6 +12,48 @@ const PROTECTED: [&str; 2] = ["tessel-dogfood", "demo"];
 const PREFIX: &str = "swarm-";
 const MAX_LEN: usize = 64;
 
+/// The production coordinator. A swarm run never connects to it.
+const PRODUCTION_COORDINATOR: &str = "tessel-coordinator.devfep.workers.dev";
+/// The first label of the swarm deployment's host (wrangler `--env swarm`).
+const SWARM_COORDINATOR: &str = "tessel-coordinator-swarm";
+
+/// Accepts only the swarm coordinator (or a local dev server) as the live target. The scripted
+/// reviewer approves everything it sees, so it may only ever run where it is the sole reviewer.
+pub fn check_coordinator(url: &str) -> Result<()> {
+    let Some(rest) = url
+        .strip_prefix("wss://")
+        .or_else(|| url.strip_prefix("ws://"))
+    else {
+        bail!("the coordinator URL must start with ws:// or wss://");
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        bail!("the coordinator URL must not carry credentials");
+    }
+    let host = authority.rsplit_once(':').map_or(authority, |(h, port)| {
+        if port.bytes().all(|b| b.is_ascii_digit()) {
+            h
+        } else {
+            authority
+        }
+    });
+    let host = host.to_ascii_lowercase();
+    if host == PRODUCTION_COORDINATOR || host.split('.').next() == Some("tessel-coordinator") {
+        bail!(
+            "{host} is the production coordinator; a swarm run only targets the swarm deployment"
+        );
+    }
+    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]");
+    let swarm = host
+        .split('.')
+        .next()
+        .is_some_and(|label| label == SWARM_COORDINATOR);
+    if !(local || swarm) {
+        bail!("{host} is not the swarm coordinator ({SWARM_COORDINATOR}.<account>.workers.dev) or a local dev server");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScratchRepo(String);
 
@@ -84,6 +126,30 @@ mod tests {
             assert!(ScratchRepo::parse(bad).is_err(), "{bad:?} must be refused");
         }
         assert!(ScratchRepo::parse(&format!("swarm-{}", "x".repeat(80))).is_err());
+    }
+
+    #[test]
+    fn only_the_swarm_coordinator_or_a_local_server_is_a_live_target() {
+        for ok in [
+            "wss://tessel-coordinator-swarm.devfep.workers.dev",
+            "wss://tessel-coordinator-swarm.devfep.workers.dev/",
+            "ws://localhost:8787",
+            "ws://127.0.0.1:8787/repo",
+        ] {
+            assert!(check_coordinator(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "wss://tessel-coordinator.devfep.workers.dev",
+            "wss://TESSEL-COORDINATOR.devfep.workers.dev/x",
+            "wss://tessel-coordinator.other.workers.dev",
+            "wss://tessel-coordinator.devfep.workers.dev:443",
+            "wss://user:pw@tessel-coordinator-swarm.devfep.workers.dev",
+            "wss://example.com",
+            "wss://evil.example/tessel-coordinator-swarm",
+            "https://tessel-coordinator-swarm.devfep.workers.dev",
+        ] {
+            assert!(check_coordinator(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
