@@ -1,0 +1,4 @@
+intent: fix review findings 1,2,3,5,6 for the shadow policy
+assumes: Watch on an agent connection replays the log from seq 0 and then follows it
+rejected: polling the log with the observer from every agent (concurrent same-identity connections); a literal (3,0) probe, since the agent now waits and fewer tasks are shadowed
+evidence: cargo test --workspace 782 passed (775 + 7); clippy -D warnings clean; mutants M3a M3b M5 M8 M9 killed
