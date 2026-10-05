@@ -39,6 +39,16 @@ fn file(path: &str, mode: Mode) -> ScopeClaim {
     }
 }
 
+fn symbol(path: &str, name: &str, mode: Mode) -> ScopeClaim {
+    ScopeClaim {
+        scope: Scope::Symbol(SymbolId {
+            path: path.into(),
+            qualified_name: name.into(),
+        }),
+        mode,
+    }
+}
+
 fn commit_file(agent: &Agent, path: &str, text: &str, message: &str) -> Result<String> {
     let root = agent.root();
     std::fs::write(root.join(path), text)?;
@@ -646,7 +656,7 @@ async fn an_edit_plus_an_add_fit_one_claim_and_submit_end_to_end() -> Result<()>
         anyhow::bail!("not a submit");
     };
     assert_eq!(touched.len(), 2, "{touched:?}");
-    assert!(touched.contains(&file("src/a.rs", Mode::EditBody)));
+    assert!(touched.contains(&symbol("src/a.rs", "a::a", Mode::EditBody)));
     assert!(touched.contains(&file("src/new.rs", Mode::Create)));
     Ok(())
 }
@@ -759,7 +769,7 @@ async fn files_merged_by_others_are_not_uncovered_after_a_rebase() -> Result<()>
     let ClientMsg::Submit { touched, .. } = &sent[0] else {
         anyhow::bail!("not a submit");
     };
-    assert_eq!(touched, &vec![file("src/a.rs", Mode::EditBody)]);
+    assert_eq!(touched, &vec![symbol("src/a.rs", "a::a", Mode::EditBody)]);
     Ok(())
 }
 
@@ -835,6 +845,6 @@ async fn the_base_advances_to_the_merged_commit_and_only_then() -> Result<()> {
     let ClientMsg::Submit { touched, .. } = &sent[1] else {
         anyhow::bail!("not a submit");
     };
-    assert_eq!(touched, &vec![file("src/b.rs", Mode::EditBody)]);
+    assert_eq!(touched, &vec![symbol("src/b.rs", "b::b", Mode::EditBody)]);
     Ok(())
 }
