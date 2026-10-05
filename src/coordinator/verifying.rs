@@ -34,6 +34,11 @@
 //! - What the log records is the protocol `Outcome` (`TrialReport::verdict`). Anything that is
 //!   not a verdict about the work (nothing to test, the commit is not on the fork, a timeout,
 //!   infrastructure that kept failing) is `Inconclusive`, which no counter treats as broken.
+//! - A race entry's tests are tried by the same queue (invariant 7, see `racing`): one trial per
+//!   entry with `before` and `main` both the head when the race closed, which the steward runs once
+//!   and reads as both sides. What the trial says is read by `TrialReport::tests_passed`, not by
+//!   `verdict`: there is no baseline to compare against. Nothing about a race trial is logged as
+//!   an `AssumptionVerified`; the race's own events are the record.
 //! - A conflict is not sent to the assuming agent as a message: no `ServerMsg` says "your
 //!   assumption broke" (`AssumptionChallenged` says "re-check it" and would be read as a second
 //!   challenge). The event is the record, and watchers receive it.
@@ -42,9 +47,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{Coordinator, Effect};
 use crate::merge::{
-    infra_backoff_ms, TrialReport, TrialVerdict, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
+    infra_backoff_ms, TestsVerdict, TrialReport, TrialVerdict, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
 };
-use crate::protocol::{AgentId, Assumption, ClaimId, CommitId, EventKind, Outcome};
+use crate::protocol::{AgentId, Assumption, ClaimId, CommitId, EventKind, Outcome, RaceId};
 
 /// An assumption a submission challenged at submit time, kept with the submission until it merges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,13 +58,25 @@ pub(super) struct Challenged {
     pub(super) assumption: Assumption,
 }
 
-/// One assumption to verify: the assuming agent's work, tried on `main`.
+/// What a trial is for. Untagged, so a verification stored before races, which has an
+/// `assumption` field, loads as `Assumption`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum Subject {
+    /// An assumption a merge challenged (invariant 8).
+    Assumption { assumption: Assumption },
+    /// The tests of a race entry (invariant 7).
+    RaceEntry { race: RaceId },
+}
+
+/// One trial to run: an assuming agent's work, or a race entry, tried on `main`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Verification {
     id: u64,
     agent: AgentId,
     claim: ClaimId,
-    assumption: Assumption,
+    #[serde(flatten)]
+    subject: Subject,
     /// Main before the merge that challenged the assumption: the baseline of the trial.
     before: CommitId,
     /// Main after the merge that challenged the assumption.
@@ -115,11 +132,14 @@ impl Coordinator {
                 .verification_in_flight
                 .as_ref()
                 .map(|flight| flight.id);
+            let subject = Subject::Assumption {
+                assumption: challenge.assumption.clone(),
+            };
             let mut baseline = before.clone();
             self.state.verifications.retain(|queued| {
                 let replaced = running != Some(queued.id)
                     && queued.claim == challenge.claim
-                    && queued.assumption == challenge.assumption
+                    && queued.subject == subject
                     && queued.main == *before;
                 if replaced {
                     baseline = queued.before.clone();
@@ -131,13 +151,43 @@ impl Coordinator {
                 id,
                 agent,
                 claim: challenge.claim,
-                assumption: challenge.assumption.clone(),
+                subject,
                 before: baseline,
                 main: main.clone(),
                 infra_failures: 0,
                 retry_at_ms: None,
             });
         }
+    }
+
+    /// Queue the tests of a race entry: `commit` of `agent`'s fork tried on `head`, which is both
+    /// sides of the trial. Entries queued together see the same head.
+    pub(super) fn record_race_trial(
+        &mut self,
+        race: RaceId,
+        agent: &AgentId,
+        claim: ClaimId,
+        head: &CommitId,
+    ) {
+        let id = super::take_next(&mut self.state.next_verification);
+        self.state.verifications.push(Verification {
+            id,
+            agent: agent.clone(),
+            claim,
+            subject: Subject::RaceEntry { race },
+            before: head.clone(),
+            main: head.clone(),
+            infra_failures: 0,
+            retry_at_ms: None,
+        });
+    }
+
+    /// Whether a trial for `race` is still queued or running.
+    pub(super) fn race_has_trials(&self, race: RaceId) -> bool {
+        self.state
+            .verifications
+            .iter()
+            .any(|queued| queued.subject == Subject::RaceEntry { race })
     }
 
     /// Forget the verifications of claims that no longer exist. Claim ids are never reused, so a
@@ -165,12 +215,15 @@ impl Coordinator {
         if next.retry_at_ms.is_some_and(|due| due > now_ms) {
             return None;
         }
-        let commit = self
-            .state
-            .claims
-            .get(&next.claim.0)
-            .and_then(|assuming| assuming.work.as_ref())
-            .map(|work| work.fork_commit.clone());
+        let commit = match &next.subject {
+            Subject::Assumption { .. } => self
+                .state
+                .claims
+                .get(&next.claim.0)
+                .and_then(|assuming| assuming.work.as_ref())
+                .map(|work| work.fork_commit.clone()),
+            Subject::RaceEntry { race } => self.entry_commit(*race, next.claim),
+        };
         let dispatch = VerifyDispatch {
             id: next.id,
             agent: next.agent.clone(),
@@ -256,26 +309,65 @@ impl Coordinator {
             return Vec::new();
         }
         self.state.verification_in_flight = None;
-        match report.verdict() {
-            TrialVerdict::Decided(result) => self.finish_verification(id, result, now_ms),
-            TrialVerdict::Infrastructure => {
-                self.retry_verification_after_infrastructure(id, now_ms)
-            }
+        let Some(subject) = self.subject_of(id) else {
+            return Vec::new();
+        };
+        match subject {
+            Subject::Assumption { assumption } => match report.verdict() {
+                TrialVerdict::Decided(result) => {
+                    self.finish_verification(id, assumption, result, now_ms)
+                }
+                TrialVerdict::Infrastructure => {
+                    self.retry_verification_after_infrastructure(id, now_ms)
+                }
+            },
+            Subject::RaceEntry { race } => match report.tests_passed() {
+                TestsVerdict::Decided(passed) => self.finish_race_trial(id, race, passed, now_ms),
+                TestsVerdict::Infrastructure => {
+                    self.retry_verification_after_infrastructure(id, now_ms)
+                }
+            },
         }
     }
 
+    fn subject_of(&self, id: u64) -> Option<Subject> {
+        let queued = self.state.verifications.iter().find(|v| v.id == id)?;
+        Some(queued.subject.clone())
+    }
+
     /// The verification ran to a result: remove it and log it. The result is the only effect.
-    fn finish_verification(&mut self, id: u64, result: Outcome, now_ms: u64) -> Vec<Effect> {
+    fn finish_verification(
+        &mut self,
+        id: u64,
+        assumption: Assumption,
+        result: Outcome,
+        now_ms: u64,
+    ) -> Vec<Effect> {
         let Some(index) = self.state.verifications.iter().position(|v| v.id == id) else {
             return Vec::new();
         };
         let done = self.state.verifications.remove(index);
         let verified = EventKind::AssumptionVerified {
             claim: done.claim,
-            assumption: done.assumption,
+            assumption,
             outcome: result,
         };
         vec![self.event(now_ms, verified)]
+    }
+
+    /// A race entry's trial ran to a result (or gave up: `None`): remove it and tell the race.
+    fn finish_race_trial(
+        &mut self,
+        id: u64,
+        race: RaceId,
+        passed: Option<bool>,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let Some(index) = self.state.verifications.iter().position(|v| v.id == id) else {
+            return Vec::new();
+        };
+        let done = self.state.verifications.remove(index);
+        self.record_trial(race, done.claim, passed, now_ms)
     }
 
     /// The attempt did not finish. Retry after a backoff, up to `MAX_INFRA_RETRIES` times; then
@@ -287,7 +379,12 @@ impl Coordinator {
         let queued = &mut self.state.verifications[index];
         queued.infra_failures += 1;
         if queued.infra_failures > MAX_INFRA_RETRIES {
-            return self.finish_verification(id, Outcome::Inconclusive, now_ms);
+            return match queued.subject.clone() {
+                Subject::Assumption { assumption } => {
+                    self.finish_verification(id, assumption, Outcome::Inconclusive, now_ms)
+                }
+                Subject::RaceEntry { race } => self.finish_race_trial(id, race, None, now_ms),
+            };
         }
         let wait = infra_backoff_ms(queued.infra_failures);
         queued.retry_at_ms = Some(now_ms.saturating_add(wait));
@@ -523,7 +620,12 @@ mod tests {
         assert!(c.has_verification_in_flight());
         let queued = &c.state.verifications[0];
         assert_eq!(queued.claim, assuming);
-        assert_eq!(queued.assumption, assumes("src/a.rs", "f returns Some"));
+        assert_eq!(
+            queued.subject,
+            Subject::Assumption {
+                assumption: assumes("src/a.rs", "f returns Some")
+            }
+        );
     }
 
     #[test]
@@ -593,12 +695,13 @@ mod tests {
 
         merge_challenger(&mut c, challenger.0, MAIN);
 
-        let statements: Vec<_> = c
-            .state
-            .verifications
-            .iter()
-            .map(|v| v.assumption.statement.as_str())
-            .collect();
+        let mut statements = Vec::new();
+        for queued in &c.state.verifications {
+            let Subject::Assumption { assumption } = &queued.subject else {
+                panic!("expected an assumption verification");
+            };
+            statements.push(assumption.statement.as_str());
+        }
         assert_eq!(statements, ["f returns Some", "g is pure"]);
         assert!(c.state.verifications.iter().all(|v| v.claim == assuming.0));
     }
@@ -1156,5 +1259,42 @@ mod tests {
         submit(&mut c, "a1", blocker, "src/a.rs");
         merge_challenger(&mut c, blocker.0, MAIN);
         assert_eq!(pending(&c), 0);
+    }
+    #[test]
+    fn a_verification_stored_before_races_loads_as_an_assumption_and_keeps_its_shape() {
+        let stored = r#"{"id":4,"agent":"a1","claim":2,
+            "assumption":{"scope":{"kind":"file","path":"src/a.rs"},"statement":"f returns Some"},
+            "before":"old","main":"new"}"#;
+        let queued: Verification = serde_json::from_str(stored).unwrap();
+        assert_eq!(
+            queued.subject,
+            Subject::Assumption {
+                assumption: assumes("src/a.rs", "f returns Some")
+            }
+        );
+        let again = serde_json::to_value(&queued).unwrap();
+        assert_eq!(again["assumption"]["statement"], "f returns Some");
+        assert!(again.get("subject").is_none() && again.get("race").is_none());
+    }
+
+    #[test]
+    fn a_race_trial_round_trips_and_is_not_mistaken_for_an_assumption() {
+        let queued = Verification {
+            id: 1,
+            agent: agent("a1"),
+            claim: ClaimId(3),
+            subject: Subject::RaceEntry { race: RaceId(2) },
+            before: CommitId(MAIN.into()),
+            main: CommitId(MAIN.into()),
+            infra_failures: 0,
+            retry_at_ms: None,
+        };
+        let stored = serde_json::to_string(&queued).unwrap();
+        assert!(
+            stored.contains("\"race\":2") && !stored.contains("assumption"),
+            "{stored}"
+        );
+        let loaded: Verification = serde_json::from_str(&stored).unwrap();
+        assert_eq!(loaded.subject, Subject::RaceEntry { race: RaceId(2) });
     }
 }

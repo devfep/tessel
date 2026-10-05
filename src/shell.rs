@@ -503,8 +503,8 @@ pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
 /// What kind of work produced the result that is about to be stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Work {
-    /// A message that adds content (`Claim`, `Amend`, `Submit`): the only work that may be
-    /// refused for growing the state past `SOFT_ENTRY_BYTES`.
+    /// A message that adds content (`Claim`, `Amend`, `Submit`, `OpenRace`, `JoinRace`): the only
+    /// work that may be refused for growing the state past `SOFT_ENTRY_BYTES`.
     Content,
     /// Everything else: the other client messages, the alarm's expiry, a withdrawal on close and
     /// the expiry that follows a refusal. Never refused for size below `HARD_ENTRY_BYTES`, so a
@@ -516,14 +516,14 @@ pub enum Work {
 /// The kind of work a client message does.
 pub fn work_of(msg: &ClientMsg) -> Work {
     match msg {
-        ClientMsg::Claim { .. } | ClientMsg::Amend { .. } | ClientMsg::Submit { .. } => {
-            Work::Content
-        }
+        ClientMsg::Claim { .. }
+        | ClientMsg::Amend { .. }
+        | ClientMsg::Submit { .. }
+        | ClientMsg::OpenRace { .. }
+        | ClientMsg::JoinRace { .. } => Work::Content,
         ClientMsg::Hello { .. }
         | ClientMsg::Heartbeat
         | ClientMsg::Release { .. }
-        | ClientMsg::OpenRace { .. }
-        | ClientMsg::JoinRace { .. }
         | ClientMsg::PickWinner { .. }
         | ClientMsg::Review { .. }
         | ClientMsg::Watch { .. } => Work::Plain,
@@ -1876,6 +1876,11 @@ mod tests {
             msg(r#"{"type":"amend","req":3,"claim":1,"fence":1,"add":[]}"#),
             msg(r#"{"type":"submit","req":4,"claim":1,"fence":1,
                 "fork_commit":"c","touched":[]}"#),
+            msg(
+                r#"{"type":"open_race","req":5,"intent":{"summary":"s","task_ref":null},
+                "scopes":[],"max_entrants":1,"deadline_ms":1,"criteria":[]}"#,
+            ),
+            msg(r#"{"type":"join_race","req":6,"race":1}"#),
         ];
         for message in &content {
             assert_eq!(work_of(message), Work::Content, "{message:?}");
@@ -1884,11 +1889,6 @@ mod tests {
             hello("a1"),
             msg(r#"{"type":"heartbeat"}"#),
             msg(r#"{"type":"release","claim":1,"fence":1}"#),
-            msg(
-                r#"{"type":"open_race","req":5,"intent":{"summary":"s","task_ref":null},
-                "scopes":[],"max_entrants":1,"deadline_ms":1,"criteria":[]}"#,
-            ),
-            msg(r#"{"type":"join_race","req":6,"race":1}"#),
             msg(r#"{"type":"pick_winner","req":7,"race":1,"claim":1}"#),
             msg(r#"{"type":"review","req":8,"claim":1,"approve":true,"note":null}"#),
             msg(r#"{"type":"watch","from_seq":0}"#),

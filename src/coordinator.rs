@@ -18,8 +18,12 @@
 //!   only while no merge is due (see `verifying`).
 //! - A shadow claim (invariant 10) is a real claim with an id, a fence and a lease that places no
 //!   lock, so it blocks nobody. Submitting one records it for verification and never queues it.
+//! - A race (invariant 7) holds its scopes with locks of its own, taken under an id from the claim
+//!   counter. Its entries are claims that place no lock of their own, so entrants never block each
+//!   other and the race blocks everyone else. See `racing` for how a race is judged.
 
 mod merging;
+mod racing;
 mod verifying;
 
 pub use merging::MergeDispatch;
@@ -32,8 +36,8 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::protocol::{
     review_reasons, uncovered, AgentId, ClaimId, ClientMsg, CommitId, Conflict, DecisionRecord,
-    ErrorCode, Event, EventKind, Fence, HeldAssumption, Intent, Lock, OnConflict, ReleaseReason,
-    RequestId, RunId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    ErrorCode, Event, EventKind, Fence, HeldAssumption, Intent, Lock, OnConflict, RaceId,
+    ReleaseReason, RequestId, RunId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +87,9 @@ enum ClaimKind {
     Real,
     /// A real denial the agent may keep working past (invariant 10): places no lock.
     Shadow,
+    /// An entry in a race (invariant 7): holds exactly the race's scopes, but the race places the
+    /// locks. It is not queued for merge until it wins; a winner becomes `Real`.
+    Entry(RaceId),
 }
 
 impl ClaimKind {
@@ -91,6 +98,15 @@ impl ClaimKind {
     fn places_locks(self) -> bool {
         match self {
             ClaimKind::Real => true,
+            ClaimKind::Shadow | ClaimKind::Entry(_) => false,
+        }
+    }
+
+    /// Whether the claim holds scopes, for invariant 2: an entry holds its race's scopes even
+    /// though the race places the locks.
+    fn holds_scopes(self) -> bool {
+        match self {
+            ClaimKind::Real | ClaimKind::Entry(_) => true,
             ClaimKind::Shadow => false,
         }
     }
@@ -206,6 +222,9 @@ struct Holder {
     held: ScopeClaim,
     slot: usize,
     lock: Lock,
+    /// Set when the lock belongs to a race, not to a claim. A race blocks its opener's own claims
+    /// too: the opener is not an entrant.
+    race: Option<RaceId>,
 }
 
 type LockTable = HashMap<Scope, Vec<Holder>>;
@@ -240,6 +259,8 @@ struct Blocked {
     claim: ClaimId,
     slot: usize,
     conflict: Conflict,
+    /// The race that holds the blocking lock, if it is one.
+    race: Option<RaceId>,
 }
 
 impl Blocked {
@@ -282,6 +303,13 @@ struct CoordinatorState {
     #[serde(default)]
     next_verification: u64,
     claims: BTreeMap<u64, ActiveClaim>,
+    /// Races that have not been decided, keyed by race id (invariant 7).
+    #[serde(default)]
+    races: BTreeMap<u64, racing::Race>,
+    /// Id of the next race; starts at 1 and is never reused. A stored state from before races
+    /// loads with 1.
+    #[serde(default = "first_race")]
+    next_race: u64,
     /// The Wait queue, oldest first (invariant 2).
     ///
     /// Whenever claims go away (release or expiry) the queue is walked once, in order. A waiter
@@ -316,6 +344,9 @@ impl From<CoordinatorState> for Coordinator {
         for (id, claim) in &state.claims {
             place_locks(&mut locks, ClaimId(*id), claim);
         }
+        for (id, race) in &state.races {
+            racing::place_race_locks(&mut locks, RaceId(*id), race);
+        }
         Self { state, locks }
     }
 }
@@ -349,6 +380,8 @@ impl Coordinator {
             verification_in_flight: None,
             next_verification: 0,
             claims: BTreeMap::new(),
+            races: BTreeMap::new(),
+            next_race: first_race(),
             waiting: Vec::new(),
         }))
     }
@@ -411,7 +444,11 @@ impl Coordinator {
                     fence: expired.fence,
                 },
             });
+            if let ClaimKind::Entry(race) = expired.kind {
+                effects.extend(self.entrant_left(race, claim, now_ms));
+            }
         }
+        effects.extend(self.judge_races_past_deadline(now_ms));
         if any_expired {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
@@ -457,14 +494,21 @@ impl Coordinator {
         self.next_expiry_ms().is_some_and(|due| due <= now_ms)
     }
 
-    /// The earliest lease expiry of any unsubmitted claim, for the shell's next alarm.
+    /// The earliest lease expiry of any unsubmitted claim or deadline of an open race, for the
+    /// shell's next alarm.
     pub fn next_expiry_ms(&self) -> Option<u64> {
-        self.state
+        let lease = self
+            .state
             .claims
             .values()
             .filter(|claim| claim.submitted.is_none())
             .map(|claim| claim.expires_at_ms)
-            .min()
+            .min();
+        match (lease, self.next_race_deadline_ms()) {
+            (Some(lease), Some(deadline)) => Some(lease.min(deadline)),
+            (Some(due), None) | (None, Some(due)) => Some(due),
+            (None, None) => None,
+        }
     }
 
     fn route(&mut self, agent: &AgentId, msg: ClientMsg, now_ms: u64) -> Vec<Effect> {
@@ -492,7 +536,7 @@ impl Coordinator {
             ClientMsg::OpenRace { .. }
             | ClientMsg::JoinRace { .. }
             | ClientMsg::PickWinner { .. }
-            | ClientMsg::Watch { .. } => Self::handle_collective(msg),
+            | ClientMsg::Watch { .. } => self.handle_collective(agent, msg, now_ms),
         }
     }
 
@@ -562,12 +606,32 @@ impl Coordinator {
     }
 
     /// Races and watch.
-    fn handle_collective(msg: ClientMsg) -> Vec<Effect> {
+    fn handle_collective(&mut self, agent: &AgentId, msg: ClientMsg, now_ms: u64) -> Vec<Effect> {
         match msg {
-            // When OpenRace is implemented, its scopes must go through `claim_fault`.
-            ClientMsg::OpenRace { req, .. } => not_implemented(Some(req), "OpenRace"),
-            ClientMsg::JoinRace { req, .. } => not_implemented(Some(req), "JoinRace"),
-            ClientMsg::PickWinner { req, .. } => not_implemented(Some(req), "PickWinner"),
+            ClientMsg::OpenRace {
+                req,
+                intent,
+                scopes,
+                max_entrants,
+                deadline_ms,
+                criteria,
+            } => {
+                let request = racing::OpenRequest {
+                    claim: ClaimRequest {
+                        req,
+                        intent,
+                        scopes,
+                    },
+                    max_entrants,
+                    deadline_ms,
+                    criteria,
+                };
+                self.open_race(agent, request, now_ms)
+            }
+            ClientMsg::JoinRace { req, race } => self.join_race(agent, req, race, now_ms),
+            ClientMsg::PickWinner { req, race, claim } => {
+                self.pick_winner(agent, req, race, claim, now_ms)
+            }
             ClientMsg::Watch { .. } => watch_not_served(),
             ClientMsg::Hello { .. }
             | ClientMsg::Claim { .. }
@@ -675,12 +739,13 @@ impl Coordinator {
             .any(|waiter| waiter.agent == *agent)
     }
 
-    /// Whether `agent` holds any lock. A shadow claim holds none, so it cannot deadlock a waiter.
+    /// Whether `agent` holds any scope. A shadow claim holds none, so it cannot deadlock a waiter.
+    /// A race entry holds its race's scopes, so an entrant may not wait.
     fn holds_claims(&self, agent: &AgentId) -> bool {
         self.state
             .claims
             .values()
-            .any(|claim| claim.agent == *agent && claim.kind.places_locks())
+            .any(|claim| claim.agent == *agent && claim.kind.holds_scopes())
     }
 
     /// Queue a blocked `Wait` request, unless the agent holds claims (invariant 2). Logs
@@ -766,6 +831,10 @@ impl Coordinator {
             Ok(held) => held.clone(),
             Err(refusal) => return vec![*refusal],
         };
+        if let ClaimKind::Entry(_) = held.kind {
+            let message = "a race entry holds exactly the race's scopes and cannot amend them";
+            return vec![error(Some(req), ErrorCode::RaceScopeFixed, message)];
+        }
         if held.submitted.is_some() {
             return vec![already_submitted(Some(req), claim)];
         }
@@ -867,7 +936,15 @@ impl Coordinator {
             self.collect_blockers(agent, index, requested, &mut found);
         }
         found.sort_by_key(Blocked::key);
-        found.into_iter().map(|blocked| blocked.conflict).collect()
+        let mut conflicts = Vec::with_capacity(found.len());
+        for blocked in found {
+            let race = blocked.race.filter(|race| self.race_is_joinable(*race));
+            conflicts.push(Conflict {
+                race,
+                ..blocked.conflict
+            });
+        }
+        conflicts
     }
 
     fn collect_blockers(
@@ -1051,6 +1128,9 @@ impl Coordinator {
         remove_locks(&mut self.locks, claim, &released);
         let reason = ReleaseReason::Agent;
         let mut effects = vec![self.event(now_ms, EventKind::ClaimReleased { claim, reason })];
+        if let ClaimKind::Entry(race) = released.kind {
+            effects.extend(self.entrant_left(race, claim, now_ms));
+        }
         effects.extend(self.grant_unblocked_waiters(now_ms));
         effects
     }
@@ -1098,6 +1178,17 @@ impl Coordinator {
         if !missing.is_empty() {
             return self.reject_uncovered(req, claim, missing, now_ms);
         }
+        if let ClaimKind::Entry(race) = held.kind {
+            let request = SubmitRequest {
+                req,
+                claim,
+                fence,
+                fork_commit,
+                touched,
+                decisions,
+            };
+            return self.submit_entry(race, request, now_ms);
+        }
         let kind = held.kind;
         let has_evidence = !decisions.evidence.is_empty();
         let ordinal = take_next(&mut self.state.next_submission);
@@ -1117,7 +1208,7 @@ impl Coordinator {
         )];
         let mut review = None;
         let queue_position = match kind {
-            ClaimKind::Shadow => 0,
+            ClaimKind::Shadow | ClaimKind::Entry(_) => 0,
             ClaimKind::Real => {
                 let (challenges, challenged) =
                     self.challenge_assumptions(agent, &fork_commit, &touched, now_ms);
@@ -1311,6 +1402,11 @@ fn already_submitted(req: Option<RequestId>, claim: ClaimId) -> Effect {
     error(req, ErrorCode::AlreadySubmitted, message)
 }
 
+/// A state stored before races loads with the first race id.
+fn first_race() -> u64 {
+    1
+}
+
 /// Returns the counter's value and advances it.
 fn take_next(counter: &mut u64) -> u64 {
     let value = *counter;
@@ -1342,7 +1438,8 @@ fn blocked_by(
     lock: Lock,
     holder: &Holder,
 ) -> Option<Blocked> {
-    if holder.agent == *agent || !lock.conflicts_with(holder.lock) {
+    let own = holder.agent == *agent && holder.race.is_none();
+    if own || !lock.conflicts_with(holder.lock) {
         return None;
     }
     Some(Blocked {
@@ -1356,24 +1453,44 @@ fn blocked_by(
             their_intent: Intent::clone(&holder.intent),
             race: None,
         },
+        race: holder.race,
     })
 }
 
-/// A shadow claim places no locks (invariant 10).
+/// A shadow claim places no locks (invariant 10), and neither does a race entry (invariant 7).
 fn place_locks(locks: &mut LockTable, id: ClaimId, claim: &ActiveClaim) {
     if !claim.kind.places_locks() {
         return;
     }
-    let intent = Arc::new(claim.intent.clone());
-    for (slot, held) in claim.scopes.iter().enumerate() {
+    let owner = LockOwner {
+        id,
+        agent: &claim.agent,
+        intent: &claim.intent,
+        race: None,
+    };
+    place_scope_locks(locks, &owner, &claim.scopes);
+}
+
+/// Who a set of locks belongs to.
+struct LockOwner<'a> {
+    id: ClaimId,
+    agent: &'a AgentId,
+    intent: &'a Intent,
+    race: Option<RaceId>,
+}
+
+fn place_scope_locks(locks: &mut LockTable, owner: &LockOwner<'_>, scopes: &[ScopeClaim]) {
+    let intent = Arc::new(owner.intent.clone());
+    for (slot, held) in scopes.iter().enumerate() {
         for (node, lock) in held.locks() {
             let holder = Holder {
-                claim: id,
-                agent: claim.agent.clone(),
+                claim: owner.id,
+                agent: owner.agent.clone(),
                 intent: Arc::clone(&intent),
                 held: held.clone(),
                 slot,
                 lock,
+                race: owner.race,
             };
             locks.entry(node).or_default().push(holder);
         }
@@ -1385,7 +1502,11 @@ fn remove_locks(locks: &mut LockTable, id: ClaimId, claim: &ActiveClaim) {
     if !claim.kind.places_locks() {
         return;
     }
-    for held in &claim.scopes {
+    remove_scope_locks(locks, id, &claim.scopes);
+}
+
+fn remove_scope_locks(locks: &mut LockTable, id: ClaimId, scopes: &[ScopeClaim]) {
+    for held in scopes {
         for (node, _) in held.locks() {
             // A node shared by two of this claim's scopes is already pruned the second time.
             let hash_map::Entry::Occupied(mut slot) = locks.entry(node) else {
@@ -1508,14 +1629,6 @@ fn error(req: Option<RequestId>, code: ErrorCode, message: impl Into<String>) ->
         code,
         message: message.into(),
     })
-}
-
-fn not_implemented(req: Option<RequestId>, what: &str) -> Vec<Effect> {
-    vec![error(
-        req,
-        ErrorCode::Malformed,
-        format!("not implemented yet: {what}"),
-    )]
 }
 
 /// `Watch` is served by the Durable Object shell, which replays the stored log; the core keeps no
@@ -2484,42 +2597,60 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_messages_error_and_change_nothing() {
+    fn race_messages_the_sender_may_not_send_error_and_change_nothing() {
         let mut c = coordinator();
         grant(&mut c, "a", vec![sc(file("src/a.rs"), Mode::EditBody)]);
         let before = state(&c);
         let scopes = vec![sc(file("src/a.rs"), Mode::EditBody)];
         let req = RequestId(7);
         let messages = vec![
-            ClientMsg::OpenRace {
-                req,
-                intent: intent("r"),
-                scopes,
-                max_entrants: 2,
-                deadline_ms: 10,
-                criteria: vec![],
-            },
-            ClientMsg::JoinRace {
-                req,
-                race: RaceId(1),
-            },
-            ClientMsg::PickWinner {
-                req,
-                race: RaceId(1),
-                claim: ClaimId(1),
-            },
+            (
+                ClientMsg::OpenRace {
+                    req,
+                    intent: intent("r"),
+                    scopes,
+                    max_entrants: 2,
+                    deadline_ms: 10,
+                    criteria: vec![],
+                },
+                ErrorCode::NotOwner,
+            ),
+            (
+                ClientMsg::JoinRace {
+                    req,
+                    race: RaceId(1),
+                },
+                ErrorCode::UnknownRace,
+            ),
+            (
+                ClientMsg::PickWinner {
+                    req,
+                    race: RaceId(1),
+                    claim: ClaimId(1),
+                },
+                ErrorCode::NotOwner,
+            ),
         ];
-        for msg in messages {
+        for (msg, expected) in messages {
             let effects = c.handle(&agent("b"), msg.clone(), NOW);
-            let ServerMsg::Error { code, message, .. } = only_reply(&effects) else {
+            let ServerMsg::Error {
+                req: echoed, code, ..
+            } = only_reply(&effects)
+            else {
                 panic!("expected Error for {msg:?}");
             };
-            assert_eq!(*code, ErrorCode::Malformed, "{msg:?}");
-            assert!(message.starts_with("not implemented yet"), "{message}");
+            assert_eq!(*code, expected, "{msg:?}");
+            assert_eq!(*echoed, Some(req), "{msg:?}");
             assert!(logged(&effects).is_empty(), "{msg:?}");
             assert_eq!(state(&c), before, "{msg:?}");
         }
+    }
 
+    #[test]
+    fn a_watch_that_reaches_the_core_errors_and_changes_nothing() {
+        let mut c = coordinator();
+        grant(&mut c, "a", vec![sc(file("src/a.rs"), Mode::EditBody)]);
+        let before = state(&c);
         let effects = c.handle(&agent("b"), ClientMsg::Watch { from_seq: 0 }, NOW);
         let ServerMsg::Error { code, message, .. } = only_reply(&effects) else {
             panic!("expected Error for watch");
