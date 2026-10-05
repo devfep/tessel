@@ -29,6 +29,20 @@ pub struct Config {
     pub lease_ms: u64,
 }
 
+/// `Config` the coordinator cannot run with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidConfig {
+    reason: &'static str,
+}
+
+impl std::fmt::Display for InvalidConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid coordinator config: {}", self.reason)
+    }
+}
+
+impl std::error::Error for InvalidConfig {}
+
 /// Something the caller must do after `Coordinator::handle`.
 ///
 /// The caller must durably persist the coordinator state and every `Log` event BEFORE delivering
@@ -116,6 +130,8 @@ struct CoordinatorState {
     next_claim: u64,
     next_fence: u64,
     next_seq: u64,
+    /// The latest `now_ms` the core has seen. Time never runs backwards inside the core.
+    clock_ms: u64,
     claims: BTreeMap<u64, ActiveClaim>,
     /// The Wait queue, oldest first (invariant 2).
     ///
@@ -156,16 +172,32 @@ impl From<CoordinatorState> for Coordinator {
 }
 
 impl Coordinator {
-    pub fn new(config: Config) -> Self {
-        Self::from(CoordinatorState {
+    /// Fails if `config.lease_ms` is zero: every grant would already be due, so the shell's
+    /// expiry alarm would fire forever.
+    pub fn new(config: Config) -> Result<Self, InvalidConfig> {
+        if config.lease_ms == 0 {
+            return Err(InvalidConfig {
+                reason: "lease_ms must be greater than zero",
+            });
+        }
+        Ok(Self::from(CoordinatorState {
             config,
             head: None,
             next_claim: 1,
             next_fence: 1,
             next_seq: 0,
+            clock_ms: 0,
             claims: BTreeMap::new(),
             waiting: Vec::new(),
-        })
+        }))
+    }
+
+    /// Returns `now_ms`, or the latest time already seen if that is later, and remembers it. The
+    /// caller's clocks (an alarm and a WebSocket message) may disagree slightly; this keeps
+    /// leases from shortening and `Event::at_ms` from decreasing.
+    fn advance_clock(&mut self, now_ms: u64) -> u64 {
+        self.state.clock_ms = self.state.clock_ms.max(now_ms);
+        self.state.clock_ms
     }
 
     /// Apply one client message from `agent`.
@@ -176,7 +208,11 @@ impl Coordinator {
     ///
     /// Leases that ran out by `now_ms` are expired first, so a late alarm never lets an expired
     /// claim block or act. Their effects precede the effects of `msg`.
+    ///
+    /// `now_ms` is clamped to the latest time the core has seen, so an earlier value than a
+    /// previous call's is treated as that previous time.
     pub fn handle(&mut self, agent: &AgentId, msg: ClientMsg, now_ms: u64) -> Vec<Effect> {
+        let now_ms = self.advance_clock(now_ms);
         let mut effects = self.expire(now_ms);
         effects.extend(self.route(agent, msg, now_ms));
         effects
@@ -187,19 +223,19 @@ impl Coordinator {
     /// Each expiry removes the claim and its locks, which retires its fence, logs
     /// `ClaimReleased { LeaseExpired }` and notifies the owner. Waiters that the freed scopes
     /// unblock are then granted. The Durable Object calls this from its alarm.
+    ///
+    /// `now_ms` is clamped to the latest time the core has seen, as in `handle`.
     pub fn expire(&mut self, now_ms: u64) -> Vec<Effect> {
-        let mut due = Vec::new();
-        for (id, claim) in &self.state.claims {
-            if claim.expires_at_ms <= now_ms {
-                due.push(*id);
-            }
-        }
+        let now_ms = self.advance_clock(now_ms);
         let mut effects = Vec::new();
-        for id in &due {
-            let Some(expired) = self.state.claims.remove(id) else {
+        let mut any_expired = false;
+        for (id, expired) in std::mem::take(&mut self.state.claims) {
+            if expired.expires_at_ms > now_ms {
+                self.state.claims.insert(id, expired);
                 continue;
-            };
-            let claim = ClaimId(*id);
+            }
+            any_expired = true;
+            let claim = ClaimId(id);
             remove_locks(&mut self.locks, claim, &expired);
             let reason = ReleaseReason::LeaseExpired;
             effects.push(self.event(now_ms, EventKind::ClaimReleased { claim, reason }));
@@ -211,7 +247,7 @@ impl Coordinator {
                 },
             });
         }
-        if !due.is_empty() {
+        if any_expired {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
         effects
@@ -458,12 +494,9 @@ impl Coordinator {
             fence,
             add,
         } = request;
-        let held = self.state.claims.get(&claim.0);
-        if let Some(refusal) = refusal(held, agent, Some(req), claim, fence) {
-            return vec![refusal];
-        }
-        let Some(held) = held else {
-            return vec![unknown_claim(Some(req), claim)];
+        let held = match self.authorize(agent, Some(req), claim, fence) {
+            Ok(held) => held.clone(),
+            Err(refusal) => return vec![*refusal],
         };
         if add.is_empty() {
             return vec![error(
@@ -474,42 +507,55 @@ impl Coordinator {
         }
         let mut added = without_duplicates(add);
         added.retain(|scope| !held.scopes.contains(scope));
-        let intent = held.intent.clone();
         let conflicts = self.find_conflicts(agent, &added);
         if conflicts.is_empty() {
-            return self.apply_amend(agent, req, claim, added, now_ms);
+            let request = AmendRequest {
+                req,
+                claim,
+                fence,
+                add: added,
+            };
+            return self.apply_amend(held, request, now_ms);
         }
         let denied = self.event(
             now_ms,
             EventKind::ClaimDenied {
                 agent: agent.clone(),
                 scopes: added,
-                intent,
+                intent: held.intent,
                 conflicts: conflicts.clone(),
             },
         );
         vec![denied, Effect::Reply(ServerMsg::Denied { req, conflicts })]
     }
 
-    /// Append `added` to the claim under a new fence, which retires the old one.
+    /// Replace `held` by a copy that also covers `request.add`, under a new fence, which retires
+    /// the old one. The lease is unchanged.
     fn apply_amend(
         &mut self,
-        agent: &AgentId,
-        req: RequestId,
-        claim: ClaimId,
-        added: Vec<ScopeClaim>,
+        held: ActiveClaim,
+        request: AmendRequest,
         now_ms: u64,
     ) -> Vec<Effect> {
-        let at_risk = self.assumptions_at_risk(agent, &added);
-        let Some(active) = self.state.claims.get_mut(&claim.0) else {
-            return vec![unknown_claim(Some(req), claim)];
-        };
+        let AmendRequest {
+            req,
+            claim,
+            add: added,
+            ..
+        } = request;
+        let at_risk = self.assumptions_at_risk(&held.agent, &added);
         let fence = Fence(take_next(&mut self.state.next_fence));
-        remove_locks(&mut self.locks, claim, active);
-        active.fence = fence;
-        active.scopes.extend(added.iter().cloned());
-        place_locks(&mut self.locks, claim, active);
-        let expires_at_ms = active.expires_at_ms;
+        remove_locks(&mut self.locks, claim, &held);
+        let mut scopes = held.scopes.clone();
+        scopes.extend(added.iter().cloned());
+        let updated = ActiveClaim {
+            fence,
+            scopes,
+            ..held
+        };
+        place_locks(&mut self.locks, claim, &updated);
+        let expires_at_ms = updated.expires_at_ms;
+        self.state.claims.insert(claim.0, updated);
         let amended = self.event(
             now_ms,
             EventKind::ClaimAmended {
@@ -664,18 +710,42 @@ impl Coordinator {
         fence: Fence,
         now_ms: u64,
     ) -> Vec<Effect> {
-        let held = self.state.claims.get(&claim.0);
-        if let Some(refusal) = refusal(held, agent, None, claim, fence) {
-            return vec![refusal];
-        }
-        let Some(released) = self.state.claims.remove(&claim.0) else {
-            return vec![unknown_claim(None, claim)];
+        let released = match self.authorize(agent, None, claim, fence) {
+            Ok(held) => held.clone(),
+            Err(refusal) => return vec![*refusal],
         };
+        self.state.claims.remove(&claim.0);
         remove_locks(&mut self.locks, claim, &released);
         let reason = ReleaseReason::Agent;
         let mut effects = vec![self.event(now_ms, EventKind::ClaimReleased { claim, reason })];
         effects.extend(self.grant_unblocked_waiters(now_ms));
         effects
+    }
+
+    /// The claim, if `agent` may act on it with `fence`; otherwise the error to send. The message
+    /// never reveals the current fence: a sender with a stale one is by definition not holding it.
+    fn authorize(
+        &self,
+        agent: &AgentId,
+        req: Option<RequestId>,
+        claim: ClaimId,
+        fence: Fence,
+    ) -> Result<&ActiveClaim, Box<Effect>> {
+        let Some(held) = self.state.claims.get(&claim.0) else {
+            return Err(Box::new(unknown_claim(req, claim)));
+        };
+        if held.agent != *agent {
+            let message = format!("claim {} belongs to another agent", claim.0);
+            return Err(Box::new(error(req, ErrorCode::NotOwner, message)));
+        }
+        if held.fence != fence {
+            let message = format!(
+                "claim {} rejected fence {}: not the current fence",
+                claim.0, fence.0
+            );
+            return Err(Box::new(error(req, ErrorCode::StaleFence, message)));
+        }
+        Ok(held)
     }
 
     fn event(&mut self, at_ms: u64, kind: EventKind) -> Effect {
@@ -688,32 +758,6 @@ impl Coordinator {
             kind,
         })
     }
-}
-
-/// The error to send if `agent` may not act on `claim` with `fence`, else `None`. The message
-/// never reveals the current fence: a sender with a stale one is by definition not holding it.
-fn refusal(
-    held: Option<&ActiveClaim>,
-    agent: &AgentId,
-    req: Option<RequestId>,
-    claim: ClaimId,
-    fence: Fence,
-) -> Option<Effect> {
-    let Some(held) = held else {
-        return Some(unknown_claim(req, claim));
-    };
-    if held.agent != *agent {
-        let message = format!("claim {} belongs to another agent", claim.0);
-        return Some(error(req, ErrorCode::NotOwner, message));
-    }
-    if held.fence != fence {
-        let message = format!(
-            "claim {} rejected fence {}: not the current fence",
-            claim.0, fence.0
-        );
-        return Some(error(req, ErrorCode::StaleFence, message));
-    }
-    None
 }
 
 fn unknown_claim(req: Option<RequestId>, claim: ClaimId) -> Effect {
@@ -853,6 +897,7 @@ mod tests {
             run: RunId("test".into()),
             lease_ms: LEASE,
         })
+        .unwrap()
     }
 
     fn agent(name: &str) -> AgentId {
@@ -1071,6 +1116,7 @@ mod tests {
     #[test]
     fn hello_with_unsupported_protocol_is_refused_and_logs_nothing() {
         let mut c = coordinator();
+        c.expire(NOW);
         let before = state(&c);
         let effects = hello(&mut c, "a1", "abc", PROTOCOL_VERSION + 1);
         assert_error(&effects, ErrorCode::UnsupportedProtocol);
@@ -1607,6 +1653,7 @@ mod tests {
     #[test]
     fn claim_with_no_scopes_is_malformed() {
         let mut c = coordinator();
+        c.expire(NOW);
         let before = state(&c);
         assert_error(&claim_as(&mut c, "a", vec![]), ErrorCode::Malformed);
         assert_eq!(state(&c), before);
@@ -2003,13 +2050,13 @@ mod tests {
     fn next_expiry_is_the_earliest_lease_and_follows_heartbeats() {
         let mut c = coordinator();
         assert_eq!(c.next_expiry_ms(), None);
-        grant_at(&mut c, "a", vec![x_edit()], NOW + 50);
-        assert_eq!(c.next_expiry_ms(), Some(NOW + 50 + LEASE));
-        grant_at(&mut c, "b", vec![y_edit()], NOW + 10);
+        grant_at(&mut c, "a", vec![x_edit()], NOW + 10);
+        assert_eq!(c.next_expiry_ms(), Some(NOW + 10 + LEASE));
+        grant_at(&mut c, "b", vec![y_edit()], NOW + 50);
         grant_at(&mut c, "c", vec![z_edit()], NOW + 90);
         assert_eq!(c.next_expiry_ms(), Some(NOW + 10 + LEASE));
 
-        heartbeat(&mut c, "b", NOW + 200);
+        heartbeat(&mut c, "a", NOW + 200);
         assert_eq!(c.next_expiry_ms(), Some(NOW + 50 + LEASE));
     }
 
@@ -2142,6 +2189,20 @@ mod tests {
         );
         let freed = release(&mut c, "b", claim, fence);
         assert_eq!(released(&freed), vec![(claim, ReleaseReason::Agent)]);
+    }
+
+    #[test]
+    fn a_denied_amend_places_no_lock_for_the_scope_it_asked_for() {
+        let mut c = coordinator();
+        let (blocker, blocker_fence) = grant(&mut c, "a", vec![x_edit()]);
+        let (claim, fence) = grant(&mut c, "b", vec![y_edit()]);
+        let effects = amend(&mut c, "b", claim, fence, vec![x_edit()]);
+        let ServerMsg::Denied { .. } = only_reply(&effects) else {
+            panic!("expected Denied, got {effects:?}");
+        };
+
+        release(&mut c, "a", blocker, blocker_fence);
+        grant(&mut c, "c", vec![x_edit()]);
     }
 
     #[test]
@@ -2437,7 +2498,73 @@ mod tests {
         assert_eq!(seqs, (0..seqs.len() as u64).collect::<Vec<u64>>());
     }
 
-    // ---- property: decisions and leases match a brute-force oracle ----
+    #[test]
+    fn an_earlier_now_does_not_shorten_leases() {
+        let mut c = coordinator();
+        grant_at(&mut c, "a", vec![x_edit()], NOW + 1_000);
+        let expiry = NOW + 1_000 + LEASE;
+        assert_eq!(c.next_expiry_ms(), Some(expiry));
+
+        assert!(heartbeat(&mut c, "a", NOW).is_empty());
+        assert_eq!(c.next_expiry_ms(), Some(expiry));
+        let effects = handle_at(&mut c, "b", claim_msg(intent("b"), vec![y_edit()]), NOW);
+        let ServerMsg::Granted { expires_at_ms, .. } = only_reply(&effects) else {
+            panic!("expected Granted, got {effects:?}");
+        };
+        assert_eq!(*expires_at_ms, expiry, "a grant uses the later clock");
+    }
+
+    #[test]
+    fn an_earlier_now_does_not_unexpire_anything_or_move_events_back() {
+        let mut c = coordinator();
+        let (claim, fence) = grant(&mut c, "a", vec![x_edit()]);
+        let late = NOW + LEASE;
+        let mut all = c.expire(late);
+        assert_eq!(released(&all).len(), 1);
+
+        assert!(c.expire(NOW).is_empty());
+        all.extend(handle_at(
+            &mut c,
+            "b",
+            claim_msg(intent("b"), vec![x_edit()]),
+            NOW,
+        ));
+        let msg = ClientMsg::Release { claim, fence };
+        let stale = handle_at(&mut c, "a", msg, NOW);
+        assert_error(&stale, ErrorCode::UnknownClaim);
+        all.extend(stale);
+
+        let times: Vec<u64> = logged(&all).iter().map(|e| e.at_ms).collect();
+        assert_eq!(times, vec![late, late]);
+    }
+
+    #[test]
+    fn the_clock_survives_a_round_trip() {
+        let mut c = coordinator();
+        grant_at(&mut c, "a", vec![x_edit()], NOW + 5_000);
+        let mut restored: Coordinator = serde_json::from_str(&state(&c)).unwrap();
+
+        let effects = handle_at(
+            &mut restored,
+            "b",
+            claim_msg(intent("b"), vec![y_edit()]),
+            NOW,
+        );
+        assert_eq!(logged(&effects)[0].at_ms, NOW + 5_000);
+    }
+
+    #[test]
+    fn a_zero_lease_is_rejected_at_construction() {
+        let config = |lease_ms| Config {
+            run: RunId("test".into()),
+            lease_ms,
+        };
+        let err = Coordinator::new(config(0)).unwrap_err();
+        assert!(err.to_string().contains("lease_ms"), "{err}");
+        assert!(Coordinator::new(config(1)).is_ok());
+    }
+
+    // ---- property: decisions, leases, the queue and amends match a brute-force model ----
 
     fn universe() -> Vec<Scope> {
         vec![
@@ -2462,8 +2589,16 @@ mod tests {
             agent: u8,
             scopes: Vec<ScopeClaim>,
         },
+        Wait {
+            agent: u8,
+            scopes: Vec<ScopeClaim>,
+        },
         Release {
             pick: usize,
+        },
+        Amend {
+            pick: usize,
+            scopes: Vec<ScopeClaim>,
         },
         /// Move the clock. `eager` also runs `expire` at the new time; otherwise the expiry is
         /// left for the next message to trigger lazily.
@@ -2488,13 +2623,16 @@ mod tests {
     fn ops() -> impl Strategy<Value = Vec<Op>> {
         let jumps = vec![0, 1, LEASE / 2, LEASE - 1, LEASE, LEASE + 1];
         let op = prop_oneof![
-            4 => (0u8..3, scope_claims()).prop_map(|(agent, scopes)| Op::Claim { agent, scopes }),
-            1 => any::<usize>().prop_map(|pick| Op::Release { pick }),
+            4 => (0u8..4, scope_claims()).prop_map(|(agent, scopes)| Op::Claim { agent, scopes }),
+            3 => (0u8..4, scope_claims()).prop_map(|(agent, scopes)| Op::Wait { agent, scopes }),
+            2 => any::<usize>().prop_map(|pick| Op::Release { pick }),
+            2 => (any::<usize>(), scope_claims())
+                .prop_map(|(pick, scopes)| Op::Amend { pick, scopes }),
             2 => (prop::sample::select(jumps), any::<bool>())
                 .prop_map(|(ms, eager)| Op::Advance { ms, eager }),
-            2 => (0u8..3).prop_map(|agent| Op::Heartbeat { agent }),
+            1 => (0u8..4).prop_map(|agent| Op::Heartbeat { agent }),
         ];
-        prop::collection::vec(op, 1..40)
+        prop::collection::vec(op, 1..60)
     }
 
     struct Active {
@@ -2504,6 +2642,12 @@ mod tests {
         scopes: Vec<ScopeClaim>,
         /// Tracked here, independently of the coordinator.
         expires_at: u64,
+    }
+
+    struct Queued {
+        agent: AgentId,
+        req: u64,
+        scopes: Vec<ScopeClaim>,
     }
 
     type Pair = (ScopeClaim, ScopeClaim, AgentId);
@@ -2520,7 +2664,12 @@ mod tests {
         out
     }
 
-    /// Two scope claims conflict iff one scope covers the other and the modes conflict.
+    /// Two scope claims clash iff one scope covers the other and the modes conflict.
+    fn clash(mine: &ScopeClaim, theirs: &ScopeClaim) -> bool {
+        let overlap = mine.scope.covers(&theirs.scope) || theirs.scope.covers(&mine.scope);
+        overlap && mine.mode.conflicts_with(theirs.mode)
+    }
+
     /// One entry per (requested scope, blocking claim, held scope), in the documented order:
     /// request index, then claim id (`active` is in grant order), then held index. `scopes`
     /// must already be free of repeats.
@@ -2529,9 +2678,7 @@ mod tests {
         for mine in scopes {
             for other in active.iter().filter(|a| a.agent != *who) {
                 for theirs in &other.scopes {
-                    let overlap =
-                        mine.scope.covers(&theirs.scope) || theirs.scope.covers(&mine.scope);
-                    if overlap && mine.mode.conflicts_with(theirs.mode) {
+                    if clash(mine, theirs) {
                         out.push((mine.clone(), theirs.clone(), other.agent.clone()));
                     }
                 }
@@ -2540,96 +2687,300 @@ mod tests {
         out
     }
 
-    /// Drops every claim whose lease ran out at `now`, returning what the coordinator must
-    /// announce, in claim id order.
-    fn expire_oracle(active: &mut Vec<Active>, now: u64) -> Vec<(AgentId, ClaimId, Fence)> {
-        let mut gone = Vec::new();
-        let mut kept = Vec::new();
-        for a in active.drain(..) {
-            if a.expires_at <= now {
-                gone.push((a.agent.clone(), a.claim, a.fence));
-            } else {
-                kept.push(a);
+    /// What one coordinator call must announce besides its own reply.
+    #[derive(Default)]
+    struct Announced {
+        expired: Vec<(AgentId, ClaimId, Fence)>,
+        granted: Vec<GrantNotice>,
+    }
+
+    /// The whole expected state, kept independently of the coordinator. It predicts claim ids and
+    /// fences with its own counters: only real grants and successful amends consume one.
+    struct Model {
+        active: Vec<Active>,
+        queue: Vec<Queued>,
+        next_claim: u64,
+        next_fence: u64,
+        next_req: u64,
+        now: u64,
+    }
+
+    impl Model {
+        fn new() -> Self {
+            Self {
+                active: Vec::new(),
+                queue: Vec::new(),
+                next_claim: 1,
+                next_fence: 1,
+                next_req: 100,
+                now: NOW,
             }
         }
-        *active = kept;
-        gone
+
+        fn grant(&mut self, who: &AgentId, scopes: Vec<ScopeClaim>) -> (ClaimId, Fence) {
+            let (claim, fence) = (ClaimId(self.next_claim), Fence(self.next_fence));
+            self.next_claim += 1;
+            self.next_fence += 1;
+            let expires_at = self.now + LEASE;
+            self.active.push(Active {
+                agent: who.clone(),
+                claim,
+                fence,
+                scopes,
+                expires_at,
+            });
+            (claim, fence)
+        }
+
+        fn holds(&self, who: &AgentId) -> bool {
+            self.active.iter().any(|a| a.agent == *who)
+        }
+
+        fn is_queued(&self, who: &AgentId) -> bool {
+            self.queue.iter().any(|w| w.agent == *who)
+        }
+
+        /// Everything the coordinator does at the start of every call at `self.now`.
+        fn lapse(&mut self) -> Announced {
+            let mut announced = Announced::default();
+            let mut kept = Vec::new();
+            for a in self.active.drain(..) {
+                if a.expires_at <= self.now {
+                    announced.expired.push((a.agent, a.claim, a.fence));
+                } else {
+                    kept.push(a);
+                }
+            }
+            self.active = kept;
+            if !announced.expired.is_empty() {
+                announced.granted = self.walk();
+            }
+            announced
+        }
+
+        /// One FIFO pass: a waiter is granted iff it clashes with no active claim of another
+        /// agent and with no earlier request still waiting.
+        fn walk(&mut self) -> Vec<GrantNotice> {
+            let mut granted = Vec::new();
+            let mut waiting: Vec<Queued> = Vec::new();
+            for w in std::mem::take(&mut self.queue) {
+                let by_active = !oracle(&self.active, &w.agent, &w.scopes).is_empty();
+                let by_earlier = waiting.iter().any(|e| {
+                    e.agent != w.agent
+                        && e.scopes
+                            .iter()
+                            .any(|x| w.scopes.iter().any(|y| clash(x, y)))
+                });
+                if by_active || by_earlier {
+                    waiting.push(w);
+                    continue;
+                }
+                let (claim, fence) = self.grant(&w.agent, w.scopes);
+                granted.push((w.agent, w.req, claim, fence, self.now + LEASE));
+            }
+            self.queue = waiting;
+            granted
+        }
+    }
+
+    fn who_is(n: u8) -> AgentId {
+        agent(&format!("agent-{n}"))
+    }
+
+    fn assert_announced(effects: &[Effect], expired: &Announced, extra: &[GrantNotice]) {
+        let mut granted = expired.granted.clone();
+        granted.extend(extra.iter().cloned());
+        assert_eq!(expired_notices(effects), expired.expired);
+        assert_eq!(granted_notices(effects), granted);
+    }
+
+    fn assert_refused(effects: &[Effect], expected: ErrorCode) {
+        let ServerMsg::Error { code, .. } = only_reply(effects) else {
+            panic!("expected Error({expected:?}), got {effects:?}");
+        };
+        assert_eq!(*code, expected);
+    }
+
+    fn assert_grant_reply(effects: &[Effect], req: u64, claim: ClaimId, fence: Fence, exp: u64) {
+        let ServerMsg::Granted {
+            req: got_req,
+            claim: got_claim,
+            fence: got_fence,
+            expires_at_ms,
+            ..
+        } = only_reply(effects)
+        else {
+            panic!("expected Granted, got {effects:?}");
+        };
+        assert_eq!((got_req.0, *got_claim, *got_fence), (req, claim, fence));
+        assert_eq!(*expires_at_ms, exp);
+    }
+
+    fn assert_denied_as(effects: &[Effect], expected: Vec<Pair>) {
+        let ServerMsg::Denied { conflicts, .. } = only_reply(effects) else {
+            panic!("expected Denied, got {effects:?}");
+        };
+        let mut got: Vec<Pair> = Vec::new();
+        for x in conflicts {
+            got.push((x.requested.clone(), x.held.clone(), x.held_by.clone()));
+        }
+        assert_eq!(got, expected);
+    }
+
+    /// Applies `Claim` (Fail policy) or `Wait` and checks the answer.
+    fn step_claim(c: &mut Coordinator, m: &mut Model, n: u8, raw: Vec<ScopeClaim>, wait: bool) {
+        let who = who_is(n);
+        let lapse = m.lapse();
+        let req = if wait { m.next_req } else { 1 };
+        let msg = if wait {
+            wait_msg(req, raw.clone())
+        } else {
+            claim_msg(intent("p"), raw.clone())
+        };
+        let effects = c.handle(&who, msg, m.now);
+        let scopes = distinct(&raw);
+        let blockers = oracle(&m.active, &who, &scopes);
+        if m.is_queued(&who) {
+            assert_refused(&effects, ErrorCode::WaitWhileHolding);
+        } else if blockers.is_empty() {
+            let (claim, fence) = m.grant(&who, scopes);
+            assert_grant_reply(&effects, req, claim, fence, m.now + LEASE);
+        } else if !wait {
+            assert_denied_as(&effects, blockers);
+        } else if m.holds(&who) {
+            assert_refused(&effects, ErrorCode::WaitWhileHolding);
+        } else {
+            m.next_req += 1;
+            m.queue.push(Queued {
+                agent: who,
+                req,
+                scopes,
+            });
+            let ServerMsg::Queued { req: got, position } = only_reply(&effects) else {
+                panic!("expected Queued, got {effects:?}");
+            };
+            assert_eq!((got.0, *position as usize), (req, m.queue.len()));
+        }
+        assert_announced(&effects, &lapse, &[]);
+    }
+
+    fn step_release(c: &mut Coordinator, m: &mut Model, pick: usize) {
+        let lapse = m.lapse();
+        if m.active.is_empty() {
+            assert_announced(&c.expire(m.now), &lapse, &[]);
+            return;
+        }
+        let gone = m.active.remove(pick % m.active.len());
+        let granted = m.walk();
+        let msg = ClientMsg::Release {
+            claim: gone.claim,
+            fence: gone.fence,
+        };
+        let effects = c.handle(&gone.agent, msg, m.now);
+        assert!(replies(&effects).is_empty(), "release failed: {effects:?}");
+        assert_announced(&effects, &lapse, &granted);
+    }
+
+    fn step_amend(c: &mut Coordinator, m: &mut Model, pick: usize, raw: Vec<ScopeClaim>) {
+        let lapse = m.lapse();
+        if m.active.is_empty() {
+            assert_announced(&c.expire(m.now), &lapse, &[]);
+            return;
+        }
+        let idx = pick % m.active.len();
+        let (who, claim, old) = {
+            let a = &m.active[idx];
+            (a.agent.clone(), a.claim, a.fence)
+        };
+        let mut added = distinct(&raw);
+        added.retain(|s| !m.active[idx].scopes.contains(s));
+        let blockers = oracle(&m.active, &who, &added);
+        let msg = ClientMsg::Amend {
+            req: RequestId(900),
+            claim,
+            fence: old,
+            add: raw,
+        };
+        let effects = c.handle(&who, msg, m.now);
+        assert_announced(&effects, &lapse, &[]);
+        if !blockers.is_empty() {
+            assert_denied_as(&effects, blockers);
+            return;
+        }
+        let new = Fence(m.next_fence);
+        m.next_fence += 1;
+        let expires_at = m.active[idx].expires_at;
+        assert_grant_reply(&effects, 900, claim, new, expires_at);
+        m.active[idx].fence = new;
+        m.active[idx].scopes.extend(added);
+        let stale = c.handle(&who, ClientMsg::Release { claim, fence: old }, m.now);
+        assert_refused(&stale, ErrorCode::StaleFence);
+    }
+
+    fn step_time(c: &mut Coordinator, m: &mut Model, op: &Op) -> bool {
+        match op {
+            Op::Advance { ms, eager } => {
+                m.now += ms;
+                if *eager {
+                    let lapse = m.lapse();
+                    assert_announced(&c.expire(m.now), &lapse, &[]);
+                }
+                *eager
+            }
+            Op::Heartbeat { agent: n } => {
+                let who = who_is(*n);
+                let lapse = m.lapse();
+                let effects = c.handle(&who, ClientMsg::Heartbeat, m.now);
+                assert!(replies(&effects).is_empty(), "{effects:?}");
+                for a in m.active.iter_mut().filter(|a| a.agent == who) {
+                    a.expires_at = m.now + LEASE;
+                }
+                assert_announced(&effects, &lapse, &[]);
+                true
+            }
+            Op::Claim { .. } | Op::Wait { .. } | Op::Release { .. } | Op::Amend { .. } => {
+                unreachable!("not a clock operation: {op:?}")
+            }
+        }
+    }
+
+    /// Runs one operation; false if the coordinator was not called (a lazy clock jump).
+    fn step(c: &mut Coordinator, m: &mut Model, op: Op) -> bool {
+        match op {
+            Op::Claim { agent, scopes } => step_claim(c, m, agent, scopes, false),
+            Op::Wait { agent, scopes } => step_claim(c, m, agent, scopes, true),
+            Op::Release { pick } => step_release(c, m, pick),
+            Op::Amend { pick, scopes } => step_amend(c, m, pick, scopes),
+            Op::Advance { .. } | Op::Heartbeat { .. } => return step_time(c, m, &op),
+        }
+        true
+    }
+
+    fn assert_matches_model(c: &Coordinator, m: &Model) {
+        assert_eq!(
+            c.next_expiry_ms(),
+            m.active.iter().map(|a| a.expires_at).min()
+        );
+        let mut queued = Vec::new();
+        for w in &c.state.waiting {
+            queued.push((w.agent.clone(), w.request.req.0));
+        }
+        let expected: Vec<(AgentId, u64)> =
+            m.queue.iter().map(|w| (w.agent.clone(), w.req)).collect();
+        assert_eq!(queued, expected);
     }
 
     proptest! {
         #[test]
-        fn decisions_and_leases_match_brute_force_oracle(sequence in ops()) {
+        fn coordinator_matches_brute_force_model(sequence in ops()) {
             let mut c = coordinator();
-            let mut active: Vec<Active> = Vec::new();
-            let mut now = NOW;
-            // Expiries the oracle has applied that the coordinator has not announced yet.
-            let mut pending: Vec<(AgentId, ClaimId, Fence)> = Vec::new();
+            let mut m = Model::new();
             for op in sequence {
                 // Every reachable state must survive a save and load, so run on the restored one.
                 c = serde_json::from_str(&state(&c)).unwrap();
-                let effects = match op {
-                    Op::Claim { agent: n, scopes: raw } => {
-                        let who = agent(&format!("agent-{n}"));
-                        let scopes = distinct(&raw);
-                        let expected = oracle(&active, &who, &scopes);
-                        let effects = c.handle(&who, claim_msg(intent("p"), raw), now);
-                        if expected.is_empty() {
-                            let ServerMsg::Granted { claim, fence, expires_at_ms, .. } =
-                                only_reply(&effects)
-                            else {
-                                return Err(TestCaseError::fail(format!("denied: {effects:?}")));
-                            };
-                            prop_assert_eq!(*expires_at_ms, now + LEASE);
-                            let (claim, fence) = (*claim, *fence);
-                            let expires_at = now + LEASE;
-                            active.push(Active { agent: who, claim, fence, scopes, expires_at });
-                        } else {
-                            let ServerMsg::Denied { conflicts, .. } = only_reply(&effects) else {
-                                return Err(TestCaseError::fail(format!("granted: {effects:?}")));
-                            };
-                            let mut got: Vec<Pair> = Vec::new();
-                            for x in conflicts {
-                                let (req, held) = (x.requested.clone(), x.held.clone());
-                                got.push((req, held, x.held_by.clone()));
-                            }
-                            prop_assert_eq!(got, expected);
-                        }
-                        effects
-                    }
-                    Op::Release { pick } => {
-                        if active.is_empty() {
-                            continue;
-                        }
-                        let gone = active.remove(pick % active.len());
-                        let msg = ClientMsg::Release { claim: gone.claim, fence: gone.fence };
-                        let effects = c.handle(&gone.agent, msg, now);
-                        prop_assert!(replies(&effects).is_empty(), "release failed: {effects:?}");
-                        effects
-                    }
-                    Op::Advance { ms, eager } => {
-                        now += ms;
-                        pending.extend(expire_oracle(&mut active, now));
-                        if !eager {
-                            continue;
-                        }
-                        c.expire(now)
-                    }
-                    Op::Heartbeat { agent: n } => {
-                        let who = agent(&format!("agent-{n}"));
-                        let effects = c.handle(&who, ClientMsg::Heartbeat, now);
-                        prop_assert!(replies(&effects).is_empty(), "{effects:?}");
-                        for a in active.iter_mut().filter(|a| a.agent == who) {
-                            a.expires_at = now + LEASE;
-                        }
-                        effects
-                    }
-                };
-                // One call announces everything due by now, in claim id order, whichever of
-                // several lazy clock jumps made it due.
-                pending.sort_by_key(|(_, claim, _)| claim.0);
-                prop_assert_eq!(expired_notices(&effects), std::mem::take(&mut pending));
-                let earliest = active.iter().map(|a| a.expires_at).min();
-                prop_assert_eq!(c.next_expiry_ms(), earliest);
+                if step(&mut c, &mut m, op) {
+                    assert_matches_model(&c, &m);
+                }
             }
         }
     }
