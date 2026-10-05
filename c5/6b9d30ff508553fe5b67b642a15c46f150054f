@@ -1,0 +1,5 @@
+intent: repo isolation for the swarm Worker (ALLOWED_REPO_PREFIX, 403 before the token check, pure repo_allowed in shell.rs); off agent-minutes start after the wait; count review approvals and rejections from the log without reading free text; minors
+assumes: production leaves ALLOWED_REPO_PREFIX unset (serves all repos); env.var errors when a var is unset
+rejected: identifying the script's approvals by their note (free text, rule 4); a var set to empty in production (changes prod config)
+evidence: cargo test --workspace 744 passed (predicted 744); clippy -D warnings clean for tessel-swarm and tessel-coordinator; wasm 0 warnings; wrangler dry-run shows ALLOWED_REPO_PREFIX=swarm-
+dogfood: agent harness-1, claim 32 on tessel-swarm/, wrangler.toml, src/runtime.rs, src/shell.rs, fence 57
