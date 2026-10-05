@@ -1,0 +1,5 @@
+intent: implement races (invariant 7) in the coordinator core: OpenRace, JoinRace, entry submissions held until the race is judged, entry tests tried through the verification queue, ranking with rank_entries, HumanPick via PickWinner, winner promoted to the merge queue at its original order, losers rejected
+assumes: the steward trial with before == main runs the commit once and reports it as before (trial-report.ts same-sha shortcut); a race entry's risk_bp and diff_lines are not measured and stay None
+rejected: a placeholder claim in claims for the race (every claims iteration would need a case); a separate race-trial queue (the shell would need new dispatch code); reviewing every entry at submit (flags work that is discarded)
+evidence: cargo test --lib 402 passed, clippy -D warnings and rustfmt clean
+dogfood: agent race-1 on tessel-dogfood, claim 24 held src/coordinator.rs, verifying.rs, merging.rs, merge.rs, shell.rs and racing.rs (create); no denials
