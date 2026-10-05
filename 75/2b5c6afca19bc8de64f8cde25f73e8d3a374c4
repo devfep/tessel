@@ -1,0 +1,4 @@
+intent: fix pass 2: start_base survives a restart while claims are held (fail closed if never persisted); stop confirms within 15 s and no longer resends; race-entry fallback removed; tests for serialised claims and the Accepted claim match
+assumes: races are not implemented, so no claim is a race entry
+rejected: re-pinning start_base on every start (hid commits made before a restart); resending a release over a closed socket
+evidence: cargo test --workspace 462 passed (65+74+23+300); clippy -D warnings clean; deny licenses ok; dogfood: claim 17 (fence 17, amended to fence 18) on tessel-dogfood
