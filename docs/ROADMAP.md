@@ -219,6 +219,11 @@ two Workers are approved.
   mirror with a local fast-forward-only script (no GitHub credential in Cloudflare). Probe first:
   build time and memory, the Docker build context, a 5-minute merge over the service binding, and
   image storage (50 GB per account).
+  Time budget (from the ASSUME-1 review): one merge's worst case is clone 240 s + fetch 240 s +
+  rebase 120 s + dependency check 30 s + tests 600 s, about 20 minutes, above the 13-minute steward
+  call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
+  measure the real numbers in the probe, then set the step timeouts so their sum stays under the
+  call timeout with margin, or move the merge off the alarm's wall clock.
 - [ ] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
   `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
   changes. Put leading attribute and decorator siblings in the signature range.
