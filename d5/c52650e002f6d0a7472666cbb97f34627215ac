@@ -1,0 +1,4 @@
+intent: tessel submit diffs from the coordinator head or start commit only when it is an ancestor of the work, so a stale head on another line of history cannot charge the lane with unrelated scopes
+assumes: coordinator head and start commit are commits in the shared object store; git merge-base --is-ancestor is the history test
+rejected: touching only submit.rs (diff_base needs the work commit, so commands.rs passes it, a one-line caller change); dropping the coordinator head entirely (a lane that merged the trunk would be charged with others' changes)
+evidence: cargo test --workspace 748 passed 0 failed (745 + 3 net new); new tests fail on the old logic (4 of 5 new/changed tests), clippy -D warnings clean on bins and submit/symbols/review tests, rustfmt clean
