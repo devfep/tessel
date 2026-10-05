@@ -1,0 +1,4 @@
+intent: fix pass 2: remove a duplicated docstring line; executor test that an unreadable main gives push_failed
+assumes: none
+rejected: none
+evidence: pnpm test 307 passed (predicted 307); gates clean
