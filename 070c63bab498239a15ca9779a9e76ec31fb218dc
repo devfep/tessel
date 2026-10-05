@@ -1,0 +1,4 @@
+intent: merge the sprint/build tip (ROADMAP/STATE only) before the final gate
+assumes: none
+rejected: none
+evidence: post-merge cargo test 227 passed, clippy -D warnings clean, rustfmt --check clean, wasm release build 0 warnings
