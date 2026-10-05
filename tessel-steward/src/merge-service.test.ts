@@ -57,29 +57,30 @@ describe("MergeService /trial", () => {
   });
 
   it("runs a trial of the fork's commit on the given main, and never a merge", async () => {
-    const outcome = { outcome: "clean", base: MAIN, head: COMMIT, commit: COMMIT };
+    const clean = { outcome: "clean", base: MAIN, head: COMMIT, commit: COMMIT };
+    const outcome = { before: clean, after: clean };
     const { service, merge, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
     trial.mockResolvedValue(outcome);
     const response = await service.fetch(
-      postTrial({ repo: "demo", fork: "demo--a1", main: MAIN, commit: COMMIT }),
+      postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN, commit: COMMIT }),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(outcome);
-    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, COMMIT);
+    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, MAIN, COMMIT);
     expect(merge).not.toHaveBeenCalled();
   });
 
   it("passes no commit when the request names none, so the steward reads the fork's head", async () => {
     const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
     trial.mockResolvedValue({ outcome: "commit_not_in_fork" });
-    await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", main: MAIN }));
-    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, undefined);
+    await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN }));
+    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, MAIN, undefined);
   });
 
   it("refuses a fork that is not a fork of the repo without running a trial", async () => {
     const { service, trial } = build({ "other--a1": "artifacts:tessel/other" });
     const response = await service.fetch(
-      postTrial({ repo: "demo", fork: "other--a1", main: MAIN, commit: COMMIT }),
+      postTrial({ repo: "demo", fork: "other--a1", before: MAIN, main: MAIN, commit: COMMIT }),
     );
     expect(response.status).toBe(400);
     expect(trial).not.toHaveBeenCalled();
@@ -87,9 +88,13 @@ describe("MergeService /trial", () => {
 
   it.each([
     ["a body that is not JSON", "not json"],
-    ["a body without a main", { repo: "demo", fork: "demo--a1", commit: COMMIT }],
+    ["a body without a main", { repo: "demo", fork: "demo--a1", before: MAIN, commit: COMMIT }],
+    ["a body without a baseline", { repo: "demo", fork: "demo--a1", main: MAIN }],
     ["a main that is a ref", { repo: "demo", fork: "demo--a1", main: "main" }],
-    ["a commit that is not a sha", { repo: "demo", fork: "demo--a1", main: MAIN, commit: "x" }],
+    [
+      "a commit that is not a sha",
+      { repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN, commit: "x" },
+    ],
   ])("answers 400 for %s", async (_label, body) => {
     const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
     expect((await service.fetch(postTrial(body))).status).toBe(400);
@@ -99,13 +104,15 @@ describe("MergeService /trial", () => {
   it("answers 404 for a missing fork, and 502 with a fixed message when the trial throws", async () => {
     const missing = build({});
     const gone = await missing.service.fetch(
-      postTrial({ repo: "demo", fork: "demo--ghost", main: MAIN }),
+      postTrial({ repo: "demo", fork: "demo--ghost", before: MAIN, main: MAIN }),
     );
     expect(gone.status).toBe(404);
 
     const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
     trial.mockRejectedValue(new Error("boom art_v1_secret"));
-    const response = await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", main: MAIN }));
+    const response = await service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN }),
+    );
     expect(response.status).toBe(502);
     expect(JSON.stringify(await response.json())).not.toContain("secret");
   });

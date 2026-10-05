@@ -150,7 +150,7 @@ impl Coordinator {
             return Vec::new();
         }
         let effects = match outcome.verdict() {
-            Verdict::Landed { head } => self.land(claim, &held, head, now_ms),
+            Verdict::Landed { base, head } => self.land(claim, &held, (base, head), now_ms),
             Verdict::Rejected { reason } => self.reject_work(claim, held, reason, now_ms),
             Verdict::MainMoved => self.retry_after_move(claim, held, now_ms),
             Verdict::Infrastructure => self.retry_after_infrastructure(claim, held, now_ms),
@@ -285,7 +285,7 @@ impl Coordinator {
         &mut self,
         claim: ClaimId,
         held: &ActiveClaim,
-        head: CommitId,
+        (base, head): (CommitId, CommitId),
         now_ms: u64,
     ) -> Vec<Effect> {
         let touched = held
@@ -326,7 +326,7 @@ impl Coordinator {
             .as_ref()
             .map(|work| work.challenged.clone())
             .unwrap_or_default();
-        self.record_verifications(&challenged, &head);
+        self.record_verifications(&challenged, &base, &head);
         effects
     }
 

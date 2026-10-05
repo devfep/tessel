@@ -15,6 +15,7 @@ import {
   type MergeRequest,
   type Sha,
   type TrialOutcome,
+  type TrialReport,
   type TrialRequest,
 } from "./merge-types";
 import { redactTokens } from "./redact";
@@ -65,8 +66,17 @@ export function redactTrialOutcome(outcome: TrialOutcome): TrialOutcome {
     case "conflict":
     case "nothing_to_test":
     case "commit_not_in_fork":
+    case "main_unreachable":
       return outcome;
   }
+}
+
+/** Redacts both outcomes of a trial report. */
+export function redactTrialReport(report: TrialReport): TrialReport {
+  return {
+    before: report.before && redactTrialOutcome(report.before),
+    after: report.after && redactTrialOutcome(report.after),
+  };
 }
 
 function reportRevokeFailure(repo: string, tokenId: string): (reason: string) => void {
@@ -81,9 +91,16 @@ function reportRevokeFailure(repo: string, tokenId: string): (reason: string) =>
     );
 }
 
-/** What a run inside the sandbox is given: the boundaries of a trial, and the pieces a push needs. */
-interface Sandbox {
+/**
+ * What a trial is given inside the sandbox: the boundaries of a trial and nothing else. There is
+ * no repo handle in it, so a trial cannot mint a token of any scope (`merge-trial-types.test.ts`).
+ */
+export interface TrialSandbox {
   deps: TrialDeps;
+}
+
+/** What a merge is given inside the sandbox: a trial's, and the pieces a push needs. */
+interface Sandbox extends TrialSandbox {
   container: Container;
   main: ArtifactsRepo;
   mainRemote: string;
@@ -228,8 +245,8 @@ export async function executeMerge(
 }
 
 /**
- * Tries the fork's commit on main at `request.main` inside the DO's container and tests it. See
- * `runTrial` for the steps and `TrialOutcome` for the results. Nothing is pushed and no write
+ * Tries the fork's commit on main at `request.before` and at `request.main` inside the DO's
+ * container and tests it. See `runTrial` for the steps and `TrialReport` for the results. Nothing is pushed and no write
  * token is created: this function never calls `createToken("write")`, and the deps it passes
  * have no way to. Call this on a Durable Object instance with a new random name for each trial.
  *
@@ -240,9 +257,9 @@ export async function executeTrial(
   env: Env,
   repo: string,
   request: TrialRequest,
-): Promise<TrialOutcome> {
-  return withSandbox(ctx, env, repo, request.fork, async ({ deps }) =>
-    redactTrialOutcome(await runTrial(deps, request.main, request.commit)),
+): Promise<TrialReport> {
+  return withSandbox(ctx, env, repo, request.fork, async ({ deps }: TrialSandbox) =>
+    redactTrialReport(await runTrial(deps, request.before, request.main, request.commit)),
   );
 }
 

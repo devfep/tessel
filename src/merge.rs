@@ -55,17 +55,20 @@ pub fn request_body(
 }
 
 /// What the coordinator sends the steward's `/trial`: try `commit` from the agent's fork on main as
-/// it was at `main`, and test it. Without `commit` the steward uses the head of the fork's default
-/// branch. Nothing is merged and nothing is pushed.
+/// it was at `before` (the baseline) and, if that is clean, as it was at `main`, and test it each
+/// time. Without `commit` the steward uses the head of the fork's default branch. Nothing is
+/// merged and nothing is pushed.
 pub fn trial_request_body(
     repo: &str,
     agent: &AgentId,
+    before: &CommitId,
     main: &CommitId,
     commit: Option<&CommitId>,
 ) -> String {
     let mut body = serde_json::json!({
         "repo": repo,
         "fork": fork_name(repo, agent),
+        "before": before.0,
         "main": main.0,
     });
     if let Some(commit) = commit {
@@ -152,7 +155,7 @@ impl MergeOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// Main now holds the work, at `head`.
-    Landed { head: CommitId },
+    Landed { base: CommitId, head: CommitId },
     /// A verified rejection of the work, in fixed form: the reason never quotes repo text.
     Rejected { reason: String },
     /// Main moved under the merge; dispatch the same claim again.
@@ -164,8 +167,14 @@ pub enum Verdict {
 impl MergeOutcome {
     pub fn verdict(&self) -> Verdict {
         match self {
-            MergeOutcome::Merged { head, .. } => Verdict::Landed { head: head.clone() },
-            MergeOutcome::AlreadyMerged { base } => Verdict::Landed { head: base.clone() },
+            MergeOutcome::Merged { base, head } => Verdict::Landed {
+                base: base.clone(),
+                head: head.clone(),
+            },
+            MergeOutcome::AlreadyMerged { base } => Verdict::Landed {
+                base: base.clone(),
+                head: base.clone(),
+            },
             MergeOutcome::Conflict { files } => Verdict::Rejected {
                 reason: format!(
                     "conflicts with main in {} file(s); rebase onto main and resubmit",
@@ -197,9 +206,9 @@ impl MergeOutcome {
     }
 }
 
-/// The steward's answer to one trial (tessel-steward/src/merge-types.ts, `TrialOutcome`). Only
-/// the codes the verdict needs are read: the commit that was tried, the files and the test output
-/// are untrusted or unused and are never kept. Exhaustive wherever it is matched.
+/// One run of a trial (tessel-steward/src/merge-types.ts, `TrialOutcome`). Only the codes the
+/// verdict needs are read: the commit that was tried, the files and the test output are untrusted
+/// or unused and are never kept. Exhaustive wherever it is matched.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum TrialOutcome {
@@ -207,14 +216,14 @@ pub enum TrialOutcome {
     Clean {},
     /// Replaying the commit onto main stopped with files unmerged.
     Conflict {},
-    /// The repo's tests ran on the rebased commit and did not pass.
-    TestsFailed {
-        result: StepExit,
-    },
+    /// The repo's tests ran on the rebased commit and did not pass (a timeout included).
+    TestsFailed {},
     /// The replay left main unchanged: the commit adds nothing to test.
     NothingToTest {},
     /// The commit is not reachable from the fork's default branch.
     CommitNotInFork {},
+    /// A main sha of the request is not on main's history. Final: asking again changes nothing.
+    MainUnreachable {},
     /// Infrastructure: the attempt did not finish. These never count for or against the code.
     Clone {},
     GitFailed {},
@@ -227,20 +236,39 @@ pub enum TrialOutcome {
     ServiceUnavailable,
 }
 
-impl TrialOutcome {
-    /// The outcome a steward response means, read as `MergeOutcome::from_response` reads one.
+/// The steward's answer to one trial call: the commit tried on main at `before` (the baseline),
+/// then, only if that was clean, on the new main. `before` is `None` when the trial stopped before
+/// either run.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TrialReport {
+    pub before: Option<TrialOutcome>,
+    pub after: Option<TrialOutcome>,
+}
+
+impl TrialReport {
+    /// A report that says only that `outcome` happened, for a call that gave no usable answer.
+    pub fn stopped(outcome: TrialOutcome) -> Self {
+        Self {
+            before: None,
+            after: Some(outcome),
+        }
+    }
+
+    /// The report a steward response means. A 4xx is `Refused`. Any other response that is not a
+    /// 200 with a known `TrialReport` is `ServiceUnavailable`. A body is never kept or quoted.
     pub fn from_response(status: u16, body: &str) -> Self {
         if (400..500).contains(&status) {
-            return TrialOutcome::Refused;
+            return Self::stopped(TrialOutcome::Refused);
         }
         if status != 200 {
-            return TrialOutcome::ServiceUnavailable;
+            return Self::stopped(TrialOutcome::ServiceUnavailable);
         }
-        serde_json::from_str(body).unwrap_or(TrialOutcome::ServiceUnavailable)
+        serde_json::from_str(body)
+            .unwrap_or_else(|_| Self::stopped(TrialOutcome::ServiceUnavailable))
     }
 }
 
-/// What a trial outcome means for the verification. Decided in one exhaustive match.
+/// What a trial report means for the verification. Decided in one exhaustive match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrialVerdict {
     /// The trial ran to a result the log may record.
@@ -251,33 +279,59 @@ pub enum TrialVerdict {
 }
 
 impl TrialOutcome {
-    /// Only a clean run, a real conflict and failing tests are verdicts about the assuming
-    /// agent's work. Everything else is `Inconclusive`, which no counter treats as broken:
+    /// What one run means when it is taken alone. Only a clean run, a real conflict and failing
+    /// tests say anything about the work; the rest is `Inconclusive`, which no counter treats as
+    /// broken:
     /// - `NothingToTest`: the commit adds nothing to main, so a test run would judge main.
     /// - `CommitNotInFork`: the commit the coordinator knows is not on the agent's fork (never
     ///   pushed, or the fork moved), so there was nothing to try.
-    /// - `Refused`: the fork is missing or is not a fork of this repo.
-    /// - A test step that timed out or was killed (exit 124 or 137): not a failing assertion.
+    /// - `MainUnreachable`, `Refused`: there was no state of main, or no fork, to try it on.
     /// - Infrastructure: retried first, see `TrialVerdict::Infrastructure`.
-    pub fn verdict(&self) -> TrialVerdict {
+    fn verdict(&self) -> TrialVerdict {
         match self {
             TrialOutcome::Clean {} => TrialVerdict::Decided(Outcome::Clean),
             TrialOutcome::Conflict {} => TrialVerdict::Decided(Outcome::TextualConflict),
-            TrialOutcome::TestsFailed { result } => {
-                if TIMED_OUT_EXIT_CODES.contains(&result.exit_code) {
-                    TrialVerdict::Decided(Outcome::Inconclusive)
-                } else {
-                    TrialVerdict::Decided(Outcome::TestsFailed)
-                }
-            }
+            TrialOutcome::TestsFailed {} => TrialVerdict::Decided(Outcome::TestsFailed),
             TrialOutcome::NothingToTest {}
             | TrialOutcome::CommitNotInFork {}
+            | TrialOutcome::MainUnreachable {}
             | TrialOutcome::Refused => TrialVerdict::Decided(Outcome::Inconclusive),
             TrialOutcome::Clone {}
             | TrialOutcome::GitFailed {}
             | TrialOutcome::Install {}
             | TrialOutcome::ServiceUnavailable => TrialVerdict::Infrastructure,
         }
+    }
+}
+
+impl TrialReport {
+    /// What the report is evidence for (CLAUDE.md rule 7). A failure counts against the assuming
+    /// agent's work only if the same commit was clean on the baseline `before`: the merge then
+    /// changed the result. So:
+    /// - `before` clean, `after` clean: `Clean`.
+    /// - `before` clean, `after` a conflict: `TextualConflict`, new after this merge.
+    /// - `before` clean, `after` failing tests: `TestsFailed`. A test step that timed out or was
+    ///   killed counts too: the same commit passed on `before`.
+    /// - `before` anything else (work already failing, already conflicting, nothing to test):
+    ///   `Inconclusive`. So is any trial that stopped before running, and an `after` that proves
+    ///   nothing (nothing to test, unreachable main).
+    /// - Infrastructure on either side: `Infrastructure`, retried.
+    pub fn verdict(&self) -> TrialVerdict {
+        let (Some(before), after) = (&self.before, &self.after) else {
+            return match self.after.as_ref().map(TrialOutcome::verdict) {
+                Some(TrialVerdict::Decided(_)) => TrialVerdict::Decided(Outcome::Inconclusive),
+                Some(TrialVerdict::Infrastructure) | None => TrialVerdict::Infrastructure,
+            };
+        };
+        match before.verdict() {
+            TrialVerdict::Infrastructure => return TrialVerdict::Infrastructure,
+            TrialVerdict::Decided(Outcome::Clean) => {}
+            TrialVerdict::Decided(_) => return TrialVerdict::Decided(Outcome::Inconclusive),
+        }
+        let Some(after) = after else {
+            return TrialVerdict::Infrastructure;
+        };
+        after.verdict()
     }
 }
 
@@ -405,100 +459,186 @@ mod tests {
         );
     }
 
-    fn trial(json: &str) -> TrialOutcome {
-        TrialOutcome::from_response(200, json)
+    fn trial(json: &str) -> TrialReport {
+        TrialReport::from_response(200, json)
+    }
+
+    fn run(outcome: &str) -> String {
+        format!(r#"{{"outcome":"{outcome}"}}"#)
     }
 
     #[test]
-    fn reads_every_outcome_a_trial_can_have() {
+    fn reads_every_outcome_a_trial_run_can_have() {
         let step = r#"{"step":"test","exitCode":1,"stdout":"x","stderr":"y","stdoutTruncated":false,"stderrTruncated":false,"passed":false}"#;
         let tried = format!(r#""base":"{SHA_A}","head":"{SHA_B}","commit":"{SHA_B}""#);
+        let runs = [
+            (
+                format!(r#"{{"outcome":"clean",{tried}}}"#),
+                TrialOutcome::Clean {},
+            ),
+            (
+                format!(
+                    r#"{{"outcome":"conflict","base":"{SHA_A}","commit":"{SHA_B}","files":["a"]}}"#
+                ),
+                TrialOutcome::Conflict {},
+            ),
+            (
+                format!(r#"{{"outcome":"tests_failed",{tried},"result":{step}}}"#),
+                TrialOutcome::TestsFailed {},
+            ),
+            (
+                format!(r#"{{"outcome":"nothing_to_test","base":"{SHA_A}","commit":"{SHA_B}"}}"#),
+                TrialOutcome::NothingToTest {},
+            ),
+            (run("commit_not_in_fork"), TrialOutcome::CommitNotInFork {}),
+            (
+                format!(r#"{{"outcome":"main_unreachable","main":"{SHA_A}"}}"#),
+                TrialOutcome::MainUnreachable {},
+            ),
+            (
+                format!(r#"{{"outcome":"clone","result":{step}}}"#),
+                TrialOutcome::Clone {},
+            ),
+            (
+                format!(r#"{{"outcome":"git_failed","result":{step}}}"#),
+                TrialOutcome::GitFailed {},
+            ),
+            (
+                format!(r#"{{"outcome":"install",{tried},"result":{step}}}"#),
+                TrialOutcome::Install {},
+            ),
+        ];
+        for (json, expected) in runs {
+            let report = trial(&format!(r#"{{"before":null,"after":{json}}}"#));
+            assert_eq!(report, TrialReport::stopped(expected), "{json}");
+        }
+        let both = trial(&format!(
+            r#"{{"before":{},"after":{}}}"#,
+            run("clean"),
+            run("conflict")
+        ));
         assert_eq!(
-            trial(&format!(r#"{{"outcome":"clean",{tried}}}"#)),
-            TrialOutcome::Clean {}
-        );
-        assert_eq!(
-            trial(&format!(
-                r#"{{"outcome":"conflict","base":"{SHA_A}","commit":"{SHA_B}","files":["a"]}}"#
-            )),
-            TrialOutcome::Conflict {}
-        );
-        assert_eq!(
-            trial(&format!(
-                r#"{{"outcome":"tests_failed",{tried},"result":{step}}}"#
-            )),
-            TrialOutcome::TestsFailed {
-                result: StepExit { exit_code: 1 }
+            both,
+            TrialReport {
+                before: Some(TrialOutcome::Clean {}),
+                after: Some(TrialOutcome::Conflict {})
             }
         );
+        let skipped = trial(&format!(
+            r#"{{"before":{},"after":null}}"#,
+            run("tests_failed")
+        ));
         assert_eq!(
-            trial(&format!(
-                r#"{{"outcome":"nothing_to_test","base":"{SHA_A}","commit":"{SHA_B}"}}"#
-            )),
-            TrialOutcome::NothingToTest {}
-        );
-        assert_eq!(
-            trial(r#"{"outcome":"commit_not_in_fork"}"#),
-            TrialOutcome::CommitNotInFork {}
-        );
-        assert_eq!(
-            trial(&format!(r#"{{"outcome":"clone","result":{step}}}"#)),
-            TrialOutcome::Clone {}
-        );
-        assert_eq!(
-            trial(&format!(r#"{{"outcome":"git_failed","result":{step}}}"#)),
-            TrialOutcome::GitFailed {}
-        );
-        assert_eq!(
-            trial(&format!(
-                r#"{{"outcome":"install",{tried},"result":{step}}}"#
-            )),
-            TrialOutcome::Install {}
+            skipped,
+            TrialReport {
+                before: Some(TrialOutcome::TestsFailed {}),
+                after: None
+            }
         );
     }
 
     #[test]
-    fn a_trial_response_that_is_not_a_known_outcome_is_the_service_being_unavailable() {
-        let unavailable = TrialOutcome::ServiceUnavailable;
-        assert_eq!(TrialOutcome::from_response(502, "{}"), unavailable);
-        assert_eq!(TrialOutcome::from_response(302, ""), unavailable);
+    fn a_trial_response_that_is_not_a_known_report_is_the_service_being_unavailable() {
+        let unavailable = TrialReport::stopped(TrialOutcome::ServiceUnavailable);
+        assert_eq!(TrialReport::from_response(502, "{}"), unavailable);
+        assert_eq!(TrialReport::from_response(302, ""), unavailable);
         assert_eq!(trial("not json"), unavailable);
         assert_eq!(
-            trial(r#"{"outcome":"merged","base":"x","head":"y"}"#),
+            trial(&run("clean")).verdict(),
+            TrialVerdict::Infrastructure,
+            "a bare outcome is not a report: it says nothing and is retried"
+        );
+        assert_eq!(
+            trial(&format!(r#"{{"before":null,"after":{}}}"#, run("merged"))),
             unavailable
         );
-        assert_eq!(trial(r#"{"outcome":"tests_failed"}"#), unavailable);
-        assert_eq!(trial(r#"{"outcome":"refused"}"#), unavailable);
         assert_eq!(
-            TrialOutcome::from_response(404, r#"{"outcome":"clean"}"#),
-            TrialOutcome::Refused
+            trial(&format!(r#"{{"before":null,"after":{}}}"#, run("refused"))),
+            unavailable
+        );
+        assert_eq!(
+            TrialReport::from_response(404, r#"{"before":null,"after":null}"#),
+            TrialReport::stopped(TrialOutcome::Refused)
         );
     }
 
+    fn report(before: TrialOutcome, after: TrialOutcome) -> TrialReport {
+        TrialReport {
+            before: Some(before),
+            after: Some(after),
+        }
+    }
+
     #[test]
-    fn a_trial_maps_to_the_protocol_outcome_it_is_evidence_for() {
-        let failed = |exit_code| TrialOutcome::TestsFailed {
-            result: StepExit { exit_code },
-        };
+    fn a_failure_counts_only_if_the_same_commit_was_clean_on_the_baseline() {
         let decided = TrialVerdict::Decided;
-        assert_eq!(TrialOutcome::Clean {}.verdict(), decided(Outcome::Clean));
+        let clean = TrialOutcome::Clean {};
         assert_eq!(
-            TrialOutcome::Conflict {}.verdict(),
+            report(clean.clone(), clean.clone()).verdict(),
+            decided(Outcome::Clean)
+        );
+        assert_eq!(
+            report(clean.clone(), TrialOutcome::Conflict {}).verdict(),
             decided(Outcome::TextualConflict)
         );
-        assert_eq!(failed(1).verdict(), decided(Outcome::TestsFailed));
-        for timed_out in [124, 137] {
-            assert_eq!(failed(timed_out).verdict(), decided(Outcome::Inconclusive));
-        }
+        assert_eq!(
+            report(clean.clone(), TrialOutcome::TestsFailed {}).verdict(),
+            decided(Outcome::TestsFailed)
+        );
         for unproven in [
             TrialOutcome::NothingToTest {},
             TrialOutcome::CommitNotInFork {},
+            TrialOutcome::MainUnreachable {},
             TrialOutcome::Refused,
         ] {
             assert_eq!(
-                unproven.verdict(),
+                report(clean.clone(), unproven.clone()).verdict(),
                 decided(Outcome::Inconclusive),
                 "{unproven:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn work_that_was_already_failing_or_conflicting_on_the_baseline_is_inconclusive() {
+        let inconclusive = TrialVerdict::Decided(Outcome::Inconclusive);
+        for before in [
+            TrialOutcome::TestsFailed {},
+            TrialOutcome::Conflict {},
+            TrialOutcome::NothingToTest {},
+        ] {
+            for after in [
+                TrialOutcome::Clean {},
+                TrialOutcome::TestsFailed {},
+                TrialOutcome::Conflict {},
+            ] {
+                assert_eq!(
+                    report(before.clone(), after.clone()).verdict(),
+                    inconclusive,
+                    "{before:?} then {after:?}"
+                );
+            }
+            let skipped = TrialReport {
+                before: Some(before.clone()),
+                after: None,
+            };
+            assert_eq!(skipped.verdict(), inconclusive, "{before:?}");
+        }
+    }
+
+    #[test]
+    fn a_trial_that_stopped_before_running_is_inconclusive_or_infrastructure() {
+        for stopped in [
+            TrialOutcome::CommitNotInFork {},
+            TrialOutcome::MainUnreachable {},
+            TrialOutcome::Refused,
+            TrialOutcome::Clean {},
+            TrialOutcome::TestsFailed {},
+        ] {
+            assert_eq!(
+                TrialReport::stopped(stopped.clone()).verdict(),
+                TrialVerdict::Decided(Outcome::Inconclusive),
+                "no baseline, nothing to count: {stopped:?}"
             );
         }
         for unfinished in [
@@ -508,29 +648,56 @@ mod tests {
             TrialOutcome::ServiceUnavailable,
         ] {
             assert_eq!(
-                unfinished.verdict(),
+                TrialReport::stopped(unfinished.clone()).verdict(),
                 TrialVerdict::Infrastructure,
                 "{unfinished:?}"
             );
+            let clean = TrialOutcome::Clean {};
+            assert_eq!(
+                report(unfinished.clone(), clean.clone()).verdict(),
+                TrialVerdict::Infrastructure,
+                "{unfinished:?} on the baseline"
+            );
+            assert_eq!(
+                report(clean, unfinished.clone()).verdict(),
+                TrialVerdict::Infrastructure,
+                "{unfinished:?} on the new main"
+            );
         }
+        let empty = TrialReport {
+            before: None,
+            after: None,
+        };
+        assert_eq!(empty.verdict(), TrialVerdict::Infrastructure);
+        let unrun = TrialReport {
+            before: Some(TrialOutcome::Clean {}),
+            after: None,
+        };
+        assert_eq!(unrun.verdict(), TrialVerdict::Infrastructure);
     }
 
     #[test]
-    fn the_trial_request_names_the_fork_main_and_the_commit_only_when_there_is_one() {
+    fn the_trial_request_names_the_fork_both_mains_and_the_commit_only_when_there_is_one() {
         let agent = AgentId("a1".into());
-        let main = CommitId(SHA_A.into());
-        let commit = CommitId(SHA_B.into());
-        let with = trial_request_body("demo", &agent, &main, Some(&commit));
-        let without = trial_request_body("demo", &agent, &main, None);
+        let before = CommitId(SHA_A.into());
+        let main = CommitId(SHA_B.into());
+        let commit = CommitId("c".repeat(40));
+        let with = trial_request_body("demo", &agent, &before, &main, Some(&commit));
+        let without = trial_request_body("demo", &agent, &before, &main, None);
         let with: serde_json::Value = serde_json::from_str(&with).unwrap();
         let without: serde_json::Value = serde_json::from_str(&without).unwrap();
         assert_eq!(
             with,
-            serde_json::json!({"repo": "demo", "fork": "demo--a1", "main": SHA_A, "commit": SHA_B})
+            serde_json::json!({
+                "repo": "demo", "fork": "demo--a1", "before": SHA_A, "main": SHA_B,
+                "commit": commit.0,
+            })
         );
         assert_eq!(
             without,
-            serde_json::json!({"repo": "demo", "fork": "demo--a1", "main": SHA_A})
+            serde_json::json!({
+                "repo": "demo", "fork": "demo--a1", "before": SHA_A, "main": SHA_B,
+            })
         );
     }
 
@@ -648,6 +815,7 @@ mod tests {
         assert_eq!(
             merged.verdict(),
             Verdict::Landed {
+                base: CommitId(SHA_A.into()),
                 head: CommitId(SHA_B.into())
             }
         );
@@ -657,6 +825,7 @@ mod tests {
         assert_eq!(
             already.verdict(),
             Verdict::Landed {
+                base: CommitId(SHA_A.into()),
                 head: CommitId(SHA_A.into())
             }
         );

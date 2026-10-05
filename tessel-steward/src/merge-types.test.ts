@@ -88,28 +88,35 @@ describe("isSafeBranchName", () => {
 
 describe("parseTrialRequest", () => {
   it("accepts a fork, a main sha and a commit sha", () => {
-    expect(parseTrialRequest({ fork: "demo--a1", main: SHA, commit: SHA })).toEqual({
+    expect(parseTrialRequest({ fork: "demo--a1", before: SHA, main: SHA, commit: SHA })).toEqual({
       ok: true,
-      request: { fork: "demo--a1", main: SHA, commit: SHA },
+      request: { fork: "demo--a1", before: SHA, main: SHA, commit: SHA },
     });
   });
 
   it("accepts a request without a commit, or with a null one, as 'the fork's head'", () => {
-    const expected = { ok: true, request: { fork: "demo--a1", main: SHA } };
-    expect(parseTrialRequest({ fork: "demo--a1", main: SHA })).toEqual(expected);
-    expect(parseTrialRequest({ fork: "demo--a1", main: SHA, commit: null })).toEqual(expected);
+    const expected = { ok: true, request: { fork: "demo--a1", before: SHA, main: SHA } };
+    expect(parseTrialRequest({ fork: "demo--a1", before: SHA, main: SHA })).toEqual(expected);
+    expect(parseTrialRequest({ fork: "demo--a1", before: SHA, main: SHA, commit: null })).toEqual(
+      expected,
+    );
   });
 
   it.each([
     ["a missing body", null],
     ["a string body", "x"],
-    ["a missing fork", { main: SHA }],
-    ["a fork that is not a name", { fork: "../x", main: SHA }],
-    ["a missing main", { fork: "demo--a1" }],
-    ["a main that is a ref name", { fork: "demo--a1", main: "main" }],
-    ["a commit that is a ref name", { fork: "demo--a1", main: SHA, commit: "main" }],
-    ["a commit that is an empty string", { fork: "demo--a1", main: SHA, commit: "" }],
-    ["a commit that is an option", { fork: "demo--a1", main: SHA, commit: `--${SHA}` }],
+    ["a missing fork", { before: SHA, main: SHA }],
+    ["a fork that is not a name", { fork: "../x", before: SHA, main: SHA }],
+    ["a missing main", { fork: "demo--a1", before: SHA }],
+    ["a missing baseline", { fork: "demo--a1", main: SHA }],
+    ["a baseline that is a ref name", { fork: "demo--a1", before: "main", main: SHA }],
+    ["a main that is a ref name", { fork: "demo--a1", before: SHA, main: "main" }],
+    ["a commit that is a ref name", { fork: "demo--a1", before: SHA, main: SHA, commit: "main" }],
+    ["a commit that is an empty string", { fork: "demo--a1", before: SHA, main: SHA, commit: "" }],
+    [
+      "a commit that is an option",
+      { fork: "demo--a1", before: SHA, main: SHA, commit: `--${SHA}` },
+    ],
   ])("rejects %s", (_label, body) => {
     expect(parseTrialRequest(body)).toMatchObject({ ok: false });
   });

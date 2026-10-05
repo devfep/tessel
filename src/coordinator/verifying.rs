@@ -7,9 +7,15 @@
 //! - Verifications are recorded when the challenging submission lands, one per challenged
 //!   (claim, assumption), for claims still live. They are part of the persisted state, so they are
 //!   stored before anything is sent (CLAUDE.md rule 6).
-//! - The commit to try is the assuming claim's submitted `fork_commit`; for a claim that has not
-//!   submitted it is `None`, and the steward reads the head of the agent's fork and says which
-//!   commit that was.
+//! - The commit to try is chosen when the trial is dispatched, not when it is recorded: the
+//!   assuming claim's submitted `fork_commit` at that moment; for a claim that has not submitted
+//!   it is `None`, and the steward reads the head of the agent's fork and says which commit that
+//!   was.
+//! - Each trial carries a baseline, `before`: main as it was before the merge that challenged the
+//!   assumption. The steward tries the work on `before` first, and a failure on the new main counts
+//!   only if the work was clean there (`TrialReport::verdict`). Without it, work that was already
+//!   failing, or that clashes with an unrelated merge, would be counted as an assumption broken by
+//!   this one.
 //! - One verification runs at a time, and only while no merge is due: merges have priority. A
 //!   merge in backoff does not hold a verification up. Time-outs, the watchdog and the bounded
 //!   infrastructure retries are the merge queue's (`merge::STEWARD_CALL_TIMEOUT_MS`,
@@ -19,9 +25,9 @@
 //!   would count a verification that never happened. A verification already running for a claim
 //!   that ends has its answer discarded.
 //! - Several merges that challenge the same (claim, assumption) before it runs keep only the
-//!   newest main. A verification already running is left to finish: it is evidence about the
+//!   newest main, with the baseline of the oldest of them (main before the first challenge). A verification already running is left to finish: it is evidence about the
 //!   older main, and the newer one queues behind it.
-//! - What the log records is the protocol `Outcome` (`TrialOutcome::verdict`). Anything that is
+//! - What the log records is the protocol `Outcome` (`TrialReport::verdict`). Anything that is
 //!   not a verdict about the work (nothing to test, the commit is not on the fork, a timeout,
 //!   infrastructure that kept failing) is `Inconclusive`, which no counter treats as broken.
 //! - A conflict is not sent to the assuming agent as a message: no `ServerMsg` says "your
@@ -32,7 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Coordinator, Effect};
 use crate::merge::{
-    infra_backoff_ms, TrialOutcome, TrialVerdict, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
+    infra_backoff_ms, TrialReport, TrialVerdict, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{AgentId, Assumption, ClaimId, CommitId, EventKind, Outcome};
 
@@ -50,8 +56,8 @@ pub(super) struct Verification {
     agent: AgentId,
     claim: ClaimId,
     assumption: Assumption,
-    /// The assuming claim's submitted commit, or `None` for the head of the agent's fork.
-    commit: Option<CommitId>,
+    /// Main before the merge that challenged the assumption: the baseline of the trial.
+    before: CommitId,
     /// Main after the merge that challenged the assumption.
     main: CommitId,
     /// Infrastructure failures so far.
@@ -73,8 +79,9 @@ pub(super) struct VerifyFlight {
 pub struct VerifyDispatch {
     pub id: u64,
     pub agent: AgentId,
-    /// `None`: the steward tries the head of the agent's fork.
+    /// The assuming claim's submitted commit now; `None`: the steward tries the head of the fork.
     pub commit: Option<CommitId>,
+    pub before: CommitId,
     pub main: CommitId,
     /// 1 for the first dispatch, counting every retry.
     pub attempt: u32,
@@ -82,24 +89,34 @@ pub struct VerifyDispatch {
 
 impl Coordinator {
     /// Queue a verification for each assumption the landed submission challenged whose assuming
-    /// claim is still live, against `main`. A verification already queued for the same
-    /// (claim, assumption) is replaced by this newer one; one in flight is left to finish.
-    pub(super) fn record_verifications(&mut self, challenged: &[Challenged], main: &CommitId) {
+    /// claim is still live, against `main`, with `before` as the baseline. A verification already
+    /// queued for the same (claim, assumption) is replaced by this newer one, which keeps the
+    /// older one's baseline; one in flight is left to finish.
+    pub(super) fn record_verifications(
+        &mut self,
+        challenged: &[Challenged],
+        before: &CommitId,
+        main: &CommitId,
+    ) {
         for challenge in challenged {
             let Some(assuming) = self.state.claims.get(&challenge.claim.0) else {
                 continue;
             };
-            let commit = assuming.work.as_ref().map(|work| work.fork_commit.clone());
             let agent = assuming.agent.clone();
             let running = self
                 .state
                 .verification_in_flight
                 .as_ref()
                 .map(|flight| flight.id);
+            let mut baseline = before.clone();
             self.state.verifications.retain(|queued| {
-                running == Some(queued.id)
-                    || queued.claim != challenge.claim
-                    || queued.assumption != challenge.assumption
+                let replaced = running != Some(queued.id)
+                    && queued.claim == challenge.claim
+                    && queued.assumption == challenge.assumption;
+                if replaced {
+                    baseline = queued.before.clone();
+                }
+                !replaced
             });
             let id = super::take_next(&mut self.state.next_verification);
             self.state.verifications.push(Verification {
@@ -107,7 +124,7 @@ impl Coordinator {
                 agent,
                 claim: challenge.claim,
                 assumption: challenge.assumption.clone(),
-                commit,
+                before: baseline,
                 main: main.clone(),
                 infra_failures: 0,
                 retry_at_ms: None,
@@ -116,7 +133,9 @@ impl Coordinator {
     }
 
     /// Forget the verifications of claims that no longer exist. Claim ids are never reused, so a
-    /// claim that is gone has ended.
+    /// claim that is gone has ended. Every path that removes a claim (`handle`, `expire` and a
+    /// merge's outcome) ends with this call, so the queue only ever holds live claims between
+    /// calls and the readers need not check.
     pub(super) fn drop_ended_verifications(&mut self) {
         let claims = &self.state.claims;
         self.state
@@ -131,7 +150,6 @@ impl Coordinator {
     /// The marker is part of the state: the caller persists it before calling the steward.
     pub fn begin_verification(&mut self, now_ms: u64) -> Option<VerifyDispatch> {
         let now_ms = self.advance_clock(now_ms);
-        self.drop_ended_verifications();
         if self.state.verification_in_flight.is_some() || self.merge_pending_at(now_ms) {
             return None;
         }
@@ -139,10 +157,17 @@ impl Coordinator {
         if next.retry_at_ms.is_some_and(|due| due > now_ms) {
             return None;
         }
+        let commit = self
+            .state
+            .claims
+            .get(&next.claim.0)
+            .and_then(|assuming| assuming.work.as_ref())
+            .map(|work| work.fork_commit.clone());
         let dispatch = VerifyDispatch {
             id: next.id,
             agent: next.agent.clone(),
-            commit: next.commit.clone(),
+            commit,
+            before: next.before.clone(),
             main: next.main.clone(),
             attempt: next.infra_failures + 1,
         };
@@ -209,7 +234,7 @@ impl Coordinator {
     pub fn verification_outcome(
         &mut self,
         id: u64,
-        outcome: &TrialOutcome,
+        report: &TrialReport,
         now_ms: u64,
     ) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
@@ -223,8 +248,7 @@ impl Coordinator {
             return Vec::new();
         }
         self.state.verification_in_flight = None;
-        self.drop_ended_verifications();
-        match outcome.verdict() {
+        match report.verdict() {
             TrialVerdict::Decided(result) => self.finish_verification(id, result, now_ms),
             TrialVerdict::Infrastructure => {
                 self.retry_verification_after_infrastructure(id, now_ms)
@@ -249,7 +273,6 @@ impl Coordinator {
     /// The attempt did not finish. Retry after a backoff, up to `MAX_INFRA_RETRIES` times; then
     /// log it as `Inconclusive`, so a verification that cannot run cannot wedge the queue.
     fn retry_verification_after_infrastructure(&mut self, id: u64, now_ms: u64) -> Vec<Effect> {
-        self.drop_ended_verifications();
         let Some(index) = self.state.verifications.iter().position(|v| v.id == id) else {
             return Vec::new();
         };
@@ -268,7 +291,7 @@ impl Coordinator {
 mod tests {
     use super::*;
     use crate::coordinator::Config;
-    use crate::merge::{MergeOutcome, StepExit, INFRA_BACKOFF_BASE_MS};
+    use crate::merge::{MergeOutcome, TrialOutcome, INFRA_BACKOFF_BASE_MS};
     use crate::protocol::{
         ClientMsg, DecisionRecord, Event, Fence, Intent, Mode, OnConflict, RequestId, RunId, Scope,
         ScopeClaim, ServerMsg, Summary,
@@ -459,9 +482,19 @@ mod tests {
         events
     }
 
-    fn failed(exit_code: i64) -> TrialOutcome {
-        TrialOutcome::TestsFailed {
-            result: StepExit { exit_code },
+    /// Work that was already failing on the baseline, and still fails on the new main.
+    fn baseline_failing() -> TrialReport {
+        TrialReport {
+            before: Some(TrialOutcome::TestsFailed {}),
+            after: None,
+        }
+    }
+
+    /// A trial whose baseline was clean, so `after` is judged on its own.
+    fn clean_then(after: TrialOutcome) -> TrialReport {
+        TrialReport {
+            before: Some(TrialOutcome::Clean {}),
+            after: Some(after),
         }
     }
 
@@ -562,25 +595,50 @@ mod tests {
     }
 
     #[test]
-    fn the_commit_to_try_is_the_assuming_claims_submitted_commit_else_none() {
+    fn the_commit_to_try_is_the_assuming_claims_submitted_commit_when_the_trial_is_dispatched() {
+        let mut c = core();
+        let (assuming, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        // a1 submits after the verification was recorded: the trial tries that commit.
+        let a1 = c.state.claims[&assuming.0].fence;
+        submit(&mut c, "a1", (assuming, a1), "src/b.rs");
+        // a1's own merge is now due, and has priority; put it in backoff to let the trial run.
+        c.begin_merge(NOW).unwrap();
+        c.merge_outcome(assuming, &MergeOutcome::ServiceUnavailable, NOW);
+        let dispatch = c.begin_verification(NOW).unwrap();
+        assert_eq!(dispatch.commit, Some(CommitId(fork_sha("a1"))));
+
         let mut c = core();
         let (_, challenger) = challenged(&mut c);
         merge_challenger(&mut c, challenger, MAIN);
+        let dispatch = c.begin_verification(NOW).unwrap();
         assert_eq!(
-            c.state.verifications[0].commit, None,
-            "a1 has not submitted"
+            dispatch.commit, None,
+            "a1 has not submitted: the steward reads the fork"
         );
+    }
 
+    #[test]
+    fn a_commit_submitted_before_the_merge_is_the_one_tried() {
         let mut c = core();
         let (assuming, challenger) = challenged(&mut c);
         let a1 = c.state.claims[&assuming.0].fence;
         submit(&mut c, "a1", (assuming, a1), "src/b.rs");
-        // a1's own submission waits behind a2's, so a2 merges first.
         merge_challenger(&mut c, challenger, MAIN);
-        assert_eq!(
-            c.state.verifications[0].commit,
-            Some(CommitId(fork_sha("a1")))
-        );
+        let dispatch = c.begin_merge(NOW).unwrap();
+        c.merge_outcome(dispatch.claim, &MergeOutcome::ServiceUnavailable, NOW);
+        let dispatch = c.begin_verification(NOW).unwrap();
+        assert_eq!(dispatch.commit, Some(CommitId(fork_sha("a1"))));
+    }
+
+    #[test]
+    fn the_trial_carries_main_before_the_challenging_merge_as_its_baseline() {
+        let mut c = core();
+        let (_, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        let dispatch = c.begin_verification(NOW).unwrap();
+        assert_eq!(dispatch.before, CommitId("old".into()));
+        assert_eq!(dispatch.main, CommitId(MAIN.into()));
     }
 
     #[test]
@@ -672,7 +730,7 @@ mod tests {
 
         let first = c.begin_verification(NOW).expect("the first runs");
         assert_eq!(c.begin_verification(NOW), None, "one at a time");
-        c.verification_outcome(first.id, &TrialOutcome::Clean {}, NOW);
+        c.verification_outcome(first.id, &clean_then(TrialOutcome::Clean {}), NOW);
         let second = c.begin_verification(NOW).expect("then the second");
         assert_ne!(first.id, second.id);
         assert_eq!(c.state.verifications[0].claim, assuming.0);
@@ -681,13 +739,32 @@ mod tests {
     #[test]
     fn each_trial_outcome_is_logged_as_the_protocol_outcome_it_is_evidence_for() {
         let cases = [
-            (TrialOutcome::Clean {}, Outcome::Clean),
-            (TrialOutcome::Conflict {}, Outcome::TextualConflict),
-            (failed(1), Outcome::TestsFailed),
-            (failed(124), Outcome::Inconclusive),
-            (TrialOutcome::NothingToTest {}, Outcome::Inconclusive),
-            (TrialOutcome::CommitNotInFork {}, Outcome::Inconclusive),
-            (TrialOutcome::Refused, Outcome::Inconclusive),
+            (clean_then(TrialOutcome::Clean {}), Outcome::Clean),
+            (
+                clean_then(TrialOutcome::Conflict {}),
+                Outcome::TextualConflict,
+            ),
+            (
+                clean_then(TrialOutcome::TestsFailed {}),
+                Outcome::TestsFailed,
+            ),
+            (
+                clean_then(TrialOutcome::NothingToTest {}),
+                Outcome::Inconclusive,
+            ),
+            (
+                clean_then(TrialOutcome::CommitNotInFork {}),
+                Outcome::Inconclusive,
+            ),
+            (
+                TrialReport::stopped(TrialOutcome::Refused),
+                Outcome::Inconclusive,
+            ),
+            (
+                TrialReport::stopped(TrialOutcome::MainUnreachable {}),
+                Outcome::Inconclusive,
+            ),
+            (baseline_failing(), Outcome::Inconclusive),
         ];
         for (trial, expected) in cases {
             let mut c = core();
@@ -715,7 +792,8 @@ mod tests {
         let (_, challenger) = challenged(&mut c);
         merge_challenger(&mut c, challenger, MAIN);
         let dispatch = c.begin_verification(NOW).unwrap();
-        let effects = c.verification_outcome(dispatch.id, &TrialOutcome::Conflict {}, NOW);
+        let effects =
+            c.verification_outcome(dispatch.id, &clean_then(TrialOutcome::Conflict {}), NOW);
         assert!(matches!(
             logged(&effects)[..],
             [EventKind::AssumptionVerified { assumption, .. }]
@@ -726,13 +804,13 @@ mod tests {
     #[test]
     fn the_summary_counts_broken_only_for_verified_conflicts() {
         let cases = [
-            (TrialOutcome::Clean {}, 0),
-            (TrialOutcome::Conflict {}, 1),
-            (failed(1), 1),
-            (failed(137), 0),
-            (TrialOutcome::NothingToTest {}, 0),
-            (TrialOutcome::CommitNotInFork {}, 0),
-            (TrialOutcome::GitFailed {}, 0),
+            (clean_then(TrialOutcome::Clean {}), 0),
+            (clean_then(TrialOutcome::Conflict {}), 1),
+            (clean_then(TrialOutcome::TestsFailed {}), 1),
+            (baseline_failing(), 0),
+            (clean_then(TrialOutcome::NothingToTest {}), 0),
+            (clean_then(TrialOutcome::CommitNotInFork {}), 0),
+            (clean_then(TrialOutcome::GitFailed {}), 0),
         ];
         for (trial, broken) in cases {
             let mut c = core();
@@ -775,7 +853,8 @@ mod tests {
         for retry in 1..=MAX_INFRA_RETRIES {
             let dispatch = c.begin_verification(now).unwrap();
             assert_eq!(dispatch.attempt, retry);
-            let effects = c.verification_outcome(dispatch.id, &TrialOutcome::Clone {}, now);
+            let effects =
+                c.verification_outcome(dispatch.id, &clean_then(TrialOutcome::Clone {}), now);
             assert!(effects.is_empty(), "retry {retry} logs nothing");
             let wait = infra_backoff_ms(retry);
             assert_eq!(c.next_verification_ms(false, now), Some(now + wait));
@@ -784,7 +863,11 @@ mod tests {
         }
         let dispatch = c.begin_verification(now).unwrap();
         assert_eq!(dispatch.attempt, MAX_INFRA_RETRIES + 1);
-        let effects = c.verification_outcome(dispatch.id, &TrialOutcome::ServiceUnavailable, now);
+        let effects = c.verification_outcome(
+            dispatch.id,
+            &clean_then(TrialOutcome::ServiceUnavailable),
+            now,
+        );
         assert_eq!(
             verified_events(&effects),
             [(assuming, Outcome::Inconclusive)]
@@ -870,7 +953,8 @@ mod tests {
         };
         c.handle(&agent("a1"), release, NOW);
 
-        let effects = c.verification_outcome(dispatch.id, &TrialOutcome::Conflict {}, NOW);
+        let effects =
+            c.verification_outcome(dispatch.id, &clean_then(TrialOutcome::Conflict {}), NOW);
 
         assert!(effects.is_empty(), "{effects:?}");
         assert!(!c.has_verification_in_flight(), "the queue is not wedged");
@@ -884,14 +968,14 @@ mod tests {
         let dispatch = c.begin_verification(NOW).unwrap();
 
         assert!(c
-            .verification_outcome(dispatch.id + 1, &TrialOutcome::Conflict {}, NOW)
+            .verification_outcome(dispatch.id + 1, &clean_then(TrialOutcome::Conflict {}), NOW)
             .is_empty());
         assert!(c.has_verification_in_flight());
         assert_eq!(pending(&c), 1);
-        let again = c.verification_outcome(dispatch.id, &TrialOutcome::Clean {}, NOW);
+        let again = c.verification_outcome(dispatch.id, &clean_then(TrialOutcome::Clean {}), NOW);
         assert_eq!(verified_events(&again).len(), 1);
         assert!(c
-            .verification_outcome(dispatch.id, &TrialOutcome::Conflict {}, NOW)
+            .verification_outcome(dispatch.id, &clean_then(TrialOutcome::Conflict {}), NOW)
             .is_empty());
     }
 
@@ -904,7 +988,12 @@ mod tests {
 
         let second = grant(&mut c, "a3", vec![edit("src/a.rs")], Vec::new());
         submit(&mut c, "a3", second, "src/a.rs");
-        merge_challenger(&mut c, second.0, MAIN2);
+        c.begin_merge(NOW).unwrap();
+        let after_first = MergeOutcome::Merged {
+            base: CommitId(MAIN.into()),
+            head: CommitId(MAIN2.into()),
+        };
+        c.merge_outcome(second.0, &after_first, NOW);
 
         assert_eq!(pending(&c), 1, "deduplicated");
         let queued = &c.state.verifications[0];
@@ -949,7 +1038,7 @@ mod tests {
         merge_challenger(&mut c, second.0, MAIN2);
         assert_eq!(pending(&c), 2);
 
-        let done = c.verification_outcome(running.id, &TrialOutcome::Conflict {}, NOW);
+        let done = c.verification_outcome(running.id, &clean_then(TrialOutcome::Conflict {}), NOW);
         assert_eq!(
             verified_events(&done),
             [(assuming, Outcome::TextualConflict)]

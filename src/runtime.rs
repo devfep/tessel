@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use crate::coordinator::{Coordinator as Core, Effect, MergeDispatch, VerifyDispatch};
 use crate::identity;
-use crate::merge::{self, MergeOutcome, TrialOutcome};
+use crate::merge::{self, MergeOutcome, TrialOutcome, TrialReport};
 use crate::protocol::{AgentId, ClaimId, ClientMsg, ServerMsg};
 use crate::shell::{
     self, keep_first, Action, ReplayStep, Session, StoreDecision, StoredSize, Target, Work,
@@ -407,25 +407,26 @@ impl Coordinator {
 
     /// Ask the steward to try the work. A failed call, a non-200 and an answer that is not a
     /// known outcome are all `ServiceUnavailable`: infrastructure, retried with backoff.
-    async fn ask_steward_to_try(&self, dispatch: &VerifyDispatch) -> TrialOutcome {
+    async fn ask_steward_to_try(&self, dispatch: &VerifyDispatch) -> TrialReport {
         let call = self.call_steward_for(
             STEWARD_TRIAL_URL,
             merge::trial_request_body(
                 &self.repo(),
                 &dispatch.agent,
+                &dispatch.before,
                 &dispatch.main,
                 dispatch.commit.as_ref(),
             ),
         );
         match with_timeout(call, STEWARD_CALL_TIMEOUT).await {
-            Some(Ok((status, body))) => TrialOutcome::from_response(status, &body),
+            Some(Ok((status, body))) => TrialReport::from_response(status, &body),
             Some(Err(e)) => {
                 console_error!("coordinator {}: steward trial failed: {e}", self.repo());
-                TrialOutcome::ServiceUnavailable
+                TrialReport::stopped(TrialOutcome::ServiceUnavailable)
             }
             None => {
                 console_error!("coordinator {}: steward trial timed out", self.repo());
-                TrialOutcome::ServiceUnavailable
+                TrialReport::stopped(TrialOutcome::ServiceUnavailable)
             }
         }
     }

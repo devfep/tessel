@@ -1,6 +1,7 @@
 import {
   baseCommand,
   changedFilesCommand,
+  cleanCommand,
   cloneCommand,
   commitExistsCommand,
   conflictsCommand,
@@ -13,6 +14,7 @@ import {
   pushCommand,
   rebaseCommand,
   reachableCommand,
+  resetToCommand,
   type GitCommand,
   type MergeSources,
 } from "./merge-commands";
@@ -28,6 +30,7 @@ import {
   type MergeOutcome,
   type Sha,
   type TrialOutcome,
+  type TrialReport,
 } from "./merge-types";
 import { runInstallThenTest, runStepThenRevoke, type StepOutcome } from "./run-steps";
 
@@ -247,61 +250,105 @@ async function forkHead(deps: TrialDeps): Promise<Sha | TrialOutcome> {
   return shaOf(result) ?? { outcome: "git_failed", result };
 }
 
-/** Checks that `main` is a commit on main's history, so a trial is against a real state of main. */
+/**
+ * Checks that `main` is a commit on main's history, so a trial is against a real state of main.
+ * Any answer but yes is `main_unreachable`, which is final.
+ */
 async function pinMain(deps: TrialDeps, main: Sha): Promise<TrialOutcome | undefined> {
   const onMain = await deps.run(onMainCommand(deps.sources.workspace, main));
-  return onMain.exitCode === 0 ? undefined : { outcome: "git_failed", result: onMain };
+  return onMain.exitCode === 0 ? undefined : { outcome: "main_unreachable", main };
+}
+
+/** A report of a trial that stopped before either run. */
+function stopped(after: TrialOutcome): TrialReport {
+  return { before: null, after };
+}
+
+/** Leaves the work tree as a fresh clone would have it, with HEAD on `main`, for the next run. */
+async function resetWorkspace(deps: TrialDeps, main: Sha): Promise<TrialOutcome | undefined> {
+  const { workspace } = deps.sources;
+  for (const command of [resetToCommand(workspace, main), cleanCommand(workspace)]) {
+    const result = await deps.run(command);
+    if (result.exitCode !== 0) {
+      return { outcome: "git_failed", result };
+    }
+  }
+  return undefined;
+}
+
+/** Replays `commit` onto `main` and tests it. */
+async function tryOnMain(deps: TrialDeps, main: Sha, commit: Sha): Promise<TrialOutcome> {
+  const rebased = await rebaseOntoMain(deps, main, commit);
+  switch (rebased.outcome) {
+    case "conflict":
+      return { ...rebased, commit };
+    case "git_failed":
+      return rebased;
+    case "rebased":
+      return testRebased(deps, rebased, commit);
+  }
 }
 
 /**
- * Tries a fork's commit on main as it was at `main`: the steps of `runMerge` up to and including
- * the tests, and nothing after them. It does not push, does not touch the write token (`deps`
- * cannot) and does not check coverage: it verifies, it does not merge.
+ * Tries a fork's commit on main at `before` and, if that is clean, on main at `main`: the steps
+ * of `runMerge` up to and including the tests, twice, and nothing after them. It does not push,
+ * does not touch the write token (`deps` cannot) and does not check coverage: it verifies, it
+ * does not merge. The baseline run is what lets a caller tell "this merge broke the work" from
+ * "the work was already broken".
  *
  * Order, which the tests pin:
  * 1. Clone main and fetch the fork with read tokens, then revoke both before anything else runs.
- * 2. Check that `main` is on main's history.
+ * 2. Check that `before` and `main` are on main's history.
  * 3. Take `commit`, or the head of the fork's default branch if there is none, and verify it is
  *    reachable from that branch.
- * 4. Rebase `merge-base..commit` onto `main` with the fixed committer, as a merge does.
- * 5. Run the dependency check and the tests.
+ * 4. On `before`: rebase `merge-base..commit` onto it with the fixed committer, as a merge does,
+ *    then run the dependency check and the tests.
+ * 5. If that was clean and `main` differs from `before`: clean the work tree, and do step 4 on
+ *    `main`.
  *
  * @param deps The sandbox and read-token boundaries.
+ * @param before The sha of main to take as the baseline.
  * @param main The sha of main to try the commit on.
  * @param commit The commit to try, or `undefined` for the fork's head.
- * @returns The outcome. Which outcomes are evidence is documented on `TrialOutcome`.
+ * @returns The report. Which outcomes are evidence is documented on `TrialOutcome`.
  * @throws If a read token cannot be revoked, or a boundary throws.
  */
 export async function runTrial(
   deps: TrialDeps,
+  before: Sha,
   main: Sha,
   commit: Sha | undefined,
-): Promise<TrialOutcome> {
+): Promise<TrialReport> {
   const fetched = await runStepThenRevoke(() => fetchSources(deps), deps.revokeReadTokens);
   if (fetched.exitCode !== 0) {
-    return { outcome: "clone", result: fetched };
+    return stopped({ outcome: "clone", result: fetched });
   }
-  const unpinned = await pinMain(deps, main);
-  if (unpinned !== undefined) {
-    return unpinned;
+  for (const sha of before === main ? [main] : [before, main]) {
+    const unpinned = await pinMain(deps, sha);
+    if (unpinned !== undefined) {
+      return stopped(unpinned);
+    }
   }
   const tried = commit ?? (await forkHead(deps));
   if (typeof tried !== "string") {
-    return tried;
+    return stopped(tried);
   }
   const unverified = await verifyCommit(deps, tried);
   if (unverified !== undefined) {
-    return unverified;
+    return stopped(unverified);
   }
-  const rebased = await rebaseOntoMain(deps, main, tried);
-  switch (rebased.outcome) {
-    case "conflict":
-      return { ...rebased, commit: tried };
-    case "git_failed":
-      return rebased;
-    case "rebased":
-      return testRebased(deps, rebased, tried);
+  const baseline = await tryOnMain(deps, before, tried);
+  if (baseline.outcome !== "clean") {
+    return { before: baseline, after: null };
   }
+  if (before === main) {
+    return { before: baseline, after: baseline };
+  }
+  const unclean = await resetWorkspace(deps, main);
+  if (unclean !== undefined) {
+    return { before: baseline, after: unclean };
+  }
+  return { before: baseline, after: await tryOnMain(deps, main, tried) };
 }
 
 async function testRebased(deps: TrialDeps, rebased: Rebased, commit: Sha): Promise<TrialOutcome> {

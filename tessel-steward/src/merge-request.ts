@@ -28,9 +28,9 @@ export async function handleMergeRequest(env: Env, repo: string, body: unknown):
 }
 
 /**
- * Validates `{ "fork", "main", "commit"? }` for `repo`, checks that the fork is a fork of `repo`,
+ * Validates `{ "fork", "before", "main", "commit"? }` for `repo`, checks that the fork is a fork of `repo`,
  * and runs a trial in a fresh test runner: the commit (or the fork's head) tested on main at
- * `main`, never merged. Answers 200 with the `TrialOutcome` or 400 with an error.
+ * `before` and at `main`, never merged. Answers 200 with the `TrialReport` or 400 with an error.
  */
 export async function handleTrialRequest(env: Env, repo: string, body: unknown): Promise<Response> {
   if (!isValidName(repo)) {
@@ -40,11 +40,11 @@ export async function handleTrialRequest(env: Env, repo: string, body: unknown):
   if (!parsed.ok) {
     return json({ error: parsed.error }, 400);
   }
-  const { fork, main, commit } = parsed.request;
+  const { fork, before, main, commit } = parsed.request;
   using handle = await env.ARTIFACTS.get(fork);
   if (!isForkOf(repo, await handle.info())) {
     return json({ error: `${fork} is not a fork of ${repo}` }, 400);
   }
   const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
-  return json(await runner.trial(repo, fork, main, commit), 200);
+  return json(await runner.trial(repo, fork, before, main, commit), 200);
 }

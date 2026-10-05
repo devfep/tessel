@@ -10,14 +10,17 @@ const TRIAL_PATH = "/trial";
  * URL, so it needs no admin token: only a Worker that binds to it can call it. It accepts two
  * requests, both `POST`:
  * - any path but `/trial`: `{ "repo", "fork", "commit", "scopes" }`, answered with the `MergeOutcome`.
- * - `/trial`: `{ "repo", "fork", "main", "commit"? }`, answered with the `TrialOutcome`. A trial
+ * - `/trial`: `{ "repo", "fork", "before", "main", "commit"? }`, answered with the `TrialReport`. A trial
  *   tests a fork's commit on main and never pushes.
  */
 export class MergeService extends WorkerEntrypoint<Env> {
   override async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST") {
       return Response.json(
-        { error: "expected POST {repo, fork, commit, scopes} or POST /trial {repo, fork, main}" },
+        {
+          error:
+            "expected POST {repo, fork, commit, scopes} or POST /trial {repo, fork, before, main}",
+        },
         { status: 405 },
       );
     }

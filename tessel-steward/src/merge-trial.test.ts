@@ -14,6 +14,7 @@ function sha(character: string): Sha {
 }
 
 const MAIN = sha("6");
+const BEFORE = sha("8");
 const MERGE_BASE = sha("2");
 const COMMIT = sha("3");
 const HEAD = sha("4");
@@ -29,6 +30,8 @@ type GitStep =
   | "mergebase"
   | "rebase"
   | "conflicts"
+  | "checkout"
+  | "clean"
   | "head"
   | "other";
 
@@ -43,6 +46,8 @@ function gitStep(command: GitCommand): GitStep {
     ["--is-ancestor", "reachable"],
     [" merge-base ", "mergebase"],
     [" rebase ", "rebase"],
+    [" checkout ", "checkout"],
+    [" clean ", "clean"],
     ["--diff-filter=U", "conflicts"],
     ["HEAD^{commit}", "head"],
   ];
@@ -67,6 +72,8 @@ function harness(overrides: Partial<Plan> = {}) {
     reachable: { exitCode: 0 },
     mergebase: { exitCode: 0, stdout: `${MERGE_BASE}\n` },
     rebase: { exitCode: 0 },
+    checkout: { exitCode: 0 },
+    clean: { exitCode: 0 },
     conflicts: { exitCode: 0, stdout: "" },
     head: { exitCode: 0, stdout: `${HEAD}\n` },
     other: { exitCode: 0 },
@@ -104,10 +111,19 @@ function harness(overrides: Partial<Plan> = {}) {
   return { deps, events, commands };
 }
 
+/** A trial whose baseline is the main it tries: one run, whose outcome is both sides. */
+async function trialOnce(deps: TrialDeps, main: Sha, commit: Sha | undefined) {
+  const report = await runTrial(deps, main, main, commit);
+  if (report.before !== null && report.after !== null) {
+    expect(report.before).toEqual(report.after);
+  }
+  return report.after ?? report.before;
+}
+
 describe("runTrial", () => {
   it("fetches, revokes the reads, pins main, verifies, rebases onto the given main, then tests", async () => {
     const { deps, events } = harness();
-    const outcome = await runTrial(deps, MAIN, COMMIT);
+    const outcome = await trialOnce(deps, MAIN, COMMIT);
     expect(outcome).toEqual({ outcome: "clean", base: MAIN, head: HEAD, commit: COMMIT });
     expect(events).toEqual([
       "git:clone",
@@ -126,7 +142,7 @@ describe("runTrial", () => {
 
   it("rebases the commit onto the main it was given, not onto the main it cloned", async () => {
     const { deps, commands } = harness();
-    await runTrial(deps, MAIN, COMMIT);
+    await trialOnce(deps, MAIN, COMMIT);
     const rebase = commands.find((command) => gitStep(command) === "rebase");
     expect(rebase?.argv.slice(-4)).toEqual(["--onto", MAIN, MERGE_BASE, COMMIT]);
     const pin = commands.find((command) => gitStep(command) === "onmain");
@@ -136,7 +152,7 @@ describe("runTrial", () => {
   it("never runs a push, whatever the tests say", async () => {
     for (const test of [0, 1, 124]) {
       const { deps, commands } = harness({ test });
-      await runTrial(deps, MAIN, COMMIT);
+      await trialOnce(deps, MAIN, COMMIT);
       const verbs = commands.flatMap((command) => command.argv);
       expect(verbs).not.toContain("push");
       expect(verbs.some((arg) => arg.startsWith("--force-with-lease"))).toBe(false);
@@ -155,12 +171,12 @@ describe("runTrial", () => {
 
   it("is clean when the rebased commit passes the tests", async () => {
     const { deps } = harness();
-    expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({ outcome: "clean" });
+    expect(await trialOnce(deps, MAIN, COMMIT)).toMatchObject({ outcome: "clean" });
   });
 
   it("reports failing tests with the capped output, and 124 as a test failure of the step", async () => {
     const { deps } = harness({ test: 124 });
-    expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({
+    expect(await trialOnce(deps, MAIN, COMMIT)).toMatchObject({
       outcome: "tests_failed",
       base: MAIN,
       head: HEAD,
@@ -173,7 +189,7 @@ describe("runTrial", () => {
     const { deps, events } = harness({
       git: { rebase: { exitCode: 1 }, conflicts: { exitCode: 0, stdout: "src/a.ts\0b.md\0" } },
     });
-    expect(await runTrial(deps, MAIN, COMMIT)).toEqual({
+    expect(await trialOnce(deps, MAIN, COMMIT)).toEqual({
       outcome: "conflict",
       base: MAIN,
       commit: COMMIT,
@@ -185,7 +201,7 @@ describe("runTrial", () => {
   it("reports a commit that is not on the fork as commit_not_in_fork, and runs nothing after", async () => {
     for (const git of [{ exists: { exitCode: 1 } }, { reachable: { exitCode: 1 } }]) {
       const { deps, events } = harness({ git });
-      expect(await runTrial(deps, MAIN, COMMIT)).toEqual({ outcome: "commit_not_in_fork" });
+      expect(await trialOnce(deps, MAIN, COMMIT)).toEqual({ outcome: "commit_not_in_fork" });
       expect(events).not.toContain("git:rebase");
       expect(events.some((event) => event.startsWith("package:"))).toBe(false);
     }
@@ -193,7 +209,7 @@ describe("runTrial", () => {
 
   it("reports nothing_to_test when the replay leaves main unchanged, instead of testing main", async () => {
     const { deps, events } = harness({ git: { head: { exitCode: 0, stdout: `${MAIN}\n` } } });
-    expect(await runTrial(deps, MAIN, COMMIT)).toEqual({
+    expect(await trialOnce(deps, MAIN, COMMIT)).toEqual({
       outcome: "nothing_to_test",
       base: MAIN,
       commit: COMMIT,
@@ -203,24 +219,24 @@ describe("runTrial", () => {
 
   it("reports a dependency refusal as install, not as a test failure", async () => {
     const { deps } = harness({ install: 10 });
-    const outcome = await runTrial(deps, MAIN, COMMIT);
+    const outcome = await trialOnce(deps, MAIN, COMMIT);
     expect(outcome).toMatchObject({ outcome: "install", base: MAIN, head: HEAD });
   });
 
   it("reports a failed clone or fetch as clone", async () => {
     for (const step of ["clone", "fetch"] as const) {
       const { deps, events } = harness({ git: { [step]: { exitCode: 128 } } });
-      expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({ outcome: "clone" });
+      expect(await trialOnce(deps, MAIN, COMMIT)).toMatchObject({ outcome: "clone" });
       expect(events).not.toContain("git:onmain");
     }
   });
 
-  it("reports a main that is not on main's history as git_failed, and tries nothing", async () => {
+  it("reports a main that is not on main's history as main_unreachable, and tries nothing", async () => {
     for (const exitCode of [1, 128]) {
       const { deps, events } = harness({ git: { onmain: { exitCode } } });
-      expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({
-        outcome: "git_failed",
-        result: { exitCode },
+      expect(await trialOnce(deps, MAIN, COMMIT)).toEqual({
+        outcome: "main_unreachable",
+        main: MAIN,
       });
       expect(events).not.toContain("git:rebase");
     }
@@ -228,12 +244,12 @@ describe("runTrial", () => {
 
   it("reports a git failure that is not a conflict as git_failed", async () => {
     const { deps } = harness({ git: { rebase: { exitCode: 1 }, conflicts: { exitCode: 0 } } });
-    expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({ outcome: "git_failed" });
+    expect(await trialOnce(deps, MAIN, COMMIT)).toMatchObject({ outcome: "git_failed" });
   });
 
   it("uses the fork's head when no commit is named, and says which commit that was", async () => {
     const { deps, commands } = harness();
-    const outcome = await runTrial(deps, MAIN, undefined);
+    const outcome = await trialOnce(deps, MAIN, undefined);
     expect(outcome).toEqual({ outcome: "clean", base: MAIN, head: HEAD, commit: FORK_HEAD });
     const rebase = commands.find((command) => gitStep(command) === "rebase");
     expect(rebase?.argv.slice(-4)).toEqual(["--onto", MAIN, MERGE_BASE, FORK_HEAD]);
@@ -241,19 +257,127 @@ describe("runTrial", () => {
 
   it("does not read the fork's head when a commit is named", async () => {
     const { deps, events } = harness();
-    await runTrial(deps, MAIN, COMMIT);
+    await trialOnce(deps, MAIN, COMMIT);
     expect(events).not.toContain("git:forkhead");
   });
 
   it("reports an unreadable fork head as git_failed", async () => {
     const { deps } = harness({ git: { forkhead: { exitCode: 128 } } });
-    expect(await runTrial(deps, MAIN, undefined)).toMatchObject({ outcome: "git_failed" });
+    expect(await trialOnce(deps, MAIN, undefined)).toMatchObject({ outcome: "git_failed" });
   });
 
   it("runs nothing from the repo when a read token cannot be revoked", async () => {
     const { deps, events } = harness({ revokedReads: false });
-    await expect(runTrial(deps, MAIN, COMMIT)).rejects.toThrow(REVOKE_FAILED_MESSAGE);
+    await expect(trialOnce(deps, MAIN, COMMIT)).rejects.toThrow(REVOKE_FAILED_MESSAGE);
     expect(events).not.toContain("git:onmain");
     expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+  });
+
+  describe("with a baseline", () => {
+    it("tries the commit on before first, then cleans the work tree and tries it on main", async () => {
+      const { deps, events, commands } = harness();
+      const report = await runTrial(deps, BEFORE, MAIN, COMMIT);
+      expect(report.before).toMatchObject({ outcome: "clean", base: BEFORE });
+      expect(report.after).toMatchObject({ outcome: "clean", base: MAIN });
+      expect(events).toEqual([
+        "git:clone",
+        "git:fetch",
+        "revoke-reads",
+        "git:onmain",
+        "git:onmain",
+        "git:exists",
+        "git:reachable",
+        "git:mergebase",
+        "git:rebase",
+        "git:head",
+        "package:install",
+        "package:test",
+        "git:checkout",
+        "git:clean",
+        "git:mergebase",
+        "git:rebase",
+        "git:head",
+        "package:install",
+        "package:test",
+      ]);
+      const rebases = commands.filter((command) => gitStep(command) === "rebase");
+      expect(rebases.map((command) => command.argv.slice(-4))).toEqual([
+        ["--onto", BEFORE, MERGE_BASE, COMMIT],
+        ["--onto", MAIN, MERGE_BASE, COMMIT],
+      ]);
+      const checkout = commands.find((command) => gitStep(command) === "checkout");
+      expect(checkout?.argv).toContain(MAIN);
+    });
+
+    it("reports failing tests on main next to a clean baseline", async () => {
+      const { deps } = harness();
+      let tests = 0;
+      deps.runPackageStep = async (step) =>
+        makeOutcome(
+          step,
+          step === "test" && ++tests === 2 ? 1 : 0,
+          { text: "", truncated: false },
+          { text: "", truncated: false },
+        );
+      const report = await runTrial(deps, BEFORE, MAIN, COMMIT);
+      expect(report.before).toMatchObject({ outcome: "clean" });
+      expect(report.after).toMatchObject({ outcome: "tests_failed", base: MAIN });
+    });
+
+    it("does not try main when the baseline is not clean: the work was already failing", async () => {
+      for (const plan of [
+        { test: 1 },
+        { git: { rebase: { exitCode: 1 }, conflicts: { exitCode: 0, stdout: "a\0" } } },
+      ]) {
+        const { deps, events } = harness(plan);
+        const report = await runTrial(deps, BEFORE, MAIN, COMMIT);
+        expect(report.before).not.toBeNull();
+        expect(report.before?.outcome).not.toBe("clean");
+        expect(report.after).toBeNull();
+        expect(events).not.toContain("git:checkout");
+      }
+    });
+
+    it("pins both mains before any run, and stops with no run when either is unreachable", async () => {
+      for (const failing of [1, 2]) {
+        let pins = 0;
+        const { deps, events } = harness();
+        const run = deps.run;
+        deps.run = async (command) => {
+          if (gitStep(command) === "onmain" && ++pins === failing) {
+            events.push("git:onmain");
+            return {
+              exitCode: 1,
+              stdout: "",
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            };
+          }
+          return run(command);
+        };
+        const report = await runTrial(deps, BEFORE, MAIN, COMMIT);
+        expect(report).toEqual({
+          before: null,
+          after: { outcome: "main_unreachable", main: failing === 1 ? BEFORE : MAIN },
+        });
+        expect(events).not.toContain("git:rebase");
+      }
+    });
+
+    it("reports a work tree that cannot be cleaned as git_failed on main, keeping the baseline", async () => {
+      const { deps } = harness({ git: { clean: { exitCode: 1 } } });
+      const report = await runTrial(deps, BEFORE, MAIN, COMMIT);
+      expect(report.before).toMatchObject({ outcome: "clean" });
+      expect(report.after).toMatchObject({ outcome: "git_failed" });
+    });
+
+    it("reports a commit that is not on the fork with no baseline", async () => {
+      const { deps } = harness({ git: { reachable: { exitCode: 1 } } });
+      expect(await runTrial(deps, BEFORE, MAIN, COMMIT)).toEqual({
+        before: null,
+        after: { outcome: "commit_not_in_fork" },
+      });
+    });
   });
 });

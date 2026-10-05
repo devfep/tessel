@@ -54,12 +54,14 @@ export function parseMergeRequest(body: unknown): ParsedMergeRequest {
 }
 
 /**
- * A request to try `commit` of `fork` on top of main as it was at `main`, without merging it.
- * Without `commit` the trial uses the head of the fork's default branch, and the outcome says
- * which commit that was.
+ * A request to try `commit` of `fork` on top of main as it was at `main`, without merging it, and
+ * also on main as it was at `before`, the baseline: a failure counts against the work only if the
+ * same commit was clean on `before`. Without `commit` the trial uses the head of the fork's
+ * default branch, and the outcome says which commit that was.
  */
 export interface TrialRequest {
   fork: string;
+  before: Sha;
   main: Sha;
   commit?: Sha;
 }
@@ -67,29 +69,38 @@ export interface TrialRequest {
 export type ParsedTrialRequest = { ok: true; request: TrialRequest } | { ok: false; error: string };
 
 /**
- * Validates `{ "fork": <repo name>, "main": <sha>, "commit"?: <sha> }`. A `commit` that is present
- * must be a sha: it is never taken to mean "the fork's head".
+ * Validates `{ "fork": <repo name>, "before": <sha>, "main": <sha>, "commit"?: <sha> }`. A `commit`
+ * that is present must be a sha: it is never taken to mean "the fork's head".
  */
 export function parseTrialRequest(body: unknown): ParsedTrialRequest {
   if (typeof body !== "object" || body === null) {
-    return { ok: false, error: 'expected a JSON object {"fork", "main", "commit"?}' };
+    return { ok: false, error: 'expected a JSON object {"fork", "before", "main", "commit"?}' };
   }
-  const { fork, main, commit } = body as { fork?: unknown; main?: unknown; commit?: unknown };
+  const { fork, before, main, commit } = body as {
+    fork?: unknown;
+    before?: unknown;
+    main?: unknown;
+    commit?: unknown;
+  };
   if (typeof fork !== "string" || !isValidName(fork)) {
     return { ok: false, error: "fork must be a repo name" };
+  }
+  const beforeSha = parseSha(before);
+  if (beforeSha === undefined) {
+    return { ok: false, error: "before must be 40 lowercase hex characters" };
   }
   const mainSha = parseSha(main);
   if (mainSha === undefined) {
     return { ok: false, error: "main must be 40 lowercase hex characters" };
   }
   if (commit === undefined || commit === null) {
-    return { ok: true, request: { fork, main: mainSha } };
+    return { ok: true, request: { fork, before: beforeSha, main: mainSha } };
   }
   const commitSha = parseSha(commit);
   if (commitSha === undefined) {
     return { ok: false, error: "commit must be 40 lowercase hex characters when present" };
   }
-  return { ok: true, request: { fork, main: mainSha, commit: commitSha } };
+  return { ok: true, request: { fork, before: beforeSha, main: mainSha, commit: commitSha } };
 }
 
 /**
@@ -174,6 +185,8 @@ export type MergeOutcome =
  * - `nothing_to_test`: replaying the commit left main unchanged, so the commit adds nothing to
  *   test. Running main's own tests here would blame the commit for main.
  * - `commit_not_in_fork`: the commit is not reachable from the fork's default branch.
+ * - `main_unreachable`: a main sha of the request is not on main's history, so there is no state
+ *   of main to try the commit on. Not retried: asking again cannot change it.
  *
  * Infrastructure (the attempt did not finish): `clone`, `git_failed` (including a `main` that is
  * not on main's history) and `install`.
@@ -186,6 +199,20 @@ export type TrialOutcome =
   | { outcome: "tests_failed"; base: Sha; head: Sha; commit: Sha; result: StepOutcome }
   | { outcome: "nothing_to_test"; base: Sha; commit: Sha }
   | { outcome: "commit_not_in_fork" }
+  | { outcome: "main_unreachable"; main: Sha }
   | { outcome: "clone"; result: StepOutcome }
   | { outcome: "git_failed"; result: GitResult }
   | { outcome: "install"; base: Sha; head: Sha; commit: Sha; result: StepOutcome };
+
+/**
+ * What one trial call reports: the commit tried on main at `before`, then on main at `main`.
+ * - Both ran: `before` and `after` are their outcomes.
+ * - `before` was not `clean`: `after` is `null`. The work was already failing on the baseline, so
+ *   the second run would prove nothing about the merge that moved main.
+ * - The trial stopped before either ran (clone, an unreachable main, an unreadable or missing
+ *   commit): `before` is `null` and `after` says why.
+ */
+export interface TrialReport {
+  before: TrialOutcome | null;
+  after: TrialOutcome | null;
+}
