@@ -592,6 +592,30 @@ impl Agent {
         self.hook_at(tool, key, path, &self.path, &["--root", &root])
     }
 
+    /// The hook JSON with no `cwd` field, run from `process_cwd`, which may be outside the worktree.
+    pub fn hook_without_cwd(
+        &self,
+        tool: &str,
+        key: &str,
+        path: &str,
+        process_cwd: &Path,
+    ) -> Result<Done> {
+        use std::io::Write;
+        let root = self.root().display().to_string();
+        let event = serde_json::json!({ "tool_name": tool, "tool_input": { key: path } });
+        let mut child = self
+            .command(&["hook", "pre-edit", "--root", &root])
+            .current_dir(process_cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut pipe) = child.stdin.take() {
+            pipe.write_all(event.to_string().as_bytes())?;
+        }
+        Ok(Done::from(child.wait_with_output()?))
+    }
+
     /// Like `hook`, with the event's `cwd` and the hook's extra arguments chosen by the caller.
     pub fn hook_at(
         &self,

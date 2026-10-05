@@ -61,7 +61,7 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
         Command::Stop => stop(&cwd).await,
         Command::Hook {
             action: HookAction::PreEdit { root },
-        } => pre_edit(&cwd, root).await,
+        } => pre_edit(root).await,
         Command::Hook {
             action: HookAction::Install,
         } => install(&cwd),
@@ -426,7 +426,7 @@ fn inbox(cwd: &Path, all: bool) -> anyhow::Result<ExitCode> {
 
 // ---------- hook ----------
 
-async fn pre_edit(cwd: &Path, root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
+async fn pre_edit(root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
     let root = root.or_else(|| {
         std::env::var_os("CLAUDE_PROJECT_DIR")
             .filter(|dir| !dir.is_empty())
@@ -434,7 +434,7 @@ async fn pre_edit(cwd: &Path, root: Option<PathBuf>) -> anyhow::Result<ExitCode>
     });
     let mut stdin = Vec::new();
     let read = std::io::stdin().read_to_end(&mut stdin).map(|_| stdin);
-    let verdict = hook::pre_edit(read, cwd, root.as_deref()).await;
+    let verdict = hook::pre_edit(read, root.as_deref()).await;
     if verdict.exit != 0 {
         complain(&verdict.message);
     }

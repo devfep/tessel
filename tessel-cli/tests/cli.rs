@@ -970,6 +970,22 @@ async fn a_relative_path_needs_a_usable_working_directory() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relative_path_without_a_cwd_is_blocked_whatever_the_process_directory() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("no cwd")?;
+    let outside = tempfile::tempdir()?;
+    let done = a1.hook_without_cwd("Edit", "file_path", "src/a.rs", outside.path())?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    assert!(done.stderr.contains("not usable"), "{}", done.stderr);
+    assert_eq!(a1.held_claims()?, 0);
+    // An absolute path needs no cwd.
+    let absolute = a1.root().join("src/a.rs").display().to_string();
+    let done = a1.hook_without_cwd("Edit", "file_path", &absolute, outside.path())?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(a1.held_claims()?, 1);
+    Ok(())
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_hook_without_a_root_blocks_unless_claude_names_the_project() -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
     a1.start("holder")?;

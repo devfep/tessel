@@ -162,21 +162,15 @@ struct HookInput {
 }
 
 /// Decides one `PreToolUse` event. `stdin` is the hook JSON as read from standard input;
-/// `process_cwd` is used when the event carries no `cwd`. `root` is the guarded worktree: whether
-/// an edit is inside it is decided from the edited file's resolved path, never from the cwd.
-pub async fn pre_edit(
-    stdin: std::io::Result<Vec<u8>>,
-    process_cwd: &Path,
-    root: Option<&Path>,
-) -> Verdict {
-    decide(stdin, process_cwd, root).await.verdict()
+/// a relative path is read from the event's `cwd` and never from this process's own directory,
+/// which can be anywhere; an event with no `cwd` and a relative path is blocked. `root` is the
+/// guarded worktree: whether an edit is inside it is decided from the edited file's resolved
+/// path, never from the cwd.
+pub async fn pre_edit(stdin: std::io::Result<Vec<u8>>, root: Option<&Path>) -> Verdict {
+    decide(stdin, root).await.verdict()
 }
 
-async fn decide(
-    stdin: std::io::Result<Vec<u8>>,
-    process_cwd: &Path,
-    root: Option<&Path>,
-) -> Outcome {
+async fn decide(stdin: std::io::Result<Vec<u8>>, root: Option<&Path>) -> Outcome {
     let bytes = match stdin {
         Ok(bytes) => bytes,
         Err(e) => return Outcome::UnreadableInput(e.to_string()),
@@ -196,9 +190,7 @@ async fn decide(
             key,
         };
     };
-    let cwd = input
-        .cwd
-        .map_or_else(|| process_cwd.to_path_buf(), Into::into);
+    let cwd = input.cwd.map(std::path::PathBuf::from);
     let Some(root) = root else {
         return Outcome::NoRoot;
     };
@@ -206,9 +198,16 @@ async fn decide(
         Ok(worktree) => worktree,
         Err(e) => return Outcome::Worktree(e),
     };
-    if Path::new(raw).is_relative() && !(cwd.is_absolute() && cwd.is_dir()) {
-        return Outcome::CwdUnusable(cwd.display().to_string());
-    }
+    let cwd = match cwd {
+        Some(cwd) if cwd.is_absolute() && cwd.is_dir() => cwd,
+        Some(cwd) if Path::new(raw).is_relative() => {
+            return Outcome::CwdUnusable(cwd.display().to_string());
+        }
+        None if Path::new(raw).is_relative() => {
+            return Outcome::CwdUnusable("(the hook input has no cwd)".to_string());
+        }
+        Some(_) | None => worktree.root.clone(),
+    };
     let rel = match locate(&worktree.root, &cwd, raw) {
         Located::Inside(rel) => rel,
         Located::Outside => return Outcome::OutsideWorktree,
@@ -300,6 +299,9 @@ pub fn install(worktree: &Worktree, exe: &Path) -> Result<Installed, InstallErro
             reason: "the tessel binary or the worktree path is not valid UTF-8".into(),
         });
     };
+    // Never write a hook `timeout` below `HOOK_TIMEOUT`: Claude Code does not block the edit when a
+    // hook times out, so a short timeout would let an edit through while the daemon is still
+    // answering.
     let command = format!(
         "{} {HOOK_SUBCOMMAND} --root {}",
         shell_quote(exe),

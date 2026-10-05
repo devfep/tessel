@@ -54,7 +54,9 @@ keeps its old intent. To change the intent, run `tessel stop` and then `tessel s
 The hook is pinned to the worktree where you ran `tessel hook install` (`--root`), so it guards
 that worktree whatever directory the tool runs from. Run `tessel hook install` again after moving
 the worktree, or if the hook says it does not know which worktree it guards (a hook installed by
-an older `tessel` has no root).
+an older `tessel` has no root). For such an old install the hook falls back to
+`$CLAUDE_PROJECT_DIR`, which names the project root and may be the main checkout rather than your
+worktree; rerun `tessel hook install` to pin the root.
 
 The hook does not see changes made through shell commands (`sed`, redirects, formatters). Claim
 those files yourself first. It resolves symlinks, so a link to a file counts as that file. It
