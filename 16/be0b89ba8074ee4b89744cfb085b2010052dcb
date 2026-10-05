@@ -1,0 +1,4 @@
+intent: a hook event without cwd and a relative path is blocked (CwdUnusable, exit 2) instead of resolving against the hook process's directory
+assumes: Claude Code sends cwd in every PreToolUse event
+rejected: keeping the fallback only when it lies inside the worktree: the process cwd is not evidence of anything
+evidence: cargo test -p tessel-cli --test cli a_relative_path passed; clippy clean; dogfood: claims 15 on tessel-dogfood
