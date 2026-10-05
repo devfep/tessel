@@ -1,0 +1,5 @@
+intent: review fixes: record unrun tasks, scripted reviewer only local and opt-in, off mode parallel with agents-back branch point, waited_ms measures claim to answer, steward URL validated, exhaustive EventKind matches, pinned report cells
+assumes: the log is the record, so a timed-out task whose claim the log shows merged or rejected is counted as that
+rejected: keeping a default scripted reviewer (it would need adding to the global REVIEWERS); branching every off task from the start commit (unfair to off)
+evidence: cargo test -p tessel-swarm 57 passed; clippy -D warnings clean; fmt clean
+dogfood: agent harness-1, claim 30 on tessel-swarm/ (edit-signature, create) and tessel-swarm/src/events.rs (create), fence 49
