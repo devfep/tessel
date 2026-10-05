@@ -1,0 +1,4 @@
+intent: COORD-1 review fixes: Hello identity from caller, StaleFence hides current fence, lock table derived and unpersisted, BTreeMap claims, explicit conflict order, family dispatch
+assumes: COORD-4 binds identity per connection and passes it on every call including Hello
+rejected: serde into=CoordinatorState (clones whole state per serialize), so manual Serialize on the persisted part; HashSet dedupe in find_conflicts, replaced by sort+dedup on the order key
+evidence: cargo test 46 passed (17 protocol + 28 unit + 1 proptest); mutants M2, M9, stale-fence-leak, hello-logs-declared each fail one named test; clippy 0 hits in coordinator.rs; wasm warnings 10
