@@ -33,6 +33,10 @@ pub enum Policy {
     Wait,
     /// Put the task back and pick other work; try it again later.
     Skip,
+    /// Claim with `OnConflict::Shadow`: when denied, do the work in the agent's own fork, push
+    /// and submit it for verification only, and never expect a merge. The run then waits for the
+    /// coordinator to try that work against what blocked it. Experiment runs only.
+    Shadow,
 }
 
 #[derive(Debug, Clone)]
@@ -41,7 +45,8 @@ pub struct OnConfig {
     pub policy: Policy,
     /// Time an agent spends on a task between its claim and its commit.
     pub work_ms: u64,
-    /// Longest an agent waits for a grant, and again for a merge.
+    /// Longest an agent waits for a grant, and again for a merge. Under the shadow policy it is
+    /// also the longest the run waits, once the agents are done, for shadow trials to be logged.
     pub task_timeout: Duration,
     /// How often a skipped task may be denied before its agent gives up on it.
     pub max_denials: u32,
@@ -77,6 +82,8 @@ pub enum Resolution {
     Failed,
     /// No agent was left to take it: every agent had stopped.
     NotRun,
+    /// Denied under the shadow policy: worked and submitted for verification, never to merge.
+    Shadowed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,6 +98,17 @@ pub struct TaskResult {
     /// attempts. Time spent preparing the claim and backing off between attempts is not in it.
     pub waited_ms: u64,
     pub note: Option<String>,
+}
+
+/// What the log says about shadow claims. Zero everywhere unless the shadow policy ran.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ShadowTrials {
+    /// `ClaimShadowed` events.
+    pub claims: u64,
+    /// `DenialVerified` events the trial could not judge. They count nothing.
+    pub inconclusive: u64,
+    /// Shadow claims with no `DenialVerified` event: no trial ran for them.
+    pub never_verified: u64,
 }
 
 pub struct OnResult {
@@ -109,6 +127,7 @@ pub struct OnResult {
     /// Claims flagged for review that were never decided.
     pub reviews_held: u64,
     pub scripted_reviewer: bool,
+    pub shadow_trials: ShadowTrials,
     pub results: Vec<TaskResult>,
     pub work_ms_total: u64,
     pub wasted_ms: u64,
@@ -178,6 +197,9 @@ pub async fn run_on(
     }
     let wall_ms = millis(started);
     record_unrun(&ctx);
+    if config.policy == Policy::Shadow && failure.is_none() {
+        await_verification(endpoint, config.task_timeout).await?;
+    }
     let _ = stop_reviewer.send(true);
     if let Some(reviewer) = reviewer {
         reviewer.await.context("the reviewer task panicked")??;
@@ -199,6 +221,27 @@ pub async fn run_on(
         wall_ms,
         config.scripted_reviewer,
     ))
+}
+
+/// Polls the log until every shadow trial it owes has been recorded, or `limit` has passed. The
+/// polls are a second apart because each one is a new observer connection, which the log records.
+/// Whatever is still owed at the limit stays out of the counts: the report says it never ran.
+async fn await_verification(endpoint: &Endpoint, limit: Duration) -> Result<()> {
+    let observer = endpoint.token_of(OBSERVER)?;
+    let deadline = Instant::now() + limit;
+    loop {
+        let log = read_log(
+            &endpoint.ws_url,
+            observer,
+            OBSERVER,
+            Duration::from_secs(60),
+        )
+        .await?;
+        if events::awaiting_verification(&log) == 0 || Instant::now() >= deadline {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 /// Tasks still queued when the last agent stopped (a timeout ends an agent) are not finished;
@@ -236,6 +279,11 @@ fn summarize(
         reviews_rejected: counts.review_rejections,
         reviews_held: counts.held_for_review,
         scripted_reviewer,
+        shadow_trials: ShadowTrials {
+            claims: counts.shadow_claims,
+            inconclusive: counts.shadow_inconclusive,
+            never_verified: counts.shadow_unverified,
+        },
         work_ms_total: results.iter().map(|r| r.work_ms).sum(),
         wasted_ms: results.iter().filter(rejected).map(|r| r.work_ms).sum(),
         waited_ms: results.iter().map(|r| r.waited_ms).sum(),
@@ -390,9 +438,12 @@ struct Held {
     claim: ClaimId,
     fence: Fence,
     scopes: Vec<ScopeClaim>,
+    /// A shadow claim: it places no lock, and its submission is never merged.
+    shadow: bool,
 }
 
 enum Grant {
+    /// Granted, or shadowed (`Held::shadow`): the agent may work either way.
     Granted(Held),
     Denied,
     TimedOut,
@@ -404,6 +455,14 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(job).await?
 }
 
+/// The part of an agent's task that is the same for every claim it holds: the checkout, the
+/// agent that works on it and the task.
+struct Job<'a> {
+    work: &'a Git,
+    agent: &'a str,
+    task: &'a Task,
+}
+
 async fn run_task(
     ctx: &Ctx,
     work: &Git,
@@ -411,16 +470,43 @@ async fn run_task(
     agent: &str,
     task: &Task,
 ) -> Result<Step> {
-    let policy = ctx.config.policy;
-    let timeout = ctx.config.task_timeout;
+    let (req, scopes) = send_claim(ctx, work, conn, task).await?;
+    let claimed = Instant::now();
+    let answer = await_grant(conn, req, scopes, ctx.config.task_timeout).await?;
+    let waited_ms = millis(claimed);
+    let held = match answer {
+        Grant::Granted(held) => held,
+        Grant::Denied => {
+            return Ok(Step {
+                end: End::Denied,
+                work_ms: 0,
+                waited_ms,
+            })
+        }
+        Grant::TimedOut => {
+            return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0).waited(waited_ms))
+        }
+    };
+    let job = Job { work, agent, task };
+    let step = work_and_submit(ctx, &job, conn, held).await?;
+    Ok(step.waited(waited_ms))
+}
+
+/// Plans the claim for the edit as the trunk stands and sends it.
+async fn send_claim(
+    ctx: &Ctx,
+    work: &Git,
+    conn: &mut Conn,
+    task: &Task,
+) -> Result<(tessel_coordinator::protocol::RequestId, Vec<ScopeClaim>)> {
     let (tree, after) = checkout_and_edit(ctx, work, task).await?;
     let mut scopes = tasks::plan_claims(&tasks::touched(&tree, &after));
     scopes.extend(tasks::dependencies(task, &tree));
     let req = conn.next_req();
-    let on_conflict = if policy == Policy::Wait {
-        OnConflict::Wait
-    } else {
-        OnConflict::Fail
+    let on_conflict = match ctx.config.policy {
+        Policy::Wait => OnConflict::Wait,
+        Policy::Skip => OnConflict::Fail,
+        Policy::Shadow => OnConflict::Shadow,
     };
     let intent = Intent {
         summary: task.intent(),
@@ -434,47 +520,48 @@ async fn run_task(
         on_conflict,
     })
     .await?;
-    let claimed = Instant::now();
-    let answer = await_grant(conn, req, scopes, timeout).await?;
-    let waited_ms = millis(claimed);
-    let mut held = match answer {
-        Grant::Granted(held) => held,
-        Grant::Denied => {
-            return Ok(Step {
-                end: End::Denied,
-                work_ms: 0,
-                waited_ms,
-            })
-        }
-        Grant::TimedOut => {
-            return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0).waited(waited_ms))
-        }
-    };
+    Ok((req, scopes))
+}
+
+/// With a grant in hand: edits the trunk as it stands now, commits, pushes and submits. A shadow
+/// claim skips the simulated work time, so that its submission is on record before the work that
+/// blocked it can merge, and is then left open: releasing it would drop its verification.
+async fn work_and_submit(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, held: Held) -> Result<Step> {
+    let mut held = held;
+    let timeout = ctx.config.task_timeout;
     let granted = Instant::now();
     // Main may have moved while this agent waited: edit what is there now, not what was.
-    let (tree, after) = checkout_and_edit(ctx, work, task).await?;
+    let (tree, after) = checkout_and_edit(ctx, job.work, job.task).await?;
     let touched = tasks::touched(&tree, &after);
     if let Some(note) = ensure_covered(conn, &mut held, &touched).await? {
         release(conn, &held).await?;
-        return Ok(Step::done(Resolution::Failed, note, millis(granted)).waited(waited_ms));
+        return Ok(Step::done(Resolution::Failed, note, millis(granted)));
     }
-    tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
-    let sha = match commit_and_push(ctx, work, agent, &after, task).await {
+    if !held.shadow {
+        tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
+    }
+    let pushed = commit_and_push(ctx, job.work, job.agent, &after, job.task).await;
+    let sha = match pushed {
         Ok(sha) => sha,
         Err(error) => {
             release(conn, &held).await?;
-            return Ok(
-                Step::done(Resolution::Failed, format!("{error:#}"), millis(granted))
-                    .waited(waited_ms),
-            );
+            return Ok(Step::done(
+                Resolution::Failed,
+                format!("{error:#}"),
+                millis(granted),
+            ));
         }
     };
     let work_ms = millis(granted);
-    let end = submit_and_wait(conn, &held, &sha, touched, timeout).await?;
+    let end = if held.shadow {
+        submit_shadow(conn, &held, &sha, touched, timeout).await?
+    } else {
+        submit_and_wait(conn, &held, &sha, touched, timeout).await?
+    };
     Ok(Step {
         end: End::Done(end.0, end.1),
         work_ms,
-        waited_ms,
+        waited_ms: 0,
     })
 }
 
@@ -530,6 +617,20 @@ async fn await_grant(
                     claim,
                     fence,
                     scopes,
+                    shadow: false,
+                }));
+            }
+            Some(ServerMsg::Shadowed {
+                req: r,
+                claim,
+                fence,
+                ..
+            }) if r == req => {
+                return Ok(Grant::Granted(Held {
+                    claim,
+                    fence,
+                    scopes,
+                    shadow: true,
                 }));
             }
             Some(ServerMsg::Denied { req: r, .. }) if r == req => return Ok(Grant::Denied),
@@ -619,13 +720,12 @@ async fn commit_and_push(
     .await
 }
 
-async fn submit_and_wait(
+async fn send_submit(
     conn: &mut Conn,
     held: &Held,
     sha: &str,
     touched: Vec<ScopeClaim>,
-    limit: Duration,
-) -> Result<(Resolution, Option<String>)> {
+) -> Result<()> {
     let req = conn.next_req();
     let decisions = DecisionRecord {
         evidence: vec!["node --test passed on the checkout this change was made on".to_string()],
@@ -639,7 +739,55 @@ async fn submit_and_wait(
         touched,
         decisions,
     })
-    .await?;
+    .await
+}
+
+/// A shadow submission is recorded and never queued, so the only answer is `Accepted`.
+async fn submit_shadow(
+    conn: &mut Conn,
+    held: &Held,
+    sha: &str,
+    touched: Vec<ScopeClaim>,
+    limit: Duration,
+) -> Result<(Resolution, Option<String>)> {
+    send_submit(conn, held, sha, touched).await?;
+    let deadline = Instant::now() + limit;
+    loop {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok((Resolution::TimedOut, Some("no answer to the submit".into())));
+        };
+        match conn.recv(left).await? {
+            None => return Ok((Resolution::TimedOut, Some("no answer to the submit".into()))),
+            Some(ServerMsg::Accepted { claim, .. }) if claim == held.claim => {
+                let note = "shadow: submitted for verification, never queued to merge";
+                return Ok((Resolution::Shadowed, Some(note.into())));
+            }
+            Some(ServerMsg::Uncovered { claim, .. }) if claim == held.claim => {
+                release(conn, held).await?;
+                return Ok((
+                    Resolution::Failed,
+                    Some("shadow submission touched unclaimed scopes".into()),
+                ));
+            }
+            Some(ServerMsg::Error { code, message, .. }) => {
+                return Ok((
+                    Resolution::Failed,
+                    Some(format!("shadow submit refused ({code:?}): {message}")),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+async fn submit_and_wait(
+    conn: &mut Conn,
+    held: &Held,
+    sha: &str,
+    touched: Vec<ScopeClaim>,
+    limit: Duration,
+) -> Result<(Resolution, Option<String>)> {
+    send_submit(conn, held, sha, touched).await?;
     let deadline = Instant::now() + limit;
     loop {
         let Some(left) = deadline.checked_duration_since(Instant::now()) else {

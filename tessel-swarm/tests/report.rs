@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tessel_coordinator::protocol::Summary;
 use tessel_swarm::off::{self, Counts, OffConfig, OffResult};
-use tessel_swarm::on::{OnConfig, OnResult, Policy, Resolution, TaskResult};
+use tessel_swarm::on::{OnConfig, OnResult, Policy, Resolution, ShadowTrials, TaskResult};
 use tessel_swarm::report::{ab_markdown, header_of, off_json, on_json, SCHEMA};
 use tessel_swarm::tasks::{Kind, Task};
 
@@ -55,6 +55,7 @@ fn on_result() -> OnResult {
         reviews_rejected: 0,
         reviews_held: 2,
         scripted_reviewer: false,
+        shadow_trials: ShadowTrials::default(),
         results: vec![TaskResult {
             task: 1,
             agent: "a01".into(),
@@ -249,4 +250,69 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
     let approvals = "Review approvals (the only reviewer is the script)";
     assert_eq!(cells(&table, approvals)[2], "5");
     assert_eq!(cells(&table, "Review rejections")[2], "1");
+}
+
+const SHADOW_ROW: &str = "Conflicts prevented, verified by shadow runs";
+
+fn shadow_result() -> OnResult {
+    let mut on = on_result();
+    on.summary.denials = 5;
+    on.summary.conflicts_prevented_verified = 2;
+    on.summary.false_alarms = 1;
+    on.shadow_trials = ShadowTrials {
+        claims: 5,
+        inconclusive: 1,
+        never_verified: 1,
+    };
+    on
+}
+
+#[test]
+fn the_shadow_row_reports_verified_outcomes_and_never_the_denials() {
+    let table = ab_markdown(
+        &header_of(&config(), 9, 2, 0.5),
+        "local",
+        Policy::Shadow,
+        &off_result(),
+        &shadow_result(),
+    );
+    assert_eq!(
+        cells(&table, SHADOW_ROW)[2],
+        "verified preventions 2, false alarms 1 \
+         (shadow claims 5: inconclusive 1, never verified 1)"
+    );
+    assert_eq!(cells(&table, SHADOW_ROW)[1], "n/a");
+}
+
+#[test]
+fn other_policies_cannot_produce_the_shadow_row_whatever_the_summary_holds() {
+    for policy in [Policy::Wait, Policy::Skip] {
+        let table = ab_markdown(
+            &header_of(&config(), 9, 2, 0.5),
+            "local",
+            policy,
+            &off_result(),
+            &shadow_result(),
+        );
+        assert_eq!(
+            cells(&table, SHADOW_ROW)[2],
+            "n/a (this policy makes no shadow run)"
+        );
+    }
+}
+
+#[test]
+fn the_json_carries_the_shadow_counts_only_for_the_shadow_policy() {
+    let header = header_of(&config(), 9, 2, 0.5);
+    let shadow = on_json(&header, "local", Policy::Shadow, &shadow_result());
+    assert_eq!(shadow["policy"], "shadow");
+    assert_eq!(
+        shadow["shadow_verification"]["conflicts_prevented_verified"],
+        2
+    );
+    assert_eq!(shadow["shadow_verification"]["false_alarms"], 1);
+    assert_eq!(shadow["shadow_verification"]["inconclusive"], 1);
+    assert_eq!(shadow["shadow_verification"]["never_verified"], 1);
+    let wait = on_json(&header, "local", Policy::Wait, &shadow_result());
+    assert!(wait.get("shadow_verification").is_none());
 }

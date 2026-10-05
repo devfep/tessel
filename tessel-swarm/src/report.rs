@@ -24,6 +24,7 @@ fn policy_name(policy: Policy) -> &'static str {
     match policy {
         Policy::Wait => "wait",
         Policy::Skip => "skip",
+        Policy::Shadow => "shadow",
     }
 }
 
@@ -57,8 +58,26 @@ pub fn off_json(header: &Header, off: &OffResult) -> Value {
     })
 }
 
+/// The shadow row of the A/B table. Only the shadow policy makes shadow runs, so every other
+/// policy says it cannot produce the number. The counts are `Summary::from_events` over the
+/// coordinator's log: a denial is never counted here, only a `DenialVerified` conflict.
+fn shadow_cell(policy: Policy, on: &OnResult) -> String {
+    match policy {
+        Policy::Wait | Policy::Skip => "n/a (this policy makes no shadow run)".into(),
+        Policy::Shadow => format!(
+            "verified preventions {}, false alarms {} (shadow claims {}: inconclusive {}, never \
+             verified {})",
+            on.summary.conflicts_prevented_verified,
+            on.summary.false_alarms,
+            on.shadow_trials.claims,
+            on.shadow_trials.inconclusive,
+            on.shadow_trials.never_verified,
+        ),
+    }
+}
+
 pub fn on_json(header: &Header, target: &str, policy: Policy, on: &OnResult) -> Value {
-    json!({
+    let mut value = json!({
         "schema": SCHEMA,
         "mode": "on",
         "run": header,
@@ -81,7 +100,20 @@ pub fn on_json(header: &Header, target: &str, policy: Policy, on: &OnResult) -> 
             "on_work_later_rejected": on.wasted_ms,
             "waiting": on.waited_ms,
         },
-    })
+    });
+    if policy == Policy::Shadow {
+        value["shadow_verification"] = json!({
+            "note": "from DenialVerified events in the coordinator's log; a denial is not a \
+                     prevention",
+            "conflicts_prevented_verified": on.summary.conflicts_prevented_verified,
+            "false_alarms": on.summary.false_alarms,
+            "precision": on.summary.precision,
+            "shadow_claims": on.shadow_trials.claims,
+            "inconclusive": on.shadow_trials.inconclusive,
+            "never_verified": on.shadow_trials.never_verified,
+        });
+    }
+    value
 }
 
 /// Tenths, from integers: 69.8 landed per minute.
@@ -103,11 +135,20 @@ fn row(label: &str, off: &str, on: &str) -> [String; 3] {
     [label.into(), off.into(), on.into()]
 }
 
-fn table_rows(header: &Header, off: &OffResult, on: &OnResult) -> Vec<[String; 3]> {
+fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -> Vec<[String; 3]> {
     let unfinished = on
         .results
         .iter()
-        .filter(|r| r.result != Resolution::Merged && r.result != Resolution::Rejected)
+        .filter(|r| {
+            r.result != Resolution::Merged
+                && r.result != Resolution::Rejected
+                && r.result != Resolution::Shadowed
+        })
+        .count();
+    let shadowed = on
+        .results
+        .iter()
+        .filter(|r| r.result == Resolution::Shadowed)
         .count();
     let counts = &off.counts;
     let off_rejected = counts.textual_conflicts + counts.build_failed + counts.tests_failed;
@@ -141,6 +182,11 @@ fn table_rows(header: &Header, off: &OffResult, on: &OnResult) -> Vec<[String; 3
             &unfinished.to_string(),
         ),
         row(
+            "Run as shadow work (submitted for verification, never to merge)",
+            "n/a",
+            &shadowed.to_string(),
+        ),
+        row(
             "Claims denied outright (a denial is not a prevented conflict)",
             "n/a",
             &n(on.summary.denials),
@@ -153,7 +199,7 @@ fn table_rows(header: &Header, off: &OffResult, on: &OnResult) -> Vec<[String; 3
         row(
             "Conflicts prevented, verified by shadow runs",
             "n/a",
-            "n/a (no shadow run in this harness)",
+            &shadow_cell(policy, on),
         ),
         row("Held for review (not approved)", "n/a", &n(on.reviews_held)),
         row(
@@ -241,7 +287,7 @@ pub fn ab_markdown(
         ),
         "|---|---|---|".into(),
     ];
-    for [metric, off_cell, on_cell] in table_rows(header, off, on) {
+    for [metric, off_cell, on_cell] in table_rows(header, policy, off, on) {
         lines.push(format!("| {metric} | {off_cell} | {on_cell} |"));
     }
     lines.push(String::new());

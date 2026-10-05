@@ -82,6 +82,7 @@ pub async fn run_on_local(spec: &Spec, tasks: &[Task], repo: &ScratchRepo) -> Re
         base: &base,
         names: &names,
         reviewers: &reviewers,
+        shadow_enabled: spec.policy == Policy::Shadow,
     })
     .await?;
     let result = on::run_on(

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use std::time::Duration;
 
-use tessel_coordinator::protocol::{EventKind, Summary};
+use tessel_coordinator::protocol::{ClaimId, EventKind, Outcome, Summary};
 use tessel_swarm::demo;
 use tessel_swarm::git::{self, Checks, Git};
 use tessel_swarm::guard::ScratchRepo;
@@ -81,6 +81,7 @@ async fn run_with_hook(tasks: &[Task], config: OnConfig, hook: Option<(Duration,
         base: &base,
         names: &names,
         reviewers: &reviewers,
+        shadow_enabled: config.policy == Policy::Shadow,
     })
     .await
     .unwrap();
@@ -353,6 +354,117 @@ async fn every_number_comes_from_summary_over_the_coordinators_own_log() {
     run.server.shutdown().await;
 }
 
+fn shadow_claims(run: &Run) -> Vec<ClaimId> {
+    run.result
+        .events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::ClaimShadowed { claim, .. } => Some(*claim),
+            _ => None,
+        })
+        .collect()
+}
+
+fn outcomes_of(run: &Run) -> Vec<String> {
+    let mut outcomes: Vec<String> = run
+        .result
+        .results
+        .iter()
+        .map(|r| format!("{:?}", r.result))
+        .collect();
+    outcomes.sort();
+    outcomes
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shadowed_agent_submits_for_verification_and_the_conflict_is_counted_from_the_log() {
+    // Both rewrite unitPrice's body on one line: whoever claims second is shadowed, and its work,
+    // tried on the trunk after the first one merged, conflicts.
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let run = run(&tasks, config(2, Policy::Shadow, 1000)).await;
+    assert_eq!(outcomes_of(&run), ["Merged", "Shadowed"]);
+    let shadows = shadow_claims(&run);
+    assert_eq!(shadows.len(), 1, "{:?}", run.result.events);
+    let shadow = shadows[0];
+    let events = &run.result.events;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(&e.kind, EventKind::Submitted { claim, .. } if *claim == shadow)),
+        "the shadow work was pushed and submitted like a granted claim's"
+    );
+    assert_eq!(
+        merged_claims(&run),
+        1,
+        "a shadow submission is never merged"
+    );
+    let verdicts: Vec<Outcome> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::DenialVerified {
+                shadow_claim,
+                outcome,
+                ..
+            } if *shadow_claim == shadow => Some(*outcome),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(verdicts, [Outcome::TextualConflict]);
+    assert_eq!(run.result.summary, Summary::from_events(events));
+    assert_eq!(run.result.summary.conflicts_prevented_verified, 1);
+    assert_eq!(run.result.summary.false_alarms, 0);
+    assert_eq!(run.result.summary.denials, 1);
+    let trials = run.result.shadow_trials;
+    assert_eq!(
+        (trials.claims, trials.inconclusive, trials.never_verified),
+        (1, 0, 0)
+    );
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blocker_that_never_merges_leaves_the_denial_unverified_and_prevents_nothing() {
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    // Main changes the same line behind the blocker: its commit will not apply and is rejected.
+    let poison: Hook = Box::new(|trunk| {
+        let file = trunk.join("src/pricing.ts");
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(
+            &file,
+            text.replace("return base * qty;", "return qty * base;"),
+        )
+        .unwrap();
+        Git::new(&trunk)
+            .commit_all("Change main behind the agents")
+            .unwrap();
+    });
+    let run = run_with_hook(
+        &tasks,
+        config(2, Policy::Shadow, 1500),
+        Some((Duration::from_millis(500), poison)),
+    )
+    .await;
+    assert_eq!(outcomes_of(&run), ["Rejected", "Shadowed"]);
+    assert_eq!(merged_claims(&run), 0);
+    let summary = &run.result.summary;
+    assert_eq!(summary.denials, 1, "the shadow claim is a denial");
+    assert_eq!(summary.conflicts_prevented_verified, 0);
+    assert_eq!(summary.false_alarms, 0);
+    let trials = run.result.shadow_trials;
+    assert_eq!(
+        (trials.claims, trials.inconclusive, trials.never_verified),
+        (1, 0, 1)
+    );
+    assert!(
+        !run.result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::DenialVerified { .. })),
+        "no work landed to conflict with, so nothing was tried"
+    );
+    run.server.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_closes_open_connections() {
     let scratch = tempfile::tempdir().unwrap();
@@ -364,6 +476,7 @@ async fn shutdown_closes_open_connections() {
         base: &demo::base_tree(),
         names: &names,
         reviewers: &[REVIEWER.to_string()],
+        shadow_enabled: false,
     })
     .await
     .unwrap();

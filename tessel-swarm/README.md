@@ -33,13 +33,14 @@ is judged on a green trunk.
 scopes where the edit allows, the way the CLI plans them), respect a denial, edit the checkout as
 main stands after the grant, commit, push to a fork, `Submit`, wait for `Merged` or
 `SubmitRejected`, and release a rejected claim. `--policy wait` queues behind the holder;
-`--policy skip` puts the task back and picks other work. A reviewer connection (`swarm-reviewer`)
-approves every submission held for review, with a fixed note that marks its approvals in the log;
-`--no-reviewer` turns it off, and a held submission then stays held until its agent times out.
+`--policy skip` puts the task back and picks other work; `--policy shadow` is described below.
+A reviewer connection (`swarm-reviewer`) approves every submission held for review, with a fixed
+note that marks its approvals in the log; `--no-reviewer` turns it off, and a held submission then
+stays held until its agent times out.
 It runs against the local target and against the swarm coordinator (below), where it is the only
 reviewer. Held and approved counts come from the log.
 An agent that times out stops, and the tasks nobody took are recorded as not run, so every task
-is merged, rejected or not finished.
+is merged, rejected, shadowed or not finished.
 Every count about the coordinator comes from reading its event log with `Watch` and running
 `Summary::from_events` over it. `SubmitRejected` and `WaitQueued` counts are taken from the same
 log, because `Summary` has no field for them. Wall time and agent-minutes are measured by the
@@ -52,13 +53,35 @@ harness.
   They are computed from the local replay, and `Summary::from_events` over the replay's own events
   gives the replay merge and conflict counts.
 - A cell reading `n/a` is a number the run cannot produce. The table never shows zero for it.
-- Verified prevention needs shadow runs, which this harness does not make, so that row is `n/a`.
+- Verified prevention needs shadow runs, which only `--policy shadow` makes. With any other policy
+  that row is `n/a`. A denial is never counted as a prevention.
 - Waiting is the time from a claim being sent to its answer, summed over attempts.
 - Agent-minutes on both sides are the configured `--work-ms` per task plus the measured time to
   edit, test and commit.
 - In `on`, the steward reports a failed test run for both build and test failures, and the log
   keeps the rejection reason as text that the harness does not parse, so `on` has no per-kind
   split of its rejections.
+
+## The shadow policy
+
+With `--policy shadow` an agent whose claim conflicts claims with `OnConflict::Shadow`. It is
+denied for real, but it still does its task in its own fork, pushes and submits, as a granted
+agent does. A shadow submission is recorded and never queued, so the agent never waits for a
+merge; the task is recorded as `shadowed`, not as landed or rejected. It skips the simulated work
+time, so the submission is on record before the work that blocked it can merge.
+
+When the blocking work merges, the steward tries each submitted shadow commit against it and the
+coordinator logs `DenialVerified`. After the agents finish, the run polls the log until every
+trial the log still owes is there, for at most `--task-timeout-s`, and only then computes the table.
+
+The row "Conflicts prevented, verified by shadow runs" is `Summary::from_events` over the
+coordinator's log: verified preventions (a conflict), false alarms (clean), and beside them the
+shadow claims, how many trials were inconclusive (counted as neither) and how many shadow claims
+were never tried (the blocker did not merge, or the claim had not submitted before it did). It is
+computed from nothing else. A denial alone is never a prevention.
+
+The coordinator must allow shadows (`SHADOW_ENABLED`): the local target does, and the swarm
+deployment does (`[env.swarm.vars]`); production does not.
 
 ## Run it
 

@@ -8,6 +8,11 @@
 //! always reports a merge, this one cherry-picks the submitted commit onto the trunk, runs the
 //! tests, and reports `Conflict` or `TestsFailed` when that is what happened.
 //!
+//! With `shadow_enabled` the steward also runs the coordinator's queued trials (shadow claims and
+//! assumptions): the commit is tried on a fresh clone of the trunk at the merge's `before` and
+//! then, only if that was clean, at its `main`, the way the real steward's trial route does.
+//! Without it nothing is dispatched, so the other policies behave as they always have.
+//!
 //! What the local steward does not do: check the merged diff against the claim (invariant 11);
 //! the core already checked the `touched` list the agent submitted.
 
@@ -19,8 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
-use tessel_coordinator::coordinator::{Config, Coordinator, MergeDispatch};
-use tessel_coordinator::merge::{MergeOutcome, StepExit};
+use tessel_coordinator::coordinator::{Config, Coordinator, MergeDispatch, VerifyDispatch};
+use tessel_coordinator::merge::{MergeOutcome, StepExit, TrialOutcome, TrialReport};
 use tessel_coordinator::protocol::{AgentId, CommitId, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
@@ -130,6 +135,8 @@ pub struct LocalSetup<'a> {
     /// Every name that needs a token: the agents, the reviewer and the observer.
     pub names: &'a [String],
     pub reviewers: &'a [String],
+    /// Allow `OnConflict::Shadow` and run the trials it queues: for the shadow policy only.
+    pub shadow_enabled: bool,
 }
 
 impl LocalServer {
@@ -148,7 +155,7 @@ impl LocalServer {
         let mut core = Coordinator::new(Config {
             run: RunId("swarm-on".into()),
             lease_ms: LEASE_MS,
-            shadow_enabled: false,
+            shadow_enabled: setup.shadow_enabled,
         })?;
         core.set_reviewers(setup.reviewers.iter().map(|r| AgentId(r.clone())).collect());
         let mut tokens = HashMap::new();
@@ -175,7 +182,12 @@ impl LocalServer {
         let tasks = vec![
             tokio::spawn(accept(listener, Arc::clone(&hub), stop_rx)),
             tokio::spawn(expire_loop(Arc::clone(&hub))),
-            tokio::spawn(steward_loop(Arc::clone(&hub), trunk, forks_dir.clone())),
+            tokio::spawn(steward_loop(
+                Arc::clone(&hub),
+                trunk,
+                forks_dir.clone(),
+                setup.shadow_enabled,
+            )),
         ];
         Ok(Self {
             hub,
@@ -241,11 +253,16 @@ async fn expire_loop(hub: Arc<Hub>) {
 
 /// Lands submissions one at a time, the way the steward does: take the next merge from the core,
 /// run it with real git, report the outcome.
-async fn steward_loop(hub: Arc<Hub>, trunk: Git, forks: PathBuf) {
+async fn steward_loop(hub: Arc<Hub>, trunk: Git, forks: PathBuf, verify: bool) {
     loop {
         tokio::time::sleep(Duration::from_millis(10)).await;
         let dispatch = lock(&hub.state).core.begin_merge(now_ms());
-        let Some(dispatch) = dispatch else { continue };
+        let Some(dispatch) = dispatch else {
+            if verify {
+                verify_next(&hub, &trunk.dir, &forks).await;
+            }
+            continue;
+        };
         let (repo, dir) = (trunk.clone(), forks.clone());
         let work = dispatch.clone();
         let outcome = tokio::task::spawn_blocking(move || land(&repo, &dir, &work))
@@ -255,6 +272,82 @@ async fn steward_loop(hub: Arc<Hub>, trunk: Git, forks: PathBuf) {
         let effects = state.core.merge_outcome(dispatch.claim, &outcome, now_ms());
         let (events, outbound) = shell::split_effects(effects);
         state.flush(None, events, outbound);
+    }
+}
+
+/// Runs the next queued trial, if the core has one: a merge is never due when it does.
+async fn verify_next(hub: &Hub, trunk: &Path, forks: &Path) {
+    let dispatch = lock(&hub.state).core.begin_verification(now_ms());
+    let Some(dispatch) = dispatch else { return };
+    let (trunk, forks, work) = (trunk.to_path_buf(), forks.to_path_buf(), dispatch.clone());
+    let report = tokio::task::spawn_blocking(move || trial(&trunk, &forks, &work))
+        .await
+        .unwrap_or_else(|_| TrialReport::stopped(TrialOutcome::GitFailed {}));
+    let mut state = lock(&hub.state);
+    let effects = state
+        .core
+        .verification_outcome(dispatch.id, &report, now_ms());
+    let (events, outbound) = shell::split_effects(effects);
+    state.flush(None, events, outbound);
+}
+
+/// Tries the dispatched commit on `before`, then on `main` if it was clean on `before`.
+fn trial(trunk: &Path, forks: &Path, dispatch: &VerifyDispatch) -> TrialReport {
+    try_trial(trunk, forks, dispatch)
+        .unwrap_or_else(|_| TrialReport::stopped(TrialOutcome::GitFailed {}))
+}
+
+fn try_trial(trunk: &Path, forks: &Path, dispatch: &VerifyDispatch) -> Result<TrialReport> {
+    let scratch = tempfile::tempdir()?;
+    Git::new(scratch.path()).run(&["clone", "-q", &trunk.to_string_lossy(), "trial"])?;
+    let clone = Git::new(&scratch.path().join("trial"));
+    let fork = forks.join(format!("{}.git", dispatch.agent.0));
+    let (fetched, _) = clone.attempt(&["fetch", "-q", &fork.to_string_lossy(), "main"])?;
+    let known = match &dispatch.commit {
+        Some(commit) => {
+            let probe = format!("{}^{{commit}}", commit.0);
+            fetched && clone.attempt(&["cat-file", "-e", &probe])?.0
+        }
+        None => false,
+    };
+    let Some(commit) = dispatch.commit.as_ref().filter(|_| known) else {
+        return Ok(TrialReport::stopped(TrialOutcome::CommitNotInFork {}));
+    };
+    let before = try_on(&clone, &commit.0, &dispatch.before.0)?;
+    if before != (TrialOutcome::Clean {}) {
+        return Ok(TrialReport {
+            before: Some(before),
+            after: None,
+        });
+    }
+    let after = try_on(&clone, &commit.0, &dispatch.main.0)?;
+    Ok(TrialReport {
+        before: Some(before),
+        after: Some(after),
+    })
+}
+
+/// Cherry-picks `commit` onto the trunk at `at` and runs the tests.
+fn try_on(clone: &Git, commit: &str, at: &str) -> Result<TrialOutcome> {
+    clone.run(&["reset", "-q", "--hard"])?;
+    clone.run(&["clean", "-fdxq"])?;
+    let (found, _) = clone.attempt(&["checkout", "-q", "--detach", at])?;
+    if !found {
+        return Ok(TrialOutcome::MainUnreachable {});
+    }
+    let (picked, _) = clone.attempt(&["cherry-pick", commit])?;
+    if !picked {
+        let (empty, _) = clone.attempt(&["diff", "--cached", "--quiet"])?;
+        let unmerged = clone.run(&["diff", "--name-only", "--diff-filter=U"])?;
+        clone.run(&["cherry-pick", "--abort"])?;
+        if unmerged.is_empty() && empty {
+            return Ok(TrialOutcome::NothingToTest {});
+        }
+        return Ok(TrialOutcome::Conflict {});
+    }
+    match git::run_checks(&clone.dir)? {
+        Checks::Pass { .. } => Ok(TrialOutcome::Clean {}),
+        Checks::BuildFailed | Checks::TestsFailed => Ok(TrialOutcome::TestsFailed {}),
     }
 }
 
