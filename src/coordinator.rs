@@ -141,7 +141,7 @@ struct ActiveClaim {
 /// What a shadow claim keeps so that, when the work that blocked it merges, the steward can
 /// test-merge the shadow work against it. Kept apart from `work` because a shadow claim is never
 /// queued for merge.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Denial {
     /// The claims whose locks denied the request, in claim id order. Races are not listed: their
     /// work lands through entries, not as a blocking claim.
@@ -4462,6 +4462,32 @@ mod tests {
             &shadow_with(&mut old, "c", intent("s"), vec![x_edit()]),
             ErrorCode::ShadowDisabled,
         );
+    }
+
+    #[test]
+    fn state_saved_before_denials_were_kept_loads_shadow_claims_without_one() {
+        let c = mixed_coordinator();
+        let mut value = serde_json::to_value(&c).unwrap();
+        let Some(claims) = value.get_mut("claims").and_then(|v| v.as_object_mut()) else {
+            panic!("no claims");
+        };
+        let mut stripped = 0;
+        for (_, claim) in claims.iter_mut() {
+            let Some(fields) = claim.as_object_mut() else {
+                panic!("claim is not an object");
+            };
+            if fields.remove("denial").is_some_and(|d| !d.is_null()) {
+                stripped += 1;
+            }
+        }
+        assert_eq!(stripped, 2, "both shadow claims carried a denial");
+        let old: Coordinator = serde_json::from_value(value).unwrap();
+        assert!(old
+            .state
+            .claims
+            .values()
+            .all(|claim| claim.denial.is_none()));
+        assert_eq!(old.state.claims.len(), c.state.claims.len());
     }
 
     #[test]

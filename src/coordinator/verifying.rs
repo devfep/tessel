@@ -47,9 +47,8 @@
 //!   failing before the merge is `Inconclusive`, not a prevention. Nothing is queued, and nothing
 //!   is logged, when the blocker ends without merging (no work landed to conflict with), when the
 //!   shadow claim had not submitted by then (there is no commit to try; one that submits later
-//!   has no baseline from before the merge, so it is not tried either), or when the shadow claim
-//!   ended before its trial ran. A shadow claim blocked by several claims is tried once for each
-//!   that merges, each against its own baseline.
+//!   has no baseline from before the merge, so it is not tried either). A shadow claim blocked by several claims is tried once
+//!   for each that merges, each against its own baseline.
 //! - A conflict is not sent to the assuming agent as a message: no `ServerMsg` says "your
 //!   assumption broke" (`AssumptionChallenged` says "re-check it" and would be read as a second
 //!   challenge). The event is the record, and watchers receive it.
