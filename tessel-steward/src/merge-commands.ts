@@ -147,6 +147,11 @@ export function changedFilesCommand(workspace: string, base: Sha, head: Sha): Gi
   ]);
 }
 
+/** Stdout is the content of `path` in the commit `commit` (exit non-zero when it is not there). */
+export function showFileCommand(workspace: string, commit: Sha, path: string): GitCommand {
+  return local(workspace, ["show", `${commit}:${path}`]);
+}
+
 /** Stdout is the sha HEAD points at. */
 export function headCommand(workspace: string): GitCommand {
   return local(workspace, ["rev-parse", "--verify", "HEAD^{commit}"]);

@@ -97,7 +97,7 @@ async function runTests(env: Env, repo: string): Promise<Response> {
 }
 
 async function mergeFork(env: Env, request: Request, repo: string): Promise<Response> {
-  return handleMergeRequest(env, repo, await request.json().catch(() => null));
+  return handleMergeRequest(env, repo, await request.json().catch(() => null), true);
 }
 
 async function issueIdentity(env: Env, repo: string, agent: string): Promise<Response> {

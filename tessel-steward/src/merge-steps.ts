@@ -12,6 +12,7 @@ import {
   pushCommand,
   rebaseCommand,
   reachableCommand,
+  showFileCommand,
   type GitCommand,
   type MergeSources,
 } from "./merge-commands";
@@ -21,7 +22,7 @@ import {
   uncoveredPaths,
   type ClaimedScope,
 } from "./merge-coverage";
-import { TESSEL_TOML_PATH } from "./tessel-config";
+import { TESSEL_TOML_PATH, parseGateConfig } from "./tessel-config";
 import {
   parseSha,
   type GitResult,
@@ -135,6 +136,38 @@ async function rebaseOntoMain(
     : { outcome: "rebased", base, head };
 }
 
+/** Who asks for the merge. Only the admin route may change the gate; it is never read from a body. */
+export interface MergePolicy {
+  adminMerge: boolean;
+}
+
+/**
+ * What a change to `tessel.toml` means. A submission over the service binding may not touch the
+ * gate (`gate_changed`). An admin merge may, if the head's file is one `parseGateConfig` accepts
+ * (else `gate_invalid`); when the diff touches nothing else the head's file is the whole gate
+ * (`only`), because the trunk's own may be the broken one. `untouched` and `mixed` leave the
+ * trunk's gate in charge of the tests.
+ */
+async function reviewGate(
+  deps: MergeDeps,
+  required: readonly { path: string }[],
+  range: { base: Sha; head: Sha },
+  policy: MergePolicy,
+): Promise<MergeOutcome | "untouched" | "mixed" | "only"> {
+  const { base, head } = range;
+  if (!required.some(({ path }) => path === TESSEL_TOML_PATH)) {
+    return "untouched";
+  }
+  if (!policy.adminMerge) {
+    return { outcome: "gate_changed", base, head };
+  }
+  const file = await deps.run(showFileCommand(deps.sources.workspace, head, TESSEL_TOML_PATH));
+  if (file.exitCode !== 0 || file.stdoutTruncated || !parseGateConfig(file.stdout).ok) {
+    return { outcome: "gate_invalid", base, head };
+  }
+  return required.every(({ path }) => path === TESSEL_TOML_PATH) ? "only" : "mixed";
+}
+
 /**
  * Invariant 11 on the change the steward sees: every file the rebased range `base..head` changes
  * must be covered by the claim, and none may be the gate (`tessel.toml`: a fork must not weaken the
@@ -146,19 +179,21 @@ async function checkCoverage(
   base: Sha,
   head: Sha,
   scopes: readonly ClaimedScope[],
-): Promise<MergeOutcome | undefined> {
+  policy: MergePolicy,
+): Promise<MergeOutcome | "gate_only" | undefined> {
   const diff = await deps.run(changedFilesCommand(deps.sources.workspace, base, head));
   const complete = diff.exitCode === 0 && !diff.stdoutTruncated;
   const required = complete ? parseNameStatus(diff.stdout) : undefined;
   if (required === undefined) {
     return { outcome: "git_failed", result: diff };
   }
-  if (required.some(({ path }) => path === TESSEL_TOML_PATH)) {
-    return { outcome: "gate_changed", base, head };
+  const gate = await reviewGate(deps, required, { base, head }, policy);
+  if (typeof gate === "object") {
+    return gate;
   }
   const uncovered = uncoveredPaths(required, scopes);
   if (uncovered.length === 0) {
-    return undefined;
+    return gate === "only" ? "gate_only" : undefined;
   }
   return {
     outcome: "uncovered",
@@ -208,6 +243,8 @@ async function pushToMain(deps: MergeDeps, base: Sha, head: Sha): Promise<MergeO
  * @param deps The sandbox, token and main-reading boundaries.
  * @param commit The submitted commit, already validated as a sha.
  * @param scopes The scopes the claim holds. Required: the coverage check cannot be skipped.
+ * @param policy Whether the request came over the admin route (see `reviewGate`). Defaults to
+ *   the service binding's, which may not change the gate.
  * @returns The outcome. Which outcomes are evidence is documented on `MergeOutcome`.
  * @throws If a read token cannot be revoked, or a boundary throws.
  */
@@ -215,6 +252,7 @@ export async function runMerge(
   deps: MergeDeps,
   commit: Sha,
   scopes: readonly ClaimedScope[],
+  policy: MergePolicy = { adminMerge: false },
 ): Promise<MergeOutcome> {
   const fetched = await runStepThenRevoke(() => fetchSources(deps), deps.revokeReadTokens);
   if (fetched.exitCode !== 0) {
@@ -240,7 +278,10 @@ export async function runMerge(
   if (head === base) {
     return { outcome: "already_merged", base };
   }
-  const uncovered = await checkCoverage(deps, base, head, scopes);
+  const uncovered = await checkCoverage(deps, base, head, scopes, policy);
+  if (uncovered === "gate_only") {
+    return pushToMain(deps, base, head);
+  }
   if (uncovered !== undefined) {
     return uncovered;
   }

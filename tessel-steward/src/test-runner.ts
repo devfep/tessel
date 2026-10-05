@@ -94,14 +94,20 @@ export class TestRunner extends DurableObject<Env> {
    * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
    *   start, or a read token could not be revoked.
    */
-  async merge(repo: string, fork: string, commit: string, scopes: unknown): Promise<MergeOutcome> {
+  async merge(
+    repo: string,
+    fork: string,
+    commit: string,
+    scopes: unknown,
+    adminMerge: boolean,
+  ): Promise<MergeOutcome> {
     const parsed = parseMergeRequest({ fork, commit, scopes });
     if (!parsed.ok || !isValidName(repo)) {
       throw new Error(
         "merge needs a repo name, a fork name, a 40-hex commit and the claim's scopes",
       );
     }
-    return executeMerge(this.ctx, this.env, repo, parsed.request);
+    return executeMerge(this.ctx, this.env, repo, parsed.request, adminMerge === true);
   }
 
   /**

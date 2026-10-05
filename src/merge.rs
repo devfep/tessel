@@ -119,9 +119,11 @@ pub enum MergeOutcome {
     Uncovered {
         total: u64,
     },
-    /// The commit rebased onto main changes `tessel.toml`, the gate the steward judges by. A human
-    /// changes the gate by hand; the work is rejected, never merged.
+    /// The commit rebased onto main changes `tessel.toml`, the gate the steward judges by. Only an
+    /// admin merge may change the gate; over the coordinator's binding the work is rejected.
     GateChanged {},
+    /// An admin merge changes `tessel.toml` to a file the steward cannot accept.
+    GateInvalid {},
     /// Another write reached main after the steward read it; try again.
     MainMoved {},
     /// The commit is not reachable from the fork's default branch.
@@ -198,7 +200,11 @@ impl MergeOutcome {
                 ),
             },
             MergeOutcome::GateChanged {} => Verdict::Rejected {
-                reason: "changes the gate (tessel.toml); a human must change it by hand"
+                reason: "changes the gate (tessel.toml); only an admin merge may change it"
+                    .to_string(),
+            },
+            MergeOutcome::GateInvalid {} => Verdict::Rejected {
+                reason: "changes the gate (tessel.toml) to a file the steward cannot accept"
                     .to_string(),
             },
             MergeOutcome::CommitNotInFork {} => Verdict::Rejected {
@@ -326,7 +332,8 @@ impl TrialReport {
     /// - `before` clean, `after` clean: `Clean`.
     /// - `before` clean, `after` a conflict: `TextualConflict`, new after this merge.
     /// - `before` clean, `after` failing tests: `TestsFailed`. A test step that timed out is
-    ///   `Timeout`, infrastructure, not this.
+    ///   `Timeout`, infrastructure: the budget ran out, which says nothing about the code (rule 7
+    ///   counts only verified outcomes), so it is retried and then `Inconclusive`.
     /// - `before` anything else (work already failing, already conflicting, nothing to test):
     ///   `Inconclusive`. So is any trial that stopped before running, and an `after` that proves
     ///   nothing (nothing to test, unreachable main).
@@ -447,6 +454,10 @@ mod tests {
         assert_eq!(
             parse(r#"{"outcome":"gate_changed","base":"a","head":"b","files":[]}"#),
             MergeOutcome::GateChanged {}
+        );
+        assert_eq!(
+            parse(r#"{"outcome":"gate_invalid","base":"a","head":"b"}"#),
+            MergeOutcome::GateInvalid {}
         );
     }
 
@@ -813,7 +824,11 @@ mod tests {
         assert!(rejected(&failed).starts_with("tests failed (exit code 1)"));
         assert_eq!(
             rejected(&MergeOutcome::GateChanged {}),
-            "changes the gate (tessel.toml); a human must change it by hand"
+            "changes the gate (tessel.toml); only an admin merge may change it"
+        );
+        assert_eq!(
+            rejected(&MergeOutcome::GateInvalid {}),
+            "changes the gate (tessel.toml) to a file the steward cannot accept"
         );
     }
 

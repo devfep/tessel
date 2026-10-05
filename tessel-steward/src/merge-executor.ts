@@ -51,6 +51,7 @@ export function redactOutcome(outcome: MergeOutcome): MergeOutcome {
     case "conflict":
     case "uncovered":
     case "gate_changed":
+    case "gate_invalid":
     case "main_moved":
     case "commit_not_in_fork":
       return outcome;
@@ -203,6 +204,7 @@ async function withSandbox<T>(
  * pinned update, and the outcome is decided by a read of main made by the Worker, not by the
  * sandbox. Isolating the tests under another uid is not built.
  *
+ * @param adminMerge True only for the admin route; it lets the merge change `tessel.toml`.
  * @throws As `withSandbox` does.
  */
 export async function executeMerge(
@@ -210,6 +212,7 @@ export async function executeMerge(
   env: Env,
   repo: string,
   request: MergeRequest,
+  adminMerge: boolean,
 ): Promise<MergeOutcome> {
   return withSandbox(
     ctx,
@@ -245,7 +248,9 @@ export async function executeMerge(
         },
         currentMain: () => readMainHead(main),
       };
-      return redactOutcome(await runMerge(mergeDeps, request.commit, request.scopes));
+      return redactOutcome(
+        await runMerge(mergeDeps, request.commit, request.scopes, { adminMerge }),
+      );
     },
   );
 }

@@ -206,8 +206,22 @@ describe("MergeService", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: "already_merged", base: COMMIT });
-    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES);
+    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES, false);
     expect(trial).not.toHaveBeenCalled();
+  });
+
+  it("never lets a request body turn on the admin merge that may change the gate", async () => {
+    const merge = vi.fn(async () => ({ outcome: "gate_changed" }));
+    const { service } = build({ "demo--a1": "artifacts:tessel/demo" }, merge);
+    for (const adminMerge of [true, "true", 1]) {
+      await service.fetch(
+        post({ repo: "demo", fork: "demo--a1", commit: COMMIT, scopes: SCOPES, adminMerge }),
+      );
+    }
+    expect(merge).toHaveBeenCalledTimes(3);
+    for (const call of merge.mock.calls as unknown[][]) {
+      expect(call[4]).toBe(false);
+    }
   });
 
   it("refuses a fork that is not a fork of the repo without merging", async () => {

@@ -31,6 +31,8 @@ interface World {
   /** Text of `tessel.toml` on main, or null for none. */
   tesselToml: string | null;
   installExit: number;
+  /** What `git show <head>:tessel.toml` prints in the sandbox, and its exit code. */
+  headGate: { exitCode: number; stdout: string };
   /** Exit code of the dependency check of a repo without a usable tessel.toml. */
   depsExit: number;
   forkHost: string;
@@ -59,6 +61,7 @@ function respond(argv: string[], world: World): { exitCode: number; stdout: stri
     ["npm test", { exitCode: world.testExit, stdout: world.testOutput }],
     ["cargo test", { exitCode: world.testExit, stdout: world.testOutput }],
     ["pnpm test", { exitCode: world.testExit, stdout: world.testOutput }],
+    [" show ", world.headGate],
     ["node -e", { exitCode: world.depsExit, stdout: "" }],
     ["cargo fetch", { exitCode: world.installExit, stdout: "" }],
     ["pnpm install", { exitCode: world.installExit, stdout: "" }],
@@ -79,6 +82,7 @@ function build(overrides: Partial<World> = {}) {
     mainNow: HEAD,
     tesselToml: null,
     installExit: 0,
+    headGate: { exitCode: 0, stdout: GATE },
     depsExit: 0,
     forkHost: "git.example",
     mainReadFails: false,
@@ -181,7 +185,7 @@ const request = {
 describe("executeMerge", () => {
   it("merges, minting the write token only after the tests ran and revoking it after the push", async () => {
     const { ctx, env, events } = build();
-    const outcome = await executeMerge(ctx, env, "demo", request);
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
 
     expect(outcome).toEqual({ outcome: "merged", base: BASE, head: HEAD });
     const at = (needle: string) => events.findIndex((event) => event.includes(needle));
@@ -193,7 +197,7 @@ describe("executeMerge", () => {
 
   it("has revoked both read tokens before the first command that is not a fetch", async () => {
     const { ctx, env, events } = build();
-    await executeMerge(ctx, env, "demo", request);
+    await executeMerge(ctx, env, "demo", request, false);
     const firstLocal = events.findIndex((event) => event.includes("rev-parse"));
     expect(events.indexOf("revoke demo-read")).toBeLessThan(firstLocal);
     expect(events.indexOf("revoke demo--a1-read")).toBeLessThan(firstLocal);
@@ -201,7 +205,7 @@ describe("executeMerge", () => {
 
   it("installs the push gateway only after the tests", async () => {
     const { ctx, env, events } = build();
-    await executeMerge(ctx, env, "demo", request);
+    await executeMerge(ctx, env, "demo", request, false);
     expect(events.indexOf("intercept read-gateway")).toBeLessThan(events.indexOf("start"));
     expect(events.indexOf("intercept push-gateway")).toBeGreaterThan(
       events.findIndex((event) => event.includes("npm test")),
@@ -210,7 +214,7 @@ describe("executeMerge", () => {
 
   it("mints no write token and never pushes when the tests fail", async () => {
     const { ctx, env, events } = build({ testExit: 1 });
-    const outcome = await executeMerge(ctx, env, "demo", request);
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
     expect(outcome.outcome).toBe("tests_failed");
     expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
     expect(events.some((event) => event.includes(" push "))).toBe(false);
@@ -219,7 +223,7 @@ describe("executeMerge", () => {
 
   it("rejects an uncovered change before the install and the tests, minting no write token", async () => {
     const { ctx, env, events } = build({ changed: "M\0src/a.ts\0A\0docs/new.md\0" });
-    const outcome = await executeMerge(ctx, env, "demo", request);
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
 
     expect(outcome).toEqual({
       outcome: "uncovered",
@@ -238,7 +242,7 @@ describe("executeMerge", () => {
   it("refuses a repo that is not a fork of the main repo before creating any token", async () => {
     for (const forkSource of [null, "github:owner/demo", "artifacts:tessel/other"]) {
       const { ctx, env, events } = build({ forkSource });
-      await expect(executeMerge(ctx, env, "demo", request)).rejects.toThrow("not a fork");
+      await expect(executeMerge(ctx, env, "demo", request, false)).rejects.toThrow("not a fork");
       expect(events).toEqual([]);
     }
   });
@@ -252,21 +256,21 @@ describe("executeMerge", () => {
       }
       return exec(cmd);
     };
-    await expect(executeMerge(ctx, env, "demo", request)).rejects.toThrow("container died");
+    await expect(executeMerge(ctx, env, "demo", request, false)).rejects.toThrow("container died");
     expect(events).toContain("revoke demo-write");
     expect(events.at(-1)).toBe("destroy");
   });
 
   it("redacts tokens that the repo's tests print", async () => {
     const { ctx, env } = build({ testExit: 1, testOutput: "using art_v1_secret-demo-read now" });
-    const outcome = await executeMerge(ctx, env, "demo", request);
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
     expect(JSON.stringify(outcome)).not.toContain("secret-demo-read");
     expect(outcome).toMatchObject({ outcome: "tests_failed" });
   });
 
   it("mints read tokens that outlive the clone and the fetch, and a short write token", async () => {
     const { ctx, env, ttls } = build();
-    await executeMerge(ctx, env, "demo", request);
+    await executeMerge(ctx, env, "demo", request, false);
     expect(ttls.get("read demo")).toBeGreaterThanOrEqual(STEP_SECONDS.clone + STEP_SECONDS.fetch);
     expect(ttls.get("read demo--a1")).toBeGreaterThanOrEqual(
       STEP_SECONDS.clone + STEP_SECONDS.fetch,
@@ -276,13 +280,13 @@ describe("executeMerge", () => {
 
   it("refuses a fork on another git host before creating any token", async () => {
     const { ctx, env, events } = build({ forkHost: "evil.example" });
-    await expect(executeMerge(ctx, env, "demo", request)).rejects.toThrow("same git host");
+    await expect(executeMerge(ctx, env, "demo", request, false)).rejects.toThrow("same git host");
     expect(events).toEqual([]);
   });
 
   it("does not report merged when the push exits 0 but main did not move", async () => {
     const { ctx, env } = build({ mainNow: BASE });
-    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+    expect(await executeMerge(ctx, env, "demo", request, false)).toMatchObject({
       outcome: "push_failed",
     });
   });
@@ -290,7 +294,7 @@ describe("executeMerge", () => {
   it("reports push_failed, never merged or main_moved, when main cannot be read", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { ctx, env } = build({ mainReadFails: true });
-    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+    expect(await executeMerge(ctx, env, "demo", request, false)).toMatchObject({
       outcome: "push_failed",
     });
   });
@@ -298,7 +302,7 @@ describe("executeMerge", () => {
   it("reports main_moved when the push is rejected and main has changed", async () => {
     const racer = sha("9");
     const { ctx, env } = build({ pushExit: 1, mainNow: racer });
-    expect(await executeMerge(ctx, env, "demo", request)).toEqual({
+    expect(await executeMerge(ctx, env, "demo", request, false)).toEqual({
       outcome: "main_moved",
       expected: BASE,
       actual: racer,
@@ -452,13 +456,13 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("starts the toolchain image on the instance it asks for, and legacy repos on lite", async () => {
     const configured = build({ tesselToml: GATE });
-    await executeMerge(configured.ctx, configured.env, "demo", request);
+    await executeMerge(configured.ctx, configured.env, "demo", request, false);
     expect(configured.starts).toEqual([
       { image: "toolchain-image", enableInternet: false, instance: "standard-4" },
     ]);
 
     const legacy = build();
-    await executeMerge(legacy.ctx, legacy.env, "demo", request);
+    await executeMerge(legacy.ctx, legacy.env, "demo", request, false);
     expect(legacy.starts).toEqual([
       { image: "lite-image", enableInternet: false, instance: "lite" },
     ]);
@@ -466,19 +470,19 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("runs every command of a configured gate, git included, as the unprivileged user", async () => {
     const configured = build({ tesselToml: GATE });
-    await executeMerge(configured.ctx, configured.env, "demo", request);
+    await executeMerge(configured.ctx, configured.env, "demo", request, false);
     const repoCommands = configured.execUsers.filter(({ command }) => !command.startsWith("cat "));
     expect(repoCommands.length).toBeGreaterThan(10);
     expect(repoCommands.filter(({ user }) => user !== "node")).toEqual([]);
 
     const legacy = build();
-    await executeMerge(legacy.ctx, legacy.env, "demo", request);
+    await executeMerge(legacy.ctx, legacy.env, "demo", request, false);
     expect(legacy.execUsers.filter(({ user }) => user !== undefined)).toEqual([]);
   });
 
   it("reads the gate from main at the commit the run is based on, never from the fork", async () => {
     const merge = build({ tesselToml: GATE });
-    await executeMerge(merge.ctx, merge.env, "demo", request);
+    await executeMerge(merge.ctx, merge.env, "demo", request, false);
     expect(merge.reads).toEqual([{ repo: "demo", ref: BASE, path: "tessel.toml" }]);
 
     const trial = build({ tesselToml: GATE });
@@ -495,14 +499,16 @@ describe("a repo with a tessel.toml on main", () => {
       readsAtStart = reads.length;
       start(options);
     };
-    await executeMerge(ctx, env, "demo", request);
+    await executeMerge(ctx, env, "demo", request, false);
     expect(readsAtStart).toBe(1);
     expect(events).toContain("start");
   });
 
   it("runs the installs with no network, scripts or lockfile drift, then the trunk's tests", async () => {
     const { ctx, env, events } = build({ tesselToml: GATE });
-    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({ outcome: "merged" });
+    expect(await executeMerge(ctx, env, "demo", request, false)).toMatchObject({
+      outcome: "merged",
+    });
     const execs = events.filter((event) => event.startsWith("exec "));
     const commands = execs.map((event) => event.slice(5));
     const at = (needle: string) => commands.findIndex((command) => command.includes(needle));
@@ -518,7 +524,7 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("stops at install, as infrastructure, when an install command fails", async () => {
     const { ctx, env, events } = build({ tesselToml: GATE, installExit: 1 });
-    const outcome = await executeMerge(ctx, env, "demo", request);
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
     expect(outcome).toMatchObject({
       outcome: "install",
       result: { step: "install", reason: "install_failed" },
@@ -530,7 +536,7 @@ describe("a repo with a tessel.toml on main", () => {
   it("reports a test step that ran out of time as a timeout, never as failing tests", async () => {
     for (const testExit of [124, 137]) {
       const merge = build({ tesselToml: GATE, testExit });
-      const merged = await executeMerge(merge.ctx, merge.env, "demo", request);
+      const merged = await executeMerge(merge.ctx, merge.env, "demo", request, false);
       expect(merged).toMatchObject({
         outcome: "timeout",
         result: { step: "test", reason: "timeout", passed: false },
@@ -547,7 +553,7 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("reports an install command that ran out of time as a timeout, running no tests", async () => {
     const { ctx, env, events } = build({ tesselToml: GATE, installExit: 124 });
-    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+    expect(await executeMerge(ctx, env, "demo", request, false)).toMatchObject({
       outcome: "timeout",
       result: { step: "install", reason: "timeout" },
     });
@@ -556,7 +562,7 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("rejects a submission that changes tessel.toml as gate_changed, running nothing of the repo's", async () => {
     const { ctx, env, events } = build({ tesselToml: GATE, changed: "M\0tessel.toml\0" });
-    expect(await executeMerge(ctx, env, "demo", request)).toEqual({
+    expect(await executeMerge(ctx, env, "demo", request, false)).toEqual({
       outcome: "gate_changed",
       base: BASE,
       head: HEAD,
@@ -568,7 +574,7 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("keeps a real test failure a test failure, with the measured wall time and peak memory", async () => {
     const { ctx, env } = build({ tesselToml: GATE, testExit: 1 });
-    const outcome = await executeMerge(ctx, env, "demo", request);
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
     expect(outcome).toMatchObject({
       outcome: "tests_failed",
       result: { step: "test", exitCode: 1 },
@@ -581,7 +587,7 @@ describe("a repo with a tessel.toml on main", () => {
   it("is main_moved, with nothing run, when main is not the commit the gate was read at", async () => {
     const racer = sha("9");
     const { ctx, env, events } = build({ tesselToml: GATE, mainBefore: racer });
-    expect(await executeMerge(ctx, env, "demo", request)).toEqual({
+    expect(await executeMerge(ctx, env, "demo", request, false)).toEqual({
       outcome: "main_moved",
       expected: racer,
       actual: BASE,
@@ -600,7 +606,7 @@ describe("a repo with a tessel.toml on main", () => {
     ];
     for (const tesselToml of invalid) {
       const { ctx, env, starts, events } = build({ tesselToml, depsExit: 0 });
-      const outcome = await executeMerge(ctx, env, "demo", request);
+      const outcome = await executeMerge(ctx, env, "demo", request, false);
       expect(outcome).toMatchObject({
         outcome: "install",
         result: { step: "install", reason: "config", stdout: "" },
@@ -612,7 +618,7 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("refuses a repo with dependencies and no tessel.toml, as before", async () => {
     const { ctx, env } = build({ depsExit: 3 });
-    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+    expect(await executeMerge(ctx, env, "demo", request, false)).toMatchObject({
       outcome: "install",
       result: { reason: "dependencies" },
     });
@@ -620,7 +626,7 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("runs the dependency check outside the repo, so an unparsable package.json cannot stop node", async () => {
     const { ctx, env, execUsers } = build();
-    await executeMerge(ctx, env, "demo", request);
+    await executeMerge(ctx, env, "demo", request, false);
     const check = execUsers.find(({ command }) => command.startsWith("node -e"));
     expect(check?.cwd).toBe("/");
     expect(check?.command.endsWith(" /workspace/package.json")).toBe(true);
@@ -628,7 +634,49 @@ describe("a repo with a tessel.toml on main", () => {
 
   it("still runs npm test for a repo without dependencies and without a tessel.toml", async () => {
     const { ctx, env, events } = build();
-    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({ outcome: "merged" });
+    expect(await executeMerge(ctx, env, "demo", request, false)).toMatchObject({
+      outcome: "merged",
+    });
     expect(events.some((event) => event.includes("npm test"))).toBe(true);
+  });
+});
+
+describe("the admin merge route and the gate", () => {
+  const changesGate = "M\0tessel.toml\0";
+  const wholeRepo = {
+    ...request,
+    scopes: [{ scope: { kind: "dir" as const, path: "" }, mode: "edit_body" as const }],
+  };
+
+  it("lets an admin merge change tessel.toml alone, judged by the head's file: no install, no tests", async () => {
+    const { ctx, env, events } = build({ tesselToml: GATE, changed: changesGate, testExit: 1 });
+    expect(await executeMerge(ctx, env, "demo", wholeRepo, true)).toMatchObject({
+      outcome: "merged",
+    });
+    expect(events.some((event) => event.includes("cargo") || event.includes("pnpm"))).toBe(false);
+  });
+
+  it("repairs a broken trunk gate: the trunk's file is invalid and the head's is valid", async () => {
+    const { ctx, env, starts } = build({ tesselToml: "not toml [", changed: changesGate });
+    expect(await executeMerge(ctx, env, "demo", wholeRepo, true)).toMatchObject({
+      outcome: "merged",
+    });
+    expect(starts).toHaveLength(1);
+  });
+
+  it("refuses an admin merge whose head file is invalid, and the same change over the service binding", async () => {
+    const invalid = { exitCode: 0, stdout: 'instance = "standard-4"\nshell = "sh"\n' };
+    const admin = build({ tesselToml: GATE, changed: changesGate, headGate: invalid });
+    expect(await executeMerge(admin.ctx, admin.env, "demo", wholeRepo, true)).toEqual({
+      outcome: "gate_invalid",
+      base: BASE,
+      head: HEAD,
+    });
+    expect(admin.events.some((event) => event.startsWith("mint write"))).toBe(false);
+
+    const service = build({ tesselToml: GATE, changed: changesGate });
+    expect(await executeMerge(service.ctx, service.env, "demo", wholeRepo, false)).toMatchObject({
+      outcome: "gate_changed",
+    });
   });
 });

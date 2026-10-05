@@ -34,7 +34,7 @@ export class MergeService extends WorkerEntrypoint<Env> {
     try {
       return await (trial
         ? handleTrialRequest(this.env, repo, body)
-        : handleMergeRequest(this.env, repo, body));
+        : handleMergeRequest(this.env, repo, body, false));
     } catch (error) {
       if ((error as Partial<ArtifactsError>).code === "NOT_FOUND") {
         return Response.json({ error: "fork or repo not found" }, { status: 404 });

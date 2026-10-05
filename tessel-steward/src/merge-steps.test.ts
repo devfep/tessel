@@ -26,6 +26,9 @@ const WHOLE_REPO: ClaimedScope[] = [
   { scope: { kind: "dir", path: "" }, mode: "create" },
 ];
 
+const VALID_GATE = 'instance = "standard-4"\n[[test]]\nargv = ["pnpm", "test"]\n';
+const ADMIN = { adminMerge: true };
+
 type GitStep =
   | "clone"
   | "fetch"
@@ -37,6 +40,7 @@ type GitStep =
   | "conflicts"
   | "changed"
   | "head"
+  | "show"
   | "push";
 
 function gitStep(command: GitCommand): GitStep {
@@ -52,6 +56,7 @@ function gitStep(command: GitCommand): GitStep {
     ["--diff-filter=U", "conflicts"],
     ["--name-status", "changed"],
     ["HEAD^{commit}", "head"],
+    [" show ", "show"],
     [" push ", "push"],
   ];
   const found = matches.find(([needle]) => text.includes(needle));
@@ -89,6 +94,7 @@ function harness(overrides: Partial<Plan> = {}) {
     conflicts: { exitCode: 0, stdout: "" },
     changed: { exitCode: 0, stdout: "M\0src/a.ts\0" },
     head: { exitCode: 0, stdout: `${HEAD}\n` },
+    show: { exitCode: 0, stdout: VALID_GATE },
     push: { exitCode: 0 },
   };
   const events: string[] = [];
@@ -242,6 +248,78 @@ describe("runMerge", () => {
       expect(events.some((event) => event.startsWith("package:"))).toBe(false);
       expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
     }
+  });
+
+  it("rejects a change to tessel.toml over the service binding even when the head's file is valid", async () => {
+    const { deps } = harness({ git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0" } } });
+    expect(await runMerge(deps, COMMIT, WHOLE_REPO, { adminMerge: false })).toEqual({
+      outcome: "gate_changed",
+      base: BASE,
+      head: HEAD,
+    });
+  });
+
+  describe("an admin merge that changes tessel.toml", () => {
+    const gateAndCode = "M\0tessel.toml\0M\0src/a.ts\0";
+
+    it("refuses a head file that is invalid, oversized or deleted, running nothing of the repo's", async () => {
+      const heads = [
+        { exitCode: 0, stdout: 'instance = "standard-4"\nshell = "sh"\n' },
+        { exitCode: 0, stdout: "not toml [" },
+        { exitCode: 0, stdout: "" },
+        { exitCode: 0, stdout: VALID_GATE.replace("pnpm", "sh") },
+        { exitCode: 128, stdout: "" },
+      ];
+      for (const show of heads) {
+        const changed = { exitCode: 0, stdout: gateAndCode };
+        const { deps, events } = harness({ git: { changed, show } });
+        expect(await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN), show.stdout).toEqual({
+          outcome: "gate_invalid",
+          base: BASE,
+          head: HEAD,
+        });
+        expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+        expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+      }
+    });
+
+    it("reads the head's file from the rebased commit", async () => {
+      const { deps, commands } = harness({
+        git: { changed: { exitCode: 0, stdout: gateAndCode } },
+      });
+      await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN);
+      const show = commands.find((command) => gitStep(command) === "show");
+      expect(show?.argv).toContain(`${HEAD}:tessel.toml`);
+    });
+
+    it("still runs the trunk's tests when the diff has code besides the gate", async () => {
+      const { deps, events } = harness({ git: { changed: { exitCode: 0, stdout: gateAndCode } } });
+      expect(await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN)).toMatchObject({ outcome: "merged" });
+      expect(events).toContain("package:test");
+    });
+
+    it("judges a diff of only tessel.toml by the head's file alone: no install, no tests, then the push", async () => {
+      const { deps, events } = harness({
+        git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0" } },
+        install: 3,
+        test: 1,
+      });
+      expect(await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN)).toMatchObject({
+        outcome: "merged",
+      });
+      expect(events.some((event) => event.startsWith("package:"))).toBe(false);
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(true);
+    });
+
+    it("still enforces the claim's coverage", async () => {
+      const narrow: ClaimedScope[] = [
+        { scope: { kind: "file", path: "tessel.toml" }, mode: "edit_body" },
+      ];
+      const { deps } = harness({
+        git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0M\0src/a.ts\0" } },
+      });
+      expect(await runMerge(deps, COMMIT, narrow, ADMIN)).toMatchObject({ outcome: "uncovered" });
+    });
   });
 
   it("does not mistake other files named like the gate for it", async () => {

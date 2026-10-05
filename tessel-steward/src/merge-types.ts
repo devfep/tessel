@@ -167,8 +167,10 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  *   `tessel.toml`) ran on the rebased `head` and did not exit 0. A step that timed out or was
  *   killed (exit 124 or 137) is never this: it is `timeout`.
  * - `gate_changed`: the commit rebased onto main changes `tessel.toml`, the gate it would be
- *   judged by. Read from the diff before any repo code ran. Nothing was tested or pushed; a human
- *   changes the gate by hand.
+ *   judged by, and the request came over the coordinator's service binding. Only an admin merge
+ *   may change the gate. Read from the diff before any repo code ran; nothing was tested or pushed.
+ * - `gate_invalid`: an admin merge changes `tessel.toml` to a file `parseGateConfig` refuses
+ *   (or deletes it). Nothing was tested or pushed.
  * - `uncovered`: the commit rebased onto main changes files that the claim's scopes do not cover
  *   in a permitting mode (invariant 11), read from `git diff --name-status` of the rebased range
  *   before any repo code ran. `files` holds at most `MAX_REPORTED_FILES` paths (untrusted data);
@@ -199,6 +201,7 @@ export type MergeOutcome =
   | { outcome: "tests_failed"; base: Sha; head: Sha; result: StepOutcome }
   | { outcome: "uncovered"; base: Sha; head: Sha; files: string[]; total: number }
   | { outcome: "gate_changed"; base: Sha; head: Sha }
+  | { outcome: "gate_invalid"; base: Sha; head: Sha }
   | { outcome: "main_moved"; expected: Sha; actual: Sha }
   | { outcome: "commit_not_in_fork" }
   | { outcome: "clone"; result: StepOutcome }
