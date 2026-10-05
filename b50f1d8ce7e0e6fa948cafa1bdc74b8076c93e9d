@@ -1,0 +1,4 @@
+intent: Make steward test results honest, bound output, and restrict write tokens to forks
+assumes: ExecProcess stdout/stderr are readable streams; Artifacts info().source is null only for non-forks
+rejected: output() with after-the-fact cap, since streams are available and keep memory bounded
+evidence: typecheck, oxlint, oxfmt clean; vitest 86/86; local wrangler run demo=test/0/passed, demo tokens 403, fork tokens 201; 5 mutants killed
