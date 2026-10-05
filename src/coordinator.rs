@@ -268,6 +268,10 @@ impl Coordinator {
                 return not_implemented(Some(request.req), "Claim with OnConflict::Shadow");
             }
         }
+        let request = ClaimRequest {
+            scopes: without_duplicates(request.scopes),
+            ..request
+        };
         let conflicts = self.find_conflicts(agent, &request.scopes);
         if conflicts.is_empty() {
             self.grant(agent, request, now_ms)
@@ -279,18 +283,13 @@ impl Coordinator {
     /// Every active claim of another agent that blocks one of `scopes`. Looks only at the nodes
     /// the requested scopes lock. The result does not depend on storage or insertion order: it is
     /// sorted by (index of the requested scope in the request, blocking claim id, index of the
-    /// held scope within its claim). A scope repeated in the request is reported for its first
-    /// occurrence only.
+    /// held scope within its claim). `scopes` must not repeat a `ScopeClaim`.
     fn find_conflicts(&self, agent: &AgentId, scopes: &[ScopeClaim]) -> Vec<Conflict> {
         let mut found = Vec::new();
         for (index, requested) in scopes.iter().enumerate() {
-            if scopes[..index].contains(requested) {
-                continue;
-            }
             self.collect_blockers(agent, index, requested, &mut found);
         }
         found.sort_by_key(Blocked::key);
-        found.dedup_by_key(|blocked| blocked.key());
         found.into_iter().map(|blocked| blocked.conflict).collect()
     }
 
@@ -494,6 +493,18 @@ fn remove_locks(locks: &mut LockTable, id: ClaimId, claim: &ActiveClaim) {
             }
         }
     }
+}
+
+/// Drops exact repeats, keeping first occurrences in order. The same scope in two modes is two
+/// distinct claims and both stay.
+fn without_duplicates(scopes: Vec<ScopeClaim>) -> Vec<ScopeClaim> {
+    let mut out: Vec<ScopeClaim> = Vec::with_capacity(scopes.len());
+    for scope in scopes {
+        if !out.contains(&scope) {
+            out.push(scope);
+        }
+    }
+    out
 }
 
 fn error(req: Option<RequestId>, code: ErrorCode, message: impl Into<String>) -> Effect {
@@ -1243,6 +1254,51 @@ mod tests {
     }
 
     #[test]
+    fn holder_that_listed_a_scope_twice_blocks_with_one_conflict() {
+        let mut c = coordinator();
+        let held = sc(file("src/a.rs"), Mode::EditBody);
+        grant(&mut c, "a", vec![held.clone(), held.clone()]);
+        assert_eq!(deny(&mut c, "b", vec![held]).len(), 1);
+    }
+
+    #[test]
+    fn requester_that_lists_a_scope_twice_gets_one_conflict() {
+        let mut c = coordinator();
+        let wanted = sc(file("src/a.rs"), Mode::EditBody);
+        grant(&mut c, "a", vec![wanted.clone()]);
+        assert_eq!(deny(&mut c, "b", vec![wanted.clone(), wanted]).len(), 1);
+    }
+
+    #[test]
+    fn granted_claim_logs_a_repeated_scope_once() {
+        let mut c = coordinator();
+        let repeated = sc(file("src/a.rs"), Mode::EditBody);
+        let other = sc(file("src/b.rs"), Mode::EditBody);
+        let scopes = vec![repeated.clone(), other.clone(), repeated.clone()];
+        let effects = claim_as(&mut c, "a", scopes);
+        let EventKind::ClaimGranted { scopes, .. } = only_event(&effects) else {
+            panic!("expected ClaimGranted, got {effects:?}");
+        };
+        assert_eq!(scopes, &vec![repeated, other]);
+    }
+
+    #[test]
+    fn same_scope_in_two_modes_stays_two_claims() {
+        let mut c = coordinator();
+        let depend = sc(file("src/a.rs"), Mode::Depend);
+        let edit_body = sc(file("src/a.rs"), Mode::EditBody);
+        let effects = claim_as(&mut c, "a", vec![depend.clone(), edit_body.clone()]);
+        let EventKind::ClaimGranted { scopes, .. } = only_event(&effects) else {
+            panic!("expected ClaimGranted, got {effects:?}");
+        };
+        assert_eq!(scopes, &vec![depend.clone(), edit_body.clone()]);
+
+        let conflicts = deny(&mut c, "b", vec![sc(file("src/a.rs"), Mode::EditSignature)]);
+        let held: Vec<ScopeClaim> = conflicts.iter().map(|x| x.held.clone()).collect();
+        assert_eq!(held, vec![depend, edit_body]);
+    }
+
+    #[test]
     fn claim_with_no_scopes_is_malformed() {
         let mut c = coordinator();
         let before = state(&c);
@@ -1423,16 +1479,25 @@ mod tests {
 
     type Pair = (ScopeClaim, ScopeClaim, AgentId);
 
+    /// Independent of the production helper: keeps first occurrences in order.
+    fn distinct(scopes: &[ScopeClaim]) -> Vec<ScopeClaim> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for scope in scopes {
+            if seen.insert(scope.clone()) {
+                out.push(scope.clone());
+            }
+        }
+        out
+    }
+
     /// Two scope claims conflict iff one scope covers the other and the modes conflict.
     /// One entry per (requested scope, blocking claim, held scope), in the documented order:
-    /// request index, then claim id (`active` is in grant order), then held index. A scope
-    /// repeated in the request counts once, at its first occurrence.
+    /// request index, then claim id (`active` is in grant order), then held index. `scopes`
+    /// must already be free of repeats.
     fn oracle(active: &[Active], who: &AgentId, scopes: &[ScopeClaim]) -> Vec<Pair> {
         let mut out = Vec::new();
-        for (index, mine) in scopes.iter().enumerate() {
-            if scopes[..index].contains(mine) {
-                continue;
-            }
+        for mine in scopes {
             for other in active.iter().filter(|a| a.agent != *who) {
                 for theirs in &other.scopes {
                     let overlap =
@@ -1452,26 +1517,31 @@ mod tests {
             let mut c = coordinator();
             let mut active: Vec<Active> = Vec::new();
             for op in sequence {
+                // Every reachable state must survive a save and load, so run on the restored one.
+                c = serde_json::from_str(&state(&c)).unwrap();
                 match op {
-                    Op::Claim { agent: n, scopes } => {
+                    Op::Claim { agent: n, scopes: raw } => {
                         let who = agent(&format!("agent-{n}"));
+                        let scopes = distinct(&raw);
                         let expected = oracle(&active, &who, &scopes);
-                        let effects = c.handle(&who, claim_msg(intent("p"), scopes.clone()), NOW);
-                        match only_reply(&effects) {
-                            ServerMsg::Granted { claim, fence, .. } => {
-                                prop_assert!(expected.is_empty(), "granted despite {expected:?}");
-                                let (claim, fence) = (*claim, *fence);
-                                active.push(Active { agent: who, claim, fence, scopes });
+                        let effects = c.handle(&who, claim_msg(intent("p"), raw), NOW);
+                        if expected.is_empty() {
+                            let ServerMsg::Granted { claim, fence, .. } = only_reply(&effects)
+                            else {
+                                return Err(TestCaseError::fail(format!("denied: {effects:?}")));
+                            };
+                            let (claim, fence) = (*claim, *fence);
+                            active.push(Active { agent: who, claim, fence, scopes });
+                        } else {
+                            let ServerMsg::Denied { conflicts, .. } = only_reply(&effects) else {
+                                return Err(TestCaseError::fail(format!("granted: {effects:?}")));
+                            };
+                            let mut got: Vec<Pair> = Vec::new();
+                            for x in conflicts {
+                                let (req, held) = (x.requested.clone(), x.held.clone());
+                                got.push((req, held, x.held_by.clone()));
                             }
-                            ServerMsg::Denied { conflicts, .. } => {
-                                let mut got: Vec<Pair> = Vec::new();
-                                for x in conflicts {
-                                    let (req, held) = (x.requested.clone(), x.held.clone());
-                                    got.push((req, held, x.held_by.clone()));
-                                }
-                                prop_assert_eq!(got, expected);
-                            }
-                            other => prop_assert!(false, "unexpected reply {other:?}"),
+                            prop_assert_eq!(got, expected);
                         }
                     }
                     Op::Release { pick } => {
