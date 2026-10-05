@@ -13,6 +13,7 @@ vi.mock("cloudflare:workers", () => ({
 import { MergeService } from "./merge-service";
 
 const COMMIT = "b".repeat(40);
+const SCOPES = [{ scope: { kind: "dir", path: "src" }, mode: "edit_body" }];
 
 function build(
   sources: Record<string, string | null>,
@@ -50,24 +51,38 @@ describe("MergeService", () => {
   it("merges the fork's commit and returns the outcome as JSON", async () => {
     const merge = vi.fn(async () => ({ outcome: "already_merged", base: COMMIT }));
     const { service } = build({ "demo--a1": "artifacts:tessel/demo" }, merge);
-    const response = await service.fetch(post({ repo: "demo", fork: "demo--a1", commit: COMMIT }));
+    const response = await service.fetch(
+      post({ repo: "demo", fork: "demo--a1", commit: COMMIT, scopes: SCOPES }),
+    );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: "already_merged", base: COMMIT });
-    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT);
+    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES);
   });
 
   it("refuses a fork that is not a fork of the repo without merging", async () => {
     const { service, merge } = build({ "other--a1": "artifacts:tessel/other" });
-    const response = await service.fetch(post({ repo: "demo", fork: "other--a1", commit: COMMIT }));
+    const response = await service.fetch(
+      post({ repo: "demo", fork: "other--a1", commit: COMMIT, scopes: SCOPES }),
+    );
     expect(response.status).toBe(400);
     expect(merge).not.toHaveBeenCalled();
   });
 
   it.each([
     ["a body that is not JSON", "not json"],
-    ["a body without a repo", { fork: "demo--a1", commit: COMMIT }],
-    ["a repo that is not a name", { repo: "../x", fork: "demo--a1", commit: COMMIT }],
-    ["a commit that is not a sha", { repo: "demo", fork: "demo--a1", commit: "main" }],
+    ["a body without a repo", { fork: "demo--a1", commit: COMMIT, scopes: SCOPES }],
+    [
+      "a repo that is not a name",
+      { repo: "../x", fork: "demo--a1", commit: COMMIT, scopes: SCOPES },
+    ],
+    [
+      "a commit that is not a sha",
+      { repo: "demo", fork: "demo--a1", commit: "main", scopes: SCOPES },
+    ],
+    [
+      "a request from an old coordinator, without scopes",
+      { repo: "demo", fork: "demo--a1", commit: COMMIT },
+    ],
   ])("answers 400 for %s", async (_label, body) => {
     const { service, merge } = build({ "demo--a1": "artifacts:tessel/demo" });
     const response = await service.fetch(post(body));
@@ -78,7 +93,7 @@ describe("MergeService", () => {
   it("answers 404 when the fork or the repo does not exist, so the coordinator does not retry", async () => {
     const { service, merge } = build({});
     const response = await service.fetch(
-      post({ repo: "demo", fork: "demo--ghost", commit: COMMIT }),
+      post({ repo: "demo", fork: "demo--ghost", commit: COMMIT, scopes: SCOPES }),
     );
     expect(response.status).toBe(404);
     expect(merge).not.toHaveBeenCalled();
@@ -91,7 +106,9 @@ describe("MergeService", () => {
       },
     };
     const { service } = build({}, vi.fn(), failing);
-    const response = await service.fetch(post({ repo: "demo", fork: "demo--a1", commit: COMMIT }));
+    const response = await service.fetch(
+      post({ repo: "demo", fork: "demo--a1", commit: COMMIT, scopes: SCOPES }),
+    );
     expect(response.status).toBe(502);
   });
 
@@ -106,7 +123,9 @@ describe("MergeService", () => {
       throw new Error("boom art_v1_secret");
     });
     const { service } = build({ "demo--a1": "artifacts:tessel/demo" }, merge);
-    const response = await service.fetch(post({ repo: "demo", fork: "demo--a1", commit: COMMIT }));
+    const response = await service.fetch(
+      post({ repo: "demo", fork: "demo--a1", commit: COMMIT, scopes: SCOPES }),
+    );
     expect(response.status).toBe(502);
     expect(JSON.stringify(await response.json())).not.toContain("secret");
   });
