@@ -117,6 +117,9 @@ pub enum NoticeKind {
     GrantedAfterWait,
     /// The socket dropped while a `--wait` was queued; the coordinator withdraws it.
     WaitWithdrawn,
+    /// The daemon compared its claims with the coordinator's log after a reconnect and
+    /// changed something.
+    Reconciled,
     Error,
     /// A server message this CLI does not act on.
     Unexpected,

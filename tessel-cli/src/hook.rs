@@ -9,9 +9,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use thiserror::Error;
 
-use crate::render::{denial_text, one_line, quote_untrusted};
+use crate::render::{denial_text, escape, one_line, quote_untrusted};
 use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request};
-use crate::scope::relative_to_root;
+use crate::scope::{locate, Located};
 use crate::state::write_atomic;
 use crate::worktree::Worktree;
 
@@ -80,10 +80,19 @@ pub async fn pre_edit(stdin: &str, process_cwd: &Path) -> Verdict {
     let Ok(worktree) = Worktree::discover(&cwd) else {
         return Verdict::allow();
     };
-    let Some(rel) = relative_to_root(&worktree.root, &cwd, raw) else {
-        return Verdict::allow();
+    let rel = match locate(&worktree.root, &cwd, raw) {
+        Located::Inside(rel) => rel,
+        Located::Outside => return Verdict::allow(),
+        Located::NotUtf8 => {
+            return Verdict::block(format!(
+                "tessel hook: {} names a path that is not valid UTF-8, which cannot be claimed; \
+                 blocking the edit\n",
+                escape(raw)
+            ));
+        }
     };
-    if rel == ".tessel" || rel.starts_with(".tessel/") {
+    let internal = |dir: &str| rel == dir || rel.starts_with(&format!("{dir}/"));
+    if internal(".tessel") || internal(".git") {
         return Verdict::allow();
     }
     let create = !worktree.root.join(&rel).exists();
@@ -113,28 +122,32 @@ async fn claim_file(worktree: &Worktree, rel: &str, create: bool) -> Verdict {
         Reply::Claim {
             outcome: ClaimOutcome::Denied { conflicts },
         } => {
-            let hint = format!("tessel claim {rel} --wait");
+            let hint = format!("tessel claim {} --wait", escape(rel));
             Verdict::block(format!(
-                "tessel: cannot edit {rel}; another agent holds it.\n{}",
+                "tessel: cannot edit {}; another agent holds it.\n{}",
+                escape(rel),
                 denial_text(&conflicts, &hint)
             ))
         }
         Reply::Claim {
             outcome: ClaimOutcome::Queued { .. },
         } => Verdict::block(format!(
-            "tessel: {rel} is queued behind another agent; wait for the grant in `tessel inbox`\n"
+            "tessel: {} is queued behind another agent; wait for the grant in `tessel inbox`\n",
+            escape(rel)
         )),
         Reply::Claim {
             outcome: ClaimOutcome::Refused { message, .. },
         } => Verdict::block(format!(
-            "tessel: could not claim {rel}.\n{}",
+            "tessel: could not claim {}.\n{}",
+            escape(rel),
             quote_untrusted("the coordinator", &message)
         )),
         Reply::Failed { message } => Verdict::block(format!(
-            "tessel: could not claim {rel}: {}\n",
+            "tessel: could not claim {}: {}\n",
+            escape(rel),
             one_line(&message)
         )),
-        Reply::Status { .. } | Reply::Released { .. } | Reply::Stopping => {
+        Reply::Status { .. } | Reply::Released { .. } | Reply::Stopping { .. } => {
             Verdict::block("tessel: the daemon answered with something unexpected\n".to_string())
         }
     }

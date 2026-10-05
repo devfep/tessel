@@ -1,0 +1,384 @@
+//! Reconciling the daemon's idea of its claims with the coordinator's, after a reconnect.
+//!
+//! A claim reply or a release can be lost with the socket, which would leave a claim that
+//! heartbeats keep alive and nobody tracks. The protocol has no "list my claims" request, so
+//! after each reconnect the daemon reads the event log (`Watch { from_seq: 0 }`) and rebuilds
+//! the agent's live claims from it. This module is the pure part: log in, decisions out.
+
+use std::collections::{BTreeMap, HashSet};
+
+use tessel_coordinator::protocol::{AgentId, ClaimId, Event, EventKind, Fence, RaceId, ScopeClaim};
+
+use crate::state::HeldClaim;
+
+/// A claim the coordinator holds for this agent, as the log shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerClaim {
+    pub fence: Fence,
+    pub scopes: Vec<ScopeClaim>,
+    pub race: Option<RaceId>,
+}
+
+/// The claims `agent` holds after replaying `events` in order, with each claim's latest fence.
+/// A claim that was released, expired, submitted or merged is not live: submitted work belongs
+/// to the steward, and this CLI never submits.
+pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerClaim> {
+    let mut live = BTreeMap::new();
+    for event in events {
+        match &event.kind {
+            EventKind::ClaimGranted {
+                agent: owner,
+                claim,
+                fence,
+                scopes,
+                race,
+                ..
+            } if owner == agent => {
+                live.insert(
+                    claim.0,
+                    ServerClaim {
+                        fence: *fence,
+                        scopes: scopes.clone(),
+                        race: *race,
+                    },
+                );
+            }
+            EventKind::ClaimAmended {
+                claim,
+                fence,
+                added,
+            } => {
+                if let Some(held) = live.get_mut(&claim.0) {
+                    held.fence = *fence;
+                    held.scopes.extend(added.iter().cloned());
+                }
+            }
+            EventKind::ClaimReleased { claim, .. }
+            | EventKind::Submitted { claim, .. }
+            | EventKind::Merged { claim, .. } => {
+                live.remove(&claim.0);
+            }
+            EventKind::ClaimGranted { .. }
+            | EventKind::AgentConnected { .. }
+            | EventKind::ClaimDenied { .. }
+            | EventKind::ClaimShadowed { .. }
+            | EventKind::WaitQueued { .. }
+            | EventKind::WaitWithdrawn { .. }
+            | EventKind::SubmitRejected { .. }
+            | EventKind::ReviewRequested { .. }
+            | EventKind::ReviewDecided { .. }
+            | EventKind::BaseMoved { .. }
+            | EventKind::AssumptionChallenged { .. }
+            | EventKind::RaceOpened { .. }
+            | EventKind::RaceDecided { .. }
+            | EventKind::DenialVerified { .. }
+            | EventKind::AssumptionVerified { .. }
+            | EventKind::ReplayMerged { .. } => {}
+        }
+    }
+    live
+}
+
+/// Claims that left the live set in `events`, whatever agent held them.
+fn ended_claims(events: &[Event]) -> HashSet<ClaimId> {
+    let mut ended = HashSet::new();
+    for event in events {
+        match &event.kind {
+            EventKind::ClaimReleased { claim, .. }
+            | EventKind::Submitted { claim, .. }
+            | EventKind::Merged { claim, .. } => {
+                ended.insert(*claim);
+            }
+            EventKind::AgentConnected { .. }
+            | EventKind::ClaimGranted { .. }
+            | EventKind::ClaimDenied { .. }
+            | EventKind::ClaimShadowed { .. }
+            | EventKind::ClaimAmended { .. }
+            | EventKind::WaitQueued { .. }
+            | EventKind::WaitWithdrawn { .. }
+            | EventKind::SubmitRejected { .. }
+            | EventKind::ReviewRequested { .. }
+            | EventKind::ReviewDecided { .. }
+            | EventKind::BaseMoved { .. }
+            | EventKind::AssumptionChallenged { .. }
+            | EventKind::RaceOpened { .. }
+            | EventKind::RaceDecided { .. }
+            | EventKind::DenialVerified { .. }
+            | EventKind::AssumptionVerified { .. }
+            | EventKind::ReplayMerged { .. } => {}
+        }
+    }
+    ended
+}
+
+/// What the daemon knew when the connection dropped.
+pub struct Local<'a> {
+    pub claims: &'a [HeldClaim],
+    /// Granted since the new connection was welcomed: the log read may predate them.
+    pub fresh: &'a HashSet<ClaimId>,
+    /// Scopes of claim requests whose answer was lost with the socket.
+    pub lost_requests: &'a [Vec<ScopeClaim>],
+    /// Claims this daemon asked to release before the socket dropped.
+    pub lost_releases: &'a HashSet<ClaimId>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Local claims the log shows as ended. Absence from the log is not enough: the read may
+    /// have been cut short, and forgetting a claim that is still held would be worse.
+    pub forget: Vec<ClaimId>,
+    /// Local claims whose fence differs from the log's latest.
+    pub refresh: Vec<(ClaimId, Fence)>,
+    /// Live claims that answer a request whose reply was lost: index into `lost_requests`.
+    pub answer_lost: Vec<(usize, ClaimId, ServerClaim)>,
+    /// Live claims this daemon tried to release before the socket dropped.
+    pub release_again: Vec<(ClaimId, Fence)>,
+    /// Live claims no local request explains. They are kept, because heartbeats keep them
+    /// alive and it cannot tell a sibling daemon of the same agent from a ghost; the inbox
+    /// says so and `tessel release <id>` drops one.
+    pub adopt: Vec<(ClaimId, ServerClaim)>,
+}
+
+/// Decides what to do about every difference between the local claims and the log.
+pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Event]) -> Plan {
+    let mut plan = Plan::default();
+    let ended = ended_claims(events);
+    for held in local.claims {
+        match live.get(&held.claim.0) {
+            Some(server) if server.fence != held.fence => {
+                plan.refresh.push((held.claim, server.fence));
+            }
+            None if ended.contains(&held.claim) && !local.fresh.contains(&held.claim) => {
+                plan.forget.push(held.claim);
+            }
+            Some(_) | None => {}
+        }
+    }
+    let known: HashSet<ClaimId> = local.claims.iter().map(|held| held.claim).collect();
+    let mut answered = HashSet::new();
+    for (&id, server) in live
+        .iter()
+        .rev()
+        .filter(|(id, _)| !known.contains(&ClaimId(**id)))
+    {
+        let claim = ClaimId(id);
+        if local.lost_releases.contains(&claim) {
+            plan.release_again.push((claim, server.fence));
+            continue;
+        }
+        let lost = local
+            .lost_requests
+            .iter()
+            .enumerate()
+            .find(|(index, scopes)| !answered.contains(index) && **scopes == server.scopes);
+        match lost {
+            Some((index, _)) => {
+                answered.insert(index);
+                plan.answer_lost.push((index, claim, server.clone()));
+            }
+            None => plan.adopt.push((claim, server.clone())),
+        }
+    }
+    plan
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tessel_coordinator::protocol::{
+        Intent, Mode, ReleaseReason, RunId, Scope, ScopeClaim as Sc,
+    };
+
+    fn scopes(path: &str) -> Vec<Sc> {
+        vec![Sc {
+            scope: Scope::File { path: path.into() },
+            mode: Mode::EditBody,
+        }]
+    }
+
+    fn event(seq: u64, kind: EventKind) -> Event {
+        Event {
+            seq,
+            at_ms: 0,
+            run: RunId("t".into()),
+            kind,
+        }
+    }
+
+    fn granted(seq: u64, agent: &str, claim: u64, fence: u64, path: &str) -> Event {
+        event(
+            seq,
+            EventKind::ClaimGranted {
+                agent: AgentId(agent.into()),
+                claim: ClaimId(claim),
+                fence: Fence(fence),
+                scopes: scopes(path),
+                intent: Intent {
+                    summary: String::new(),
+                    task_ref: None,
+                    assumptions: Vec::new(),
+                },
+                race: None,
+                at_risk: Vec::new(),
+            },
+        )
+    }
+
+    fn held(claim: u64, fence: u64, path: &str) -> HeldClaim {
+        HeldClaim {
+            claim: ClaimId(claim),
+            fence: Fence(fence),
+            expires_at_ms: 0,
+            race: None,
+            scopes: scopes(path),
+        }
+    }
+
+    fn released(seq: u64, claim: u64) -> Event {
+        event(
+            seq,
+            EventKind::ClaimReleased {
+                claim: ClaimId(claim),
+                reason: ReleaseReason::Agent,
+            },
+        )
+    }
+
+    #[test]
+    fn live_claims_follow_grants_amendments_and_endings() {
+        let me = AgentId("a1".into());
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            granted(1, "a2", 2, 2, "b.rs"),
+            granted(2, "a1", 3, 3, "c.rs"),
+            event(
+                3,
+                EventKind::ClaimAmended {
+                    claim: ClaimId(1),
+                    fence: Fence(4),
+                    added: scopes("d.rs"),
+                },
+            ),
+            released(4, 3),
+        ];
+        let live = live_claims(&me, &events);
+        assert_eq!(live.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(live[&1].fence, Fence(4));
+        assert_eq!(live[&1].scopes.len(), 2);
+    }
+
+    #[test]
+    fn submitted_and_merged_claims_are_not_live() {
+        let me = AgentId("a1".into());
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            granted(1, "a1", 2, 2, "b.rs"),
+            event(
+                2,
+                EventKind::Merged {
+                    claim: ClaimId(1),
+                    head: tessel_coordinator::protocol::CommitId("h".into()),
+                },
+            ),
+            event(
+                3,
+                EventKind::Submitted {
+                    claim: ClaimId(2),
+                    fork_commit: tessel_coordinator::protocol::CommitId("f".into()),
+                    touched: scopes("b.rs"),
+                    decisions: tessel_coordinator::protocol::DecisionRecord::default(),
+                },
+            ),
+        ];
+        assert!(live_claims(&me, &events).is_empty());
+    }
+
+    fn plan_for(
+        local: &[HeldClaim],
+        events: &[Event],
+        lost_requests: &[Vec<Sc>],
+        lost_releases: &[u64],
+    ) -> Plan {
+        let live = live_claims(&AgentId("a1".into()), events);
+        let releases: HashSet<ClaimId> = lost_releases.iter().map(|id| ClaimId(*id)).collect();
+        let fresh = HashSet::new();
+        let local = Local {
+            claims: local,
+            fresh: &fresh,
+            lost_requests,
+            lost_releases: &releases,
+        };
+        plan(&local, &live, events)
+    }
+
+    #[test]
+    fn a_lost_grant_reply_is_matched_to_its_request() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let plan = plan_for(&[], &events, &[scopes("a.rs")], &[]);
+        assert_eq!(plan.answer_lost.len(), 1);
+        assert_eq!(plan.answer_lost[0].0, 0);
+        assert_eq!(plan.answer_lost[0].1, ClaimId(7));
+        assert!(plan.adopt.is_empty() && plan.release_again.is_empty());
+    }
+
+    #[test]
+    fn a_lost_release_is_sent_again_with_the_latest_fence() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let plan = plan_for(&[], &events, &[], &[7]);
+        assert_eq!(plan.release_again, vec![(ClaimId(7), Fence(9))]);
+        assert!(plan.adopt.is_empty());
+    }
+
+    #[test]
+    fn an_unexplained_live_claim_is_adopted_not_released() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let plan = plan_for(&[], &events, &[scopes("other.rs")], &[]);
+        assert_eq!(plan.adopt.len(), 1);
+        assert!(plan.answer_lost.is_empty() && plan.release_again.is_empty());
+    }
+
+    #[test]
+    fn only_a_logged_ending_makes_the_daemon_forget_a_claim() {
+        let local = [held(1, 1, "a.rs"), held(2, 2, "b.rs")];
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            granted(1, "a1", 2, 2, "b.rs"),
+            released(2, 1),
+        ];
+        let plan = plan_for(&local, &events, &[], &[]);
+        assert_eq!(plan.forget, vec![ClaimId(1)]);
+        // A claim missing from a truncated log is kept.
+        let plan = plan_for(&local, &[], &[], &[]);
+        assert!(plan.forget.is_empty());
+    }
+
+    #[test]
+    fn a_stale_fence_is_refreshed_and_a_fresh_claim_is_never_forgotten() {
+        let local = [held(1, 1, "a.rs")];
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            event(
+                1,
+                EventKind::ClaimAmended {
+                    claim: ClaimId(1),
+                    fence: Fence(5),
+                    added: Vec::new(),
+                },
+            ),
+        ];
+        let plan = plan_for(&local, &events, &[], &[]);
+        assert_eq!(plan.refresh, vec![(ClaimId(1), Fence(5))]);
+
+        let ended = vec![granted(0, "a1", 1, 1, "a.rs"), released(1, 1)];
+        let live = live_claims(&AgentId("a1".into()), &ended);
+        let fresh: HashSet<ClaimId> = [ClaimId(1)].into();
+        let none = HashSet::new();
+        let local = Local {
+            claims: &local,
+            fresh: &fresh,
+            lost_requests: &[],
+            lost_releases: &none,
+        };
+        assert!(super::plan(&local, &live, &ended).forget.is_empty());
+    }
+}

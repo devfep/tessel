@@ -65,24 +65,49 @@ fn check_path(scope: &str, path: &str) -> Result<(), ScopeError> {
     Ok(())
 }
 
+/// Where a file lies relative to the worktree.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Located {
+    /// Repo-relative, `/`-separated path.
+    Inside(String),
+    Outside,
+    /// Inside, but a path component is not valid UTF-8, so no scope can name it.
+    NotUtf8,
+}
+
 /// Resolves `raw` (absolute, or relative to `cwd`) against the worktree `root`, which must be
-/// canonical. Returns the repo-relative `/`-separated path, or `None` if the file is outside the
-/// worktree. The file need not exist: its deepest existing ancestor is canonicalized, so a
-/// symlinked prefix such as macOS `/var` compares equal to the root.
-pub fn relative_to_root(root: &Path, cwd: &Path, raw: &str) -> Option<String> {
+/// canonical. Symlinks are resolved first: the deepest existing ancestor is canonicalized, so a
+/// link inside the worktree that points outside counts as outside, one that points at another
+/// file in the worktree counts as that file, and a symlinked prefix such as macOS `/var`
+/// compares equal to the root. The file itself need not exist.
+pub fn locate(root: &Path, cwd: &Path, raw: &str) -> Located {
     let joined = cwd.join(raw);
     let normalized = normalize(&joined);
-    let resolved = canonicalize_prefix(&normalized);
-    let rel = resolved.strip_prefix(root).ok()?;
+    classify(root, &canonicalize_prefix(&normalized))
+}
+
+fn classify(root: &Path, resolved: &Path) -> Located {
+    let Ok(rel) = resolved.strip_prefix(root) else {
+        return Located::Outside;
+    };
     let mut parts = Vec::new();
     for component in rel.components() {
         match component {
-            Component::Normal(part) => parts.push(part.to_str()?.to_string()),
+            Component::Normal(part) => match part.to_str() {
+                Some(part) => parts.push(part.to_string()),
+                None => return Located::NotUtf8,
+            },
             Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Located::Outside;
+            }
         }
     }
-    (!parts.is_empty()).then(|| parts.join("/"))
+    if parts.is_empty() {
+        Located::Outside
+    } else {
+        Located::Inside(parts.join("/"))
+    }
 }
 
 /// Lexically removes `.` and resolves `..`, without touching the filesystem.
@@ -189,18 +214,47 @@ mod tests {
     }
 
     #[test]
-    fn resolves_files_inside_the_root_even_when_they_do_not_exist() {
+    fn locates_files_inside_the_root_even_when_they_do_not_exist() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        let rel = |raw: &str| relative_to_root(&root, &root, raw);
-        assert_eq!(rel("src/new.rs").as_deref(), Some("src/new.rs"));
+        let find = |raw: &str| locate(&root, &root, raw);
+        let inside = |path: &str| Located::Inside(path.to_string());
+        assert_eq!(find("src/new.rs"), inside("src/new.rs"));
         assert_eq!(
-            rel(root.join("src/../src/x.rs").to_str().unwrap()).as_deref(),
-            Some("src/x.rs")
+            find(root.join("src/../src/x.rs").to_str().unwrap()),
+            inside("src/x.rs")
         );
-        assert_eq!(rel("../outside.rs"), None);
-        assert_eq!(rel("/etc/hosts"), None);
-        assert_eq!(rel("."), None);
+        assert_eq!(find("../outside.rs"), Located::Outside);
+        assert_eq!(find("/etc/hosts"), Located::Outside);
+        assert_eq!(find("."), Located::Outside);
+    }
+
+    #[test]
+    fn symlinks_are_resolved_before_the_inside_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("escape")).unwrap();
+        std::os::unix::fs::symlink(root.join("src/a.rs"), root.join("alias.rs")).unwrap();
+        assert_eq!(locate(&root, &root, "escape/new.rs"), Located::Outside);
+        assert_eq!(
+            locate(&root, &root, "alias.rs"),
+            Located::Inside("src/a.rs".into())
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_name_is_reported_not_ignored() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = Path::new("/work/tree");
+        let bad = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
+        assert_eq!(classify(root, &bad), Located::NotUtf8);
+        assert_eq!(
+            classify(root, &root.join("ok.rs")),
+            Located::Inside("ok.rs".into())
+        );
     }
 }

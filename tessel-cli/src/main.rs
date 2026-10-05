@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod daemon;
 mod hook;
+mod reconcile;
 mod render;
 mod rpc;
 mod scope;

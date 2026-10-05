@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tempfile::TempDir;
 use tessel_coordinator::coordinator::{Config, Coordinator};
-use tessel_coordinator::protocol::{AgentId, ClientMsg, RunId, ServerMsg};
+use tessel_coordinator::protocol::{AgentId, ClientMsg, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
@@ -31,6 +32,7 @@ fn now_ms() -> u64 {
 struct SocketEntry {
     id: u64,
     bound: Option<AgentId>,
+    watching: bool,
     tx: mpsc::UnboundedSender<ServerMsg>,
 }
 
@@ -40,9 +42,49 @@ struct Inner {
     received: Mutex<Vec<(AgentId, ClientMsg)>>,
     tokens: HashMap<String, String>,
     next_socket: Mutex<u64>,
+    events: Mutex<Vec<Event>>,
+    accepting: AtomicBool,
+    lose: Mutex<Vec<(String, Lose)>>,
+}
+
+/// A message to lose on its way, as a dropped network connection would.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Lose {
+    /// The coordinator handles the claim, but the reply is lost and the socket closes.
+    ClaimReply,
+    /// The coordinator never sees the release; the socket closes.
+    Release,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Inner {
+    /// Records events in the log and sends them to the sockets that watch it.
+    fn publish(&self, events: Vec<Event>) {
+        let mut log = lock(&self.events);
+        let sockets = lock(&self.sockets);
+        for event in events {
+            for entry in sockets.iter().filter(|s| s.watching) {
+                let _ = entry.tx.send(ServerMsg::Event {
+                    event: event.clone(),
+                });
+            }
+            log.push(event);
+        }
+    }
+
+    /// Runs `msg` on the core as `agent`, outside any socket.
+    fn act(&self, agent: &AgentId, msg: ClientMsg) {
+        let effects = lock(&self.core).handle(agent, msg, now_ms());
+        let (events, outbound) = shell::split_effects(effects);
+        self.publish(events);
+        self.deliver(None, outbound);
+    }
+
     fn deliver(&self, origin: Option<u64>, outbound: Vec<Outbound>) {
         let sockets = self
             .sockets
@@ -89,6 +131,9 @@ impl Fake {
                 .map(|(agent, token)| ((*token).to_string(), (*agent).to_string()))
                 .collect(),
             next_socket: Mutex::new(0),
+            events: Mutex::new(Vec::new()),
+            accepting: AtomicBool::new(true),
+            lose: Mutex::new(Vec::new()),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
@@ -101,6 +146,21 @@ impl Fake {
     /// Cuts every open socket without a close frame, as a network failure would.
     pub fn drop_connections(&self) {
         self.kill.send_modify(|generation| *generation += 1);
+    }
+
+    /// Refuses (or accepts again) new connections with HTTP 503. Open sockets are unaffected.
+    pub fn set_accepting(&self, accepting: bool) {
+        self.inner.accepting.store(accepting, Ordering::SeqCst);
+    }
+
+    /// Loses the next message of this kind from `agent`.
+    pub fn lose_next(&self, agent: &str, what: Lose) {
+        lock(&self.inner.lose).push((agent.to_string(), what));
+    }
+
+    /// Makes `agent` send `msg` to the coordinator without any socket, as if from elsewhere.
+    pub fn act(&self, agent: &str, msg: ClientMsg) {
+        self.inner.act(&AgentId(agent.into()), msg);
     }
 
     /// Sends `msg` to every open socket bound to `agent`.
@@ -136,7 +196,8 @@ async fn expire_loop(inner: Arc<Inner>) {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             core.expire(now_ms())
         };
-        let (_, outbound) = shell::split_effects(effects);
+        let (events, outbound) = shell::split_effects(effects);
+        inner.publish(events);
         inner.deliver(None, outbound);
     }
 }
@@ -153,6 +214,7 @@ async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<u
     let verified: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
     let seen = Arc::clone(&verified);
     let tokens = inner.tokens.clone();
+    let open = Arc::clone(&inner);
     #[expect(
         clippy::result_large_err,
         reason = "the handshake callback fixes this signature"
@@ -164,6 +226,11 @@ async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<u
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
+        if !open.accepting.load(Ordering::SeqCst) {
+            let mut busy = ErrorResponse::new(Some("busy".to_string()));
+            *busy.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+            return Err(busy);
+        }
         let agent = bearer.and_then(|token| tokens.get(token));
         match agent {
             Some(agent) if request.uri().path() == expected => {
@@ -202,6 +269,7 @@ async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<u
         .push(SocketEntry {
             id,
             bound: None,
+            watching: false,
             tx,
         });
     let mut session = Session {
@@ -252,8 +320,25 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
             inner.deliver(Some(id), vec![Outbound::Reply(reply)]);
             return Some(Handled { close: true });
         }
-        Action::Watch { .. } => {}
+        Action::Watch { from_seq } => {
+            let log = lock(&inner.events);
+            let mut sockets = lock(&inner.sockets);
+            if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
+                for event in log.iter().filter(|e| e.seq >= from_seq) {
+                    let _ = entry.tx.send(ServerMsg::Event {
+                        event: event.clone(),
+                    });
+                }
+                entry.watching = true;
+            }
+        }
         Action::Call { agent } => {
+            if let Some(lost) = take_loss(inner, &agent, &msg) {
+                if lost == Lose::ClaimReply {
+                    inner.act(&agent, msg);
+                }
+                return Some(Handled { close: true });
+            }
             inner
                 .received
                 .lock()
@@ -266,7 +351,8 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 core.handle(&agent, msg, now_ms())
             };
-            let (_, outbound) = shell::split_effects(effects);
+            let (events, outbound) = shell::split_effects(effects);
+            inner.publish(events);
             if let Some(bound) = shell::bind_on_welcome(session, &agent, &outbound) {
                 *session = bound;
                 let mut sockets = inner
@@ -305,8 +391,24 @@ fn close_socket(inner: &Inner, id: u64, session: &Session) {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         core.disconnect(agent, now_ms())
     };
-    let (_, outbound) = shell::split_effects(effects);
+    let (events, outbound) = shell::split_effects(effects);
+    inner.publish(events);
     inner.deliver(None, outbound);
+}
+
+fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
+    let wanted = if let ClientMsg::Claim { .. } = msg {
+        Lose::ClaimReply
+    } else if let ClientMsg::Release { .. } = msg {
+        Lose::Release
+    } else {
+        return None;
+    };
+    let mut pending = lock(&inner.lose);
+    let at = pending
+        .iter()
+        .position(|(who, what)| *who == agent.0 && *what == wanted)?;
+    Some(pending.remove(at).1)
 }
 
 // ---------- agents: real git repos running the real binary ----------
@@ -382,6 +484,16 @@ impl Agent {
             pipe.write_all(stdin.as_bytes())?;
         }
         Ok(Done::from(child.wait_with_output()?))
+    }
+
+    /// Runs the daemon in the foreground of a child process, as `tessel start` would detach it.
+    pub fn spawn_daemon(&self, summary: &str) -> Result<std::process::Child> {
+        let child = self
+            .command(&["daemon", "--summary", summary])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        Ok(child)
     }
 
     /// Starts the daemon and requires it to come online.
@@ -470,8 +582,15 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// Polls `check` every 25 ms for up to `limit`, returning the first `Some`.
-pub async fn eventually<T>(
+pub async fn eventually<T>(limit: Duration, check: impl FnMut() -> Result<Option<T>>) -> Result<T> {
+    eventually_every(limit, Duration::from_millis(25), check).await
+}
+
+/// Like `eventually`, polling every `every`. A probe that itself logs an event at the
+/// coordinator (a denied claim) should not poll faster than the daemon's event-log read ends.
+pub async fn eventually_every<T>(
     limit: Duration,
+    every: Duration,
     mut check: impl FnMut() -> Result<Option<T>>,
 ) -> Result<T> {
     let deadline = tokio::time::Instant::now() + limit;
@@ -482,6 +601,6 @@ pub async fn eventually<T>(
         if tokio::time::Instant::now() >= deadline {
             bail!("condition not met within {limit:?}");
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::sleep(every).await;
     }
 }

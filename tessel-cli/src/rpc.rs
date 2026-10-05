@@ -38,11 +38,23 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "reply", rename_all = "snake_case")]
 pub enum Reply {
-    Status { state: Box<State> },
-    Claim { outcome: ClaimOutcome },
-    Released { claims: Vec<ClaimId> },
-    Stopping,
-    Failed { message: String },
+    Status {
+        state: Box<State>,
+    },
+    Claim {
+        outcome: ClaimOutcome,
+    },
+    Released {
+        claims: Vec<ClaimId>,
+    },
+    /// The daemon is stopping. `unreleased` lists claims it could not release because it was
+    /// offline; they stay held until their lease ends.
+    Stopping {
+        unreleased: Vec<ClaimId>,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

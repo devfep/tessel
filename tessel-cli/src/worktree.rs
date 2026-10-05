@@ -78,6 +78,10 @@ impl Worktree {
         self.dir().join("inbox.cursor")
     }
 
+    pub fn lock_path(&self) -> PathBuf {
+        self.dir().join("daemon.lock")
+    }
+
     pub fn pid_path(&self) -> PathBuf {
         self.dir().join("daemon.pid")
     }

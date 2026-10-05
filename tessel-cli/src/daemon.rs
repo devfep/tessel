@@ -4,15 +4,15 @@
 //! One task owns all state. Reader/writer work for the socket runs in a helper task that
 //! exchanges messages with the owner through channels, so no lock is ever held across an await.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    uncovered, Assumption, ClaimId, ClientMsg, CommitId, ErrorCode, Intent, Mode, OnConflict,
-    RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, ErrorCode, Event, Intent, Mode,
+    OnConflict, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -24,6 +24,7 @@ use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::config::Config;
+use crate::reconcile::{self, Local, Plan, ServerClaim};
 use crate::rpc::{self, ClaimOutcome, Reply, Request};
 use crate::state::{append_notice, Connection, HeldClaim, Notice, NoticeKind, QueuedWait, State};
 use crate::worktree::Worktree;
@@ -33,6 +34,11 @@ const FIRST_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(1);
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
+/// The event-log read after a reconnect ends when no event has arrived for this long.
+const SNAPSHOT_QUIET: Duration = Duration::from_millis(400);
+/// Live events from busy agents can keep the log from ever going quiet, so the read also ends
+/// after this long. By then the replay is long over; what was read is what is used.
+const SNAPSHOT_LIMIT: Duration = Duration::from_secs(5);
 /// Until the coordinator's `Welcome` says otherwise.
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(10);
 
@@ -59,8 +65,19 @@ struct Command {
 }
 
 enum Incoming {
-    Msg { generation: u64, msg: ServerMsg },
-    Closed { generation: u64, reason: String },
+    Msg {
+        generation: u64,
+        msg: ServerMsg,
+    },
+    Closed {
+        generation: u64,
+        reason: String,
+    },
+    /// The coordinator's event log, read right after a reconnect.
+    Snapshot {
+        generation: u64,
+        events: Result<Vec<Event>, String>,
+    },
 }
 
 struct Conn {
@@ -70,7 +87,6 @@ struct Conn {
 
 struct PendingClaim {
     scopes: Vec<ScopeClaim>,
-    sent_at_ms: u64,
     /// The coordinator answered `Queued`; the grant will arrive later.
     queued: bool,
     replies: Vec<oneshot::Sender<Reply>>,
@@ -97,6 +113,12 @@ struct Daemon {
     next_req: u64,
     pending: HashMap<u64, PendingClaim>,
     release_reqs: HashMap<u64, ClaimId>,
+    /// Claim requests whose answer was lost with the socket; their callers are still waiting.
+    lost_requests: Vec<PendingClaim>,
+    /// Claims released just before the socket dropped; the release may not have arrived.
+    lost_releases: HashSet<ClaimId>,
+    /// Claims granted since the current connection was welcomed.
+    fresh: HashSet<ClaimId>,
     in_tx: mpsc::UnboundedSender<Incoming>,
     backoff: Duration,
     reconnect_at: Option<Instant>,
@@ -107,7 +129,7 @@ struct Daemon {
 }
 
 /// Runs the daemon for `worktree` until `tessel stop` or a fatal error. Returns `Ok` without
-/// doing anything if another daemon already serves this worktree.
+/// doing anything if another daemon already holds this worktree's lock.
 pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Result<()> {
     // Fails only if a provider is already installed, which is what we want anyway.
     if rustls::crypto::ring::default_provider()
@@ -121,18 +143,17 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         );
     }
     worktree.prepare_dir()?;
-    let sock = worktree.sock();
-    if rpc::call(&sock, &Request::Status, Duration::from_secs(1))
-        .await
-        .is_ok()
-    {
+    // Held for the daemon's whole life: the kernel drops it if the process dies, so a crash
+    // never leaves a lock behind, and a second daemon exits before touching the socket.
+    let Some(_lock) = acquire_lock(&worktree)? else {
         log(
             &worktree,
             &config,
-            "another daemon already serves this worktree; exiting",
+            "another daemon holds the lock for this worktree; exiting",
         );
         return Ok(());
-    }
+    };
+    let sock = worktree.sock();
     match std::fs::remove_file(&sock) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -176,6 +197,23 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
     result
 }
 
+fn acquire_lock(worktree: &Worktree) -> anyhow::Result<Option<std::fs::File>> {
+    let path = worktree.lock_path();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("cannot lock {}", path.display()))
+        }
+    }
+}
+
 fn restrict_permissions(sock: &std::path::Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600))
@@ -212,6 +250,9 @@ impl Daemon {
             next_req: 1,
             pending: HashMap::new(),
             release_reqs: HashMap::new(),
+            lost_requests: Vec::new(),
+            lost_releases: HashSet::new(),
+            fresh: HashSet::new(),
             in_tx,
             backoff: FIRST_BACKOFF,
             reconnect_at: Some(now),
@@ -310,8 +351,15 @@ impl Daemon {
             self.in_tx.clone(),
             self.generation,
         ));
+        match self.worktree.head() {
+            Ok(head) => self.state.base = head,
+            Err(e) => self.log(&format!(
+                "cannot read HEAD, keeping {}: {e}",
+                self.state.base
+            )),
+        }
         let hello = ClientMsg::Hello {
-            agent: tessel_coordinator::protocol::AgentId(self.config.agent.clone()),
+            agent: AgentId(self.config.agent.clone()),
             base: CommitId(self.state.base.clone()),
             protocol: PROTOCOL_VERSION,
         };
@@ -384,7 +432,10 @@ impl Daemon {
             Incoming::Closed { generation, reason } if generation == self.generation => {
                 self.on_closed(&reason);
             }
-            Incoming::Msg { .. } | Incoming::Closed { .. } => {}
+            Incoming::Snapshot { generation, events } if generation == self.generation => {
+                self.on_snapshot(events);
+            }
+            Incoming::Msg { .. } | Incoming::Closed { .. } | Incoming::Snapshot { .. } => {}
         }
     }
 
@@ -392,6 +443,8 @@ impl Daemon {
         self.conn = None;
         self.log(&format!("connection closed: {reason}"));
         self.state.last_error = Some(reason.to_string());
+        // A claim request that was in flight may have been granted without us hearing of it.
+        // Its caller keeps waiting; the event log read after the next welcome decides.
         for (_, pending) in std::mem::take(&mut self.pending) {
             if pending.queued {
                 self.notify(
@@ -400,12 +453,12 @@ impl Daemon {
                      it, claim again after reconnecting",
                     None,
                 );
-                continue;
+            } else {
+                self.lost_requests.push(pending);
             }
-            let message = "connection lost before the coordinator answered; run `tessel status` \
-                           to see what is held";
-            answer(pending.replies, &refused(None, message));
         }
+        self.lost_releases
+            .extend(self.release_reqs.drain().map(|(_, claim)| claim));
         self.state.queued = None;
         self.schedule_reconnect();
         self.persist();
@@ -502,6 +555,12 @@ impl Daemon {
         self.state.last_error = None;
         self.heartbeat_every = Duration::from_millis((lease_ms / 3).max(1));
         self.next_heartbeat = Instant::now() + self.heartbeat_every;
+        self.fresh.clear();
+        tokio::spawn(snapshot_task(
+            self.config.clone(),
+            self.in_tx.clone(),
+            self.generation,
+        ));
         self.log(&format!("welcomed; lease {lease_ms} ms"));
         self.persist();
     }
@@ -518,11 +577,12 @@ impl Daemon {
         let held = HeldClaim {
             claim,
             fence,
-            expires_at_ms: pending.sent_at_ms.saturating_add(lease),
+            expires_at_ms: now_ms().saturating_add(lease),
             race,
             scopes: pending.scopes,
         };
         self.state.claims.push(held.clone());
+        self.fresh.insert(claim);
         if pending.queued {
             self.state.queued = None;
             self.notify(
@@ -556,6 +616,130 @@ impl Daemon {
                 },
             },
         );
+    }
+
+    /// Compares this agent's claims in the coordinator's log with the local ones, and repairs
+    /// the difference. The rules are in `reconcile`.
+    fn on_snapshot(&mut self, events: Result<Vec<Event>, String>) {
+        let lost = std::mem::take(&mut self.lost_requests);
+        let lost_releases = std::mem::take(&mut self.lost_releases);
+        let events = match events {
+            Ok(events) => events,
+            Err(why) => {
+                self.log(&format!("cannot read the event log: {why}"));
+                self.notify(
+                    NoticeKind::Error,
+                    "could not read the coordinator's event log after reconnecting, so claims \
+                     were not compared; see daemon.log",
+                    None,
+                );
+                let message = "the connection dropped before the coordinator answered, and the \
+                               outcome could not be checked afterwards; run `tessel status`";
+                for pending in lost {
+                    answer(pending.replies, &refused(None, message));
+                }
+                self.lost_releases = lost_releases;
+                return;
+            }
+        };
+        let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
+        self.log(&format!(
+            "event log read: {} events, {} live claims for this agent",
+            events.len(),
+            live.len()
+        ));
+        let scopes: Vec<Vec<ScopeClaim>> = lost.iter().map(|p| p.scopes.clone()).collect();
+        let local = Local {
+            claims: &self.state.claims,
+            fresh: &self.fresh,
+            lost_requests: &scopes,
+            lost_releases: &lost_releases,
+        };
+        let plan = reconcile::plan(&local, &live, &events);
+        self.apply_plan(plan, lost);
+    }
+
+    fn apply_plan(&mut self, plan: Plan, lost: Vec<PendingClaim>) {
+        let Plan {
+            forget,
+            refresh,
+            answer_lost,
+            release_again,
+            adopt,
+        } = plan;
+        for claim in forget {
+            self.state.claims.retain(|held| held.claim != claim);
+            let note = format!("claim {} is gone from the coordinator; forgot it", claim.0);
+            self.notify(NoticeKind::Reconciled, &note, None);
+        }
+        for (claim, fence) in refresh {
+            if let Some(held) = self
+                .state
+                .claims
+                .iter_mut()
+                .find(|held| held.claim == claim)
+            {
+                held.fence = fence;
+            }
+        }
+        let mut lost: Vec<Option<PendingClaim>> = lost.into_iter().map(Some).collect();
+        for (index, claim, server) in answer_lost {
+            let held = self.adopt(claim, server);
+            let note = format!(
+                "claim {} was granted just before the connection dropped; it is now tracked",
+                claim.0
+            );
+            self.notify(NoticeKind::Reconciled, &note, None);
+            if let Some(pending) = lost.get_mut(index).and_then(Option::take) {
+                let outcome = ClaimOutcome::Granted {
+                    claim: held,
+                    at_risk: Vec::new(),
+                };
+                answer(pending.replies, &Reply::Claim { outcome });
+            }
+        }
+        for (claim, server) in adopt {
+            self.adopt(claim, server);
+            let note = format!(
+                "the coordinator holds claim {} for this agent and no request here explains it; \
+                 it is now tracked, and `tessel release {}` drops it",
+                claim.0, claim.0
+            );
+            self.notify(NoticeKind::Reconciled, &note, None);
+        }
+        for (claim, fence) in release_again {
+            let held = HeldClaim {
+                claim,
+                fence,
+                expires_at_ms: 0,
+                race: None,
+                scopes: Vec::new(),
+            };
+            self.send_release(&held);
+            let note = format!(
+                "a release of claim {} was lost with the connection; sent it again",
+                claim.0
+            );
+            self.notify(NoticeKind::Reconciled, &note, None);
+        }
+        let message = "the connection dropped before the coordinator answered; it did not grant \
+                       this claim, so run it again";
+        for pending in lost.into_iter().flatten() {
+            answer(pending.replies, &refused(None, message));
+        }
+        self.persist();
+    }
+
+    fn adopt(&mut self, claim: ClaimId, server: ServerClaim) -> HeldClaim {
+        let held = HeldClaim {
+            claim,
+            fence: server.fence,
+            expires_at_ms: now_ms().saturating_add(self.state.lease_ms.unwrap_or(0)),
+            race: server.race,
+            scopes: server.scopes,
+        };
+        self.state.claims.push(held.clone());
+        held
     }
 
     fn on_queued(&mut self, req: RequestId, position: u32) {
@@ -640,10 +824,11 @@ impl Daemon {
                 let _ = reply.send(self.release(claim));
             }
             Request::Stop => {
-                self.release_all_for_stop();
+                let unreleased = self.release_all_for_stop();
                 self.pending.clear();
+                self.lost_requests.clear();
                 self.close_connection().await;
-                let _ = reply.send(Reply::Stopping);
+                let _ = reply.send(Reply::Stopping { unreleased });
                 return Flow::Exit;
             }
         }
@@ -733,7 +918,6 @@ impl Daemon {
             req,
             PendingClaim {
                 scopes,
-                sent_at_ms: now_ms(),
                 queued: false,
                 replies: vec![reply],
             },
@@ -781,13 +965,16 @@ impl Daemon {
         });
     }
 
-    fn release_all_for_stop(&mut self) {
+    /// Releases every held claim if online. Returns the claims it could not release.
+    fn release_all_for_stop(&mut self) -> Vec<ClaimId> {
         let held = std::mem::take(&mut self.state.claims);
-        if self.is_online() {
-            for claim in &held {
-                self.send_release(claim);
-            }
+        if !self.is_online() {
+            return held.iter().map(|claim| claim.claim).collect();
         }
+        for claim in &held {
+            self.send_release(claim);
+        }
+        Vec::new()
     }
 
     /// Lets queued messages go out, then closes the socket and waits for its task.
@@ -874,6 +1061,45 @@ async fn open_socket(config: &Config) -> Result<Socket, ConnectFailure> {
         // Only the error kind is shown: a handshake error must never echo request headers.
         Ok(Err(e)) => Err(ConnectFailure::Transient(format!("cannot connect: {e}"))),
     }
+}
+
+/// Reads the whole event log on a short-lived second connection, which `Watch` turns into a
+/// replay followed by live events. The replay has no end marker, so it is over when no event
+/// has arrived for `SNAPSHOT_QUIET`, or after `SNAPSHOT_LIMIT`.
+async fn snapshot_task(config: Config, tx: mpsc::UnboundedSender<Incoming>, generation: u64) {
+    let events = tokio::time::timeout(CONNECT_TIMEOUT + SNAPSHOT_LIMIT * 2, read_log(&config))
+        .await
+        .unwrap_or_else(|_| Err("the event log read hung".to_string()));
+    let _ = tx.send(Incoming::Snapshot { generation, events });
+}
+
+async fn read_log(config: &Config) -> Result<Vec<Event>, String> {
+    let mut socket = open_socket(config).await.map_err(|failure| match failure {
+        ConnectFailure::Fatal(message) | ConnectFailure::Transient(message) => message,
+    })?;
+    let watch =
+        serde_json::to_string(&ClientMsg::Watch { from_seq: 0 }).map_err(|e| e.to_string())?;
+    socket
+        .send(Message::text(watch))
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut events = Vec::new();
+    let deadline = Instant::now() + SNAPSHOT_LIMIT;
+    while Instant::now() < deadline {
+        match tokio::time::timeout(SNAPSHOT_QUIET, socket.next()).await {
+            Err(_) | Ok(None) => break,
+            Ok(Some(Err(e))) => return Err(e.to_string()),
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<ServerMsg>(&text) {
+                Ok(ServerMsg::Event { event }) => events.push(event),
+                Ok(ServerMsg::Error { code, .. }) => return Err(format!("refused: {code:?}")),
+                Ok(_) => {}
+                Err(e) => return Err(format!("unreadable message: {e}")),
+            },
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+    let _ = socket.close(None).await;
+    Ok(events)
 }
 
 /// Owns the socket: forwards frames to the daemon and daemon messages to the socket. Ends when

@@ -122,6 +122,10 @@ async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow::Res
     if let Some(task) = &task {
         daemon.arg("--task").arg(task);
     }
+    // Its own process group, with stdio redirected to daemon.log and no controlling terminal
+    // needed: a Ctrl-C at the terminal, or a tool runner killing the process group of the command
+    // that ran `tessel start`, then cannot reach the daemon. The daemon never reads a terminal or
+    // writes to one, so it needs no `setsid` and no extra dependency.
     let mut child = daemon
         .current_dir(&worktree.root)
         .stdin(Stdio::null())
@@ -132,7 +136,8 @@ async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow::Res
         .context("cannot start the daemon")?;
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
-        if let Some(status) = child.try_wait()? {
+        // A daemon that exits cleanly lost the lock to another one, which will come online.
+        if let Some(status) = child.try_wait()?.filter(|status| !status.success()) {
             bail!(
                 "the daemon exited ({status}) before connecting; last log lines:\n{}",
                 log_tail(&worktree)
@@ -206,7 +211,10 @@ async fn claim(
     let Reply::Claim { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
     };
-    let hint = format!("tessel claim {} --wait", args.join(" "));
+    let hint = format!(
+        "tessel claim {} --wait",
+        crate::render::escape(&args.join(" "))
+    );
     say(&outcome_text(&outcome, &hint));
     Ok(ExitCode::from(match outcome {
         ClaimOutcome::Granted { .. } | ClaimOutcome::Covered => 0,
@@ -232,7 +240,7 @@ async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Reply::Failed { message } => bail!("{message}"),
-        Reply::Status { .. } | Reply::Claim { .. } | Reply::Stopping => {
+        Reply::Status { .. } | Reply::Claim { .. } | Reply::Stopping { .. } => {
             bail!("the daemon answered with something unexpected")
         }
     }
@@ -240,14 +248,18 @@ async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<ExitCode> {
 
 async fn stop(cwd: &Path) -> anyhow::Result<ExitCode> {
     let worktree = Worktree::discover(cwd)?;
-    match rpc::call(&worktree.sock(), &Request::Stop, CALL_TIMEOUT).await {
-        Ok(_) => {}
+    let unreleased = match rpc::call(&worktree.sock(), &Request::Stop, CALL_TIMEOUT).await {
+        Ok(Reply::Stopping { unreleased }) => unreleased,
+        Ok(Reply::Failed { message }) => bail!("{message}"),
+        Ok(Reply::Status { .. } | Reply::Claim { .. } | Reply::Released { .. }) => {
+            bail!("the daemon answered with something unexpected")
+        }
         Err(ClientError::NotRunning) => {
             say("no daemon was running\n");
             return Ok(ExitCode::SUCCESS);
         }
         Err(e) => return Err(e.into()),
-    }
+    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while worktree.sock().exists() {
         if tokio::time::Instant::now() >= deadline {
@@ -255,7 +267,16 @@ async fn stop(cwd: &Path) -> anyhow::Result<ExitCode> {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    say("stopped: claims released, socket closed\n");
+    if unreleased.is_empty() {
+        say("stopped: claims released, socket closed\n");
+    } else {
+        let ids: Vec<String> = unreleased.iter().map(|c| c.0.to_string()).collect();
+        say(&format!(
+            "stopped, but the coordinator was unreachable: claim(s) {} were NOT released and stay \
+             held until their lease ends\n",
+            ids.join(", ")
+        ));
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -271,7 +292,10 @@ async fn status(cwd: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let unread = state::unread_count(&worktree)?;
     if json {
         let doc = json!({ "daemon_running": running, "state": state, "unread_inbox": unread });
-        say(&format!("{}\n", serde_json::to_string_pretty(&doc)?));
+        say(&format!(
+            "{}\n",
+            crate::render::json_safe(&serde_json::to_string_pretty(&doc)?)
+        ));
         return Ok(ExitCode::SUCCESS);
     }
     match state {
