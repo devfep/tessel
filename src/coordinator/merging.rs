@@ -156,7 +156,7 @@ impl Coordinator {
     /// Decide a submission held for review (invariant 12). Only a configured reviewer may, never
     /// on their own submission. Approval clears the hold; the submission keeps its ordinal, so it
     /// merges in its original order. Rejection returns the claim to active with a fresh lease and
-    /// the same fence. The reviewer is answered with what the submitter is told, under their `req`.
+    /// the same fence. The reviewer gets no reply on success: watchers see `ReviewDecided`, refusals are errors.
     pub(super) fn review(
         &mut self,
         reviewer: &AgentId,
@@ -199,11 +199,6 @@ impl Coordinator {
         let mut effects = vec![self.event(now_ms, decided)];
         if !approve {
             effects.extend(self.reject_work(claim, held, REJECTED_IN_REVIEW.to_string(), now_ms));
-            let rejected = ServerMsg::SubmitRejected {
-                claim,
-                reason: REJECTED_IN_REVIEW.to_string(),
-            };
-            effects.push(Effect::Reply(rejected));
             return effects;
         }
         let ordinal = held.submitted;
@@ -215,16 +210,15 @@ impl Coordinator {
         };
         self.keep_work(claim, held, released);
         let queue_position = ordinal.map_or(0, |ordinal| self.queue_position(ordinal));
-        let accepted = |req| ServerMsg::Accepted {
-            req,
+        let accepted = ServerMsg::Accepted {
+            req: submit_req,
             claim,
             queue_position,
         };
         effects.push(Effect::Notify {
             agent: submitter,
-            msg: accepted(submit_req),
+            msg: accepted,
         });
-        effects.push(Effect::Reply(accepted(req)));
         effects
     }
 
@@ -1012,10 +1006,7 @@ mod tests {
 
     fn approve(c: &mut Coordinator, claim: ClaimId) {
         let effects = review(c, "felix", claim, true, None);
-        assert!(
-            matches!(replies(&effects)[..], [ServerMsg::Accepted { .. }]),
-            "{effects:?}"
-        );
+        assert!(replies(&effects).is_empty(), "{effects:?}");
     }
 
     /// A claim whose submission has no test evidence, so it is held for review.
@@ -1068,13 +1059,7 @@ mod tests {
             *queue_position, 1,
             "it is first: the claim submitted after it merged and `last` is behind it"
         );
-        assert!(matches!(
-            replies(&effects)[..],
-            [ServerMsg::Accepted {
-                req: REVIEW_REQ,
-                ..
-            }]
-        ));
+        assert!(replies(&effects).is_empty(), "the reviewer gets no reply");
         assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(held.0));
         c.merge_outcome(held.0, &merged_outcome(), NOW);
         assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(last.0));
@@ -1134,6 +1119,7 @@ mod tests {
         let held = held_for_review(&mut c, "held", "src/1.rs");
 
         let effects = review(&mut c, "felix", held.0, false, Some("not this way"));
+        assert!(replies(&effects).is_empty(), "the reviewer gets no reply");
 
         let kinds = logged(&effects);
         assert!(matches!(
