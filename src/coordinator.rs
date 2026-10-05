@@ -842,8 +842,8 @@ impl Coordinator {
     /// A rejected submission changes nothing but the event log, and the claim stays submittable.
     ///
     /// `Accepted::queue_position` is the 1-based place among submitted non-shadow claims, in
-    /// submission order (see `queue_position`). For a shadow claim it is 0, meaning "recorded for verification, never
-    /// queued for merge": the protocol has no dedicated reply for that.
+    /// submission order (see `queue_position`). For a shadow claim it is 0, meaning "recorded
+    /// for verification, never queued for merge": the protocol has no dedicated reply for that.
     fn submit(&mut self, agent: &AgentId, request: SubmitRequest, now_ms: u64) -> Vec<Effect> {
         let SubmitRequest {
             req,
@@ -922,7 +922,8 @@ impl Coordinator {
     /// Tell every agent whose assumption the submission threatens (invariant 8): the other
     /// agents' active non-shadow claims, in claim id order, then each claim's assumptions in
     /// declared order. Already submitted claims are included: their work has not merged yet.
-    /// Each (claim, assumption) is challenged once however many touched scopes threaten it. Challenges are notices and are logged; they never block the submission.
+    /// Each (claim, assumption) is challenged once however many touched scopes threaten it.
+    /// Challenges are notices and are logged; they never block the submission.
     fn challenge_assumptions(
         &mut self,
         submitter: &AgentId,
