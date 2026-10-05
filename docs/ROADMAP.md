@@ -17,7 +17,17 @@ to Felix at FREEZE.
 |---|---|---|---|
 | impl-spike-3 | SPIKE-3 | `.claude/worktrees/spike-3` / `task-spike-3` | reported at `80b8ae1` → fix passes if any |
 | cq-spike-3 | SPIKE-3 review | same worktree, read-only | reviewing `ddaeb44..80b8ae1` → verdict |
-| impl-coord-1 | COORD-1 | `.claude/worktrees/coord-1` / `task-coord-1` | implementing → review |
+| impl-coord-1 | COORD-1 | `.claude/worktrees/coord-1` / `task-coord-1` | reported at `4862f59` → fix pass 1 (rulings below) |
+| cq-coord-1 | COORD-1 review | same worktree, read-only | reviewing `ddaeb44..4862f59` → verdict |
+
+**Rulings for COORD-1 fix pass 1** (sent with the reviewer's findings as one brief, once the reviewer
+has finished mutating the worktree):
+1. `Hello` identity: the core uses the `agent` argument of `handle` for the reply and the log. A
+   `Hello` whose message agent differs from the argument is `Malformed` and logs nothing. The shell
+   passes the connection's agent, which for the first `Hello` is the one the message names.
+2. Dispatch complexity: `handle` routes by message family to two functions (claim lifecycle; races,
+   review and watch), each an exhaustive match with every variant named and no wildcard, so all three
+   stay at or under complexity 8 as later tasks fill in the arms.
 
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is running for SPIKE-3; quit it when SPIKE-3 closes.
