@@ -595,16 +595,18 @@ mod tests {
     }
 
     #[test]
-    fn rebinding_keeps_the_watcher_flag() {
+    fn rebinding_keeps_the_watcher_flag_and_from_seq() {
         let session = Session {
             agent: None,
             watcher: true,
-            watch_from: 0,
+            watch_from: 7,
         };
         let mut core = new_core();
         let (who, effects) = run(&mut core, &session, hello("a1"));
         let (_, outbound) = split_effects(effects);
-        assert!(bind_on_welcome(&session, &who, &outbound).unwrap().watcher);
+        let rebound = bind_on_welcome(&session, &who, &outbound).unwrap();
+        assert!(rebound.watcher);
+        assert_eq!(rebound.watch_from, 7);
     }
 
     #[test]
