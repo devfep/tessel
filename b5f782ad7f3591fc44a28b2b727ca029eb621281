@@ -1,0 +1,4 @@
+intent: record the FIX-RUST verdict and the corrected rulings on the state limit and disconnect order
+assumes: none
+rejected: the original ruling that refused any write over 1 MiB (it could wedge a repo on its own lazy expiry)
+evidence: docs only
