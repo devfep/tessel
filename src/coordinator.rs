@@ -1027,6 +1027,9 @@ impl Coordinator {
     /// marked submitted, which stops its lease and holds it for the steward; it keeps its locks.
     /// A rejected submission changes nothing but the event log, and the claim stays submittable.
     ///
+    /// A flagged submission (invariant 12) is answered with `ReviewRequired` alone; its `Accepted`
+    /// follows when a reviewer approves it, so the first reply says whether it is held.
+    ///
     /// `Accepted::queue_position` is the 1-based place among submitted non-shadow claims, in
     /// submission order (see `queue_position`). For a shadow claim it is 0, meaning "recorded
     /// for verification, never queued for merge": the protocol has no dedicated reply for that.
@@ -1096,20 +1099,21 @@ impl Coordinator {
                 self.queue_position(ordinal)
             }
         };
-        let accepted = ServerMsg::Accepted {
-            req,
-            claim,
-            queue_position,
-        };
-        effects.push(Effect::Reply(accepted));
-        if let Some(reasons) = review {
-            let requested = EventKind::ReviewRequested {
+        let Some(reasons) = review else {
+            let accepted = ServerMsg::Accepted {
+                req,
                 claim,
-                reasons: reasons.clone(),
+                queue_position,
             };
-            effects.push(self.event(now_ms, requested));
-            effects.push(Effect::Reply(ServerMsg::ReviewRequired { claim, reasons }));
-        }
+            effects.push(Effect::Reply(accepted));
+            return effects;
+        };
+        let requested = EventKind::ReviewRequested {
+            claim,
+            reasons: reasons.clone(),
+        };
+        effects.push(self.event(now_ms, requested));
+        effects.push(Effect::Reply(ServerMsg::ReviewRequired { claim, reasons }));
         effects
     }
 
@@ -3373,8 +3377,7 @@ mod tests {
         handle_at(c, who, submit_msg(claim, fence, touched), NOW)
     }
 
-    /// The position in the `Accepted` reply, which comes first; a flagged submission is also
-    /// answered with `ReviewRequired`.
+    /// The position in the `Accepted` reply, the only reply to an unflagged submission.
     fn accepted_position(effects: &[Effect], claim: ClaimId) -> u32 {
         let ServerMsg::Accepted {
             req,
@@ -3633,7 +3636,13 @@ mod tests {
             sc(sym("src/deep/x.rs", "f"), Mode::EditSignature),
         ];
         let effects = submit(&mut c, "a", a, fence, touched);
-        assert_eq!(accepted_position(&effects, a), 1);
+        assert!(
+            matches!(
+                replies(&effects)[..],
+                [ServerMsg::ReviewRequired { claim, .. }] if *claim == a
+            ),
+            "covered, so not Uncovered; a signature change is held for review: {effects:?}"
+        );
         let (b, b_fence) = grant(&mut c, "b", vec![sc(file("lib/x.rs"), Mode::EditBody)]);
         let outside = submit(
             &mut c,
@@ -3731,11 +3740,14 @@ mod tests {
         };
         let effects = handle_at(&mut c, "b", msg, NOW);
         // A challenged assumption is also a reason for review (invariant 12).
-        assert_eq!(
-            kinds(&effects),
-            ["log", "log", "notify", "reply", "log", "reply"]
+        assert_eq!(kinds(&effects), ["log", "log", "notify", "log", "reply"]);
+        assert!(
+            matches!(
+                replies(&effects)[..],
+                [ServerMsg::ReviewRequired { claim, .. }] if *claim == b
+            ),
+            "{effects:?}"
         );
-        assert_eq!(accepted_position(&effects, b), 1);
         let expected: Challenge = (
             holder,
             Assumption {
@@ -5383,7 +5395,14 @@ mod tests {
             return;
         }
         m.active[idx].submitted = true;
-        assert_eq!(accepted_position(&effects, claim), m.submitted_count());
+        if matches!(replies(&effects)[..], [ServerMsg::ReviewRequired { .. }]) {
+            assert_eq!(
+                m.active[idx].claim, claim,
+                "held for review, not accepted yet"
+            );
+        } else {
+            assert_eq!(accepted_position(&effects, claim), m.submitted_count());
+        }
         let again = handle_m(c, m, &who, submit_msg(claim, fence, touched));
         assert_refused(&again, ErrorCode::AlreadySubmitted);
     }

@@ -1081,6 +1081,37 @@ mod tests {
     }
 
     #[test]
+    fn a_flagged_submission_is_answered_review_required_and_accepted_only_after_approval() {
+        let mut c = core();
+        let clean = grant(&mut c, "clean", vec![edit("src/1.rs")]);
+        let effects = submit_with(&mut c, "clean", clean, vec![edit("src/1.rs")], true);
+        assert!(
+            matches!(replies(&effects)[..], [ServerMsg::Accepted { .. }]),
+            "an unflagged submission is accepted at once: {effects:?}"
+        );
+
+        let flagged = grant(&mut c, "flagged", vec![edit("src/2.rs")]);
+        let effects = submit_with(&mut c, "flagged", flagged, vec![edit("src/2.rs")], false);
+        assert!(
+            matches!(replies(&effects)[..], [ServerMsg::ReviewRequired { .. }]),
+            "the first and only reply says it is held: {effects:?}"
+        );
+        assert!(notices(&effects, "flagged").is_empty());
+
+        let effects = review(&mut c, "felix", flagged.0, true, None);
+        assert!(
+            matches!(
+                notices(&effects, "flagged")[..],
+                [ServerMsg::Accepted {
+                    req: RequestId(9),
+                    ..
+                }]
+            ),
+            "{effects:?}"
+        );
+    }
+
+    #[test]
     fn an_approved_submission_goes_ahead_of_one_submitted_after_it() {
         let mut c = core();
         let held = held_for_review(&mut c, "held", "src/1.rs");
