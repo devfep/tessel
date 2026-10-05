@@ -1,0 +1,4 @@
+intent: mutant allowing --config survived because the refused cases paired it with a second refused token
+assumes: none
+rejected: none
+evidence: vitest 534 pass; mutant rerun below
