@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::protocol::{AgentId, CommitId, ScopeClaim};
+use crate::protocol::{AgentId, CommitId, Outcome, ScopeClaim};
 
 /// A `main_moved` outcome re-dispatches the claim at once; this many in a row reject it.
 pub const MAX_MAIN_MOVED: u32 = 5;
@@ -52,6 +52,26 @@ pub fn request_body(
         "scopes": scopes,
     })
     .to_string()
+}
+
+/// What the coordinator sends the steward's `/trial`: try `commit` from the agent's fork on main as
+/// it was at `main`, and test it. Without `commit` the steward uses the head of the fork's default
+/// branch. Nothing is merged and nothing is pushed.
+pub fn trial_request_body(
+    repo: &str,
+    agent: &AgentId,
+    main: &CommitId,
+    commit: Option<&CommitId>,
+) -> String {
+    let mut body = serde_json::json!({
+        "repo": repo,
+        "fork": fork_name(repo, agent),
+        "main": main.0,
+    });
+    if let Some(commit) = commit {
+        body["commit"] = serde_json::Value::String(commit.0.clone());
+    }
+    body.to_string()
 }
 
 /// The name of an agent's Artifacts fork of `repo`.
@@ -177,6 +197,90 @@ impl MergeOutcome {
     }
 }
 
+/// The steward's answer to one trial (tessel-steward/src/merge-types.ts, `TrialOutcome`). Only
+/// the codes the verdict needs are read: the commit that was tried, the files and the test output
+/// are untrusted or unused and are never kept. Exhaustive wherever it is matched.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum TrialOutcome {
+    /// The rebased commit passed the repo's tests.
+    Clean {},
+    /// Replaying the commit onto main stopped with files unmerged.
+    Conflict {},
+    /// The repo's tests ran on the rebased commit and did not pass.
+    TestsFailed {
+        result: StepExit,
+    },
+    /// The replay left main unchanged: the commit adds nothing to test.
+    NothingToTest {},
+    /// The commit is not reachable from the fork's default branch.
+    CommitNotInFork {},
+    /// Infrastructure: the attempt did not finish. These never count for or against the code.
+    Clone {},
+    GitFailed {},
+    Install {},
+    /// The steward refused the request (a 4xx). A fact about the request, never retried.
+    #[serde(skip_deserializing)]
+    Refused,
+    /// Infrastructure: the steward could not be reached or its answer was unusable.
+    #[serde(skip_deserializing)]
+    ServiceUnavailable,
+}
+
+impl TrialOutcome {
+    /// The outcome a steward response means, read as `MergeOutcome::from_response` reads one.
+    pub fn from_response(status: u16, body: &str) -> Self {
+        if (400..500).contains(&status) {
+            return TrialOutcome::Refused;
+        }
+        if status != 200 {
+            return TrialOutcome::ServiceUnavailable;
+        }
+        serde_json::from_str(body).unwrap_or(TrialOutcome::ServiceUnavailable)
+    }
+}
+
+/// What a trial outcome means for the verification. Decided in one exhaustive match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrialVerdict {
+    /// The trial ran to a result the log may record.
+    Decided(Outcome),
+    /// The attempt did not finish. Retried with backoff, and recorded as `Inconclusive` only
+    /// when the retries run out.
+    Infrastructure,
+}
+
+impl TrialOutcome {
+    /// Only a clean run, a real conflict and failing tests are verdicts about the assuming
+    /// agent's work. Everything else is `Inconclusive`, which no counter treats as broken:
+    /// - `NothingToTest`: the commit adds nothing to main, so a test run would judge main.
+    /// - `CommitNotInFork`: the commit the coordinator knows is not on the agent's fork (never
+    ///   pushed, or the fork moved), so there was nothing to try.
+    /// - `Refused`: the fork is missing or is not a fork of this repo.
+    /// - A test step that timed out or was killed (exit 124 or 137): not a failing assertion.
+    /// - Infrastructure: retried first, see `TrialVerdict::Infrastructure`.
+    pub fn verdict(&self) -> TrialVerdict {
+        match self {
+            TrialOutcome::Clean {} => TrialVerdict::Decided(Outcome::Clean),
+            TrialOutcome::Conflict {} => TrialVerdict::Decided(Outcome::TextualConflict),
+            TrialOutcome::TestsFailed { result } => {
+                if TIMED_OUT_EXIT_CODES.contains(&result.exit_code) {
+                    TrialVerdict::Decided(Outcome::Inconclusive)
+                } else {
+                    TrialVerdict::Decided(Outcome::TestsFailed)
+                }
+            }
+            TrialOutcome::NothingToTest {}
+            | TrialOutcome::CommitNotInFork {}
+            | TrialOutcome::Refused => TrialVerdict::Decided(Outcome::Inconclusive),
+            TrialOutcome::Clone {}
+            | TrialOutcome::GitFailed {}
+            | TrialOutcome::Install {}
+            | TrialOutcome::ServiceUnavailable => TrialVerdict::Infrastructure,
+        }
+    }
+}
+
 fn tests_reason(exit_code: i64) -> String {
     if TIMED_OUT_EXIT_CODES.contains(&exit_code) {
         format!("tests timed out or were killed (exit code {exit_code}) on the commit rebased onto main")
@@ -298,6 +402,135 @@ mod tests {
         assert!(
             reason.contains("fork missing or not a fork of this repo"),
             "{reason}"
+        );
+    }
+
+    fn trial(json: &str) -> TrialOutcome {
+        TrialOutcome::from_response(200, json)
+    }
+
+    #[test]
+    fn reads_every_outcome_a_trial_can_have() {
+        let step = r#"{"step":"test","exitCode":1,"stdout":"x","stderr":"y","stdoutTruncated":false,"stderrTruncated":false,"passed":false}"#;
+        let tried = format!(r#""base":"{SHA_A}","head":"{SHA_B}","commit":"{SHA_B}""#);
+        assert_eq!(
+            trial(&format!(r#"{{"outcome":"clean",{tried}}}"#)),
+            TrialOutcome::Clean {}
+        );
+        assert_eq!(
+            trial(&format!(
+                r#"{{"outcome":"conflict","base":"{SHA_A}","commit":"{SHA_B}","files":["a"]}}"#
+            )),
+            TrialOutcome::Conflict {}
+        );
+        assert_eq!(
+            trial(&format!(
+                r#"{{"outcome":"tests_failed",{tried},"result":{step}}}"#
+            )),
+            TrialOutcome::TestsFailed {
+                result: StepExit { exit_code: 1 }
+            }
+        );
+        assert_eq!(
+            trial(&format!(
+                r#"{{"outcome":"nothing_to_test","base":"{SHA_A}","commit":"{SHA_B}"}}"#
+            )),
+            TrialOutcome::NothingToTest {}
+        );
+        assert_eq!(
+            trial(r#"{"outcome":"commit_not_in_fork"}"#),
+            TrialOutcome::CommitNotInFork {}
+        );
+        assert_eq!(
+            trial(&format!(r#"{{"outcome":"clone","result":{step}}}"#)),
+            TrialOutcome::Clone {}
+        );
+        assert_eq!(
+            trial(&format!(r#"{{"outcome":"git_failed","result":{step}}}"#)),
+            TrialOutcome::GitFailed {}
+        );
+        assert_eq!(
+            trial(&format!(
+                r#"{{"outcome":"install",{tried},"result":{step}}}"#
+            )),
+            TrialOutcome::Install {}
+        );
+    }
+
+    #[test]
+    fn a_trial_response_that_is_not_a_known_outcome_is_the_service_being_unavailable() {
+        let unavailable = TrialOutcome::ServiceUnavailable;
+        assert_eq!(TrialOutcome::from_response(502, "{}"), unavailable);
+        assert_eq!(TrialOutcome::from_response(302, ""), unavailable);
+        assert_eq!(trial("not json"), unavailable);
+        assert_eq!(
+            trial(r#"{"outcome":"merged","base":"x","head":"y"}"#),
+            unavailable
+        );
+        assert_eq!(trial(r#"{"outcome":"tests_failed"}"#), unavailable);
+        assert_eq!(trial(r#"{"outcome":"refused"}"#), unavailable);
+        assert_eq!(
+            TrialOutcome::from_response(404, r#"{"outcome":"clean"}"#),
+            TrialOutcome::Refused
+        );
+    }
+
+    #[test]
+    fn a_trial_maps_to_the_protocol_outcome_it_is_evidence_for() {
+        let failed = |exit_code| TrialOutcome::TestsFailed {
+            result: StepExit { exit_code },
+        };
+        let decided = TrialVerdict::Decided;
+        assert_eq!(TrialOutcome::Clean {}.verdict(), decided(Outcome::Clean));
+        assert_eq!(
+            TrialOutcome::Conflict {}.verdict(),
+            decided(Outcome::TextualConflict)
+        );
+        assert_eq!(failed(1).verdict(), decided(Outcome::TestsFailed));
+        for timed_out in [124, 137] {
+            assert_eq!(failed(timed_out).verdict(), decided(Outcome::Inconclusive));
+        }
+        for unproven in [
+            TrialOutcome::NothingToTest {},
+            TrialOutcome::CommitNotInFork {},
+            TrialOutcome::Refused,
+        ] {
+            assert_eq!(
+                unproven.verdict(),
+                decided(Outcome::Inconclusive),
+                "{unproven:?}"
+            );
+        }
+        for unfinished in [
+            TrialOutcome::Clone {},
+            TrialOutcome::GitFailed {},
+            TrialOutcome::Install {},
+            TrialOutcome::ServiceUnavailable,
+        ] {
+            assert_eq!(
+                unfinished.verdict(),
+                TrialVerdict::Infrastructure,
+                "{unfinished:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_trial_request_names_the_fork_main_and_the_commit_only_when_there_is_one() {
+        let agent = AgentId("a1".into());
+        let main = CommitId(SHA_A.into());
+        let commit = CommitId(SHA_B.into());
+        let with = trial_request_body("demo", &agent, &main, Some(&commit));
+        let without = trial_request_body("demo", &agent, &main, None);
+        let with: serde_json::Value = serde_json::from_str(&with).unwrap();
+        let without: serde_json::Value = serde_json::from_str(&without).unwrap();
+        assert_eq!(
+            with,
+            serde_json::json!({"repo": "demo", "fork": "demo--a1", "main": SHA_A, "commit": SHA_B})
+        );
+        assert_eq!(
+            without,
+            serde_json::json!({"repo": "demo", "fork": "demo--a1", "main": SHA_A})
         );
     }
 

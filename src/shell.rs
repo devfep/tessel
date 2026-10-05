@@ -376,7 +376,7 @@ pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
 pub const MAX_DATE_MS: f64 = 8.64e15;
 
 /// The absolute time the alarm should fire, in milliseconds since the epoch, or `None` to clear
-/// it. The core picks the earliest of a lease expiry and a merge dispatch. This is the one place
+/// it. The core picks the earliest of a lease expiry, a merge dispatch and a verification. This is the one place
 /// the time is clamped: `setAlarm` refuses a time that is not after 0, so it is at least
 /// `now_ms + 1` (it fires at once), and at most the largest valid `Date`.
 pub fn alarm_at_ms(next_alarm_ms: Option<u64>, now_ms: u64) -> Option<f64> {
@@ -384,8 +384,8 @@ pub fn alarm_at_ms(next_alarm_ms: Option<u64>, now_ms: u64) -> Option<f64> {
     Some((next as f64).min(MAX_DATE_MS))
 }
 
-/// Whether a stored in-flight merge was cut off by a restart. It was not if this instance is
-/// itself waiting on the steward: recovery must then do nothing.
+/// Whether a stored in-flight merge (or verification) was cut off by a restart. It was not if this
+/// instance is itself waiting on the steward: recovery must then do nothing.
 pub fn merge_cut_off(merging_here: bool, in_flight: bool) -> bool {
     in_flight && !merging_here
 }
