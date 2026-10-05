@@ -1,0 +1,5 @@
+intent: tessel-swarm crate: seeded scripted-agent workloads, mode off (plain-git replay, local) and mode on (real protocol over WebSocket), JSON and Markdown evidence
+assumes: node >= 22.18 runs .ts files with type stripping; the protocol client types and Summary::from_events stay as at b914a0a
+rejected: reusing tessel-cli/tests/support/mod.rs (test-only, uses CARGO_BIN_EXE_tessel and fault injection, cannot link from another crate); an HTTP client crate for the steward routes (curl with config on stdin instead); sending ReplayMerged events to a coordinator (no client message, would fake evidence)
+evidence: cargo test -p tessel-swarm 48 passed; clippy -D warnings clean; cargo deny check licenses ok
+dogfood: agent harness-1 on repo tessel-dogfood, claim 25 on tessel-swarm/ (create) and Cargo.toml (edit-body)
