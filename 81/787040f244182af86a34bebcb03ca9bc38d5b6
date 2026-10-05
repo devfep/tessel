@@ -1,0 +1,4 @@
+intent: pin that a non-clean baseline returns after:null without rethrowing main's error
+assumes: none
+rejected: changing trial-report.ts (it already checks the baseline before main's rejection)
+evidence: trial-report tests 7 pass; mutant rethrowing main's error before the baseline check fails the new test
