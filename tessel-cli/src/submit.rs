@@ -85,20 +85,21 @@ pub fn decisions(evidence: &[String], rejected: &[String]) -> anyhow::Result<Dec
 
 /// The full 40-hex id of `rev` (default `HEAD`) in the worktree at `root`.
 pub fn resolve_commit(root: &Path, rev: Option<&str>) -> anyhow::Result<String> {
+    let explicit = rev.is_some();
     let rev = rev.unwrap_or("HEAD");
+    let what = if explicit {
+        format!("--commit {}", escape(rev))
+    } else {
+        format!("{} (the current commit)", escape(rev))
+    };
     if rev.starts_with('-') {
-        bail!("--commit {} is not a commit", escape(rev));
+        bail!("{what} is not a commit");
     }
     let out = git(
         root,
         &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
     )
-    .with_context(|| {
-        format!(
-            "--commit {} is not a commit in this repository",
-            escape(rev)
-        )
-    })?;
+    .with_context(|| format!("{what} is not a commit in this repository"))?;
     let sha = String::from_utf8_lossy(&out).trim().to_string();
     if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!(
@@ -589,6 +590,20 @@ mod tests {
         assert_eq!(resolve_commit(dir.path(), Some(&sha[..10])).unwrap(), sha);
         assert!(resolve_commit(dir.path(), Some("nonsense")).is_err());
         assert!(resolve_commit(dir.path(), Some("--output=x")).is_err());
+    }
+
+    #[test]
+    fn the_error_names_the_flag_only_when_the_flag_was_given() {
+        let empty = tempfile::tempdir().unwrap();
+        run(empty.path(), &["init", "-q"]);
+        let implicit = format!("{:#}", resolve_commit(empty.path(), None).unwrap_err());
+        assert!(implicit.contains("HEAD (the current commit)"), "{implicit}");
+        assert!(!implicit.contains("--commit"), "{implicit}");
+        let explicit = format!(
+            "{:#}",
+            resolve_commit(empty.path(), Some("nonsense")).unwrap_err()
+        );
+        assert!(explicit.contains("--commit nonsense"), "{explicit}");
     }
 
     #[test]

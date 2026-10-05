@@ -24,7 +24,7 @@ use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request, SubmitOutcome}
 use crate::scope;
 use crate::state::{self, Connection, State};
 use crate::submit;
-use crate::worktree::Worktree;
+use crate::worktree::{Worktree, WorktreeError};
 use crate::{Command, HookAction};
 
 /// Exit code of `claim` when the coordinator denied it.
@@ -386,9 +386,19 @@ async fn review(
     note: Option<String>,
 ) -> anyhow::Result<ExitCode> {
     review::check_note(note.as_deref())?;
-    let worktree = Worktree::discover(cwd)?;
-    let config = load_config(&worktree)?;
-    let base = submit::resolve_commit(&worktree.root, None)?;
+    // A reviewer needs no checkout: the decision is about a claim the coordinator holds.
+    let worktree = match Worktree::discover(cwd) {
+        Ok(worktree) => Some(worktree),
+        Err(WorktreeError::NotARepo(_)) => None,
+        Err(e) => return Err(e.into()),
+    };
+    let config_dir = worktree
+        .as_ref()
+        .map_or(cwd, |worktree| worktree.root.as_path());
+    let config = Config::load(config_dir, |name| std::env::var(name).ok())?;
+    let base = worktree
+        .and_then(|worktree| submit::resolve_commit(&worktree.root, None).ok())
+        .unwrap_or_else(|| review::NO_BASE.to_string());
     let verdict = if approve { "approved" } else { "rejected" };
     let decision = review::decide(&config, &base, ClaimId(claim), approve, note).await?;
     match decision {

@@ -571,7 +571,12 @@ impl Coordinator {
             );
             return vec![error(None, ErrorCode::UnsupportedProtocol, message)];
         }
-        let head = self.state.head.get_or_insert(base).clone();
+        let head = if !base.0.is_empty() && base.0.bytes().all(|byte| byte == b'0') {
+            // A reviewer with no commit sends zeros; it must never become the head.
+            self.state.head.clone().unwrap_or(base)
+        } else {
+            self.state.head.get_or_insert(base).clone()
+        };
         let connected = self.event(
             now_ms,
             EventKind::AgentConnected {
@@ -1689,6 +1694,23 @@ mod tests {
             logged(effects).is_empty(),
             "errors must not log: {effects:?}"
         );
+    }
+
+    #[test]
+    fn an_all_zeros_base_never_becomes_the_head() {
+        let zeros = "0".repeat(40);
+        let mut c = coordinator();
+        for (who, base, expected) in [
+            ("r1", zeros.as_str(), zeros.as_str()),
+            ("a1", "abc", "abc"),
+            ("r1", zeros.as_str(), "abc"),
+        ] {
+            let effects = hello(&mut c, who, base, PROTOCOL_VERSION);
+            let ServerMsg::Welcome { head, .. } = only_reply(&effects) else {
+                panic!("expected Welcome, got {effects:?}");
+            };
+            assert_eq!(head, &CommitId(expected.into()), "{who} said {base}");
+        }
     }
 
     #[test]

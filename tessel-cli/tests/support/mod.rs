@@ -574,6 +574,27 @@ impl Agent {
         })
     }
 
+    /// An agent whose directory is a git repository with no commit.
+    pub fn without_commits(fake: &Fake, name: &str, token: &str) -> Result<Self> {
+        let agent = Self::without_repo(fake, name, token)?;
+        git(&agent.path, &["init", "-q"])?;
+        Ok(agent)
+    }
+
+    /// An agent whose directory is not inside any git repository.
+    pub fn without_repo(fake: &Fake, name: &str, token: &str) -> Result<Self> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().to_path_buf();
+        Ok(Self {
+            name: name.into(),
+            token: token.into(),
+            dir,
+            path,
+            env: Vec::new(),
+            url: fake.url.clone(),
+        })
+    }
+
     /// Sets an environment variable for every command this agent runs.
     pub fn with_env(mut self, key: &str, value: &str) -> Self {
         self.env.push((key.into(), value.into()));
@@ -604,6 +625,16 @@ impl Agent {
     /// Runs `tessel args...` and waits for it to finish.
     pub fn tessel(&self, args: &[&str]) -> Result<Done> {
         let output = self.command(args).output().context("cannot run tessel")?;
+        Ok(Done::from(output))
+    }
+
+    /// Runs `tessel args...` from `subdir` of the agent's directory.
+    pub fn tessel_in(&self, args: &[&str], subdir: &str) -> Result<Done> {
+        let output = self
+            .command(args)
+            .current_dir(self.path.join(subdir))
+            .output()
+            .context("cannot run tessel")?;
         Ok(Done::from(output))
     }
 
