@@ -325,6 +325,11 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   working, submits), so the A/B table's "Conflicts prevented, verified by shadow runs" cell comes
   from `DenialVerified` events. (The first live run's 120 s timeout is a run setting,
   `--task-timeout`, to raise for the Oct 10 runs, not code.)
+  Review 1 (Opus, "With fixes"): later shadow work force-pushed over earlier shadow commits (3 real
+  conflicts → 1 prevention, 2 Inconclusive); skipped `work_ms` understated agent-minutes; red
+  local baseline untested; `wait`/`skip` tables changed. Fix pass 1 in progress. Follow-up, not
+  in this task: match a shadow's blocker by `conflict.held` scope rather than the holder's latest
+  grant (only over-waits today; the swarm opens no races).
 - [ ] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
@@ -337,6 +342,10 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   Fix without a protocol change: send a WebSocket ping each tick; no inbound frame within about
   lease/2 means a dead link: close, reconnect, and move the local expiry only on proof of delivery.
   Check the lane's daemon log for a connected/closed gap around the expiry first.
+- [ ] **CLI-CONNECT-TIMEOUT** — from the CLI-LIVENESS review: heartbeats run only once the daemon
+  is online, so a link that goes half-open after the WebSocket handshake but before `Welcome` sits
+  in Connecting with no timeout (fails closed: claims lapse locally). Bound the wait for `Welcome`
+  and reconnect with the existing backoff.
 - [ ] **SHADOW-GC** — from the SHADOW-1 review: submitted shadow claims are never removed (true
   before SHADOW-1). They hold no locks, leases or queue positions, but state grows by one claim per
   shadow submit in experiment runs, and a shadow blocked only by a race can never be verified.
