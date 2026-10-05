@@ -1,0 +1,4 @@
+intent: kill the collapse-ordering mutant
+assumes: none
+rejected: none
+evidence: plan tests pass; mutant swapping the sort key now fails; dogfood: claim 21 fence 32 on tessel-dogfood
