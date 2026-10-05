@@ -1,0 +1,5 @@
+intent: the rejection test passed with the release removed, because the agent's disconnect freed the claim; make it observable by keeping the agent busy and ordering grant before the next merge
+assumes: a rejected claim stays open with its fence until released (merging.rs reject_work)
+rejected: a wall-clock bound on the wait (flaky under load); ordering of events in the coordinator log instead
+evidence: M5 mutant (release removed) survived before this change; rerun below
+dogfood: agent harness-1, claim 25
