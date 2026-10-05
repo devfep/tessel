@@ -14,17 +14,26 @@ function sha(character: string): Sha {
 const BEFORE = sha("1");
 const MAIN = sha("2");
 const COMMIT = sha("3");
-const FORK_HEAD = sha("4");
-const request = { fork: "demo--a1", before: BEFORE, main: MAIN };
+const plan = { before: BEFORE, main: MAIN, commit: COMMIT };
 
-function clean(base: Sha, commit: Sha = COMMIT): TrialOutcome {
-  return { outcome: "clean", base, head: sha("9"), commit };
+function clean(base: Sha): TrialOutcome {
+  return { outcome: "clean", base, head: sha("9"), commit: COMMIT };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("reportTrial", () => {
-  it("runs the baseline first and the new main second, each as a run of its own", async () => {
+  it("runs both sides with the one commit it was given", async () => {
     const runner = vi.fn(async (main: Sha) => clean(main));
-    const report = await reportTrial({ ...request, commit: COMMIT }, runner);
+    const report = await reportTrial(plan, runner);
     expect(runner.mock.calls).toEqual([
       [BEFORE, COMMIT],
       [MAIN, COMMIT],
@@ -32,16 +41,24 @@ describe("reportTrial", () => {
     expect(report).toEqual({ before: clean(BEFORE), after: clean(MAIN) });
   });
 
-  it("tries on main the commit the baseline run resolved, not the fork head of that moment", async () => {
-    const runner = vi.fn(async (main: Sha) => clean(main, FORK_HEAD));
-    await reportTrial(request, runner);
-    expect(runner.mock.calls).toEqual([
-      [BEFORE, undefined],
-      [MAIN, FORK_HEAD],
+  it("starts both sides before either has finished", async () => {
+    const gates = new Map<Sha, ReturnType<typeof deferred<TrialOutcome>>>([
+      [BEFORE, deferred()],
+      [MAIN, deferred()],
     ]);
+    const started: Sha[] = [];
+    const pending = reportTrial(plan, (main) => {
+      started.push(main);
+      return gates.get(main)!.promise;
+    });
+    await Promise.resolve();
+    expect(started).toEqual([BEFORE, MAIN]);
+    gates.get(MAIN)?.resolve(clean(MAIN));
+    gates.get(BEFORE)?.resolve(clean(BEFORE));
+    expect(await pending).toEqual({ before: clean(BEFORE), after: clean(MAIN) });
   });
 
-  it("does not run main when the baseline is not clean", async () => {
+  it("discards main's result when the baseline is not clean, even if main passed", async () => {
     const failing: TrialOutcome[] = [
       { outcome: "commit_not_in_fork" },
       { outcome: "main_unreachable", main: BEFORE },
@@ -49,15 +66,15 @@ describe("reportTrial", () => {
       { outcome: "conflict", base: BEFORE, commit: COMMIT, files: ["a"] },
     ];
     for (const before of failing) {
-      const runner = vi.fn(async () => before);
-      expect(await reportTrial(request, runner)).toEqual({ before, after: null });
-      expect(runner).toHaveBeenCalledTimes(1);
+      const runner = vi.fn(async (main: Sha) => (main === BEFORE ? before : clean(main)));
+      expect(await reportTrial(plan, runner)).toEqual({ before, after: null });
+      expect(runner).toHaveBeenCalledTimes(2);
     }
   });
 
   it("makes one run, which is both sides, when the baseline is main itself", async () => {
     const runner = vi.fn(async (main: Sha) => clean(main));
-    const report = await reportTrial({ ...request, before: MAIN }, runner);
+    const report = await reportTrial({ ...plan, before: MAIN }, runner);
     expect(runner).toHaveBeenCalledTimes(1);
     expect(report.after).toBe(report.before);
   });
@@ -65,6 +82,21 @@ describe("reportTrial", () => {
   it("reports what main's run says, whatever it is", async () => {
     const after: TrialOutcome = { outcome: "commit_not_in_fork" };
     const runner = vi.fn(async (main: Sha) => (main === BEFORE ? clean(main) : after));
-    expect(await reportTrial(request, runner)).toEqual({ before: clean(BEFORE), after });
+    expect(await reportTrial(plan, runner)).toEqual({ before: clean(BEFORE), after });
+  });
+
+  it("throws the first error only after both runs have finished", async () => {
+    const slow = deferred<TrialOutcome>();
+    const runner = (main: Sha) =>
+      main === BEFORE ? Promise.reject(new Error("container died")) : slow.promise;
+    let settled = false;
+    const pending = reportTrial(plan, runner).finally(() => {
+      settled = true;
+    });
+    pending.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(settled).toBe(false);
+    slow.resolve(clean(MAIN));
+    await expect(pending).rejects.toThrow("container died");
   });
 });

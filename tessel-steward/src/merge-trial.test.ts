@@ -17,13 +17,11 @@ const MAIN = sha("6");
 const MERGE_BASE = sha("2");
 const COMMIT = sha("3");
 const HEAD = sha("4");
-const FORK_HEAD = sha("7");
 
 type GitStep =
   | "clone"
   | "fetch"
   | "onmain"
-  | "forkhead"
   | "exists"
   | "reachable"
   | "mergebase"
@@ -38,7 +36,6 @@ function gitStep(command: GitCommand): GitStep {
     [" clone ", "clone"],
     [" fetch ", "fetch"],
     ["refs/remotes/origin/main", "onmain"],
-    ["refs/remotes/fork/main^{commit}", "forkhead"],
     ["--quiet", "exists"],
     ["--is-ancestor", "reachable"],
     [" merge-base ", "mergebase"],
@@ -62,7 +59,6 @@ function harness(overrides: Partial<Plan> = {}) {
     clone: { exitCode: 0 },
     fetch: { exitCode: 0 },
     onmain: { exitCode: 0 },
-    forkhead: { exitCode: 0, stdout: `${FORK_HEAD}\n` },
     exists: { exitCode: 0, stdout: `${COMMIT}\n` },
     reachable: { exitCode: 0 },
     mergebase: { exitCode: 0, stdout: `${MERGE_BASE}\n` },
@@ -229,25 +225,6 @@ describe("runTrial", () => {
   it("reports a git failure that is not a conflict as git_failed", async () => {
     const { deps } = harness({ git: { rebase: { exitCode: 1 }, conflicts: { exitCode: 0 } } });
     expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({ outcome: "git_failed" });
-  });
-
-  it("uses the fork's head when no commit is named, and says which commit that was", async () => {
-    const { deps, commands } = harness();
-    const outcome = await runTrial(deps, MAIN, undefined);
-    expect(outcome).toEqual({ outcome: "clean", base: MAIN, head: HEAD, commit: FORK_HEAD });
-    const rebase = commands.find((command) => gitStep(command) === "rebase");
-    expect(rebase?.argv.slice(-4)).toEqual(["--onto", MAIN, MERGE_BASE, FORK_HEAD]);
-  });
-
-  it("does not read the fork's head when a commit is named", async () => {
-    const { deps, events } = harness();
-    await runTrial(deps, MAIN, COMMIT);
-    expect(events).not.toContain("git:forkhead");
-  });
-
-  it("reports an unreadable fork head as git_failed", async () => {
-    const { deps } = harness({ git: { forkhead: { exitCode: 128 } } });
-    expect(await runTrial(deps, MAIN, undefined)).toMatchObject({ outcome: "git_failed" });
   });
 
   it("runs nothing from the repo when a read token cannot be revoked", async () => {

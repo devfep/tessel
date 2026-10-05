@@ -19,7 +19,9 @@
 //! - One verification runs at a time, and only while no merge is due: merges have priority. A
 //!   merge in backoff does not hold a verification up. Time-outs, the watchdog and the bounded
 //!   infrastructure retries are the merge queue's (`merge::STEWARD_CALL_TIMEOUT_MS`,
-//!   `MERGE_WATCHDOG_MS`, `MAX_INFRA_RETRIES`).
+//!   `MERGE_WATCHDOG_MS`, `MAX_INFRA_RETRIES`). The steward runs the two sides of a trial at the
+//!   same time; a side that outlives the call timeout is an infrastructure failure, so the
+//!   verification ends `Inconclusive` after the retries (see `STEWARD_CALL_TIMEOUT_MS`).
 //! - A claim that ends before its verification runs (released, expired or merged) drops it, and
 //!   nothing is logged: there is no longer anyone whose assumption could be broken, and an event
 //!   would count a verification that never happened. A verification already running for a claim

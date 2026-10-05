@@ -13,6 +13,7 @@ vi.mock("cloudflare:workers", () => ({
 import { MergeService } from "./merge-service";
 
 const COMMIT = "b".repeat(40);
+const FORK_HEAD = "e".repeat(40);
 const SCOPES = [{ scope: { kind: "dir", path: "src" }, mode: "edit_body" }];
 
 function build(
@@ -21,6 +22,7 @@ function build(
   artifacts?: { get: () => Promise<never> },
 ) {
   const trial = vi.fn();
+  const log = vi.fn(async (_options: { ref: string; limit: number }) => [{ hash: FORK_HEAD }]);
   const getByName = vi.fn((_name: string) => ({ merge, trial }));
   const env = {
     ARTIFACTS: artifacts ?? {
@@ -29,7 +31,8 @@ function build(
           throw Object.assign(new Error("not found"), { code: "NOT_FOUND" });
         }
         return {
-          info: async () => ({ source: sources[name] }),
+          info: async () => ({ source: sources[name], defaultBranch: "main" }),
+          log,
           [Symbol.dispose]: () => undefined,
         };
       },
@@ -37,7 +40,7 @@ function build(
     TEST_RUNNER: { getByName },
   } as unknown as Env;
   const Service = MergeService as unknown as new (ctx: unknown, env: Env) => MergeService;
-  return { service: new Service({}, env), merge, trial, getByName };
+  return { service: new Service({}, env), merge, trial, getByName, log };
 }
 
 function post(body: unknown): Request {
@@ -86,25 +89,67 @@ describe("MergeService /trial", () => {
     expect(new Set(names).size).toBe(2);
   });
 
-  it("does not start a second test runner when the baseline is not clean", async () => {
+  it("reads the fork's head once when the request names no commit, and tries it on both sides", async () => {
     const other = "d".repeat(40);
-    const { service, trial, getByName } = build({ "demo--a1": "artifacts:tessel/demo" });
+    const { service, trial, log } = build({ "demo--a1": "artifacts:tessel/demo" });
     trial.mockResolvedValue({ outcome: "commit_not_in_fork" });
-    const response = await service.fetch(
-      postTrial({ repo: "demo", fork: "demo--a1", before: other, main: MAIN }),
-    );
-    expect(await response.json()).toEqual({
-      before: { outcome: "commit_not_in_fork" },
-      after: null,
-    });
-    expect(getByName).toHaveBeenCalledTimes(1);
+    await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", before: other, main: MAIN }));
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith({ ref: "main", limit: 1 });
+    expect(trial.mock.calls).toEqual([
+      ["demo", "demo--a1", other, FORK_HEAD],
+      ["demo", "demo--a1", MAIN, FORK_HEAD],
+    ]);
   });
 
-  it("passes no commit when the request names none, so the steward reads the fork's head", async () => {
-    const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
+  it("does not read the fork's head when the request names a commit", async () => {
+    const { service, trial, log } = build({ "demo--a1": "artifacts:tessel/demo" });
     trial.mockResolvedValue({ outcome: "commit_not_in_fork" });
-    await service.fetch(postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN }));
-    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, undefined);
+    await service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN, commit: COMMIT }),
+    );
+    expect(log).not.toHaveBeenCalled();
+    expect(trial).toHaveBeenCalledWith("demo", "demo--a1", MAIN, COMMIT);
+  });
+
+  it("answers 502 when the fork's head cannot be read, and runs no trial", async () => {
+    const { service, trial, log } = build({ "demo--a1": "artifacts:tessel/demo" });
+    log.mockResolvedValue([]);
+    const response = await service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", before: MAIN, main: MAIN }),
+    );
+    expect(response.status).toBe(502);
+    expect(trial).not.toHaveBeenCalled();
+  });
+
+  it("starts the baseline and the main trial before either has answered", async () => {
+    const other = "d".repeat(40);
+    const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
+    const answers: Array<(outcome: unknown) => void> = [];
+    trial.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    const pending = service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", before: other, main: MAIN, commit: COMMIT }),
+    );
+    await vi.waitFor(() => expect(trial).toHaveBeenCalledTimes(2));
+    expect(answers).toHaveLength(2);
+    for (const answer of answers) {
+      answer({ outcome: "clean", base: MAIN, head: COMMIT, commit: COMMIT });
+    }
+    expect((await pending).status).toBe(200);
+  });
+
+  it("keeps no main result when the baseline is not clean, even if main passed", async () => {
+    const other = "d".repeat(40);
+    const clean = { outcome: "clean", base: MAIN, head: COMMIT, commit: COMMIT };
+    const failing = { outcome: "tests_failed", base: other, head: COMMIT, commit: COMMIT };
+    const { service, trial } = build({ "demo--a1": "artifacts:tessel/demo" });
+    trial.mockImplementation(async (_repo, _fork, main: string) =>
+      main === other ? failing : clean,
+    );
+    const response = await service.fetch(
+      postTrial({ repo: "demo", fork: "demo--a1", before: other, main: MAIN, commit: COMMIT }),
+    );
+    expect(await response.json()).toEqual({ before: failing, after: null });
   });
 
   it("refuses a fork that is not a fork of the repo without running a trial", async () => {

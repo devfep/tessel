@@ -53,35 +53,32 @@ export function parseMergeRequest(body: unknown): ParsedMergeRequest {
   return { ok: true, request: { fork, commit: sha, scopes: parsedScopes.scopes } };
 }
 
-/**
- * A request to try `commit` of `fork` on top of main as it was at `main`, without merging it.
- * Without `commit` the trial uses the head of the fork's default branch, and the outcome says
- * which commit that was. One trial is one run in one sandbox.
- */
+/** A request to try `commit` of `fork` on top of main as it was at `main`, without merging it. */
 export interface TrialSide {
   fork: string;
   main: Sha;
-  commit?: Sha;
+  commit: Sha;
 }
 
 /**
- * A request for a `TrialReport`: the same, and also on main as it was at `before`, the baseline.
- * A failure counts against the work only if the same commit was clean on `before`.
+ * A request for a `TrialReport`: the commit tried on main at `before`, the baseline, and at
+ * `main`. A failure counts against the work only if the same commit was clean on `before`. Without
+ * `commit` the handler uses the head of the fork's default branch, read once for both sides.
  */
-export interface TrialRequest extends TrialSide {
+export interface TrialRequest {
+  fork: string;
   before: Sha;
+  main: Sha;
+  commit?: Sha;
 }
 
 export type ParsedTrialSide = { ok: true; request: TrialSide } | { ok: false; error: string };
 export type ParsedTrialRequest = { ok: true; request: TrialRequest } | { ok: false; error: string };
 
-/**
- * Validates `{ "fork": <repo name>, "main": <sha>, "commit"?: <sha> }`. A `commit` that is present
- * must be a sha: it is never taken to mean "the fork's head".
- */
+/** Validates `{ "fork": <repo name>, "main": <sha>, "commit": <sha> }`. */
 export function parseTrialSide(body: unknown): ParsedTrialSide {
   if (typeof body !== "object" || body === null) {
-    return { ok: false, error: 'expected a JSON object {"fork", "main", "commit"?}' };
+    return { ok: false, error: 'expected a JSON object {"fork", "main", "commit"}' };
   }
   const { fork, main, commit } = body as { fork?: unknown; main?: unknown; commit?: unknown };
   if (typeof fork !== "string" || !isValidName(fork)) {
@@ -91,27 +88,46 @@ export function parseTrialSide(body: unknown): ParsedTrialSide {
   if (mainSha === undefined) {
     return { ok: false, error: "main must be 40 lowercase hex characters" };
   }
+  const commitSha = parseSha(commit);
+  if (commitSha === undefined) {
+    return { ok: false, error: "commit must be 40 lowercase hex characters" };
+  }
+  return { ok: true, request: { fork, main: mainSha, commit: commitSha } };
+}
+
+/**
+ * Validates `{ "fork", "before", "main", "commit"? }`. A `commit` that is present must be a sha:
+ * it is never taken to mean "the fork's head".
+ */
+export function parseTrialRequest(body: unknown): ParsedTrialRequest {
+  if (typeof body !== "object" || body === null) {
+    return { ok: false, error: 'expected a JSON object {"fork", "before", "main", "commit"?}' };
+  }
+  const { fork, before, main, commit } = body as {
+    fork?: unknown;
+    before?: unknown;
+    main?: unknown;
+    commit?: unknown;
+  };
+  if (typeof fork !== "string" || !isValidName(fork)) {
+    return { ok: false, error: "fork must be a repo name" };
+  }
+  const beforeSha = parseSha(before);
+  if (beforeSha === undefined) {
+    return { ok: false, error: "before must be 40 lowercase hex characters" };
+  }
+  const mainSha = parseSha(main);
+  if (mainSha === undefined) {
+    return { ok: false, error: "main must be 40 lowercase hex characters" };
+  }
   if (commit === undefined || commit === null) {
-    return { ok: true, request: { fork, main: mainSha } };
+    return { ok: true, request: { fork, before: beforeSha, main: mainSha } };
   }
   const commitSha = parseSha(commit);
   if (commitSha === undefined) {
     return { ok: false, error: "commit must be 40 lowercase hex characters when present" };
   }
-  return { ok: true, request: { fork, main: mainSha, commit: commitSha } };
-}
-
-/** Validates `{ "fork", "before", "main", "commit"? }`: a trial side, and the baseline. */
-export function parseTrialRequest(body: unknown): ParsedTrialRequest {
-  const side = parseTrialSide(body);
-  if (!side.ok) {
-    return side;
-  }
-  const beforeSha = parseSha((body as { before?: unknown }).before);
-  if (beforeSha === undefined) {
-    return { ok: false, error: "before must be 40 lowercase hex characters" };
-  }
-  return { ok: true, request: { ...side.request, before: beforeSha } };
+  return { ok: true, request: { fork, before: beforeSha, main: mainSha, commit: commitSha } };
 }
 
 /**
@@ -184,7 +200,7 @@ export type MergeOutcome =
 /**
  * The result of one trial: `commit` replayed onto main at `base`, tested, and nothing else. A
  * trial never pushes and never has a write token. Exactly one variant. `commit` is the commit that
- * was tried: the request's, or the fork's head when the request named none.
+ * was tried.
  *
  * Evidence (CLAUDE.md rule 7):
  * - `clean`: the rebased `head` passed the repo's own `npm test`.

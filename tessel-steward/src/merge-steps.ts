@@ -5,7 +5,6 @@ import {
   commitExistsCommand,
   conflictsCommand,
   fetchForkCommand,
-  forkHeadCommand,
   headCommand,
   mergeBaseCommand,
   onMainCommand,
@@ -241,12 +240,6 @@ export async function runMerge(
   return pushToMain(deps, base, head);
 }
 
-/** Resolves the head of the fork's default branch as fetched, or says why it could not. */
-async function forkHead(deps: TrialDeps): Promise<Sha | TrialOutcome> {
-  const result = await deps.run(forkHeadCommand(deps.sources));
-  return shaOf(result) ?? { outcome: "git_failed", result };
-}
-
 /**
  * Checks that `main` is a commit on main's history, so a trial is against a real state of main.
  * Any answer but yes is `main_unreachable`, which is final.
@@ -278,22 +271,17 @@ async function tryOnMain(deps: TrialDeps, main: Sha, commit: Sha): Promise<Trial
  * Order, which the tests pin:
  * 1. Clone main and fetch the fork with read tokens, then revoke both before anything else runs.
  * 2. Check that `main` is on main's history.
- * 3. Take `commit`, or the head of the fork's default branch if there is none, and verify it is
- *    reachable from that branch.
+ * 3. Verify that `commit` is reachable from the fork's default branch.
  * 4. Rebase `merge-base..commit` onto `main` with the fixed committer, as a merge does.
  * 5. Run the dependency check and the tests.
  *
  * @param deps The sandbox and read-token boundaries.
  * @param main The sha of main to try the commit on.
- * @param commit The commit to try, or `undefined` for the fork's head.
+ * @param commit The commit to try.
  * @returns The outcome. Which outcomes are evidence is documented on `TrialOutcome`.
  * @throws If a read token cannot be revoked, or a boundary throws.
  */
-export async function runTrial(
-  deps: TrialDeps,
-  main: Sha,
-  commit: Sha | undefined,
-): Promise<TrialOutcome> {
+export async function runTrial(deps: TrialDeps, main: Sha, commit: Sha): Promise<TrialOutcome> {
   const fetched = await runStepThenRevoke(() => fetchSources(deps), deps.revokeReadTokens);
   if (fetched.exitCode !== 0) {
     return { outcome: "clone", result: fetched };
@@ -302,15 +290,11 @@ export async function runTrial(
   if (unpinned !== undefined) {
     return unpinned;
   }
-  const tried = commit ?? (await forkHead(deps));
-  if (typeof tried !== "string") {
-    return tried;
-  }
-  const unverified = await verifyCommit(deps, tried);
+  const unverified = await verifyCommit(deps, commit);
   if (unverified !== undefined) {
     return unverified;
   }
-  return tryOnMain(deps, main, tried);
+  return tryOnMain(deps, main, commit);
 }
 
 async function testRebased(deps: TrialDeps, rebased: Rebased, commit: Sha): Promise<TrialOutcome> {

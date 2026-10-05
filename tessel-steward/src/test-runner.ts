@@ -87,7 +87,7 @@ export class TestRunner extends DurableObject<Env> {
   }
 
   /**
-   * Tries `commit` of `fork` (the fork's head when `commit` is undefined) on main of `repo` as it
+   * Tries `commit` of `fork` on main of `repo` as it
    * was at `main`, and runs its tests. Never merges, never pushes, never has a write token. See
    * `TrialOutcome` for the results and `executeTrial` for the sandbox.
    *
@@ -97,15 +97,10 @@ export class TestRunner extends DurableObject<Env> {
    * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
    *   start, or a read token could not be revoked.
    */
-  async trial(
-    repo: string,
-    fork: string,
-    main: string,
-    commit: string | undefined,
-  ): Promise<TrialOutcome> {
+  async trial(repo: string, fork: string, main: string, commit: string): Promise<TrialOutcome> {
     const parsed = parseTrialSide({ fork, main, commit });
     if (!parsed.ok || !isValidName(repo)) {
-      throw new Error("trial needs a repo name, a fork name, a 40-hex main and an optional commit");
+      throw new Error("trial needs a repo name, a fork name, a 40-hex main and a 40-hex commit");
     }
     return executeTrial(this.ctx, this.env, repo, parsed.request);
   }

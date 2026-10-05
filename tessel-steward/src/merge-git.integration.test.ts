@@ -365,7 +365,7 @@ function assumingFork(repos: Repos): { assuming: Sha; oldMain: Sha } {
 }
 
 /** One trial in a sandbox of its own (a new work tree and nothing shared with other trials). */
-async function trialOnce(repos: Repos, main: Sha, commit: Sha | undefined) {
+async function trialOnce(repos: Repos, main: Sha, commit: Sha) {
   return runTrial(trialDeps(repos), main, commit);
 }
 
@@ -418,17 +418,6 @@ describe("runTrial against real git", () => {
     expect(outcome).toMatchObject({ outcome: "clean", base: given });
   });
 
-  it("uses the fork's head when no commit is named and reports it", async () => {
-    const repos = new Repos();
-    const { assuming } = assumingFork(repos);
-    repos.commit("lib.txt", "broken\n", "a2 changes the behaviour");
-    repos.push(repos.main);
-
-    const outcome = await trialOnce(repos, repos.mainHead(), undefined);
-
-    expect(outcome).toMatchObject({ outcome: "tests_failed", commit: assuming });
-  });
-
   it("reports a conflict with the unmerged files, and leaves main alone", async () => {
     const repos = new Repos();
     const base = git(repos.work, "rev-parse", "HEAD");
@@ -477,12 +466,10 @@ describe("runTrial against real git", () => {
 });
 
 /** Each run gets its own work tree, as each gets its own sandbox in production. */
-function report(repos: Repos, before: Sha, main: Sha, commit: Sha | undefined) {
-  const request =
-    commit === undefined
-      ? { fork: "demo--a1", before, main }
-      : { fork: "demo--a1", before, main, commit };
-  return reportTrial(request, (tried, tryCommit) => trialOnce(repos, tried, tryCommit));
+function report(repos: Repos, before: Sha, main: Sha, commit: Sha) {
+  return reportTrial({ before, main, commit }, (tried, tryCommit) =>
+    trialOnce(repos, tried, tryCommit),
+  );
 }
 
 describe("reportTrial against real git", () => {
@@ -528,17 +515,5 @@ describe("reportTrial against real git", () => {
 
     expect(result.before).toMatchObject({ outcome: "clean" });
     expect(result.after).toMatchObject({ outcome: "conflict", files: ["test.sh"] });
-  });
-
-  it("tries the fork's head on both sides when no commit is named", async () => {
-    const repos = new Repos();
-    const { assuming, oldMain } = assumingFork(repos);
-    repos.commit("lib.txt", "broken\n", "a2 changes the behaviour");
-    repos.push(repos.main);
-
-    const result = await report(repos, oldMain, repos.mainHead(), undefined);
-
-    expect(result.before).toMatchObject({ outcome: "clean", commit: assuming });
-    expect(result.after).toMatchObject({ outcome: "tests_failed", commit: assuming });
   });
 });

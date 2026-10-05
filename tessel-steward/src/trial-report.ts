@@ -1,29 +1,46 @@
-import type { Sha, TrialOutcome, TrialReport, TrialRequest } from "./merge-types";
+import type { Sha, TrialOutcome, TrialReport } from "./merge-types";
 
 /** Runs one trial in a sandbox of its own: a new Durable Object instance for every call. */
-export type TrialRunner = (main: Sha, commit: Sha | undefined) => Promise<TrialOutcome>;
+export type TrialRunner = (main: Sha, commit: Sha) => Promise<TrialOutcome>;
+
+/** What `reportTrial` tries: `commit` on main at `before`, the baseline, and at `main`. */
+export interface TrialPlan {
+  before: Sha;
+  main: Sha;
+  commit: Sha;
+}
 
 /**
- * Tries the request's commit on main at `before`, and, only if that was clean, on main at `main`.
- * Each run is its own call to `runner`, so each has its own container, its own read tokens and
- * its own work tree: what the first run leaves behind (files in `/tmp` or `$HOME`, a process still
- * listening) cannot make the second fail. The second run tries the commit the first one tried, so
- * a fork head that moves in between cannot make the two runs differ.
+ * Tries the commit on main at `before` and on main at `main`, both at once. Each run is its own
+ * call to `runner`, so each has its own container, its own read tokens and its own work tree: what
+ * one run leaves behind (files in `/tmp` or `$HOME`, a process still listening) cannot make the
+ * other fail. Both runs try the same commit, which the caller resolved once, so a fork head that
+ * moves meanwhile cannot make them differ. They run at once because one side's worst case already
+ * fills the steward call timeout (see `STEWARD_CALL_TIMEOUT_MS`).
  *
+ * The result of `main` is kept only if the baseline was `clean`: otherwise the work was already
+ * failing and the main run says nothing about the merge that moved main, so it is discarded.
  * When `before` and `main` are the same sha there is one run, and it is both sides.
  *
- * @throws If `runner` throws.
+ * @throws The first error of a run that threw, after both runs have finished.
  */
-export async function reportTrial(
-  request: TrialRequest,
-  runner: TrialRunner,
-): Promise<TrialReport> {
-  const before = await runner(request.before, request.commit);
-  if (before.outcome !== "clean") {
-    return { before, after: null };
+export async function reportTrial(plan: TrialPlan, runner: TrialRunner): Promise<TrialReport> {
+  if (plan.before === plan.main) {
+    const only = await runner(plan.main, plan.commit);
+    return { before: only, after: only.outcome === "clean" ? only : null };
   }
-  if (request.before === request.main) {
-    return { before, after: before };
+  const [before, main] = await Promise.allSettled([
+    runner(plan.before, plan.commit),
+    runner(plan.main, plan.commit),
+  ]);
+  if (before.status === "rejected") {
+    throw before.reason;
   }
-  return { before, after: await runner(request.main, before.commit) };
+  if (before.value.outcome !== "clean") {
+    return { before: before.value, after: null };
+  }
+  if (main.status === "rejected") {
+    throw main.reason;
+  }
+  return { before: before.value, after: main.value };
 }

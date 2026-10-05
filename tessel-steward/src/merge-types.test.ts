@@ -124,11 +124,7 @@ describe("parseTrialRequest", () => {
 });
 
 describe("parseTrialSide", () => {
-  it("accepts a fork and a main sha, with or without a commit", () => {
-    expect(parseTrialSide({ fork: "demo--a1", main: SHA })).toEqual({
-      ok: true,
-      request: { fork: "demo--a1", main: SHA },
-    });
+  it("accepts a fork, a main sha and a commit sha", () => {
     expect(parseTrialSide({ fork: "demo--a1", main: SHA, commit: SHA })).toEqual({
       ok: true,
       request: { fork: "demo--a1", main: SHA, commit: SHA },
@@ -136,7 +132,8 @@ describe("parseTrialSide", () => {
   });
 
   it.each([
-    ["a missing main", { fork: "demo--a1" }],
+    ["a missing main", { fork: "demo--a1", commit: SHA }],
+    ["a missing commit", { fork: "demo--a1", main: SHA }],
     ["a commit that is a ref name", { fork: "demo--a1", main: SHA, commit: "main" }],
   ])("rejects %s", (_label, body) => {
     expect(parseTrialSide(body)).toMatchObject({ ok: false });

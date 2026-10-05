@@ -17,7 +17,6 @@ const MERGE_BASE = sha("2");
 const COMMIT = sha("3");
 const HEAD = sha("4");
 const MAIN_AT_TRIAL = sha("6");
-const FORK_HEAD = sha("7");
 const encoder = new TextEncoder();
 
 interface World {
@@ -44,7 +43,6 @@ function textStream(text: string): ReadableStream<Uint8Array> {
 function respond(argv: string[], world: World): { exitCode: number; stdout: string } {
   const text = argv.join(" ");
   const answers: Array<[string, { exitCode: number; stdout: string }]> = [
-    ["fork/main^{commit}", { exitCode: 0, stdout: `${FORK_HEAD}\n` }],
     ["origin/main^{commit}", { exitCode: 0, stdout: `${BASE}\n` }],
     ["--name-status", { exitCode: 0, stdout: world.changed }],
     ["merge-base --is-ancestor", { exitCode: 0, stdout: "" }],
@@ -311,12 +309,6 @@ describe("executeTrial", () => {
       outcome: "clean",
     });
     expect(events.some((event) => event.includes("--name-status"))).toBe(false);
-  });
-
-  it("names the fork's head as the commit when the request names none", async () => {
-    const { ctx, env } = build();
-    const outcome = await executeTrial(ctx, env, "demo", { fork: "demo--a1", main: MAIN_AT_TRIAL });
-    expect(outcome).toMatchObject({ outcome: "clean", commit: FORK_HEAD });
   });
 
   it("refuses a repo that is not a fork of the main repo before creating any token", async () => {
