@@ -1,0 +1,4 @@
+intent: record the trunk catch-up, the steward redeploy and the SHADOW-1 dispatch
+assumes: none
+rejected: none
+evidence: trunk 8432f8c (admin merge merged, 136 s); artifacts-trunk mirrored 6f78128..8432f8c; steward f5f3d912
