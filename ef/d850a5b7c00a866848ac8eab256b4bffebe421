@@ -1,5 +1,5 @@
-intent: leading attributes, decorators, doc comments and impl/class headers are signature, so changes to them are edit_signature
+intent: leading attributes, decorators, doc comments and impl/class headers count as signature
 assumes: tree-sitter puts attributes and TS member decorators as preceding siblings
-rejected: counting doc comments as body (a doc states the contract others code against)
+rejected: counting doc comments as body at this commit (reversed in fix pass 1)
 evidence: cargo test -p tessel-cli passes, 12 new tests
-dogfood: claim 23 fence 34 on symbols.rs, plan.rs, SKILL.md
+dogfood: claim 23 fence 34 on symbols.rs, plan.rs, SKILL.md; the claim was granted AFTER the edits were written, not before
