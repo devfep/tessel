@@ -1,0 +1,4 @@
+intent: record the COORD-2 verdict and rulings (monotonic clock, lease_ms 0 rejected)
+assumes: none
+rejected: none
+evidence: docs only
