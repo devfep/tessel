@@ -5,13 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 15:30 EDT. Handover: Felix is clearing this session's context; a fresh session
-resumes from this block.
-**Orchestrator:** none (the Claude Code session in `repos/tessel` stopped here for a context clear).
-Take the role when you resume: read this block, `docs/BUILD-PROTOCOL.md`, then `PLAN.md` §9.
-**Tip:** `sprint/build` at the DOGFOOD-3 merge `b6b8bfb` plus this STATE commit, pushed. The GitHub
-trunk is at `29aa8fe` (pull request 1). The Artifacts trunk `tessel-dogfood` is at `6f78128`, the
-same tree as `b6b8bfb` (`deb0143`) with linear history from the steward's rebase.
+**As of:** 2026-10-05 15:41 EDT.
+**Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
+**Tip:** `sprint/build` at the HARNESS-1 merge `0c7a776`, pushed. The GitHub trunk is at `29aa8fe`
+(pull request 1). The Artifacts trunk `tessel-dogfood` is at `6f78128`, the same tree as `b6b8bfb`
+(`deb0143`); it lacks HARNESS-1, whose `Cargo.lock` change needs the steward's toolchain image
+rebuilt (README "Dogfooding gate") before an admin merge can carry it.
 **Milestone:** PLAN §9 Oct 6–8 delivered and checked live: CLI and dogfood v0, the steward merge
 path with review gate and coverage check, assumptions verified end to end, races (one scripted race
 live end to end). Dogfood v1 is technically ready: the first Tessel commit merged through the
@@ -34,12 +33,10 @@ parent session's hook settings), and merge notes record each late claim.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** none live after the clear. Two worktrees remain on disk for the next session:
-- `.claude/worktrees/harness-1`, branch `task-harness-1` at `d478721`: HARNESS-1, review "Yes"
-  (745 tests). Ready to merge with `tools/merge-one.sh task-harness-1`.
-- `.claude/worktrees/dogfood-1`, branch `task-dogfood-3` at `9bcc1c7`: already merged (`b6b8bfb`);
-  reclaim the worktree and branch.
-**Merge queue:** HARNESS-1.
+**Agents:** `impl-dogfood-4` (Sonnet), dispatched 15:40 in `.claude/worktrees/dogfood-4` on
+`task-dogfood-4`; owns `wrangler.toml`, `tools/mirror.sh`, `docs/BUILD-PROTOCOL.md`, README's
+mirror paragraphs. Finds the Artifacts delete call; runs nothing destructive.
+**Merge queue:** empty.
 **Background jobs:** none. Docker Desktop stopped.
 
 **Deployed** on `devfep.workers.dev`:
@@ -54,9 +51,13 @@ parent session's hook settings), and merge notes record each late claim.
 - Artifacts (namespace `tessel`): `tessel-dogfood` (the dogfood v1 trunk, `6f78128`) and fork
   `tessel-dogfood--orchestrator`; `demo`, `demo--agent-1`; scratch `gate*-*` repos; stray `tessel`
   (to delete). Queue `tessel-artifacts-events` with its subscriptions as before.
-- Not deployed yet: `tessel-coordinator-swarm` (`[env.swarm]` lands with HARNESS-1).
+- Not deployed yet: `tessel-coordinator-swarm` (`[env.swarm]` merged with HARNESS-1). Blocked on
+  its secret: see Pending from Felix, item 0.
 
 **Pending from Felix:**
+0. Set the swarm Worker's signing key (the session's permission classifier refuses secret writes):
+   from the repo root, `npx wrangler secret put IDENTITY_SIGNING_KEY --env swarm` and paste the
+   `IDENTITY_SIGNING_KEY` value from `.dev.vars`. The orchestrator then deploys and checks it.
 1. At the next hand merge of `src/protocol.rs` (additive only): delete the six stale
    `cfg_attr(not(test), expect(dead_code))` lines (then drop CLI-1's
    `#[allow(unfulfilled_lint_expectations)]` on `pub mod protocol`); correct the `Summary` doc on
@@ -97,18 +98,20 @@ approved. In Bash, never put `git push` and the bare word "main" in one command 
 blocks it); write `HEAD:refs/heads/main` or push in a separate command.
 
 **Next actions on resume:**
-1. Merge HARNESS-1 (`tools/merge-one.sh task-harness-1`), gate (`cargo test --workspace` expects
-   745), deploy `tessel-coordinator-swarm` (`npx wrangler deploy --env swarm`, after
-   `wrangler secret put IDENTITY_SIGNING_KEY --env swarm` with the value from `.dev.vars`), then
-   check `/repo/tessel-dogfood/ws` on the swarm host returns 403, then a first small live swarm run
+1. Once Felix sets the secret (Pending 0): deploy `tessel-coordinator-swarm`
+   (`npx wrangler deploy --env swarm`), check `/repo/tessel-dogfood/ws` on the swarm host returns
+   403, then a first small live swarm run
    (`tessel-swarm run --target live --seed 1 --tasks 10 --agents 6`, command in its README).
-2. DOGFOOD-4: add `orchestrator` to production `REVIEWERS` (wrangler.toml), point
+2. Rebuild the steward toolchain image from the `0c7a776` lockfiles (`npx wrangler deploy` in
+   `tessel-steward/`, Docker on, after the DOGFOOD-4 lane's cargo gate), then admin-merge the
+   `sprint/build` tip onto `tessel-dogfood` from fork `tessel-dogfood--orchestrator`.
+3. DOGFOOD-4 (in progress): add `orchestrator` to production `REVIEWERS` (wrangler.toml), point
    `tools/mirror.sh` at `refs/heads/artifacts-trunk`, find the Artifacts delete call for the stray
    `tessel` repo (the orchestrator runs it), and update `docs/BUILD-PROTOCOL.md` for the new merge
    flow: lanes fork `tessel-dogfood`, push, and `tessel submit`; the orchestrator approves held work
    as `orchestrator`; `merge-one.sh` stays the fallback. Then run the mirror and record the first
    lane merge through the steward.
-3. Shadow verification (PLAN §9 Oct 9) reusing the trial primitive; swarm and A/B runs (Oct 10);
+4. Shadow verification (PLAN §9 Oct 9) reusing the trial primitive; swarm and A/B runs (Oct 10);
    milestone pull request from `artifacts-trunk` with `/code-review` and `/security-review`.
 
 ## Tasks
@@ -273,10 +276,12 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   otherwise at the deadline.
   CLOSED 2026-10-05 at `ea9bd43`. Live on `6411b1db`: two entrants joined and submitted, the
   failing entry was filtered by its trial, the winner merged, the loser got "lost the race".
-- [ ] **HARNESS-1** — (review "Yes" at `d478721`; merge on resume) PLAN §8, §9 Oct 9–10: `tessel-swarm`, a seeded workload generator and
+- [x] **HARNESS-1** — PLAN §8, §9 Oct 9–10: `tessel-swarm`, a seeded workload generator and
   scripted agents in two modes: coordinated (real protocol, numbers from `Summary::from_events`)
   and uncoordinated local replay (labelled local); JSON and a Markdown A/B table. Targets only
   `swarm-*` repos.
+  CLOSED 2026-10-05 at `0c7a776` (review "Yes" after two fix passes). Workspace tests 745 on the
+  merged tree, as predicted. Not live yet: the swarm Worker awaits its secret.
 - [x] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
   `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
   changes. Put leading attribute and decorator siblings in the signature range.
