@@ -254,7 +254,11 @@ async fn claims_serialize_a_signature_change_and_a_new_caller_that_break_each_ot
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_submission_releases_its_claim_for_the_next_agent() {
-    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let tasks = [
+        body(1, "unitPrice"),
+        body(2, "unitPrice"),
+        body(3, "restock"),
+    ];
     // While agent one works, main changes the same line outside any claim: its commit will not
     // apply, the steward rejects it, and agent two (queued behind it) must still get its turn.
     let poison: Hook = Box::new(|trunk| {
@@ -283,15 +287,40 @@ async fn a_rejected_submission_releases_its_claim_for_the_next_agent() {
         .map(|r| format!("{:?}", r.result))
         .collect();
     outcomes.sort();
-    assert_eq!(outcomes, ["Merged", "Rejected"]);
+    assert_eq!(outcomes, ["Merged", "Merged", "Rejected"]);
     assert_eq!(run.result.rejected_in_log, 1);
-    assert_eq!(run.result.summary.merges, 1);
+    assert_eq!(run.result.summary.merges, 2);
+    // The rejected agent goes on to restock and stays connected. Its rejected claim must be
+    // released at once, not when it disconnects: the queued agent is granted before restock merges.
+    let events = &run.result.events;
+    let granted = |label: &str| {
+        events
+            .iter()
+            .position(|e| matches!(&e.kind, EventKind::ClaimGranted { intent, .. } if intent.summary.starts_with(label)))
+            .unwrap()
+    };
+    let restock_claim = events.iter().find_map(|e| match &e.kind {
+        EventKind::ClaimGranted { claim, intent, .. } if intent.summary.starts_with("t03") => {
+            Some(*claim)
+        }
+        _ => None,
+    });
+    let restock_merged = events
+        .iter()
+        .position(
+            |e| matches!(&e.kind, EventKind::Merged { claim, .. } if Some(*claim) == restock_claim),
+        )
+        .unwrap();
+    assert!(
+        granted("t01").max(granted("t02")) < restock_merged,
+        "the queued agent waited for the rejected agent to disconnect"
+    );
     assert!(
         run.result.wasted_ms >= 1400,
         "the rejected agent's work time is counted: {}",
         run.result.wasted_ms
     );
-    assert_eq!(merged_claims(&run), 1);
+    assert_eq!(merged_claims(&run), 2);
     run.server.shutdown().await;
 }
 
