@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 01:00 EDT.
+**As of:** 2026-10-05 01:08 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` code at `ddaeb44` (docs commits on top), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-spike-3 | SPIKE-3 | `.claude/worktrees/spike-3` / `task-spike-3` | reported at `80b8ae1` → fix passes if any |
-| cq-spike-3 | SPIKE-3 review | same worktree, read-only | reviewing `ddaeb44..80b8ae1` → verdict |
+| impl-spike-3 | SPIKE-3 | `.claude/worktrees/spike-3` / `task-spike-3` | fix pass 1 (7 items) → re-check |
+| cq-spike-3 | SPIKE-3 review | same worktree, read-only | verdict "With fixes" on `80b8ae1` (1 Important, 6 Minor) → re-check after fix pass 1 |
 | impl-coord-1 | COORD-1 | `.claude/worktrees/coord-1` / `task-coord-1` | reported at `4862f59` → fix pass 1 (rulings below) |
 | cq-coord-1 | COORD-1 review | same worktree, read-only | reviewing `ddaeb44..4862f59` → verdict |
 
