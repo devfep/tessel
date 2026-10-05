@@ -357,6 +357,46 @@ impl TrialReport {
     }
 }
 
+/// What a trial report says about a race entry's tests (invariant 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestsVerdict {
+    /// The trial ran to a result: `Some(true)` the tests passed, `Some(false)` they failed, `None`
+    /// they did not run to a result (see `TrialReport::tests_passed`).
+    Decided(Option<bool>),
+    /// The attempt did not finish. Retried with backoff, and read as `None` when the retries run
+    /// out.
+    Infrastructure,
+}
+
+impl TrialReport {
+    /// Whether the commit's tests pass, from a trial whose `before` and `main` are the same sha.
+    /// The steward then runs the commit once and reports that run as `before`, so only `before`
+    /// is read; a report that stopped early has only `after`. There is no baseline to compare
+    /// against, so a failure is the commit's own.
+    /// - `Clean`: `Some(true)`. `TestsFailed` (a timeout included): `Some(false)`.
+    /// - A conflict with main, nothing to test, a commit that is not on the fork, an unreachable
+    ///   main or a refused request: `None`. The tests did not run, so neither answer is true.
+    /// - Infrastructure: `Infrastructure`, retried.
+    pub fn tests_passed(&self) -> TestsVerdict {
+        let Some(run) = self.before.as_ref().or(self.after.as_ref()) else {
+            return TestsVerdict::Infrastructure;
+        };
+        match run {
+            TrialOutcome::Clean {} => TestsVerdict::Decided(Some(true)),
+            TrialOutcome::TestsFailed {} => TestsVerdict::Decided(Some(false)),
+            TrialOutcome::Conflict {}
+            | TrialOutcome::NothingToTest {}
+            | TrialOutcome::CommitNotInFork {}
+            | TrialOutcome::MainUnreachable {}
+            | TrialOutcome::Refused => TestsVerdict::Decided(None),
+            TrialOutcome::Clone {}
+            | TrialOutcome::GitFailed {}
+            | TrialOutcome::Install {}
+            | TrialOutcome::ServiceUnavailable => TestsVerdict::Infrastructure,
+        }
+    }
+}
+
 fn tests_reason(exit_code: i64) -> String {
     format!("tests failed (exit code {exit_code}) on the commit rebased onto main")
 }
@@ -871,5 +911,76 @@ mod tests {
                 head: CommitId(SHA_A.into())
             }
         );
+    }
+    #[test]
+    fn tests_passed_reads_the_single_run_of_a_trial_on_one_sha() {
+        use TestsVerdict::{Decided, Infrastructure};
+        let one = |outcome: TrialOutcome| TrialReport {
+            after: matches!(outcome, TrialOutcome::Clean {}).then(|| outcome.clone()),
+            before: Some(outcome),
+        };
+        assert_eq!(
+            one(TrialOutcome::Clean {}).tests_passed(),
+            Decided(Some(true))
+        );
+        assert_eq!(
+            one(TrialOutcome::TestsFailed {}).tests_passed(),
+            Decided(Some(false))
+        );
+        for no_result in [
+            TrialOutcome::Conflict {},
+            TrialOutcome::NothingToTest {},
+            TrialOutcome::CommitNotInFork {},
+            TrialOutcome::MainUnreachable {},
+            TrialOutcome::Refused,
+        ] {
+            assert_eq!(
+                one(no_result.clone()).tests_passed(),
+                Decided(None),
+                "{no_result:?}"
+            );
+        }
+        for infrastructure in [
+            TrialOutcome::Clone {},
+            TrialOutcome::GitFailed {},
+            TrialOutcome::Install {},
+            TrialOutcome::ServiceUnavailable,
+        ] {
+            assert_eq!(
+                one(infrastructure.clone()).tests_passed(),
+                Infrastructure,
+                "{infrastructure:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tests_passed_reads_a_trial_that_stopped_before_running_from_its_only_outcome() {
+        assert_eq!(
+            TrialReport::stopped(TrialOutcome::Refused).tests_passed(),
+            TestsVerdict::Decided(None)
+        );
+        assert_eq!(
+            TrialReport::stopped(TrialOutcome::ServiceUnavailable).tests_passed(),
+            TestsVerdict::Infrastructure
+        );
+        let empty = TrialReport {
+            before: None,
+            after: None,
+        };
+        assert_eq!(empty.tests_passed(), TestsVerdict::Infrastructure);
+    }
+
+    #[test]
+    fn a_failing_run_is_the_commits_own_even_though_the_verdict_calls_it_inconclusive() {
+        let report = TrialReport {
+            before: Some(TrialOutcome::TestsFailed {}),
+            after: None,
+        };
+        assert_eq!(
+            report.verdict(),
+            TrialVerdict::Decided(Outcome::Inconclusive)
+        );
+        assert_eq!(report.tests_passed(), TestsVerdict::Decided(Some(false)));
     }
 }

@@ -5,10 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 12:54 EDT.
+**As of:** 2026-10-05 13:35 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the ASSUME-1 merge `4a4644e` plus this STATE commit; the GitHub trunk
-at `29aa8fe` (pull request 1).
+**Tip:** `sprint/build` at the RACE-1 merge `fe57323` plus this STATE commit; the GitHub trunk at
+`29aa8fe` (pull request 1).
 **Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
 steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
 v0 ran on `tessel-dogfood` (agent `cli-2`, claims 1–19, every edit claimed first; record in the
@@ -32,20 +32,18 @@ is recorded with the first Tessel commit merged by the steward.
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents** (four lanes on disjoint files, cargo under `nice`; Felix asked to parallelise when there
-is headroom, 12:40 EDT; the Mac had load 7.5 and about 48 GB free at dispatch):
-- DOGFOOD-1 (`.claude/worktrees/dogfood-1`): steward image, instance, install, `tessel.toml`, time
-  budget, mirror script.
-- RACE-1 (`.claude/worktrees/race-1`): races in the coordinator; agent `race-1` on `tessel-dogfood`.
-- HARNESS-1 (`.claude/worktrees/harness-1`): `tessel-swarm` crate, scripted swarm and A/B replay;
-  agent `harness-1`.
-- SYM-SIG (`.claude/worktrees/sym-sig`): attributes and decorators in the signature range; agent
-  `sym-sig`.
+**Agents** (cargo capped at 3 jobs under `nice`):
+- DOGFOOD-1: review "With fixes" (gate self-protection, time budget, honest timeout outcome);
+  fix pass 1 running.
+- HARNESS-1: built (662 tests); in review (Opus), including how a live swarm handles review
+  without a global rubber-stamp reviewer.
+- RACE-FIX (`.claude/worktrees/race-1`): found live; judge a race early only when it is full.
+RACE-1 merged and deployed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `2a7e965d`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `55309dff` (races; see RACE-FIX): every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
@@ -67,6 +65,9 @@ is headroom, 12:40 EDT; the Mac had load 7.5 and about 48 GB free at dispatch):
    `#[serde(default)]` if the dashboard needs "merged after approval".
    Also from the ASSUME-1 review: add `#[serde(default)] commit: Option<CommitId>` to
    `EventKind::AssumptionVerified`, so the log records which fork commit was tried.
+   From the RACE-1 review: add `#[serde(default)] entries: Vec<RaceEntry>` to
+   `EventKind::RaceDecided`, so the log shows why each entry was ranked or dropped (invariant 10);
+   the stale `expect(dead_code)` on `rank_entries` and `none_last` are among the six above.
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
@@ -92,11 +93,16 @@ is headroom, 12:40 EDT; the Mac had load 7.5 and about 48 GB free at dispatch):
 - `Summary.reviews_requested` counts review requests, not reviewed merges (see Pending item 1).
 - A submission held for review keeps its locks until a reviewer in `REVIEWERS` decides it; it never
   expires. The CLI has no `review` command yet (raw `review` message only).
+- `skills/tessel/SKILL.md` has four lines over 100 characters (3, 73, 74, 126).
 - Five lines over 100 characters predate REVIEW-1: `src/coordinator.rs:13`,
   `src/coordinator/merging.rs:629` and `:825`, `src/identity.rs:153`, `src/shell.rs:1`.
 - `tessel submit` computes `touched` from a base pinned at the first start and advanced only by
   this agent's `Merged`; deleting `.tessel/state.json` resets it to HEAD (documented). The steward
   also checks the rebased commit's files against the claim (COVER-1), at file level only.
+
+**Felix's ruling, 2026-10-05 13:42 EDT:** a third Worker, `tessel-coordinator-swarm` (same coordinator code,
+own Durable Objects, `REVIEWERS = "swarm-reviewer"`), may be deployed for live swarm and A/B runs,
+so the scripted reviewer never has authority over real repos. Production `REVIEWERS` stays `felix`.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. Up to four lanes at once when the Mac has
 headroom (load under about 10), one Docker image build at a time, cargo under `nice`. No
@@ -238,16 +244,32 @@ two Workers are approved.
   call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
   measure the real numbers in the probe, then set the step timeouts so their sum stays under the
   call timeout with margin, or move the merge off the alarm's wall clock.
-- [ ] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
+  Go/no-go for the live probe on `standard-4` (from the DOGFOOD-1 review; any miss is a no-go and
+  `merge-one.sh` stays): `exec` runs the gate as uid 1000; `memory.peak` is non-null; `readFile`
+  with a 40-hex ref returns the blob and a bogus sha returns null without throwing; the deployed
+  image build with `build_context ..` succeeds; `cargo test` compiles no dependency; container start
+  under 10 s cold; clone plus fetch under 60 s; install under 45 s; test under 200 s warm and 240 s
+  cold; peak memory under 9 GiB; a full merge over the service binding under 600 s; and the gate
+  self-protection (submissions touching `tessel.toml` refused, admin-only escape hatch) has landed.
+- [x] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
   join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
   trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
+  CLOSED 2026-10-05 at `fe57323` (review "Yes" after one fix pass; HumanPick bounded, unmeasured
+  criteria refused). Workspace tests 677. Live: race opened, outsider denied with the race named,
+  entry trial `tests_passed: true`, winner merged. Found live: judged as soon as the only entrant
+  submitted, so a second join got `race_closed`.
+- [ ] **RACE-FIX** — judge a race early only when it is full and every entry has submitted;
+  otherwise at the deadline.
 - [ ] **HARNESS-1** — PLAN §8, §9 Oct 9–10: `tessel-swarm`, a seeded workload generator and
   scripted agents in two modes: coordinated (real protocol, numbers from `Summary::from_events`)
   and uncoordinated local replay (labelled local); JSON and a Markdown A/B table. Targets only
   `swarm-*` repos.
-- [ ] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
+- [x] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
   `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
   changes. Put leading attribute and decorator siblings in the signature range.
+  CLOSED 2026-10-05 at `05793e3` (review "Yes" after one fix pass). Doc-only changes count as body
+  (Felix-delegated ruling, review by exception). Dogfood record includes two late claims, stated in
+  the merge note.
 - [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
   CLOSED 2026-10-05 at `38e5ff8` (review "Yes" after one fix pass; flagged submissions now get
   `ReviewRequired` before any `Accepted`). Workspace tests 404. Live on `9f75140a`: held submit,
