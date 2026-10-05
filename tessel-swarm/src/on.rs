@@ -714,4 +714,43 @@ mod tests {
             .as_deref()
             .is_some_and(|n| n.contains("stopped waiting")));
     }
+
+    #[test]
+    fn the_summary_counts_a_timed_out_task_once_when_the_log_shows_it_merged() {
+        use tessel_coordinator::protocol::{AgentId, CommitId, EventKind, Fence, Intent, RunId};
+        let at = |seq, kind| Event {
+            seq,
+            at_ms: 0,
+            run: RunId("t".into()),
+            kind,
+        };
+        let log = vec![
+            at(
+                0,
+                EventKind::ClaimGranted {
+                    agent: AgentId("a01".into()),
+                    claim: ClaimId(1),
+                    fence: Fence(1),
+                    scopes: Vec::new(),
+                    intent: Intent {
+                        summary: "t02: x".into(),
+                        task_ref: Some("t02".into()),
+                        assumptions: Vec::new(),
+                    },
+                    race: None,
+                    at_risk: Vec::new(),
+                },
+            ),
+            at(
+                1,
+                EventKind::Merged {
+                    claim: ClaimId(1),
+                    head: CommitId("c".repeat(40)),
+                },
+            ),
+        ];
+        let result = summarize(log, vec![timed_out(2)], 10, false);
+        assert_eq!(result.results[0].result, Resolution::Merged);
+        assert_eq!(result.summary.merges, 1);
+    }
 }
