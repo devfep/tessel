@@ -69,7 +69,7 @@ pub fn extract(path: &str, source: &str) -> Option<Vec<Symbol>> {
     }
     let mut out = Vec::new();
     match language {
-        Language::Rust => rust_items(root, source, &rust_module_path(path), &None, &mut out),
+        Language::Rust => rust_items(root, source, &rust_module_path(path), None, &mut out),
         Language::TypeScript | Language::Tsx => ts_items(root, source, "", &mut out),
     }
     if out.iter().any(|symbol| !is_canonical_name(&symbol.name)) {
@@ -194,7 +194,7 @@ fn rust_items(
     container: Node<'_>,
     source: &str,
     prefix: &str,
-    header: &Option<Range<usize>>,
+    header: Option<&Range<usize>>,
     out: &mut Vec<Symbol>,
 ) {
     let mut cursor = container.walk();
@@ -226,7 +226,7 @@ fn rust_items(
                     field_text(item, "name", source),
                     item.child_by_field_name("body"),
                 ) {
-                    rust_items(body, source, &join(prefix, "::", name), &None, out);
+                    rust_items(body, source, &join(prefix, "::", name), None, out);
                 }
             }
             "impl_item" => {
@@ -234,14 +234,20 @@ fn rust_items(
                     rust_impl_label(item, source),
                     item.child_by_field_name("body"),
                 ) {
-                    let impl_header = Some(header_of(item, body, source));
-                    rust_items(body, source, &join(prefix, "::", &label), &impl_header, out);
+                    let impl_header = header_of(item, body, source);
+                    rust_items(
+                        body,
+                        source,
+                        &join(prefix, "::", &label),
+                        Some(&impl_header),
+                        out,
+                    );
                 }
             }
             _ => {}
         }
         for symbol in &mut out[before..] {
-            symbol.header = symbol.header.take().or_else(|| header.clone());
+            symbol.header = symbol.header.take().or_else(|| header.cloned());
         }
     }
 }
@@ -396,7 +402,7 @@ fn ts_members(
                 }
             }
             "method_signature" | "abstract_method_signature" => {
-                out.push(whole(name, member, source))
+                out.push(whole(name, member, source));
             }
             "public_field_definition" => {
                 match ts_function_body(member.child_by_field_name("value")) {
