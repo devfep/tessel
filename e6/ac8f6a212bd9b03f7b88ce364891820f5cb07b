@@ -1,0 +1,4 @@
+intent: DOGFOOD-3: (1) peakMemoryBytes was null because the container exposes no cgroup memory.peak: wrap each test command in /usr/bin/time -f %M -a -o /tmp/tessel-peak-rss and report the largest; (2) three tessel-cli tests failed only in the container because PID 1 (sleep) never reaps: killed daemons stayed zombies and kill -0 saw them alive; tini is the image ENTRYPOINT and the explicit start entrypoint; (3) --no-fail-fast in tessel.toml so one failing test binary no longer hides the rest
+assumes: the runtime honours the entrypoint option of start(); /usr/bin/time and /usr/bin/tini exist in trixie packages
+rejected: reading cgroup v1 paths (unknown layout, no way to check the real container)
+evidence: local container, no init: 3 tests fail with 'condition not met within 8s', 11 zombies; with docker --init: 3 pass, 0 zombies; steward vitest 549 pass, typecheck, oxlint clean
