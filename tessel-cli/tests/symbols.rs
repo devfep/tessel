@@ -402,3 +402,25 @@ async fn an_addition_made_through_a_syntax_error_is_covered_and_submits() -> Res
     assert!(sent_touched(&fake).contains(&symbol("m::extra", Mode::Create)));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_commit_of_more_than_256_scopes_is_refused_locally_with_exit_1() -> Result<()> {
+    let (fake, a1, _a2) = world().await?;
+    let root = a1.root();
+    for i in 0..300 {
+        std::fs::write(root.join(format!("src/g{i}.rs")), "pub fn f() {}\n")?;
+    }
+    git(&root, &["add", "src"])?;
+    git(&root, &["commit", "-q", "-m", "many files"])?;
+    a1.start("many")?;
+    assert_eq!(a1.tessel(&["claim", "src/"])?.code, 0);
+    for i in 0..300 {
+        std::fs::write(root.join(format!("src/g{i}.rs")), "pub fn f() { 1; }\n")?;
+    }
+    git(&root, &["commit", "-q", "-am", "change all"])?;
+    let done = a1.tessel(&["submit", "--evidence", "cargo test passed"])?;
+    assert_eq!(done.code, 1, "{}", done.all());
+    assert!(done.stderr.contains("at most 256"), "{}", done.stderr);
+    assert!(sent_touched(&fake).is_empty());
+    Ok(())
+}

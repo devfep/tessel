@@ -658,6 +658,40 @@ class Panel extends React.Component {
         );
     }
 
+    /// Every character the coordinator's rule refuses.
+    fn hazards() -> Vec<char> {
+        let mut all: Vec<char> = (0u32..=0x1f)
+            .chain(0x7f..=0x9f)
+            .filter_map(char::from_u32)
+            .collect();
+        for c in ['\u{61c}', '\u{200e}', '\u{200f}', '\u{2028}', '\u{2029}'] {
+            all.push(c);
+        }
+        all.extend(('\u{202a}'..='\u{202e}').chain('\u{2066}'..='\u{2069}'));
+        all
+    }
+
+    #[test]
+    fn every_display_hazard_makes_a_name_non_canonical_and_a_file_unextractable() {
+        assert_eq!(hazards().len(), 32 + 33 + 5 + 5 + 4);
+        for c in hazards() {
+            assert!(
+                !is_canonical_name(&format!("a{c}b")),
+                "U+{:04X}",
+                u32::from(c)
+            );
+            let source = format!("class A {{\n  \"a{c}b\"() {{}}\n}}\n");
+            assert!(
+                extract("src/a.ts", &source).is_none(),
+                "U+{:04X}",
+                u32::from(c)
+            );
+        }
+        assert!(is_canonical_name("a b"));
+        assert!(!is_canonical_name(""));
+        assert!(!is_canonical_name(" a"));
+    }
+
     #[test]
     fn a_name_the_coordinator_would_refuse_gives_no_symbols() {
         let esc = "class A {\n  \"a\u{1b}b\"() {}\n}\n";

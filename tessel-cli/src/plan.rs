@@ -259,8 +259,8 @@ pub fn collapse(touched: Vec<ScopeClaim>, held: &[ScopeClaim], limit: usize) -> 
         }
         let Some((path, _, _)) = counts
             .iter()
-            .max_by_key(|(_, symbols, covered)| (*covered, *symbols))
             .filter(|(_, symbols, _)| *symbols > 1)
+            .max_by_key(|(_, symbols, covered)| (*covered, *symbols))
             .copied()
         else {
             return out;
@@ -606,6 +606,15 @@ fn check(user: &str) -> bool {
         let got = collapse(touched, &held, MAX_SCOPES_PER_MESSAGE);
         assert_eq!(got.len(), 231, "{}", got.len());
         assert!(got.contains(&file_in("src/a.rs", Mode::EditBody)));
+    }
+
+    #[test]
+    fn a_covered_file_of_one_symbol_does_not_stop_the_collapse_of_a_larger_one() {
+        let mut touched = many("src/a.rs", 1, Mode::EditBody);
+        touched.extend(many("src/b.rs", 300, Mode::EditBody));
+        let held = [file_in("src/a.rs", Mode::EditBody)];
+        let got = collapse(touched, &held, MAX_SCOPES_PER_MESSAGE);
+        assert_eq!(got.len(), 2, "{}", got.len());
     }
 
     fn sym_in(path: &str, name: &str, mode: Mode) -> ScopeClaim {
