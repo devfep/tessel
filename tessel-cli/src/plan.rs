@@ -598,6 +598,16 @@ fn check(user: &str) -> bool {
         );
     }
 
+    #[test]
+    fn a_file_the_claim_covers_collapses_before_a_larger_one_it_does_not() {
+        let mut touched = many("src/a.rs", 50, Mode::EditBody);
+        touched.extend(many("src/b.rs", 230, Mode::EditBody));
+        let held = [file_in("src/a.rs", Mode::EditBody)];
+        let got = collapse(touched, &held, MAX_SCOPES_PER_MESSAGE);
+        assert_eq!(got.len(), 231, "{}", got.len());
+        assert!(got.contains(&file_in("src/a.rs", Mode::EditBody)));
+    }
+
     fn sym_in(path: &str, name: &str, mode: Mode) -> ScopeClaim {
         ScopeClaim {
             scope: symbol_scope(path, name),
