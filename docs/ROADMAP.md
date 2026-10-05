@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 02:14 EDT (times from `date`; earlier entries ran about an hour fast).
+**As of:** 2026-10-05 02:17 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` at the COORD-3 merge `a10a680` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | reported at `b2cc7c7` (107 tests, local run a–g); holding → fix pass |
-| cq-coord-4 | COORD-4 review | same worktree; live probes on port 8796 | reviewing `8b50045..HEAD` → verdict |
+| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | fix pass 1 (12 items, incl. merging the tip for `shadow_enabled`) → re-check |
+| cq-coord-4 | COORD-4 review | same worktree; live probes on port 8796 | "With fixes" on `b2cc7c7` (1 Important, 9 Minor; 12 mutants killed) → re-check |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -43,6 +43,9 @@ to Felix at FREEZE.
    COORD-4 merges after COORD-3 and sets `shadow_enabled` from a `SHADOW_ENABLED` variable.
 12. The 75-character subject on COORD-3 commit `2e760b1` is reworded by the orchestrator at merge
    time, with a tree-equality check and the note carried over.
+13. COORD-4 fix pass: sending requires a `Persisted` token that only a completed write returns, so
+   persist-before-send is enforced by the types; delivery order is a pure, tested function; a failed
+   send to another socket closes that socket only; a second `Watch` on a watching socket is refused.
 
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
