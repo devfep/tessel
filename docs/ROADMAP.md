@@ -33,7 +33,8 @@ parent session's hook settings), and merge notes record each late claim.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `impl-dogfood-4` (Sonnet), dispatched 15:40 in `.claude/worktrees/dogfood-4` on
+**Agents:** `impl-dogfood-4` (Sonnet) on fix pass 1 after `rev-dogfood-4` (Opus) said "With
+fixes" at 15:5x (stale sprint/build rule, reviewer not in the log, seam on `=0`, docs); dispatched 15:40 in `.claude/worktrees/dogfood-4` on
 `task-dogfood-4`; owns `wrangler.toml`, `tools/mirror.sh`, `docs/BUILD-PROTOCOL.md`, README's
 mirror paragraphs. Finds the Artifacts delete call; runs nothing destructive.
 **Merge queue:** empty.
@@ -51,19 +52,25 @@ mirror paragraphs. Finds the Artifacts delete call; runs nothing destructive.
 - Artifacts (namespace `tessel`): `tessel-dogfood` (the dogfood v1 trunk, `6f78128`) and fork
   `tessel-dogfood--orchestrator`; `demo`, `demo--agent-1`; scratch `gate*-*` repos; stray `tessel`
   (to delete). Queue `tessel-artifacts-events` with its subscriptions as before.
-- Not deployed yet: `tessel-coordinator-swarm` (`[env.swarm]` merged with HARNESS-1). Blocked on
-  its secret: see Pending from Felix, item 0.
+- `tessel-coordinator-swarm` version `44538ffb` (`REVIEWERS = "swarm-reviewer"`, `swarm-*` repos
+  only). Its signing key is wrong: see Pending from Felix, item 0.
 
 **Pending from Felix:**
-0. Set the swarm Worker's signing key (the session's permission classifier refuses secret writes):
-   from the repo root, `npx wrangler secret put IDENTITY_SIGNING_KEY --env swarm` and paste the
-   `IDENTITY_SIGNING_KEY` value from `.dev.vars`. The orchestrator then deploys and checks it.
+0. Re-set the swarm Worker's signing key (the session's permission classifier refuses secret
+   writes). The 15:42 attempt ran non-interactively and stored a wrong value: a steward-minted token
+   gets 401 on the swarm host and `welcome` on production. Pipe it instead:
+   `rg -N '^IDENTITY_SIGNING_KEY=' .dev.vars | cut -d= -f2- | tr -d '"\n' |
+   npx wrangler secret put IDENTITY_SIGNING_KEY --env swarm`. The swarm Worker is deployed
+   (`44538ffb`) and already returns 403 for `tessel-dogfood` and 401 without a token.
 1. At the next hand merge of `src/protocol.rs` (additive only): delete the six stale
    `cfg_attr(not(test), expect(dead_code))` lines (then drop CLI-1's
    `#[allow(unfulfilled_lint_expectations)]` on `pub mod protocol`); correct the `Summary` doc on
    `reviews_requested`; add `#[serde(default)] commit: Option<CommitId>` to
    `EventKind::AssumptionVerified`; add `#[serde(default)] entries: Vec<RaceEntry>` to
-   `EventKind::RaceDecided`.
+   `EventKind::RaceDecided`. New (DOGFOOD-4 review): `ReviewDecided` does not name the reviewer, so
+   with `felix` and `orchestrator` both listed the log cannot show who approved. Proposed: add
+   `#[serde(default)] reviewer: Option<AgentId>` to it. Until then the orchestrator puts
+   "orchestrator: Opus Yes, gate <sha>" in every approval's note.
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
