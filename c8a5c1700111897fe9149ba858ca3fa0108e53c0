@@ -1,4 +1,4 @@
 intent: log the Wait queue (WaitQueued/WaitWithdrawn); Release and Uncovered carry req; protocol.rs lint-clean
 assumes: the only way a queued request leaves ungranted is the agent's last socket closing (Coordinator::disconnect)
-rejected: a reason field on WaitWithdrawn (one reason today); gating dead protocol helpers behind cfg(test) (kept as expect(dead_code) because PLAN.md section 5 plans them)
+rejected: a reason field on WaitWithdrawn (one reason today); removing the planned-but-unused protocol helpers (kept as expect(dead_code); PLAN.md section 5 plans them)
 evidence: cargo test 227 passed (220 base + 7 new); clippy -D warnings clean; rustfmt --check clean
