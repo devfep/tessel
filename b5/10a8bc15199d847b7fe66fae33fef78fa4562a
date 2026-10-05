@@ -1,0 +1,4 @@
+intent: pin that a gate-only admin merge still runs the coverage check, and document the recovery path for a broken trunk gate
+assumes: none
+rejected: none
+evidence: steward vitest 544 pass, typecheck, oxlint, oxfmt clean; mutant A4 below
