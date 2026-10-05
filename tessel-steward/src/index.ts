@@ -1,3 +1,4 @@
+import { IDENTITY_TTL_MS, isValidName, signIdentityToken } from "./identity";
 import { parsePushEvent } from "./push-event";
 import { matchRoute, type Route } from "./routes";
 import type { TestRunResult } from "./test-runner";
@@ -7,11 +8,13 @@ export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 
 const AGENT_TOKEN_TTL_SECONDS = 3600;
 const USAGE =
-  "POST /repos/<repo>, POST /repos/<repo>/forks/<fork>, POST /repos/<repo>/tokens " +
-  "or POST /repos/<repo>/test-runs";
+  "POST /repos/<repo>, POST /repos/<repo>/forks/<fork>, POST /repos/<repo>/tokens, " +
+  "POST /repos/<repo>/test-runs or POST /repos/<repo>/agents/<agent>/identity";
 const NOT_A_FORK_MESSAGE =
   "write tokens are issued only for agent forks; only the steward writes the main repo";
 const TEST_REF = "main";
+const INVALID_NAME_MESSAGE =
+  "repo and agent must each be 1 to 128 characters of A-Z a-z 0-9 . _ - starting with a letter or digit";
 
 const STATUS_BY_ARTIFACTS_CODE: Record<ArtifactsErrorCode, number> = {
   ALREADY_EXISTS: 409,
@@ -79,6 +82,19 @@ async function runTests(env: Env, repo: string): Promise<Response> {
   return json(result, 200);
 }
 
+async function issueIdentity(env: Env, repo: string, agent: string): Promise<Response> {
+  if (!isValidName(repo) || !isValidName(agent)) {
+    return json({ error: INVALID_NAME_MESSAGE }, 400);
+  }
+  const expiresAtMs = Date.now() + IDENTITY_TTL_MS;
+  const token = await signIdentityToken(env.IDENTITY_SIGNING_KEY, {
+    repo,
+    agent,
+    expMs: expiresAtMs,
+  });
+  return json({ token, agent, repo, expires_at_ms: expiresAtMs }, 201);
+}
+
 function runRoute(env: Env, route: Route): Promise<Response> {
   switch (route.kind) {
     case "create":
@@ -89,6 +105,8 @@ function runRoute(env: Env, route: Route): Promise<Response> {
       return mintWriteToken(env, route.repo);
     case "test-run":
       return runTests(env, route.repo);
+    case "identity":
+      return issueIdentity(env, route.repo, route.agent);
   }
 }
 

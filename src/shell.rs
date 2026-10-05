@@ -43,6 +43,11 @@ pub const EVENT_PREFIX: &str = "ev:";
 /// What a socket remembers across hibernation, kept in its attachment.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
+    /// The agent the Worker verified at the upgrade, set before the first message. A `Hello` for
+    /// anyone else is refused. `None` (an attachment from before verification) refuses every
+    /// `Hello`.
+    #[serde(default)]
+    pub verified: Option<AgentId>,
     /// Set by the first `Hello` the core answered with `Welcome`.
     #[serde(default)]
     pub agent: Option<AgentId>,
@@ -57,6 +62,8 @@ pub struct Session {
 pub enum Action {
     /// Answer the sender directly; the core is not called.
     Reject(ServerMsg),
+    /// Answer the sender directly, then close the socket; the core is not called.
+    RejectAndClose(ServerMsg),
     /// Replay the stored log from `from_seq`, then follow live.
     Watch { from_seq: u64 },
     /// Call the core with `agent` as the identity bound to the connection.
@@ -195,9 +202,9 @@ fn error_msg(code: ErrorCode, message: &str) -> ServerMsg {
 
 /// Decide what to do with `msg` on a socket in `session`.
 ///
-/// Before the socket is bound only `Hello` and `Watch` are served. A `Hello` on an unbound
-/// socket is run as the agent it names; on a bound socket it is run as the bound agent, so the
-/// core refuses a `Hello` that names someone else.
+/// Before the socket is bound only `Hello` and `Watch` are served. A `Hello` must name the agent
+/// the Worker verified at the upgrade; any other is refused with `NotOwner` and the socket is
+/// closed. On a bound socket a `Hello` is run as the bound agent.
 pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
     match msg {
         ClientMsg::Watch { .. } if session.watch_from.is_some() => Action::Reject(error_msg(
@@ -210,6 +217,12 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
         ClientMsg::Hello { agent, .. } => {
             if let Some(rejection) = check_agent_id(agent) {
                 return Action::Reject(rejection);
+            }
+            if session.verified.as_ref() != Some(agent) {
+                return Action::RejectAndClose(error_msg(
+                    ErrorCode::NotOwner,
+                    "hello names an agent this connection's token was not issued for",
+                ));
             }
             let agent = session.agent.clone().unwrap_or_else(|| agent.clone());
             Action::Call { agent }
@@ -275,7 +288,7 @@ pub fn bind_on_welcome(
         if let Outbound::Reply(ServerMsg::Welcome { .. }) = item {
             return Some(Session {
                 agent: Some(agent.clone()),
-                watch_from: session.watch_from,
+                ..session.clone()
             });
         }
     }
@@ -583,37 +596,6 @@ pub fn agent_to_withdraw(
     None
 }
 
-const BEARER_PREFIX: &str = "Bearer ";
-
-/// Whether an `Authorization` header carries the coordinator token. Fails closed: a missing or
-/// empty `expected`, a missing header, another scheme or an empty token never match.
-pub fn is_authorized(expected: Option<&str>, authorization: Option<&str>) -> bool {
-    let Some(expected) = expected.filter(|token| !token.is_empty()) else {
-        return false;
-    };
-    let Some(presented) = authorization.and_then(|header| header.strip_prefix(BEARER_PREFIX))
-    else {
-        return false;
-    };
-    if presented.is_empty() {
-        return false;
-    }
-    constant_time_eq(expected.as_bytes(), presented.as_bytes())
-}
-
-/// Equality without an early exit on the first differing byte. The lengths are compared first,
-/// so the length of the secret is not hidden.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,8 +609,16 @@ mod tests {
 
     fn bound(name: &str) -> Session {
         Session {
+            verified: Some(agent(name)),
             agent: Some(agent(name)),
             watch_from: None,
+        }
+    }
+
+    fn verified(name: &str) -> Session {
+        Session {
+            verified: Some(agent(name)),
+            ..Session::default()
         }
     }
 
@@ -672,6 +662,7 @@ mod tests {
     #[test]
     fn session_survives_the_attachment_round_trip() {
         let session = Session {
+            verified: Some(agent("a1")),
             agent: Some(agent("a1")),
             watch_from: Some(0),
         };
@@ -698,22 +689,48 @@ mod tests {
     }
 
     #[test]
-    fn unbound_hello_runs_as_the_agent_it_names() {
-        let Action::Call { agent: who } = decide(&Session::default(), &hello("a1")) else {
+    fn unbound_hello_runs_as_the_verified_agent() {
+        let Action::Call { agent: who } = decide(&verified("a1"), &hello("a1")) else {
             panic!("expected a core call");
         };
         assert_eq!(who, agent("a1"));
     }
 
-    #[test]
-    fn bound_hello_naming_someone_else_runs_as_the_bound_agent_and_core_refuses_it() {
-        let mut core = new_core();
-        let (who, effects) = run(&mut core, &bound("a1"), hello("a2"));
-        assert_eq!(who, agent("a1"));
-        let [Effect::Reply(ServerMsg::Error { code, .. })] = effects.as_slice() else {
-            panic!("expected one error reply, got {effects:?}");
+    fn close_code(action: Action) -> ErrorCode {
+        let Action::RejectAndClose(ServerMsg::Error { code, .. }) = action else {
+            panic!("expected a rejection that closes the socket, got {action:?}");
         };
-        assert_eq!(*code, ErrorCode::Malformed);
+        code
+    }
+
+    #[test]
+    fn hello_naming_another_agent_is_not_owner_and_closes_the_socket() {
+        for session in [verified("a1"), bound("a1")] {
+            let action = decide(&session, &hello("a2"));
+            assert_eq!(close_code(action), ErrorCode::NotOwner);
+        }
+    }
+
+    #[test]
+    fn hello_on_a_socket_without_a_verified_identity_is_not_owner() {
+        let action = decide(&Session::default(), &hello("a1"));
+        assert_eq!(close_code(action), ErrorCode::NotOwner);
+    }
+
+    #[test]
+    fn after_welcome_a_repeated_hello_is_served_and_another_agent_is_refused() {
+        let mut core = new_core();
+        let (who, effects) = run(&mut core, &verified("a1"), hello("a1"));
+        let (_, outbound) = split_effects(effects);
+        let session = bind_on_welcome(&verified("a1"), &who, &outbound).unwrap();
+        let Action::Call { agent: again } = decide(&session, &hello("a1")) else {
+            panic!("expected a core call");
+        };
+        assert_eq!(again, agent("a1"));
+        assert_eq!(
+            close_code(decide(&session, &hello("a2"))),
+            ErrorCode::NotOwner
+        );
     }
 
     #[test]
@@ -738,16 +755,19 @@ mod tests {
     #[test]
     fn hello_with_an_overlong_agent_id_is_malformed() {
         let at_limit = "a".repeat(MAX_AGENT_ID_BYTES);
-        assert!(matches_call(decide(&Session::default(), &hello(&at_limit))));
+        assert!(matches_call(decide(
+            &verified(&at_limit),
+            &hello(&at_limit)
+        )));
         let over = "a".repeat(MAX_AGENT_ID_BYTES + 1);
-        let action = decide(&Session::default(), &hello(&over));
+        let action = decide(&verified(&over), &hello(&over));
         assert_eq!(reject_code(action), ErrorCode::Malformed);
     }
 
     fn matches_call(action: Action) -> bool {
         match action {
             Action::Call { .. } => true,
-            Action::Reject(_) | Action::Watch { .. } => false,
+            Action::Reject(_) | Action::RejectAndClose(_) | Action::Watch { .. } => false,
         }
     }
 
@@ -778,7 +798,7 @@ mod tests {
     #[test]
     fn effects_split_into_events_and_messages_in_order() {
         let mut core = new_core();
-        let (_, mut all) = run(&mut core, &Session::default(), hello("a1"));
+        let (_, mut all) = run(&mut core, &verified("a1"), hello("a1"));
         let (_, effects) = run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
         let (_, effects2) = run(&mut core, &bound("a2"), claim("wait", "depend"));
         let count = all.len() + effects.len() + effects2.len();
@@ -813,7 +833,7 @@ mod tests {
     #[test]
     fn welcome_binds_the_socket_to_the_calling_agent() {
         let mut core = new_core();
-        let (who, effects) = run(&mut core, &Session::default(), hello("a1"));
+        let (who, effects) = run(&mut core, &verified("a1"), hello("a1"));
         let (_, outbound) = split_effects(effects);
         let bound = bind_on_welcome(&Session::default(), &who, &outbound).unwrap();
         assert_eq!(bound.agent, Some(agent("a1")));
@@ -823,7 +843,7 @@ mod tests {
     fn a_refused_hello_does_not_bind() {
         let mut core = new_core();
         let message = msg(r#"{"type":"hello","agent":"a1","base":"abc","protocol":999}"#);
-        let (who, effects) = run(&mut core, &Session::default(), message);
+        let (who, effects) = run(&mut core, &verified("a1"), message);
         let (_, outbound) = split_effects(effects);
         assert!(bind_on_welcome(&Session::default(), &who, &outbound).is_none());
     }
@@ -844,6 +864,7 @@ mod tests {
     #[test]
     fn rebinding_keeps_the_watcher_flag_and_from_seq() {
         let session = Session {
+            verified: Some(agent("a1")),
             agent: None,
             watch_from: Some(7),
         };
@@ -915,6 +936,7 @@ mod tests {
     #[test]
     fn watchers_are_found_by_their_flag() {
         let watcher = Session {
+            verified: None,
             agent: None,
             watch_from: Some(0),
         };
@@ -959,7 +981,7 @@ mod tests {
     #[test]
     fn persist_entries_put_state_first_then_events_in_order() {
         let mut core = new_core();
-        run(&mut core, &Session::default(), hello("a1"));
+        run(&mut core, &verified("a1"), hello("a1"));
         let (_, effects) = run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
         let (events, _) = split_effects(effects);
         assert!(!events.is_empty());
@@ -976,7 +998,7 @@ mod tests {
     #[test]
     fn stored_state_restores_the_core_and_continues_the_seq() {
         let mut core = new_core();
-        run(&mut core, &Session::default(), hello("a1"));
+        run(&mut core, &verified("a1"), hello("a1"));
         let (_, first) = run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
         let last = split_effects(first).0.last().map(|e| e.seq).unwrap();
         let stored = serde_json::to_string(&core).unwrap();
@@ -1032,7 +1054,7 @@ mod tests {
     #[test]
     fn a_log_event_carries_the_configured_run() {
         let mut core = new_core();
-        let (_, effects) = run(&mut core, &Session::default(), hello("a1"));
+        let (_, effects) = run(&mut core, &verified("a1"), hello("a1"));
         let (events, _) = split_effects(effects);
         let [Event {
             kind: EventKind::AgentConnected { .. },
@@ -1087,6 +1109,7 @@ mod tests {
     #[test]
     fn a_second_watch_on_a_watcher_is_refused_but_the_first_is_served() {
         let watcher = Session {
+            verified: None,
             agent: None,
             watch_from: Some(0),
         };
@@ -1102,7 +1125,7 @@ mod tests {
     fn matches_watch(action: Action) -> bool {
         match action {
             Action::Watch { .. } => true,
-            Action::Reject(_) | Action::Call { .. } => false,
+            Action::Reject(_) | Action::RejectAndClose(_) | Action::Call { .. } => false,
         }
     }
 
@@ -1150,6 +1173,7 @@ mod tests {
 
     fn watcher() -> Session {
         Session {
+            verified: None,
             agent: None,
             watch_from: Some(0),
         }
@@ -1219,6 +1243,7 @@ mod tests {
     #[test]
     fn a_sender_that_is_also_a_watcher_gets_its_reply_then_the_events() {
         let sender = Session {
+            verified: None,
             agent: Some(agent("a1")),
             watch_from: Some(0),
         };
@@ -1235,6 +1260,7 @@ mod tests {
 
     fn watcher_from(watch_from: u64) -> Session {
         Session {
+            verified: None,
             agent: None,
             watch_from: Some(watch_from),
         }
@@ -1305,79 +1331,6 @@ mod tests {
         keep_first(&mut slot, Ok(()));
         keep_first(&mut slot, Err("second".to_string()));
         assert_eq!(slot.as_deref(), Some("first"));
-    }
-
-    const TOKEN: &str = "s3cret-token-value";
-
-    fn bearer(token: &str) -> String {
-        format!("Bearer {token}")
-    }
-
-    #[test]
-    fn the_right_bearer_token_is_authorized() {
-        assert!(is_authorized(Some(TOKEN), Some(&bearer(TOKEN))));
-    }
-
-    #[test]
-    fn a_different_token_of_the_same_length_is_refused() {
-        let last = format!("{}X", &TOKEN[..TOKEN.len() - 1]);
-        let first = format!("X{}", &TOKEN[1..]);
-        for wrong in [last, first] {
-            assert_eq!(wrong.len(), TOKEN.len());
-            assert!(
-                !is_authorized(Some(TOKEN), Some(&bearer(&wrong))),
-                "{wrong}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_token_of_another_length_is_refused() {
-        let shorter = &TOKEN[..TOKEN.len() - 1];
-        let longer = format!("{TOKEN}x");
-        assert!(!is_authorized(Some(TOKEN), Some(&bearer(shorter))));
-        assert!(!is_authorized(Some(TOKEN), Some(&bearer(&longer))));
-    }
-
-    #[test]
-    fn a_missing_or_empty_secret_refuses_every_request() {
-        for expected in [None, Some("")] {
-            for header in [None, Some("Bearer "), Some("Bearer x"), Some("")] {
-                assert!(!is_authorized(expected, header), "{expected:?} {header:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn an_empty_presented_token_is_refused() {
-        assert!(!is_authorized(Some(TOKEN), Some("Bearer ")));
-    }
-
-    #[test]
-    fn a_missing_authorization_header_is_refused() {
-        assert!(!is_authorized(Some(TOKEN), None));
-    }
-
-    #[test]
-    fn another_scheme_or_spelling_is_refused() {
-        let basic = format!("Basic {TOKEN}");
-        let lower = format!("bearer {TOKEN}");
-        let joined = format!("Bearer{TOKEN}");
-        let padded = format!(" Bearer {TOKEN}");
-        for header in [TOKEN, basic.as_str(), &lower, &joined, &padded, "Bearer"] {
-            assert!(!is_authorized(Some(TOKEN), Some(header)), "{header}");
-        }
-    }
-
-    #[test]
-    fn constant_time_eq_compares_every_byte_and_the_length() {
-        assert!(constant_time_eq(b"", b""));
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"xbc"));
-        assert!(!constant_time_eq(b"abc", b"ab"));
-        assert!(!constant_time_eq(b"ab", b"abc"));
-        assert!(!constant_time_eq(b"", b"a"));
     }
 
     fn padded_hello(total: usize) -> String {

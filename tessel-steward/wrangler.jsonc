@@ -4,7 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-04",
   "observability": { "enabled": true },
-  "secrets": { "required": ["STEWARD_ADMIN_TOKEN"] },
+  "secrets": { "required": ["STEWARD_ADMIN_TOKEN", "IDENTITY_SIGNING_KEY"] },
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "tessel" }],
   "queues": {
     "consumers": [

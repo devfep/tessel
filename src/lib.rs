@@ -10,10 +10,14 @@
 //! call reloads from storage. So is a core whose state or event is too large to store.
 //!
 //! Authentication: the Worker serves `/repo/<name>/ws` only to a request that carries
-//! `Authorization: Bearer <COORDINATOR_TOKEN>`; anything else is refused before the Durable
-//! Object is reached. `agent` in `hello` is then the only identity the core trusts.
+//! `Authorization: Bearer <token>`, a token the steward signed for this repo and one agent (format
+//! in `identity`); anything else is refused before the Durable Object is reached. The Worker
+//! hands the verified agent to the Durable Object in a header it sets itself, the Durable Object
+//! stores it in the socket's attachment, and a `hello` for any other agent is refused with
+//! `NotOwner` and the socket is closed.
 
 mod coordinator;
+mod identity;
 mod protocol;
 mod shell;
 mod store;
@@ -27,8 +31,16 @@ use shell::{keep_first, Action, ReplayStep, Session, StoreDecision, StoredSize, 
 use store::{Applied, Persisted};
 use worker::*;
 
-/// The fixed body of the refusal of a request without the coordinator token.
+/// WebSocket close code for a policy violation.
+const CLOSE_POLICY_VIOLATION: u16 = 1008;
+
+/// The fixed body of the refusal of a request without a valid identity token.
 const UNAUTHORIZED_BODY: &str = "unauthorized";
+
+/// The header the Worker uses to tell the Durable Object which agent the token proved. The
+/// Worker overwrites it on every request, and the Durable Object is reachable only through the
+/// Worker, so a caller cannot choose its value.
+const VERIFIED_AGENT_HEADER: &str = "X-Tessel-Verified-Agent";
 
 /// What `apply` made of a call: something to store and send, or a client call that is refused
 /// because it would grow the state too far.
@@ -38,7 +50,7 @@ enum Prepared {
 }
 
 /// Route: GET /repo/<name>/ws  (WebSocket upgrade) -> coordinator for <name>, for a request
-/// that carries the coordinator token.
+/// that carries an identity token for <name>.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
@@ -49,29 +61,37 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         ["repo", name, "ws"] if !name.is_empty() => name.to_string(),
         _ => return Response::error("expected /repo/<name>/ws", 404),
     };
-    if !authorized(&req, &env)? {
+    let Some(agent) = verified_agent(&req, &env, &repo)? else {
         return Response::error(UNAUTHORIZED_BODY, 401);
-    }
+    };
 
+    let mut forwarded = req.clone_mut()?;
+    let headers = forwarded.headers_mut()?;
+    headers.delete("Authorization")?;
+    headers.set(VERIFIED_AGENT_HEADER, &agent.0)?;
     let stub = env
         .durable_object("COORDINATOR")?
         .id_from_name(&repo)?
         .get_stub()?;
-    stub.fetch_with_request(req).await
+    stub.fetch_with_request(forwarded).await
 }
 
-/// Whether the request carries the `COORDINATOR_TOKEN` secret. A missing secret refuses every
-/// request. The token is never logged or echoed.
-fn authorized(req: &Request, env: &Env) -> Result<bool> {
-    let expected = env
-        .secret("COORDINATOR_TOKEN")
+/// The agent the request's identity token proves for `repo`, or `None` if it proves none. A
+/// missing `IDENTITY_SIGNING_KEY` refuses every request. Only the reason is logged, never the
+/// token or the key.
+fn verified_agent(req: &Request, env: &Env, repo: &str) -> Result<Option<AgentId>> {
+    let key = env
+        .secret("IDENTITY_SIGNING_KEY")
         .ok()
         .map(|secret| secret.to_string());
     let presented = req.headers().get("Authorization")?;
-    Ok(shell::is_authorized(
-        expected.as_deref(),
-        presented.as_deref(),
-    ))
+    match identity::verify_bearer(key.as_deref(), presented.as_deref(), repo, now_ms()) {
+        Ok(agent) => Ok(Some(agent)),
+        Err(reason) => {
+            console_error!("coordinator {repo}: refused upgrade: {reason:?}");
+            Ok(None)
+        }
+    }
 }
 
 #[durable_object]
@@ -98,10 +118,18 @@ impl DurableObject for Coordinator {
         if req.headers().get("Upgrade")?.as_deref() != Some("websocket") {
             return Response::error("expected WebSocket upgrade", 426);
         }
+        let Some(verified) = req.headers().get(VERIFIED_AGENT_HEADER)? else {
+            return Response::error(UNAUTHORIZED_BODY, 401);
+        };
         let pair = WebSocketPair::new()?;
         // Hibernation API: the runtime holds the socket, so an idle
         // coordinator costs nothing while agents stay connected.
         self.state.accept_web_socket(&pair.server);
+        let session = Session {
+            verified: Some(AgentId(verified)),
+            ..Session::default()
+        };
+        self.write_session(&pair.server, &session)?;
         Response::from_websocket(pair.client)
     }
 
@@ -171,6 +199,13 @@ impl Coordinator {
         let session = self.read_session(ws)?;
         match shell::decide(&session, &msg) {
             Action::Reject(reply) => send(ws, &reply),
+            Action::RejectAndClose(reply) => {
+                let sent = send(ws, &reply);
+                if let Err(e) = ws.close(Some(CLOSE_POLICY_VIOLATION), Some("identity mismatch")) {
+                    console_error!("coordinator {}: close failed: {e}", self.repo());
+                }
+                sent
+            }
             Action::Watch { from_seq } => self.watch(ws, session, from_seq).await,
             Action::Call { agent } => self.call(ws, &session, agent, msg).await,
         }
