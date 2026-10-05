@@ -1,0 +1,4 @@
+intent: prove the steward can run npm test for an Artifacts repo in a Sandbox container without the sandbox holding a credential
+assumes: Artifacts accepts Bearer repo tokens over git HTTPS; interceptOutboundHttps passes ctx.exports entrypoint props through; wrangler dev runs containers locally via Docker
+rejected: token in clone URL or http.extraHeader (any sandbox process could read it); moving matchRoute to routes.ts was needed so it is testable outside the workerd-only index module
+evidence: pnpm typecheck, oxlint, oxfmt --check clean; vitest 54 passed; cargo test 17 passed; docker build ok; local POST /repos/demo/test-runs returned passed:true exitCode 0; breaking the gateway POST path made 2 tests fail
