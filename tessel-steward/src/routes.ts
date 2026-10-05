@@ -2,11 +2,18 @@ export type Route =
   | { kind: "create"; repo: string }
   | { kind: "fork"; repo: string; fork: string }
   | { kind: "token"; repo: string }
-  | { kind: "test-run"; repo: string };
+  | { kind: "test-run"; repo: string }
+  | { kind: "identity"; repo: string; agent: string };
 
 export function matchRoute(pathname: string): Route | undefined {
-  const [root, repo, action, fork, ...rest] = pathname.split("/").filter(Boolean);
+  const [root, repo, action, fork, leaf, ...rest] = pathname.split("/").filter(Boolean);
   if (root !== "repos" || repo === undefined || rest.length > 0) {
+    return undefined;
+  }
+  if (action === "agents" && fork !== undefined && leaf === "identity") {
+    return { kind: "identity", repo, agent: fork };
+  }
+  if (leaf !== undefined) {
     return undefined;
   }
   if (action === undefined) {

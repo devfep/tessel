@@ -9,23 +9,30 @@ change and events are stored before any reply is sent.
     npm i -g wrangler
 
 ## Authentication
-The Worker serves `/repo/<name>/ws` only to a request with `Authorization: Bearer
-<COORDINATOR_TOKEN>`. Any other request gets `401 unauthorized` before a WebSocket is accepted.
-`COORDINATOR_TOKEN` is a Worker secret; a missing or empty secret refuses every request.
+The Worker serves `/repo/<name>/ws` only to a request with `Authorization: Bearer <token>`, where
+the token is an identity token the steward signed for that repo and one agent (24 hours). Any
+other request gets `401 unauthorized` before a WebSocket is accepted. A `hello` for any other
+agent gets `not_owner` and the socket is closed. The token format is documented in
+`src/identity.rs`.
 
-    npx wrangler secret put COORDINATOR_TOKEN
+`IDENTITY_SIGNING_KEY` is a secret on both the coordinator and the steward, and the two must hold
+the same value. A missing or empty key refuses every request.
+
+    npx wrangler secret put IDENTITY_SIGNING_KEY
 
 For local runs put it in `.dev.vars` (gitignored):
 
-    COORDINATOR_TOKEN=<a long random value>
+    IDENTITY_SIGNING_KEY=<a long random value>
 
-The `agent` in `hello` is the agent's name, not a credential: every holder of the token can act
-as any agent.
+Mint a token with the steward's admin route (the response has `token`):
+
+    curl -X POST -H "Authorization: Bearer $STEWARD_ADMIN_TOKEN" \
+      https://<steward>/repos/demo/agents/a1/identity
 
 ## Run locally
     npx wrangler dev
     # in another terminal (install websocat, e.g. `brew install websocat`):
-    websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $COORDINATOR_TOKEN"
+    websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $AGENT_TOKEN"
 
 Put the `-H` option after the URL, or write it with `=` as here: a bare `-H` takes the arguments
 that follow it, including the URL.
@@ -86,7 +93,7 @@ with, and changing them later has no effect on it.
 ## Deploy
     npx wrangler deploy
     websocat wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws \
-      -H="Authorization: Bearer $COORDINATOR_TOKEN"
+      -H="Authorization: Bearer $AGENT_TOKEN"
 
 ## Tests
     cargo test

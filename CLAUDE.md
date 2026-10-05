@@ -12,7 +12,7 @@ Read `PLAN.md` before starting work: it's the single source of truth for scope, 
 ## Commands
 - `cargo test`: protocol tests. Must pass before every commit.
 - `npx wrangler dev`: run the coordinator locally on :8787.
-- `websocat ws://localhost:8787/repo/demo/ws`, then send `{"type":"hello","agent":"a1","base":"abc"}`; expect `welcome`.
+- Get a token: `POST /repos/demo/agents/a1/identity` on the steward with `Authorization: Bearer $STEWARD_ADMIN_TOKEN`, using the same `IDENTITY_SIGNING_KEY` as the coordinator. Then `websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $AGENT_TOKEN"`, and send `{"type":"hello","agent":"a1","base":"abc"}`; expect `welcome`.
 - `npx wrangler deploy`: deploy.
 
 ## Rules
