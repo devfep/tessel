@@ -1,0 +1,4 @@
+intent: share protocol types with the native CLI without pulling the worker crate into it
+assumes: worker-build and the wasm build use default features, so runtime stays on there
+rejected: cfg(target_arch = wasm32) gating, because a feature can be switched off in a native test build and the CLI states what it needs in its own Cargo.toml
+evidence: cargo test -p tessel-coordinator 241 passed; wasm release build 0 warnings; worker-build exports Coordinator
