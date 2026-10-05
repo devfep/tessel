@@ -330,7 +330,7 @@ async fn submit(
     };
     let held = submit::pick_claim(&state, claim)?;
     let fork_commit = submit::resolve_commit(&worktree.root, commit)?;
-    let base = submit::diff_base(&worktree.root, &state)?;
+    let base = submit::diff_base(&worktree.root, &state, &fork_commit)?;
     let touched = submit::touched(&worktree.root, &base, &fork_commit)?;
     let touched = plan::collapse(touched, &held.scopes, plan::MAX_SCOPES_PER_MESSAGE);
     if touched.len() > plan::MAX_SCOPES_PER_MESSAGE {

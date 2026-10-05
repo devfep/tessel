@@ -110,29 +110,34 @@ pub fn resolve_commit(root: &Path, rev: Option<&str>) -> anyhow::Result<String> 
     Ok(sha)
 }
 
-/// The commit to diff from: the coordinator's head when it exists in this repository, else the
-/// commit the daemon was started at. Both come from the commit graph or the coordinator and
-/// neither moves when the connection drops (the `Hello` base does, so it is never used here).
-/// Fails when neither is available, because a diff from the wrong commit hides changed files.
-pub fn diff_base(root: &Path, state: &State) -> anyhow::Result<String> {
+/// The commit to diff `work` from: the coordinator's head when it is `work` or in its history, else
+/// the commit the daemon was started at when that is. The coordinator's head is preferred so a
+/// lane that merged the trunk into its branch is not charged with other agents' changes. It goes
+/// stale when work lands outside the coordinator, and every worktree shares one object store, so
+/// a stale head can exist locally on another line of history; a diff from there would list
+/// everything between that line and `work`, so it is skipped. Neither moves when the connection
+/// drops (the `Hello` base does, so it is never used here). Fails when neither is an ancestor,
+/// because a diff from the wrong commit hides or invents changed files.
+pub fn diff_base(root: &Path, state: &State, work: &str) -> anyhow::Result<String> {
     if let Some(head) = state.coordinator_head.as_deref() {
-        if is_commit(root, head) {
+        if is_ancestor(root, head, work) {
             return Ok(head.to_string());
         }
     }
-    if is_commit(root, &state.start_base) {
+    if is_ancestor(root, &state.start_base, work) {
         return Ok(state.start_base.clone());
     }
     bail!(
         "cannot tell what this work is based on: neither the coordinator's head ({}) nor the \
-         commit this work started from ({}) exists in this repository. Fetch the coordinator's \
-         head into this repository. A restart does not repair this while you hold claims, \
-         because it keeps the start commit that was pinned before",
+         commit this work started from ({}) is {} or in its history. Merge or rebase onto one of \
+         them, or fetch the coordinator's head into this repository. A restart does not repair \
+         this while you hold claims, because it keeps the start commit that was pinned before",
         state
             .coordinator_head
             .as_deref()
             .map_or_else(|| "unknown".into(), escape),
-        escape(&state.start_base)
+        escape(&state.start_base),
+        escape(work)
     )
 }
 
@@ -539,31 +544,84 @@ mod tests {
         }
     }
 
+    /// Commits `path` on a side branch cut from the current commit, then returns to where it was.
+    fn commit_on_side_branch(root: &Path, path: &str) -> String {
+        let here = head(root);
+        run(root, &["checkout", "-q", "-b", "side", &here]);
+        let side = commit_file(root, path, "pub fn side() {}\n");
+        run(root, &["checkout", "-q", &here]);
+        run(root, &["branch", "-q", "-D", "side"]);
+        side
+    }
+
     #[test]
-    fn the_diff_base_is_the_coordinator_head_else_the_start_commit_never_the_hello_base() {
+    fn the_diff_base_is_the_coordinator_head_when_it_is_in_the_work_s_history() {
         let dir = repo();
         let root = dir.path();
         let start = head(root);
         let tip = commit_file(root, "src/keep.rs", "pub fn keep() { 9; }\n");
-        let absent = "1".repeat(40);
+        let work = commit_file(root, "src/edit.rs", "pub fn edit() { 9; }\n");
         let both = state_with(&start, Some(&tip));
-        assert_eq!(diff_base(root, &both).unwrap(), tip);
-        let lagging = state_with(&start, Some(&absent));
-        assert_eq!(diff_base(root, &lagging).unwrap(), start);
-        let unknown = state_with(&start, None);
-        assert_eq!(diff_base(root, &unknown).unwrap(), start);
+        assert_eq!(diff_base(root, &both, &work).unwrap(), tip);
+        let equal = state_with(&start, Some(&work));
+        assert_eq!(diff_base(root, &equal, &work).unwrap(), work);
     }
 
     #[test]
-    fn with_no_usable_base_the_diff_fails_closed() {
+    fn the_diff_base_is_the_start_commit_when_the_coordinator_head_is_unusable() {
         let dir = repo();
+        let root = dir.path();
+        let start = head(root);
+        let unrelated = commit_on_side_branch(root, "src/side.rs");
+        let work = commit_file(root, "src/edit.rs", "pub fn edit() { 9; }\n");
         let absent = "1".repeat(40);
-        for state in [state_with("", None), state_with(&absent, Some(&absent))] {
-            let err = diff_base(dir.path(), &state).unwrap_err().to_string();
+        for coordinator_head in [Some(unrelated.as_str()), Some(absent.as_str()), None] {
+            let state = state_with(&start, coordinator_head);
+            assert_eq!(
+                diff_base(root, &state, &work).unwrap(),
+                start,
+                "{coordinator_head:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrelated_coordinator_head_does_not_charge_the_lane_with_other_work() {
+        let dir = repo();
+        let root = dir.path();
+        let older = commit_on_side_branch(root, "src/side.rs");
+        let start = commit_file(root, "src/keep.rs", "pub fn keep() { 9; }\n");
+        let work = commit_file(root, "src/edit.rs", "pub fn edit() { 9; }\n");
+        let state = state_with(&start, Some(&older));
+        let base = diff_base(root, &state, &work).unwrap();
+        let got = touched(root, &base, &work).unwrap();
+        assert_eq!(
+            got,
+            vec![symbol("src/edit.rs", "edit::edit", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn with_no_base_in_the_work_s_history_the_diff_fails_closed_naming_both_commits() {
+        let dir = repo();
+        let root = dir.path();
+        let unrelated = commit_on_side_branch(root, "src/side.rs");
+        let work = commit_file(root, "src/edit.rs", "pub fn edit() { 9; }\n");
+        let absent = "1".repeat(40);
+        let cases = [
+            state_with("", None),
+            state_with(&absent, Some(&absent)),
+            state_with(&unrelated, Some(&unrelated)),
+        ];
+        for state in cases {
+            let err = diff_base(root, &state, &work).unwrap_err().to_string();
             assert!(
                 err.contains("cannot tell what this work is based on"),
                 "{err}"
             );
+            assert!(err.contains(&escape(&state.start_base)), "{err}");
+            let named = state.coordinator_head.as_deref().unwrap_or("unknown");
+            assert!(err.contains(&escape(named)), "{err}");
         }
     }
 

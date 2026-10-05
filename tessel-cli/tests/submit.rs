@@ -848,3 +848,41 @@ async fn the_base_advances_to_the_merged_commit_and_only_then() -> Result<()> {
     assert_eq!(touched, &vec![symbol("src/b.rs", "b::b", Mode::EditBody)]);
     Ok(())
 }
+
+/// The coordinator's head can name a commit that exists in the shared object store but lies on
+/// another line of history (work landed outside the coordinator). Diffing from it would charge
+/// the agent with everything between that line and its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_coordinator_head_on_another_line_of_history_is_not_the_diff_base() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let root = a1.root();
+    let fork_point = head(&a1)?;
+    git(&root, &["checkout", "-q", "-b", "elsewhere"])?;
+    let elsewhere = commit_file(&a1, "src/old.rs", "pub fn old() {}\n", "another line")?;
+    git(&root, &["checkout", "-q", &fork_point])?;
+    commit_file(&a1, "src/b.rs", "pub fn b() { 2; }\n", "before this task")?;
+    a1.start("unrelated head")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_file(&a1, "src/a.rs", "pub fn a() { 1; }\n", "my change")?;
+    fake.push(
+        "a1",
+        ServerMsg::BaseMoved {
+            head: CommitId(elsewhere.clone()),
+            by: tessel_coordinator::protocol::AgentId("a2".into()),
+            affected: vec![],
+        },
+    );
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["coordinator_head"] == elsewhere.as_str()).then_some(()))
+    })
+    .await?;
+
+    let done = a1.tessel(&["submit", "--evidence", "tests passed"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let sent = submits(&fake);
+    let ClientMsg::Submit { touched, .. } = &sent[0] else {
+        anyhow::bail!("not a submit");
+    };
+    assert_eq!(touched, &vec![symbol("src/a.rs", "a::a", Mode::EditBody)]);
+    Ok(())
+}
