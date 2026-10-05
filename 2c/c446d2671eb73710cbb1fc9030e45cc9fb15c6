@@ -1,0 +1,4 @@
+intent: record the DOGFOOD-4 verdict, the swarm deploy and its key mismatch, and the reviewer-field proposal
+assumes: none
+rejected: none
+evidence: swarm 44538ffb: 403 for tessel-dogfood, 401 without auth, 401 with a minted token that production accepts (welcome)
