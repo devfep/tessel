@@ -72,6 +72,31 @@ describe("reportTrial", () => {
     }
   });
 
+  it("is Inconclusive without rethrowing when the baseline is not clean and main's run throws", async () => {
+    const before: TrialOutcome = {
+      outcome: "tests_failed",
+      base: BEFORE,
+      head: sha("9"),
+      commit: COMMIT,
+      result: {
+        step: "test",
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        passed: false,
+      },
+    };
+    const runner = async (main: Sha): Promise<TrialOutcome> => {
+      if (main === BEFORE) {
+        return before;
+      }
+      throw new Error("container died");
+    };
+    expect(await reportTrial(plan, runner)).toEqual({ before, after: null });
+  });
+
   it("makes one run, which is both sides, when the baseline is main itself", async () => {
     const runner = vi.fn(async (main: Sha) => clean(main));
     const report = await reportTrial({ ...plan, before: MAIN }, runner);
