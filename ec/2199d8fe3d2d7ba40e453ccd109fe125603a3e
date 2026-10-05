@@ -1,0 +1,4 @@
+intent: expose the merge executor to the coordinator through a named WorkerEntrypoint with no public URL, sharing the route's validation
+assumes: a named entrypoint is reachable only through a service binding that names it (Cloudflare service bindings docs)
+rejected: reusing the admin-token route over HTTP from the coordinator (needs a secret in the coordinator and a public hop)
+evidence: steward typecheck/oxlint/oxfmt 0; pnpm test 315 passed (307 base + 8 new)
