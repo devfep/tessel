@@ -2,30 +2,39 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 import { isAllowedGitRequest } from "./git-gateway-policy";
 import { revokeOnce } from "./revoke-once";
-import { runCloneThenTest, type StepOutcome } from "./run-steps";
+import { DEPENDENCIES_DECLARED_EXIT_CODE, runCloneThenTest, type StepOutcome } from "./run-steps";
+import { captureTail } from "./tail-capture";
 
 const CLONE_TIMEOUT_SECONDS = "240";
 const TEST_TIMEOUT_SECONDS = "600";
 const TOKEN_TTL_SECONDS = 300;
+const DEPENDENCY_CHECK_TIMEOUT_SECONDS = "30";
+const OUTPUT_LIMIT_BYTES = 256 * 1024;
 const WORKSPACE = "/workspace";
 const CONTAINER_CA_CERTIFICATE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 
 /**
  * Result of one test run.
  *
- * `passed` is true only when `step` is "test" and `exitCode` is 0. A failed clone (bad ref,
- * refused request, Artifacts outage) returns `step: "clone"` with `passed: false`; that is an
- * infrastructure failure, not a failing test suite, and must not be counted as test evidence.
- * Exit code 124 or 137 means the step timed out or was killed. `stdout` and `stderr` come from
- * the repo's code and are untrusted data.
+ * `passed` is true only when `step` is "test" and `exitCode` is 0. Steps "clone" and "install"
+ * are infrastructure outcomes, not test evidence: "clone" is a failed clone (bad ref, refused
+ * request, Artifacts outage); "install" is a repo the runner refused because it declares
+ * dependencies (or its package.json could not be read) and this runner cannot install them yet,
+ * so its tests never ran; `exitCode` is then the dependency check's and `stderr` is a fixed
+ * message written by the coordinator. Exit code 124 or 137 means the step timed out or was
+ * killed. `stdout` and `stderr` come from the repo's code and are untrusted data; each is capped
+ * at 256 KiB, keeping the end, and `stdoutTruncated` / `stderrTruncated` say when the beginning
+ * was dropped.
  */
 export interface TestRunResult {
   repo: string;
   ref: string;
-  step: "clone" | "test";
+  step: "clone" | "install" | "test";
   exitCode: number;
   stdout: string;
   stderr: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
   passed: boolean;
 }
 
@@ -53,6 +62,22 @@ export class ArtifactsGitGateway extends WorkerEntrypoint<Env, GatewayProps> {
   }
 }
 
+// Exits 0 when package.json declares no dependencies, 3 when it declares any, 4 when it is
+// missing and 5 when it is not valid JSON.
+const DEPENDENCY_CHECK_SCRIPT = `
+const fs = require("fs");
+let pkg;
+try {
+  pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+} catch (error) {
+  process.exit(error.code === "ENOENT" ? 4 : 5);
+}
+const count = (key) =>
+  pkg && typeof pkg[key] === "object" && pkg[key] !== null ? Object.keys(pkg[key]).length : 0;
+const declared = count("dependencies") + count("devDependencies") > 0;
+process.exit(declared ? ${DEPENDENCIES_DECLARED_EXIT_CODE} : 0);
+`;
+
 async function runStep(
   container: Container,
   step: TestRunResult["step"],
@@ -64,14 +89,23 @@ async function runStep(
     ["timeout", "--kill-after=5", timeoutSeconds, ...argv],
     options,
   );
-  const output = await process.output();
-  const decoder = new TextDecoder();
+  const { stdout, stderr } = process;
+  if (stdout === null || stderr === null) {
+    throw new Error(`The ${step} step has no output streams`);
+  }
+  const [out, err, exitCode] = await Promise.all([
+    captureTail(stdout, OUTPUT_LIMIT_BYTES),
+    captureTail(stderr, OUTPUT_LIMIT_BYTES),
+    process.exitCode,
+  ]);
   return {
     step,
-    exitCode: output.exitCode,
-    stdout: decoder.decode(output.stdout),
-    stderr: decoder.decode(output.stderr),
-    passed: step === "test" && output.exitCode === 0,
+    exitCode,
+    stdout: out.text,
+    stderr: err.text,
+    stdoutTruncated: out.truncated,
+    stderrTruncated: err.truncated,
+    passed: step === "test" && exitCode === 0,
   };
 }
 
@@ -138,7 +172,7 @@ export class TestRunner extends DurableObject<Env> {
     container: Container,
     remote: string,
     ref: string,
-    revokeToken: () => Promise<void>,
+    revokeToken: () => Promise<boolean>,
   ): Promise<StepOutcome> {
     return runCloneThenTest((step) => {
       switch (step) {
@@ -149,6 +183,14 @@ export class TestRunner extends DurableObject<Env> {
             CLONE_TIMEOUT_SECONDS,
             ["git", "clone", "--depth=1", `--branch=${ref}`, "--", remote, WORKSPACE],
             { env: { GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
+          );
+        case "install":
+          return runStep(
+            container,
+            "install",
+            DEPENDENCY_CHECK_TIMEOUT_SECONDS,
+            ["node", "-e", DEPENDENCY_CHECK_SCRIPT],
+            { cwd: WORKSPACE },
           );
         case "test":
           return runStep(container, "test", TEST_TIMEOUT_SECONDS, ["npm", "test"], {

@@ -1,6 +1,7 @@
 import { parsePushEvent } from "./push-event";
 import { matchRoute, type Route } from "./routes";
 import type { TestRunResult } from "./test-runner";
+import { isForkRepo } from "./token-policy";
 
 export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 
@@ -8,6 +9,8 @@ const AGENT_TOKEN_TTL_SECONDS = 3600;
 const USAGE =
   "POST /repos/<repo>, POST /repos/<repo>/forks/<fork>, POST /repos/<repo>/tokens " +
   "or POST /repos/<repo>/test-runs";
+const NOT_A_FORK_MESSAGE =
+  "write tokens are issued only for agent forks; only the steward writes the main repo";
 const TEST_REF = "main";
 
 const STATUS_BY_ARTIFACTS_CODE: Record<ArtifactsErrorCode, number> = {
@@ -61,8 +64,12 @@ async function forkRepo(env: Env, repo: string, fork: string): Promise<Response>
 
 async function mintWriteToken(env: Env, repo: string): Promise<Response> {
   using handle = await env.ARTIFACTS.get(repo);
+  const info = await handle.info();
+  if (!isForkRepo(info)) {
+    return json({ error: NOT_A_FORK_MESSAGE }, 403);
+  }
   const token = await handle.createToken("write", AGENT_TOKEN_TTL_SECONDS);
-  const { remote } = await handle.info();
+  const { remote } = info;
   const { plaintext, scope, expiresAt } = token;
   return json({ repo, remote, token: plaintext, scope, expiresAt }, 201);
 }
