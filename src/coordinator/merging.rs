@@ -863,6 +863,47 @@ mod tests {
         assert_eq!(restarted.next_merge_ms(), Some(0));
     }
 
+    /// What a reviewer's approval will do: the submission may now be dispatched.
+    fn approve(c: &mut Coordinator, claim: ClaimId) {
+        let work = c
+            .state
+            .claims
+            .get_mut(&claim.0)
+            .unwrap()
+            .work
+            .as_mut()
+            .unwrap();
+        work.awaiting_review = false;
+    }
+
+    #[test]
+    fn approving_an_earlier_submission_mid_merge_neither_starts_nor_loses_a_merge() {
+        let mut c = core();
+        let held = grant(&mut c, "held", vec![edit("src/1.rs")]);
+        submit_with(&mut c, "held", held, vec![edit("src/1.rs")], false);
+        let running = grant(&mut c, "running", vec![edit("src/2.rs")]);
+        submit(&mut c, "running", running, "src/2.rs");
+        let sent = c.begin_merge(NOW).unwrap();
+        assert_eq!(sent.claim, running.0, "the held submission is skipped");
+
+        approve(&mut c, held.0);
+
+        assert_eq!(
+            c.begin_merge(NOW),
+            Some(sent.clone()),
+            "one merge at a time"
+        );
+        let stored = serde_json::to_string(&c).unwrap();
+        let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            restarted.begin_merge(NOW),
+            Some(sent),
+            "the marker survives a restart"
+        );
+        restarted.merge_outcome(running.0, &merged_outcome(), NOW);
+        assert_eq!(restarted.begin_merge(NOW).unwrap().claim, held.0);
+    }
+
     #[test]
     fn a_stale_answer_changes_nothing() {
         let mut c = core();
