@@ -153,6 +153,14 @@ mod tests {
     }
 
     #[test]
+    fn the_production_coordinator_is_refused_by_name() {
+        let message = check_coordinator("wss://tessel-coordinator.devfep.workers.dev")
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("production coordinator"), "{message}");
+    }
+
+    #[test]
     fn refusal_names_the_rule() {
         let message = ScratchRepo::parse("tessel-dogfood")
             .err()
