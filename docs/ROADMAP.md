@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 02:29 EDT.
+**As of:** 2026-10-05 02:53 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
-**Tip:** `sprint/build` at the COORD-3 merge `a10a680` (plus this docs commit), pushed. `main` at `9211b67`.
+**Tip:** `sprint/build` at the COORD-4 merge `f0868ed` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
 to Felix at FREEZE.
 
@@ -15,8 +15,7 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | fix pass 1 at `9eaf7c8` (148 tests, local run repeated); holding → re-check result |
-| cq-coord-4 | COORD-4 review | same worktree; live probes on port 8796 | re-checking `9eaf7c8` with a full mutant set → verdict |
+| (none) | FREEZE | the orchestrator's checkout | milestone gate → pull request to `main` |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -50,7 +49,7 @@ to Felix at FREEZE.
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
 
-**Deployed:** `tessel-coordinator` (toolchain check, version `7aeaebc0`) and `tessel-steward`
+**Deployed:** `tessel-coordinator` (the full coordinator, version `f661b66f`) and `tessel-steward`
 (spikes 2 and 3 with the `TestRunner` container, version `7be0d0c7`) on `devfep.workers.dev`. Queue `tessel-artifacts-events` with
 subscriptions `tessel-repo-lifecycle` and `tessel-push-demo--agent-1`. Artifacts repos `demo` and
 `demo--agent-1` in namespace `tessel`.
@@ -78,8 +77,8 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
 
 **Next actions:**
 1. On each report: dispatch the Opus reviewer, run fix passes, merge on "Yes", gate, close.
-2. Merge COORD-3 first, then COORD-4 (it adapts to the new `Config` field), deploy the coordinator
-   and run the two-agent live check, then FREEZE.
+2. FREEZE: steward and Rust gates on the tip, `/code-review` and `/security-review` on the milestone
+   diff, pull request `sprint/build` → `main`, merge, report to Felix.
 
 ## Tasks
 
@@ -107,10 +106,12 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   CLOSED 2026-10-05 at `a10a680` (merge of `task-coord-3`; review "Yes" after two fix passes).
   `cargo test` 104 passed on the merged tree. Left for the steward task: the merge-outcome path, and
   a test that queue positions follow the submission ordinal once merged claims are removed.
-- [ ] **COORD-4** — Durable Object shell: persist state and events before sending, alarms for lease
+- [x] **COORD-4** — Durable Object shell: persist state and events before sending, alarms for lease
   expiry, WebSocket sessions, `Watch` replay from the event store, deploy.
-  Files: `src/lib.rs`, `wrangler.toml`, `README.md`.
-  Verify: two agents on the deployed coordinator, a conflicting claim denied with the other's
-  intent, state intact after the object is evicted.
+  CLOSED 2026-10-05 at `f0868ed` (merge of `task-coord-4`; review "Yes" after three fix passes).
+  `cargo test` 158 passed on the merged tree; sending without a completed write does not compile.
+  Live on version `f661b66f`: grant, denial with the holder's intent, queue then grant on release,
+  watcher replay, expiry through the alarm, and head, counters and the full log intact after a
+  redeploy. Not exercised live: close-on-failure for a send to another socket, and hibernation.
 - [ ] **FREEZE** — Milestone gate: full gate on the tip, `/code-review` and `/security-review` on
   the milestone diff, pull request `sprint/build` → `main`, report to Felix, protocol frozen.
