@@ -48,6 +48,8 @@ struct Inner {
     skip_seq: AtomicU64,
     stall_live: AtomicBool,
     review_first: AtomicBool,
+    hold_claim_reply: AtomicBool,
+    held: Mutex<Vec<(u64, Vec<Outbound>)>>,
     lose: Mutex<Vec<(String, Lose)>>,
 }
 
@@ -142,6 +144,8 @@ impl Fake {
             skip_seq: AtomicU64::new(u64::MAX),
             stall_live: AtomicBool::new(false),
             review_first: AtomicBool::new(false),
+            hold_claim_reply: AtomicBool::new(false),
+            held: Mutex::new(Vec::new()),
             lose: Mutex::new(Vec::new()),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -150,6 +154,19 @@ impl Fake {
         tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx));
         tokio::spawn(expire_loop(Arc::clone(&inner)));
         Ok(Self { url, inner, kill })
+    }
+
+    /// Keeps the reply to the next `Claim` or `Amend` back until `release_held`.
+    pub fn hold_next_claim_reply(&self) {
+        self.inner.hold_claim_reply.store(true, Ordering::SeqCst);
+    }
+
+    /// Delivers the replies kept back by `hold_next_claim_reply`.
+    pub fn release_held(&self) {
+        let held = std::mem::take(&mut *lock(&self.inner.held));
+        for (origin, outbound) in held {
+            self.inner.deliver(Some(origin), outbound);
+        }
     }
 
     /// Makes the coordinator send `ReviewRequired` before `Accepted`, as REVIEW-1 will.
@@ -403,6 +420,8 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((agent.clone(), msg.clone()));
+            let holds_claim_reply =
+                matches!(msg, ClientMsg::Claim { .. } | ClientMsg::Amend { .. });
             let effects = {
                 let mut core = inner
                     .core
@@ -427,7 +446,11 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                 }
             }
             // As the Durable Object does: the reply first, then the events it caused.
-            inner.deliver(Some(id), outbound);
+            if holds_claim_reply && inner.hold_claim_reply.swap(false, Ordering::SeqCst) {
+                lock(&inner.held).push((id, outbound));
+            } else {
+                inner.deliver(Some(id), outbound);
+            }
             inner.publish(events);
         }
     }

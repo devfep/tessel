@@ -104,14 +104,17 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   `--commit` defaults to `HEAD` and must name a commit (it is resolved to the full 40-hex id).
   What changed is the file-level diff `git diff <base>...<commit>`, where `<base>` is the
   coordinator's head when your repository has that commit (it comes from the coordinator and is
-  updated on `merged` and `base_moved`), else the commit your daemon was started at; a reconnect
-  never changes it (`tessel status` shows `start` and `coordinator head`). If neither commit
-  exists locally, `tessel submit` fails with exit 1. An added file needs `create`, a modified one
-  `edit-body`, a deleted or type-changed one `edit-signature`, and a rename needs
-  `edit-signature` on the old path plus `create` on the new one. All of these fit in your one
-  claim. Deleting or renaming also holds the submission for review (not built yet). If you
-  rebased onto newer main and files you did not touch show as uncovered, your daemon has an old
-  coordinator head: `tessel stop` and `tessel start` fetch the current one.
+  updated on `merged` and `base_moved`), else the commit this work started from (`start` in
+  `tessel status`, pinned when the work began). Neither a reconnect nor a daemon restart moves
+  it while you hold claims; a restart with no claims pins the current HEAD. If neither commit
+  exists locally, or claims were adopted after a restart that had no pinned start commit,
+  `tessel submit` fails with exit 1. An added file needs `create`, a modified one `edit-body`,
+  a deleted or type-changed one `edit-signature`, and a rename needs `edit-signature` on the old
+  path plus `create` on the new one. All of these fit in your one claim. Deleting or renaming
+  also holds the submission for review. If you rebased onto newer main and files you did not
+  touch show as uncovered, your daemon has an old coordinator head, which refreshes on the next
+  reconnect; to refresh it now, commit, release your claims, `tessel stop` and `tessel start`,
+  then claim again.
 - **Uncovered (exit 5).** If the claim does not cover a changed file, `tessel submit` prints the
   uncovered scopes and sends nothing. Release the claim if nothing under it is uncommitted, claim
   the full set, or drop the changes outside it. The coordinator checks coverage again.

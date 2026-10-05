@@ -1685,17 +1685,44 @@ async fn a_denied_amend_reports_a_denial_and_leaves_the_claim_alone() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_hooks_at_once_end_with_one_claim_holding_both_files() -> Result<()> {
-    let (_fake, a1, _a2) = world(30_000).await?;
-    a1.start("parallel edits")?;
+async fn a_request_that_arrives_while_a_claim_is_in_flight_waits_and_amends_it() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("overlapping edits")?;
+    fake.hold_next_claim_reply();
+    let sent = |fake: &Fake| {
+        fake.received("a1")
+            .iter()
+            .filter(|m| matches!(m, ClientMsg::Claim { .. }))
+            .count()
+    };
     let (one, two) = std::thread::scope(|scope| {
         let one = scope.spawn(|| a1.hook("Edit", "file_path", "src/a.rs"));
+        // The first claim has reached the coordinator, whose reply is held back.
+        for _ in 0..400 {
+            if sent(&fake) == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let two = scope.spawn(|| a1.hook("Edit", "file_path", "src/b.rs"));
+        // The second request reaches the daemon and must wait for that reply.
+        std::thread::sleep(Duration::from_millis(500));
+        fake.release_held();
         (one.join(), two.join())
     });
     let one = one.map_err(|_| anyhow::anyhow!("hook thread panicked"))??;
     let two = two.map_err(|_| anyhow::anyhow!("hook thread panicked"))??;
     assert_eq!((one.code, two.code), (0, 0), "{}{}", one.all(), two.all());
+    let received = fake.received("a1");
+    let claims = received
+        .iter()
+        .filter(|m| matches!(m, ClientMsg::Claim { .. }))
+        .count();
+    let amends = received
+        .iter()
+        .filter(|m| matches!(m, ClientMsg::Amend { .. }))
+        .count();
+    assert_eq!((claims, amends), (1, 1), "{received:?}");
     assert_eq!(claim_ids(&a1)?.len(), 1);
     let mut paths = scope_paths(&a1)?;
     paths.sort();
@@ -1805,5 +1832,134 @@ async fn stop_names_a_claim_whose_release_the_coordinator_never_took() -> Result
     );
     a2.start("blocked")?;
     assert_eq!(a2.tessel(&["claim", "src/a.rs"])?.code, 3);
+    Ok(())
+}
+
+// ---------- the diff base survives a restart ----------
+
+async fn kill_daemon(agent: &Agent) -> Result<()> {
+    let pid = agent.status()?["state"]["pid"]
+        .as_u64()
+        .context("no daemon pid")?;
+    let killed = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()?;
+    assert!(killed.success());
+    eventually(SHORT, || Ok((!alive(pid)).then_some(()))).await
+}
+
+/// The fake's coordinator head is this repository's first commit, which exists locally; naming a
+/// head the repository does not have leaves the pinned start commit as the only diff base.
+async fn forget_the_coordinator_head(fake: &Fake, agent: &Agent) -> Result<()> {
+    fake.push(
+        "a1",
+        ServerMsg::BaseMoved {
+            head: CommitId("1".repeat(40)),
+            by: AgentId("a2".into()),
+            affected: vec![],
+        },
+    );
+    eventually(SHORT, || {
+        Ok((agent.status()?["state"]["coordinator_head"] == "1".repeat(40)).then_some(()))
+    })
+    .await
+}
+
+fn commit_in(agent: &Agent, path: &str, text: &str) -> Result<()> {
+    std::fs::write(agent.root().join(path), text)?;
+    git(&agent.root(), &["add", path])?;
+    git(
+        &agent.root(),
+        &["commit", "-q", "-m", &format!("edit {path}")],
+    )?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_and_restart_keeps_the_pinned_start_so_earlier_commits_still_count() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("crash")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let pinned = a1.status()?["state"]["start_base"].clone();
+    commit_in(&a1, "src/b.rs", "pub fn b() { 1; }\n")?;
+
+    kill_daemon(&a1).await?;
+    a1.start("after the crash")?;
+    eventually(SHORT, || Ok((a1.held_claims()? == 1).then_some(()))).await?;
+    assert_eq!(a1.status()?["state"]["start_base"], pinned);
+    commit_in(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    forget_the_coordinator_head(&fake, &a1).await?;
+
+    let done = a1.tessel(&["submit", "--evidence", "ok"])?;
+    assert_eq!(done.code, 5, "{}", done.all());
+    assert!(done.stdout.contains("src/b.rs"), "{}", done.stdout);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adopted_claims_with_no_pinned_start_make_submit_fail_closed() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("crash and lose the state file")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    commit_in(&a1, "src/b.rs", "pub fn b() { 1; }\n")?;
+
+    kill_daemon(&a1).await?;
+    std::fs::remove_file(a1.root().join(".tessel/state.json"))?;
+    a1.start("after the crash")?;
+    eventually(SHORT, || Ok((a1.held_claims()? == 1).then_some(()))).await?;
+    commit_in(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    forget_the_coordinator_head(&fake, &a1).await?;
+
+    let done = a1.tessel(&["submit", "--evidence", "ok"])?;
+    assert_eq!(done.code, 1, "{}", done.all());
+    assert!(
+        done.stderr
+            .contains("cannot tell what this work is based on"),
+        "{}",
+        done.stderr
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_with_no_claims_pins_the_current_head() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("first session")?;
+    let first = a1.status()?["state"]["start_base"].clone();
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    commit_in(&a1, "src/b.rs", "pub fn b() { 1; }\n")?;
+    a1.start("second session")?;
+    let head = head_of(&a1)?;
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["start_base"] == head.as_str()).then_some(()))
+    })
+    .await?;
+    assert_ne!(first, serde_json::Value::String(head));
+    Ok(())
+}
+
+fn head_of(agent: &Agent) -> Result<String> {
+    Ok(git(&agent.root(), &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_gives_up_confirming_within_the_clients_patience() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("a log that never ends")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    // The event log read never reaches its end marker, so no release can be confirmed.
+    fake.stall_live_events(true);
+    let began = std::time::Instant::now();
+    let stopped = a1.tessel(&["stop"])?;
+    let took = began.elapsed();
+    assert_eq!(stopped.code, 0, "{}", stopped.all());
+    assert!(
+        stopped.stdout.contains("NOT released"),
+        "{}",
+        stopped.stdout
+    );
+    assert!(took < Duration::from_secs(22), "stop took {took:?}");
     Ok(())
 }

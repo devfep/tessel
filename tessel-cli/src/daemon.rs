@@ -39,9 +39,10 @@ const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const SNAPSHOT_LIMIT: Duration = Duration::from_secs(5);
 /// Until the coordinator's `Welcome` says otherwise.
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(10);
-/// How many times `stop` reads the event log and releases again before it reports a claim as not
-/// released.
-const CONFIRM_RETRIES: u32 = 3;
+/// How many times, and for how long in all, `stop` reads the event log before it reports a claim as
+/// not released. The client gives up on `stop` after 30 s.
+const CONFIRM_READS: u32 = 3;
+const CONFIRM_DEADLINE: Duration = Duration::from_secs(15);
 const CONFIRM_PAUSE: Duration = Duration::from_millis(150);
 
 type Socket =
@@ -149,6 +150,12 @@ struct Daemon {
     heartbeat_every: Duration,
     next_housekeeping: Instant,
     ever_online: bool,
+    /// HEAD when this daemon process started.
+    launch_head: String,
+    /// `start_base` still has to be settled against the claims the first log read shows.
+    start_base_unsettled: bool,
+    /// `start_base` was not persisted by an earlier daemon, so it is only this process's HEAD.
+    start_base_invented: bool,
 }
 
 /// Runs the daemon for `worktree` until `tessel stop` or a fatal error. Returns `Ok` without
@@ -189,6 +196,13 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         .context("cannot write daemon.pid")?;
 
     let base = worktree.head()?;
+    // The diff base outlives a restart while claims do: it was pinned when the work began.
+    let persisted = State::read(&worktree)
+        .ok()
+        .flatten()
+        .map(|prior| prior.start_base)
+        .filter(|pinned| !pinned.is_empty());
+    let invented = persisted.is_none();
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let accept = tokio::spawn(accept_loop(listener, cmd_tx, shutdown_rx));
@@ -199,9 +213,9 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         repo: config.repo.clone(),
         summary: args.summary,
         task_ref: args.task_ref,
-        start_base: base.clone(),
+        start_base: persisted.unwrap_or_else(|| base.clone()),
         coordinator_head: None,
-        base,
+        base: base.clone(),
         socket: sock.display().to_string(),
         connection: Connection::Connecting,
         lease_ms: None,
@@ -211,6 +225,9 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         updated_at_ms: now_ms(),
     };
     let mut daemon = Daemon::new(worktree.clone(), config, state, in_tx);
+    daemon.launch_head = base.clone();
+    daemon.start_base_unsettled = true;
+    daemon.start_base_invented = invented;
     daemon.log("daemon started");
     let result = daemon.main_loop(cmd_rx, in_rx).await;
     if let Err(e) = &result {
@@ -289,6 +306,9 @@ impl Daemon {
             heartbeat_every: DEFAULT_HEARTBEAT,
             next_housekeeping: now + HOUSEKEEPING_EVERY,
             ever_online: false,
+            launch_head: String::new(),
+            start_base_unsettled: false,
+            start_base_invented: false,
         }
     }
 
@@ -767,6 +787,7 @@ impl Daemon {
         let plan = reconcile::plan(&local, &live, &events);
         if complete {
             self.apply_plan(plan, lost);
+            self.settle_start_base();
             return;
         }
         self.notify(
@@ -782,6 +803,32 @@ impl Daemon {
             answer(pending.replies, &refused(None, message));
         }
         self.apply_plan(plan, Vec::new());
+    }
+
+    /// Settles the diff base once the first complete log read has said which claims this agent
+    /// holds from before this process. With none, the work starts here: the base is this
+    /// process's HEAD. With some (a restart after a crash adopts them), the base is the one an
+    /// earlier daemon persisted, so commits made before the restart still count; if none was
+    /// persisted it is unknown and `submit` fails closed.
+    fn settle_start_base(&mut self) {
+        if !self.start_base_unsettled {
+            return;
+        }
+        self.start_base_unsettled = false;
+        let inherited = self
+            .state
+            .claims
+            .iter()
+            .any(|held| !self.fresh.contains(&held.claim));
+        if !inherited {
+            self.state.start_base = self.launch_head.clone();
+        } else if self.start_base_invented {
+            self.state.start_base.clear();
+            self.log(
+                "claims held from before this daemon started, but no start commit was persisted",
+            );
+        }
+        self.persist();
     }
 
     /// Brings the fences and scopes of local claims up to what the log shows.
@@ -1248,12 +1295,12 @@ impl Daemon {
         }
     }
 
-    /// The one claim that new scopes are added to, if the agent holds exactly one open claim
-    /// that is not a race entry (an entry cannot amend: `RaceScopeFixed`).
+    /// The one claim that new scopes are added to, if the agent holds exactly one open claim.
     fn amend_target(&self) -> Option<(ClaimId, tessel_coordinator::protocol::Fence)> {
+        // Amend assumes no race entries (they cannot amend: `RaceScopeFixed`) until races ship.
         let mut open = self.state.claims.iter().filter(|held| !held.submitted);
         let only = open.next()?;
-        if open.next().is_some() || only.race.is_some() {
+        if open.next().is_some() {
             return None;
         }
         Some((only.claim, only.fence))
@@ -1492,36 +1539,25 @@ impl Daemon {
 
     /// A `Release` has no reply, and closing the socket right after sending it can lose it, so
     /// before the socket closes the coordinator's event log is read until it shows every claim
-    /// ended. A claim still live is released again with the fence the log shows. Returns the
-    /// claims that could not be confirmed released.
+    /// ended, within `CONFIRM_DEADLINE` in all. Returns the claims it could not confirm released.
     async fn confirm_released(&mut self, sent: Vec<ClaimId>) -> Vec<ClaimId> {
         let mut remaining = sent;
-        for attempt in 0..=CONFIRM_RETRIES {
+        let deadline = Instant::now() + CONFIRM_DEADLINE;
+        for _ in 0..CONFIRM_READS {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
             if remaining.is_empty() {
                 break;
             }
-            let live = self.live_claims_in_log().await;
-            if let Some(live) = &live {
+            let live = tokio::time::timeout(left, self.live_claims_in_log())
+                .await
+                .unwrap_or(None);
+            if let Some(live) = live {
                 remaining.retain(|claim| live.contains_key(&claim.0));
             }
-            if attempt == CONFIRM_RETRIES {
+            if remaining.is_empty() {
                 break;
-            }
-            for claim in remaining.clone() {
-                // Without a complete log there is no fence to use; the fence last held is gone,
-                // so only a log-confirmed live claim is released again.
-                let Some(server) = live.as_ref().and_then(|live| live.get(&claim.0)) else {
-                    continue;
-                };
-                let held = HeldClaim {
-                    claim,
-                    fence: server.fence,
-                    expires_at_ms: 0,
-                    race: None,
-                    scopes: Vec::new(),
-                    submitted: false,
-                };
-                self.send_release(&held);
             }
             tokio::time::sleep(CONFIRM_PAUSE).await;
         }
@@ -1530,29 +1566,20 @@ impl Daemon {
 
     /// This agent's live claims according to a complete read of the event log, or `None`.
     async fn live_claims_in_log(&self) -> Option<BTreeMap<u64, ServerClaim>> {
-        let read = tokio::time::timeout(
-            CONNECT_TIMEOUT + SNAPSHOT_LIMIT * 2,
-            read_log(&self.config, self.state.base.clone()),
-        )
-        .await;
-        match read {
-            Ok(Ok(LogRead {
+        match read_log(&self.config, self.state.base.clone()).await {
+            Ok(LogRead {
                 events,
                 complete: true,
-            })) => Some(reconcile::live_claims(
+            }) => Some(reconcile::live_claims(
                 &AgentId(self.config.agent.clone()),
                 &events,
             )),
-            Ok(Ok(LogRead { .. })) => {
+            Ok(LogRead { .. }) => {
                 self.log("stop: the event log was cut short, so releases are unconfirmed");
                 None
             }
-            Ok(Err(why)) => {
+            Err(why) => {
                 self.log(&format!("stop: cannot read the event log: {why}"));
-                None
-            }
-            Err(_) => {
-                self.log("stop: the event log read hung");
                 None
             }
         }
@@ -1879,4 +1906,95 @@ async fn dispatch(request: Request, cmd_tx: &mpsc::Sender<Command>) -> Reply {
     reply_rx.await.unwrap_or_else(|_| Reply::Failed {
         message: "the daemon stopped before answering".into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tessel_coordinator::protocol::Fence;
+
+    fn held(claim: u64) -> HeldClaim {
+        HeldClaim {
+            claim: ClaimId(claim),
+            fence: Fence(claim),
+            expires_at_ms: u64::MAX,
+            race: None,
+            scopes: Vec::new(),
+            submitted: false,
+        }
+    }
+
+    fn daemon_in(dir: &std::path::Path) -> Daemon {
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .status();
+        assert!(init.is_ok_and(|status| status.success()));
+        let worktree = Worktree::discover(dir).unwrap();
+        worktree.prepare_dir().unwrap();
+        let config = Config::load(dir, |name| match name {
+            "TESSEL_COORDINATOR" => Some("ws://127.0.0.1:1".to_string()),
+            "TESSEL_REPO" => Some("demo".to_string()),
+            "TESSEL_AGENT" => Some("a1".to_string()),
+            "TESSEL_TOKEN" => Some("tok".to_string()),
+            _ => None,
+        })
+        .unwrap();
+        let state = State {
+            pid: 1,
+            agent: "a1".into(),
+            repo: "demo".into(),
+            summary: String::new(),
+            task_ref: None,
+            start_base: String::new(),
+            coordinator_head: None,
+            base: String::new(),
+            socket: String::new(),
+            connection: Connection::Online,
+            lease_ms: None,
+            last_error: None,
+            claims: vec![held(1), held(2)],
+            queued: None,
+            updated_at_ms: 0,
+        };
+        let (in_tx, _in_rx) = mpsc::unbounded_channel();
+        Daemon::new(worktree, config, state, in_tx)
+    }
+
+    #[test]
+    fn an_accepted_for_another_claim_does_not_answer_or_submit_the_pending_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let (reply, mut answer_rx) = oneshot::channel();
+        daemon.submits.insert(
+            5,
+            PendingSubmit {
+                claim: ClaimId(1),
+                reply,
+            },
+        );
+
+        daemon.on_accepted(RequestId(5), ClaimId(2), 4);
+        assert!(
+            answer_rx.try_recv().is_err(),
+            "answered by a mismatched Accepted"
+        );
+        assert!(daemon.submits.contains_key(&5));
+        assert!(daemon.state.claims.iter().all(|held| !held.submitted));
+
+        daemon.on_accepted(RequestId(5), ClaimId(1), 3);
+        let answered = answer_rx.try_recv().unwrap();
+        assert!(
+            matches!(
+                answered,
+                Reply::Submit {
+                    outcome: SubmitOutcome::Accepted { queue_position: 3 }
+                }
+            ),
+            "{answered:?}"
+        );
+        assert!(daemon.state.claims[0].submitted);
+        assert!(!daemon.state.claims[1].submitted);
+    }
 }

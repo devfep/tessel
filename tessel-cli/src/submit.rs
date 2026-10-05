@@ -123,8 +123,9 @@ pub fn diff_base(root: &Path, state: &State) -> anyhow::Result<String> {
     }
     bail!(
         "cannot tell what this work is based on: neither the coordinator's head ({}) nor the \
-         commit this daemon started at ({}) exists in this repository. Fetch the coordinator's \
-         head, or run `tessel stop` and `tessel start` again",
+         commit this work started from ({}) exists in this repository. Fetch the coordinator's \
+         head into this repository. A restart does not repair this while you hold claims, \
+         because it keeps the start commit that was pinned before",
         state
             .coordinator_head
             .as_deref()
