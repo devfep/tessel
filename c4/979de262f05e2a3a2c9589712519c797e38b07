@@ -1,0 +1,4 @@
+intent: when the coordinator head is ahead of the work, diff from its fork point with the work if the start commit is at or before it, so a lane that merged trunk T1 is not charged with T1 after trunk moves to T2
+assumes: a stale head on another line has a fork point older than the start commit
+rejected: falling straight to the start commit (charges merged trunk changes); dropping the head (loses the merged-trunk case)
+evidence: cargo test --workspace 750 passed 0 failed; new fork-point test fails on d5c5265; 3 mutants killed; clippy -D warnings clean on touched targets
