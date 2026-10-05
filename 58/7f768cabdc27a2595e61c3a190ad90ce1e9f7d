@@ -1,0 +1,4 @@
+intent: implement ClientMsg::Review (invariant 12): REVIEWERS-gated approve/reject of held submissions
+assumes: the shell derives the alarm from core state after every call, so an approval schedules the merge
+rejected: reviewers in Config (breaks tessel-cli test literals, another lane's file), so they live in CoordinatorState and are applied on every load
+evidence: cargo test --workspace 401 passed (386 + 15); clippy clean
