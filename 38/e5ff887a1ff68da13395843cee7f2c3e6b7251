@@ -1,0 +1,4 @@
+intent: merge REVIEW-1: Review approve/reject for submissions held under invariant 12; REVIEWERS var; ReviewRequired before Accepted
+assumes: REVIEWERS = felix (wrangler.toml); an invalid value fails closed (nobody can approve)
+rejected: failing the DO load on a bad REVIEWERS (would stop every repo); replying Accepted to the reviewer (it has no submission)
+evidence: review Yes after one fix pass (16 reviewer mutants killed). Merged tree: cargo test --workspace 404, clippy 0. Live on coordinator 9f75140a, repo gate10-1791209737: two evidence-less submits answered review_required (no_test_evidence) first; a2 reviewing got not_owner; felix approve -> a1 accepted then merged, trunk at the merged head 0f3752c; second approve of the merged claim -> unknown_claim; felix reject -> a2 submit_rejected 'rejected in review' with the injected note absent from the reason.
