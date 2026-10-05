@@ -1,0 +1,4 @@
+intent: close the milestone in the roadmap and leave a STATE block Felix or the next orchestrator can resume from
+assumes: none
+rejected: keeping the per-task rulings list in STATE (they are in the merge notes and the code's doc comments)
+evidence: docs only; gate and live evidence are in the notes on 597f625 and 7de5ff3
