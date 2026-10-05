@@ -1,0 +1,5 @@
+intent: a refused live run ran the off side first and left seed1-off.json, which was committed by mistake; validate live arguments up front and remove the file
+assumes: none
+rejected: none
+evidence: cli tests 5 passed, refused run writes nothing
+dogfood: agent harness-1, claim 31
