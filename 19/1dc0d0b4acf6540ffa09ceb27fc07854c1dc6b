@@ -1,0 +1,4 @@
+intent: merge COVER-1: invariant 11 checked on the rebased commit by the steward (file level, before any repo code runs); uncovered changes are verified rejections
+assumes: symbol precision still rests on the agent's touched list (coordinator check); the steward's check is file level
+rejected: trusting only the client-computed touched list (failed open three times in CLI-2 review)
+evidence: review Yes after two fix passes (orchestrator re-ran mutant n2 on 387cb6b: killed). Merged tree: cargo test --workspace 472, steward 375. Live on steward c43ad948 + coordinator 493e4466, repo gate11-1791212819: a1 claimed and reported src/a.txt but its commit changed src/b.txt -> submit_rejected 'the merged change touches 1 file(s) the claim does not cover', trunk unchanged; a1's claim stayed active so a2's claim on src/a.txt was denied (correct); after a1's lease lapsed, a2 claimed and changed src/a.txt -> merged in 20 s.
