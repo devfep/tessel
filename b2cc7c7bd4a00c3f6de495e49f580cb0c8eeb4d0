@@ -1,0 +1,4 @@
+intent: update README to the working run, conflict and watch flow
+assumes: none
+rejected: none
+evidence: commands in README exercised against wrangler dev
