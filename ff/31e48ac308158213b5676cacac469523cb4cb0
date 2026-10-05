@@ -1,0 +1,4 @@
+intent: on reconnect the event log's Merged events for this agent's submissions advance start_base (forward only); a damaged state.json refuses to start
+assumes: a submitted claim ends only by Merged; a Merged event means everything up to the submission's fork commit landed
+rejected: advancing only in the forget path: a stopped or restarted daemon has no local claim to forget
+evidence: cargo test --workspace 468 passed (66+78+24+300); clippy clean; deny ok; dogfood: claim 19 on tessel-dogfood
