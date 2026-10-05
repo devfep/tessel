@@ -1,0 +1,4 @@
+intent: close the assumption loop (PLAN 9 Oct): after a merge that challenged assumptions, try each live assuming agent's work on the new main via the steward /trial and log AssumptionVerified
+assumes: steward /trial answers as TrialOutcome; ServerMsg has no variant that says an assumption broke, so the event alone is the record
+rejected: a ServerMsg to the assuming agent (AssumptionChallenged would read as a second challenge); counting a test timeout (124/137) as TestsFailed (not a failing assertion, so Inconclusive); logging when a claim ends before its verification runs (no verification happened)
+evidence: cargo test -p tessel-coordinator 336 passed, clippy -D warnings clean, wasm build clean
