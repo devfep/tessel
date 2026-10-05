@@ -1,0 +1,5 @@
+intent: PROTO-FREEZE fix pass 1 (NoHello echoes req; Mode::permits exhaustive; test-only helpers moved into test modules)
+assumes: none
+rejected: none
+evidence: cargo test 229 passed (227 + 2 new); clippy -D warnings and rustfmt clean
+correction: the note on c8a5c17 says gating dead helpers behind cfg(test) was rejected. That is wrong for Scope::root and Mode::ALL, which were gated with cfg(test); this commit moves them into the test modules.
