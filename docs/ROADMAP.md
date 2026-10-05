@@ -5,33 +5,31 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 07:44 EDT.
+**As of:** 2026-10-05 07:58 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the IDENTITY merge `d6f127f` plus this STATE commit; `main` at `29aa8fe`
-(pull request 1).
-**Milestone:** next is PLAN §9 Oct 6 (CLI levels 1–2, skill file, dogfood v0).
+**Tip:** `sprint/build` at the PROTO-FREEZE merge `e402440` (merged by Felix) plus this STATE
+commit; `main` at `29aa8fe` (pull request 1).
+**Milestone:** protocol frozen with Felix's additions. Next is PLAN §9 Oct 6 (CLI levels 1–2, skill
+file, dogfood v0); the steward merge executor (Oct 7) starts early in a disjoint lane.
 
-**Felix's rulings, 2026-10-05 07:00 EDT** (the four items pending at FREEZE):
-1. Protocol freeze: add an event for a `Wait` request being queued and one for it being withdrawn,
-   and `req` on `Release` (so its errors can echo it) and on `Uncovered`. The other gaps stay.
-2. Identity: per-agent tokens signed by the steward, verified at the coordinator upgrade, binding
-   the socket's agent. Replaces the shared `COORDINATOR_TOKEN`.
+**Felix's rulings, 2026-10-05 07:00 EDT** (the four items pending at FREEZE), all now delivered
+except ruling 3, which lands with the steward merge path:
+1. Protocol freeze additions: queued and withdrawn wait events, `req` on `Release` and `Uncovered`.
+2. Identity: per-agent tokens signed by the steward (IDENTITY).
 3. Push events: `Submit` is the merge signal; the steward verifies the commit by reading the fork;
    one push subscription on the main repo. PLAN §4 diagram updated in `8feb196`.
-4. Fix the clippy and rustfmt findings in `src/protocol.rs` (no wire change).
+4. `src/protocol.rs` clippy and rustfmt clean (PROTO-FREEZE).
 
-`tools/merge-one.sh` still refuses any change to `src/protocol.rs`. An edit to let approved tasks
-through was refused by the session's permission classifier, so Felix runs the PROTO-FREEZE merge
-himself (his ruling, 07:19).
+`tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
+hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** PROTO-FREEZE (Sonnet) idle. Review Yes at `c07956a`; `sprint/build` merged in as
-`64f6079` (one test-module conflict in `src/shell.rs`, both tests kept, checked by the orchestrator);
-re-gate 241 tests, clippy and wasm clean. IDENTITY closed and reclaimed.
-**Merge queue:** `task-proto-freeze`, waiting for Felix to merge it (predicted tree `f1eb073`).
+**Agents:** CLI-1 (Sonnet, worktree `.claude/worktrees/cli-1`) and STEWARD-1 (Sonnet, worktree
+`.claude/worktrees/steward-1`), both cut from this commit, dispatched 07:58.
+**Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `4426eafc`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `57e82531`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
@@ -64,9 +62,11 @@ attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZ
 two Workers are approved.
 
 **Next actions:**
-1. Re-gate PROTO-FREEZE on the merged tip, hand the merge to Felix, then deploy the coordinator.
-2. Dispatch CLI-1 (protocol as a library crate, CLI levels 1–2, skill file) after PROTO-FREEZE
-   merges.
+1. Review CLI-1 and STEWARD-1 as they report.
+2. After CLI-1: SKILL-1 (skill file and fork `AGENTS.md`, describing only shipped commands), then
+   CLI-2 (tree-sitter symbol claims, mode escalation), then dogfood v0.
+3. After STEWARD-1: wire `Submit` from the coordinator to the steward and the outcome back
+   (`Merged` / `SubmitRejected`), per Felix's ruling 3.
 
 ## Tasks
 
@@ -118,13 +118,22 @@ two Workers are approved.
   the milestone diff, pull request `sprint/build` → `main`, report to Felix.
   CLOSED 2026-10-05 with pull request 1. The two reviews produced FIX-RUST and FIX-STEWARD, both
   merged, deployed and checked live before the merge to `main`.
-- [ ] **PROTO-FREEZE** — Felix's rulings 1 and 4: queued and withdrawn wait events, `req` on
+- [x] **PROTO-FREEZE** — Felix's rulings 1 and 4: queued and withdrawn wait events, `req` on
   `Release` and `Uncovered`, clippy and rustfmt clean on `src/protocol.rs`; the coordinator emits
   the events.
+  CLOSED 2026-10-05 at `e402440` (merged by Felix; review "Yes" after one fix pass, which also made
+  `Mode::permits` exhaustive). `cargo test` 241, clippy `-D warnings` clean on the whole crate. Live
+  on `57e82531`: `wait_queued` then `wait_withdrawn` on close, and a bad `release` echoes its `req`.
 - [x] **IDENTITY** — Felix's ruling 2: steward-signed per-agent tokens replace `COORDINATOR_TOKEN`;
   the coordinator binds the socket to the token's agent.
   CLOSED 2026-10-05 at `d6f127f` (review "Yes" after one fix pass; adds `deny.toml`). Merged tree:
   `cargo test` 232, steward 163. Live on coordinator `4426eafc` and steward `dfed7cbe`: a minted
   token connects, a hello under another agent gets `not_owner`, and the wrong repo, no auth, a
   garbage token, the old secret and a forged agent header all get 401.
-- [ ] **CLI-1** — PLAN §9 Oct 6: protocol as a library crate, `tessel-cli` levels 1–2, skill file.
+- [ ] **CLI-1** — PLAN §9 Oct 6: protocol as a library, `tessel-cli` with a per-worktree daemon,
+  `start`/`claim`/`status`/`inbox`/`release`/`stop`, and the Claude Code pre-edit hook that
+  auto-claims files and blocks on denial.
+- [ ] **STEWARD-1** — PLAN §9 Oct 7, early: steward merge executor. Verify a fork commit, rebase it
+  onto the trunk in the Sandbox, test, push only if the trunk has not moved; report a typed outcome.
+- [ ] **SKILL-1** — skill file and the `AGENTS.md` carried into forks, for shipped commands only.
+- [ ] **CLI-2** — tree-sitter symbol claims and mode escalation in the pre-edit hook.
