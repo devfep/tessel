@@ -674,7 +674,8 @@ impl Coordinator {
     }
 
     /// Assumptions in other agents' active non-shadow claims that any of `scopes` could break
-    /// (invariant 8), in claim id order.
+    /// (invariant 8), in claim id order. A submitted claim still counts: its work has not merged,
+    /// so it still relies on what it assumed.
     fn assumptions_at_risk(&self, agent: &AgentId, scopes: &[ScopeClaim]) -> Vec<HeldAssumption> {
         let mut out = Vec::new();
         for (id, other) in &self.state.claims {
@@ -841,7 +842,7 @@ impl Coordinator {
     /// A rejected submission changes nothing but the event log, and the claim stays submittable.
     ///
     /// `Accepted::queue_position` is the 1-based place among submitted non-shadow claims, in
-    /// submission order. For a shadow claim it is 0, meaning "recorded for verification, never
+    /// submission order (see `queue_position`). For a shadow claim it is 0, meaning "recorded for verification, never
     /// queued for merge": the protocol has no dedicated reply for that.
     fn submit(&mut self, agent: &AgentId, request: SubmitRequest, now_ms: u64) -> Vec<Effect> {
         let SubmitRequest {
@@ -888,7 +889,7 @@ impl Coordinator {
             0
         } else {
             effects.extend(self.challenge_assumptions(agent, &fork_commit, &touched, now_ms));
-            self.queue_position()
+            self.queue_position(ordinal)
         };
         let accepted = ServerMsg::Accepted {
             req,
@@ -920,7 +921,8 @@ impl Coordinator {
 
     /// Tell every agent whose assumption the submission threatens (invariant 8): the other
     /// agents' active non-shadow claims, in claim id order, then each claim's assumptions in
-    /// declared order. Challenges are notices and are logged; they never block the submission.
+    /// declared order. Already submitted claims are included: their work has not merged yet.
+    /// Each (claim, assumption) is challenged once however many touched scopes threaten it. Challenges are notices and are logged; they never block the submission.
     fn challenge_assumptions(
         &mut self,
         submitter: &AgentId,
@@ -961,11 +963,16 @@ impl Coordinator {
         effects
     }
 
-    /// The number of submitted non-shadow claims: the position of the latest submission.
-    fn queue_position(&self) -> u32 {
+    /// The 1-based place of the submission numbered `ordinal`: the number of submitted
+    /// non-shadow claims numbered at or before it. Stays right when later tasks remove merged
+    /// claims.
+    fn queue_position(&self, ordinal: u64) -> u32 {
         let mut queued = 0;
         for claim in self.state.claims.values() {
-            if claim.submitted.is_some() && !claim.shadow {
+            if claim.shadow {
+                continue;
+            }
+            if claim.submitted.is_some_and(|other| other <= ordinal) {
                 queued += 1;
             }
         }
@@ -2262,6 +2269,8 @@ mod tests {
             add: vec![y_edit()],
         };
         assert_error(&handle_at(&mut c, "a", msg, late), ErrorCode::UnknownClaim);
+        let stale = handle_at(&mut c, "a", submit_msg(claim, fence, vec![x_edit()]), late);
+        assert_submit_error(&stale, ErrorCode::UnknownClaim);
     }
 
     #[test]
@@ -3082,7 +3091,10 @@ mod tests {
 
         // Another agent widens its claim, which issues a new fence, then submits.
         let outside = submit(&mut c, "b", b, b_fence, vec![y_edit()]);
-        assert_eq!(replies(&outside).len(), 1);
+        let ServerMsg::Uncovered { scopes, .. } = only_reply(&outside) else {
+            panic!("expected Uncovered, got {outside:?}");
+        };
+        assert_eq!(scopes, &vec![y_edit()]);
         let amended = amend(&mut c, "b", b, b_fence, vec![y_edit()]);
         let ServerMsg::Granted { fence, .. } = only_reply(&amended) else {
             panic!("expected Granted, got {amended:?}");
@@ -3113,11 +3125,10 @@ mod tests {
             b_fence,
             vec![sc(file("src/x.rs"), Mode::Depend)],
         );
-        assert_eq!(replies(&outside).len(), 1);
         let ServerMsg::Uncovered { scopes, .. } = only_reply(&outside) else {
             panic!("expected Uncovered, got {outside:?}");
         };
-        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes, &vec![sc(file("src/x.rs"), Mode::Depend)]);
     }
 
     #[test]
@@ -3502,6 +3513,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn two_touched_scopes_threatening_one_assumption_challenge_it_once() {
+        let mut c = coordinator();
+        let target = sym("src/auth.rs", "refresh");
+        let holder = intent_assuming("holder", &[(target, "returns Some")]);
+        grant_with(
+            &mut c,
+            "holder",
+            holder,
+            vec![sc(file("src/other.rs"), Mode::Depend)],
+        );
+        let whole = sc(file("src/auth.rs"), Mode::EditBody);
+        let (b, fence) = grant(&mut c, "b", vec![whole.clone()]);
+        let touched = vec![whole, sc(sym("src/auth.rs", "refresh"), Mode::EditBody)];
+        let effects = submit(&mut c, "b", b, fence, touched);
+        assert_eq!(challenge_notices(&effects).len(), 1);
+        assert_eq!(challenge_events(&effects).len(), 1);
+    }
+
+    #[test]
+    fn a_submitted_claims_assumptions_are_still_at_risk_and_challenged() {
+        let mut c = coordinator();
+        let assuming = intent_assuming("a", &[(file("src/y.rs"), "y is stable")]);
+        let (a, a_fence) = grant_with(
+            &mut c,
+            "a",
+            assuming,
+            vec![sc(file("src/y.rs"), Mode::Depend)],
+        );
+        submit(
+            &mut c,
+            "a",
+            a,
+            a_fence,
+            vec![sc(file("src/y.rs"), Mode::Depend)],
+        );
+
+        let granted = claim_as(&mut c, "b", vec![y_edit()]);
+        let ServerMsg::Granted {
+            claim,
+            fence,
+            at_risk,
+            ..
+        } = only_reply(&granted)
+        else {
+            panic!("expected Granted, got {granted:?}");
+        };
+        assert_eq!(at_risk.len(), 1);
+        assert_eq!((at_risk[0].claim, &at_risk[0].agent), (a, &agent("a")));
+        let effects = submit(&mut c, "b", *claim, *fence, vec![y_edit()]);
+        let notices = challenge_notices(&effects);
+        assert_eq!(notices.len(), 1);
+        assert_eq!((notices[0].0.clone(), notices[0].1 .0), (agent("a"), a));
+    }
+
+    fn state_value(c: &Coordinator) -> serde_json::Value {
+        serde_json::to_value(c).unwrap()
+    }
+
+    #[test]
+    fn only_accepted_submits_consume_an_ordinal_and_positions_follow_it() {
+        let mut c = shadow_coordinator();
+        grant(&mut c, "a", vec![x_edit()]);
+        let (s, s_fence) = shadow_as(&mut c, "s", vec![x_edit()]);
+        let (b, b_fence) = grant(&mut c, "b", vec![y_edit()]);
+        let (d, d_fence) = grant(&mut c, "d", vec![z_edit()]);
+        let (e, e_fence) = grant(&mut c, "e", vec![sc(file("src/w.rs"), Mode::EditBody)]);
+
+        assert_eq!(
+            accepted_position(&submit(&mut c, "b", b, b_fence, vec![y_edit()]), b),
+            1
+        );
+        let rejected = submit(&mut c, "d", d, d_fence, vec![x_edit()]);
+        let ServerMsg::Uncovered { scopes, .. } = only_reply(&rejected) else {
+            panic!("expected Uncovered, got {rejected:?}");
+        };
+        assert_eq!(scopes, &vec![x_edit()]);
+        assert_eq!(state_value(&c)["next_submission"], 1);
+        assert_eq!(
+            accepted_position(&submit(&mut c, "s", s, s_fence, vec![x_edit()]), s),
+            0
+        );
+        assert_eq!(
+            accepted_position(&submit(&mut c, "d", d, d_fence, vec![z_edit()]), d),
+            2
+        );
+        let touched = vec![sc(file("src/w.rs"), Mode::EditBody)];
+        assert_eq!(
+            accepted_position(&submit(&mut c, "e", e, e_fence, touched), e),
+            3
+        );
+        let value = state_value(&c);
+        assert_eq!(value["next_submission"], 4);
+        assert_eq!(value["claims"]["4"]["submitted"], 2);
+        assert_eq!(value["claims"]["5"]["submitted"], 3);
+    }
+
     /// Leased, submitted and shadow claims side by side.
     fn mixed_coordinator() -> Coordinator {
         let mut c = shadow_coordinator();
@@ -3704,6 +3812,8 @@ mod tests {
         expires_at: u64,
         /// Submitted claims never expire, are not renewed, and keep blocking.
         submitted: bool,
+        /// Fences an amend retired, which must never be accepted again.
+        retired: Vec<Fence>,
     }
 
     struct Queued {
@@ -3791,6 +3901,7 @@ mod tests {
                 scopes,
                 expires_at,
                 submitted: false,
+                retired: Vec::new(),
             });
             (claim, fence)
         }
@@ -4003,6 +4114,7 @@ mod tests {
         let expires_at = m.active[idx].expires_at;
         assert_grant_reply(&effects, 900, claim, new, expires_at);
         m.active[idx].fence = new;
+        m.active[idx].retired.push(old);
         m.active[idx].scopes.extend(added);
         let stale = c.handle(&who, ClientMsg::Release { claim, fence: old }, m.now);
         assert_refused(&stale, ErrorCode::StaleFence);
@@ -4020,6 +4132,18 @@ mod tests {
             }
         }
         out
+    }
+
+    fn without_seq_of(value: &serde_json::Value) -> serde_json::Value {
+        let mut value = value.clone();
+        if let Some(object) = value.as_object_mut() {
+            object.remove("next_seq");
+        }
+        value
+    }
+
+    fn without_seq(c: &Coordinator) -> serde_json::Value {
+        without_seq_of(&state_value(c))
     }
 
     fn step_submit(
@@ -4044,8 +4168,25 @@ mod tests {
         } else {
             distinct(&raw)
         };
+        let stale = m.active[idx]
+            .retired
+            .first()
+            .copied()
+            .unwrap_or(Fence(fence.0 + 1));
+        let first = c.handle(&who, submit_msg(claim, stale, touched.clone()), m.now);
+        assert_refused(&first, ErrorCode::StaleFence);
+        assert_announced(&first, &lapse, &[]);
+        let settled = state_value(c);
+        let second = c.handle(&who, submit_msg(claim, stale, touched.clone()), m.now);
+        assert_refused(&second, ErrorCode::StaleFence);
+        assert_eq!(
+            state_value(c),
+            settled,
+            "a stale submit must change nothing"
+        );
+
         let effects = c.handle(&who, submit_msg(claim, fence, touched.clone()), m.now);
-        assert_announced(&effects, &lapse, &[]);
+        assert_announced(&effects, &Announced::default(), &[]);
         if m.active[idx].submitted {
             assert_refused(&effects, ErrorCode::AlreadySubmitted);
             return;
@@ -4056,6 +4197,11 @@ mod tests {
                 panic!("expected Uncovered, got {effects:?}");
             };
             assert_eq!((*got, scopes), (claim, &expected));
+            assert_eq!(
+                without_seq(c),
+                without_seq_of(&settled),
+                "uncovered changes only seq"
+            );
             return;
         }
         m.active[idx].submitted = true;
