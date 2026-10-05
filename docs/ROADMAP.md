@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 01:52 EDT.
+**As of:** 2026-10-05 02:12 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` at the COORD-1 merge `e3e2847` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,7 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-2 | COORD-2 | `.claude/worktrees/coord-2` / `task-coord-2` | implementing from `e3e2847` → review |
+| impl-coord-2 | COORD-2 | `.claude/worktrees/coord-2` / `task-coord-2` | fix pass 1 (5 items) → re-check |
+| cq-coord-2 | COORD-2 review | same worktree, read-only | "With fixes" on `0067cb9` (1 Important, 4 Minor; 20 mutants killed) → re-check |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -29,6 +30,10 @@ to Felix at FREEZE.
 7. COORD-2: an agent with a queued `Wait` request may make no other claim; waiters are served FIFO
    and never jump an earlier waiter they conflict with; queueing logs nothing because the protocol
    has no event for it (proposed below).
+8. COORD-2 fix pass: time never goes backwards inside the core (a persisted clock clamps `now_ms`);
+   `Coordinator::new` rejects `lease_ms == 0`.
+9. COORD-3 and COORD-4 run as two parallel lanes after COORD-2 merges (disjoint files). A submitted
+   claim needs a status that expiry, heartbeat and `next_expiry_ms` skip; shadow claims place no locks.
 
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
