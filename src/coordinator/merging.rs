@@ -80,7 +80,8 @@ impl Coordinator {
         self.retry_after_infrastructure(flight.claim, held, now_ms)
     }
 
-    /// When the shell should next run `begin_merge`, as an alarm time: `Some(0)` for "now".
+    /// When the shell should next run `begin_merge`, as an absolute time in milliseconds since the
+    /// epoch that is never before `now_ms`: "now" is `now_ms`, not 0.
     ///
     /// `merging_here` is true while this instance is waiting for the steward. The merge in flight
     /// then schedules only a watchdog, `MERGE_WATCHDOG_MS` after `now_ms`: its answer reschedules,
@@ -91,19 +92,19 @@ impl Coordinator {
             if merging_here {
                 return Some(now_ms.saturating_add(MERGE_WATCHDOG_MS));
             }
-            return Some(0);
+            return Some(now_ms);
         }
         let claim = self.next_to_merge()?;
         let work = self.state.claims.get(&claim.0)?.work.as_ref()?;
-        Some(work.retry_at_ms.unwrap_or(0))
+        Some(work.retry_at_ms.unwrap_or(0).max(now_ms))
     }
 
-    /// The earliest of the next lease expiry and the next merge dispatch: the one alarm time.
+    /// The earliest of the next lease expiry and the next merge dispatch: the one alarm time, an
+    /// absolute time in milliseconds since the epoch that is never before `now_ms`. An overdue
+    /// lease is due at `now_ms`.
     pub fn next_alarm_ms(&self, merging_here: bool, now_ms: u64) -> Option<u64> {
-        match (
-            self.next_expiry_ms(),
-            self.next_merge_ms(merging_here, now_ms),
-        ) {
+        let expiry = self.next_expiry_ms().map(|due| due.max(now_ms));
+        match (expiry, self.next_merge_ms(merging_here, now_ms)) {
             (Some(expiry), Some(merge)) => Some(expiry.min(merge)),
             (Some(due), None) | (None, Some(due)) => Some(due),
             (None, None) => None,
@@ -902,7 +903,7 @@ mod tests {
         let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
 
         assert_eq!(restarted.begin_merge(NOW + 60_000), Some(sent));
-        assert_eq!(restarted.next_merge_ms(false, NOW), Some(0));
+        assert_eq!(restarted.next_merge_ms(false, NOW), Some(NOW));
     }
 
     /// What a reviewer's approval will do: the submission may now be dispatched.
@@ -1038,7 +1039,7 @@ mod tests {
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         assert_eq!(
             c.next_alarm_ms(false, NOW),
-            Some(0),
+            Some(NOW),
             "a merge in flight is due now"
         );
 
@@ -1196,13 +1197,47 @@ mod tests {
     }
 
     #[test]
+    fn every_planned_alarm_is_an_absolute_time_not_before_now() {
+        let mut c = core();
+        let mut now = NOW;
+        let check = |c: &Coordinator, what: &str, now: u64| {
+            for merging_here in [false, true] {
+                if let Some(at) = c.next_alarm_ms(merging_here, now) {
+                    assert!(at >= now, "{what}: {at} is before {now}");
+                }
+                if let Some(at) = c.next_merge_ms(merging_here, now) {
+                    assert!(at >= now, "{what}: merge {at} is before {now}");
+                }
+            }
+        };
+        check(&c, "nothing due", now);
+        grant(&mut c, "idle", vec![edit("src/idle.rs")]);
+        check(&c, "a lease", now);
+        check(&c, "an overdue lease", NOW + 10 * LEASE);
+        let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
+        check(&c, "a merge in flight", now);
+        check(&c, "a merge in flight, much later", NOW + 1_000_000_000);
+        c.merge_outcome(claim, &MergeOutcome::Clone {}, now);
+        check(&c, "backoff", now);
+        now += 3_600_000;
+        check(&c, "backoff long past", now);
+        let again = c.begin_merge(now).expect("due");
+        assert_eq!(again.claim, claim);
+        check(&c, "a merge due now", now);
+        let moved = grant(&mut c, "b", vec![edit("src/b.rs")]);
+        submit(&mut c, "b", moved, "src/b.rs");
+        check(&c, "two submissions", now);
+        assert_eq!(c.next_merge_ms(false, 5), Some(5), "now, never 0");
+    }
+
+    #[test]
     fn a_merge_this_instance_is_waiting_on_schedules_only_the_lease_expiry() {
         let mut c = core();
         grant(&mut c, "idle", vec![edit("src/idle.rs")]);
         dispatched(&mut c, "a", "src/a.rs");
         assert_eq!(
             c.next_alarm_ms(false, NOW),
-            Some(0),
+            Some(NOW),
             "after a restart: recover it"
         );
         assert_eq!(
