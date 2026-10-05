@@ -1,0 +1,4 @@
+intent: apply the milestone review fixes to the coordinator (auth at upgrade, bounded input and state, waiter withdrawal, canonical scope paths, retired claim ids)
+assumes: workerd keeps the closing socket out of the sockets compared in websocket_close (checked in the local run); the first release after a lease expiry reports stale_fence, not unknown_claim
+rejected: a serde shim for old session attachments (replace, do not deprecate; only scratch data exists)
+evidence: cargo test 199 passed; clippy 0 findings in the four files; rustfmt --check clean; wasm build ok; 8 mutants each turned a test red; local run a-g on wrangler dev
