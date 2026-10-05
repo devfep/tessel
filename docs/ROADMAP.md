@@ -5,13 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 09:06 EDT.
+**As of:** 2026-10-05 09:32 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the SKILL-1 merge `d282935` plus this STATE commit; `main` at `29aa8fe`
+**Tip:** `sprint/build` at the CLI-FIX merge `36abdb3` plus this STATE commit; `main` at `29aa8fe`
 (pull request 1).
-**Milestone:** PLAN §9 Oct 6 delivered except dogfood v0 itself: the CLI, the hook and the skill
-file are merged and checked live with two agents. Dogfood v0 waits for CLI-FIX. Oct 7 work (the
-steward merge executor) is merged early; SUBMIT-1 wires it to the coordinator.
+**Milestone:** PLAN §9 Oct 6 delivered. Dogfood v0 has started: CLI-2 is the first lane that
+claims its files through the live coordinator (repo `tessel-dogfood`, agent `cli-2`). Limit, stated
+honestly: subagents share the parent session's hook settings, so the pre-edit hook does not enforce
+claims for lanes; they claim by hand following the skill. Oct 7 work in progress (SUBMIT-1).
 
 **Felix's rulings, 2026-10-05 07:00 EDT** (the four items pending at FREEZE), all now delivered
 except ruling 3, which lands with the steward merge path:
@@ -24,13 +25,16 @@ except ruling 3, which lands with the steward merge path:
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** CLI-FIX (Sonnet, `.claude/worktrees/cli-fix`) and SUBMIT-1 (Sonnet,
-`.claude/worktrees/submit-1`), both cut from this commit.
+**Agents:**
+- SUBMIT-1 (Sonnet, `.claude/worktrees/submit-1`): review "With fixes" (one merge per alarm, a
+  timeout on the steward call, steward 4xx as agent errors, sha checked at Submit); fix pass 1.
+- CLI-2 (Sonnet, `.claude/worktrees/cli-2`): part a, `tessel submit`; dogfooded on
+  `tessel-dogfood`.
 **Merge queue:** empty.
 **Background jobs:** none.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `08290d17`: every upgrade needs `Authorization: Bearer <token>` minted
+- `tessel-coordinator` version `b3681796`: every upgrade needs `Authorization: Bearer <token>` minted
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
@@ -72,9 +76,11 @@ attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZ
 two Workers are approved.
 
 **Next actions:**
-1. Review CLI-FIX and SUBMIT-1 as they report.
-2. Then CLI-2: `tessel submit`, tree-sitter symbol claims, mode escalation.
-3. Dogfood v0: run two agents on this repo through the CLI and merge by hand.
+1. Review SUBMIT-1 and CLI-2 as they report; deploy SUBMIT-1 (steward first) and check a clean
+   merge, a conflict and a failing test end to end through `Submit`.
+2. REVIEW-1 after SUBMIT-1 merges: `Review` approve/reject for held submissions; note that
+   `Summary.reviews_requested` now counts held submissions too; a held submission keeps its locks.
+3. CLI-2b: tree-sitter symbol claims in the hook and symbol-level `touched`.
 
 ## Tasks
 
@@ -153,10 +159,16 @@ two Workers are approved.
   merges, each with the trunk checked afterwards.
 - [x] **SKILL-1** — skill file and the `AGENTS.md` carried into forks, for shipped commands only.
   CLOSED 2026-10-05 at `d282935` (review "Yes" after one fix pass; `skills/tessel/`).
-- [ ] **CLI-FIX** — found live: a socket path over 100 bytes makes `start` fail and the pre-edit
+- [x] **CLI-FIX** — found live: a socket path over 100 bytes makes `start` fail and the pre-edit
   hook exit 0 (fails open). Short socket path independent of the worktree depth; the hook fails
   closed on every error.
-- [ ] **CLI-2** — `tessel submit`; tree-sitter symbol claims and mode escalation in the hook.
+  CLOSED 2026-10-05 at `36abdb3` (review "Yes" after one fix pass, which also pinned the hook to its
+  worktree root: a cwd outside the worktree could otherwise skip the claim). Workspace tests 348.
+  Live from a 130-byte-deep worktree: start works; the installed hook auto-claims, blocks a held
+  file and allows a path outside.
+- [ ] **CLI-2** — part a: `tessel submit` (file-level `touched`, local coverage check, evidence
+  required). Part b (CLI-2b): tree-sitter symbol claims and mode escalation in the hook.
+- [ ] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
 - [ ] **SUBMIT-1** — Felix's ruling 3: on `Submit`, the coordinator sends the claim's fork
   (`<repo>--<agent>`) and commit to the steward merge executor through a service binding (not
   public), and applies the outcome (`Merged` / `SubmitRejected`, `BaseMoved`,
