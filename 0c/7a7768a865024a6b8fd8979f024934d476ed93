@@ -1,0 +1,4 @@
+intent: merge HARNESS-1: tessel-swarm seeded workload generator, coordinated and labelled-local uncoordinated modes, JSON and Markdown A/B report, swarm Worker env serving only swarm-* repos
+assumes: none beyond the reviewed branch
+rejected: none
+evidence: review Yes at d478721 after two fix passes. Merged tree (branch predated DOGFOOD-3, no file touched by both): cargo test --workspace 745 passed 0 failed (predicted 745); clippy -p tessel-swarm -D warnings clean; cargo fmt --check clean.
