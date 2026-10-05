@@ -1,0 +1,4 @@
+intent: the coordinator sends ReviewRequired right after Accepted; the daemon waits 250 ms before telling the submit command so exit 7 and the review text are reported instead of a merge queue place
+assumes: Accepted and ReviewRequired are sent back to back (src/coordinator.rs submit)
+rejected: answering on Accepted and leaving review to the inbox: a delete or rename would print accepted and exit 0 while waiting for a human
+evidence: cargo test -p tessel-cli --test submit 18 passed (delete test now exits 7); dogfood: claims 1-14 on tessel-dogfood
