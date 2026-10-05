@@ -236,7 +236,8 @@ impl Coordinator {
 
     /// Load the core from storage, or create it for the configured run. Fails loudly on corrupt
     /// state or a bad config; never starts empty over stored data. `RUN` and `SHADOW_ENABLED`
-    /// matter only when nothing is stored yet; `REVIEWERS` is applied on every load; a bad one leaves nobody able to review.
+    /// matter only when nothing is stored yet; `REVIEWERS` is applied on every load, and a bad
+    /// one leaves nobody able to review.
     async fn ensure_loaded(&self) -> Result<()> {
         if self.core.borrow().is_some() {
             return Ok(());
