@@ -63,6 +63,9 @@ SYM-SIG closed and reclaimed.
    `#[serde(default)]` if the dashboard needs "merged after approval".
    Also from the ASSUME-1 review: add `#[serde(default)] commit: Option<CommitId>` to
    `EventKind::AssumptionVerified`, so the log records which fork commit was tried.
+   From the RACE-1 review: add `#[serde(default)] entries: Vec<RaceEntry>` to
+   `EventKind::RaceDecided`, so the log shows why each entry was ranked or dropped (invariant 10);
+   the stale `expect(dead_code)` on `rank_entries` and `none_last` are among the six above.
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
