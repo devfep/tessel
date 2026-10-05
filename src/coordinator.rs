@@ -1241,7 +1241,8 @@ fn without_duplicates(scopes: Vec<ScopeClaim>) -> Vec<ScopeClaim> {
 const MAX_SCOPES_PER_MESSAGE: usize = 256;
 
 const SCOPE_NOT_CANONICAL: &str = "a scope is not valid: paths must be repo-relative, \
-    '/'-separated, without empty, '.' or '..' segments, and names must not be empty";
+    '/'-separated, without empty, '.' or '..' segments, names must not be empty or padded with whitespace, \
+    and no part may contain a control character";
 
 /// Why a `Claim` is malformed beyond having no scopes: its scopes or the scopes of its intent's
 /// assumptions are refused. A fixed text that never echoes a path.
@@ -1279,15 +1280,20 @@ fn is_canonical(scope: &Scope) -> bool {
         Scope::Dir { path } => path.is_empty() || is_canonical_path(path),
         Scope::File { path } => is_canonical_path(path),
         Scope::Symbol(symbol) => {
-            is_canonical_path(&symbol.path) && !symbol.qualified_name.is_empty()
+            is_canonical_path(&symbol.path) && is_canonical_name(&symbol.qualified_name)
         }
     }
 }
 
+/// A non-empty symbol name with no leading or trailing whitespace and no control character.
+fn is_canonical_name(name: &str) -> bool {
+    !name.is_empty() && name.trim() == name && !name.chars().any(char::is_control)
+}
+
 /// A non-empty path with no leading or trailing `/`, no empty, `.` or `..` segment, no backslash
-/// and no NUL.
+/// and no control character (C0, DEL, C1). Scope text is shown to other agents and terminals.
 fn is_canonical_path(path: &str) -> bool {
-    if path.contains('\\') || path.contains('\0') {
+    if path.contains('\\') || path.chars().any(char::is_control) {
         return false;
     }
     for segment in path.split('/') {
@@ -4168,7 +4174,15 @@ mod tests {
             file(".."),
             file("src\\a.rs"),
             file("src/a\0.rs"),
+            file("src/a\n.rs"),
+            file("src/a\r.rs"),
+            file("src/\x1b[31ma.rs"),
+            file("src/a\x7f.rs"),
+            file("src/a\u{85}.rs"),
+            file("src/a\t.rs"),
             file(""),
+            dir("src/\nb"),
+            dir("sr\x1bc"),
             dir("./src"),
             dir("src/"),
             dir("/"),
@@ -4179,6 +4193,16 @@ mod tests {
             sym("src/a.rs/", "f"),
             sym("", "f"),
             sym("src/a.rs", ""),
+            sym("src/a.rs", "f\ng"),
+            sym("src/a.rs", "f\rg"),
+            sym("src/a.rs", "f\x1b[2Jg"),
+            sym("src/a.rs", "f\x7f"),
+            sym("src/a.rs", "f\u{85}g"),
+            sym("src/a\n.rs", "f"),
+            sym("src/a.rs", " f"),
+            sym("src/a.rs", "f "),
+            sym("src/a.rs", "\u{a0}f"),
+            sym("src/a.rs", "   "),
         ]
     }
 
@@ -4283,6 +4307,39 @@ mod tests {
         let ServerMsg::Granted { .. } = only_reply(&effects) else {
             panic!("expected Granted, got {effects:?}");
         };
+    }
+
+    #[test]
+    fn names_with_interior_spaces_and_non_ascii_text_stay_canonical() {
+        assert!(is_canonical(&sym("src/a b.rs", "impl Foo for Bar::new")));
+        assert!(is_canonical(&file("src/caf\u{e9}/\u{4e2d}\u{6587}.rs")));
+    }
+
+    proptest! {
+        #[test]
+        fn any_control_character_in_a_scope_text_is_refused(
+            head in "[a-z]{0,4}",
+            control in proptest::char::range('\0', '\u{9f}')
+                .prop_filter("control", |c| c.is_control()),
+            tail in "[a-z]{0,4}",
+        ) {
+            let text = format!("{head}{control}{tail}");
+            prop_assert!(!is_canonical(&file(&text)));
+            prop_assert!(!is_canonical(&dir(&text)));
+            prop_assert!(!is_canonical(&sym(&text, "f")));
+            prop_assert!(!is_canonical(&sym("a.rs", &text)));
+            let nested = format!("d/{text}/f.rs");
+            prop_assert!(!is_canonical(&file(&nested)));
+        }
+
+        #[test]
+        fn printable_scope_text_without_padding_is_accepted(
+            path in "[a-zA-Z_][a-zA-Z0-9_.-]{0,5}(/[a-zA-Z0-9_-]{1,6}){0,3}",
+            name in "[a-zA-Z0-9_:<>]{1,6}( [a-zA-Z0-9_:]{1,6}){0,2}",
+        ) {
+            prop_assert!(is_canonical(&file(&path)));
+            prop_assert!(is_canonical(&sym(&path, &name)));
+        }
     }
 
     #[test]
