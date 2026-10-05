@@ -17,11 +17,15 @@ pub struct ServerClaim {
     pub fence: Fence,
     pub scopes: Vec<ScopeClaim>,
     pub race: Option<RaceId>,
+    /// Submitted and not since rejected: the coordinator holds the claim for the steward.
+    pub submitted: bool,
+    /// The fork commit of the submission while `submitted`.
+    pub submitted_commit: Option<String>,
 }
 
-/// The claims `agent` holds after replaying `events` in order, with each claim's latest fence.
-/// A claim that was released, expired, submitted or merged is not live: submitted work belongs
-/// to the steward, and this CLI never submits.
+/// The claims `agent` holds after replaying `events` in order, with each claim's latest fence
+/// and whether it is submitted. A claim that was released, expired or merged is not live. A
+/// submitted claim is live: the coordinator keeps its locks until `Merged` or `SubmitRejected`.
 pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerClaim> {
     let mut live = BTreeMap::new();
     for event in events {
@@ -40,6 +44,8 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                         fence: *fence,
                         scopes: scopes.clone(),
                         race: *race,
+                        submitted: false,
+                        submitted_commit: None,
                     },
                 );
             }
@@ -53,9 +59,21 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                     held.scopes.extend(added.iter().cloned());
                 }
             }
-            EventKind::ClaimReleased { claim, .. }
-            | EventKind::Submitted { claim, .. }
-            | EventKind::Merged { claim, .. } => {
+            EventKind::Submitted {
+                claim, fork_commit, ..
+            } => {
+                if let Some(held) = live.get_mut(&claim.0) {
+                    held.submitted = true;
+                    held.submitted_commit = Some(fork_commit.0.clone());
+                }
+            }
+            EventKind::SubmitRejected { claim, .. } => {
+                if let Some(held) = live.get_mut(&claim.0) {
+                    held.submitted = false;
+                    held.submitted_commit = None;
+                }
+            }
+            EventKind::ClaimReleased { claim, .. } | EventKind::Merged { claim, .. } => {
                 live.remove(&claim.0);
             }
             EventKind::ClaimGranted { .. }
@@ -64,7 +82,6 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
             | EventKind::ClaimShadowed { .. }
             | EventKind::WaitQueued { .. }
             | EventKind::WaitWithdrawn { .. }
-            | EventKind::SubmitRejected { .. }
             | EventKind::ReviewRequested { .. }
             | EventKind::ReviewDecided { .. }
             | EventKind::BaseMoved { .. }
@@ -79,14 +96,61 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
     live
 }
 
+/// The fork commits of this agent's submissions that the log shows merged, oldest first. A merge
+/// means everything up to that commit has landed on main, whether or not this daemon heard it.
+pub fn landed_commits(agent: &AgentId, events: &[Event]) -> Vec<String> {
+    let mut mine = HashSet::new();
+    let mut submitted = std::collections::HashMap::new();
+    let mut landed = Vec::new();
+    for event in events {
+        match &event.kind {
+            EventKind::ClaimGranted {
+                agent: owner,
+                claim,
+                ..
+            } if owner == agent => {
+                mine.insert(*claim);
+            }
+            EventKind::Submitted {
+                claim, fork_commit, ..
+            } => {
+                submitted.insert(*claim, fork_commit.0.clone());
+            }
+            EventKind::SubmitRejected { claim, .. } => {
+                submitted.remove(claim);
+            }
+            EventKind::Merged { claim, .. } if mine.contains(claim) => {
+                landed.extend(submitted.get(claim).cloned());
+            }
+            EventKind::Merged { .. }
+            | EventKind::ClaimGranted { .. }
+            | EventKind::AgentConnected { .. }
+            | EventKind::ClaimDenied { .. }
+            | EventKind::ClaimShadowed { .. }
+            | EventKind::ClaimAmended { .. }
+            | EventKind::ClaimReleased { .. }
+            | EventKind::WaitQueued { .. }
+            | EventKind::WaitWithdrawn { .. }
+            | EventKind::ReviewRequested { .. }
+            | EventKind::ReviewDecided { .. }
+            | EventKind::BaseMoved { .. }
+            | EventKind::AssumptionChallenged { .. }
+            | EventKind::RaceOpened { .. }
+            | EventKind::RaceDecided { .. }
+            | EventKind::DenialVerified { .. }
+            | EventKind::AssumptionVerified { .. }
+            | EventKind::ReplayMerged { .. } => {}
+        }
+    }
+    landed
+}
+
 /// Claims that left the live set in `events`, whatever agent held them.
 fn ended_claims(events: &[Event]) -> HashSet<ClaimId> {
     let mut ended = HashSet::new();
     for event in events {
         match &event.kind {
-            EventKind::ClaimReleased { claim, .. }
-            | EventKind::Submitted { claim, .. }
-            | EventKind::Merged { claim, .. } => {
+            EventKind::ClaimReleased { claim, .. } | EventKind::Merged { claim, .. } => {
                 ended.insert(*claim);
             }
             EventKind::AgentConnected { .. }
@@ -96,6 +160,7 @@ fn ended_claims(events: &[Event]) -> HashSet<ClaimId> {
             | EventKind::ClaimAmended { .. }
             | EventKind::WaitQueued { .. }
             | EventKind::WaitWithdrawn { .. }
+            | EventKind::Submitted { .. }
             | EventKind::SubmitRejected { .. }
             | EventKind::ReviewRequested { .. }
             | EventKind::ReviewDecided { .. }
@@ -114,7 +179,8 @@ fn ended_claims(events: &[Event]) -> HashSet<ClaimId> {
 /// What the daemon knew when the connection dropped.
 pub struct Local<'a> {
     pub claims: &'a [HeldClaim],
-    /// Granted since the new connection was welcomed: the log read may predate them.
+    /// Granted, submitted or rejected since the new connection was welcomed: the log read may
+    /// predate them.
     pub fresh: &'a HashSet<ClaimId>,
     /// Scopes of claim requests whose answer was lost with the socket.
     pub lost_requests: &'a [Vec<ScopeClaim>],
@@ -133,6 +199,13 @@ pub struct Plan {
     pub forget: Vec<ClaimId>,
     /// Local claims whose fence is older than the log's latest. A fence never goes backwards.
     pub refresh: Vec<(ClaimId, Fence)>,
+    /// Local claims whose scopes differ from the log's because an `Amend` reply was lost, for
+    /// claims whose fence moved on. The log's scopes replace the local ones.
+    pub rescope: Vec<(ClaimId, Vec<ScopeClaim>)>,
+    /// Local claims whose submitted flag differs from the log: a submission whose reply was lost
+    /// (now true), or one the steward rejected (now false). Only a complete read decides this,
+    /// and never for a claim whose state changed since the new connection was welcomed.
+    pub set_submitted: Vec<(ClaimId, bool, Option<String>)>,
     /// Live claims that answer a request whose reply was lost: index into `lost_requests`.
     pub answer_lost: Vec<(usize, ClaimId, ServerClaim)>,
     /// Live claims this daemon tried to release before the socket dropped.
@@ -151,6 +224,20 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
         match live.get(&held.claim.0) {
             Some(server) if server.fence > held.fence => {
                 plan.refresh.push((held.claim, server.fence));
+                if server.scopes != held.scopes {
+                    plan.rescope.push((held.claim, server.scopes.clone()));
+                }
+            }
+            Some(server)
+                if local.complete
+                    && server.submitted != held.submitted
+                    && !local.fresh.contains(&held.claim) =>
+            {
+                plan.set_submitted.push((
+                    held.claim,
+                    server.submitted,
+                    server.submitted_commit.clone(),
+                ));
             }
             None if ended.contains(&held.claim) && !local.fresh.contains(&held.claim) => {
                 plan.forget.push(held.claim);
@@ -238,6 +325,8 @@ mod tests {
             expires_at_ms: 0,
             race: None,
             scopes: scopes(path),
+            submitted: false,
+            submitted_commit: None,
         }
     }
 
@@ -274,30 +363,153 @@ mod tests {
         assert_eq!(live[&1].scopes.len(), 2);
     }
 
+    fn submitted_event(seq: u64, claim: u64, path: &str) -> Event {
+        event(
+            seq,
+            EventKind::Submitted {
+                claim: ClaimId(claim),
+                fork_commit: tessel_coordinator::protocol::CommitId("f".into()),
+                touched: scopes(path),
+                decisions: tessel_coordinator::protocol::DecisionRecord::default(),
+            },
+        )
+    }
+
+    fn rejected_event(seq: u64, claim: u64) -> Event {
+        event(
+            seq,
+            EventKind::SubmitRejected {
+                claim: ClaimId(claim),
+                reason: "conflict".into(),
+            },
+        )
+    }
+
+    fn merged_event(seq: u64, claim: u64) -> Event {
+        event(
+            seq,
+            EventKind::Merged {
+                claim: ClaimId(claim),
+                head: tessel_coordinator::protocol::CommitId("h".into()),
+            },
+        )
+    }
+
     #[test]
-    fn submitted_and_merged_claims_are_not_live() {
+    fn landed_commits_are_this_agents_merged_submissions_in_order() {
+        let me = AgentId("a1".into());
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            granted(1, "a2", 2, 2, "b.rs"),
+            granted(2, "a1", 3, 3, "c.rs"),
+            submitted_event(3, 1, "a.rs"),
+            submitted_event(4, 2, "b.rs"),
+            submitted_event(5, 3, "c.rs"),
+            rejected_event(6, 3),
+            merged_event(7, 2),
+            merged_event(8, 1),
+            merged_event(9, 3),
+        ];
+        assert_eq!(landed_commits(&me, &events), vec!["f".to_string()]);
+    }
+
+    #[test]
+    fn a_submitted_claim_is_live_and_a_merged_one_is_not() {
         let me = AgentId("a1".into());
         let events = vec![
             granted(0, "a1", 1, 1, "a.rs"),
             granted(1, "a1", 2, 2, "b.rs"),
-            event(
-                2,
-                EventKind::Merged {
-                    claim: ClaimId(1),
-                    head: tessel_coordinator::protocol::CommitId("h".into()),
-                },
-            ),
-            event(
-                3,
-                EventKind::Submitted {
-                    claim: ClaimId(2),
-                    fork_commit: tessel_coordinator::protocol::CommitId("f".into()),
-                    touched: scopes("b.rs"),
-                    decisions: tessel_coordinator::protocol::DecisionRecord::default(),
-                },
-            ),
+            merged_event(2, 1),
+            submitted_event(3, 2, "b.rs"),
         ];
-        assert!(live_claims(&me, &events).is_empty());
+        let live = live_claims(&me, &events);
+        assert_eq!(live.keys().copied().collect::<Vec<_>>(), vec![2]);
+        assert!(live[&2].submitted);
+    }
+
+    #[test]
+    fn a_rejected_submission_is_live_and_not_submitted_again() {
+        let me = AgentId("a1".into());
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            submitted_event(1, 1, "a.rs"),
+            rejected_event(2, 1),
+        ];
+        let live = live_claims(&me, &events);
+        assert!(!live[&1].submitted);
+        assert_eq!(live[&1].fence, Fence(1));
+    }
+
+    #[test]
+    fn a_local_submitted_claim_is_not_forgotten_but_a_merged_one_is() {
+        let mut submitted = held(1, 1, "a.rs");
+        submitted.submitted = true;
+        let local = [submitted, held(2, 2, "b.rs")];
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            granted(1, "a1", 2, 2, "b.rs"),
+            submitted_event(2, 1, "a.rs"),
+            submitted_event(3, 2, "b.rs"),
+            merged_event(4, 2),
+        ];
+        let plan = plan_for(&local, &events, &[], &[]);
+        assert_eq!(plan.forget, vec![ClaimId(2)]);
+        assert!(plan.set_submitted.is_empty());
+    }
+
+    #[test]
+    fn the_log_decides_whether_a_local_claim_is_submitted() {
+        let mut was_submitted = held(2, 2, "b.rs");
+        was_submitted.submitted = true;
+        let local = [held(1, 1, "a.rs"), was_submitted];
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            granted(1, "a1", 2, 2, "b.rs"),
+            submitted_event(2, 1, "a.rs"),
+            submitted_event(3, 2, "b.rs"),
+            rejected_event(4, 2),
+        ];
+        let plan = plan_for(&local, &events, &[], &[]);
+        assert_eq!(
+            plan.set_submitted,
+            vec![
+                (ClaimId(1), true, Some("f".to_string())),
+                (ClaimId(2), false, None)
+            ]
+        );
+        let incomplete = plan_incomplete(&local, &events, &[], &[]);
+        assert!(incomplete.set_submitted.is_empty());
+    }
+
+    #[test]
+    fn a_claim_changed_since_the_welcome_keeps_its_local_submitted_flag() {
+        let local = [held(1, 1, "a.rs")];
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            submitted_event(1, 1, "a.rs"),
+        ];
+        let live = live_claims(&AgentId("a1".into()), &events);
+        let fresh: HashSet<ClaimId> = [ClaimId(1)].into();
+        let none = HashSet::new();
+        let local = Local {
+            claims: &local,
+            fresh: &fresh,
+            lost_requests: &[],
+            lost_releases: &none,
+            complete: true,
+        };
+        assert!(super::plan(&local, &live, &events).set_submitted.is_empty());
+    }
+
+    #[test]
+    fn an_unexplained_submitted_claim_is_adopted_as_submitted() {
+        let events = vec![
+            granted(0, "a1", 7, 9, "a.rs"),
+            submitted_event(1, 7, "a.rs"),
+        ];
+        let plan = plan_for(&[], &events, &[], &[]);
+        assert_eq!(plan.adopt.len(), 1);
+        assert!(plan.adopt[0].1.submitted);
     }
 
     fn plan_for(
@@ -355,6 +567,26 @@ mod tests {
         let events = vec![granted(0, "a1", 1, 1, "a.rs"), released(1, 1)];
         let plan = plan_incomplete(&local, &events, &[], &[]);
         assert_eq!(plan.forget, vec![ClaimId(1)]);
+    }
+
+    #[test]
+    fn a_lost_amend_reply_is_repaired_from_the_log() {
+        let local = [held(1, 1, "a.rs")];
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            event(
+                1,
+                EventKind::ClaimAmended {
+                    claim: ClaimId(1),
+                    fence: Fence(5),
+                    added: scopes("b.rs"),
+                },
+            ),
+        ];
+        let plan = plan_for(&local, &events, &[], &[]);
+        assert_eq!(plan.refresh, vec![(ClaimId(1), Fence(5))]);
+        assert_eq!(plan.rescope.len(), 1);
+        assert_eq!(plan.rescope[0].1.len(), 2);
     }
 
     #[test]

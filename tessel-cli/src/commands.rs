@@ -9,15 +9,18 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 use serde_json::json;
-use tessel_coordinator::protocol::{ClaimId, Mode, ScopeClaim};
+use tessel_coordinator::protocol::{uncovered, ClaimId, Mode, ScopeClaim};
 
 use crate::config::Config;
 use crate::daemon;
 use crate::hook::{self, Installed};
-use crate::render::{needs_attention, notice_text, outcome_text, status_text};
-use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request};
+use crate::render::{
+    escape, needs_attention, notice_text, outcome_text, status_text, submit_text, uncovered_text,
+};
+use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request, SubmitOutcome};
 use crate::scope;
 use crate::state::{self, Connection, State};
+use crate::submit;
 use crate::worktree::Worktree;
 use crate::{Command, HookAction};
 
@@ -25,6 +28,13 @@ use crate::{Command, HookAction};
 const EXIT_DENIED: u8 = 3;
 /// Exit code of `claim --wait` when the request is queued.
 const EXIT_QUEUED: u8 = 4;
+/// Exit code of `submit` when the claim does not cover what the commit changed. Nothing is sent
+/// when the CLI finds this itself; the coordinator also checks.
+const EXIT_UNCOVERED: u8 = 5;
+/// Exit code of `submit` when the coordinator refused it (stale fence, already submitted, ...).
+const EXIT_SUBMIT_REFUSED: u8 = 6;
+/// Exit code of `submit` when the coordinator holds it for human review.
+const EXIT_REVIEW_REQUIRED: u8 = 7;
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,14 +48,29 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             mode,
             wait,
             assume,
-        } => claim(&cwd, &scopes, mode.into(), wait, assume).await,
+            new,
+        } => {
+            let options = ClaimOptions {
+                mode: mode.into(),
+                wait,
+                assume,
+                new,
+            };
+            claim(&cwd, &scopes, options).await
+        }
         Command::Status { json } => status(&cwd, json).await,
         Command::Inbox { all } => inbox(&cwd, all),
         Command::Release { claim } => release(&cwd, claim).await,
+        Command::Submit {
+            claim,
+            evidence,
+            rejected,
+            commit,
+        } => submit(&cwd, claim, &evidence, &rejected, commit.as_deref()).await,
         Command::Stop => stop(&cwd).await,
         Command::Hook {
             action: HookAction::PreEdit { root },
-        } => pre_edit(&cwd, root).await,
+        } => pre_edit(root).await,
         Command::Hook {
             action: HookAction::Install,
         } => install(&cwd),
@@ -108,6 +133,14 @@ async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow::Res
             connection_word(state.connection)
         ));
         return Ok(ExitCode::SUCCESS);
+    }
+    // An unreadable state file would reset the submit base to HEAD and hide earlier commits.
+    if let Err(e) = State::read(&worktree) {
+        bail!(
+            "{e}. Not starting: a damaged state file would reset the submit base to HEAD and hide \
+             commits you made earlier. Repair it, or delete .tessel/state.json yourself, which \
+             resets the base to HEAD"
+        );
     }
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -186,13 +219,21 @@ fn log_tail(worktree: &Worktree) -> String {
 
 // ---------- claim / release / stop ----------
 
-async fn claim(
-    cwd: &Path,
-    args: &[String],
+/// What `tessel claim` was asked besides the scopes.
+struct ClaimOptions {
     mode: Mode,
     wait: bool,
     assume: Vec<String>,
-) -> anyhow::Result<ExitCode> {
+    new: bool,
+}
+
+async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<ExitCode> {
+    let ClaimOptions {
+        mode,
+        wait,
+        assume,
+        new,
+    } = options;
     let worktree = Worktree::discover(cwd)?;
     let mut scopes = Vec::new();
     for arg in args {
@@ -205,6 +246,7 @@ async fn claim(
         scopes,
         wait,
         assumptions: assume,
+        new,
     };
     let Reply::Claim { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
@@ -228,36 +270,113 @@ async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<ExitCode> {
         claim: claim.map(ClaimId),
     };
     match call_daemon(&worktree, &request).await? {
-        Reply::Released { claims } if claims.is_empty() => {
-            say("nothing to release\n");
-            Ok(ExitCode::SUCCESS)
-        }
-        Reply::Released { claims } => {
-            let ids: Vec<String> = claims.iter().map(|c| c.0.to_string()).collect();
-            say(&format!("released claim(s) {}\n", ids.join(", ")));
+        Reply::Released {
+            claims,
+            kept_submitted,
+        } => {
+            if claims.is_empty() {
+                say("nothing to release\n");
+            } else {
+                say(&format!("released claim(s) {}\n", id_list(&claims)));
+            }
+            if !kept_submitted.is_empty() {
+                say(&format!(
+                    "kept claim(s) {}: submitted claims stay with the coordinator until they merge \
+                     or are rejected\n",
+                    id_list(&kept_submitted)
+                ));
+            }
             Ok(ExitCode::SUCCESS)
         }
         Reply::Failed { message } => bail!("{message}"),
-        Reply::Status { .. } | Reply::Claim { .. } | Reply::Stopping { .. } => {
+        Reply::Status { .. }
+        | Reply::Claim { .. }
+        | Reply::Submit { .. }
+        | Reply::Stopping { .. } => {
             bail!("the daemon answered with something unexpected")
         }
     }
 }
 
+/// Hands one claim's finished work to the coordinator for the steward to merge. Everything that
+/// can be checked here is checked before anything is sent: the evidence, the claim, the commit
+/// and that the claim covers every file the commit changed.
+async fn submit(
+    cwd: &Path,
+    claim: Option<u64>,
+    evidence: &[String],
+    rejected: &[String],
+    commit: Option<&str>,
+) -> anyhow::Result<ExitCode> {
+    let worktree = Worktree::discover(cwd)?;
+    let decisions = submit::decisions(evidence, rejected)?;
+    let Reply::Status { state } = call_daemon(&worktree, &Request::Status).await? else {
+        bail!("the daemon answered with something unexpected");
+    };
+    let held = submit::pick_claim(&state, claim)?;
+    let fork_commit = submit::resolve_commit(&worktree.root, commit)?;
+    let base = submit::diff_base(&worktree.root, &state)?;
+    let touched = submit::touched(&worktree.root, &base, &fork_commit)?;
+    if touched.is_empty() {
+        bail!(
+            "commit {fork_commit} changes nothing relative to {base}; commit your work first, or \
+             pass --commit"
+        );
+    }
+    let missing = uncovered(&held.scopes, &touched);
+    if !missing.is_empty() {
+        say(&uncovered_text(held.claim, &missing, true));
+        return Ok(ExitCode::from(EXIT_UNCOVERED));
+    }
+    if touched.iter().any(|t| t.mode == Mode::EditSignature) {
+        say(
+            "note: the commit deletes or renames files (edit-signature); the coordinator holds \
+             such a change for human review, and review approval is not built yet\n",
+        );
+    }
+    let request = Request::Submit {
+        claim: held.claim,
+        fork_commit: fork_commit.clone(),
+        touched,
+        decisions,
+    };
+    let fork = format!("{}--{}", state.repo, state.agent);
+    let claim = held.claim;
+    let Reply::Submit { outcome } = call_daemon(&worktree, &request).await? else {
+        bail!("the daemon answered with something unexpected");
+    };
+    say(&submit_text(&outcome, claim, &fork_commit, &escape(&fork)));
+    Ok(ExitCode::from(match outcome {
+        SubmitOutcome::Accepted { .. } => 0,
+        SubmitOutcome::Uncovered { .. } => EXIT_UNCOVERED,
+        SubmitOutcome::ReviewRequired { .. } => EXIT_REVIEW_REQUIRED,
+        SubmitOutcome::Refused { .. } => EXIT_SUBMIT_REFUSED,
+    }))
+}
+
 async fn stop(cwd: &Path) -> anyhow::Result<ExitCode> {
     let worktree = Worktree::discover(cwd)?;
-    let unreleased = match rpc::call(&worktree.sock(), &Request::Stop, CALL_TIMEOUT).await {
-        Ok(Reply::Stopping { unreleased }) => unreleased,
-        Ok(Reply::Failed { message }) => bail!("{message}"),
-        Ok(Reply::Status { .. } | Reply::Claim { .. } | Reply::Released { .. }) => {
-            bail!("the daemon answered with something unexpected")
-        }
-        Err(ClientError::NotRunning) => {
-            say("no daemon was running\n");
-            return Ok(ExitCode::SUCCESS);
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let (unreleased, submitted) =
+        match rpc::call(&worktree.sock(), &Request::Stop, CALL_TIMEOUT).await {
+            Ok(Reply::Stopping {
+                unreleased,
+                submitted,
+            }) => (unreleased, submitted),
+            Ok(Reply::Failed { message }) => bail!("{message}"),
+            Ok(
+                Reply::Status { .. }
+                | Reply::Claim { .. }
+                | Reply::Released { .. }
+                | Reply::Submit { .. },
+            ) => {
+                bail!("the daemon answered with something unexpected")
+            }
+            Err(ClientError::NotRunning) => {
+                say("no daemon was running\n");
+                return Ok(ExitCode::SUCCESS);
+            }
+            Err(e) => return Err(e.into()),
+        };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while worktree.sock().exists() {
         if tokio::time::Instant::now() >= deadline {
@@ -268,14 +387,25 @@ async fn stop(cwd: &Path) -> anyhow::Result<ExitCode> {
     if unreleased.is_empty() {
         say("stopped: claims released, socket closed\n");
     } else {
-        let ids: Vec<String> = unreleased.iter().map(|c| c.0.to_string()).collect();
         say(&format!(
-            "stopped, but the coordinator was unreachable: claim(s) {} were NOT released and stay \
-             held until their lease ends\n",
-            ids.join(", ")
+            "stopped, but claim(s) {} were NOT released: the coordinator was unreachable or did not \
+             confirm the release, so they stay held until their lease ends\n",
+            id_list(&unreleased)
+        ));
+    }
+    if !submitted.is_empty() {
+        say(&format!(
+            "claim(s) {} were submitted and stay with the coordinator until they merge or are \
+             rejected; this daemon will not hear which\n",
+            id_list(&submitted)
         ));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn id_list(claims: &[ClaimId]) -> String {
+    let ids: Vec<String> = claims.iter().map(|c| c.0.to_string()).collect();
+    ids.join(", ")
 }
 
 // ---------- status / inbox ----------
@@ -322,7 +452,7 @@ fn inbox(cwd: &Path, all: bool) -> anyhow::Result<ExitCode> {
 
 // ---------- hook ----------
 
-async fn pre_edit(cwd: &Path, root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
+async fn pre_edit(root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
     let root = root.or_else(|| {
         std::env::var_os("CLAUDE_PROJECT_DIR")
             .filter(|dir| !dir.is_empty())
@@ -330,7 +460,7 @@ async fn pre_edit(cwd: &Path, root: Option<PathBuf>) -> anyhow::Result<ExitCode>
     });
     let mut stdin = Vec::new();
     let read = std::io::stdin().read_to_end(&mut stdin).map(|_| stdin);
-    let verdict = hook::pre_edit(read, cwd, root.as_deref()).await;
+    let verdict = hook::pre_edit(read, root.as_deref()).await;
     if verdict.exit != 0 {
         complain(&verdict.message);
     }

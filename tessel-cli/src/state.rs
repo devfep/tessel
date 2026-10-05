@@ -18,6 +18,13 @@ pub struct HeldClaim {
     pub expires_at_ms: u64,
     pub race: Option<RaceId>,
     pub scopes: Vec<ScopeClaim>,
+    /// The coordinator accepted a submission for this claim and holds it until `Merged` or
+    /// `SubmitRejected` (invariant 5). A submitted claim does not expire and cannot be released.
+    #[serde(default)]
+    pub submitted: bool,
+    /// The fork commit of the submission, to move the diff base to when it merges.
+    #[serde(default)]
+    pub submitted_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +53,15 @@ pub struct State {
     pub repo: String,
     pub summary: String,
     pub task_ref: Option<String>,
+    /// HEAD at the first start in the worktree, moved only when one of this agent's submissions
+    /// merges. A reconnect, restart, `stop` or lapsed lease never changes it, so `submit` has a diff
+    /// base that comes from the commit graph, not from the connection.
+    #[serde(default)]
+    pub start_base: String,
+    /// The coordinator's head commit, from `Welcome`, `Merged` and `BaseMoved`.
+    #[serde(default)]
+    pub coordinator_head: Option<String>,
+    /// HEAD sent in the last `Hello`; it moves with every reconnect and is not a diff base.
     pub base: String,
     /// Where the daemon listens; outside `.tessel/` because worktree paths can be long.
     #[serde(default)]
@@ -123,6 +139,14 @@ pub enum NoticeKind {
     /// The daemon compared its claims with the coordinator's log after a reconnect and
     /// changed something.
     Reconciled,
+    /// The steward merged a submitted claim; the daemon dropped it.
+    Merged,
+    /// The merge of a submitted claim was refused; the claim is active again.
+    SubmitRejected,
+    /// The coordinator found touched scopes outside the claim.
+    Uncovered,
+    /// A submission is held for a human to approve.
+    ReviewRequired,
     Error,
     /// A server message this CLI does not act on.
     Unexpected,
