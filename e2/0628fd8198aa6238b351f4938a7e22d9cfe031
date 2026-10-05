@@ -1,0 +1,4 @@
+intent: fix pass 1: submit diffs from the coordinator head or the pinned start commit (never the hello base); claims amend the one open claim; Accepted/ReviewRequired decide the reply in either order; stop confirms releases in the event log
+assumes: Welcome/BaseMoved/Merged carry the coordinator head; Amend replies with Granted and a new fence; a Release has no reply
+rejected: a 250 ms settle window for the review notice (not deterministic); a claim-per-mode CLI limit (replaced by amend)
+evidence: cargo test --workspace 437 passed (64+70+23+280); clippy -D warnings clean; cargo deny licenses ok; dogfood: claim 16 (one claim, 15 files) on tessel-dogfood
