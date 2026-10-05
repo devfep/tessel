@@ -1,0 +1,4 @@
+intent: run lazy expiry as its own persisted step before each client message so the soft limit judges the message against the post-expiry size (closes the ratchet toward the hard limit); the refusal path no longer needs a recovery expiry
+assumes: none new
+rejected: judging expiry and message together (a message that refills freed bytes looked like no growth)
+evidence: cargo test 219 passed; clippy 0 in the four files; 3 mutants (two red, one does not compile); local run on wrangler dev
