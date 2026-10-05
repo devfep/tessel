@@ -306,7 +306,17 @@ mod tests {
     #[test]
     fn a_signed_agent_id_that_cannot_be_an_agent_id_is_refused() {
         let long = "a".repeat(MAX_AGENT_ID_BYTES + 1);
-        for agent in ["", "a b", "a\r\nb", "agent/1", "ägent", ".a", "-a", "_a", long.as_str()] {
+        for agent in [
+            "",
+            "a b",
+            "a\r\nb",
+            "agent/1",
+            "ägent",
+            ".a",
+            "-a",
+            "_a",
+            long.as_str(),
+        ] {
             let token = sign(KEY, "demo", agent, EXP);
             assert_eq!(
                 verify(&token, "demo", NOW),
@@ -424,7 +434,7 @@ mod tests {
         #[test]
         fn sign_then_verify_round_trips(
             repo in ".{0,100}",
-            agent in "[A-Za-z0-9._-]{1,128}",
+            agent in "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
             exp_ms in 1u64..(1 << 53),
         ) {
             let token = sign(KEY, &repo, &agent, exp_ms);
@@ -434,7 +444,7 @@ mod tests {
         #[test]
         fn flipping_any_one_byte_of_a_token_fails(
             repo in "[a-z0-9-]{1,40}",
-            agent in "[A-Za-z0-9._-]{1,128}",
+            agent in "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
         ) {
             let token = sign(KEY, &repo, &agent, EXP);
             for index in 0..token.len() {
