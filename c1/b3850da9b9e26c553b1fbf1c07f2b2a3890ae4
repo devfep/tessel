@@ -1,0 +1,4 @@
+intent: move the mirror to a new GitHub branch artifacts-trunk (create on first run, fast-forward after), let agent orchestrator review held work, document the steward flow in BUILD-PROTOCOL
+assumes: git ls-remote --exit-code answers 2 only when the ref is absent; MIRROR_ALLOW_LOCAL_REMOTES is a test-only seam
+rejected: a seam per remote check (one env var covers both); relying on git's own push rejection as the ff check (the script's message is asserted instead)
+evidence: offline harness 7 cases pass; two mutants (ff check removed, any ls-remote failure as absent) each fail a case; shellcheck and shfmt clean
