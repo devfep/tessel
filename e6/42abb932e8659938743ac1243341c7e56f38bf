@@ -1,0 +1,4 @@
+intent: stop the hook failing open by cwd (pin --root at install), load old state.json, use libc geteuid, panic hook exits 2, more error-path tests
+assumes: Claude Code runs hook commands from settings.local.json with cwd and stdin as documented; CLAUDE_PROJECT_DIR is set by Claude Code
+rejected: testing the panic hook (needs a test-only panic path); keeping the uid probe file (replaced by libc geteuid at the orchestrator's request)
+evidence: cargo test --workspace predicted 348 (244+44+60); clippy -D warnings, fmt, deny licenses clean
