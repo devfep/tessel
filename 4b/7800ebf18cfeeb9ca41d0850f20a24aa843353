@@ -1,0 +1,4 @@
+intent: amended item 1: service-binding merges touching tessel.toml are gate_changed; the admin route may merge such a change if the head file parses (else gate_invalid), and a tessel.toml-only admin diff is judged by the head file alone; stale Rust doc on a timed-out after side fixed
+assumes: the admin flag comes only from the route (index.ts true, MergeService false), never from a body
+rejected: admin merges skipping coverage (kept: scopes still apply); skipping tests for mixed admin diffs (the trunk gate still runs)
+evidence: steward vitest 543 pass, typecheck, oxlint, oxfmt clean; cargo test --workspace 595 pass; clippy, rustfmt, wasm clean
