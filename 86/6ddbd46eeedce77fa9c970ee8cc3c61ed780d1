@@ -1,0 +1,5 @@
+intent: a race is judged at its deadline, or early only when it is full (entrants == max_entrants) and every entrant has submitted; a lone first submitter no longer ends a race that has room (found live: a2's join got race_closed)
+assumes: none
+rejected: judging when every current entrant has submitted (the first joiner to submit always ended the race)
+evidence: cargo test --lib 408 passed (405 + 3 new)
+dogfood: claim 29 held src/coordinator/racing.rs
