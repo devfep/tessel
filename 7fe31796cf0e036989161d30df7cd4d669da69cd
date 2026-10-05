@@ -1,0 +1,5 @@
+intent: fix pass 1: merged/push_failed/main_moved come from a Worker-side read of main after every push, not the sandbox exit code; git gets http.postBuffer = the gateway body cap so it sends no probe POST; push-options refused; read token TTL covers clone plus fetch
+assumes: git sends no probe POST when the body is within http.postBuffer (so the gateway keeps refusing a bare 0000 probe); the Artifacts namespace is not readable at runtime
+rejected: comparing the full artifacts:<ns>/<repo> source (namespace is only in wrangler.jsonc, so the suffix check stays); forwarding push options (a plain push sends none); uid isolation of the tests
+evidence: pnpm test 306 passed (297 + 9 new, predicted 306); typecheck, oxlint, oxfmt --check clean; mutants killed
+limit: a process the tests detach (setsid/nohup) can outlive timeout and run when the write token is minted. It cannot use the token: MergePushGateway forwards only the pinned update, and the outcome comes from a trusted read of main
