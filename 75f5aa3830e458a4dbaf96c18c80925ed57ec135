@@ -1,0 +1,4 @@
+intent: rewrap two doc comments over 100 characters
+assumes: none
+rejected: none
+evidence: awk length>100 prints nothing; cargo test 104 passed; clippy 0 hits; rustfmt clean

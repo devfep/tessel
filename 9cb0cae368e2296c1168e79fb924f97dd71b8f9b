@@ -1,0 +1,4 @@
+intent: COORD-3 fix pass 1: queue position from submission ordinal, stale-fence property, missing tests
+assumes: challenges and at_risk include other agents' submitted claims (their work has not merged)
+rejected: dropping the ordinal field, since the merge queue needs submission order
+evidence: cargo test 104 passed; mutants M16 M17 M1 and submitted-assuming-no-challenge all caught
