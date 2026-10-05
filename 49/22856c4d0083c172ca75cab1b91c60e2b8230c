@@ -1,0 +1,4 @@
+intent: fix pass 1 for SUBMIT-1: one merge per alarm, 13 min steward timeout, a restart-cut-off merge counts as an attempt, in-flight merge schedules only lease expiry, 4xx from the steward rejects at once, fork_commit must be a 40-hex sha
+assumes: a failed or evicted alarm handler is retried by the runtime, so the alarm may be left at lease expiry only during a merge
+rejected: removing the merging Cell (needed to tell a running merge from one a restart cut off); a 10 min timeout (the steward's test step alone may take 10 min)
+evidence: cargo test --workspace 358 passed (350 + 8); clippy -D warnings, rustfmt --check clean; wasm release 0 warnings
