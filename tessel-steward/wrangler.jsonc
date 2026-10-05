@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tessel-steward",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  "secrets": { "required": ["STEWARD_ADMIN_TOKEN"] },
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "tessel" }],
+  "queues": {
+    "consumers": [
+      { "queue": "tessel-artifacts-events", "max_batch_size": 10, "max_batch_timeout": 1 },
+    ],
+  },
+}
