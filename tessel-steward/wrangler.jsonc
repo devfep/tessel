@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "tessel-steward",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-04",
+  "observability": { "enabled": true },
+  "secrets": { "required": ["STEWARD_ADMIN_TOKEN"] },
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "tessel" }],
+  "queues": {
+    "consumers": [
+      { "queue": "tessel-artifacts-events", "max_batch_size": 10, "max_batch_timeout": 1 },
+    ],
+  },
+  "containers": [
+    {
+      "class_name": "TestRunner",
+      "scheduling_policy": "durable_object",
+      "images": { "tests": { "dockerfile": "./Dockerfile" } },
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "TestRunner", "name": "TEST_RUNNER" }],
+  },
+  "exports": {
+    "TestRunner": { "type": "durable-object", "storage": "sqlite" },
+  },
+}

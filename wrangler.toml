@@ -2,6 +2,9 @@ name = "tessel-coordinator"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-01"
 
+[secrets]
+required = ["COORDINATOR_TOKEN"]
+
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
@@ -12,3 +15,7 @@ class_name = "Coordinator"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Coordinator"]
+
+[vars]
+RUN = "dogfood"
+SHADOW_ENABLED = "false"

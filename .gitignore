@@ -1,9 +1,11 @@
 /target
 /build
-/node_modules
+node_modules/
 .wrangler/
 .dev.vars
 .env
 *.log
 .DS_Store
 .claude/settings.local.json
+worker-configuration.d.ts
+.claude/worktrees/
