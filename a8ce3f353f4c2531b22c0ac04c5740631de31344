@@ -1,0 +1,4 @@
+intent: steward merge executor: fetch main and the fork, verify the commit is reachable from the fork, rebase deterministically, run the tests, push main with a lease
+assumes: interceptOutboundHttps called again for the same host replaces the earlier gateway (Sandbox docs say so; unverified live); Artifacts log({ref:'main'}) returns the newest main commit; a fork's info().source ends with /<repo>
+rejected: pushing from a pristine clone (the push gateway checks the receive-pack command instead, so a tampered sandbox git cannot push anything else); a new DO class and container (merge is a method on TestRunner); counting an already-merged rebase as a merge
+evidence: pnpm test 297 passed (163 base + 134 new, incl. 6 against real git); typecheck, oxlint, oxfmt --check clean
