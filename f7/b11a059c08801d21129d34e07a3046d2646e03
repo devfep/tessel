@@ -1,0 +1,4 @@
+intent: steward can test a fork's commit on main at a given sha without merging (PLAN 9 Oct assumptions end to end; reused by shadow verification)
+assumes: the fork's default branch head is what an unsubmitted assuming agent has; main sha is on main's history
+rejected: a separate code path for trial (shares fetch, verify, rebase, test with runMerge); running tests when the replay leaves main unchanged (would blame the commit for main, so nothing_to_test)
+evidence: pnpm test 427 passed, typecheck, oxlint, oxfmt clean
