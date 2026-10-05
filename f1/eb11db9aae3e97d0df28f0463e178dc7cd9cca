@@ -1,0 +1,4 @@
+intent: record the HARNESS-1 close, the DOGFOOD-4 dispatch and the swarm secret Felix must set
+assumes: none
+rejected: setting the swarm secret from the session (refused by the permission classifier)
+evidence: none (state only)
