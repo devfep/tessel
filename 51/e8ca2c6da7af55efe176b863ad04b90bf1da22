@@ -1,0 +1,5 @@
+intent: fix pass 1: a HumanPick race not picked by deadline + MAX_RACE_MS is decided with no winner and every entry rejected ('the race was not picked in time'); LowestRisk and SmallestDiff are refused at OpenRace; a passing trial counts as test evidence for the winner's review gate; deadline-limit test; proptest asserts entrants are alive
+assumes: none
+rejected: auto-picking the top-ranked entry at the pick deadline (the point of HumanPick is a human choice)
+evidence: cargo test --lib 405 passed
+dogfood: claim 28 held src/coordinator/racing.rs
