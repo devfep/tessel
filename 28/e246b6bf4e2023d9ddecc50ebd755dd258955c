@@ -1,0 +1,4 @@
+intent: credit a heartbeat only when a pong echoes its ping payload, so frames sent before the heartbeat cannot advance the local expiry; steadier healthy-link test
+assumes: the runtime echoes ping payloads in pongs (checked live below)
+rejected: crediting any inbound frame (fail-open by up to one heartbeat interval)
+evidence: cargo test --workspace 772 passed 0 failed; clippy -D warnings clean on touched targets; new test fails on 0806956; mutants P1-P3, M1-M4, M7 killed
