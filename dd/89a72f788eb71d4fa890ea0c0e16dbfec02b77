@@ -1,0 +1,4 @@
+intent: pass 2: choose the file to collapse among multi-symbol files; test every hazard char and the over-256 exit
+assumes: none
+rejected: none
+evidence: cargo test -p tessel-cli pass, clippy -D warnings, fmt clean; dogfood: claim 22 fence 33 on tessel-dogfood (claim 21 fence 32 was pass 1)
