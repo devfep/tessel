@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { NETWORK_TIMEOUT_SECONDS } from "./merge-commands";
 import { executeMerge, executeTrial, redactOutcome, redactTrialOutcome } from "./merge-executor";
+import { STEP_SECONDS } from "./step-budget";
 import { parseSha, type MergeOutcome, type Sha, type TrialOutcome } from "./merge-types";
 
 function sha(character: string): Sha {
@@ -24,7 +24,15 @@ interface World {
   testExit: number;
   testOutput: string;
   pushExit: number;
+  /** Main as the steward reads it before the sandbox starts. */
+  mainBefore: Sha;
+  /** Main as read after the push. */
   mainNow: Sha;
+  /** Text of `tessel.toml` on main, or null for none. */
+  tesselToml: string | null;
+  installExit: number;
+  /** Exit code of the dependency check of a repo without a usable tessel.toml. */
+  depsExit: number;
   forkHost: string;
   mainReadFails: boolean;
   changed: string;
@@ -49,6 +57,12 @@ function respond(argv: string[], world: World): { exitCode: number; stdout: stri
     [" merge-base ", { exitCode: 0, stdout: `${MERGE_BASE}\n` }],
     ["HEAD^{commit}", { exitCode: 0, stdout: `${HEAD}\n` }],
     ["npm test", { exitCode: world.testExit, stdout: world.testOutput }],
+    ["cargo test", { exitCode: world.testExit, stdout: world.testOutput }],
+    ["pnpm test", { exitCode: world.testExit, stdout: world.testOutput }],
+    ["node -e", { exitCode: world.depsExit, stdout: "" }],
+    ["cargo fetch", { exitCode: world.installExit, stdout: "" }],
+    ["pnpm install", { exitCode: world.installExit, stdout: "" }],
+    ["memory.peak", { exitCode: 0, stdout: "123456\n" }],
     [" push ", { exitCode: world.pushExit, stdout: "" }],
     ["--quiet", { exitCode: 0, stdout: `${COMMIT}\n` }],
   ];
@@ -61,7 +75,11 @@ function build(overrides: Partial<World> = {}) {
     testExit: 0,
     testOutput: "ok",
     pushExit: 0,
+    mainBefore: BASE,
     mainNow: HEAD,
+    tesselToml: null,
+    installExit: 0,
+    depsExit: 0,
     forkHost: "git.example",
     mainReadFails: false,
     changed: "M\0src/a.ts\0",
@@ -70,6 +88,9 @@ function build(overrides: Partial<World> = {}) {
   const events: string[] = [];
   const tokens = new Map<string, string>();
   const ttls = new Map<string, number>();
+  const reads: Array<{ repo: string; ref: string; path: string }> = [];
+  const starts: unknown[] = [];
+  let pushed = false;
 
   function repo(name: string) {
     return {
@@ -89,7 +110,14 @@ function build(overrides: Partial<World> = {}) {
         events.push(`revoke ${id}`);
         return true;
       },
+      readFile: async (args: { ref: string; path: string }) => {
+        reads.push({ repo: name, ...args });
+        return world.tesselToml === null ? null : new Blob([world.tesselToml]);
+      },
       log: async () => {
+        if (!pushed) {
+          return [{ hash: world.mainBefore }];
+        }
         if (world.mainReadFails) {
           throw new Error("artifacts unavailable");
         }
@@ -101,11 +129,12 @@ function build(overrides: Partial<World> = {}) {
 
   let running = false;
   const container = {
-    images: { tests: "image" },
+    images: { tests: "lite-image", toolchain: "toolchain-image" },
     get running() {
       return running;
     },
-    start: () => {
+    start: (options: unknown) => {
+      starts.push(options);
       running = true;
       events.push("start");
     },
@@ -120,6 +149,9 @@ function build(overrides: Partial<World> = {}) {
       const argv = cmd.slice(3);
       const { exitCode, stdout } = respond(argv, world);
       events.push(`exec ${argv.join(" ")}`);
+      if (argv.join(" ").includes(" push ")) {
+        pushed = true;
+      }
       return {
         stdout: textStream(stdout),
         stderr: textStream(""),
@@ -134,7 +166,7 @@ function build(overrides: Partial<World> = {}) {
   };
   const ctx = { container, exports: exportsStub } as unknown as DurableObjectState;
   const env = { ARTIFACTS: { get: async (name: string) => repo(name) } } as unknown as Env;
-  return { ctx, env, events, world, ttls, pushGateway };
+  return { ctx, env, events, world, ttls, pushGateway, reads, starts };
 }
 
 const request = {
@@ -232,8 +264,10 @@ describe("executeMerge", () => {
   it("mints read tokens that outlive the clone and the fetch, and a short write token", async () => {
     const { ctx, env, ttls } = build();
     await executeMerge(ctx, env, "demo", request);
-    expect(ttls.get("read demo")).toBeGreaterThanOrEqual(2 * NETWORK_TIMEOUT_SECONDS);
-    expect(ttls.get("read demo--a1")).toBeGreaterThanOrEqual(2 * NETWORK_TIMEOUT_SECONDS);
+    expect(ttls.get("read demo")).toBeGreaterThanOrEqual(STEP_SECONDS.clone + STEP_SECONDS.fetch);
+    expect(ttls.get("read demo--a1")).toBeGreaterThanOrEqual(
+      STEP_SECONDS.clone + STEP_SECONDS.fetch,
+    );
     expect(ttls.get("write demo")).toBe(60);
   });
 
@@ -392,5 +426,158 @@ describe("redactOutcome", () => {
   it("returns outcomes without output unchanged", () => {
     const merged: MergeOutcome = { outcome: "merged", base: BASE, head: HEAD };
     expect(redactOutcome(merged)).toBe(merged);
+  });
+});
+
+const GATE = `
+instance = "standard-4"
+
+[install]
+cargo = true
+pnpm = ["tessel-steward"]
+
+[[test]]
+argv = ["cargo", "test", "--workspace", "--locked", "--offline"]
+
+[[test]]
+dir = "tessel-steward"
+argv = ["pnpm", "test"]
+`;
+
+describe("a repo with a tessel.toml on main", () => {
+  const trialRequest = { fork: "demo--a1", main: MAIN_AT_TRIAL, commit: COMMIT };
+
+  it("starts the toolchain image on the instance it asks for, and legacy repos on lite", async () => {
+    const configured = build({ tesselToml: GATE });
+    await executeMerge(configured.ctx, configured.env, "demo", request);
+    expect(configured.starts).toEqual([
+      { image: "toolchain-image", enableInternet: false, instance: "standard-4" },
+    ]);
+
+    const legacy = build();
+    await executeMerge(legacy.ctx, legacy.env, "demo", request);
+    expect(legacy.starts).toEqual([
+      { image: "lite-image", enableInternet: false, instance: "lite" },
+    ]);
+  });
+
+  it("reads the gate from main at the commit the run is based on, never from the fork", async () => {
+    const merge = build({ tesselToml: GATE });
+    await executeMerge(merge.ctx, merge.env, "demo", request);
+    expect(merge.reads).toEqual([{ repo: "demo", ref: BASE, path: "tessel.toml" }]);
+
+    const trial = build({ tesselToml: GATE });
+    await executeTrial(trial.ctx, trial.env, "demo", trialRequest);
+    expect(trial.reads).toEqual([{ repo: "demo", ref: MAIN_AT_TRIAL, path: "tessel.toml" }]);
+  });
+
+  it("reads the gate before the container starts", async () => {
+    const { ctx, env, events, reads } = build({ tesselToml: GATE });
+    let readsAtStart = -1;
+    const container = ctx.container as unknown as { start: (options: unknown) => void };
+    const start = container.start;
+    container.start = (options) => {
+      readsAtStart = reads.length;
+      start(options);
+    };
+    await executeMerge(ctx, env, "demo", request);
+    expect(readsAtStart).toBe(1);
+    expect(events).toContain("start");
+  });
+
+  it("runs the installs with no network, scripts or lockfile drift, then the trunk's tests", async () => {
+    const { ctx, env, events } = build({ tesselToml: GATE });
+    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({ outcome: "merged" });
+    const execs = events.filter((event) => event.startsWith("exec "));
+    const commands = execs.map((event) => event.slice(5));
+    const at = (needle: string) => commands.findIndex((command) => command.includes(needle));
+    expect(commands).toContain("cargo fetch --locked --offline");
+    expect(commands).toContain("pnpm install --offline --frozen-lockfile --ignore-scripts");
+    expect(commands).toContain("cargo test --workspace --locked --offline");
+    expect(commands).toContain("pnpm test");
+    expect(commands.includes("npm test")).toBe(false);
+    expect(at("cargo fetch")).toBeLessThan(at("pnpm install"));
+    expect(at("pnpm install")).toBeLessThan(at("cargo test"));
+    expect(at("cargo test")).toBeLessThan(at("pnpm test"));
+  });
+
+  it("stops at install, as infrastructure, when an install command fails", async () => {
+    const { ctx, env, events } = build({ tesselToml: GATE, installExit: 1 });
+    const outcome = await executeMerge(ctx, env, "demo", request);
+    expect(outcome).toMatchObject({
+      outcome: "install",
+      result: { step: "install", reason: "install_failed" },
+    });
+    expect(events.some((event) => event.includes("cargo test"))).toBe(false);
+    expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
+  });
+
+  it("reports a test step that ran out of time as infrastructure, never as failing tests", async () => {
+    for (const testExit of [124, 137]) {
+      const merge = build({ tesselToml: GATE, testExit });
+      const merged = await executeMerge(merge.ctx, merge.env, "demo", request);
+      expect(merged).toMatchObject({
+        outcome: "install",
+        result: { reason: "timeout", passed: false },
+      });
+      expect(merge.events.some((event) => event.startsWith("mint write"))).toBe(false);
+
+      const trial = build({ tesselToml: GATE, testExit });
+      expect(await executeTrial(trial.ctx, trial.env, "demo", trialRequest)).toMatchObject({
+        outcome: "install",
+        result: { reason: "timeout" },
+      });
+    }
+  });
+
+  it("keeps a real test failure a test failure, with the measured wall time and peak memory", async () => {
+    const { ctx, env } = build({ tesselToml: GATE, testExit: 1 });
+    const outcome = await executeMerge(ctx, env, "demo", request);
+    expect(outcome).toMatchObject({
+      outcome: "tests_failed",
+      result: { step: "test", exitCode: 1 },
+    });
+    const { result } = outcome as Extract<MergeOutcome, { outcome: "tests_failed" }>;
+    expect(result.measurement?.peakMemoryBytes).toBe(123456);
+    expect(result.measurement?.wallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("is main_moved, with nothing run, when main is not the commit the gate was read at", async () => {
+    const racer = sha("9");
+    const { ctx, env, events } = build({ tesselToml: GATE, mainBefore: racer });
+    expect(await executeMerge(ctx, env, "demo", request)).toEqual({
+      outcome: "main_moved",
+      expected: racer,
+      actual: BASE,
+    });
+    expect(events.some((event) => event.includes("cargo"))).toBe(false);
+    expect(events.some((event) => event.startsWith("mint write"))).toBe(false);
+  });
+
+  it("refuses, at install with a fixed reason, a repo with dependencies whose tessel.toml is invalid", async () => {
+    for (const tesselToml of ['instance = "standard-4"\nshell = "sh"\n', "not toml [", ""]) {
+      const { ctx, env, starts, events } = build({ tesselToml, depsExit: 3 });
+      const outcome = await executeMerge(ctx, env, "demo", request);
+      expect(outcome).toMatchObject({
+        outcome: "install",
+        result: { step: "install", reason: "config", stdout: "" },
+      });
+      expect(starts).toEqual([{ image: "lite-image", enableInternet: false, instance: "lite" }]);
+      expect(events.some((event) => event.includes("npm test"))).toBe(false);
+    }
+  });
+
+  it("refuses a repo with dependencies and no tessel.toml, as before", async () => {
+    const { ctx, env } = build({ depsExit: 3 });
+    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({
+      outcome: "install",
+      result: { reason: "dependencies" },
+    });
+  });
+
+  it("still runs npm test for a repo without dependencies and without a tessel.toml", async () => {
+    const { ctx, env, events } = build();
+    expect(await executeMerge(ctx, env, "demo", request)).toMatchObject({ outcome: "merged" });
+    expect(events.some((event) => event.includes("npm test"))).toBe(true);
   });
 });

@@ -1,5 +1,25 @@
+import type { ConfigIssue } from "./gate-plan";
+import { isTimedOut } from "./step-budget";
 import type { TailCapture } from "./tail-capture";
 import { DEPENDENCIES_DECLARED_EXIT_CODE } from "./dependency-check";
+
+/**
+ * Why a step stopped the run before it reached a verdict, when the reason is known to the
+ * steward and not to the repo. A fixed value, never repo text.
+ * - `dependencies`: the repo declares dependencies and has no `tessel.toml` on main.
+ * - `config`: the repo declares dependencies and its `tessel.toml` on main is not acceptable.
+ * - `unknown`: the dependency check did not complete.
+ * - `install_failed`: an install command of a `tessel.toml` exited non-zero (a changed lockfile,
+ *   or a dependency missing from the image).
+ * - `timeout`: a step used up its share of the time budget or was killed.
+ */
+export type StepReason = "dependencies" | "config" | "unknown" | "install_failed" | "timeout";
+
+/** What the steward measured around the test step; `peakMemoryBytes` is null when unreadable. */
+export interface Measurement {
+  wallMs: number;
+  peakMemoryBytes: number | null;
+}
 
 export interface StepOutcome {
   step: "clone" | "install" | "test";
@@ -9,6 +29,8 @@ export interface StepOutcome {
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
   passed: boolean;
+  reason?: StepReason;
+  measurement?: Measurement;
 }
 
 export const REVOKE_FAILED_MESSAGE =
@@ -16,6 +38,9 @@ export const REVOKE_FAILED_MESSAGE =
 export const DEPENDENCIES_UNSUPPORTED_MESSAGE =
   "This repo declares dependencies, and dependency installation is not supported by this " +
   "runner yet; the tests were not run";
+export const CONFIG_INVALID_MESSAGE =
+  "This repo declares dependencies, and its tessel.toml on main is invalid, so they cannot be " +
+  "installed; the tests were not run";
 export const DEPENDENCIES_UNKNOWN_MESSAGE =
   "The dependency check did not complete, so it is unknown whether this repo declares " +
   "dependencies; the tests were not run";
@@ -41,16 +66,30 @@ export function makeOutcome(
   };
 }
 
-function refusal(check: StepOutcome): StepOutcome {
+/**
+ * The outcome of the dependency check of a repo without a usable `tessel.toml`, when it did not
+ * exit 0: the tests were not run. The message is fixed text, not the check's output.
+ */
+export function refuseDependencies(check: StepOutcome, issue: ConfigIssue): StepOutcome {
   const declared = check.exitCode === DEPENDENCIES_DECLARED_EXIT_CODE;
+  let reason: StepReason = "unknown";
+  if (declared) {
+    reason = issue === "invalid" ? "config" : "dependencies";
+  }
+  const messages = {
+    dependencies: DEPENDENCIES_UNSUPPORTED_MESSAGE,
+    config: CONFIG_INVALID_MESSAGE,
+    unknown: DEPENDENCIES_UNKNOWN_MESSAGE,
+  };
   return {
     step: "install",
     exitCode: check.exitCode,
     stdout: "",
-    stderr: declared ? DEPENDENCIES_UNSUPPORTED_MESSAGE : DEPENDENCIES_UNKNOWN_MESSAGE,
+    stderr: messages[reason],
     stdoutTruncated: false,
     stderrTruncated: false,
     passed: false,
+    reason,
   };
 }
 
@@ -83,11 +122,13 @@ export async function runStepThenRevoke(
 }
 
 /**
- * Runs the dependency check, then the test step.
+ * Runs the install step, then the test step.
  *
- * The `"install"` step is the dependency check: if it does not exit 0, the tests are not run
- * and an `"install"` outcome with a fixed message is returned, because tests that cannot have
- * their dependencies are not test evidence.
+ * The `"install"` step must exit 0, or the tests are not run and its outcome is returned as is:
+ * tests that cannot have their dependencies are not test evidence. A test step that used up its
+ * share of the time budget or was killed (exit 124 or 137) is also not a test failure: it is
+ * returned as an `"install"` outcome with reason `timeout`, which every caller treats as
+ * infrastructure.
  *
  * @param runStep Runs one step in the sandbox.
  * @returns The install outcome if it stopped the run, otherwise the test outcome.
@@ -95,11 +136,15 @@ export async function runStepThenRevoke(
 export async function runInstallThenTest(
   runStep: (step: "install" | "test") => Promise<StepOutcome>,
 ): Promise<StepOutcome> {
-  const check = await runStep("install");
-  if (check.exitCode !== 0) {
-    return refusal(check);
+  const install = await runStep("install");
+  if (install.exitCode !== 0) {
+    return install;
   }
-  return runStep("test");
+  const test = await runStep("test");
+  if (isTimedOut(test.exitCode)) {
+    return { ...test, step: "install", passed: false, reason: "timeout" };
+  }
+  return test;
 }
 
 /**

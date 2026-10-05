@@ -154,15 +154,28 @@ describe("runTrial", () => {
     expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({ outcome: "clean" });
   });
 
-  it("reports failing tests with the capped output, and 124 as a test failure of the step", async () => {
-    const { deps } = harness({ test: 124 });
+  it("reports failing tests with the capped output", async () => {
+    const { deps } = harness({ test: 1 });
     expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({
       outcome: "tests_failed",
       base: MAIN,
       head: HEAD,
       commit: COMMIT,
-      result: { step: "test", exitCode: 124, stdout: "test out", passed: false },
+      result: { step: "test", exitCode: 1, stdout: "test out", passed: false },
     });
+  });
+
+  it("reports a test step that timed out as an install outcome, never a test failure", async () => {
+    for (const test of [124, 137]) {
+      const { deps } = harness({ test });
+      expect(await runTrial(deps, MAIN, COMMIT)).toMatchObject({
+        outcome: "install",
+        base: MAIN,
+        head: HEAD,
+        commit: COMMIT,
+        result: { step: "install", exitCode: test, stdout: "test out", reason: "timeout" },
+      });
+    }
   });
 
   it("reports a stopped rebase as a conflict with the unmerged paths, and runs no tests", async () => {

@@ -93,6 +93,7 @@ function harness(overrides: Partial<Plan> = {}) {
   const events: string[] = [];
   const commands: GitCommand[] = [];
   const deps: MergeDeps = {
+    pinnedMain: BASE,
     sources: {
       workspace: "/workspace",
       mainRemote: "https://git.example/demo.git",
@@ -191,12 +192,33 @@ describe("runMerge", () => {
   });
 
   it("returns the capped test output with a failed test", async () => {
-    const { deps } = harness({ test: 124 });
+    const { deps } = harness({ test: 1 });
     const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
     expect(outcome).toMatchObject({
       outcome: "tests_failed",
-      result: { step: "test", exitCode: 124, stdout: "test out", passed: false },
+      result: { step: "test", exitCode: 1, stdout: "test out", passed: false },
     });
+  });
+
+  it("reports a test step that timed out as an install outcome, never a test failure", async () => {
+    for (const test of [124, 137]) {
+      const { deps, events } = harness({ test });
+      const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
+      expect(outcome).toMatchObject({
+        outcome: "install",
+        result: { step: "install", exitCode: test, stdout: "test out", reason: "timeout" },
+      });
+      expect(events.some((event) => event.startsWith("mint-write"))).toBe(false);
+    }
+  });
+
+  it("is main_moved, before verifying or rebasing, when the clone finds main elsewhere", async () => {
+    const { deps, events } = harness();
+    const racer = sha("9");
+    const outcome = await runMerge({ ...deps, pinnedMain: racer }, COMMIT, WHOLE_REPO);
+    expect(outcome).toEqual({ outcome: "main_moved", expected: racer, actual: BASE });
+    expect(events).not.toContain("git:exists");
+    expect(events.some((event) => event.startsWith("package:"))).toBe(false);
   });
 
   it("reports a stopped rebase as a conflict with the unmerged paths, and runs no tests", async () => {

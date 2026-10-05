@@ -46,12 +46,17 @@ export interface TrialDeps {
   run(command: GitCommand): Promise<GitResult>;
   /** Revokes the read tokens of main and of the fork; must not throw; false on failure. */
   revokeReadTokens(): Promise<boolean>;
-  /** Runs the dependency check ("install") or `npm test` ("test"); no write token is live. */
+  /** Runs the install step or the test step of the run's gate plan; no write token is live. */
   runPackageStep(step: "install" | "test"): Promise<StepOutcome>;
 }
 
 /** Everything `runMerge` needs from the outside world: a trial's boundaries, plus main. */
 export interface MergeDeps extends TrialDeps {
+  /**
+   * The commit of main whose gate (`tessel.toml`) the sandbox was started for. The merge must be
+   * based on exactly this commit; if the clone finds main elsewhere the merge is `main_moved`.
+   */
+  pinnedMain: Sha;
   /**
    * Mints the write token for main, lets `use` push exactly `update`, and revokes the token when
    * `use` ends, whether it returned or threw. Called only after the tests passed.
@@ -187,7 +192,8 @@ async function pushToMain(deps: MergeDeps, base: Sha, head: Sha): Promise<MergeO
  * 1. Clone main and fetch the fork with read tokens, then revoke both before anything else runs
  *    (if a revocation fails, nothing runs and this throws).
  * 2. Verify the commit is reachable from the fork's default branch.
- * 3. Rebase `merge-base..commit` onto the main that was cloned, with a fixed committer.
+ * 3. Check the cloned main is the commit whose gate the sandbox started for (else `main_moved`),
+ *    and rebase `merge-base..commit` onto it, with a fixed committer.
  * 4. Check that `scopes` cover every file the rebased range changes (invariant 11), before any
  *    repo code runs. The check is file level; see `merge-coverage.ts`.
  * 5. Run the dependency check and the tests. No token of any kind is live.
@@ -213,6 +219,9 @@ export async function runMerge(
   const base = shaOf(baseResult);
   if (base === undefined) {
     return { outcome: "git_failed", result: baseResult };
+  }
+  if (base !== deps.pinnedMain) {
+    return { outcome: "main_moved", expected: deps.pinnedMain, actual: base };
   }
   const unverified = await verifyCommit(deps, commit);
   if (unverified !== undefined) {

@@ -1,12 +1,22 @@
 import { DEPENDENCY_CHECK_SCRIPT } from "./dependency-check";
-import { makeOutcome, type StepOutcome } from "./run-steps";
+import type { GatePlan } from "./gate-plan";
+import {
+  installCommands,
+  parsePeakMemory,
+  runWithinBudget,
+  testCommands,
+  type PlannedCommand,
+} from "./gate-steps";
+import { makeOutcome, refuseDependencies, type StepOutcome } from "./run-steps";
+import { STEP_SECONDS, isTimedOut } from "./step-budget";
 import { captureTail } from "./tail-capture";
+import type { GateConfig } from "./tessel-config";
 
 export const WORKSPACE = "/workspace";
 export const CONTAINER_CA_CERTIFICATE = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 
-const TEST_TIMEOUT_SECONDS = "600";
-const DEPENDENCY_CHECK_TIMEOUT_SECONDS = "30";
+const MEMORY_PEAK_FILE = "/sys/fs/cgroup/memory.peak";
+const MEMORY_PEAK_TIMEOUT_SECONDS = "5";
 const OUTPUT_LIMIT_BYTES = 256 * 1024;
 
 /** Exit code and capped output of one command; the output is untrusted data. */
@@ -69,23 +79,151 @@ export async function runStep(
   );
 }
 
-/** Runs the dependency check or the repo's tests in the cloned workspace. */
-export function runPackageStep(
+/**
+ * The environment of the toolchain image (`toolchain.Dockerfile`), repeated for every command of
+ * a configured gate so that it does not depend on how `exec` treats the image's own. A test pins
+ * these values to the Dockerfile.
+ */
+export const TOOLCHAIN_ENV: Record<string, string> = {
+  PATH: "/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  HOME: "/root",
+  CARGO_HOME: "/usr/local/cargo",
+  RUSTUP_HOME: "/usr/local/rustup",
+  CARGO_TARGET_DIR: "/opt/cargo-target",
+  CARGO_INCREMENTAL: "0",
+  CARGO_PROFILE_DEV_DEBUG: "0",
+  npm_config_store_dir: "/opt/pnpm-store",
+};
+
+function directory(dir: string): string {
+  return dir === "." ? WORKSPACE : `${WORKSPACE}/${dir}`;
+}
+
+function stepFromCaptured(step: StepOutcome["step"], captured: Captured): StepOutcome {
+  return makeOutcome(
+    step,
+    captured.exitCode,
+    { text: captured.stdout, truncated: captured.stdoutTruncated },
+    { text: captured.stderr, truncated: captured.stderrTruncated },
+  );
+}
+
+/**
+ * Peak memory of the whole container since it started, from the cgroup. Best effort: null when
+ * the file is missing or unreadable, because a measurement must never fail a run.
+ */
+async function readPeakMemory(container: Container): Promise<number | null> {
+  try {
+    const read = await execCaptured(
+      container,
+      "memory",
+      MEMORY_PEAK_TIMEOUT_SECONDS,
+      ["cat", MEMORY_PEAK_FILE],
+      {},
+    );
+    return read.exitCode === 0 ? parsePeakMemory(read.stdout) : null;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "memory_peak_unreadable",
+        reason: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return null;
+  }
+}
+
+/** Adds the wall time of `run` and the container's peak memory to the outcome it returns. */
+async function measured(
+  container: Container,
+  run: () => Promise<StepOutcome>,
+): Promise<StepOutcome> {
+  const started = Date.now();
+  const outcome = await run();
+  const wallMs = Date.now() - started;
+  return { ...outcome, measurement: { wallMs, peakMemoryBytes: await readPeakMemory(container) } };
+}
+
+function runConfigured(
   container: Container,
   step: "install" | "test",
+  commands: PlannedCommand[],
+  budgetSeconds: number,
+): Promise<Captured> {
+  return runWithinBudget(
+    commands,
+    budgetSeconds,
+    (command, timeoutSeconds) =>
+      execCaptured(container, step, String(timeoutSeconds), command.argv, {
+        cwd: directory(command.dir),
+        env: TOOLCHAIN_ENV,
+      }),
+    Date.now,
+  );
+}
+
+async function runConfiguredStep(
+  container: Container,
+  config: GateConfig,
+  step: "install" | "test",
 ): Promise<StepOutcome> {
-  switch (step) {
-    case "install":
-      return runStep(
-        container,
-        "install",
-        DEPENDENCY_CHECK_TIMEOUT_SECONDS,
-        ["node", "-e", DEPENDENCY_CHECK_SCRIPT],
-        { cwd: WORKSPACE },
-      );
-    case "test":
-      return runStep(container, "test", TEST_TIMEOUT_SECONDS, ["npm", "test"], {
+  if (step === "test") {
+    return measured(container, async () =>
+      stepFromCaptured(
+        "test",
+        await runConfigured(container, "test", testCommands(config), STEP_SECONDS.test),
+      ),
+    );
+  }
+  const captured = await runConfigured(
+    container,
+    "install",
+    installCommands(config),
+    STEP_SECONDS.install,
+  );
+  const outcome = stepFromCaptured("install", captured);
+  if (captured.exitCode === 0) {
+    return outcome;
+  }
+  return { ...outcome, reason: isTimedOut(captured.exitCode) ? "timeout" : "install_failed" };
+}
+
+async function runLegacyStep(
+  container: Container,
+  issue: "missing" | "invalid",
+  step: "install" | "test",
+): Promise<StepOutcome> {
+  if (step === "test") {
+    return measured(container, () =>
+      runStep(container, "test", String(STEP_SECONDS.test), ["npm", "test"], {
         cwd: WORKSPACE,
-      });
+      }),
+    );
+  }
+  const check = await runStep(
+    container,
+    "install",
+    String(STEP_SECONDS.dependencyCheck),
+    ["node", "-e", DEPENDENCY_CHECK_SCRIPT],
+    { cwd: WORKSPACE },
+  );
+  return check.exitCode === 0 ? check : refuseDependencies(check, issue);
+}
+
+/**
+ * Runs the install step or the test step of `plan` in the cloned workspace. A configured plan
+ * runs the commands of the trunk's `tessel.toml`; a legacy plan runs the dependency check and
+ * `npm test`. The test step carries its wall time and the container's peak memory.
+ */
+export function runPackageStep(
+  container: Container,
+  plan: GatePlan,
+  step: "install" | "test",
+): Promise<StepOutcome> {
+  switch (plan.kind) {
+    case "configured":
+      return runConfiguredStep(container, plan.config, step);
+    case "legacy":
+      return runLegacyStep(container, plan.issue, step);
   }
 }

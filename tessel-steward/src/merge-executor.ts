@@ -4,7 +4,8 @@ import {
   execCaptured,
   runPackageStep,
 } from "./container-step";
-import { MAIN_BRANCH, NETWORK_TIMEOUT_SECONDS, type GitCommand } from "./merge-commands";
+import { readGatePlan, startOptions } from "./gate-plan";
+import { MAIN_BRANCH, type GitCommand } from "./merge-commands";
 import { runMerge, runTrial, type MergeDeps, type TrialDeps } from "./merge-steps";
 import {
   isForkOf,
@@ -19,12 +20,13 @@ import {
 } from "./merge-types";
 import { redactTokens } from "./redact";
 import { revokeOnce } from "./revoke-once";
+import { STEP_SECONDS } from "./step-budget";
 
 /**
  * Both read tokens are minted before the container starts and used by two network steps in turn
  * (clone, then fetch), each with its own timeout, so the lifetime covers both plus a margin.
  */
-const READ_TOKEN_TTL_SECONDS = 2 * NETWORK_TIMEOUT_SECONDS + 60;
+const READ_TOKEN_TTL_SECONDS = STEP_SECONDS.clone + STEP_SECONDS.fetch + 60;
 /** The push is two requests seconds apart; 60 s is the shortest lifetime Artifacts allows. */
 const WRITE_TOKEN_TTL_SECONDS = 60;
 
@@ -92,25 +94,33 @@ export interface TrialSandbox {
 
 /** What a merge is given inside the sandbox: a trial's, and the pieces a push needs. */
 interface Sandbox extends TrialSandbox {
+  /** The commit of main whose `tessel.toml` gates the run, and which the run must be based on. */
+  pinned: Sha;
   container: Container;
   main: ArtifactsRepo;
   mainRemote: string;
   host: string;
 }
 
+/** Resolves the commit of main that a run is gated by and based on, before anything starts. */
+type PinMain = (main: ArtifactsRepo) => Promise<Sha>;
+
 /**
- * Starts the sandbox for `forkName` of `repo`, calls `use`, and always tears it down. Read tokens
+ * Starts the sandbox for `forkName` of `repo`, calls `use`, and always tears it down. The gate
+ * (`tessel.toml`) is read from main at the commit `pin` returns, through the Artifacts binding
+ * and before the container starts, so neither the fork nor the clone can change it. Read tokens
  * for main and the fork are minted first and live in `MergeReadGateway` until the fetch ends.
  * The sandbox has no Internet and no credentials.
  *
- * @throws If the fork is not a fork of `repo`, a repo is missing, the container cannot start,
- *   or a read token could not be revoked (no repo code runs in that case).
+ * @throws If the fork is not a fork of `repo`, a repo is missing, main cannot be read, the
+ *   container cannot start, or a read token could not be revoked (no repo code runs in that case).
  */
 async function withSandbox<T>(
   ctx: DurableObjectState,
   env: Env,
   repo: string,
   forkName: string,
+  pin: PinMain,
   use: (sandbox: Sandbox) => Promise<T>,
 ): Promise<T> {
   const container = ctx.container;
@@ -130,10 +140,9 @@ async function withSandbox<T>(
   if (new URL(forkInfo.remote).hostname !== host) {
     throw new Error(`${repo} and ${forkName} are not on the same git host`);
   }
-  const image = container.images["tests"];
-  if (image === undefined) {
-    throw new Error('The container image "tests" is not configured');
-  }
+  const pinned = await pin(main);
+  const plan = await readGatePlan(main, pinned);
+  const start = startOptions(plan, container.images);
 
   const revokers: Array<() => Promise<boolean>> = [];
   const revokeReadTokens = async (): Promise<boolean> => {
@@ -156,7 +165,7 @@ async function withSandbox<T>(
       host,
       ctx.exports.MergeReadGateway({ props: { routes } }),
     );
-    container.start({ image, enableInternet: false });
+    container.start(start);
 
     const deps: TrialDeps = {
       sources: {
@@ -167,9 +176,9 @@ async function withSandbox<T>(
       },
       run: (command) => runGit(container, command),
       revokeReadTokens,
-      runPackageStep: async (step) => redactOutput(await runPackageStep(container, step)),
+      runPackageStep: async (step) => redactOutput(await runPackageStep(container, plan, step)),
     };
-    return await use({ deps, container, main, mainRemote: mainInfo.remote, host });
+    return await use({ deps, pinned, container, main, mainRemote: mainInfo.remote, host });
   } finally {
     await destroyContainer(container, repo);
     await revokeReadTokens();
@@ -203,9 +212,11 @@ export async function executeMerge(
     env,
     repo,
     request.fork,
-    async ({ deps, container, main, mainRemote, host }) => {
+    pinCurrentMain,
+    async ({ deps, pinned, container, main, mainRemote, host }) => {
       const mergeDeps: MergeDeps = {
         ...deps,
+        pinnedMain: pinned,
         withPushAccess: async (update, use) => {
           const token = await main.createToken("write", WRITE_TOKEN_TTL_SECONDS);
           const revoke = revokeOnce(
@@ -250,8 +261,14 @@ export async function executeTrial(
   repo: string,
   request: TrialSide,
 ): Promise<TrialOutcome> {
-  return withSandbox(ctx, env, repo, request.fork, async ({ deps }: TrialSandbox) =>
-    redactTrialOutcome(await runTrial(deps, request.main, request.commit)),
+  return withSandbox(
+    ctx,
+    env,
+    repo,
+    request.fork,
+    async () => request.main,
+    async ({ deps }: TrialSandbox) =>
+      redactTrialOutcome(await runTrial(deps, request.main, request.commit)),
   );
 }
 
@@ -264,6 +281,14 @@ async function runGit(container: Container, command: GitCommand): Promise<GitRes
     { env: { ...command.env, GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE } },
   );
   return redactOutput(captured);
+}
+
+async function pinCurrentMain(main: ArtifactsRepo): Promise<Sha> {
+  const head = await readMainHead(main);
+  if (head === null) {
+    throw new Error("The head of main could not be read, so the gate cannot be pinned to it");
+  }
+  return head;
 }
 
 async function readMainHead(main: ArtifactsRepo): Promise<Sha | null> {

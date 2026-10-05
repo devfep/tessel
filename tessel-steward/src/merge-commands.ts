@@ -1,5 +1,6 @@
 import { MAX_PUSH_BODY_BYTES } from "./receive-pack-policy";
 import { isSafeBranchName, type Sha } from "./merge-types";
+import { STEP_SECONDS } from "./step-budget";
 
 /** One git invocation. Every value is an argv element or an environment value, never shell text. */
 export interface GitCommand {
@@ -22,11 +23,6 @@ export const STEWARD_COMMITTER_EMAIL = "steward@tessel.invalid";
 /** Every replayed commit gets this committer date, so a retried rebase yields the same shas. */
 export const STEWARD_COMMITTER_DATE = "2026-01-01T00:00:00Z";
 
-export const NETWORK_TIMEOUT_SECONDS = 240;
-const LOCAL_TIMEOUT_SECONDS = 60;
-const REBASE_TIMEOUT_SECONDS = 120;
-const PUSH_TIMEOUT_SECONDS = 120;
-
 const GIT_ENV: Record<string, string> = {
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
@@ -34,7 +30,7 @@ const GIT_ENV: Record<string, string> = {
   GIT_EDITOR: "true",
 };
 
-function local(workspace: string, args: string[], timeoutSeconds = LOCAL_TIMEOUT_SECONDS) {
+function local(workspace: string, args: string[], timeoutSeconds: number = STEP_SECONDS.local) {
   return { argv: ["git", "-C", workspace, ...args], env: GIT_ENV, timeoutSeconds };
 }
 
@@ -51,7 +47,7 @@ export function cloneCommand(sources: MergeSources): GitCommand {
   return {
     argv: ["git", "clone", "--no-tags", `--branch=${MAIN_BRANCH}`, "--", mainRemote, workspace],
     env: GIT_ENV,
-    timeoutSeconds: NETWORK_TIMEOUT_SECONDS,
+    timeoutSeconds: STEP_SECONDS.clone,
   };
 }
 
@@ -62,7 +58,7 @@ export function fetchForkCommand(sources: MergeSources): GitCommand {
   return local(
     workspace,
     ["fetch", "--no-tags", "--", forkRemote, `+refs/heads/${forkBranch}:${ref}`],
-    NETWORK_TIMEOUT_SECONDS,
+    STEP_SECONDS.fetch,
   );
 }
 
@@ -117,7 +113,7 @@ export function rebaseCommand(
       mergeBase,
       commit,
     ],
-    REBASE_TIMEOUT_SECONDS,
+    STEP_SECONDS.rebase,
   );
   return {
     ...command,
@@ -174,7 +170,7 @@ export function pushCommand(sources: MergeSources, base: Sha, head: Sha): GitCom
       mainRemote,
       `${head}:refs/heads/${MAIN_BRANCH}`,
     ],
-    PUSH_TIMEOUT_SECONDS,
+    STEP_SECONDS.push,
   );
 }
 

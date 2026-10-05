@@ -163,8 +163,9 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  *   the push and got `head`; the sandbox's exit code is not trusted.
  * - `conflict`: replaying the commit onto the real main at `base` stopped with these files
  *   unmerged. This is the only outcome that shows a conflict was real.
- * - `tests_failed`: the repo's own `npm test` ran on the rebased `head` and did not exit 0.
- *   Exit code 124 or 137 means it timed out or was killed, which is not a failing assertion.
+ * - `tests_failed`: the repo's own gate (`npm test`, or the `[[test]]` commands of the trunk's
+ *   `tessel.toml`) ran on the rebased `head` and did not exit 0. A step that timed out or was
+ *   killed (exit 124 or 137) is never this: it is `install`.
  * - `uncovered`: the commit rebased onto main changes files that the claim's scopes do not cover
  *   in a permitting mode (invariant 11), read from `git diff --name-status` of the rebased range
  *   before any repo code ran. `files` holds at most `MAX_REPORTED_FILES` paths (untrusted data);
@@ -178,8 +179,11 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  * Infrastructure (never counts for or against anything; the attempt did not finish):
  * - `clone`: cloning main or fetching the fork failed.
  * - `git_failed`: a local git step failed in a way that is not a conflict.
- * - `install`: the repo declares dependencies this runner cannot install, or the check did not
- *   complete, so its tests were not run.
+ * - `install`: the tests did not reach a verdict. `result.reason` says why: the repo declares
+ *   dependencies and has no usable `tessel.toml` (`dependencies`, `config`), the dependency check
+ *   did not complete (`unknown`), an install command failed because the lockfile changed or a
+ *   dependency is not in the image (`install_failed`), or the test step used up its share of the
+ *   time budget or was killed (`timeout`).
  * - `push_failed`: the push did not move main and main did not move either.
  *
  * `stdout`/`stderr` in any `result` come from the repo or from git and are untrusted data.
@@ -203,10 +207,10 @@ export type MergeOutcome =
  * was tried.
  *
  * Evidence (CLAUDE.md rule 7):
- * - `clean`: the rebased `head` passed the repo's own `npm test`.
+ * - `clean`: the rebased `head` passed the repo's own gate (see `MergeOutcome`).
  * - `conflict`: replaying the commit onto `base` stopped with these files unmerged.
- * - `tests_failed`: the repo's tests ran on the rebased `head` and did not exit 0. Exit code 124
- *   or 137 means it timed out or was killed, which is not a failing assertion.
+ * - `tests_failed`: the repo's tests ran on the rebased `head` and did not exit 0. A step that
+ *   timed out or was killed is `install`, not this.
  *
  * Not evidence about the code, but true statements about this attempt:
  * - `nothing_to_test`: replaying the commit left main unchanged, so the commit adds nothing to

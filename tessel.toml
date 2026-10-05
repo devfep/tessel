@@ -1,0 +1,17 @@
+# The gate the steward runs on Tessel's own commits (tessel-steward/src/tessel-config.ts).
+# The steward reads this file from the trunk commit a run is based on, never from the fork.
+# Every command is an argv array run without a shell. The containers have no Internet, so the
+# dependencies come from the image (tessel-steward/toolchain.Dockerfile), built from the
+# committed lockfiles: a changed lockfile or a missing dependency fails the run at `install`.
+instance = "standard-4"
+
+[install]
+cargo = true
+pnpm = ["tessel-steward"]
+
+[[test]]
+argv = ["cargo", "test", "--workspace", "--locked", "--offline"]
+
+[[test]]
+dir = "tessel-steward"
+argv = ["pnpm", "test"]

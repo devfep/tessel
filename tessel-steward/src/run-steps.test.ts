@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { DEPENDENCIES_DECLARED_EXIT_CODE } from "./dependency-check";
 import {
+  CONFIG_INVALID_MESSAGE,
   DEPENDENCIES_UNKNOWN_MESSAGE,
   DEPENDENCIES_UNSUPPORTED_MESSAGE,
   REVOKE_FAILED_MESSAGE,
   makeOutcome,
+  refuseDependencies,
   runCloneThenTest,
   runInstallThenTest,
   runStepThenRevoke,
@@ -57,31 +59,32 @@ describe("runCloneThenTest", () => {
     expect(result.step).toBe("test");
   });
 
-  it("refuses a repo with dependencies: install outcome, tests never run", async () => {
-    const { calls, runStep, revokeToken } = harness({
-      install: DEPENDENCIES_DECLARED_EXIT_CODE,
-    });
+  it("returns a failed install step as it is and never runs the tests", async () => {
+    const { calls, runStep, revokeToken } = harness({ install: 1 });
     const result = await runCloneThenTest(runStep, revokeToken);
     expect(calls).toEqual(["start clone", "revoke", "start install"]);
-    expect(result).toEqual({
-      step: "install",
-      exitCode: DEPENDENCIES_DECLARED_EXIT_CODE,
-      stdout: "",
-      stderr: DEPENDENCIES_UNSUPPORTED_MESSAGE,
-      stdoutTruncated: false,
-      stderrTruncated: false,
-      passed: false,
-    });
+    expect(result).toEqual(outcome("install", 1));
   });
 
-  it("refuses with a different message when the dependency check did not complete", async () => {
-    const { calls, runStep, revokeToken } = harness({ install: 4 });
+  it("reports a test step that timed out or was killed as an install outcome, not a failure", async () => {
+    for (const test of [124, 137]) {
+      const { runStep, revokeToken } = harness({ test });
+      const result = await runCloneThenTest(runStep, revokeToken);
+      expect(result).toMatchObject({
+        step: "install",
+        exitCode: test,
+        stdout: "test out",
+        passed: false,
+        reason: "timeout",
+      });
+    }
+  });
+
+  it("keeps an ordinary non-zero test exit a test failure", async () => {
+    const { runStep, revokeToken } = harness({ test: 1 });
     const result = await runCloneThenTest(runStep, revokeToken);
-    expect(calls).toEqual(["start clone", "revoke", "start install"]);
-    expect(result.step).toBe("install");
-    expect(result.exitCode).toBe(4);
-    expect(result.stderr).toBe(DEPENDENCIES_UNKNOWN_MESSAGE);
-    expect(result.passed).toBe(false);
+    expect(result).toMatchObject({ step: "test", exitCode: 1, passed: false });
+    expect(result.reason).toBeUndefined();
   });
 
   it("throws when the revoke fails and runs neither the check nor the tests", async () => {
@@ -194,5 +197,40 @@ describe("runInstallThenTest", () => {
     const result = await runInstallThenTest(runStep);
     expect(calls).toEqual(["start install"]);
     expect(result).toMatchObject({ step: "install", passed: false });
+  });
+});
+
+const check = (exitCode: number) => outcome("install", exitCode);
+
+describe("refuseDependencies", () => {
+  it("refuses a repo with dependencies and no tessel.toml with a fixed message", () => {
+    expect(refuseDependencies(check(DEPENDENCIES_DECLARED_EXIT_CODE), "missing")).toEqual({
+      step: "install",
+      exitCode: DEPENDENCIES_DECLARED_EXIT_CODE,
+      stdout: "",
+      stderr: DEPENDENCIES_UNSUPPORTED_MESSAGE,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      passed: false,
+      reason: "dependencies",
+    });
+  });
+
+  it("names an invalid tessel.toml when the repo declares dependencies", () => {
+    expect(refuseDependencies(check(DEPENDENCIES_DECLARED_EXIT_CODE), "invalid")).toMatchObject({
+      stderr: CONFIG_INVALID_MESSAGE,
+      reason: "config",
+    });
+  });
+
+  it("refuses with a different message when the dependency check did not complete", () => {
+    for (const issue of ["missing", "invalid"] as const) {
+      expect(refuseDependencies(check(4), issue)).toMatchObject({
+        exitCode: 4,
+        stderr: DEPENDENCIES_UNKNOWN_MESSAGE,
+        passed: false,
+        reason: "unknown",
+      });
+    }
   });
 });
