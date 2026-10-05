@@ -1,7 +1,7 @@
 //! The git worktree the CLI works in, and the `.tessel/` directory beside its files.
 
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -155,7 +155,11 @@ fn socket_base() -> PathBuf {
 /// `<base>/tessel-<uid>/<hash of root>.sock`, with the directory created private (0700) or, if it
 /// exists, verified to be a real directory owned by this user with mode 0700.
 fn socket_path(root: &Path, base: &Path) -> Result<PathBuf, WorktreeError> {
-    let uid = current_uid(base)?;
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    socket_path_for(root, base, unsafe { libc::geteuid() })
+}
+
+fn socket_path_for(root: &Path, base: &Path, uid: u32) -> Result<PathBuf, WorktreeError> {
     let dir = base.join(format!("tessel-{uid}"));
     let dir_error = |reason: String| WorktreeError::SocketDir {
         path: dir.display().to_string(),
@@ -182,35 +186,15 @@ fn socket_path(root: &Path, base: &Path) -> Result<PathBuf, WorktreeError> {
             "its mode is {mode:o}, not 700; fix it with `chmod 700` or remove it"
         )));
     }
+    // Two worktrees whose paths collide under this 64-bit hash would share one socket, and the
+    // later daemon would replace the earlier one's. With n worktrees on a machine the odds are
+    // about n^2 / 2^65, which is negligible.
     let name = fnv1a_64(root.as_os_str().as_encoded_bytes());
     let sock = dir.join(format!("{name:016x}.sock"));
     if sock.as_os_str().len() > MAX_SOCKET_PATH_BYTES {
         return Err(WorktreeError::SocketPathTooLong(sock.display().to_string()));
     }
     Ok(sock)
-}
-
-/// This process's user id, read from the owner of a file it creates in `base`: std has no
-/// `getuid`, and a dependency for one call is not worth it.
-fn current_uid(base: &Path) -> Result<u32, WorktreeError> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let probe = base.join(format!(".tessel-uid-{}-{nanos}", std::process::id()));
-    let io_err = |e: std::io::Error| WorktreeError::SocketDir {
-        path: base.display().to_string(),
-        reason: format!("cannot determine the current user: {e}"),
-    };
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&probe)
-        .map_err(io_err)?;
-    let uid = file.metadata().map_err(io_err)?.uid();
-    drop(file);
-    std::fs::remove_file(&probe).map_err(io_err)?;
-    Ok(uid)
 }
 
 /// FNV-1a, 64 bit. Stable across Rust versions, unlike `DefaultHasher`.
@@ -311,5 +295,14 @@ mod tests {
         std::fs::create_dir(&long).unwrap();
         let err = socket_path(Path::new("/work/one"), &long).unwrap_err();
         assert!(matches!(err, WorktreeError::SocketPathTooLong(_)), "{err}");
+    }
+
+    #[test]
+    fn a_directory_owned_by_someone_else_is_refused() {
+        let base = tempfile::tempdir().unwrap();
+        // The directory is made by this user, so it cannot belong to the uid in its name.
+        let err = socket_path_for(Path::new("/work/one"), base.path(), 4_000_001).unwrap_err();
+        assert!(matches!(err, WorktreeError::SocketDir { .. }), "{err}");
+        assert!(err.to_string().contains("owned by uid"), "{err}");
     }
 }

@@ -2,7 +2,7 @@
 //! edit when the claim is denied. `install` writes the hook entry into the worktree's
 //! `.claude/settings.local.json`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -50,8 +50,10 @@ enum Outcome {
         key: &'static str,
     },
     PathNotUtf8(String),
+    NoRoot,
+    CwdUnusable(String),
     Worktree(WorktreeError),
-    NoDaemon,
+    NoDaemon(PathBuf),
     DaemonUnreachable(ClientError),
     Denied {
         rel: String,
@@ -98,16 +100,29 @@ impl Outcome {
                  blocking the edit\n",
                 escape(&raw)
             )),
-            Self::Worktree(e) => block(format!(
-                "tessel hook: cannot set up this worktree ({}); blocking the edit rather than \
-                 letting it through unclaimed\n",
-                one_line(&e.to_string())
-            )),
-            Self::NoDaemon => block(
-                "tessel: no daemon is running for this worktree, so edits cannot be claimed. \
-                 Run `tessel start \"<what you are about to do>\"` and retry.\n"
+            Self::NoRoot => block(
+                "tessel hook: this hook does not know which worktree it guards (no `--root` and \
+                 no $CLAUDE_PROJECT_DIR); blocking the edit. Run `tessel hook install` again in \
+                 the worktree.\n"
                     .to_string(),
             ),
+            Self::CwdUnusable(cwd) => block(format!(
+                "tessel hook: the working directory {} is not usable, so the edited path cannot \
+                 be resolved; blocking the edit\n",
+                escape(&cwd)
+            )),
+            Self::Worktree(e) => block(format!(
+                "tessel hook: cannot set up the guarded worktree ({}); blocking the edit rather \
+                 than letting it through unclaimed. If the worktree moved, run `tessel hook \
+                 install` again in it.\n",
+                one_line(&e.to_string())
+            )),
+            Self::NoDaemon(sock) => block(format!(
+                "tessel: no daemon is running for this worktree (nothing listens on {}), so edits \
+                 cannot be claimed. Run `tessel start \"<what you are about to do>\"` and \
+                 retry.\n",
+                escape(&sock.display().to_string())
+            )),
             Self::DaemonUnreachable(e) => block(format!("tessel: cannot reach the daemon: {e}\n")),
             Self::Denied { rel, conflicts } => {
                 let hint = format!("tessel claim {} --wait", escape(&rel));
@@ -147,12 +162,21 @@ struct HookInput {
 }
 
 /// Decides one `PreToolUse` event. `stdin` is the hook JSON as read from standard input;
-/// `process_cwd` is used when the event carries no `cwd`.
-pub async fn pre_edit(stdin: std::io::Result<Vec<u8>>, process_cwd: &Path) -> Verdict {
-    decide(stdin, process_cwd).await.verdict()
+/// `process_cwd` is used when the event carries no `cwd`. `root` is the guarded worktree: whether
+/// an edit is inside it is decided from the edited file's resolved path, never from the cwd.
+pub async fn pre_edit(
+    stdin: std::io::Result<Vec<u8>>,
+    process_cwd: &Path,
+    root: Option<&Path>,
+) -> Verdict {
+    decide(stdin, process_cwd, root).await.verdict()
 }
 
-async fn decide(stdin: std::io::Result<Vec<u8>>, process_cwd: &Path) -> Outcome {
+async fn decide(
+    stdin: std::io::Result<Vec<u8>>,
+    process_cwd: &Path,
+    root: Option<&Path>,
+) -> Outcome {
     let bytes = match stdin {
         Ok(bytes) => bytes,
         Err(e) => return Outcome::UnreadableInput(e.to_string()),
@@ -175,11 +199,16 @@ async fn decide(stdin: std::io::Result<Vec<u8>>, process_cwd: &Path) -> Outcome 
     let cwd = input
         .cwd
         .map_or_else(|| process_cwd.to_path_buf(), Into::into);
-    let worktree = match Worktree::discover(&cwd) {
+    let Some(root) = root else {
+        return Outcome::NoRoot;
+    };
+    let worktree = match Worktree::discover(root) {
         Ok(worktree) => worktree,
-        Err(WorktreeError::NotARepo(_)) => return Outcome::OutsideWorktree,
         Err(e) => return Outcome::Worktree(e),
     };
+    if Path::new(raw).is_relative() && !(cwd.is_absolute() && cwd.is_dir()) {
+        return Outcome::CwdUnusable(cwd.display().to_string());
+    }
     let rel = match locate(&worktree.root, &cwd, raw) {
         Located::Inside(rel) => rel,
         Located::Outside => return Outcome::OutsideWorktree,
@@ -200,7 +229,7 @@ async fn claim_file(worktree: &Worktree, rel: String, create: bool) -> Outcome {
     };
     let reply = match rpc::call(&worktree.sock(), &request, HOOK_TIMEOUT).await {
         Ok(reply) => reply,
-        Err(ClientError::NotRunning) => return Outcome::NoDaemon,
+        Err(ClientError::NotRunning) => return Outcome::NoDaemon(worktree.sock()),
         Err(e) => return Outcome::DaemonUnreachable(e),
     };
     match reply {
@@ -264,9 +293,16 @@ pub fn install(worktree: &Worktree, exe: &Path) -> Result<Installed, InstallErro
             })
         }
     };
+    let (Some(exe), Some(root)) = (exe.to_str(), worktree.root.to_str()) else {
+        return Err(InstallError::Shape {
+            path: shown,
+            reason: "the tessel binary or the worktree path is not valid UTF-8".into(),
+        });
+    };
     let command = format!(
-        "{} {HOOK_SUBCOMMAND}",
-        shell_quote(&exe.display().to_string())
+        "{} {HOOK_SUBCOMMAND} --root {}",
+        shell_quote(exe),
+        shell_quote(root)
     );
     let shape = |reason: &str| InstallError::Shape {
         path: shown.clone(),
@@ -310,7 +346,7 @@ fn merge_entry(doc: &mut Value, command: &str) -> Result<Installed, &'static str
             let ours = hook
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(|c| c.contains("tessel") && c.trim_end().ends_with(HOOK_SUBCOMMAND));
+                .is_some_and(is_our_command);
             if !ours {
                 continue;
             }
@@ -334,6 +370,13 @@ fn merge_entry(doc: &mut Value, command: &str) -> Result<Installed, &'static str
         "hooks": [{ "type": "command", "command": command }],
     }));
     Ok(Installed::Added)
+}
+
+/// Our hook, in the old form (`<exe> hook pre-edit`) or the current one (`... --root <dir>`).
+fn is_our_command(command: &str) -> bool {
+    command
+        .find(HOOK_SUBCOMMAND)
+        .is_some_and(|at| command[..at].contains("tessel"))
 }
 
 fn shell_quote(text: &str) -> String {
@@ -370,6 +413,19 @@ mod tests {
         assert_eq!(doc, once);
         assert_eq!(doc["permissions"]["allow"][0], "Bash(ls)");
         assert_eq!(doc["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn merge_upgrades_an_old_entry_without_root_in_place() {
+        let mut doc = json!({});
+        merge_entry(&mut doc, "/bin/tessel hook pre-edit").unwrap();
+        let new = "/bin/tessel hook pre-edit --root /work/a";
+        assert_eq!(merge_entry(&mut doc, new), Ok(Installed::Updated));
+        assert_eq!(doc["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(1));
+        assert_eq!(doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"], new);
+        assert_eq!(merge_entry(&mut doc, new), Ok(Installed::AlreadyPresent));
+        let moved = "/bin/tessel hook pre-edit --root /work/b";
+        assert_eq!(merge_entry(&mut doc, moved), Ok(Installed::Updated));
     }
 
     #[test]

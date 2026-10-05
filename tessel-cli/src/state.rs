@@ -48,6 +48,7 @@ pub struct State {
     pub task_ref: Option<String>,
     pub base: String,
     /// Where the daemon listens; outside `.tessel/` because worktree paths can be long.
+    #[serde(default)]
     pub socket: String,
     pub connection: Connection,
     pub lease_ms: Option<u64>,

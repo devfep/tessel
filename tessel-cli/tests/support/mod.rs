@@ -470,8 +470,7 @@ fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
 pub struct Agent {
     pub name: String,
     pub token: String,
-    /// Owns the directory; removed on drop.
-    _dir: TempDir,
+    dir: TempDir,
     /// The git worktree: `dir`, or a nested directory of it.
     path: PathBuf,
     env: Vec<(String, String)>,
@@ -503,7 +502,7 @@ impl Agent {
         Ok(Self {
             name: name.into(),
             token: token.into(),
-            _dir: dir,
+            dir,
             path,
             env: Vec::new(),
             url: fake.url.clone(),
@@ -527,6 +526,7 @@ impl Agent {
         command
             .args(args)
             .current_dir(&self.path)
+            .env_remove("CLAUDE_PROJECT_DIR")
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .env("TESSEL_COORDINATOR", &self.url)
             .env("TESSEL_REPO", REPO)
@@ -588,12 +588,63 @@ impl Agent {
 
     /// The hook JSON Claude Code would send for `tool` editing `path`.
     pub fn hook(&self, tool: &str, key: &str, path: &str) -> Result<Done> {
+        let root = self.root().display().to_string();
+        self.hook_at(tool, key, path, &self.path, &["--root", &root])
+    }
+
+    /// Like `hook`, with the event's `cwd` and the hook's extra arguments chosen by the caller.
+    pub fn hook_at(
+        &self,
+        tool: &str,
+        key: &str,
+        path: &str,
+        cwd: &Path,
+        extra: &[&str],
+    ) -> Result<Done> {
         let event = serde_json::json!({
             "tool_name": tool,
             "tool_input": { key: path },
-            "cwd": self.path,
+            "cwd": cwd,
         });
-        self.tessel_with_stdin(&["hook", "pre-edit"], &event.to_string())
+        let mut args = vec!["hook", "pre-edit"];
+        args.extend_from_slice(extra);
+        self.tessel_with_stdin(&args, &event.to_string())
+    }
+
+    /// Runs `tessel args...` with `stdin` connected to a directory, which fails every read.
+    pub fn tessel_with_unreadable_stdin(&self, args: &[&str]) -> Result<Done> {
+        let output = self
+            .command(args)
+            .stdin(std::fs::File::open(self.dir.path())?)
+            .output()?;
+        Ok(Done::from(output))
+    }
+
+    /// Runs `tessel args...` from a directory that is deleted before `tessel` starts.
+    pub fn tessel_in_deleted_cwd(&self, args: &[&str], stdin: &str) -> Result<Done> {
+        use std::io::Write;
+        let gone = self.dir.path().join("gone");
+        std::fs::create_dir_all(&gone)?;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("cd \"$1\" && rmdir \"$1\" && shift && exec \"$@\"")
+            .arg("sh")
+            .arg(&gone)
+            .arg(env!("CARGO_BIN_EXE_tessel"))
+            .args(args)
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
+            .env("TESSEL_COORDINATOR", &self.url)
+            .env("TESSEL_REPO", REPO)
+            .env("TESSEL_AGENT", &self.name)
+            .env("TESSEL_TOKEN", &self.token)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut pipe) = child.stdin.take() {
+            pipe.write_all(stdin.as_bytes())?;
+        }
+        Ok(Done::from(child.wait_with_output()?))
     }
 
     /// `tessel status --json`, parsed.

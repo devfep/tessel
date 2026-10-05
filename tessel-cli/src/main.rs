@@ -12,6 +12,7 @@ mod state;
 mod worktree;
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -83,7 +84,12 @@ enum Command {
 #[derive(Subcommand)]
 enum HookAction {
     /// The `PreToolUse` hook: reads the hook JSON on stdin.
-    PreEdit,
+    PreEdit {
+        /// The worktree this hook guards; `hook install` writes it. Falls back to
+        /// `$CLAUDE_PROJECT_DIR`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
     /// Add the hook to `.claude/settings.local.json` in this worktree.
     Install,
 }
@@ -113,8 +119,11 @@ fn main() -> ExitCode {
     // reports every failure as 2.
     let failure = match cli.command {
         Command::Hook {
-            action: HookAction::PreEdit,
-        } => hook::EXIT_BLOCK,
+            action: HookAction::PreEdit { .. },
+        } => {
+            block_on_panic();
+            hook::EXIT_BLOCK
+        }
         Command::Start { .. }
         | Command::Claim { .. }
         | Command::Status { .. }
@@ -142,6 +151,18 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => fail(&e, failure),
     }
+}
+
+/// A panic would otherwise end the process with 101, which lets the edit through.
+fn block_on_panic() {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = writeln!(
+            std::io::stderr(),
+            "tessel hook: internal error ({info}); blocking the edit"
+        );
+        #[expect(clippy::exit, reason = "the hook must exit 2 even when it panics")]
+        std::process::exit(i32::from(hook::EXIT_BLOCK));
+    }));
 }
 
 fn fail(error: &anyhow::Error, code: u8) -> ExitCode {

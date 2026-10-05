@@ -27,7 +27,8 @@ Four values identify you. Set them as environment variables, or as keys in `.tes
 Then, once per worktree:
 
 ```
-tessel hook install              # writes the PreToolUse hook to .claude/settings.local.json
+tessel hook install              # writes the PreToolUse hook, pinned to this worktree, to
+                                 # .claude/settings.local.json
 tessel start "<one line: what this work is for>" [--task <issue-id>]
 ```
 
@@ -49,10 +50,16 @@ keeps its old intent. To change the intent, run `tessel stop` and then `tessel s
    everything and stops the daemon. If the coordinator was unreachable, `stop` names the claims
    it did NOT release; they stay held until their lease ends.
 
+The hook is pinned to the worktree where you ran `tessel hook install` (`--root`), so it guards
+that worktree whatever directory the tool runs from. Run `tessel hook install` again after moving
+the worktree, or if the hook says it does not know which worktree it guards (a hook installed by
+an older `tessel` has no root).
+
 The hook does not see changes made through shell commands (`sed`, redirects, formatters). Claim
 those files yourself first. It resolves symlinks, so a link to a file counts as that file. It
 ignores paths outside the worktree and under `.git/` and `.tessel/`, and it blocks a path that is
-not valid UTF-8, because such a path cannot be claimed.
+not valid UTF-8, because such a path cannot be claimed. A relative path is read from the tool's
+working directory; if that directory is missing, the edit is blocked.
 
 ## Scopes and modes
 

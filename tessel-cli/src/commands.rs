@@ -3,7 +3,7 @@
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as Process, ExitCode, Stdio};
 use std::time::Duration;
 
@@ -44,8 +44,8 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
         Command::Release { claim } => release(&cwd, claim).await,
         Command::Stop => stop(&cwd).await,
         Command::Hook {
-            action: HookAction::PreEdit,
-        } => pre_edit(&cwd).await,
+            action: HookAction::PreEdit { root },
+        } => pre_edit(&cwd, root).await,
         Command::Hook {
             action: HookAction::Install,
         } => install(&cwd),
@@ -322,10 +322,15 @@ fn inbox(cwd: &Path, all: bool) -> anyhow::Result<ExitCode> {
 
 // ---------- hook ----------
 
-async fn pre_edit(cwd: &Path) -> anyhow::Result<ExitCode> {
+async fn pre_edit(cwd: &Path, root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
+    let root = root.or_else(|| {
+        std::env::var_os("CLAUDE_PROJECT_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+    });
     let mut stdin = Vec::new();
     let read = std::io::stdin().read_to_end(&mut stdin).map(|_| stdin);
-    let verdict = hook::pre_edit(read, cwd).await;
+    let verdict = hook::pre_edit(read, cwd, root.as_deref()).await;
     if verdict.exit != 0 {
         complain(&verdict.message);
     }
