@@ -1,0 +1,4 @@
+intent: review fixes: Persisted token, plan_delivery, SHADOW_ENABLED, paged replay, send-failure isolation
+assumes: DO input gates keep Watch replay and live fan-out disjoint; a failed send to a non-sender socket is rare and not locally reproducible
+rejected: none
+evidence: cargo test 148 pass; clippy 0 hits; wasm 0 warnings in own files; wrangler dev runs a,c,d,e,f,g, shadow_disabled, 250-event paged replay; 4 of 5 mutants caught, send-failure mutant not exercised
