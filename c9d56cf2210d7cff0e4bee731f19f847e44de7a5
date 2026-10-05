@@ -1,0 +1,4 @@
+intent: close COORD-4 in the roadmap and rewrite STATE for the freeze gate
+assumes: none
+rejected: none
+evidence: docs only; gate and live evidence are in the note on f0868ed
