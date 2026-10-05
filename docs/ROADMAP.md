@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 03:02 EDT.
+**As of:** 2026-10-05 03:14 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` at the COORD-2 merge `8b50045` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-coord-3 | COORD-3 | `.claude/worktrees/coord-3` / `task-coord-3` | reported at `2e760b1` (101 tests); holding → fix pass |
-| cq-coord-3 | COORD-3 review | same worktree, read-only | reviewing `8b50045..HEAD` → verdict |
+| impl-coord-3 | COORD-3 | `.claude/worktrees/coord-3` / `task-coord-3` | fix pass 1 committed at `90f43b6` (104 tests) → re-check |
+| cq-coord-3 | COORD-3 review | same worktree, read-only | "With fixes" on `2e760b1` (1 Important, 5 Minor; 22 of 24 mutants killed) → re-check `90f43b6` |
 | impl-coord-4 | COORD-4 | `.claude/worktrees/coord-4` / `task-coord-4` | reported at `b2cc7c7` (107 tests, local run a–g); holding → fix pass |
 | cq-coord-4 | COORD-4 review | same worktree; live probes on port 8796 | reviewing `8b50045..HEAD` → verdict |
 

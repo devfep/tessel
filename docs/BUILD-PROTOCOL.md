@@ -68,6 +68,11 @@ a new check can fail (mutant or deliberate break, then restore); exit codes deci
 8. The fixed report format: commit sha, files changed, decisions made, gate results with command
    output, mutant table, what was not verified.
 9. `src/protocol.rs` is frozen: a lane that needs a change stops and reports it instead.
+10. The session scratchpad is shared by every lane. Each lane keeps its scripts and scratch files in
+    a subdirectory named for its agent (`scratchpad/<agent>/`) and runs only scripts from there. On
+    5 October 2026 a lane ran a reviewer's mutant script from the shared root four times, mutating
+    and restoring another lane's worktree while it was under review.
+11. Reports and verdicts stay under about 3,000 characters; longer ones are cut off in delivery.
 
 ## 5. Resources
 
