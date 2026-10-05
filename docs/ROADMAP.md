@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 02:57 EDT.
+**As of:** 2026-10-05 03:14 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
 **Tip:** `sprint/build` at the COORD-4 merge `f0868ed` (plus this docs commit), pushed. `main` at `9211b67`.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| code-review | FREEZE | read-only | reviewing pull request 1 (`sprint/build` → `main`) → findings |
-| sec-identify | FREEZE | read-only | security review of `9211b67..HEAD` → findings, then false-positive checks |
+| impl-fix-rust | FIX-RUST | `.claude/worktrees/fix-rust` / `task-fix-rust` | implementing 9 items from the two milestone reviews, incl. SEC-1; local dev on port 8797 → review |
+| impl-fix-steward | FIX-STEWARD | `.claude/worktrees/fix-steward` / `task-fix-steward` | implementing 4 items from the code review; local dev on port 8799 → review |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -48,7 +48,7 @@ to Felix at FREEZE.
    send to another socket closes that socket only; a second `Watch` on a watching socket is refused.
 
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop is quit; start it only to rebuild the sandbox image.
+**Background jobs:** none. Docker Desktop is running for the steward lane and the redeploy; stop it with `docker desktop stop` when FREEZE closes (quitting the window leaves the backend running).
 
 **Deployed:** `tessel-coordinator` (the full coordinator, version `f661b66f`) and `tessel-steward`
 (spikes 2 and 3 with the `TestRunner` container, version `7be0d0c7`) on `devfep.workers.dev`. Queue `tessel-artifacts-events` with
@@ -121,10 +121,17 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   Live on version `f661b66f`: grant, denial with the holder's intent, queue then grant on release,
   watcher replay, expiry through the alarm, and head, counters and the full log intact after a
   redeploy. Not exercised live: close-on-failure for a send to another socket, and hibernation.
-- [ ] **SEC-1** — The coordinator refuses the WebSocket upgrade without the deployment secret.
-  Files: `src/lib.rs`, `src/shell.rs`, `wrangler.toml`, `README.md`.
-  Verify: on the deployed Worker, an upgrade without the secret is refused before any socket is
-  accepted, and the scripted two-agent run still passes with it. Bundled with the fixes from the
-  two milestone reviews as one task.
+- [ ] **FIX-RUST** — Coordinator fixes from the milestone code review and security review: SEC-1 (the
+  upgrade requires the deployment secret), bounded frames, scope counts and state size, waiters
+  withdrawn on disconnect, canonical scope paths only, shared intent, large `from_seq`, state
+  enums, cheaper delivery, `StaleFence` for claims that are gone.
+  Files: `src/lib.rs`, `src/shell.rs`, `src/store.rs`, `src/coordinator.rs`, `wrangler.toml`, `README.md`.
+  Verify: on the deployed Worker an upgrade without the secret gets 401, and the scripted two-agent
+  run passes with it.
+- [ ] **FIX-STEWARD** — Steward fixes from the milestone code review: refuse repos with
+  dependencies as step `install` instead of reporting failed tests, never run repo code when the
+  token revoke failed, cap captured output, mint write tokens for forks only.
+  Files: `tessel-steward/**`.
+  Verify: on the deployed steward `demo` still passes and `POST /repos/demo/tokens` is refused.
 - [ ] **FREEZE** — Milestone gate: full gate on the tip, `/code-review` and `/security-review` on
   the milestone diff, pull request `sprint/build` → `main`, report to Felix, protocol frozen.
