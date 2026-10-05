@@ -4203,6 +4203,20 @@ mod tests {
     }
 
     #[test]
+    fn the_due_check_clamps_now_to_the_clock_as_expire_does() {
+        let mut c = coordinator();
+        let (claim, fence) = grant(&mut c, "a", vec![x_edit()]);
+        let mut value = state_value(&c);
+        value["clock_ms"] = serde_json::json!(NOW + LEASE + 5);
+        let loaded: Coordinator = serde_json::from_value(value).unwrap();
+
+        let behind = NOW + 1;
+        assert!(loaded.has_due_expiry(behind));
+        let effects = loaded.clone().expire(behind);
+        assert_eq!(expired_notices(&effects), vec![(agent("a"), claim, fence)]);
+    }
+
+    #[test]
     fn has_queued_request_is_true_only_while_the_agent_waits() {
         let mut c = coordinator();
         grant(&mut c, "a", vec![x_edit()]);
