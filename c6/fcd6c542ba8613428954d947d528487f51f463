@@ -1,0 +1,5 @@
+intent: bring sprint/build a30785f (STATE only) into task-race-1 before the final gate
+assumes: none
+rejected: none
+evidence: the merge changes only docs/ROADMAP.md
+dogfood: no file claims needed
