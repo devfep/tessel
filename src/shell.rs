@@ -239,10 +239,11 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
             Some(agent) => Action::Call {
                 agent: agent.clone(),
             },
-            None => Action::Reject(error_msg(
-                ErrorCode::NoHello,
-                "send hello before any other message",
-            )),
+            None => Action::Reject(ServerMsg::Error {
+                req: req_of(msg),
+                code: ErrorCode::NoHello,
+                message: "send hello before any other message".to_string(),
+            }),
         },
     }
 }
@@ -425,7 +426,7 @@ pub fn state_limit_reply(req: Option<RequestId>) -> ServerMsg {
     }
 }
 
-/// The `req` a client message carries, if any.
+/// The `req` a client message carries, if any. `Release` carries an optional one.
 pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
     match msg {
         ClientMsg::Claim { req, .. }
@@ -435,10 +436,8 @@ pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
         | ClientMsg::JoinRace { req, .. }
         | ClientMsg::PickWinner { req, .. }
         | ClientMsg::Review { req, .. } => Some(*req),
-        ClientMsg::Hello { .. }
-        | ClientMsg::Heartbeat
-        | ClientMsg::Release { .. }
-        | ClientMsg::Watch { .. } => None,
+        ClientMsg::Release { req, .. } => *req,
+        ClientMsg::Hello { .. } | ClientMsg::Heartbeat | ClientMsg::Watch { .. } => None,
     }
 }
 
@@ -689,6 +688,26 @@ mod tests {
     }
 
     #[test]
+    fn no_hello_rejection_echoes_the_req_of_every_request_carrying_message() {
+        let session = Session::default();
+        let release = msg(r#"{"type":"release","claim":1,"fence":1,"req":8}"#);
+        let old_release = msg(r#"{"type":"release","claim":1,"fence":1}"#);
+        let claim_msg = claim("fail", "depend");
+        for (message, expected) in [
+            (release, Some(RequestId(8))),
+            (old_release, None),
+            (claim_msg.clone(), req_of(&claim_msg)),
+        ] {
+            let Action::Reject(ServerMsg::Error { req, code, .. }) = decide(&session, &message)
+            else {
+                panic!("expected a rejection");
+            };
+            assert_eq!((req, code), (expected, ErrorCode::NoHello));
+        }
+        assert!(req_of(&claim_msg).is_some(), "the claim carries a req");
+    }
+
+    #[test]
     fn unbound_hello_runs_as_the_verified_agent() {
         let Action::Call { agent: who } = decide(&verified("a1"), &hello("a1")) else {
             panic!("expected a core call");
@@ -894,7 +913,11 @@ mod tests {
             panic!("a1 was not granted: {granted:?}");
         };
         run(&mut core, &a2, claim_msg_wait());
-        let release = ClientMsg::Release { claim, fence };
+        let release = ClientMsg::Release {
+            claim,
+            fence,
+            req: None,
+        };
         let (_, effects) = run(&mut core, &a1, release);
         let (_, outbound) = split_effects(effects);
         let sessions = [a1, a2];
@@ -1573,6 +1596,7 @@ mod tests {
         let release = ClientMsg::Release {
             claim: ClaimId(1),
             fence: Fence(1),
+            req: None,
         };
         assert_eq!(work_of(&release), Work::Plain);
         let effects = core.handle(&agent("a"), release, NOW);
@@ -1610,6 +1634,7 @@ mod tests {
         let release = ClientMsg::Release {
             claim: ClaimId(2),
             fence: Fence(2),
+            req: None,
         };
         let effects = recovered.handle(&agent("w0"), release, late);
         let after_release = measured(&recovered, effects, after_expiry.len());
