@@ -1,0 +1,5 @@
+intent: finish wrapping the README paragraph
+assumes: none
+rejected: none
+evidence: awk length>100 clean over the swarm crate and wrangler.toml
+dogfood: agent harness-1, claim 34, fence 59
