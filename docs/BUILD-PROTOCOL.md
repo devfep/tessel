@@ -27,7 +27,11 @@ on speculative or over-engineered code.
   `task-<task>`, cut from the local `sprint/build` tip.
 - Lanes commit only to their task branch. They never push, never commit to `sprint/build`, never
   `git stash`, and edit only files under their own worktree.
-- Before its final gate and report, a lane merges the local `sprint/build` tip into its branch.
+- Before its final gate and report, a lane merges the local `sprint/build` tip into its branch, as
+  its own commit: the merge is committed first and any change follows in a separate commit, so a fix
+  never hides inside a merge commit.
+- The worktree has one user at a time. The orchestrator hands it from reviewer to implementer only
+  after the reviewer's idle notice, not on its verdict message alone.
 - The orchestrator merges every task branch with `tools/merge-one.sh <branch>`: merge-tree guard,
   `git merge --no-ff`, merged tree equals the predicted tree, no deletions, `src/protocol.rs`
   unchanged. A clean merge is not a correct merge: when both sides touched a file, diff the merged
