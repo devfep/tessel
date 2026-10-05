@@ -2624,6 +2624,9 @@ mod tests {
                         effects
                     }
                 };
+                // One call announces everything due by now, in claim id order, whichever of
+                // several lazy clock jumps made it due.
+                pending.sort_by_key(|(_, claim, _)| claim.0);
                 prop_assert_eq!(expired_notices(&effects), std::mem::take(&mut pending));
                 let earliest = active.iter().map(|a| a.expires_at).min();
                 prop_assert_eq!(c.next_expiry_ms(), earliest);
