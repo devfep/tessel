@@ -1,0 +1,4 @@
+intent: test the clock clamp of has_due_expiry
+assumes: none
+rejected: none
+evidence: cargo test 220 passed; removing the clamp turns the new test red
