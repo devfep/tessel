@@ -5,10 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 12:24 EDT.
+**As of:** 2026-10-05 13:18 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the ASSUME-1 merge `4a4644e` plus this STATE commit; the GitHub trunk
-at `29aa8fe` (pull request 1).
+**Tip:** `sprint/build` at the SYM-SIG merge `05793e3` plus this STATE commit; the GitHub trunk at
+`29aa8fe` (pull request 1).
 **Milestone:** PLAN §9 Oct 6 and Oct 7 delivered: an agent claims through the CLI, submits, and the
 steward merges in order behind the review gate; checked live end to end with the real CLI. Dogfood
 v0 ran on `tessel-dogfood` (agent `cli-2`, claims 1–19, every edit claimed first; record in the
@@ -32,7 +32,11 @@ is recorded with the first Tessel commit merged by the steward.
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** none live. DOGFOOD-1 is next.
+**Agents** (cargo capped at 3 jobs under `nice`; load reached about 22 with four lanes building):
+- DOGFOOD-1: built (toolchain image 2.48 GB, step budget 769 s of 780 s); in review (Opus).
+- RACE-1: built (655 tests, 24 mutants); in review (Opus).
+- HARNESS-1 (`.claude/worktrees/harness-1`): building; agent `harness-1`.
+SYM-SIG closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
@@ -84,13 +88,15 @@ hand (his ruling, 07:19), with the orchestrator handing him the command and the 
 - `Summary.reviews_requested` counts review requests, not reviewed merges (see Pending item 1).
 - A submission held for review keeps its locks until a reviewer in `REVIEWERS` decides it; it never
   expires. The CLI has no `review` command yet (raw `review` message only).
+- `skills/tessel/SKILL.md` has four lines over 100 characters (3, 73, 74, 126).
 - Five lines over 100 characters predate REVIEW-1: `src/coordinator.rs:13`,
   `src/coordinator/merging.rs:629` and `:825`, `src/identity.rs:153`, `src/shell.rs:1`.
 - `tessel submit` computes `touched` from a base pinned at the first start and advanced only by
   this agent's `Merged`; deleting `.tessel/state.json` resets it to HEAD (documented). The steward
   also checks the rebased commit's files against the claim (COVER-1), at file level only.
 
-**Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
+**Standing rules:** Sonnet implementers, Opus reviewers. Up to four lanes at once when the Mac has
+headroom (load under about 10), one Docker image build at a time, cargo under `nice`. No
 attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZE. Deploys of the
 two Workers are approved.
 
@@ -229,9 +235,19 @@ two Workers are approved.
   call timeout and the Durable Object alarm's 15-minute wall limit. DOGFOOD-1 must fit inside it:
   measure the real numbers in the probe, then set the step timeouts so their sum stays under the
   call timeout with margin, or move the merge off the alarm's wall clock.
-- [ ] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
+- [ ] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
+  join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
+  trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
+- [ ] **HARNESS-1** — PLAN §8, §9 Oct 9–10: `tessel-swarm`, a seeded workload generator and
+  scripted agents in two modes: coordinated (real protocol, numbers from `Summary::from_events`)
+  and uncoordinated local replay (labelled local); JSON and a Markdown A/B table. Targets only
+  `swarm-*` repos.
+- [x] **SYM-SIG** — from the CLI-2b review: attributes, derives, doc comments, decorators and
   `impl` bounds count as file `edit_body`, so `review_reasons` never flags them as signature
   changes. Put leading attribute and decorator siblings in the signature range.
+  CLOSED 2026-10-05 at `05793e3` (review "Yes" after one fix pass). Doc-only changes count as body
+  (Felix-delegated ruling, review by exception). Dogfood record includes two late claims, stated in
+  the merge note.
 - [x] **REVIEW-1** — `Review` approve/reject for submissions held under invariant 12.
   CLOSED 2026-10-05 at `38e5ff8` (review "Yes" after one fix pass; flagged submissions now get
   `ReviewRequired` before any `Accepted`). Workspace tests 404. Live on `9f75140a`: held submit,
