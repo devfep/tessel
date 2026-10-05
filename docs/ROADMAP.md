@@ -5,9 +5,9 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 03:14 EDT.
+**As of:** 2026-10-05 03:33 EDT.
 **Orchestrator:** Claude Code session in `repos/tessel` (Claude Fable 5.1), role taken 2026-10-05.
-**Tip:** `sprint/build` at the COORD-4 merge `f0868ed` (plus this docs commit), pushed. `main` at `9211b67`.
+**Tip:** `sprint/build` at the FIX-STEWARD merge `7de5ff3` (plus this docs commit), pushed. Pull request 1 to `main` is open.
 **Milestone:** coordinator core, then the protocol API freeze (PLAN §9, Oct 4–5 row). Stop and report
 to Felix at FREEZE.
 
@@ -15,8 +15,8 @@ to Felix at FREEZE.
 
 | Agent | Task | Worktree / branch | Stage → next |
 |---|---|---|---|
-| impl-fix-rust | FIX-RUST | `.claude/worktrees/fix-rust` / `task-fix-rust` | implementing 9 items from the two milestone reviews, incl. SEC-1; local dev on port 8797 → review |
-| impl-fix-steward | FIX-STEWARD | `.claude/worktrees/fix-steward` / `task-fix-steward` | implementing 4 items from the code review; local dev on port 8799 → review |
+| impl-fix-rust | FIX-RUST | `.claude/worktrees/fix-rust` / `task-fix-rust` | reported at `222e499` (199 tests, local run a–g); holding → fix pass if any |
+| cq-fix-rust | FIX-RUST review | same worktree; live probes on port 8796 | reviewing `1e126f2..222e499` → verdict |
 
 **Rulings carried into COORD-2..4** (from the COORD-1 reviews):
 1. The `agent` argument of `handle` is the only identity the core trusts and logs. A `Hello` naming
@@ -51,7 +51,7 @@ to Felix at FREEZE.
 **Background jobs:** none. Docker Desktop is running for the steward lane and the redeploy; stop it with `docker desktop stop` when FREEZE closes (quitting the window leaves the backend running).
 
 **Deployed:** `tessel-coordinator` (the full coordinator, version `f661b66f`) and `tessel-steward`
-(spikes 2 and 3 with the `TestRunner` container, version `7be0d0c7`) on `devfep.workers.dev`. Queue `tessel-artifacts-events` with
+(with the `TestRunner` container, version `64e07633`) on `devfep.workers.dev`. Queue `tessel-artifacts-events` with
 subscriptions `tessel-repo-lifecycle` and `tessel-push-demo--agent-1`. Artifacts repos `demo` and
 `demo--agent-1` in namespace `tessel`.
 
@@ -128,10 +128,11 @@ attribution trailer on commits. `src/protocol.rs` frozen. Deploys of the two Wor
   Files: `src/lib.rs`, `src/shell.rs`, `src/store.rs`, `src/coordinator.rs`, `wrangler.toml`, `README.md`.
   Verify: on the deployed Worker an upgrade without the secret gets 401, and the scripted two-agent
   run passes with it.
-- [ ] **FIX-STEWARD** — Steward fixes from the milestone code review: refuse repos with
+- [x] **FIX-STEWARD** — Steward fixes from the milestone code review: refuse repos with
   dependencies as step `install` instead of reporting failed tests, never run repo code when the
   token revoke failed, cap captured output, mint write tokens for forks only.
-  Files: `tessel-steward/**`.
-  Verify: on the deployed steward `demo` still passes and `POST /repos/demo/tokens` is refused.
+  CLOSED 2026-10-05 at `7de5ff3` (merge of `task-fix-steward`; review "Yes" after two fix passes;
+  119 steward tests). Live on version `64e07633`: `demo` passes, a fork with a declared dependency
+  returns step `install`, a token for `demo` is refused with 403 and one for the fork is issued.
 - [ ] **FREEZE** — Milestone gate: full gate on the tip, `/code-review` and `/security-review` on
   the milestone diff, pull request `sprint/build` → `main`, report to Felix, protocol frozen.
