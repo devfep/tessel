@@ -1,4 +1,4 @@
 intent: mutant allowing --config survived because the refused cases paired it with a second refused token
 assumes: none
 rejected: none
-evidence: vitest 534 pass; mutant rerun below
+evidence: vitest 533 pass (cases added to an existing test); the --config mutant is now killed
