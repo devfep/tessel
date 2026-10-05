@@ -1,0 +1,4 @@
+intent: steward gates repos by the trunk's tessel.toml (instance, install, argv tests), one time budget, measured test step, read-token route and mirror script
+assumes: exec inherits or accepts the toolchain env; cgroup memory.peak is readable in the container; Artifacts readFile accepts a commit sha as ref
+rejected: reading tessel.toml from the clone or fork (a fork could weaken its own gate); one image for lite and standard-4 (image size is capped by instance disk, lite is 2 GB); a Timeout outcome variant (needs merge.rs and the coordinator), reused install with reason=timeout
+evidence: steward typecheck, oxlint, oxfmt, vitest 512 pass; cargo test --workspace 595 pass; clippy -D warnings clean; wasm build clean; cargo deny licenses ok; shellcheck and shfmt clean on mirror.sh
