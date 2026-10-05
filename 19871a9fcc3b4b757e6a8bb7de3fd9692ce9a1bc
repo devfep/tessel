@@ -1,0 +1,4 @@
+intent: make the rebind test cover watch_from
+assumes: none
+rejected: none
+evidence: cargo test 158 pass; mutant resetting watch_from on rebind fails the test
