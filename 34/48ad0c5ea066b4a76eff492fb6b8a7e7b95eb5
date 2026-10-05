@@ -1,0 +1,4 @@
+intent: SKILL.md states the diff base order implemented in submit.rs
+assumes: none
+rejected: none
+evidence: wording matches diff_base; no line added over 100 chars
