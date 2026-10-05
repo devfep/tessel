@@ -1100,10 +1100,15 @@ async fn open_socket(config: &Config) -> Result<Socket, ConnectFailure> {
 /// Reads the whole event log on a short-lived second connection. `Watch { from_seq: 0 }`
 /// replays the log and then follows it live; the replay has no end of its own. So the read then
 /// sends `Hello`, which the coordinator handles after the replay is done (its Durable Object
-/// takes one message at a time while it reads storage). Its `Welcome` reply is sent before the
-/// events it caused, so the first `AgentConnected` for this agent after the `Welcome` is the one
-/// that `Hello` logged: it comes after every event the replay held. A read that does not reach
-/// it within `SNAPSHOT_LIMIT`, or whose `seq` numbers have a gap, is marked truncated.
+/// takes one message at a time while it reads storage; see `watch` in the Worker). Its `Welcome`
+/// reply is sent before the events it caused, so the first event after the `Welcome` must be the
+/// `AgentConnected` that `Hello` logged: it comes after every event the replay held. Any other
+/// first event, a missing marker, a closed socket, `SNAPSHOT_LIMIT` or a gap in `seq` marks the
+/// read truncated.
+///
+/// This depends on the coordinator never running the `Hello` mid-replay. If it did, the read
+/// would see a gap-free prefix of the log with a marker at its end, which none of these checks
+/// can tell from the whole log.
 ///
 /// The read connection is bound to the agent while it lives, so the coordinator withdraws a
 /// queued wait only when the last of the agent's sockets closes; `on_closed` aborts this task
@@ -1154,10 +1159,15 @@ async fn read_log(config: &Config, base: String) -> Result<LogRead, String> {
             // A closed or failed socket mid-read leaves a truncated log, not an unreadable one.
             Err(_) | Ok(None | Some(Err(_))) => break,
             Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<ServerMsg>(&text) {
-                Ok(ServerMsg::Event { event }) => {
-                    marker = welcomed && is_connection_of(&event, &me);
+                Ok(ServerMsg::Event { event }) if welcomed => {
+                    // The first event after the Welcome is the marker or the read is not whole.
+                    marker = is_connection_of(&event, &me);
                     events.push(event);
+                    if !marker {
+                        break;
+                    }
                 }
+                Ok(ServerMsg::Event { event }) => events.push(event),
                 Ok(ServerMsg::Welcome { .. }) => welcomed = true,
                 Ok(ServerMsg::Error { code, .. }) => return Err(format!("refused: {code:?}")),
                 Ok(_) => {}

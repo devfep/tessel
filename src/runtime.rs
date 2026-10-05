@@ -486,6 +486,13 @@ impl Coordinator {
     /// (message or alarm) is delivered, and `deliver` runs in the same turn that its write
     /// completes. Every await in this function is a storage read for that reason. Do not add
     /// an await of any other kind (a `fetch`, a timer) between the first read and the mark.
+    ///
+    /// The CLI relies on this. After `Watch { from_seq: 0 }` it sends `Hello` on the same socket
+    /// and treats the first event after the `Welcome` as the end of the replay: the `Hello` is a
+    /// queued message that this loop's input gate holds back until the whole replay is sent. If
+    /// an await of another kind let that `Hello` run mid-replay, its `AgentConnected` event
+    /// would reach the CLI before the later pages, the CLI would take a prefix of the log for
+    /// the whole log, and it could adopt a claim whose release is still to come.
     async fn watch(&self, ws: &WebSocket, mut session: Session, from_seq: u64) -> Result<()> {
         let storage = self.state.storage();
         let mut start_seq = from_seq;

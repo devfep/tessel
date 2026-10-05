@@ -1015,6 +1015,15 @@ async fn the_hook_resolves_symlinks_before_judging_a_path() -> Result<()> {
         scope_of(&status, 0),
         ("src/b.rs".to_string(), "edit_body".to_string())
     );
+
+    // A link whose target does not exist yet: the write lands in the target, so that is claimed.
+    std::os::unix::fs::symlink("src/new.rs", a1.root().join("dangling.rs"))?;
+    assert_eq!(a1.hook("Write", "file_path", "dangling.rs")?.code, 0);
+    let status = a1.status()?;
+    assert_eq!(
+        scope_of(&status, 1),
+        ("src/new.rs".to_string(), "create".to_string())
+    );
     Ok(())
 }
 
@@ -1111,5 +1120,43 @@ async fn a_wait_queued_while_the_log_is_read_survives_the_read_connection_closin
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(()))).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_log_with_a_missing_seq_is_not_trusted() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("gappy log")?;
+    fake.skip_in_replay(0);
+    fake.lose_next("a1", Lose::ClaimReply);
+    let refused = a1.tessel(&["claim", "src/a.rs"])?;
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(
+        refused.stdout.contains("run it again"),
+        "{}",
+        refused.stdout
+    );
+    assert_eq!(a1.held_claims()?, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_working_socket_closes_the_log_read() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("watched")?;
+    // A read that never reaches its marker stays open until its time limit.
+    fake.stall_live_events(true);
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    eventually(SHORT, || {
+        Ok((fake.watching_sockets() == 1 && hellos(&fake, "a1") > before).then_some(()))
+    })
+    .await?;
+    fake.set_accepting(false);
+    fake.drop_main_connections();
+    eventually(Duration::from_secs(2), || {
+        Ok((fake.watching_sockets() == 0).then_some(()))
+    })
+    .await?;
     Ok(())
 }

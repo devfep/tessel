@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +45,8 @@ struct Inner {
     events: Mutex<Vec<Event>>,
     accepting: AtomicBool,
     cut_replay: AtomicUsize,
+    skip_seq: AtomicU64,
+    stall_live: AtomicBool,
     lose: Mutex<Vec<(String, Lose)>>,
 }
 
@@ -69,7 +71,8 @@ impl Inner {
         let mut log = lock(&self.events);
         let sockets = lock(&self.sockets);
         for event in events {
-            for entry in sockets.iter().filter(|s| s.watching) {
+            let live = !self.stall_live.load(Ordering::SeqCst);
+            for entry in sockets.iter().filter(|s| s.watching && live) {
                 let _ = entry.tx.send(ServerMsg::Event {
                     event: event.clone(),
                 });
@@ -112,7 +115,7 @@ impl Inner {
 pub struct Fake {
     pub url: String,
     inner: Arc<Inner>,
-    kill: watch::Sender<u64>,
+    kill: watch::Sender<(u64, bool)>,
 }
 
 impl Fake {
@@ -135,11 +138,13 @@ impl Fake {
             events: Mutex::new(Vec::new()),
             accepting: AtomicBool::new(true),
             cut_replay: AtomicUsize::new(0),
+            skip_seq: AtomicU64::new(u64::MAX),
+            stall_live: AtomicBool::new(false),
             lose: Mutex::new(Vec::new()),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
-        let (kill, kill_rx) = watch::channel(0);
+        let (kill, kill_rx) = watch::channel((0, false));
         tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx));
         tokio::spawn(expire_loop(Arc::clone(&inner)));
         Ok(Self { url, inner, kill })
@@ -147,12 +152,36 @@ impl Fake {
 
     /// Cuts every open socket without a close frame, as a network failure would.
     pub fn drop_connections(&self) {
-        self.kill.send_modify(|generation| *generation += 1);
+        self.kill.send_modify(|kill| *kill = (kill.0 + 1, false));
     }
 
     /// Refuses (or accepts again) new connections with HTTP 503. Open sockets are unaffected.
     pub fn set_accepting(&self, accepting: bool) {
         self.inner.accepting.store(accepting, Ordering::SeqCst);
+    }
+
+    /// Cuts the sockets that are not reading the event log, as the loss of agents' working
+    /// connections would, and leaves the log readers open.
+    pub fn drop_main_connections(&self) {
+        self.kill.send_modify(|kill| *kill = (kill.0 + 1, true));
+    }
+
+    /// How many sockets are reading the event log right now.
+    pub fn watching_sockets(&self) -> usize {
+        lock(&self.inner.sockets)
+            .iter()
+            .filter(|s| s.watching)
+            .count()
+    }
+
+    /// Withholds live events from event-log readers, so a reader never sees its end marker.
+    pub fn stall_live_events(&self, stall: bool) {
+        self.inner.stall_live.store(stall, Ordering::SeqCst);
+    }
+
+    /// Leaves the event with this `seq` out of every replay, so a reader sees a gap.
+    pub fn skip_in_replay(&self, seq: u64) {
+        self.inner.skip_seq.store(seq, Ordering::SeqCst);
     }
 
     /// Makes every event-log replay stop `n` events short and close, as a dropped connection
@@ -210,13 +239,13 @@ async fn expire_loop(inner: Arc<Inner>) {
     }
 }
 
-async fn accept(listener: TcpListener, inner: Arc<Inner>, kill: watch::Receiver<u64>) {
+async fn accept(listener: TcpListener, inner: Arc<Inner>, kill: watch::Receiver<(u64, bool)>) {
     while let Ok((stream, _)) = listener.accept().await {
         tokio::spawn(serve(stream, Arc::clone(&inner), kill.clone()));
     }
 }
 
-async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<u64>) {
+async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<(u64, bool)>) {
     // Only a drop requested after this socket opened may close it.
     kill.borrow_and_update();
     let verified: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
@@ -286,7 +315,13 @@ async fn serve(stream: TcpStream, inner: Arc<Inner>, mut kill: watch::Receiver<u
     };
     loop {
         tokio::select! {
-            _ = kill.changed() => break,
+            _ = kill.changed() => {
+                let (_, main_only) = *kill.borrow_and_update();
+                let reading = lock(&inner.sockets).iter().any(|s| s.id == id && s.watching);
+                if !(main_only && reading) {
+                    break;
+                }
+            }
             outgoing = rx.recv() => {
                 let Some(msg) = outgoing else { break };
                 let Ok(text) = serde_json::to_string(&msg) else { break };
@@ -334,7 +369,11 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
             let mut sockets = lock(&inner.sockets);
             if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
                 let shown = log.len().saturating_sub(cut);
-                for event in log[..shown].iter().filter(|e| e.seq >= from_seq) {
+                let skip = inner.skip_seq.load(Ordering::SeqCst);
+                for event in log[..shown]
+                    .iter()
+                    .filter(|e| e.seq >= from_seq && e.seq != skip)
+                {
                     let _ = entry.tx.send(ServerMsg::Event {
                         event: event.clone(),
                     });

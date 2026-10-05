@@ -113,8 +113,16 @@ fn classify(root: &Path, resolved: &Path) -> Located {
 /// `link/..` is the parent of the link's target, not the directory holding the link. Components
 /// that do not exist yet are appended as they are.
 fn resolve(cwd: &Path, raw: &str) -> PathBuf {
-    let mut current = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    for component in Path::new(raw).components() {
+    let start = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    resolve_from(start, Path::new(raw), 0)
+}
+
+/// A chain of links longer than this is a loop; the path is left as it stands.
+const MAX_LINK_DEPTH: u32 = 40;
+
+fn resolve_from(start: PathBuf, raw: &Path, depth: u32) -> PathBuf {
+    let mut current = start;
+    for component in raw.components() {
         match component {
             Component::RootDir | Component::Prefix(_) => {
                 current = PathBuf::from(component.as_os_str());
@@ -129,14 +137,27 @@ fn resolve(cwd: &Path, raw: &str) -> PathBuf {
                     .symlink_metadata()
                     .is_ok_and(|meta| meta.file_type().is_symlink());
                 if is_link {
-                    if let Ok(target) = current.canonicalize() {
-                        current = target;
-                    }
+                    current = follow_link(&current, depth);
                 }
             }
         }
     }
     current
+}
+
+/// Where the symlink at `link` leads. A dangling link has no canonical path, but a write
+/// through it still lands at its target, so its target is read and resolved in turn.
+fn follow_link(link: &Path, depth: u32) -> PathBuf {
+    if let Ok(target) = link.canonicalize() {
+        return target;
+    }
+    let (Some(parent), Ok(target)) = (link.parent(), std::fs::read_link(link)) else {
+        return link.to_path_buf();
+    };
+    if depth >= MAX_LINK_DEPTH {
+        return link.to_path_buf();
+    }
+    resolve_from(parent.to_path_buf(), &target, depth + 1)
 }
 
 #[cfg(test)]
@@ -253,6 +274,26 @@ mod tests {
             locate(&root, &root, "in/../x.rs"),
             Located::Inside("a/x.rs".into())
         );
+    }
+
+    #[test]
+    fn a_dangling_symlink_resolves_to_where_a_write_would_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let far = outside.path().canonicalize().unwrap().join("missing.rs");
+        std::os::unix::fs::symlink("src/new.rs", root.join("alias.rs")).unwrap();
+        std::os::unix::fs::symlink("alias.rs", root.join("chain.rs")).unwrap();
+        std::os::unix::fs::symlink(&far, root.join("away.rs")).unwrap();
+        std::os::unix::fs::symlink("loop_b.rs", root.join("loop_a.rs")).unwrap();
+        std::os::unix::fs::symlink("loop_a.rs", root.join("loop_b.rs")).unwrap();
+        let inside = |path: &str| Located::Inside(path.to_string());
+        assert_eq!(locate(&root, &root, "alias.rs"), inside("src/new.rs"));
+        assert_eq!(locate(&root, &root, "chain.rs"), inside("src/new.rs"));
+        assert_eq!(locate(&root, &root, "away.rs"), Located::Outside);
+        // A loop has no target; it stays where it is and is claimed as itself.
+        assert_eq!(locate(&root, &root, "loop_a.rs"), inside("loop_a.rs"));
     }
 
     #[test]
