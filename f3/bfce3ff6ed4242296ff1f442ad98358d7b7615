@@ -1,0 +1,4 @@
+intent: node 22.23.3 (image) exits 1 at startup for 'node -e' when the cwd package.json is unparsable, so the check never reached exit 5; run it from / with the path as an argument
+assumes: node -e passes extra arguments as process.argv[1]
+rejected: process.getBuiltinModule (the crash is before the script runs)
+evidence: steward vitest 514 pass; container check below
