@@ -25,8 +25,9 @@ tests. Each task alone is valid against the starting repository.
 tasks 1 to i minus agents were merged (an agent pulls before its next
 task) and does not see work still in flight. Branches are built in parallel, one directory per
 agent. They are then merged onto the trunk with plain git, in task order, and the tests run after
-each merge. Each merge is recorded as clean, a textual conflict, a broken build (a missing export or module) or broken tests. A merge
-that breaks the build or tests is rolled back, so every merge is judged on a green trunk.
+each merge. Each merge is recorded as clean, a textual conflict, a broken build (a missing export
+or module) or broken tests. A merge that breaks the build or tests is rolled back, so every merge
+is judged on a green trunk.
 
 **`on`** runs N agents as tokio tasks speaking the real protocol over WebSocket: claim (symbol
 scopes where the edit allows, the way the CLI plans them), respect a denial, edit the checkout as
