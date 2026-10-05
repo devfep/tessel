@@ -1,0 +1,4 @@
+intent: review fixes: gate_changed rejects a submission touching tessel.toml; invalid trunk gate fails at install/config; strict command allow-list; budget counts kill grace and reserved time (test share 327 s); timeout outcome (steward plus Rust Timeout and GateChanged, dead tests_reason branch removed); clone verified against the resolved commit; mirror validates https remote and uses --; README documents the lockfile and image procedure
+assumes: a fresh depth-1 clone of the branch has HEAD equal to the commit resolved just before
+rejected: cloning by sha (server support for fetch-by-sha unknown), so the clone is verified against the resolved sha instead
+evidence: steward typecheck, oxlint, oxfmt clean, vitest 533 pass; cargo test --workspace 595 pass; clippy -D warnings, rustfmt, wasm build clean; shellcheck and shfmt clean; mirror script rerun locally
