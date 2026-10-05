@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 19:15 EDT.
+**As of:** 2026-10-05 19:26 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -26,13 +26,14 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** the Artifacts trunk `tessel-dogfood` is at `0118731` (CLI-BASE), mirrored to GitHub
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `720094e` (SHADOW-1), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
 pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
 one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
 conflicts with their rebased copies on the trunk, so catch-ups are one commit on the trunk head).
 **Milestone:** PLAN §9 Oct 6–8 delivered and checked live; dogfood v1 is in use (lanes land
-through the steward). Oct 9 (shadow verification) in progress: SHADOW-1.
+through the steward). Oct 9 shadow verification is on the trunk and deployed (SHADOW-1); the
+swarm policy that exercises it live is SHADOW-2.
 
 **Felix's rulings** (newest first; older ones are in the git notes and earlier STATE commits):
 - 15:2x EDT: (1) agent `orchestrator` joins `REVIEWERS`; it approves held lane work only after the
@@ -49,32 +50,34 @@ through the steward). Oct 9 (shadow verification) in progress: SHADOW-1.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `impl-shadow-1` (Sonnet) in `.claude/worktrees/shadow-1` on `task-shadow-1`, fork
-`tessel-dogfood--lane-shadow-1`, agent `lane-shadow-1`; review "Yes" at `401d8d0` (761 tests).
-Since 19:14 it merges the trunk `0118731` into its branch, rebuilds the fixed CLI, re-gates
-(predicted 767), claims, pushes and submits. Owns `src/coordinator*`.
+**Agents** (dispatched 19:25, both from the trunk `720094e`, both stop for review before pushing):
+- `impl-shadow-2` (Sonnet), `.claude/worktrees/shadow-2`, fork `tessel-dogfood--lane-shadow-2`;
+  owns `tessel-swarm/` and `[env.swarm.vars]` in `wrangler.toml`.
+- `impl-cli-liveness` (Sonnet), `.claude/worktrees/cli-liveness`, fork
+  `tessel-dogfood--lane-cli-liveness`; owns `tessel-cli/`.
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop stopped.
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `66fbe44a` (`REVIEWERS = "felix,orchestrator"`, deployed by Felix
-  about 16:04). Live: a review as `orchestrator` passes the reviewer check (`unknown_claim` for a
-  missing claim); a non-reviewer gets `not_owner`.
-  Every upgrade needs a steward-minted agent token. The old `COORDINATOR_TOKEN` secret is unused
-  and still set; delete with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
+- `tessel-coordinator` version `3c2e946f` (trunk `720094e`, SHADOW-1; deployed 19:22 from the
+  lane worktree holding that tree; `REVIEWERS = "felix,orchestrator"`, shadows off). Loads its
+  stored state: 223 events replayed, head `720094e`. Every upgrade needs a steward-minted agent
+  token. The old `COORDINATOR_TOKEN` secret is unused and still set (a secret delete: Felix's).
 - `tessel-steward` version `f5f3d912` (deployed by Felix about 16:15; the first attempt failed in
-  wrangler's image push, untagged mid-push, and the retry succeeded): toolchain image (Rust, Node 22, pnpm, GNU time, tini) on
+  wrangler's image push, untagged mid-push, and the retry succeeded): toolchain image (Rust, Node
+  22, pnpm, GNU time, tini) on
   `standard-4` for repos with `tessel.toml`; the `lite` image otherwise. Admin routes need
   `STEWARD_ADMIN_TOKEN` (`tessel-steward/.dev.vars`): `POST /repos/<repo>` (create),
   `/forks/<fork>`, `/tokens` (fork write tokens), `/read-tokens`, `/agents/<agent>/identity`,
   `/test-runs`, `/merges` (admin merge; the only path that may change `tessel.toml`).
-- Artifacts (namespace `tessel`): `tessel-dogfood` (the dogfood v1 trunk, `8432f8c`) and forks
+- Artifacts (namespace `tessel`): `tessel-dogfood` (the trunk, `720094e`) and forks
   `tessel-dogfood--orchestrator` (at `aadba8b`, sprint/build lineage: do not submit from it),
-  `tessel-dogfood--admin` (catch-ups), `tessel-dogfood--lane-shadow-1`; `demo`, `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos.
-  The stray `tessel` was deleted by Felix about 16:05 (confirmed gone from the listing). Queue `tessel-artifacts-events` with its subscriptions as before.
-- `tessel-coordinator-swarm` version `39c3a7de` (secret change on `44538ffb`;
-  `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only). Live: a steward-minted token gets
-  `welcome`, `tessel-dogfood` gets 403, no token gets 401.
+  `tessel-dogfood--admin` (catch-ups), `tessel-dogfood--lane-<task>` per lane; `demo`,
+  `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos. Queue `tessel-artifacts-events` with its
+  subscriptions as before.
+- `tessel-coordinator-swarm` version `9ce71fc0` (trunk `720094e`; `REVIEWERS = "swarm-reviewer"`,
+  `swarm-*` repos only, shadows off until SHADOW-2). Loads its stored state (the seed-1 run's log
+  replays). Earlier: a steward-minted token gets `welcome`, `tessel-dogfood` 403, no token 401.
 
 **Pending from Felix:**
 0. Nothing blocking. The fork-push allow rule is in `.claude/settings.local.json` (Felix, 18:3x).
@@ -293,10 +296,17 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   under 10 s cold; clone plus fetch under 60 s; install under 45 s; test under 200 s warm and 240 s
   cold; peak memory under 9 GiB; a full merge over the service binding under 600 s; and the gate
   self-protection (submissions touching `tessel.toml` refused, admin-only escape hatch) has landed.
-- [ ] **SHADOW-1** — PLAN §8 item 2, §9 Oct 9: when a blocking claim's work merges, the
+- [x] **SHADOW-1** — PLAN §8 item 2, §9 Oct 9: when a blocking claim's work merges, the
   coordinator has the steward trial each shadow submission it blocked against the pre- and
   post-merge trunk (the ASSUME-1 primitive) and appends `DenialVerified`; a red baseline or a
-  trial without a result counts nothing. The first lane to land through the steward.
+  trial without a result counts nothing (`Inconclusive`).
+  CLOSED 2026-10-05 at trunk `720094e` (review "Yes" after one fix pass). Merged through the
+  steward: claim 38, held for three signature changes, approved by `orchestrator` (event 218)
+  after its gate on `5497ebe` (the reviewed `401d8d0` merged with the trunk; tree checked equal to
+  a clean merge): 767 passed. Submitted touched = the four coordinator files. Deployed: swarm
+  `9ce71fc0`, production `3c2e946f`; both load state saved before the change (production replays
+  223 events, head `720094e`). Not exercised live: a `DenialVerified` (shadows are off on both
+  Workers; SHADOW-2 turns them on for swarm).
 - [x] **CLI-BASE** — found landing SHADOW-1: `tessel submit` diffed from the coordinator's head
   `36abdb3`, which exists locally (shared object store) but is not an ancestor of the work, and
   listed 244 unrelated scopes. `diff_base` now takes the coordinator's head when it is in the
@@ -310,6 +320,11 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   sent exactly the 4 files against the stale head, held for review (signature change), approved by
   `orchestrator` (event 201, note with the Opus verdict and gate), merged by the steward, trunk
   fast-forwarded `8432f8c..0118731`, coordinator head now `0118731`, mirrored to `artifacts-trunk`.
+- [ ] **SHADOW-2** — PLAN §8, §9 Oct 9–10: `SHADOW_ENABLED = "true"` for `[env.swarm]` only, and a
+  shadow policy in `tessel-swarm` (a denied scripted agent claims with `OnConflict::Shadow`, keeps
+  working, submits), so the A/B table's "Conflicts prevented, verified by shadow runs" cell comes
+  from `DenialVerified` events. (The first live run's 120 s timeout is a run setting,
+  `--task-timeout`, to raise for the Oct 10 runs, not code.)
 - [ ] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
