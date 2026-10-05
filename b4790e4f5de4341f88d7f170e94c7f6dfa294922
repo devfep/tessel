@@ -1,0 +1,4 @@
+intent: harden the test runner per review: early token revoke, non-masking cleanup, manual redirects, honest result semantics
+assumes: revokeToken(id) of an already-revoked token is not called twice (revokeOnce guards it); wrangler dev still runs containers
+rejected: letting cleanup errors throw (would replace the run result or original Artifacts error); logging only, chosen
+evidence: typecheck/oxlint/oxfmt clean; vitest 62 passed (expected 62); local POST /repos/demo/test-runs passed:true exit 0, no cleanup failures logged; mutants R2 and G8 turn tests red
