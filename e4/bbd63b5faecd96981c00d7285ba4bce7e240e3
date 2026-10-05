@@ -1,0 +1,4 @@
+intent: record the SHADOW-1 verdict, the push blocker and two follow-up tasks
+assumes: none
+rejected: none
+evidence: rev-shadow-1 Yes at 401d8d0, 761 tests
