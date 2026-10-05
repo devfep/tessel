@@ -1,0 +1,5 @@
+intent: plain comments no longer end the leading run; trait headers are member signature; doc-only change is edit_body
+assumes: tree-sitter lists attributes, decorators and comments as preceding siblings
+rejected: doc comments as signature (typo fixes would go to review and contend with body editors); unsafe impl on an empty impl (no member to carry it, stays file edit_body)
+evidence: cargo test --workspace 614 passed, clippy -D warnings clean
+dogfood: claim 26 fence 43 on symbols.rs, plan.rs, SKILL.md, granted before editing
