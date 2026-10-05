@@ -1,0 +1,4 @@
+intent: record the swarm Worker and coordinator checks, the stray repo delete and the first live swarm run
+assumes: none
+rejected: none
+evidence: swarm 39c3a7de welcome/403/401; coordinator 66fbe44a orchestrator unknown_claim vs probe-a1 not_owner; repos list without tessel; swarm seed 1 on 9/10 landed, 1 timed out (no grant in 120 s), off 7/10
