@@ -5,10 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 07:58 EDT.
+**As of:** 2026-10-05 08:24 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (Claude Opus 5.5).
-**Tip:** `sprint/build` at the PROTO-FREEZE merge `e402440` (merged by Felix) plus this STATE
-commit; `main` at `29aa8fe` (pull request 1).
+**Tip:** `sprint/build` at the STEWARD-1 merge `663c65c` plus this STATE commit; `main` at
+`29aa8fe` (pull request 1).
 **Milestone:** protocol frozen with Felix's additions. Next is PLAN §9 Oct 6 (CLI levels 1–2, skill
 file, dogfood v0); the steward merge executor (Oct 7) starts early in a disjoint lane.
 
@@ -23,8 +23,8 @@ except ruling 3, which lands with the steward merge path:
 `tools/merge-one.sh` refuses any change to `src/protocol.rs`; a change there is merged by Felix by
 hand (his ruling, 07:19), with the orchestrator handing him the command and the predicted tree.
 
-**Agents:** CLI-1 (Sonnet, worktree `.claude/worktrees/cli-1`) and STEWARD-1 (Sonnet, worktree
-`.claude/worktrees/steward-1`), both cut from this commit, dispatched 07:58.
+**Agents:** CLI-1 (Sonnet, worktree `.claude/worktrees/cli-1`) in review (Opus) since 08:16.
+STEWARD-1 closed and reclaimed.
 **Merge queue:** empty.
 **Background jobs:** none.
 
@@ -33,8 +33,9 @@ hand (his ruling, 07:19), with the orchestrator handing him the command and the 
   by the steward for that repo and agent. `IDENTITY_SIGNING_KEY` is set on both Workers and kept in
   both gitignored `.dev.vars` files. The old `COORDINATOR_TOKEN` secret is unused (refused live) and
   still set on the Worker; delete it with `wrangler secret delete COORDINATOR_TOKEN` when convenient.
-- `tessel-steward` version `dfed7cbe`, with the `TestRunner` container; admin routes need
-  `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/agents/<agent>/identity`
+- `tessel-steward` version `0b6da38d`, with the `TestRunner` container; admin routes need
+  `STEWARD_ADMIN_TOKEN` (in `tessel-steward/.dev.vars`). `POST /repos/<repo>/merges` runs the merge
+  executor (STEWARD-1). `POST /repos/<repo>/agents/<agent>/identity`
   mints a 24 h agent token.
 - Queue `tessel-artifacts-events` with subscriptions `tessel-repo-lifecycle` and
   `tessel-push-demo--agent-1` (the fork subscription goes once the Submit path lands). Artifacts
@@ -56,6 +57,12 @@ hand (his ruling, 07:19), with the orchestrator handing him the command and the 
 - Worker glue in `src/lib.rs` has no native tests; it is covered by `Persisted`, the pure
   functions it calls, and the live runs in the merge notes.
 - Not exercised live: closing another socket after a failed send to it.
+- Merge executor: a process the repo's tests detach (setsid, nohup) can outlive the test timeout
+  and still run while the push token is live. Bounded: the push gateway forwards only the pinned
+  update, and the outcome comes from a Worker-side read of the trunk. Isolating the tests under
+  their own uid would close it.
+- Merge executor: pushes over 1 MiB (git's probe request) are not exercised live.
+- Scratch repos `gate6-*` in Artifacts hold test state only.
 
 **Standing rules:** Sonnet implementers, Opus reviewers. At most two lanes building at once. No
 attribution trailer on commits. `src/protocol.rs` changes only under PROTO-FREEZE. Deploys of the
@@ -65,8 +72,8 @@ two Workers are approved.
 1. Review CLI-1 and STEWARD-1 as they report.
 2. After CLI-1: SKILL-1 (skill file and fork `AGENTS.md`, describing only shipped commands), then
    CLI-2 (tree-sitter symbol claims, mode escalation), then dogfood v0.
-3. After STEWARD-1: wire `Submit` from the coordinator to the steward and the outcome back
-   (`Merged` / `SubmitRejected`), per Felix's ruling 3.
+3. SUBMIT-1 (next to dispatch): wire `Submit` from the coordinator to the steward merge
+   executor and the outcome back (`Merged` / `SubmitRejected`), per Felix's ruling 3.
 
 ## Tasks
 
@@ -133,7 +140,11 @@ two Workers are approved.
 - [ ] **CLI-1** — PLAN §9 Oct 6: protocol as a library, `tessel-cli` with a per-worktree daemon,
   `start`/`claim`/`status`/`inbox`/`release`/`stop`, and the Claude Code pre-edit hook that
   auto-claims files and blocks on denial.
-- [ ] **STEWARD-1** — PLAN §9 Oct 7, early: steward merge executor. Verify a fork commit, rebase it
+- [x] **STEWARD-1** — PLAN §9 Oct 7, early: steward merge executor. Verify a fork commit, rebase it
   onto the trunk in the Sandbox, test, push only if the trunk has not moved; report a typed outcome.
+  CLOSED 2026-10-05 at `663c65c` (review "Yes" after two fix passes; `merged` is decided by a read
+  of the trunk, never by the sandbox's exit code). Steward tests 307. Live on `0b6da38d`: merged,
+  already_merged, commit_not_in_fork, tests_failed, conflict, and main_moved from two concurrent
+  merges, each with the trunk checked afterwards.
 - [ ] **SKILL-1** — skill file and the `AGENTS.md` carried into forks, for shipped commands only.
 - [ ] **CLI-2** — tree-sitter symbol claims and mode escalation in the pre-edit hook.
