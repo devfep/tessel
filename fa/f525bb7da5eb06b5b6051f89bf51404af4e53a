@@ -1,0 +1,4 @@
+intent: bring the branch up to trunk e894fbe (ACCESS-VARS, tessel-steward/wrangler.jsonc only)
+assumes: none
+rejected: none
+evidence: merge was clean, no conflicts; the only file the trunk changed is not touched by this branch
