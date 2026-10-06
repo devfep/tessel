@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 23:42 EDT.
+**As of:** 2026-10-06 00:30 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -26,7 +26,8 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** the Artifacts trunk `tessel-dogfood` is at `c79712a` (SWARM-OBSERVER), mirrored to GitHub
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `d4e6335` (DASH-1a on DASH-1b `715d8dd`; tree
+checked equal to the two gated heads combined), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
 pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
 one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
@@ -61,14 +62,12 @@ run). A small sample: it shows the mechanism live, not a rate.
   protocol decision on `ReleaseReason::Settled`; daemon stopped, no claims held. Its first commit
   `cd83a74` was made with no claims (late claims, record in the merge note). Must merge the trunk
   before landing.
-- `impl-dash-summary` (Sonnet), dispatched 23:41, `.claude/worktrees/dash-summary` (from
-  `c79712a`), fork `tessel-dogfood--lane-dash-summary`; owns `src/runtime.rs` (and `src/shell.rs`
-  if needed): DASH-1a, `GET /repo/<name>/summary` → `{"summary": Summary, "head_seq": n}`, same
-  token check as `/ws`, appends no event.
-- `impl-dash-ui` (Sonnet), dispatched 23:41, `.claude/worktrees/dash-ui` (from `c79712a`), fork
-  `tessel-dogfood--lane-dash-ui`; owns `tessel-steward/`: DASH-1b, `/dashboard/<repo>` page, SSE
-  relay of the coordinator `Watch`, `/summary` proxy, Access JWT check failing closed (503) until
-  `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are set.
+- No other lane live. `.claude/worktrees/deploy` is a detached checkout of the trunk `d4e6335`
+  used for deploys (holds `tessel-steward/node_modules`); remove it after the steward deploy.
+**Blocked: the steward deploy (DASH-1b live).** Docker Desktop was started at 00:19 for the
+steward's image build; its backend runs but `docker info` hangs (likely a Docker Desktop window
+waiting for a click: update, sign-in or terms). When Felix is back: look at Docker Desktop, then
+the orchestrator runs `npx wrangler deploy` in `.claude/worktrees/deploy/tessel-steward`.
 **Decided (Felix delegated it, 23:05):** the dashboard and review screen sign in through
 Cloudflare Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths; the
 steward verifies the `Cf-Access-Jwt-Assertion` JWT (team certs, the application's AUD tag) and
@@ -88,28 +87,32 @@ in the Cloudflare dashboard alone would be wiped on the next deploy (DASH-1b rev
 (`mds_stores`) on gate copies' `target/` dirs plus the iOS simulators; gate copies are trashed
 right after each run.
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop stopped.
+**Background jobs:** none. Docker Desktop started but not answering (see above).
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `3c2e946f` (trunk `720094e`, SHADOW-1; deployed 19:22 from the
-  lane worktree holding that tree; `REVIEWERS = "felix,orchestrator"`, shadows off). Loads its
-  stored state: 223 events replayed, head `720094e`. Every upgrade needs a steward-minted agent
+- `tessel-coordinator` version `8120ee30` (trunk `d4e6335`; deployed 00:16 from the trunk
+  checkout; `REVIEWERS = "felix,orchestrator"`, shadows off). Serves `GET /repo/<name>/summary`;
+  live: 200 JSON (`claims_granted` 54, `merges` 7, `reviews_requested` 6, `denials` 0,
+  `head_seq` 323), a second read leaves `head_seq` unchanged (no event appended), no token 401,
+  another repo's token 401, POST 405 `Allow: GET`. Every upgrade needs a steward-minted agent
   token. The old `COORDINATOR_TOKEN` secret is unused and still set (a secret delete: Felix's).
-- `tessel-steward` version `f5f3d912` (deployed by Felix about 16:15; the first attempt failed in
+- `tessel-steward` version `f5f3d912` — NOT yet the dashboard (trunk `d4e6335` holds DASH-1b; the
+  deploy waits for Docker, see Blocked above). Deployed by Felix about 16:15; the first attempt failed in
   wrangler's image push, untagged mid-push, and the retry succeeded): toolchain image (Rust, Node
   22, pnpm, GNU time, tini) on
   `standard-4` for repos with `tessel.toml`; the `lite` image otherwise. Admin routes need
   `STEWARD_ADMIN_TOKEN` (`tessel-steward/.dev.vars`): `POST /repos/<repo>` (create),
   `/forks/<fork>`, `/tokens` (fork write tokens), `/read-tokens`, `/agents/<agent>/identity`,
   `/test-runs`, `/merges` (admin merge; the only path that may change `tessel.toml`).
-- Artifacts (namespace `tessel`): `tessel-dogfood` (the trunk, `78e9f2a`) and forks
+- Artifacts (namespace `tessel`): `tessel-dogfood` (the trunk, `d4e6335`) and forks
   `tessel-dogfood--orchestrator` (at `aadba8b`, sprint/build lineage: do not submit from it),
   `tessel-dogfood--admin` (catch-ups), `tessel-dogfood--lane-<task>` per lane; `demo`,
   `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos. Queue `tessel-artifacts-events` with its
   subscriptions as before.
-- `tessel-coordinator-swarm` version `f6d0e4b1` (trunk `78e9f2a`, deployed 20:48;
-  `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only, `SHADOW_ENABLED = "true"`). Earlier: a
-  steward-minted token gets `welcome`, `tessel-dogfood` 403, no token 401.
+- `tessel-coordinator-swarm` version `a3825731` (trunk `d4e6335`, deployed 00:17;
+  `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only, `SHADOW_ENABLED = "true"`). Live: the
+  summary for `swarm-s1-tmgnje` (the 20:49 shadow run) reads 2 verified preventions, 0 false
+  alarms, precision 1.0, 2 denials, 4 merges, `head_seq` 32; `tessel-dogfood` gets 403.
 
 **Pending from Felix:**
 - (NEW, 23:20, blocks SHADOW-GC) Invariant 10: SHADOW-GC drops finished shadow claims with no
@@ -385,9 +388,17 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   coordinator for one repo and shows active claims and their holders, denials with the holder's
   intent (quoted as untrusted data: escaped, never rendered as HTML), waits, races, merges, review
   holds, verified denials, and the headline numbers from `Summary::from_events` (the same function
-  as the A/B table; a denial is never shown as a prevention). Needs: how the browser authenticates
-  to the steward for a read-only view (the orchestrator brings one recommendation before building).
+  as the A/B table; a denial is never shown as a prevention). Sign-in: Cloudflare Access (decided).
   Video segment 1:15–3:00 runs on it (PLAN §10).
+  MERGED in two lanes. DASH-1a (coordinator `GET /repo/<name>/summary`, paged fold with a cached
+  tally, no event appended): review "Yes" after one fix pass plus one test assert read by the
+  orchestrator; claim 54 approved (event 320) after the gate on `ead276f` (817); deployed to both
+  coordinators and checked live. DASH-1b (steward page, SSE relay of `Watch` with no `hello`,
+  30 s keepalive, bounded queue, Access JWT check failing closed, strict CSP, textContent only):
+  review "Yes" after one fix pass; its last commit `715d8dd` (served-CSP test, refetch limit by
+  attempt time) merged unflagged before the orchestrator read it, read right after: sound
+  (BUILD-PROTOCOL rule 00 added). Trunk `d4e6335`. Open: the steward deploy (Docker), then
+  Felix's Access setup, then a live check of the page; not closed until then.
 - [ ] **REVIEW-UI** — PLAN §4, §9 Oct 8: a review screen beside the dashboard for submissions held
   under invariant 12: the reasons from `review_reasons`, the diff, the claim's intent and
   assumptions (untrusted data), and approve/reject that sends `Review` as a configured reviewer.
