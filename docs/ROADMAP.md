@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 23:28 EDT.
+**As of:** 2026-10-05 23:42 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -26,7 +26,7 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** the Artifacts trunk `tessel-dogfood` is at `78e9f2a` (SHADOW-2), mirrored to GitHub
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `c79712a` (SWARM-OBSERVER), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
 pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
 one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
@@ -54,22 +54,27 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents** (dispatched 23:02 from the trunk `78e9f2a`):
-- `impl-swarm-observer` (Sonnet), `.claude/worktrees/swarm-observer`, fork
-  `tessel-dogfood--lane-swarm-observer`; owns `tessel-swarm/`. Fix pass 1 at `ceed37f` (802
-  tests), with `rev-swarm-observer` for re-check. Late claim on `on.rs` (first commit); claimed
-  before every edit since.
-- `impl-shadow-gc` (Sonnet), `.claude/worktrees/shadow-gc`, fork `tessel-dogfood--lane-shadow-gc`;
-  owns `src/coordinator*`, `src/shell.rs`, `src/runtime.rs`. PARKED at `3a3cbd2` (802 tests;
-  review "With fixes": the non-blocking fixes are done) waiting for Felix's protocol decision on
-  `ReleaseReason::Settled`; daemon stopped, no claims held. Its first commit `cd83a74` was made
-  with no claims (late claims, record in the merge note). DASH-1 waits for this lane to land.
+**Agents:**
+- `impl-shadow-gc` (Sonnet), `.claude/worktrees/shadow-gc` (from `78e9f2a`), fork
+  `tessel-dogfood--lane-shadow-gc`; owns `src/coordinator.rs`, `src/coordinator/*.rs`. PARKED at
+  `3a3cbd2` (802 tests; review "With fixes": the non-blocking fixes are done) waiting for Felix's
+  protocol decision on `ReleaseReason::Settled`; daemon stopped, no claims held. Its first commit
+  `cd83a74` was made with no claims (late claims, record in the merge note). Must merge the trunk
+  before landing.
+- `impl-dash-summary` (Sonnet), dispatched 23:41, `.claude/worktrees/dash-summary` (from
+  `c79712a`), fork `tessel-dogfood--lane-dash-summary`; owns `src/runtime.rs` (and `src/shell.rs`
+  if needed): DASH-1a, `GET /repo/<name>/summary` → `{"summary": Summary, "head_seq": n}`, same
+  token check as `/ws`, appends no event.
+- `impl-dash-ui` (Sonnet), dispatched 23:41, `.claude/worktrees/dash-ui` (from `c79712a`), fork
+  `tessel-dogfood--lane-dash-ui`; owns `tessel-steward/`: DASH-1b, `/dashboard/<repo>` page, SSE
+  relay of the coordinator `Watch`, `/summary` proxy, Access JWT check failing closed (503) until
+  `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are set.
 **Decided (Felix delegated it, 23:05):** the dashboard and review screen sign in through
 Cloudflare Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths; the
 steward verifies the `Cf-Access-Jwt-Assertion` JWT (team certs, the application's AUD tag) and
 maps Felix's email to reviewer `felix`. Until Access is on, those paths answer "sign-in not
-configured" (fail closed). Order: DASH-1 after SHADOW-GC lands (DASH-1 needs a read-only
-`Summary` route in `src/runtime.rs`, which SHADOW-GC holds), then REVIEW-UI.
+configured" (fail closed). SHADOW-GC's commits do not touch `src/runtime.rs`, so DASH-1 started
+at 23:41 in two lanes (DASH-1a coordinator route, DASH-1b steward page); REVIEW-UI after.
 **Access setup for Felix at his desk (about 5 minutes; the session cannot do it):** in the
 Cloudflare dashboard, Zero Trust → (first time: pick a team name and the Free plan; it may ask for
 a payment method) → Access → Applications → Add → Self-hosted: name `tessel-dashboard`, domain
@@ -389,12 +394,17 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   repo for real agents (the video's 3–5 real agents beside the scripted ones, PLAN §9 Oct 10),
   e.g. a `tessel-swarm demo-repo --repo swarm-demo` command, a LICENSE in it, and a check that the
   CLI's tree-sitter labels its symbols as expected. No second demo repo.
-- [ ] **SWARM-OBSERVER** — from the SHADOW-2 review (both can only lower the reported count):
-  (1) `on.rs` ~218: if the shared watcher stopped on a gap or gave up and the stale log owes
-  nothing, the final wait returns Ok and `watcher.abort()` drops the error (never swallow it:
-  `if watcher.is_finished() { watcher.await??; }`, or bail on a closed channel). (2) `on.rs` ~252:
-  the final wait's only guard is a non-empty log; record each `Accepted` shadow claim and require
-  its `Submitted` in the watched log before "nothing owed"; a test that kills mutant M11.
+- [x] **SWARM-OBSERVER** — from the SHADOW-2 review (both could only lower the reported count):
+  a failed shared log watcher's error was dropped at the end of a run, and the final wait trusted
+  any non-empty log. Now the watcher is aborted then awaited, its error leads (the agent's or the
+  final wait's kept as context), and the final wait needs every accepted shadow's `Submitted`.
+  CLOSED 2026-10-05 at trunk `c79712a` (review "Yes" after one fix pass, then a tests-only
+  follow-up read by the orchestrator: a deterministic shadow in the watcher-failure test). Through
+  the steward: claim 44 (late claim on `on.rs` in the first commit; one `uncovered` refusal),
+  approved by `orchestrator` (event 283) after its gate on `c79712a`: 802 passed.
+- [ ] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
+  (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
+  hides a watcher error. Scripted reviewer only; low priority.
 - [ ] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
