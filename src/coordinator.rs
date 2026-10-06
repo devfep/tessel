@@ -425,7 +425,7 @@ impl Coordinator {
         let mut effects = self.expire(now_ms);
         effects.extend(self.route(agent, msg, now_ms));
         self.drop_ended_verifications();
-        self.drop_finished_shadows();
+        effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
 
@@ -469,7 +469,7 @@ impl Coordinator {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
         self.drop_ended_verifications();
-        self.drop_finished_shadows();
+        effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
 
@@ -4253,7 +4253,10 @@ mod tests {
         let lapsed = c.expire(NOW + 10 * LEASE);
         assert_eq!(
             released(&lapsed),
-            [(ClaimId(1), ReleaseReason::LeaseExpired)]
+            [
+                (ClaimId(1), ReleaseReason::LeaseExpired),
+                (s, ReleaseReason::Settled)
+            ]
         );
         assert_eq!(c.next_expiry_ms(), None);
     }

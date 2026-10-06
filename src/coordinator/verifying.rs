@@ -54,9 +54,9 @@
 //!   is queued or running (`drop_finished_shadows`). That covers a shadow whose blockers all
 //!   merged and were tried, whose blockers all ended without merging, and one blocked only by a
 //!   race (no blocker to wait for, so it can never be tried). A shadow with a live blocker stays:
-//!   the blocker may still merge. A drop logs nothing: no `ReleaseReason` is true of it (the work
-//!   was not merged, the agent did not release it, no lease ran out), and `DenialVerified` is
-//!   already the record of the outcome.
+//!   the blocker may still merge. A drop logs `ClaimReleased` with `ReleaseReason::Settled`: the
+//!   log then says the claim ended, which no other reason says truly (the work was not merged, the
+//!   agent did not release it, no lease ran out). `DenialVerified` stays the record of the outcome.
 //! - A conflict is not sent to the assuming agent as a message: no `ServerMsg` says "your
 //!   assumption broke" (`AssumptionChallenged` says "re-check it" and would be read as a second
 //!   challenge). The event is the record, and watchers receive it.
@@ -69,7 +69,9 @@ use super::{ClaimKind, Coordinator, Effect};
 use crate::merge::{
     infra_backoff_ms, TestsVerdict, TrialReport, TrialVerdict, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
 };
-use crate::protocol::{AgentId, Assumption, ClaimId, CommitId, EventKind, Outcome, RaceId};
+use crate::protocol::{
+    AgentId, Assumption, ClaimId, CommitId, EventKind, Outcome, RaceId, ReleaseReason,
+};
 
 /// An assumption a submission challenged at submit time, kept with the submission until it merges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,15 +220,16 @@ impl Coordinator {
     }
 
     /// Drop each submitted shadow claim that nothing is owed through (see the module docs). Run
-    /// after anything that can end a claim or finish a trial. Nothing is logged.
-    pub(super) fn drop_finished_shadows(&mut self) {
+    /// after anything that can end a claim or finish a trial. Each drop is logged as
+    /// `ClaimReleased { Settled }`, in claim id order.
+    pub(super) fn drop_finished_shadows(&mut self, now_ms: u64) -> Vec<Effect> {
         if self
             .state
             .claims
             .values()
             .all(|claim| claim.kind != ClaimKind::Shadow)
         {
-            return;
+            return Vec::new();
         }
         let trialled: HashSet<u64> = self
             .state
@@ -246,9 +249,14 @@ impl Coordinator {
             })
             .map(|(id, _)| *id)
             .collect();
+        let mut effects = Vec::new();
         for id in finished {
             self.state.claims.remove(&id);
+            let claim = ClaimId(id);
+            let reason = ReleaseReason::Settled;
+            effects.push(self.event(now_ms, EventKind::ClaimReleased { claim, reason }));
         }
+        effects
     }
 
     /// Queue the tests of a race entry: `commit` of `agent`'s fork tried on `head`, which is both
@@ -345,8 +353,8 @@ impl Coordinator {
         let Some(flight) = self.state.verification_in_flight.take() else {
             return Vec::new();
         };
-        let effects = self.retry_verification_after_infrastructure(flight.id, now_ms);
-        self.drop_finished_shadows();
+        let mut effects = self.retry_verification_after_infrastructure(flight.id, now_ms);
+        effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
 
@@ -397,8 +405,9 @@ impl Coordinator {
         report: &TrialReport,
         now_ms: u64,
     ) -> Vec<Effect> {
-        let effects = self.apply_verification_outcome(id, report, now_ms);
-        self.drop_finished_shadows();
+        let now_ms = self.advance_clock(now_ms);
+        let mut effects = self.apply_verification_outcome(id, report, now_ms);
+        effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
 
@@ -2012,5 +2021,175 @@ mod tests {
 
         assert_eq!(denial_events(&effects).len(), 1);
         assert!(!is_live(&stored, shadowed));
+    }
+
+    // ---- the log of a dropped shadow ----
+
+    fn settled(effects: &[Effect]) -> Vec<ClaimId> {
+        logged(effects)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                EventKind::ClaimReleased {
+                    claim,
+                    reason: ReleaseReason::Settled,
+                } => Some(*claim),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_dropped_shadow_logs_exactly_one_settled_release_in_claim_order() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let mut shadows = Vec::new();
+        for who in ["a1", "a3", "a4"] {
+            let claim = shadow(&mut c, who, "src/a.rs");
+            submit(&mut c, who, claim, "src/a.rs");
+            shadows.push(claim.0);
+        }
+
+        let effects = c.handle(
+            &agent("a2"),
+            ClientMsg::Release {
+                claim: blocker.0,
+                fence: blocker.1,
+                req: None,
+            },
+            NOW,
+        );
+
+        assert_eq!(settled(&effects), shadows);
+        let again = c.expire(NOW + 1);
+        assert!(
+            settled(&again).is_empty(),
+            "a dropped shadow is not logged twice"
+        );
+    }
+
+    #[test]
+    fn replaying_the_log_shows_the_shadow_ended_after_its_trial() {
+        let mut c = core();
+        let mut steps = Vec::new();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+        submit(&mut c, "a2", blocker, "src/a.rs");
+        steps.push(merge_challenger(&mut c, blocker.0, MAIN));
+        steps.push(run_trial(&mut c, &clean_then(TrialOutcome::Conflict {})));
+
+        let slices: Vec<&[Effect]> = steps.iter().map(Vec::as_slice).collect();
+        let events = all_events(&slices);
+        let mut live = HashSet::new();
+        for event in &events {
+            match &event.kind {
+                EventKind::ClaimShadowed { claim, .. } => {
+                    live.insert(*claim);
+                }
+                EventKind::ClaimReleased { claim, .. } => {
+                    live.remove(claim);
+                }
+                _ => {}
+            }
+        }
+        assert!(live.is_empty(), "the log still shows {live:?} alive");
+        let verified = events
+            .iter()
+            .position(|e| matches!(e.kind, EventKind::DenialVerified { .. }));
+        let released = events.iter().position(|e| {
+            matches!(
+                e.kind,
+                EventKind::ClaimReleased { claim, reason: ReleaseReason::Settled }
+                    if claim == shadowed.0
+            )
+        });
+        assert!(
+            verified < released,
+            "the verdict is logged before the release"
+        );
+        let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
+        assert!(seqs.windows(2).all(|pair| pair[1] == pair[0] + 1));
+    }
+
+    #[test]
+    fn a_shadow_stays_while_a_blocker_rejected_in_the_merge_is_back_to_active() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        let conflict = MergeOutcome::Conflict {
+            files: vec!["src/a.rs".into()],
+        };
+
+        let effects = c.merge_outcome(blocker, &conflict, NOW);
+
+        assert!(settled(&effects).is_empty());
+        assert!(is_live(&c, blocker), "a rejected claim returns to active");
+        assert!(
+            is_live(&c, shadowed),
+            "the blocker may still be resubmitted"
+        );
+    }
+
+    #[test]
+    fn a_settled_release_does_not_change_the_summary() {
+        let mut c = core();
+        let (_, blocker) = shadowed_and_submitted(&mut c);
+        let merged = merge_challenger(&mut c, blocker, MAIN);
+        let trial = run_trial(&mut c, &clean_then(TrialOutcome::Conflict {}));
+        let all = all_events(&[&merged, &trial]);
+        let without: Vec<Event> = all
+            .iter()
+            .filter(|e| {
+                !matches!(
+                    e.kind,
+                    EventKind::ClaimReleased {
+                        reason: ReleaseReason::Settled,
+                        ..
+                    }
+                )
+            })
+            .cloned()
+            .collect();
+        assert!(without.len() < all.len(), "the trial settled the shadow");
+
+        assert_eq!(Summary::from_events(&all), Summary::from_events(&without));
+    }
+
+    #[test]
+    fn a_review_decision_names_the_reviewer() {
+        let mut c = core();
+        grant(
+            &mut c,
+            "a1",
+            vec![edit("src/b.rs")],
+            vec![assumes("src/a.rs", "f returns Some")],
+        );
+        let claim = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let submit = ClientMsg::Submit {
+            req: RequestId(9),
+            claim: claim.0,
+            fence: claim.1,
+            fork_commit: CommitId(fork_sha("a2")),
+            touched: vec![edit("src/a.rs")],
+            decisions: DecisionRecord::default(),
+        };
+        c.handle(&agent("a2"), submit, NOW);
+        let review = ClientMsg::Review {
+            req: RequestId(10),
+            claim: claim.0,
+            approve: true,
+            note: None,
+        };
+
+        let effects = c.handle(&agent("felix"), review, NOW);
+
+        let reviewers: Vec<_> = logged(&effects)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                EventKind::ReviewDecided { reviewer, .. } => Some(reviewer.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reviewers, [Some(agent("felix"))]);
     }
 }
