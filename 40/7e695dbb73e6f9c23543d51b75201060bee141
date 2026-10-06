@@ -1,0 +1,4 @@
+intent: close CLI-LIVENESS
+assumes: none
+rejected: none
+evidence: orchestrator gate on archived 28e246b 772 passed; event 249 approve; trunk 720094e..28e246b fast-forward, tree equal; mirrored
