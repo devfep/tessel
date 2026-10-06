@@ -1,0 +1,4 @@
+intent: close SHADOW-2 and record the swarm redeploy and the live shadow run
+assumes: none
+rejected: none
+evidence: orchestrator gate on archived 2d9d257 790 passed; event 263 approve; trunk 78e9f2a tree == 2d9d257 tree; mirrored; swarm f6d0e4b1 with SHADOW_ENABLED true
