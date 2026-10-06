@@ -1,0 +1,4 @@
+intent: bring the SHADOW-GC branch up to trunk d4e6335
+assumes: none
+rejected: rebase (branch has two commits already reviewed; a merge keeps them intact)
+evidence: merge was clean, no conflicts resolved
