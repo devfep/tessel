@@ -1,0 +1,4 @@
+intent: close SHADOW-GC and record the three deploys
+assumes: none
+rejected: none
+evidence: admin merge merged in 140 s (trunk 7d00ad6, tree == b143194); orchestrator gate 836 Rust + 649 steward; production 923f39fb summary 56 granted, 8 merges, head_seq 340; swarm 4e65697d 2 prevented; steward b9f110df unsigned 302, admin 401
