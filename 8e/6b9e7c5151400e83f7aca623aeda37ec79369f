@@ -1,0 +1,4 @@
+intent: record the Access decision Felix delegated and the setup steps he runs
+assumes: Access delivers a Cf-Access-Jwt-Assertion header to the Worker on protected paths
+rejected: a home-made viewer token and cookie (more auth code to secure)
+evidence: none (state only)
