@@ -1,0 +1,143 @@
+{
+  "event_count": 52,
+  "held_for_review_not_approved": 0,
+  "measured_agent_ms": {
+    "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, summed over attempts",
+    "on_work_later_rejected": 0,
+    "waiting": 334419,
+    "work_total": 15742
+  },
+  "mode": "on",
+  "policy": "shadow",
+  "queued_waits_in_event_log": 0,
+  "rejected_in_event_log": 0,
+  "review_approvals_in_event_log": 2,
+  "review_rejections_in_event_log": 0,
+  "run": {
+    "agents": 4,
+    "overlap": 0.5,
+    "seed": 2,
+    "tasks": 10,
+    "work_ms": 300
+  },
+  "schema": "tessel-swarm/1",
+  "scripted_reviewer": true,
+  "shadow_verification": {
+    "conflicts_prevented_verified": 3,
+    "false_alarms": 0,
+    "inconclusive": 0,
+    "never_verified": 0,
+    "note": "from DenialVerified events in the coordinator's log; a denial is not a prevention",
+    "precision": 1.0,
+    "shadow_claims": 3
+  },
+  "summary_from_event_log": {
+    "assumptions_challenged": 0,
+    "assumptions_confirmed_broken": 0,
+    "base_moved_notices": 1,
+    "claims_granted": 7,
+    "conflicts_prevented_verified": 3,
+    "denials": 3,
+    "false_alarms": 0,
+    "merges": 7,
+    "precision": 1.0,
+    "races_decided": 0,
+    "replay_conflicts": 0,
+    "replay_merges": 0,
+    "reviews_requested": 2
+  },
+  "target": "live",
+  "tasks": [
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 1,
+      "waited_ms": 42,
+      "work_ms": 1700
+    },
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 2,
+      "waited_ms": 54,
+      "work_ms": 1535
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 3,
+      "waited_ms": 55,
+      "work_ms": 1405
+    },
+    {
+      "agent": "a04",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 4,
+      "waited_ms": 49,
+      "work_ms": 1439
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "result": "shadowed",
+      "task": 5,
+      "waited_ms": 103871,
+      "work_ms": 1438
+    },
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 6,
+      "waited_ms": 39,
+      "work_ms": 1961
+    },
+    {
+      "agent": "a04",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "result": "shadowed",
+      "task": 7,
+      "waited_ms": 117972,
+      "work_ms": 1930
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "result": "shadowed",
+      "task": 8,
+      "waited_ms": 112251,
+      "work_ms": 1380
+    },
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 9,
+      "waited_ms": 43,
+      "work_ms": 1556
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 10,
+      "waited_ms": 43,
+      "work_ms": 1398
+    }
+  ],
+  "wall_ms": 211010
+}
