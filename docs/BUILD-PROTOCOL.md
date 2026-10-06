@@ -83,6 +83,11 @@ a new check can fail (mutant or deliberate break, then restore); exit codes deci
 
 ## 4. What every brief carries
 
+00. A lane submits exactly the commit the Opus reviewer passed, or one the orchestrator has read.
+   When the orchestrator asks for changes after the Yes, the lane commits, reports the sha, and
+   waits for the orchestrator's go before `tessel submit`: an unflagged submission merges with no
+   review hold, so "fix then land" in one message lets unread code reach the trunk (DASH-1b,
+   5 October 2026: `715d8dd` merged before the orchestrator read it; read afterwards, sound).
 0. First line of every implementer brief, in these words: "Before your first edit: mint your
    identity, `tessel start`, and claim the file. No edit before its claim." Two lanes on 5 October
    2026 (SWARM-OBSERVER, SHADOW-GC) edited before claiming; the merge note records each late claim.
