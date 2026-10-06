@@ -736,7 +736,9 @@ async fn waiting_is_the_time_from_the_claim_to_its_answer_only() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_run_whose_log_watcher_cannot_connect_fails_with_the_watchers_error() {
     let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
-    let config = config(2, Policy::Shadow, 300);
+    // The first claim is held for a full second of work, so the second is always shadowed and
+    // the final wait has an accepted shadow submit to wait for.
+    let config = config(2, Policy::Shadow, 1000);
     let scratch = tempfile::tempdir().unwrap();
     let server = start_server(&config, scratch.path()).await;
     let mut endpoint = server.endpoint.clone();
@@ -748,6 +750,13 @@ async fn a_run_whose_log_watcher_cannot_connect_fails_with_the_watchers_error() 
     else {
         unreachable!("a run whose watcher failed must not succeed");
     };
+    assert!(
+        server
+            .log()
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::ClaimShadowed { .. })),
+        "the run had a shadow claim to wait for"
+    );
     let message = format!("{error:#}");
     assert!(
         message.contains("the log watch could not reconnect"),

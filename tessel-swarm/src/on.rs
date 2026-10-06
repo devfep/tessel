@@ -1131,7 +1131,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_watcher_that_finishes_just_as_it_is_ended_still_reports_its_error() {
+    async fn a_watcher_finished_with_an_error_reports_it() {
         let watcher = tokio::spawn(async { anyhow::bail!("the event log has a gap") });
         tokio::task::yield_now().await;
         let error = settle_watcher(Some(watcher)).await.unwrap_err();
