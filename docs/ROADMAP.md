@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 20:58 EDT.
+**As of:** 2026-10-05 23:03 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -54,7 +54,15 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** none live. No worktrees.
+**Agents** (dispatched 23:02 from the trunk `78e9f2a`; both stop for review before pushing):
+- `impl-swarm-observer` (Sonnet), `.claude/worktrees/swarm-observer`, fork
+  `tessel-dogfood--lane-swarm-observer`; owns `tessel-swarm/`.
+- `impl-shadow-gc` (Sonnet), `.claude/worktrees/shadow-gc`, fork `tessel-dogfood--lane-shadow-gc`;
+  owns `src/coordinator*`, `src/shell.rs`, `src/runtime.rs`.
+**Open question for Felix (DASH-1, REVIEW-UI):** how a browser signs in. Recommended: Cloudflare
+Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths, Felix's email
+mapped to reviewer `felix`; explained to Felix at 23:00, no decision yet. Build the read-only views
+first; the sign-in plugs in last.
 **Load note:** the load reached about 34 at 20:01 and about 73 at 20:41, mostly Spotlight
 (`mds_stores`) on gate copies' `target/` dirs plus the iOS simulators; gate copies are trashed
 right after each run.
