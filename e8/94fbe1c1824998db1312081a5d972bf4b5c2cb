@@ -1,0 +1,4 @@
+intent: set ACCESS_TEAM_DOMAIN and ACCESS_AUD in the steward's wrangler vars so wrangler deploy keeps them
+assumes: Access application tessel-dashboard (team fepdev) covers /dashboard and /review
+rejected: none
+evidence: tessel-steward typecheck, oxlint, oxfmt --check exit 0; pnpm test 648 passed (unchanged)
