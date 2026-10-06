@@ -1,0 +1,4 @@
+intent: DASH-1a read-only summary route so the dashboard gets Summary::from_events over the whole log
+assumes: Summary::from_events is correct (owned by protocol.rs, frozen); the DO's storage list returns events in seq order, as watch relies on
+rejected: summing per-page summaries (would duplicate from_events logic and the precision rule); collecting the whole log in memory instead is used, paged reads only bound each storage call
+evidence: cargo test --workspace 811 passed (802 base + 9); clippy -D warnings clean; fmt clean; wasm check 0 warnings; 6 mutants, all killed after one test added for the ws method
