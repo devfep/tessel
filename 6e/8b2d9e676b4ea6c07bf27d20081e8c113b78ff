@@ -1,0 +1,4 @@
+intent: record both dashboard merges, the coordinator deploys with live checks, and the Docker block
+assumes: none
+rejected: none
+evidence: trunk d4e6335 tree == ead276f + 715d8dd; production 8120ee30 summary 200/401/401/405 and no event on read; swarm a3825731 summary 2 prevented, precision 1.0; docker info hangs
