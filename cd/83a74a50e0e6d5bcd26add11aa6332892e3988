@@ -1,0 +1,4 @@
+intent: bound stored state by dropping a submitted shadow claim when no blocker is live and no trial is queued or running
+assumes: a shadow holds no lock, lease or queue place, so a silent drop changes nothing a peer observes; no ReleaseReason is true of it so nothing is logged
+rejected: logging ClaimReleased (Merged, Agent and LeaseExpired are all false for a dropped shadow; a new reason is a protocol change)
+evidence: cargo test --workspace 801 passed (790 + 11 new); 11 new tests fail with the sweep disabled; 5 mutants killed; clippy -D warnings clean on the crate; fmt clean; wasm build no warnings
