@@ -122,14 +122,13 @@ the orchestrator to read its diff (rule 00). `impl-shadow-gc` parked (above).
   alarms, precision 1.0, 2 denials, 4 merges, `head_seq` 32; `tessel-dogfood` gets 403.
 
 **Pending from Felix:**
-- (NEW, 23:20, blocks SHADOW-GC) Invariant 10: SHADOW-GC drops finished shadow claims with no
-  event, so a replay or the dashboard would show them live forever. No existing `ReleaseReason`
-  fits honestly. Proposed: add `ReleaseReason::Settled` ("a submitted shadow claim that nothing is
-  owed through: every blocker ended and every trial is logged") in `src/protocol.rs` (~765), and
-  log `ClaimReleased { claim, reason: Settled }` per drop. A new variant is not a new optional
-  field: a client built before it fails to parse it. Felix decides: treat it as additive (every
-  client is built from the trunk) or bump `PROTOCOL_VERSION`. Recommendation: additive, folded
-  into the next hand merge of `src/protocol.rs` with item 1 below.
+- RULED (Felix, Oct 6 ~18:50 EDT): `ReleaseReason::Settled` is ADDITIVE, no version bump (only
+  experiment runs emit it; every client is built from the trunk). SHADOW-GC resumed with it, plus
+  queued items (a) stale dead-code expectations, (b) the `reviews_requested` doc, (c) a filled
+  `reviewer` on `ReviewDecided`, and a CLAUDE.md sentence recording the ruling. Not included:
+  `AssumptionVerified.commit`, `RaceDecided.entries` (nothing would fill them yet). It lands by
+  Felix's admin merge (the "by hand" path for `src/protocol.rs`) after the Opus review and gate;
+  the orchestrator hands him the command.
 0. Nothing blocking. The fork-push allow rule is in `.claude/settings.local.json` (Felix, 18:3x).
    Note: the existing `Bash(npx wrangler deploy *)` rule does not match a deploy piped through
    other commands; the orchestrator runs deploys bare. Production deploys, secret writes, Artifacts deletes and forced pushes are
