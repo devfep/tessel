@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 20:08 EDT.
+**As of:** 2026-10-05 20:50 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -26,14 +26,16 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** the Artifacts trunk `tessel-dogfood` is at `28e246b` (CLI-LIVENESS), mirrored to GitHub
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `78e9f2a` (SHADOW-2), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
 pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
 one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
 conflicts with their rebased copies on the trunk, so catch-ups are one commit on the trunk head).
 **Milestone:** PLAN §9 Oct 6–8 delivered and checked live; dogfood v1 is in use (lanes land
-through the steward). Oct 9 shadow verification is on the trunk and deployed (SHADOW-1); the
-swarm policy that exercises it live is SHADOW-2.
+through the steward). Oct 9 shadow verification is on the trunk and deployed (SHADOW-1), and the
+swarm's shadow policy (SHADOW-2) is merged, with shadows on for the swarm Worker only. The first
+live shadow run started 20:49 (seed 1, 6 tasks, 3 agents, `--task-timeout-s 300`, results in the
+scratchpad `orch/swarm-shadow1/`).
 
 **Felix's rulings** (newest first; older ones are in the git notes and earlier STATE commits):
 - 15:2x EDT: (1) agent `orchestrator` joins `REVIEWERS`; it approves held lane work only after the
@@ -50,14 +52,13 @@ swarm policy that exercises it live is SHADOW-2.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `impl-shadow-2` (Sonnet), `.claude/worktrees/shadow-2` (cut from `720094e`), fork
-`tessel-dogfood--lane-shadow-2`; owns `tessel-swarm/` and `[env.swarm.vars]` in `wrangler.toml`.
-On fix pass 2 (second watch refused by the runtime; order-based tests). Before submitting it must
-merge the trunk `28e246b` (CLI-LIVENESS, disjoint files). CLI-LIVENESS closed 20:07.
-**Load note:** at 20:01 the load hit about 34, mostly Spotlight (`mds_stores`) indexing gate
-copies' `target/` dirs; gate copies are trashed right after each run.
+**Agents:** none live. The `.claude/worktrees/shadow-2` worktree stays until the live shadow run
+ends (the run uses its `tessel-swarm` binary); then reclaim it and `task-shadow-2`.
+**Load note:** the load reached about 34 at 20:01 and about 73 at 20:41, mostly Spotlight
+(`mds_stores`) on gate copies' `target/` dirs plus the iOS simulators; gate copies are trashed
+right after each run.
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop stopped.
+**Background jobs:** the live shadow swarm run (started 20:49). Docker Desktop stopped.
 
 **Deployed** on `devfep.workers.dev`:
 - `tessel-coordinator` version `3c2e946f` (trunk `720094e`, SHADOW-1; deployed 19:22 from the
@@ -71,14 +72,14 @@ copies' `target/` dirs; gate copies are trashed right after each run.
   `STEWARD_ADMIN_TOKEN` (`tessel-steward/.dev.vars`): `POST /repos/<repo>` (create),
   `/forks/<fork>`, `/tokens` (fork write tokens), `/read-tokens`, `/agents/<agent>/identity`,
   `/test-runs`, `/merges` (admin merge; the only path that may change `tessel.toml`).
-- Artifacts (namespace `tessel`): `tessel-dogfood` (the trunk, `720094e`) and forks
+- Artifacts (namespace `tessel`): `tessel-dogfood` (the trunk, `78e9f2a`) and forks
   `tessel-dogfood--orchestrator` (at `aadba8b`, sprint/build lineage: do not submit from it),
   `tessel-dogfood--admin` (catch-ups), `tessel-dogfood--lane-<task>` per lane; `demo`,
   `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos. Queue `tessel-artifacts-events` with its
   subscriptions as before.
-- `tessel-coordinator-swarm` version `9ce71fc0` (trunk `720094e`; `REVIEWERS = "swarm-reviewer"`,
-  `swarm-*` repos only, shadows off until SHADOW-2). Loads its stored state (the seed-1 run's log
-  replays). Earlier: a steward-minted token gets `welcome`, `tessel-dogfood` 403, no token 401.
+- `tessel-coordinator-swarm` version `f6d0e4b1` (trunk `78e9f2a`, deployed 20:48;
+  `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only, `SHADOW_ENABLED = "true"`). Earlier: a
+  steward-minted token gets `welcome`, `tessel-dogfood` 403, no token 401.
 
 **Pending from Felix:**
 0. Nothing blocking. The fork-push allow rule is in `.claude/settings.local.json` (Felix, 18:3x).
@@ -321,16 +322,28 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   sent exactly the 4 files against the stale head, held for review (signature change), approved by
   `orchestrator` (event 201, note with the Opus verdict and gate), merged by the steward, trunk
   fast-forwarded `8432f8c..0118731`, coordinator head now `0118731`, mirrored to `artifacts-trunk`.
-- [ ] **SHADOW-2** — PLAN §8, §9 Oct 9–10: `SHADOW_ENABLED = "true"` for `[env.swarm]` only, and a
+- [x] **SHADOW-2** — PLAN §8, §9 Oct 9–10: `SHADOW_ENABLED = "true"` for `[env.swarm]` only, and a
   shadow policy in `tessel-swarm` (a denied scripted agent claims with `OnConflict::Shadow`, keeps
   working, submits), so the A/B table's "Conflicts prevented, verified by shadow runs" cell comes
   from `DenialVerified` events. (The first live run's 120 s timeout is a run setting,
   `--task-timeout`, to raise for the Oct 10 runs, not code.)
   Review 1 (Opus, "With fixes"): later shadow work force-pushed over earlier shadow commits (3 real
   conflicts → 1 prevention, 2 Inconclusive); skipped `work_ms` understated agent-minutes; red
-  local baseline untested; `wait`/`skip` tables changed. Fix pass 1 in progress. Follow-up, not
-  in this task: match a shadow's blocker by `conflict.held` scope rather than the holder's latest
-  grant (only over-waits today; the swarm opens no races).
+  local baseline untested; `wait`/`skip` tables changed. Review 2: a second `Watch` on one socket
+  is refused by the runtime (local server didn't model it). Review 3: per-wait polling loaded the
+  measured coordinator and padded `event_count`; now one shared observer per run.
+  CLOSED 2026-10-05 at trunk `78e9f2a` (review "Yes" after three fix passes). Through the
+  steward: claim 43 (one `uncovered` refusal, amended), held for review, approved by
+  `orchestrator` (event 263) after its gate on `2d9d257` (the reviewed `b179783` merged with trunk
+  `28e246b`; tree checked equal to a clean merge): 790 passed. Swarm Worker redeployed with
+  `SHADOW_ENABLED = "true"` (`f6d0e4b1`). Follow-ups: SWARM-OBSERVER; matching a shadow's blocker
+  by `conflict.held` scope (only over-waits today; the swarm opens no races).
+- [ ] **SWARM-OBSERVER** — from the SHADOW-2 review (both can only lower the reported count):
+  (1) `on.rs` ~218: if the shared watcher stopped on a gap or gave up and the stale log owes
+  nothing, the final wait returns Ok and `watcher.abort()` drops the error (never swallow it:
+  `if watcher.is_finished() { watcher.await??; }`, or bail on a closed channel). (2) `on.rs` ~252:
+  the final wait's only guard is a non-empty log; record each `Accepted` shadow claim and require
+  its `Submitted` in the watched log before "nothing owed"; a test that kills mutant M11.
 - [ ] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
