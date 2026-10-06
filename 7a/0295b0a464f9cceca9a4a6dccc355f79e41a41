@@ -1,0 +1,4 @@
+intent: file the pre-existing workspace clippy failure every review has excepted
+assumes: none
+rejected: none
+evidence: reviews of SHADOW-GC, CLI-LIVENESS, DASH-1a all hit tessel-cli/tests/cli.rs:810
