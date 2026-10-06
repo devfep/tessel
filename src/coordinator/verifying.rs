@@ -49,13 +49,23 @@
 //!   shadow claim had not submitted by then (there is no commit to try; one that submits later
 //!   has no baseline from before the merge, so it is not tried either). A shadow claim blocked by
 //!   several claims is tried once for each that merges, each against its own baseline.
+//! - A submitted shadow claim holds no lock, lease or queue place, so it is dropped as soon as
+//!   nothing is owed through it: none of its blockers is still a live claim and none of its trials
+//!   is queued or running (`drop_finished_shadows`). That covers a shadow whose blockers all
+//!   merged and were tried, whose blockers all ended without merging, and one blocked only by a
+//!   race (no blocker to wait for, so it can never be tried). A shadow with a live blocker stays:
+//!   the blocker may still merge. A drop logs nothing: no `ReleaseReason` is true of it (the work
+//!   was not merged, the agent did not release it, no lease ran out), and `DenialVerified` is
+//!   already the record of the outcome.
 //! - A conflict is not sent to the assuming agent as a message: no `ServerMsg` says "your
 //!   assumption broke" (`AssumptionChallenged` says "re-check it" and would be read as a second
 //!   challenge). The event is the record, and watchers receive it.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
-use super::{Coordinator, Effect};
+use super::{ClaimKind, Coordinator, Effect};
 use crate::merge::{
     infra_backoff_ms, TestsVerdict, TrialReport, TrialVerdict, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
 };
@@ -207,6 +217,32 @@ impl Coordinator {
         }
     }
 
+    /// Drop each submitted shadow claim that nothing is owed through (see the module docs). Run
+    /// after anything that can end a claim or finish a trial. Nothing is logged.
+    pub(super) fn drop_finished_shadows(&mut self) {
+        let trialled: HashSet<u64> = self
+            .state
+            .verifications
+            .iter()
+            .map(|queued| queued.claim.0)
+            .collect();
+        let claims = &self.state.claims;
+        let finished: Vec<u64> = claims
+            .iter()
+            .filter(|(id, shadow)| {
+                let mut blockers = shadow.denial.iter().flat_map(|denial| &denial.blocked_by);
+                shadow.kind == ClaimKind::Shadow
+                    && shadow.submitted.is_some()
+                    && !trialled.contains(id)
+                    && blockers.all(|blocker| !claims.contains_key(&blocker.0))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in finished {
+            self.state.claims.remove(&id);
+        }
+    }
+
     /// Queue the tests of a race entry: `commit` of `agent`'s fork tried on `head`, which is both
     /// sides of the trial. Entries queued together see the same head.
     pub(super) fn record_race_trial(
@@ -301,7 +337,9 @@ impl Coordinator {
         let Some(flight) = self.state.verification_in_flight.take() else {
             return Vec::new();
         };
-        self.retry_verification_after_infrastructure(flight.id, now_ms)
+        let effects = self.retry_verification_after_infrastructure(flight.id, now_ms);
+        self.drop_finished_shadows();
+        effects
     }
 
     /// When the shell should next run `begin_verification`, as an absolute time in milliseconds
@@ -346,6 +384,17 @@ impl Coordinator {
     /// verification is stale and changes nothing. An answer for a verification whose claim ended
     /// meanwhile is discarded and logs nothing.
     pub fn verification_outcome(
+        &mut self,
+        id: u64,
+        report: &TrialReport,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let effects = self.apply_verification_outcome(id, report, now_ms);
+        self.drop_finished_shadows();
+        effects
+    }
+
+    fn apply_verification_outcome(
         &mut self,
         id: u64,
         report: &TrialReport,
@@ -1704,5 +1753,235 @@ mod tests {
                 blocking_claim: ClaimId(2)
             }
         );
+    }
+
+    // ---- dropping finished shadow claims ----
+
+    fn is_live(c: &Coordinator, claim: ClaimId) -> bool {
+        c.state.claims.contains_key(&claim.0)
+    }
+
+    fn reloaded(c: &Coordinator) -> Coordinator {
+        serde_json::from_str(&serde_json::to_string(c).unwrap()).unwrap()
+    }
+
+    fn release(c: &mut Coordinator, who: &str, claim: (ClaimId, Fence)) {
+        let release = ClientMsg::Release {
+            claim: claim.0,
+            fence: claim.1,
+            req: None,
+        };
+        c.handle(&agent(who), release, NOW);
+    }
+
+    #[test]
+    fn a_shadow_is_dropped_after_its_last_blocker_merged_and_its_trial_is_logged() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+
+        let effects = run_trial(&mut c, &clean_then(TrialOutcome::Conflict {}));
+
+        assert_eq!(
+            denial_events(&effects),
+            [(shadowed, blocker, Outcome::TextualConflict)]
+        );
+        assert!(!is_live(&c, shadowed));
+        assert!(!is_live(&reloaded(&c), shadowed));
+    }
+
+    #[test]
+    fn a_shadow_stays_while_its_trial_is_queued_or_running() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+        assert!(is_live(&c, shadowed), "trial queued");
+        c.expire(NOW + 1);
+        assert!(is_live(&c, shadowed), "trial queued after an expiry sweep");
+
+        let dispatch = c.begin_verification(NOW).unwrap();
+        c.expire(NOW + 2);
+        assert!(is_live(&c, shadowed), "trial running");
+        let mut restarted = reloaded(&c);
+        restarted.recover_verification(NOW);
+        assert!(is_live(&restarted, shadowed), "trial waiting in backoff");
+
+        let report = clean_then(TrialOutcome::Clean {});
+        let effects = c.verification_outcome(dispatch.id, &report, NOW);
+        assert_eq!(denial_events(&effects).len(), 1);
+        assert!(!is_live(&c, shadowed));
+    }
+
+    #[test]
+    fn a_shadow_whose_blocker_was_released_without_merging_is_dropped() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+        assert!(is_live(&c, shadowed.0), "the blocker is still live");
+
+        release(&mut c, "a2", blocker);
+
+        assert!(!is_live(&c, shadowed.0));
+    }
+
+    #[test]
+    fn a_shadow_whose_blocker_expired_is_dropped_on_the_alarm() {
+        let mut c = core();
+        grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+
+        c.expire(NOW + LEASE + 1);
+
+        assert!(!is_live(&c, shadowed.0));
+    }
+
+    #[test]
+    fn a_shadow_that_submits_after_its_blockers_ended_is_dropped_at_submit() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        release(&mut c, "a2", blocker);
+        assert!(is_live(&c, shadowed.0), "unsubmitted: its lease governs");
+
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+
+        assert!(!is_live(&c, shadowed.0));
+    }
+
+    #[test]
+    fn a_shadow_blocked_only_by_a_race_is_dropped_at_submit() {
+        let mut c = core();
+        let open = ClientMsg::OpenRace {
+            req: RequestId(5),
+            intent: Intent {
+                summary: "task".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            scopes: vec![edit("src/a.rs")],
+            max_entrants: 2,
+            deadline_ms: NOW + LEASE / 2,
+            criteria: vec![crate::protocol::Criterion::FirstSubmitted],
+        };
+        c.handle(&agent("felix"), open, NOW);
+        let shadowed = shadow(&mut c, "a1", "src/a.rs");
+        assert!(c.state.claims[&shadowed.0 .0]
+            .denial
+            .as_ref()
+            .is_some_and(|denial| denial.blocked_by.is_empty()));
+
+        submit(&mut c, "a1", shadowed, "src/a.rs");
+
+        assert!(!is_live(&c, shadowed.0));
+    }
+
+    #[test]
+    fn shadows_on_one_blocker_are_each_dropped_after_their_own_trial() {
+        let mut c = core();
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let mut shadows = Vec::new();
+        for who in ["a1", "a3", "a4"] {
+            let claim = shadow(&mut c, who, "src/a.rs");
+            submit(&mut c, who, claim, "src/a.rs");
+            shadows.push(claim.0);
+        }
+        submit(&mut c, "a2", blocker, "src/a.rs");
+        merge_challenger(&mut c, blocker.0, MAIN);
+
+        for (done, expected) in [(1, [false, true, true]), (2, [false, false, true])] {
+            run_trial(&mut c, &clean_then(TrialOutcome::Clean {}));
+            let live: Vec<bool> = shadows.iter().map(|id| is_live(&c, *id)).collect();
+            assert_eq!(live, expected, "after {done} trials");
+        }
+        run_trial(&mut c, &clean_then(TrialOutcome::Clean {}));
+        assert!(c.state.claims.is_empty());
+    }
+
+    #[test]
+    fn a_shadow_with_two_blockers_stays_until_both_are_settled() {
+        let mut c = core();
+        let first = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        let second = grant(&mut c, "a3", vec![edit("src/b.rs")], Vec::new());
+        let msg = ClientMsg::Claim {
+            req: RequestId(1),
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            scopes: vec![edit("src/a.rs"), edit("src/b.rs")],
+            on_conflict: OnConflict::Shadow,
+        };
+        let effects = c.handle(&agent("a1"), msg, NOW);
+        let Some(ServerMsg::Shadowed { claim, fence, .. }) = replies(&effects).into_iter().next()
+        else {
+            panic!("expected Shadowed, got {effects:?}");
+        };
+        submit(&mut c, "a1", (*claim, *fence), "src/a.rs");
+        submit(&mut c, "a2", first, "src/a.rs");
+        merge_challenger(&mut c, first.0, MAIN);
+        run_trial(&mut c, &clean_then(TrialOutcome::Clean {}));
+        assert!(is_live(&c, *claim), "the second blocker may still merge");
+
+        let mut restarted = reloaded(&c);
+        submit(&mut restarted, "a3", second, "src/b.rs");
+        merge_challenger(&mut restarted, second.0, MAIN2);
+        assert!(is_live(&restarted, *claim), "its second trial is owed");
+        let effects = run_trial(&mut restarted, &clean_then(TrialOutcome::Conflict {}));
+
+        assert_eq!(denial_events(&effects).len(), 1);
+        assert!(!is_live(&restarted, *claim));
+    }
+
+    #[test]
+    fn stored_state_stays_bounded_over_many_shadow_submits() {
+        let mut c = core();
+        for round in 0..1_000 {
+            let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+            let shadowed = shadow(&mut c, "a1", "src/a.rs");
+            submit(&mut c, "a1", shadowed, "src/a.rs");
+            if round % 2 == 0 {
+                release(&mut c, "a2", blocker);
+            } else {
+                submit(&mut c, "a2", blocker, "src/a.rs");
+                merge_challenger(&mut c, blocker.0, MAIN);
+                run_trial(&mut c, &clean_then(TrialOutcome::Clean {}));
+            }
+            assert!(c.state.claims.is_empty(), "round {round}");
+        }
+        assert!(c.state.verifications.is_empty());
+        assert!(serde_json::to_string(&c).unwrap().len() < 2_000);
+    }
+
+    #[test]
+    fn a_stored_submitted_shadow_without_a_denial_is_dropped_on_the_next_call() {
+        let mut c = core();
+        let (shadowed, _) = shadowed_and_submitted(&mut c);
+        let mut value = serde_json::to_value(&c).unwrap();
+        let claim = &mut value["claims"][shadowed.0.to_string()];
+        assert!(claim["denial"].is_object());
+        claim.as_object_mut().unwrap().remove("denial");
+        let mut old: Coordinator = serde_json::from_value(value).unwrap();
+        assert!(is_live(&old, shadowed));
+
+        old.expire(NOW);
+
+        assert!(!is_live(&old, shadowed));
+    }
+
+    #[test]
+    fn a_stored_shadow_with_a_live_blocker_loads_and_is_still_tried() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        let mut stored = reloaded(&c);
+        assert!(is_live(&stored, shadowed));
+
+        merge_challenger(&mut stored, blocker, MAIN);
+        let effects = run_trial(&mut stored, &clean_then(TrialOutcome::Conflict {}));
+
+        assert_eq!(denial_events(&effects).len(), 1);
+        assert!(!is_live(&stored, shadowed));
     }
 }

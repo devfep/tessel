@@ -425,6 +425,7 @@ impl Coordinator {
         let mut effects = self.expire(now_ms);
         effects.extend(self.route(agent, msg, now_ms));
         self.drop_ended_verifications();
+        self.drop_finished_shadows();
         effects
     }
 
@@ -468,6 +469,7 @@ impl Coordinator {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
         self.drop_ended_verifications();
+        self.drop_finished_shadows();
         effects
     }
 
