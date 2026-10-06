@@ -1,0 +1,4 @@
+intent: the run_on watcher-failure test must always have an accepted shadow, and one test name must not overclaim
+assumes: a claim held for 1s of work always shadows the second agent's claim on the same function
+rejected: none
+evidence: on_local watcher-failure test 10/10; clippy and fmt clean; workspace count in submit evidence
