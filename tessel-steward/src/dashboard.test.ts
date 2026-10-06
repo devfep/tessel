@@ -181,6 +181,7 @@ describe("the page", () => {
     expect(html).not.toMatch(/<script[^>]*\ssrc=/);
     expect(html).not.toMatch(/<link|https?:\/\//);
     expect(policy).toContain("default-src 'none'");
+    expect(policy).not.toContain("unsafe-inline");
   });
 
   it("uses a new nonce on every response", async () => {
@@ -229,7 +230,6 @@ async function stream(headers: Record<string, string> = {}): Promise<string> {
   expect(response.headers.get("Content-Type")).toBe("text/event-stream");
   const read = response.text();
   await vi.waitFor(() => expect(upstream.sent).toHaveLength(1));
-  upstream.push({ type: "welcome", head: "h", lease_ms: 1, protocol: 1 });
   upstream.push({ type: "event", event: { seq: 12, at_ms: 1, run: "r", event: "merged" } });
   upstream.end();
   return read;
@@ -246,20 +246,21 @@ describe("/events", () => {
       agent: "dashboard",
     });
     expect(upstream.accepted).toBe(true);
-    expect(JSON.parse(upstream.sent[0] ?? "")).toMatchObject({ type: "hello", agent: "dashboard" });
-    expect(JSON.parse(upstream.sent[1] ?? "")).toEqual({ type: "watch", from_seq: 0 });
+    expect(upstream.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "watch", from_seq: 0 },
+    ]);
     expect(text).toContain(`id: 12\ndata: {"seq":12,`);
     expect(upstream.closed).toBe(true);
   });
 
   it("resumes after Last-Event-ID", async () => {
     await stream({ "Last-Event-ID": "41" });
-    expect(JSON.parse(upstream.sent[1] ?? "")).toEqual({ type: "watch", from_seq: 42 });
+    expect(JSON.parse(upstream.sent[0] ?? "")).toEqual({ type: "watch", from_seq: 42 });
   });
 
   it.each(["abc", "-3", "1.5", ""])("replays from the start for Last-Event-ID %j", async (id) => {
     await stream({ "Last-Event-ID": id });
-    expect(JSON.parse(upstream.sent[1] ?? "")).toEqual({ type: "watch", from_seq: 0 });
+    expect(JSON.parse(upstream.sent[0] ?? "")).toEqual({ type: "watch", from_seq: 0 });
   });
 
   it("tells the browser when the coordinator refuses the watch", async () => {

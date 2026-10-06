@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DASHBOARD_HELLO, relayWatch, type UpstreamSocket } from "./sse-relay";
+import { KEEPALIVE_MS, relayWatch, type UpstreamSocket } from "./sse-relay";
 
 type Listener = (event: { data: unknown }) => void;
 
@@ -49,9 +49,12 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
   }
 }
 
-function open(fromSeq = 0): { socket: FakeSocket; stream: ReadableStream<Uint8Array> } {
+function open(
+  fromSeq = 0,
+  maxQueued?: number,
+): { socket: FakeSocket; stream: ReadableStream<Uint8Array> } {
   const socket = new FakeSocket();
-  return { socket, stream: relayWatch(() => Promise.resolve(socket), fromSeq) };
+  return { socket, stream: relayWatch(() => Promise.resolve(socket), fromSeq, maxQueued) };
 }
 
 async function settle(): Promise<void> {
@@ -59,13 +62,11 @@ async function settle(): Promise<void> {
 }
 
 describe("relayWatch", () => {
-  it("says hello, then watches from the requested seq once welcomed", async () => {
+  it("sends exactly one frame, a watch from the requested seq, and no hello", async () => {
     const { socket, stream } = open(7);
     const read = readAll(stream);
     await settle();
-    expect(socket.sent).toEqual([DASHBOARD_HELLO]);
-    socket.frame({ type: "welcome", head: "abc", lease_ms: 1, protocol: 1 });
-    expect(socket.sent[1]).toBe(JSON.stringify({ type: "watch", from_seq: 7 }));
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([{ type: "watch", from_seq: 7 }]);
     socket.emit("close");
     await read;
   });
@@ -146,5 +147,50 @@ describe("relayWatch", () => {
     await settle();
     expect(socket.closed).toBe(true);
     expect(socket.sent).toEqual([]);
+  });
+
+  it("closes the stream instead of buffering when the browser does not read", async () => {
+    const { socket, stream } = open(0, 3);
+    await settle();
+    for (let seq = 0; seq < 20; seq++) {
+      socket.frame(event(seq));
+    }
+    expect(socket.closed).toBe(true);
+    const ids = [...(await readAll(stream)).matchAll(/^id: (\d+)$/gm)];
+    expect(ids.length).toBeLessThan(3);
+  });
+});
+
+describe("relayWatch keepalive", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends a comment frame every 30 seconds and stops when the stream ends", async () => {
+    vi.useFakeTimers();
+    const { socket, stream } = open();
+    const reader = stream.getReader();
+    await vi.advanceTimersByTimeAsync(0);
+    const decoder = new TextDecoder();
+    const read = async (): Promise<string> => decoder.decode((await reader.read()).value);
+    expect(await read()).toContain("retry:");
+    await vi.advanceTimersByTimeAsync(KEEPALIVE_MS);
+    expect(await read()).toBe(": ping\n\n");
+    await vi.advanceTimersByTimeAsync(KEEPALIVE_MS);
+    expect(await read()).toBe(": ping\n\n");
+    socket.emit("close");
+    expect((await reader.read()).done).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops the timer when the browser cancels", async () => {
+    vi.useFakeTimers();
+    const { socket, stream } = open();
+    const reader = stream.getReader();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+    await reader.cancel();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(socket.closed).toBe(true);
   });
 });
