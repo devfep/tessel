@@ -1,0 +1,4 @@
+intent: keep the raw output of the first live wait and shadow swarm runs in the repo
+assumes: none
+rejected: leaving them in the session scratchpad (lost when the session ends)
+evidence: shadow run: 2 denial_verified events (tests_failed, textual_conflict), 0 inconclusive, 0 never verified; no tokens in the files (rg art_v|Bearer)
