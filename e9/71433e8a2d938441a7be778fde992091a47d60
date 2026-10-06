@@ -1,0 +1,4 @@
+intent: DASH-1b: steward serves /dashboard/<repo> (page, SSE relay of the coordinator Watch, summary proxy) behind Cloudflare Access JWT verification that fails closed
+assumes: coordinator implements GET /repo/<name>/summary as {summary, head_seq} (DASH-1a) and accepts a WebSocket upgrade over a service binding; real Access tokens and certs not exercised
+rejected: public-URL var for the coordinator (a service binding avoids a second secret-bearing URL and a public hop); heartbeat comments on SSE (EventSource reconnects lossless via Last-Event-ID)
+evidence: pnpm typecheck, oxlint, oxfmt --check clean; pnpm test 638 passed (549 + 89); 10 of 10 own mutants killed
