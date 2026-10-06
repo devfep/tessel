@@ -1,0 +1,4 @@
+intent: hand the build to a fresh session: role vacant, landing recipe, ordered next actions
+assumes: none
+rejected: none
+evidence: no lanes, reviews or background jobs running; trunk 7d00ad6 deployed to all three Workers
