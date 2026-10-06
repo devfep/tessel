@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 20:50 EDT.
+**As of:** 2026-10-05 20:58 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -33,9 +33,11 @@ one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/
 conflicts with their rebased copies on the trunk, so catch-ups are one commit on the trunk head).
 **Milestone:** PLAN §9 Oct 6–8 delivered and checked live; dogfood v1 is in use (lanes land
 through the steward). Oct 9 shadow verification is on the trunk and deployed (SHADOW-1), and the
-swarm's shadow policy (SHADOW-2) is merged, with shadows on for the swarm Worker only. The first
-live shadow run started 20:49 (seed 1, 6 tasks, 3 agents, `--task-timeout-s 300`, results in the
-scratchpad `orch/swarm-shadow1/`).
+swarm's shadow policy (SHADOW-2) is merged, with shadows on for the swarm Worker only. FIRST LIVE
+VERIFIED PREVENTIONS (20:49 run, seed 1, 6 tasks, 3 agents): 2 shadow claims, both verified by
+steward trials (`tests_failed` with a clean baseline, `textual_conflict`), 0 false alarms, 0
+inconclusive, 0 never verified; raw output in `docs/evidence/2026-10-05/` (with the 16:03 wait
+run). A small sample: it shows the mechanism live, not a rate.
 
 **Felix's rulings** (newest first; older ones are in the git notes and earlier STATE commits):
 - 15:2x EDT: (1) agent `orchestrator` joins `REVIEWERS`; it approves held lane work only after the
@@ -52,13 +54,12 @@ scratchpad `orch/swarm-shadow1/`).
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** none live. The `.claude/worktrees/shadow-2` worktree stays until the live shadow run
-ends (the run uses its `tessel-swarm` binary); then reclaim it and `task-shadow-2`.
+**Agents:** none live. No worktrees.
 **Load note:** the load reached about 34 at 20:01 and about 73 at 20:41, mostly Spotlight
 (`mds_stores`) on gate copies' `target/` dirs plus the iOS simulators; gate copies are trashed
 right after each run.
 **Merge queue:** empty.
-**Background jobs:** the live shadow swarm run (started 20:49). Docker Desktop stopped.
+**Background jobs:** none. Docker Desktop stopped.
 
 **Deployed** on `devfep.workers.dev`:
 - `tessel-coordinator` version `3c2e946f` (trunk `720094e`, SHADOW-1; deployed 19:22 from the
