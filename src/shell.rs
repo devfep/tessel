@@ -2609,6 +2609,13 @@ mod tests {
                 ask("GET", "/repo/demo/ws", None, Some(&elsewhere)),
                 Err(Denied::Unauthorized(_))
             ));
+            let other = bearer("other", "a8");
+            let (_, who) = ask("GET", "/repo/other/ws", None, Some(&other)).unwrap();
+            assert_eq!(who, agent("a8"));
+            assert!(matches!(
+                ask("GET", "/repo/other/ws", None, Some(&auth)),
+                Err(Denied::Unauthorized(_))
+            ));
         }
     }
 }
