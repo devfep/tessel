@@ -1,0 +1,4 @@
+intent: make rule 2 a lint, not only a review point
+assumes: clippy's wildcard_enum_match_arm catches a wildcard arm on a protocol enum
+rejected: none
+evidence: rev-shadow-gc-2 mutant M14 (wildcard on ReleaseReason) survived clippy --all-targets
