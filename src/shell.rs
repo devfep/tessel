@@ -453,19 +453,81 @@ pub fn parse_route<'a>(segments: &[&'a str]) -> Option<Route<'a>> {
     }
 }
 
-/// The body of `GET /repo/<name>/summary`: the counters over the whole log and the `seq` of its
-/// last event, so a reader can tell whether it is looking at newer data than before. An empty log
-/// has no head: `head_seq` is `null`, not 0, which is a real `seq`.
-pub fn summary_report(events: &[Event]) -> Result<String, serde_json::Error> {
-    #[derive(Serialize)]
-    struct Report {
-        summary: Summary,
-        head_seq: Option<u64>,
+/// The counters of `Summary::from_events` over a log read a page at a time, with no events kept.
+/// `Summary::from_events` is a per-event fold whose `precision` is derived at the end, so the
+/// counters of the pages add up and `precision` is recomputed from the totals.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SummaryTally {
+    total: Summary,
+    head_seq: Option<u64>,
+}
+
+impl SummaryTally {
+    /// The `seq` the next read starts at: just after the last event counted.
+    pub fn next_seq(&self) -> u64 {
+        self.head_seq.map_or(0, |head| head.saturating_add(1))
     }
-    serde_json::to_string(&Report {
-        summary: Summary::from_events(events),
-        head_seq: events.last().map(|event| event.seq),
-    })
+
+    /// Count one page of events, which must follow those already counted.
+    pub fn add_page(&mut self, page: &[Event]) {
+        let Some(last) = page.last() else {
+            return;
+        };
+        let Summary {
+            claims_granted,
+            denials,
+            conflicts_prevented_verified,
+            false_alarms,
+            precision: _,
+            assumptions_challenged,
+            assumptions_confirmed_broken,
+            merges,
+            reviews_requested,
+            base_moved_notices,
+            races_decided,
+            replay_merges,
+            replay_conflicts,
+        } = Summary::from_events(page);
+        let total = &mut self.total;
+        total.claims_granted += claims_granted;
+        total.denials += denials;
+        total.conflicts_prevented_verified += conflicts_prevented_verified;
+        total.false_alarms += false_alarms;
+        total.assumptions_challenged += assumptions_challenged;
+        total.assumptions_confirmed_broken += assumptions_confirmed_broken;
+        total.merges += merges;
+        total.reviews_requested += reviews_requested;
+        total.base_moved_notices += base_moved_notices;
+        total.races_decided += races_decided;
+        total.replay_merges += replay_merges;
+        total.replay_conflicts += replay_conflicts;
+        self.head_seq = Some(last.seq);
+    }
+
+    /// The summary of everything counted so far.
+    pub fn summary(&self) -> Summary {
+        let mut summary = self.total.clone();
+        let judged = summary.conflicts_prevented_verified + summary.false_alarms;
+        if judged > 0 {
+            summary.precision = Some(summary.conflicts_prevented_verified as f64 / judged as f64);
+        }
+        summary
+    }
+
+    /// The body of `GET /repo/<name>/summary`: the counters and the `seq` of the last event
+    /// counted, so a reader can tell whether it is looking at newer data than before. An empty
+    /// log has no head: `head_seq` is `null`, not 0, which is a real `seq`.
+    pub fn report(&self) -> Result<String, serde_json::Error> {
+        #[derive(Serialize)]
+        struct Report {
+            summary: Summary,
+            head_seq: Option<u64>,
+        }
+        serde_json::to_string(&Report {
+            summary: self.summary(),
+            head_seq: self.head_seq,
+        })
+    }
 }
 
 /// Why the Worker refuses a request before it reaches the Durable Object.
@@ -2200,6 +2262,21 @@ mod tests {
         }
     }
 
+    fn replay_merged(outcome: Outcome) -> EventKind {
+        EventKind::ReplayMerged {
+            agent: agent("a1"),
+            fork_commit: CommitId("c".to_string()),
+            outcome,
+        }
+    }
+
+    fn merged() -> EventKind {
+        EventKind::Merged {
+            claim: ClaimId(1),
+            head: CommitId("abc".to_string()),
+        }
+    }
+
     fn evidence_log() -> Vec<Event> {
         let kinds = [
             shadow_denial(),
@@ -2220,8 +2297,16 @@ mod tests {
         log
     }
 
+    fn tally_of(events: &[Event], page: usize) -> SummaryTally {
+        let mut tally = SummaryTally::default();
+        for chunk in events.chunks(page) {
+            tally.add_page(chunk);
+        }
+        tally
+    }
+
     fn report_json(events: &[Event]) -> serde_json::Value {
-        serde_json::from_str(&summary_report(events).unwrap()).unwrap()
+        serde_json::from_str(&tally_of(events, REPLAY_PAGE).report().unwrap()).unwrap()
     }
 
     #[test]
@@ -2258,6 +2343,96 @@ mod tests {
             log_event(42, shadow_denial()),
         ];
         assert_eq!(report_json(&log)["head_seq"], 42);
+    }
+
+    #[test]
+    fn a_log_counted_in_pages_of_any_size_gives_the_summary_of_the_whole_log() {
+        let log = evidence_log();
+        for page in 1..=log.len() + 1 {
+            let tally = tally_of(&log, page);
+            assert_eq!(tally.summary(), Summary::from_events(&log), "page {page}");
+            assert_eq!(
+                tally.report().unwrap(),
+                tally_of(&log, 1).report().unwrap(),
+                "page {page}"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_counters_add_up_across_pages() {
+        let log = [
+            log_event(0, replay_merged(Outcome::Clean)),
+            log_event(1, replay_merged(Outcome::BuildFailed)),
+            log_event(2, replay_merged(Outcome::TextualConflict)),
+        ];
+        let summary = tally_of(&log, 1).summary();
+        assert_eq!((summary.replay_merges, summary.replay_conflicts), (3, 2));
+    }
+
+    #[test]
+    fn precision_comes_from_the_totals_not_from_the_pages() {
+        let log = [
+            log_event(0, verified_denial(Outcome::TextualConflict)),
+            log_event(1, verified_denial(Outcome::Clean)),
+            log_event(2, verified_denial(Outcome::Clean)),
+            log_event(3, verified_denial(Outcome::TestsFailed)),
+        ];
+        let tally = tally_of(&log, 1);
+        assert_eq!(tally.summary().precision, Some(0.5));
+        assert_eq!(tally_of(&log[..0], 1).summary().precision, None);
+    }
+
+    #[test]
+    fn a_tally_resumes_after_the_events_it_counted_and_counts_new_ones() {
+        let log = evidence_log();
+        let mut tally = SummaryTally::default();
+        assert_eq!(tally.next_seq(), 0);
+        tally.add_page(&log[..3]);
+        assert_eq!(tally.next_seq(), 3);
+        let before = tally.summary();
+        assert_eq!(before.denials, 3);
+        tally.add_page(&[]);
+        assert_eq!(tally.summary(), before, "an empty read changes nothing");
+        assert_eq!(tally.next_seq(), 3);
+        tally.add_page(&log[3..]);
+        assert_eq!(tally.next_seq(), 7);
+        assert_ne!(tally.summary(), before);
+        assert_eq!(tally.summary(), Summary::from_events(&log));
+        assert_eq!(report_json(&log)["head_seq"], 6);
+    }
+
+    mod paging {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn kind(choice: u8) -> EventKind {
+            match choice % 7 {
+                0 => shadow_denial(),
+                1 => verified_denial(Outcome::TextualConflict),
+                2 => verified_denial(Outcome::Clean),
+                3 => verified_denial(Outcome::Inconclusive),
+                4 => replay_merged(Outcome::Clean),
+                5 => replay_merged(Outcome::BuildFailed),
+                _ => merged(),
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn paged_counting_equals_one_fold(
+                choices in proptest::collection::vec(any::<u8>(), 0..60),
+                page in 1usize..70,
+            ) {
+                let mut log = Vec::new();
+                for (seq, choice) in choices.into_iter().enumerate() {
+                    log.push(log_event(seq as u64, kind(choice)));
+                }
+                let tally = tally_of(&log, page);
+                prop_assert_eq!(tally.summary(), Summary::from_events(&log));
+                prop_assert_eq!(tally.next_seq(), log.len() as u64);
+            }
+        }
     }
 
     fn path(url_path: &str) -> Vec<&str> {
@@ -2421,6 +2596,19 @@ mod tests {
                 ask("GET", "/nope", None, Some(&auth)),
                 Err(Denied::NotFound)
             );
+        }
+
+        #[test]
+        fn the_ws_route_binds_the_agent_of_a_token_for_its_repo_only() {
+            let auth = bearer("demo", "a7");
+            let (route, who) = ask("GET", "/repo/demo/ws", None, Some(&auth)).unwrap();
+            assert_eq!(route, format!("{:?}", Route::Ws { repo: "demo" }));
+            assert_eq!(who, agent("a7"));
+            let elsewhere = bearer("elsewhere", "a7");
+            assert!(matches!(
+                ask("GET", "/repo/demo/ws", None, Some(&elsewhere)),
+                Err(Denied::Unauthorized(_))
+            ));
         }
     }
 }

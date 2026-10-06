@@ -45,7 +45,7 @@ use crate::merge::{self, MergeOutcome, TrialOutcome, TrialReport};
 use crate::protocol::{AgentId, ClaimId, ClientMsg, ServerMsg};
 use crate::shell::{
     self, keep_first, Action, Denied, Inbound, ReplayStep, Route, Session, StoreDecision,
-    StoredSize, Target, Work,
+    StoredSize, SummaryTally, Target, Work,
 };
 use crate::store::{self, Applied, Dispatch, Persisted};
 use worker::*;
@@ -110,7 +110,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     };
     let (route, agent) = match shell::authorize(&inbound) {
         Ok(admitted) => admitted,
-        Err(denied) => return refuse(denied),
+        Err(denied) => return refuse(denied, url.path()),
     };
     let repo = match route {
         Route::Ws { repo } | Route::Summary { repo } => repo,
@@ -127,9 +127,9 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     stub.fetch_with_request(forwarded).await
 }
 
-/// The response for a refused request. Only the reason of a 401 is logged, never the token or
-/// the key.
-fn refuse(denied: Denied) -> Result<Response> {
+/// The response for a refused request. A 401 is logged with its reason and the path, never the
+/// token or the key.
+fn refuse(denied: Denied, path: &str) -> Result<Response> {
     match denied {
         Denied::NotFound => {
             Response::error("expected /repo/<name>/ws or /repo/<name>/summary", 404)
@@ -142,7 +142,7 @@ fn refuse(denied: Denied) -> Result<Response> {
         }
         Denied::Forbidden => Response::error("this deployment does not serve that repo", 403),
         Denied::Unauthorized(reason) => {
-            console_error!("coordinator: refused request: {reason:?}");
+            console_error!("coordinator: refused {path}: {reason:?}");
             Response::error(UNAUTHORIZED_BODY, 401)
         }
     }
@@ -163,6 +163,8 @@ pub struct Coordinator {
     merging: Cell<Option<ClaimId>>,
     /// The verification this instance is waiting on, as `merging` is for a merge.
     verifying: Cell<Option<u64>>,
+    /// The events counted for the summary route so far. Memory only: a restart starts it over.
+    summary_tally: RefCell<SummaryTally>,
 }
 
 impl DurableObject for Coordinator {
@@ -174,6 +176,7 @@ impl DurableObject for Coordinator {
             stored: Cell::new(StoredSize::default()),
             merging: Cell::new(None),
             verifying: Cell::new(None),
+            summary_tally: RefCell::new(SummaryTally::default()),
         }
     }
 
@@ -810,25 +813,29 @@ impl Coordinator {
     }
 
     /// The summary of the whole stored log as JSON. A plain read of storage: it loads no core,
-    /// appends no event, sets no alarm and touches no socket, so it cannot delay a merge
-    /// dispatch. The log is read a page at a time, as in `watch`.
+    /// appends no event, sets no alarm and touches no socket. The tally of the events already
+    /// counted is kept in memory, so a read costs only the events stored since the last one; the
+    /// first read after a wake scans the whole log, a page at a time with no events kept. That scan
+    /// runs behind the input gate like any storage read loop, so it delays other messages and the
+    /// alarm until it ends, in proportion to the log's length. Events are never rewritten or
+    /// removed, so the counted prefix stays valid.
     async fn summary(&self) -> Result<Response> {
         let storage = self.state.storage();
-        let mut events = Vec::new();
-        let mut start_seq = 0;
+        let mut tally = self.summary_tally.borrow().clone();
         loop {
-            let page = store::read_events(&storage, start_seq, shell::REPLAY_PAGE)
+            let page = store::read_events(&storage, tally.next_seq(), shell::REPLAY_PAGE)
                 .await
                 .map_err(|e| self.fail("read events", e))?;
             let last_seq = page.last().map(|event| event.seq);
             let page_len = page.len();
-            events.extend(page);
+            tally.add_page(&page);
             match shell::after_page(page_len, last_seq) {
-                ReplayStep::Next { start_seq: next } => start_seq = next,
+                ReplayStep::Next { .. } => {}
                 ReplayStep::Done => break,
             }
         }
-        let body = shell::summary_report(&events).map_err(|e| self.fail("encode summary", e))?;
+        let body = tally.report().map_err(|e| self.fail("encode summary", e))?;
+        *self.summary_tally.borrow_mut() = tally;
         let headers = Headers::new();
         headers.set("Content-Type", "application/json")?;
         headers.set("Cache-Control", "no-store")?;
