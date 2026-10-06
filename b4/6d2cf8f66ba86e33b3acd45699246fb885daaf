@@ -1,0 +1,4 @@
+intent: feed lines name the release reason (settled, lease_expired, ...) and the reviewer on review_decided
+assumes: none
+rejected: none
+evidence: vitest 649 passed; oxlint, oxfmt, tsc clean
