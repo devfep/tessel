@@ -1,0 +1,4 @@
+intent: make claim-before-edit the first line of every implementer brief
+assumes: none
+rejected: none
+evidence: SWARM-OBSERVER claimed after editing; SHADOW-GC claimed nothing
