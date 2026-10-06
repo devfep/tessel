@@ -1,0 +1,4 @@
+intent: fix pass 3: one watch-only observer per run publishes the log; waiters read it; no per-poll connects or replays
+assumes: a socket bound by Hello may Watch from its last seq after a reconnect, and the replay is ordered
+rejected: polling read_log per agent (Hello re-persists coordinator state and replays the log during the measured run)
+evidence: cargo test --workspace 785 (783 + 2); on_local 10/10 green; swarm tests 3/3; clippy -D warnings clean; M7 x3, M12, M13, M2 killed
