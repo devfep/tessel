@@ -1,0 +1,4 @@
+intent: remove the shadow sweep in merge_outcome (landing queues a trial for every submitted shadow it blocked, so it changes nothing); test that recovery past MAX_INFRA_RETRIES drops the shadow; early-return the sweep when no shadow claim exists
+assumes: none
+rejected: early return keyed on denial presence: it skipped old stored shadows with no denial (caught by an existing test)
+evidence: cargo test --workspace 802 passed; no-sweep-in-recover mutant killed by the new test; clippy, fmt, wasm clean
