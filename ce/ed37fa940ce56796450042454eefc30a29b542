@@ -1,0 +1,4 @@
+intent: settle the watcher before deciding the run's outcome, abort-then-await so no finished result is lost, and keep the watcher's error as root cause with the agent/final-wait failure as context
+assumes: awaiting a JoinHandle after abort yields the real result when the task had already completed
+rejected: none
+evidence: cargo test --workspace 802 passed (795 + 7 new); tessel-swarm 3 runs green; clippy -D warnings, fmt clean; mutants M4 (drop accepted push), M5 (drop watcher error), M6 (drop context) each fail a new test
