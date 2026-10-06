@@ -377,6 +377,17 @@ describe("live state", () => {
     expect(page.text("reviews")).toContain("No submissions held");
   });
 
+  it("names the reason a claim was released and who decided a review", async () => {
+    const page = await load();
+    page.send("claim_released", { claim: 4, reason: "settled" });
+    page.send("review_decided", { claim: 6, approve: true, note: null, reviewer: "felix" });
+    page.send("review_decided", { claim: 7, approve: false, note: null });
+    const feed = page.text("feed");
+    expect(feed).toContain("claim_released claim 4 (settled)");
+    expect(feed).toContain("review_decided claim 6 by felix");
+    expect(feed).not.toContain("claim 7 by");
+  });
+
   it("lists merges with the agent that held the claim", async () => {
     const page = await load();
     page.send("claim_granted", {

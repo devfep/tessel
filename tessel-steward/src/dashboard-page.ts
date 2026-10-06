@@ -89,7 +89,9 @@ function apply(ev) {
       outcome: ev.outcome });
   }
   state.feed.unshift("#" + ev.seq + " " + k + (ev.agent ? " " + ev.agent : "") +
-    (ev.claim !== undefined ? " claim " + ev.claim : ""));
+    (ev.claim !== undefined ? " claim " + ev.claim : "") +
+    (k === "claim_released" && ev.reason ? " (" + ev.reason + ")" : "") +
+    (k === "review_decided" && ev.reviewer ? " by " + ev.reviewer : ""));
   if (state.feed.length > 200) { state.feed.pop(); }
 }
 
