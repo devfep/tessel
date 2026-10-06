@@ -1,0 +1,4 @@
+intent: close the gap that let DASH-1b's post-review commit merge unread
+assumes: unflagged submissions merge with no review hold (review by exception, invariant 12)
+rejected: none
+evidence: 715d8dd merged at seq ~317 before the orchestrator read f275469..715d8dd; read afterwards: refetch limit by attempt time and a served-CSP test, both sound
