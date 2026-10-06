@@ -270,6 +270,13 @@ describe("headline numbers", () => {
     ]);
   });
 
+  it("renders an empty log, where head_seq is null", async () => {
+    summaryBody = { head_seq: null, summary: { claims_granted: 0, precision: null } };
+    const page = await load();
+    await settle();
+    expect(statLines(page)).toContain("0 Claims granted");
+  });
+
   it("shows n/a for precision before anything is verified", async () => {
     summaryBody = { head_seq: 0, summary: { precision: null } };
     const page = await load();

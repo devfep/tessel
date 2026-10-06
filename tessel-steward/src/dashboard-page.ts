@@ -153,7 +153,7 @@ function loadSummary() {
   });
 }
 function scheduleSummary() {
-  if (!summaryTimer) { summaryTimer = setTimeout(function () { summaryTimer = 0; loadSummary(); }, 500); }
+  if (!summaryTimer) { summaryTimer = setTimeout(function () { summaryTimer = 0; loadSummary(); }, 3000); }
 }
 
 document.getElementById("repo").textContent = base.split("/").pop();
