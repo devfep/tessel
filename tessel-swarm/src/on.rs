@@ -4,7 +4,7 @@
 //! `Summary::from_events`; the harness adds only what the log cannot hold (wall time and the
 //! time agents spent on work that was later rejected).
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
 use tessel_coordinator::protocol::{
-    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, EventKind, Fence,
-    Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
+    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, Fence, Intent,
+    OnConflict, ScopeClaim, ServerMsg, Summary,
 };
 
 use crate::conn::{read_log, Conn};
@@ -48,6 +48,9 @@ pub struct OnConfig {
     /// Longest an agent waits for a grant, and again for a merge. Under the shadow policy it is
     /// also the longest the run waits, once the agents are done, for shadow trials to be logged.
     pub task_timeout: Duration,
+    /// Under the shadow policy: longest a shadow agent waits for the trial of its own claim before
+    /// it takes another task. The run still waits up to `task_timeout` at the end.
+    pub trial_wait: Duration,
     /// How often a skipped task may be denied before its agent gives up on it.
     pub max_denials: u32,
     /// Answer every submission held for review with an approval. On by default, for the local
@@ -596,7 +599,7 @@ async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) 
     tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
     let work_ms = millis(granted);
     let waiting = Instant::now();
-    await_own_trial(conn, held.claim, timeout).await?;
+    await_own_trial(ctx, held.claim).await?;
     Ok(Step {
         end: End::Done(resolution, note),
         work_ms,
@@ -604,45 +607,23 @@ async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) 
     })
 }
 
-/// Reads the log on the agent's own connection until the trial of `claim` is in it, no trial can
-/// run for it any more (its blocker ended unmerged, or merged before it submitted), or `limit`
-/// has passed. Whatever is still owed then stays owed and the report counts it as never verified.
-async fn await_own_trial(conn: &mut Conn, claim: ClaimId, limit: Duration) -> Result<()> {
-    conn.send(&ClientMsg::Watch { from_seq: 0 }).await?;
-    let deadline = Instant::now() + limit;
-    let mut log: BTreeMap<u64, Event> = BTreeMap::new();
+/// Reads the log, on a fresh connection each time, until nothing is owed to `claim` any more: its
+/// trial is logged, or none can run (its blocker ended unmerged, or merged before it submitted).
+/// The claim is already `Accepted`, so its submission is in the log. It gives up after
+/// `trial_wait`; whatever is still owed then stays owed and the report counts it as never
+/// verified. A fresh connection because a socket may `Watch` only once, and the agent's own
+/// socket is busy with its claims.
+async fn await_own_trial(ctx: &Ctx, claim: ClaimId) -> Result<()> {
+    let observer = ctx.endpoint.token_of(OBSERVER)?;
+    let deadline = Instant::now() + ctx.config.trial_wait;
     loop {
-        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-            return Ok(());
-        };
-        let Some(msg) = conn.recv(left).await? else {
-            return Ok(());
-        };
-        let ServerMsg::Event { event } = msg else {
-            continue;
-        };
-        log.insert(event.seq, event);
-        if trial_settled(&log, claim) {
+        let url = &ctx.endpoint.ws_url;
+        let log = read_log(url, observer, OBSERVER, Duration::from_secs(60)).await?;
+        if events::awaiting_verification_of(&log, claim) == 0 || Instant::now() >= deadline {
             return Ok(());
         }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
-}
-
-/// The part of the log read so far is gap-free from seq 0, holds the claim's submission, and owes
-/// the claim nothing.
-fn trial_settled(log: &BTreeMap<u64, Event>, claim: ClaimId) -> bool {
-    let complete = log
-        .keys()
-        .next_back()
-        .is_some_and(|last| last + 1 == log.len() as u64);
-    if !complete {
-        return false;
-    }
-    let events: Vec<Event> = log.values().cloned().collect();
-    let submitted = events
-        .iter()
-        .any(|e| matches!(&e.kind, EventKind::Submitted { claim: c, .. } if *c == claim));
-    submitted && events::awaiting_verification_of(&events, claim) == 0
 }
 
 /// Brings the working directory to the trunk's head and applies the task to it.

@@ -77,6 +77,7 @@ fn config() -> OnConfig {
         policy: Policy::Wait,
         work_ms: 0,
         task_timeout: Duration::from_secs(1),
+        trial_wait: Duration::from_secs(1),
         max_denials: 1,
         scripted_reviewer: false,
     }

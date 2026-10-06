@@ -494,6 +494,7 @@ fn handle_text(hub: &Hub, id: u64, session: &mut Session, text: &str) -> bool {
             let State {
                 events, sockets, ..
             } = &mut *state;
+            session.watch_from = Some(from_seq);
             if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
                 for event in events.iter().filter(|e| e.seq >= from_seq) {
                     let _ = entry.tx.send(ServerMsg::Event {

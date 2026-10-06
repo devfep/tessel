@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use std::time::Duration;
 
-use tessel_coordinator::protocol::{ClaimId, EventKind, Outcome, Summary};
+use tessel_coordinator::protocol::{ClaimId, Event, EventKind, Outcome, Summary};
 use tessel_swarm::demo;
 use tessel_swarm::git::{self, Checks, Git};
 use tessel_swarm::guard::ScratchRepo;
@@ -58,6 +58,7 @@ fn config(agents: usize, policy: Policy, work_ms: u64) -> OnConfig {
         policy,
         work_ms,
         task_timeout: Duration::from_secs(60),
+        trial_wait: Duration::from_secs(60),
         max_denials: 400,
         scripted_reviewer: true,
     }
@@ -465,20 +466,56 @@ async fn a_blocker_that_never_merges_leaves_the_denial_unverified_and_prevents_n
     run.server.shutdown().await;
 }
 
+/// Every shadow claim that was tried: its agent's next claim is logged after the trial. A fork's
+/// `main` is replaced by each push, so an agent that went on before the trial would remove the
+/// commit the trial needs. Returns how many claims had a next claim to check.
+fn trials_precede_the_next_claim(events: &[Event]) -> usize {
+    let mut checked = 0;
+    for (at, event) in events.iter().enumerate() {
+        let EventKind::ClaimShadowed { agent, claim, .. } = &event.kind else {
+            continue;
+        };
+        let verified = |e: &Event| match &e.kind {
+            EventKind::DenialVerified { shadow_claim, .. } => shadow_claim == claim,
+            _ => false,
+        };
+        let tried = events.iter().rposition(verified);
+        let next = events[at + 1..].iter().position(|e| match &e.kind {
+            EventKind::ClaimGranted { agent: a, .. }
+            | EventKind::ClaimShadowed { agent: a, .. } => a == agent,
+            _ => false,
+        });
+        if let (Some(tried), Some(next)) = (tried, next) {
+            assert!(
+                tried < at + 1 + next,
+                "{agent:?} claimed again before {claim:?} was tried"
+            );
+            checked += 1;
+        }
+    }
+    checked
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
-    // Four rewrites of one function on two agents: an agent shadowed on one task goes on to the
-    // next and pushes again. The trial of the first shadow commit needs it to still be on the fork.
+    // Four rewrites of one function on two agents: the agent shadowed first goes on to the next
+    // task and, once its trial is logged, is shadowed again.
     let tasks = [
         body(1, "unitPrice"),
         body(2, "unitPrice"),
         body(3, "unitPrice"),
         body(4, "unitPrice"),
     ];
-    let run = run(&tasks, config(2, Policy::Shadow, 1500)).await;
+    let limit = Duration::from_secs(20);
+    let config = OnConfig {
+        task_timeout: limit,
+        trial_wait: limit,
+        ..config(2, Policy::Shadow, 1500)
+    };
+    let run = run(&tasks, config).await;
     let summary = &run.result.summary;
     let trials = run.result.shadow_trials;
-    assert!(trials.claims >= 1, "{:?}", run.result.results);
+    assert!(trials.claims >= 2, "{:?}", run.result.results);
     assert_eq!(
         (
             summary.conflicts_prevented_verified,
@@ -492,31 +529,44 @@ async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
     assert_eq!(summary.false_alarms, 0);
     assert_eq!(summary.denials, trials.claims);
     assert_eq!(*summary, Summary::from_events(&run.result.events));
+    assert!(trials_precede_the_next_claim(&run.result.events) >= 1);
+    // A second wait that never saw its trial would run to the limit.
+    for shadowed in run
+        .result
+        .results
+        .iter()
+        .filter(|r| r.result == Resolution::Shadowed)
+    {
+        assert!(shadowed.waited_ms < 10_000, "{shadowed:?}");
+    }
     run.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted() {
-    let work_ms = 4000;
+    let work_ms = 2500;
     let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
     let run = run(&tasks, config(2, Policy::Shadow, work_ms)).await;
     let events = &run.result.events;
     let shadows = shadow_claims(&run);
     assert_eq!(shadows.len(), 1, "{:?}", run.result.results);
-    let shadow = shadows[0];
-    let find = |wanted: &dyn Fn(&EventKind) -> bool| events.iter().find(|e| wanted(&e.kind));
-    let claimed = find(&|k| matches!(k, EventKind::ClaimShadowed { .. })).unwrap();
-    let submitted =
-        find(&|k| matches!(k, EventKind::Submitted { claim, .. } if *claim == shadow)).unwrap();
-    let merged = find(&|k| matches!(k, EventKind::Merged { .. })).unwrap();
+    let submitted_at = |wanted: ClaimId| {
+        events
+            .iter()
+            .find(|e| matches!(&e.kind, EventKind::Submitted { claim, .. } if *claim == wanted))
+            .unwrap()
+            .seq
+    };
+    let blocker = events
+        .iter()
+        .find_map(|e| match &e.kind {
+            EventKind::Merged { claim, .. } => Some(*claim),
+            _ => None,
+        })
+        .unwrap();
     assert!(
-        submitted.seq < merged.seq,
-        "the submission precedes the blocker's merge"
-    );
-    assert!(
-        submitted.at_ms - claimed.at_ms < work_ms - 500,
-        "the shadow work is submitted before its work time has passed: {} ms",
-        submitted.at_ms - claimed.at_ms
+        submitted_at(shadows[0]) < submitted_at(blocker),
+        "the shadow work is submitted before the blocker's own submission"
     );
     let shadowed = run
         .result
@@ -529,6 +579,25 @@ async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_count
         run.result.work_ms_total >= 2 * work_ms,
         "{}",
         run.result.work_ms_total
+    );
+    assert_eq!(run.result.summary.conflicts_prevented_verified, 1);
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trial_that_lands_after_the_agents_stopped_waiting_is_still_counted() {
+    // The shadow agent does not wait for its trial at all, and the run ends when the blocker has
+    // merged, before the steward has tried the shadow work: the run's own wait covers it.
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let config = OnConfig {
+        trial_wait: Duration::ZERO,
+        ..config(2, Policy::Shadow, 1000)
+    };
+    let run = run(&tasks, config).await;
+    let trials = run.result.shadow_trials;
+    assert_eq!(
+        (trials.claims, trials.inconclusive, trials.never_verified),
+        (1, 0, 0)
     );
     assert_eq!(run.result.summary.conflicts_prevented_verified, 1);
     run.server.shutdown().await;

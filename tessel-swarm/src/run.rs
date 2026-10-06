@@ -33,6 +33,7 @@ impl Spec {
             policy: self.policy,
             work_ms: self.work_ms,
             task_timeout: self.task_timeout,
+            trial_wait: self.task_timeout,
             max_denials: self.max_denials,
             scripted_reviewer: self.scripted_reviewer,
         }
