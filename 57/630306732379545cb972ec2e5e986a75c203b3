@@ -1,0 +1,4 @@
+intent: the SSE relay sends only a watch (a hello writes an AgentConnected event per page load), pings every 30s, and closes the stream when the browser stops reading
+assumes: coordinator accepts Watch with no prior Hello (src/shell.rs per review)
+rejected: heartbeat omitted earlier because reconnect is lossless; the edge idle limit makes a quiet log drop and reconnect, so a ping is kept
+evidence: typecheck, oxlint, oxfmt clean; pnpm test 646 passed; mutants extra-hello, no-keepalive, no-backpressure, keepalive-not-cleared, csp-unsafe-inline killed
