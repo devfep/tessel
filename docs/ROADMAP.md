@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 23:03 EDT.
+**As of:** 2026-10-05 23:28 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -54,11 +54,16 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents** (dispatched 23:02 from the trunk `78e9f2a`; both stop for review before pushing):
+**Agents** (dispatched 23:02 from the trunk `78e9f2a`):
 - `impl-swarm-observer` (Sonnet), `.claude/worktrees/swarm-observer`, fork
-  `tessel-dogfood--lane-swarm-observer`; owns `tessel-swarm/`.
+  `tessel-dogfood--lane-swarm-observer`; owns `tessel-swarm/`. Fix pass 1 at `ceed37f` (802
+  tests), with `rev-swarm-observer` for re-check. Late claim on `on.rs` (first commit); claimed
+  before every edit since.
 - `impl-shadow-gc` (Sonnet), `.claude/worktrees/shadow-gc`, fork `tessel-dogfood--lane-shadow-gc`;
-  owns `src/coordinator*`, `src/shell.rs`, `src/runtime.rs`.
+  owns `src/coordinator*`, `src/shell.rs`, `src/runtime.rs`. PARKED at `3a3cbd2` (802 tests;
+  review "With fixes": the non-blocking fixes are done) waiting for Felix's protocol decision on
+  `ReleaseReason::Settled`; daemon stopped, no claims held. Its first commit `cd83a74` was made
+  with no claims (late claims, record in the merge note). DASH-1 waits for this lane to land.
 **Decided (Felix delegated it, 23:05):** the dashboard and review screen sign in through
 Cloudflare Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths; the
 steward verifies the `Cf-Access-Jwt-Assertion` JWT (team certs, the application's AUD tag) and
