@@ -1,0 +1,4 @@
+intent: add ReleaseReason::Settled and ReviewDecided.reviewer (additive, Felix ruled Oct 6); drop six stale expect(dead_code) and the lib.rs allow; fix the reviews_requested doc; fill reviewer in the coordinator
+assumes: Settled is only emitted in experiment runs (shadows on), so older readers never see it on a deployed coordinator
+rejected: none
+evidence: cargo check --workspace --all-targets clean
