@@ -99,6 +99,14 @@ right after each run.
   steward-minted token gets `welcome`, `tessel-dogfood` 403, no token 401.
 
 **Pending from Felix:**
+- (NEW, 23:20, blocks SHADOW-GC) Invariant 10: SHADOW-GC drops finished shadow claims with no
+  event, so a replay or the dashboard would show them live forever. No existing `ReleaseReason`
+  fits honestly. Proposed: add `ReleaseReason::Settled` ("a submitted shadow claim that nothing is
+  owed through: every blocker ended and every trial is logged") in `src/protocol.rs` (~765), and
+  log `ClaimReleased { claim, reason: Settled }` per drop. A new variant is not a new optional
+  field: a client built before it fails to parse it. Felix decides: treat it as additive (every
+  client is built from the trunk) or bump `PROTOCOL_VERSION`. Recommendation: additive, folded
+  into the next hand merge of `src/protocol.rs` with item 1 below.
 0. Nothing blocking. The fork-push allow rule is in `.claude/settings.local.json` (Felix, 18:3x).
    Note: the existing `Bash(npx wrangler deploy *)` rule does not match a deploy piped through
    other commands; the orchestrator runs deploys bare. Production deploys, secret writes, Artifacts deletes and forced pushes are
