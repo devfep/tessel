@@ -415,10 +415,6 @@ pub struct RaceEntry {
 /// Deterministic ranking: best first. Entries missing a measured value sort
 /// after entries that have one; the final tie-break is claim id, so the same
 /// inputs always produce the same winner.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "planned: races (PLAN.md section 5)")
-)]
 pub fn rank_entries(criteria: &[Criterion], entries: &[RaceEntry]) -> Vec<ClaimId> {
     let mut pool: Vec<&RaceEntry> = entries
         .iter()
@@ -441,10 +437,6 @@ pub fn rank_entries(criteria: &[Criterion], entries: &[RaceEntry]) -> Vec<ClaimI
     pool.into_iter().map(|e| e.claim).collect()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "planned: races (PLAN.md section 5)")
-)]
 fn none_last<T: Ord>(a: Option<T>, b: Option<T>) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
     match (a, b) {
@@ -686,10 +678,6 @@ pub enum ReviewReason {
 
 /// The whole review policy. Empty result = merge automatically.
 /// `sensitive` entries are path prefixes, matched against each touched scope.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "planned: review by exception (PLAN.md section 5)")
-)]
 pub fn review_reasons(
     touched: &[ScopeClaim],
     threatened_assumptions: u32,
@@ -747,10 +735,6 @@ pub enum Outcome {
 
 impl Outcome {
     /// Did this outcome show a real conflict?
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "planned: dashboard evidence (PLAN.md section 8)")
-    )]
     pub fn is_conflict(self) -> Option<bool> {
         match self {
             Outcome::Clean => Some(false),
@@ -767,6 +751,9 @@ pub enum ReleaseReason {
     LeaseExpired,
     LostRace,
     Merged,
+    /// A submitted shadow claim that nothing is owed through: every blocker ended and every trial
+    /// is logged (invariant 10).
+    Settled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -851,6 +838,9 @@ pub enum EventKind {
         claim: ClaimId,
         approve: bool,
         note: Option<String>,
+        /// The reviewing agent. `None` in a log written before this field existed.
+        #[serde(default)]
+        reviewer: Option<AgentId>,
     },
     BaseMoved {
         head: CommitId,
@@ -895,10 +885,6 @@ pub enum EventKind {
 
 /// Counters for the dashboard and the A/B table, computed one way everywhere.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "planned: dashboard evidence (PLAN.md section 8)")
-)]
 pub struct Summary {
     pub claims_granted: u64,
     /// Denials issued. NOT the same as conflicts prevented.
@@ -911,7 +897,8 @@ pub struct Summary {
     pub assumptions_challenged: u64,
     pub assumptions_confirmed_broken: u64,
     pub merges: u64,
-    /// Merges that needed a human. merges - this = merged without review.
+    /// Submissions held for a human (`ReviewRequested` events). Some are rejected or still
+    /// waiting, so `merges` minus this is not the count merged without review.
     pub reviews_requested: u64,
     pub base_moved_notices: u64,
     pub races_decided: u64,
@@ -921,10 +908,6 @@ pub struct Summary {
 }
 
 impl Summary {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "planned: dashboard evidence (PLAN.md section 8)")
-    )]
     pub fn from_events<'a>(events: impl IntoIterator<Item = &'a Event>) -> Summary {
         let mut s = Summary::default();
         for e in events {

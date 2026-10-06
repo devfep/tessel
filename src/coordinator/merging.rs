@@ -202,6 +202,7 @@ impl Coordinator {
             claim,
             approve,
             note,
+            reviewer: Some(reviewer.clone()),
         };
         let mut effects = vec![self.event(now_ms, decided)];
         if !approve {

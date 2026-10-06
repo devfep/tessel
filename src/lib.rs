@@ -6,9 +6,6 @@
 
 pub mod coordinator;
 pub mod merge;
-// `protocol` is frozen and carries `expect(dead_code)` on items that are dead only while the
-// module is private. Public, those expectations are unfulfilled, which is not an error here.
-#[allow(unfulfilled_lint_expectations)]
 pub mod protocol;
 pub mod shell;
 

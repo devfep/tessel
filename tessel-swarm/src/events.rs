@@ -284,6 +284,7 @@ mod tests {
                     claim: ClaimId(claim),
                     approve,
                     note: Some(note.to_string()),
+                    reviewer: None,
                 },
             )
         };
@@ -319,6 +320,7 @@ mod tests {
                     claim: ClaimId(1),
                     approve: true,
                     note: None,
+                    reviewer: None,
                 },
             ),
             event(

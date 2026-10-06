@@ -212,6 +212,7 @@ mod tests {
             claim: ClaimId(claim),
             approve,
             note: None,
+            reviewer: None,
         }
     }
 
