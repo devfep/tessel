@@ -1,0 +1,4 @@
+intent: fix pass 2: shadow agents read the log with a fresh socket per poll; local server rejects a second Watch like the runtime
+assumes: a shadow submission is in the stored log once its Accepted reply is sent
+rejected: one Watch per connection with an owned buffer (every other recv loop discards events, so the buffer would have gaps)
+evidence: cargo test --workspace 783 (782 + 1); swarm tests 3 runs green; clippy -D warnings clean; M2 M7 M10 killed, old watch-in-loop fails the overwrite test
