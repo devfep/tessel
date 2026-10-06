@@ -1,0 +1,4 @@
+intent: close SWARM-OBSERVER and dispatch DASH-1a and DASH-1b
+assumes: none
+rejected: waiting for SHADOW-GC before DASH-1 (its commits do not touch src/runtime.rs)
+evidence: orchestrator gate on archived c79712a 802 passed; event 283 approve; trunk c79712a tree equal; mirrored
