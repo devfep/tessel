@@ -402,6 +402,10 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   follow-up read by the orchestrator: a deterministic shadow in the watcher-failure test). Through
   the steward: claim 44 (late claim on `on.rs` in the first commit; one `uncovered` refusal),
   approved by `orchestrator` (event 283) after its gate on `c79712a`: 802 passed.
+- [ ] **CLI-CLIPPY-810** — `cargo clippy --workspace --all-targets -- -D warnings` fails on a
+  pre-existing `eprintln!` (`print_stderr`) at `tessel-cli/tests/cli.rs:810`; every review today
+  had to except it. Replace it with the test harness's own reporting or an `#[expect]` with a
+  reason, so the workspace clippy gate is clean again.
 - [ ] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
