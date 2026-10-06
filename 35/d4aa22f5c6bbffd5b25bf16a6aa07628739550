@@ -1,0 +1,4 @@
+intent: record that the Access team domain and AUD must be committed, not set in the dashboard
+assumes: wrangler deploy replaces dashboard-set vars with the file's (no keep_vars)
+rejected: setting them only in the Cloudflare dashboard (wiped on the next deploy)
+evidence: rev-dash-ui finding
