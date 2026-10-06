@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 17:58 EDT.
+**As of:** 2026-10-06 18:45 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -64,31 +64,37 @@ run). A small sample: it shows the mechanism live, not a rate.
   before landing.
 - No other lane live. `.claude/worktrees/deploy` is a detached checkout of the trunk `d4e6335`
   used for deploys (holds `tessel-steward/node_modules`); remove it after the steward deploy.
-**Steward deployed with the dashboard** (Oct 6, 17:5x EDT, version `32b006fd`, after Felix
-restarted a hung Docker Desktop). Live: every `/dashboard/...` path answers 503 "sign-in not
-configured" (Access vars empty, fail closed); admin routes still 401 without the token; identity
-minting works. Next: Felix's Access app → commit `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` → redeploy →
-check the page signed in.
+**THE DASHBOARD IS LIVE behind Access** (Oct 6, 18:41 EDT; Felix signed in and saw it):
+https://tessel-steward.devfep.workers.dev/dashboard/tessel-dogfood shows 54 claims granted, 0
+denials, 0 verified, 0 false alarms, precision n/a, 7 merges, 6 reviews requested (equal to the
+coordinator's `/summary`), the seven steward merges with trunk shas, the event feed through #323
+with no `agent_connected dashboard` events, and the "a denial is not a prevented conflict" note.
+Access app `tessel-dashboard` (team `fepdev`, policy `homelab-allowed-emails`) covers exactly
+`/dashboard`, `/dashboard/*`, `/review`, `/review/*`; the AUD tag
+`81ae313c892cf190f69330a71a9b0f600aa31e340d43a8dcd54eb629dfd33b08` was read from the Access login
+redirect's `kid` (wrangler's OAuth token has no Access scope). Unsigned and forged-assertion
+requests get 302 to the login; admin routes still answer the steward's own 401. The two values are
+on the deploy command line only (`--var`), so the next trunk deploy would drop them:
+ACCESS-VARS (lane dispatched 18:44) commits them to `tessel-steward/wrangler.jsonc`.
 **Decided (Felix delegated it, 23:05):** the dashboard and review screen sign in through
 Cloudflare Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths; the
 steward verifies the `Cf-Access-Jwt-Assertion` JWT (team certs, the application's AUD tag) and
 maps Felix's email to reviewer `felix`. Until Access is on, those paths answer "sign-in not
 configured" (fail closed). SHADOW-GC's commits do not touch `src/runtime.rs`, so DASH-1 started
 at 23:41 in two lanes (DASH-1a coordinator route, DASH-1b steward page); REVIEW-UI after.
-**Access setup for Felix at his desk (about 5 minutes; the session cannot do it):** in the
-Cloudflare dashboard, Zero Trust → (first time: pick a team name and the Free plan; it may ask for
-a payment method) → Access → Applications → Add → Self-hosted: name `tessel-dashboard`, domain
-`tessel-steward.devfep.workers.dev`, paths `dashboard` and `review`; policy "Allow" with the
-include rule Emails = devfep@gmail.com; login method One-time PIN. Then send the orchestrator the
-team domain (`<team>.cloudflareaccess.com`) and the application's AUD tag (Overview tab).
-The orchestrator then commits both to `tessel-steward/wrangler.jsonc` vars (not secret) and
-redeploys: `wrangler deploy` overwrites dashboard-set vars with the file's values, so setting them
-in the Cloudflare dashboard alone would be wiped on the next deploy (DASH-1b review).
+**Access, for next time:** done in Zero Trust → Access controls → Applications → Create new
+application → Self-hosted and private → **Public DNS** (never the Workers tab, which protects the
+whole Worker, admin routes included), one destination per path in custom-input form
+(`tessel-steward.devfep.workers.dev/dashboard` etc.; a path wildcard does not cover its parent).
+Wrangler cannot manage Access; the dashboard or an API token with Access edit rights can.
 **Load note:** the load reached about 34 at 20:01 and about 73 at 20:41, mostly Spotlight
 (`mds_stores`) on gate copies' `target/` dirs plus the iOS simulators; gate copies are trashed
 right after each run.
 **Merge queue:** empty.
-**Background jobs:** none. Docker Desktop started but not answering (see above).
+**Background jobs:** none. Docker Desktop running (restarted by Felix; needed for steward deploys).
+**Agents:** `impl-access-vars` (Sonnet), `.claude/worktrees/access-vars` (from `d4e6335`), fork
+`tessel-dogfood--lane-access-vars`; owns `tessel-steward/wrangler.jsonc`; stops before pushing for
+the orchestrator to read its diff (rule 00). `impl-shadow-gc` parked (above).
 
 **Deployed** on `devfep.workers.dev`:
 - `tessel-coordinator` version `8120ee30` (trunk `d4e6335`; deployed 00:16 from the trunk
@@ -97,9 +103,9 @@ right after each run.
   `head_seq` 323), a second read leaves `head_seq` unchanged (no event appended), no token 401,
   another repo's token 401, POST 405 `Allow: GET`. Every upgrade needs a steward-minted agent
   token. The old `COORDINATOR_TOKEN` secret is unused and still set (a secret delete: Felix's).
-- `tessel-steward` version `f5f3d912` — NOT yet the dashboard (trunk `d4e6335` holds DASH-1b; the
-  deploy waits for Docker, see Blocked above). Deployed by Felix about 16:15; the first attempt failed in
-  wrangler's image push, untagged mid-push, and the retry succeeded): toolchain image (Rust, Node
+- `tessel-steward` version `b4a66e0f` (trunk `d4e6335` plus `--var ACCESS_TEAM_DOMAIN` and
+  `--var ACCESS_AUD` on the command line; deployed Oct 6 18:4x EDT from `.claude/worktrees/deploy`):
+  the dashboard behind Access, service binding `COORDINATOR`; toolchain image (Rust, Node
   22, pnpm, GNU time, tini) on
   `standard-4` for repos with `tessel.toml`; the `lite` image otherwise. Admin routes need
   `STEWARD_ADMIN_TOKEN` (`tessel-steward/.dev.vars`): `POST /repos/<repo>` (create),
@@ -404,8 +410,9 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   30 s keepalive, bounded queue, Access JWT check failing closed, strict CSP, textContent only):
   review "Yes" after one fix pass; its last commit `715d8dd` (served-CSP test, refetch limit by
   attempt time) merged unflagged before the orchestrator read it, read right after: sound
-  (BUILD-PROTOCOL rule 00 added). Trunk `d4e6335`. Open: the steward deploy (Docker), then
-  Felix's Access setup, then a live check of the page; not closed until then.
+  (BUILD-PROTOCOL rule 00 added). Trunk `d4e6335`.
+  LIVE Oct 6 18:41 EDT: steward `b4a66e0f` behind Cloudflare Access; Felix signed in and the page
+  showed the coordinator's own numbers. Remaining: ACCESS-VARS (commit the two Access values).
 - [ ] **REVIEW-UI** — PLAN §4, §9 Oct 8: a review screen beside the dashboard for submissions held
   under invariant 12: the reasons from `review_reasons`, the diff, the claim's intent and
   assumptions (untrusted data), and approve/reject that sends `Review` as a configured reviewer.
