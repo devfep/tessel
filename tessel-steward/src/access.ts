@@ -1,5 +1,7 @@
 /** How long the team's signing keys are reused before they are fetched again. */
 export const CERTS_TTL_MS = 5 * 60 * 1000;
+/** An unknown `kid` may mean the team rotated its keys; refetch for it, but not more often. */
+export const CERTS_REFETCH_MIN_MS = 60 * 1000;
 
 export interface AccessConfig {
   /** `<team>.cloudflareaccess.com`: the issuer and the host that serves the signing keys. */
@@ -75,9 +77,10 @@ async function loadKeys(
   teamDomain: string,
   fetchImpl: typeof fetch,
   nowMs: number,
+  refresh = false,
 ): Promise<Map<string, CryptoKey>> {
   const cached = keysByTeam.get(teamDomain);
-  if (cached !== undefined && nowMs - cached.fetchedAtMs < CERTS_TTL_MS) {
+  if (!refresh && cached !== undefined && nowMs - cached.fetchedAtMs < CERTS_TTL_MS) {
     return cached.keys;
   }
   const response = await fetchImpl(`https://${teamDomain}/cdn-cgi/access/certs`);
@@ -135,7 +138,10 @@ function checkClaims(
   if (typeof email !== "string" || email === "") {
     return denied(401, "token carries no email");
   }
-  if (!config.viewers.includes(email.toLowerCase())) {
+  // Some non-ASCII characters lowercase to ASCII ones (U+212A to "k"), so they must not reach
+  // the compare.
+  const isAscii = [...email].every((char) => (char.codePointAt(0) ?? 128) < 128);
+  if (!isAscii || !config.viewers.includes(email.toLowerCase())) {
     return denied(403, "this account may not view the dashboard");
   }
   return { ok: true, email };
@@ -174,7 +180,16 @@ export async function verifyAccessToken(
     console.error(JSON.stringify({ event: "access_certs_failed", message: String(error) }));
     return denied(503, "could not fetch the team's signing keys");
   }
-  const key = typeof kid === "string" ? keys.get(kid) : undefined;
+  let key = typeof kid === "string" ? keys.get(kid) : undefined;
+  const fetchedAtMs = keysByTeam.get(config.teamDomain)?.fetchedAtMs ?? 0;
+  if (key === undefined && typeof kid === "string" && now() - fetchedAtMs >= CERTS_REFETCH_MIN_MS) {
+    try {
+      key = (await loadKeys(config.teamDomain, fetchImpl, now(), true)).get(kid);
+    } catch (error) {
+      console.error(JSON.stringify({ event: "access_certs_failed", message: String(error) }));
+      return denied(503, "could not fetch the team's signing keys");
+    }
+  }
   if (key === undefined) {
     return denied(401, "unknown signing key");
   }

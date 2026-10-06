@@ -228,11 +228,17 @@ describe("denials", () => {
     ["textual_conflict", "conflict verified"],
     ["build_failed", "conflict verified"],
     ["tests_failed", "conflict verified"],
-    ["inconclusive", "not counted"],
+    ["inconclusive", "inconclusive (not counted)"],
+    ["bogus", "unrecognized outcome (bogus)"],
   ])("shows a %s verification as: %s", async (outcome, label) => {
     const page = await load();
     page.send("denial_verified", { shadow_claim: 5, blocking_claim: 1, outcome });
-    expect(page.text("verified")).toContain(label);
+    const text = page.text("verified");
+    expect(text).toContain(label);
+    expect(text).toContain(outcome);
+    if (outcome === "bogus") {
+      expect(text).not.toContain("conflict verified");
+    }
   });
 });
 

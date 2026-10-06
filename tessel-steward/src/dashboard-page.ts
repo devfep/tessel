@@ -43,9 +43,12 @@ function reasonText(r) {
   return r.reason + (detail ? ": " + detail : "");
 }
 function verdictText(outcome) {
-  if (outcome === "clean") { return "false alarm: the denied work merged cleanly"; }
-  if (outcome === "inconclusive") { return "inconclusive: not counted"; }
-  return "conflict verified (" + outcome + ")";
+  if (outcome === "clean") { return "false alarm (clean): the denied work merged cleanly"; }
+  if (outcome === "inconclusive") { return "inconclusive (not counted)"; }
+  if (outcome === "textual_conflict" || outcome === "build_failed" || outcome === "tests_failed") {
+    return "conflict verified (" + outcome + ")";
+  }
+  return "unrecognized outcome (" + outcome + ")";
 }
 
 function apply(ev) {

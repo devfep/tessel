@@ -83,6 +83,55 @@ describe("verifyAccessToken", () => {
     expect(verdict).toMatchObject({ ok: false, status: 401, reason: "unknown signing key" });
   });
 
+  it("rejects an email that only matches after Unicode case folding", async () => {
+    // U+212A (Kelvin sign) lowercases to "k".
+    const viewers = ["kim@example.com"];
+    const token = await signer.sign(validClaims({ email: "\u212Aim@example.com" }));
+    const verdict = await verifyAccessToken(
+      token,
+      { ...CONFIG, viewers },
+      { fetchImpl: signer.certsFetch(), now: () => NOW_MS },
+    );
+    expect(verdict).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it("refetches the certs once for an unknown kid, at most once a minute", async () => {
+    const rotated = await TestSigner.create("kid-2");
+    let published = [signer];
+    let fetches = 0;
+    const fetchImpl = (() => {
+      fetches += 1;
+      const keys = published.map((s) => ({ ...s.publicJwk, kid: s.kid }));
+      return Promise.resolve(Response.json({ keys }));
+    }) as typeof fetch;
+    const at = (offsetMs: number) => ({ fetchImpl, now: () => NOW_MS + offsetMs });
+    const old = await signer.sign(validClaims());
+    const fresh = await rotated.sign(validClaims());
+
+    expect(await verifyAccessToken(old, CONFIG, at(0))).toMatchObject({ ok: true });
+    published = [signer, rotated];
+    expect(await verifyAccessToken(fresh, CONFIG, at(30_000))).toMatchObject({ status: 401 });
+    expect(fetches).toBe(1);
+    expect(await verifyAccessToken(fresh, CONFIG, at(61_000))).toMatchObject({ ok: true });
+    expect(fetches).toBe(2);
+  });
+
+  it("answers 503 when the refetch for an unknown kid fails", async () => {
+    const urls: string[] = [];
+    const good = signer.certsFetch(urls);
+    await verifyAccessToken(await signer.sign(validClaims()), CONFIG, {
+      fetchImpl: good,
+      now: () => NOW_MS,
+    });
+    const failing = (() => Promise.resolve(new Response("x", { status: 500 }))) as typeof fetch;
+    const unknown = await signer.sign(validClaims(), { kid: "nope" });
+    const verdict = await verifyAccessToken(unknown, CONFIG, {
+      fetchImpl: failing,
+      now: () => NOW_MS + 61_000,
+    });
+    expect(verdict).toMatchObject({ ok: false, status: 503 });
+  });
+
   it.each([null, "", "abc", "a.b", "a.b.c.d", "!!!.???.***"])("rejects %j", async (token) => {
     expect(await verify(token)).toMatchObject({ ok: false, status: 401 });
   });
