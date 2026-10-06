@@ -83,6 +83,10 @@ a new check can fail (mutant or deliberate break, then restore); exit codes deci
 
 ## 4. What every brief carries
 
+0. First line of every implementer brief, in these words: "Before your first edit: mint your
+   identity, `tessel start`, and claim the file. No edit before its claim." Two lanes on 5 October
+   2026 (SWARM-OBSERVER, SHADOW-GC) edited before claiming; the merge note records each late claim.
+
 1. "Never end your turn waiting for a notification. You will not be woken." Poll your own long runs
    in bounded foreground loops.
 2. The worktree path, as an absolute literal path in every command.
