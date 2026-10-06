@@ -1,0 +1,4 @@
+intent: keep the raw output of the Oct 6 live shadow swarm run
+assumes: swarm Worker 4e65697d and steward b9f110df as deployed from trunk 7d00ad6
+rejected: none
+evidence: tessel-swarm run --target live --policy shadow seed 2, exit 0; 3 denial_verified, 3 settled releases
