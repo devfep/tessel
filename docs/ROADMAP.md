@@ -5,8 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 19:32 EDT.
-**Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
+**As of:** 2026-10-06 19:36 EDT.
+**Orchestrator:** none. HANDOVER at 19:35 EDT Oct 6: Felix is clearing this session's context.
+Take the role on resume: read this block, `docs/BUILD-PROTOCOL.md` (§2 steward flow; §4 rules 00
+and 0), then `PLAN.md` §9. No lanes, reviews or background jobs are running; nothing is half done.
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
 by `Bash(npx wrangler deploy *)` when run bare (no pipe); lane pushes to `tessel-dogfood--*` forks
@@ -180,17 +182,39 @@ and keep the implementer out until the verdict (two overlaps happened on Oct 5).
 each file through `tessel` before editing it. No attribution trailer. Deploys of
 `tessel-coordinator`, `tessel-steward` and (once HARNESS-1 merges) `tessel-coordinator-swarm` are
 approved. In Bash, never put `git push` and the bare word "main" in one command (the push hook
-blocks it); write `HEAD:refs/heads/main` or push in a separate command.
+blocks it); a lane's fork push is the one exception, written exactly as
+`git push https://1e40d7b5aed4b7049e5b83bc07a5264c.artifacts.cloudflare.net/git/tessel/tessel-dogfood--<lane>.git HEAD:refs/heads/main`
+alone in its Bash call (allowed by the project rule and Felix's hook exemption).
+**How a lane lands (the recipe used for every lane on Oct 5–6):** the orchestrator cuts
+`.claude/worktrees/<task>` from `origin/artifacts-trunk` and creates the fork with `POST
+/repos/tessel-dogfood/forks/tessel-dogfood--lane-<task>` (admin bearer via `curl --config -` on
+stdin). The brief opens with "Before your first edit: mint your identity, `tessel start`, and
+claim the file. No edit before its claim.", names owned files, asks for tests first, mutants,
+an exact predicted test count, and STOP before push. Opus reviews an archived copy; fix passes go
+to the same implementer and re-checks to the same reviewer. After "Yes", the lane pushes (token in
+a 0600 git include file, bare push as above) and runs `tessel submit`; any change after the Yes is
+read by the orchestrator before the go (rule 00). If held for review, the orchestrator gates an
+archived copy of the exact submitted commit (`git archive <sha> | tar -x`, `git init`,
+`CARGO_TARGET_DIR` in the scratchpad, trash it after) and approves over the coordinator socket as
+`orchestrator` with the note "orchestrator: Opus Yes at <sha>; gate <sha> <n> passed". After
+`merged`: check the trunk tree equals the gated tree, `tools/mirror.sh`, deploy what changed from
+`.claude/worktrees/deploy` (bare `npx wrangler deploy`, `--env swarm`, `--env=""`), check live,
+reclaim the worktree, close the roadmap box, rewrite STATE. Changes to `src/protocol.rs` land
+only by an admin merge Felix runs from a script the orchestrator writes (scopes from
+`git diff --name-status`: A → create, M → edit_body).
 
-**Next actions on resume:**
-1. (Done 16:03: swarm deployed and checked, first live run above.)
-2. (Done about 16:20: image rebuilt, trunk caught up to `8432f8c`, mirrored.)
-3. SHADOW-1 (in progress) is DOGFOOD-4's last step: review, then `tessel submit` from the lane,
-   approval as `orchestrator` if held, `merged` in the inbox, `tools/mirror.sh`. Then SHADOW-2:
-   `SHADOW_ENABLED = "true"` for the swarm env and a shadow policy in `tessel-swarm`, so the A/B
-   table's "Conflicts prevented, verified by shadow runs" cell is measured.
-4. Shadow verification (PLAN §9 Oct 9) reusing the trial primitive; swarm and A/B runs (Oct 10);
-   milestone pull request from `artifacts-trunk` with `/code-review` and `/security-review`.
+**Next actions on resume (in order; Felix approved this order at 19:3x EDT Oct 6):**
+1. A shadow swarm run on the swarm Worker (`tessel-swarm run --target live --policy shadow`,
+   `--task-timeout-s 300`, built from the trunk) to see a `Settled` release live and the dashboard
+   on a swarm repo; keep the raw output in `docs/evidence/<date>/`.
+2. COORD-HEAD: design (one recommendation) so admin merges stop leaving the coordinator's head
+   stale; then a lane.
+3. LINT-RULE2 and CLI-CLIPPY-810 (small; one lane can take both).
+4. REVIEW-UI (Access is in place; approvals from the browser as reviewer `felix`).
+5. Oct 10: A/B runs at 30–50 agents with `wait` and `shadow` policies, then the milestone pull
+   request from `artifacts-trunk` with `/code-review` and `/security-review`. Before it, land the
+   current `docs/ROADMAP.md` (and BUILD-PROTOCOL.md) through the steward as one commit (see Known
+   limits). Also open: DEMO-TS, SWARM-REVIEWER-ERR, CLI-CONNECT-TIMEOUT.
 
 ## Tasks
 
