@@ -1,0 +1,4 @@
+intent: record Felix's ruling and the scope of the protocol hand merge
+assumes: none
+rejected: bumping PROTOCOL_VERSION (lock-step redeploy of every client before the A/B runs)
+evidence: none (state only)
