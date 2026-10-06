@@ -139,6 +139,10 @@ right after each run.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
 **Known limits, recorded so nobody rediscovers them:**
+- The first `GET /repo/<name>/summary` after a Durable Object wake scans the whole event log
+  behind the input gate (later reads cost only new events; DASH-1a). Fine at demo sizes.
+- The coordinator checks an identity token only at the WebSocket upgrade, so an open socket
+  outlives its token (the dashboard's tokens last 60 s).
 - STATE commits still go to `sprint/build` (pushing each through the steward costs a gate run),
   so the trunk's copy of this file lags. Before the milestone pull request from `artifacts-trunk`,
   land the current `docs/ROADMAP.md` through the steward as one commit.
