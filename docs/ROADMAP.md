@@ -436,6 +436,10 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   follow-up read by the orchestrator: a deterministic shadow in the watcher-failure test). Through
   the steward: claim 44 (late claim on `on.rs` in the first commit; one `uncovered` refusal),
   approved by `orchestrator` (event 283) after its gate on `c79712a`: 802 passed.
+- [ ] **LINT-RULE2** — from the SHADOW-GC pass 2 review: CLAUDE.md rule 2 (no `_` wildcards on
+  protocol enums) is enforced by review only; a `_ =>` arm on `ReleaseReason` passed clippy.
+  Turn on clippy's `wildcard_enum_match_arm` (restriction group) for the workspace crates, with
+  `#[expect(..., reason)]` only where a wildcard on a non-protocol enum is deliberate.
 - [ ] **CLI-CLIPPY-810** — `cargo clippy --workspace --all-targets -- -D warnings` fails on a
   pre-existing `eprintln!` (`print_stderr`) at `tessel-cli/tests/cli.rs:810`; every review today
   had to except it. Replace it with the test harness's own reporting or an `#[expect]` with a
