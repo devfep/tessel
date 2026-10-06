@@ -1,0 +1,4 @@
+intent: record the invariant-10 finding and the protocol change Felix must decide
+assumes: none
+rejected: logging the drop under an existing ReleaseReason (none is true of it)
+evidence: rev-shadow-gc: every other claim exit logs an event (coordinator.rs:442, :1177, racing.rs:559/:739, merging.rs:298)
