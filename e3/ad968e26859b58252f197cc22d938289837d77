@@ -1,0 +1,4 @@
+intent: tests for the protocol additions (Settled snake_case round trip; old ReviewDecided without reviewer parses as None)
+assumes: none
+rejected: none
+evidence: cargo test --lib 459 passed
