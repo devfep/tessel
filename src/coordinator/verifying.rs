@@ -220,6 +220,14 @@ impl Coordinator {
     /// Drop each submitted shadow claim that nothing is owed through (see the module docs). Run
     /// after anything that can end a claim or finish a trial. Nothing is logged.
     pub(super) fn drop_finished_shadows(&mut self) {
+        if self
+            .state
+            .claims
+            .values()
+            .all(|claim| claim.kind != ClaimKind::Shadow)
+        {
+            return;
+        }
         let trialled: HashSet<u64> = self
             .state
             .verifications
@@ -1809,6 +1817,27 @@ mod tests {
         let report = clean_then(TrialOutcome::Clean {});
         let effects = c.verification_outcome(dispatch.id, &report, NOW);
         assert_eq!(denial_events(&effects).len(), 1);
+        assert!(!is_live(&c, shadowed));
+    }
+
+    #[test]
+    fn a_shadow_is_dropped_when_recovery_gives_up_on_its_trial() {
+        let mut c = core();
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        merge_challenger(&mut c, blocker, MAIN);
+        let mut now = NOW;
+        let mut effects = Vec::new();
+        for attempt in 0..=MAX_INFRA_RETRIES {
+            assert!(is_live(&c, shadowed), "attempt {attempt}");
+            now += 10 * INFRA_BACKOFF_BASE_MS * 2u64.pow(attempt);
+            c.begin_verification(now).expect("the trial is due");
+            effects = c.recover_verification(now);
+        }
+
+        assert_eq!(
+            denial_events(&effects),
+            [(shadowed, blocker, Outcome::Inconclusive)]
+        );
         assert!(!is_live(&c, shadowed));
     }
 

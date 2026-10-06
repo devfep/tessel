@@ -156,7 +156,6 @@ impl Coordinator {
             Verdict::Infrastructure => self.retry_after_infrastructure(claim, held, now_ms),
         };
         self.drop_ended_verifications();
-        self.drop_finished_shadows();
         effects
     }
 
