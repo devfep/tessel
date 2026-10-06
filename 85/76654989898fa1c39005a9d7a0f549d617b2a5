@@ -1,0 +1,4 @@
+intent: close DASH-1 after the trunk-only steward deploy
+assumes: none
+rejected: none
+evidence: steward fce132ca shows ACCESS_TEAM_DOMAIN fepdev.cloudflareaccess.com from the file; unsigned 302 to fepdev login; admin 401
