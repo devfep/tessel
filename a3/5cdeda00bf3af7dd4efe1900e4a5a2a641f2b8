@@ -1,0 +1,4 @@
+intent: DASH-1b follow-up: summary refresh is at most every 3s, and an empty log (head_seq null) renders
+assumes: coordinator summary returns head_seq null on an empty log
+rejected: none
+evidence: typecheck, oxlint, oxfmt clean; pnpm test 639 passed (638 + 1)
