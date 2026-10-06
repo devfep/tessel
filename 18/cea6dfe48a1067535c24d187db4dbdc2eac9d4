@@ -1,0 +1,4 @@
+intent: only conflict outcomes read conflict verified (unknown reads unrecognized); non-ASCII emails are refused before case folding; an unknown kid refetches the certs at most once a minute
+assumes: none
+rejected: none
+evidence: typecheck, oxlint, oxfmt clean; pnpm test 646 passed; mutants verdict-no-outcome, unrecognized-as-conflict, non-ascii, no-kid-refetch, refetch-every-time killed
