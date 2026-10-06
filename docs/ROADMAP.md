@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 18:45 EDT.
+**As of:** 2026-10-06 18:57 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -26,7 +26,7 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** the Artifacts trunk `tessel-dogfood` is at `d4e6335` (DASH-1a on DASH-1b `715d8dd`; tree
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `e894fbe` (ACCESS-VARS on DASH-1a `d4e6335`; tree
 checked equal to the two gated heads combined), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
 pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
@@ -74,8 +74,8 @@ Access app `tessel-dashboard` (team `fepdev`, policy `homelab-allowed-emails`) c
 `81ae313c892cf190f69330a71a9b0f600aa31e340d43a8dcd54eb629dfd33b08` was read from the Access login
 redirect's `kid` (wrangler's OAuth token has no Access scope). Unsigned and forged-assertion
 requests get 302 to the login; admin routes still answer the steward's own 401. The two values are
-on the deploy command line only (`--var`), so the next trunk deploy would drop them:
-ACCESS-VARS (lane dispatched 18:44) commits them to `tessel-steward/wrangler.jsonc`.
+committed in `tessel-steward/wrangler.jsonc` (ACCESS-VARS, trunk `e894fbe`); the steward was
+redeployed from the trunk with no `--var` (`fce132ca`) and stays behind Access.
 **Decided (Felix delegated it, 23:05):** the dashboard and review screen sign in through
 Cloudflare Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths; the
 steward verifies the `Cf-Access-Jwt-Assertion` JWT (team certs, the application's AUD tag) and
@@ -103,9 +103,9 @@ the orchestrator to read its diff (rule 00). `impl-shadow-gc` parked (above).
   `head_seq` 323), a second read leaves `head_seq` unchanged (no event appended), no token 401,
   another repo's token 401, POST 405 `Allow: GET`. Every upgrade needs a steward-minted agent
   token. The old `COORDINATOR_TOKEN` secret is unused and still set (a secret delete: Felix's).
-- `tessel-steward` version `b4a66e0f` (trunk `d4e6335` plus `--var ACCESS_TEAM_DOMAIN` and
-  `--var ACCESS_AUD` on the command line; deployed Oct 6 18:4x EDT from `.claude/worktrees/deploy`):
-  the dashboard behind Access, service binding `COORDINATOR`; toolchain image (Rust, Node
+- `tessel-steward` version `fce132ca` (trunk `e894fbe`, deployed Oct 6 ~18:55 EDT from
+  `.claude/worktrees/deploy` with no command-line vars): the dashboard behind Access (team
+  `fepdev`, AUD committed), service binding `COORDINATOR`; toolchain image (Rust, Node
   22, pnpm, GNU time, tini) on
   `standard-4` for repos with `tessel.toml`; the `lite` image otherwise. Admin routes need
   `STEWARD_ADMIN_TOKEN` (`tessel-steward/.dev.vars`): `POST /repos/<repo>` (create),
@@ -395,7 +395,7 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   `28e246b`; tree checked equal to a clean merge): 790 passed. Swarm Worker redeployed with
   `SHADOW_ENABLED = "true"` (`f6d0e4b1`). Follow-ups: SWARM-OBSERVER; matching a shadow's blocker
   by `conflict.held` scope (only over-waits today; the swarm opens no races).
-- [ ] **DASH-1** — PLAN §4, §9 Oct 7 (agent column, never cut per §11; judging: "live dashboard
+- [x] **DASH-1** — PLAN §4, §9 Oct 7 (agent column, never cut per §11; judging: "live dashboard
   with stats"): a read-only live dashboard served by the steward. It opens a `Watch` on the
   coordinator for one repo and shows active claims and their holders, denials with the holder's
   intent (quoted as untrusted data: escaped, never rendered as HTML), waits, races, merges, review
@@ -411,7 +411,10 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   attempt time) merged unflagged before the orchestrator read it, read right after: sound
   (BUILD-PROTOCOL rule 00 added). Trunk `d4e6335`.
   LIVE Oct 6 18:41 EDT: steward `b4a66e0f` behind Cloudflare Access; Felix signed in and the page
-  showed the coordinator's own numbers. Remaining: ACCESS-VARS (commit the two Access values).
+  showed the coordinator's own numbers.
+  CLOSED 2026-10-06: ACCESS-VARS merged through the steward (claim 55, trunk `e894fbe`, diff read
+  by the orchestrator under rule 00); steward redeployed from the trunk alone (`fce132ca`):
+  unsigned → 302 to the fepdev login, admin route → 401.
 - [ ] **REVIEW-UI** — PLAN §4, §9 Oct 8: a review screen beside the dashboard for submissions held
   under invariant 12: the reasons from `review_reasons`, the diff, the claim's intent and
   assumptions (untrusted data), and approve/reject that sends `Review` as a configured reviewer.
