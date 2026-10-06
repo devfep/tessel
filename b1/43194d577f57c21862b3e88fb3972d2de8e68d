@@ -1,0 +1,4 @@
+intent: rule 1 records Felix's single ruling instead of a standing policy; apply_verification_outcome no longer advances the clock again (verification_outcome already did)
+assumes: advance_clock is idempotent for the same now_ms, so the removed call changed nothing
+rejected: none
+evidence: cargo test --workspace 836 passed; clippy coordinator clean; fmt clean
