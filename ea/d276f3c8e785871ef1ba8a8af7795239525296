@@ -1,0 +1,4 @@
+intent: DASH-1a: kill the mutant that checks a ws token against a fixed repo
+assumes: none
+rejected: none
+evidence: cargo test --workspace 817 passed; clippy -D warnings clean; fmt clean; mutant with repo hardcoded to demo now fails 2 tests
