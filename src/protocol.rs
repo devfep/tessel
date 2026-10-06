@@ -1243,6 +1243,36 @@ mod tests {
     }
 
     #[test]
+    fn a_review_decision_logged_before_reviewers_were_named_still_parses() {
+        let old = r#"{"seq":7,"at_ms":1,"run":"r","event":"review_decided","claim":3,
+            "approve":true,"note":null}"#;
+        let EventKind::ReviewDecided { reviewer, .. } =
+            serde_json::from_str::<Event>(old).unwrap().kind
+        else {
+            panic!("expected ReviewDecided");
+        };
+        assert_eq!(reviewer, None);
+    }
+
+    #[test]
+    fn a_settled_release_round_trips_as_snake_case() {
+        let kind = EventKind::ClaimReleased {
+            claim: ClaimId(4),
+            reason: ReleaseReason::Settled,
+        };
+        let json = serde_json::to_string(&ev(1, kind)).unwrap();
+        assert!(json.contains(r#""reason":"settled""#), "{json}");
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back.kind,
+            EventKind::ClaimReleased {
+                reason: ReleaseReason::Settled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn permits_never_weakens_protection() {
         for held in ALL_MODES {
             for needed in ALL_MODES {
