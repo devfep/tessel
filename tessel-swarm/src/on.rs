@@ -151,6 +151,9 @@ struct Ctx {
     config: OnConfig,
     /// The log as the shared observer has read it so far: shadow policy only.
     log: Option<tokio::sync::watch::Receiver<Vec<Event>>>,
+    /// Shadow claims the coordinator answered with `Accepted`: the log must show each one's
+    /// `Submitted` before the final wait may conclude that nothing is owed.
+    accepted_shadows: Mutex<Vec<ClaimId>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -194,6 +197,7 @@ pub async fn run_on(
         scratch: scratch.to_path_buf(),
         config: config.clone(),
         log,
+        accepted_shadows: Mutex::new(Vec::new()),
     });
     let (stop_reviewer, stopped) = tokio::sync::watch::channel(false);
     let reviewer = config
@@ -215,9 +219,7 @@ pub async fn run_on(
     if config.policy == Policy::Shadow && failure.is_none() {
         await_verification(&ctx).await?;
     }
-    if let Some(watcher) = watcher {
-        watcher.abort();
-    }
+    let watched = settle_watcher(watcher).await;
     let _ = stop_reviewer.send(true);
     if let Some(reviewer) = reviewer {
         reviewer.await.context("the reviewer task panicked")??;
@@ -225,6 +227,7 @@ pub async fn run_on(
     if let Some(error) = failure {
         return Err(error);
     }
+    watched?;
     let observer = endpoint.token_of(OBSERVER)?;
     let events = read_log(
         &endpoint.ws_url,
@@ -248,13 +251,38 @@ async fn await_verification(ctx: &Ctx) -> Result<()> {
     let Some(mut log) = ctx.log.clone() else {
         return Ok(());
     };
-    let owed_nothing =
-        |events: &Vec<Event>| !events.is_empty() && events::awaiting_verification(events) == 0;
+    let accepted = lock(&ctx.accepted_shadows).clone();
+    let owed_nothing = |events: &Vec<Event>| verification_settled(events, &accepted);
     let waited = tokio::time::timeout(ctx.config.task_timeout, log.wait_for(owed_nothing)).await;
     match waited {
         Ok(Ok(_)) | Err(_) => Ok(()),
         Ok(Err(_)) => anyhow::bail!("the log watch stopped before the shadow trials were logged"),
     }
+}
+
+/// True when the log holds the `Submitted` of every accepted shadow claim and owes no trial. An
+/// accepted claim missing from the log is a watch that has not caught up, not a log that owes
+/// nothing.
+fn verification_settled(events: &[Event], accepted: &[ClaimId]) -> bool {
+    let submitted = |claim: &ClaimId| {
+        events
+            .iter()
+            .any(|e| matches!(&e.kind, EventKind::Submitted { claim: c, .. } if c == claim))
+    };
+    accepted.iter().all(submitted) && events::awaiting_verification(events) == 0
+}
+
+/// Ends the shared watcher. One that already stopped (a seq gap, or no way to reconnect) has an
+/// error that is returned, because counts read from the log it left behind cannot be trusted.
+async fn settle_watcher(watcher: Option<tokio::task::JoinHandle<Result<()>>>) -> Result<()> {
+    let Some(watcher) = watcher else {
+        return Ok(());
+    };
+    if !watcher.is_finished() {
+        watcher.abort();
+        return Ok(());
+    }
+    watcher.await.context("the log watcher panicked")?
 }
 
 /// One connection that only follows the log: the run's single observer. It replays from seq 0
@@ -671,6 +699,7 @@ async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) 
         let note = note.unwrap_or_default();
         return Ok(Step::done(resolution, note, millis(granted)));
     }
+    lock(&ctx.accepted_shadows).push(held.claim);
     tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
     let work_ms = millis(granted);
     let waiting = Instant::now();
@@ -973,6 +1002,7 @@ async fn submit_and_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tessel_coordinator::protocol::RunId;
 
     fn timed_out(task: usize) -> TaskResult {
         TaskResult {
@@ -992,6 +1022,106 @@ mod tests {
             !trial_settled(&[], ClaimId(2)),
             "an empty log owes nothing but proves nothing"
         );
+    }
+
+    fn submitted(seq: u64, claim: u64) -> Event {
+        Event {
+            seq,
+            at_ms: 0,
+            run: RunId("t".into()),
+            kind: EventKind::Submitted {
+                claim: ClaimId(claim),
+                fork_commit: CommitId("c".repeat(40)),
+                touched: Vec::new(),
+                decisions: DecisionRecord::default(),
+            },
+        }
+    }
+
+    fn shadowed_by_holder() -> Vec<Event> {
+        use tessel_coordinator::protocol::{AgentId, Conflict, Mode, Scope};
+        let intent = || Intent {
+            summary: "t01: x".into(),
+            task_ref: Some("t01".into()),
+            assumptions: Vec::new(),
+        };
+        let scope = ScopeClaim {
+            scope: Scope::File {
+                path: "src/a.ts".into(),
+            },
+            mode: Mode::EditBody,
+        };
+        let at = |seq, kind| Event {
+            seq,
+            at_ms: 0,
+            run: RunId("t".into()),
+            kind,
+        };
+        vec![
+            at(
+                0,
+                EventKind::ClaimGranted {
+                    agent: AgentId("holder".into()),
+                    claim: ClaimId(1),
+                    fence: Fence(1),
+                    scopes: vec![scope.clone()],
+                    intent: intent(),
+                    race: None,
+                    at_risk: Vec::new(),
+                },
+            ),
+            at(
+                1,
+                EventKind::ClaimShadowed {
+                    agent: AgentId("shadow".into()),
+                    claim: ClaimId(2),
+                    scopes: vec![scope.clone()],
+                    conflicts: vec![Conflict {
+                        requested: scope.clone(),
+                        held: scope,
+                        held_by: AgentId("holder".into()),
+                        their_intent: intent(),
+                        race: None,
+                    }],
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_trial_still_owed_keeps_the_log_unsettled() {
+        let mut log = shadowed_by_holder();
+        log.push(submitted(2, 2));
+        assert!(!verification_settled(&log, &[ClaimId(2)]));
+    }
+
+    #[test]
+    fn an_accepted_shadow_the_log_does_not_show_yet_is_not_settled() {
+        let log = vec![submitted(0, 1)];
+        assert!(!verification_settled(&log, &[ClaimId(1), ClaimId(2)]));
+    }
+
+    #[test]
+    fn a_log_with_every_accepted_shadow_submitted_and_nothing_owed_is_settled() {
+        let log = vec![submitted(0, 1), submitted(1, 2)];
+        assert!(verification_settled(&log, &[ClaimId(1), ClaimId(2)]));
+    }
+
+    #[tokio::test]
+    async fn a_watcher_that_stopped_with_an_error_fails_the_run() {
+        let watcher = tokio::spawn(async { anyhow::bail!("the event log has a gap") });
+        while !watcher.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let error = settle_watcher(Some(watcher)).await.unwrap_err();
+        assert!(format!("{error:#}").contains("gap"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn a_watcher_still_following_is_stopped_without_error() {
+        let watcher = tokio::spawn(std::future::pending::<Result<()>>());
+        settle_watcher(Some(watcher)).await.unwrap();
+        settle_watcher(None).await.unwrap();
     }
 
     #[test]
@@ -1017,7 +1147,7 @@ mod tests {
 
     #[test]
     fn the_summary_counts_a_timed_out_task_once_when_the_log_shows_it_merged() {
-        use tessel_coordinator::protocol::{AgentId, CommitId, EventKind, Fence, Intent, RunId};
+        use tessel_coordinator::protocol::{AgentId, Fence, Intent};
         let at = |seq, kind| Event {
             seq,
             at_ms: 0,
