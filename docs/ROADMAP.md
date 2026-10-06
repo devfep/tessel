@@ -81,6 +81,9 @@ a payment method) → Access → Applications → Add → Self-hosted: name `tes
 `tessel-steward.devfep.workers.dev`, paths `dashboard` and `review`; policy "Allow" with the
 include rule Emails = devfep@gmail.com; login method One-time PIN. Then send the orchestrator the
 team domain (`<team>.cloudflareaccess.com`) and the application's AUD tag (Overview tab).
+The orchestrator then commits both to `tessel-steward/wrangler.jsonc` vars (not secret) and
+redeploys: `wrangler deploy` overwrites dashboard-set vars with the file's values, so setting them
+in the Cloudflare dashboard alone would be wiped on the next deploy (DASH-1b review).
 **Load note:** the load reached about 34 at 20:01 and about 73 at 20:41, mostly Spotlight
 (`mds_stores`) on gate copies' `target/` dirs plus the iOS simulators; gate copies are trashed
 right after each run.
