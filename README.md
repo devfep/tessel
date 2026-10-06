@@ -15,6 +15,11 @@ other request gets `401 unauthorized` before a WebSocket is accepted. A `hello` 
 agent gets `not_owner` and the socket is closed. The token format is documented in
 `src/identity.rs`.
 
+`GET /repo/<name>/summary` takes the same token (any agent of the repo may read it) and answers
+`{"summary": {...}, "head_seq": n}`: the evidence counters over the repo's whole event log and the
+`seq` of its last event (`null` for an empty log). It is a read: no socket, no event appended.
+Refusals are the same as for `ws`; any method but `GET` gets `405`.
+
 `IDENTITY_SIGNING_KEY` is a secret on both the coordinator and the steward, and the two must hold
 the same value. A missing or empty key refuses every request.
 

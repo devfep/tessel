@@ -25,6 +25,13 @@
 //! hands the verified agent to the Durable Object in a header it sets itself, the Durable Object
 //! stores it in the socket's attachment, and a `hello` for any other agent is refused with
 //! `NotOwner` and the socket is closed.
+//!
+//! Summary: `GET /repo/<name>/summary` answers `{"summary": {...}, "head_seq": n}`, the counters of
+//! `Summary::from_events` over the repo's whole stored log and the `seq` of its last event
+//! (`null` for an empty log). It takes the same identity token as `ws`, and any agent of the repo
+//! may read it; the refusals are the same (401 for every token fault, 403 for a repo the
+//! deployment does not serve), plus 405 for any method but `GET`. It is a plain read of stored
+//! events: no socket, no event appended, no alarm, and it never waits for a merge.
 
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
@@ -34,11 +41,11 @@ use std::task::Poll;
 use std::time::Duration;
 
 use crate::coordinator::{Coordinator as Core, Effect, MergeDispatch, VerifyDispatch};
-use crate::identity;
 use crate::merge::{self, MergeOutcome, TrialOutcome, TrialReport};
 use crate::protocol::{AgentId, ClaimId, ClientMsg, ServerMsg};
 use crate::shell::{
-    self, keep_first, Action, ReplayStep, Session, StoreDecision, StoredSize, Target, Work,
+    self, keep_first, Action, Denied, Inbound, ReplayStep, Route, Session, StoreDecision,
+    StoredSize, Target, Work,
 };
 use crate::store::{self, Applied, Dispatch, Persisted};
 use worker::*;
@@ -74,27 +81,39 @@ enum Prepared {
     Refused,
 }
 
-/// Route: GET /repo/<name>/ws  (WebSocket upgrade) -> coordinator for <name>, for a request
-/// that carries an identity token for <name>.
+/// Routes: GET /repo/<name>/ws (WebSocket upgrade) and GET /repo/<name>/summary (evidence
+/// summary) -> coordinator for <name>, for a request that carries an identity token for <name>.
+/// `shell::authorize` decides; this only reads the request and answers its refusals.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     console_error_panic_hook::set_once();
 
     let url = req.url()?;
     let segments: Vec<&str> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
-    let repo = match segments.as_slice() {
-        ["repo", name, "ws"] if !name.is_empty() => name.to_string(),
-        _ => return Response::error("expected /repo/<name>/ws", 404),
-    };
     let prefix = env
         .var("ALLOWED_REPO_PREFIX")
         .ok()
         .map(|var| var.to_string());
-    if !shell::repo_allowed(prefix.as_deref(), &repo) {
-        return Response::error("this deployment does not serve that repo", 403);
-    }
-    let Some(agent) = verified_agent(&req, &env, &repo)? else {
-        return Response::error(UNAUTHORIZED_BODY, 401);
+    let key = env
+        .secret("IDENTITY_SIGNING_KEY")
+        .ok()
+        .map(|secret| secret.to_string());
+    let authorization = req.headers().get("Authorization")?;
+    let method = req.method().to_string();
+    let inbound = Inbound {
+        method: &method,
+        segments: &segments,
+        allowed_prefix: prefix.as_deref(),
+        signing_key: key.as_deref(),
+        authorization: authorization.as_deref(),
+        now_ms: now_ms(),
+    };
+    let (route, agent) = match shell::authorize(&inbound) {
+        Ok(admitted) => admitted,
+        Err(denied) => return refuse(denied),
+    };
+    let repo = match route {
+        Route::Ws { repo } | Route::Summary { repo } => repo,
     };
 
     let mut forwarded = req.clone_mut()?;
@@ -103,25 +122,28 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     headers.set(VERIFIED_AGENT_HEADER, &agent.0)?;
     let stub = env
         .durable_object("COORDINATOR")?
-        .id_from_name(&repo)?
+        .id_from_name(repo)?
         .get_stub()?;
     stub.fetch_with_request(forwarded).await
 }
 
-/// The agent the request's identity token proves for `repo`, or `None` if it proves none. A
-/// missing `IDENTITY_SIGNING_KEY` refuses every request. Only the reason is logged, never the
-/// token or the key.
-fn verified_agent(req: &Request, env: &Env, repo: &str) -> Result<Option<AgentId>> {
-    let key = env
-        .secret("IDENTITY_SIGNING_KEY")
-        .ok()
-        .map(|secret| secret.to_string());
-    let presented = req.headers().get("Authorization")?;
-    match identity::verify_bearer(key.as_deref(), presented.as_deref(), repo, now_ms()) {
-        Ok(agent) => Ok(Some(agent)),
-        Err(reason) => {
-            console_error!("coordinator {repo}: refused upgrade: {reason:?}");
-            Ok(None)
+/// The response for a refused request. Only the reason of a 401 is logged, never the token or
+/// the key.
+fn refuse(denied: Denied) -> Result<Response> {
+    match denied {
+        Denied::NotFound => {
+            Response::error("expected /repo/<name>/ws or /repo/<name>/summary", 404)
+        }
+        Denied::MethodNotAllowed => {
+            let response = Response::error("method not allowed", 405)?;
+            let headers = Headers::new();
+            headers.set("Allow", "GET")?;
+            Ok(response.with_headers(headers))
+        }
+        Denied::Forbidden => Response::error("this deployment does not serve that repo", 403),
+        Denied::Unauthorized(reason) => {
+            console_error!("coordinator: refused request: {reason:?}");
+            Response::error(UNAUTHORIZED_BODY, 401)
         }
     }
 }
@@ -156,6 +178,14 @@ impl DurableObject for Coordinator {
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
+        let url = req.url()?;
+        let segments: Vec<&str> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
+        if let Some(Route::Summary { .. }) = shell::parse_route(&segments) {
+            if req.headers().get(VERIFIED_AGENT_HEADER)?.is_none() {
+                return Response::error(UNAUTHORIZED_BODY, 401);
+            }
+            return self.summary().await;
+        }
         if req.headers().get("Upgrade")?.as_deref() != Some("websocket") {
             return Response::error("expected WebSocket upgrade", 426);
         }
@@ -777,6 +807,32 @@ impl Coordinator {
         }
         session.watch_from = Some(from_seq);
         self.write_session(ws, &session)
+    }
+
+    /// The summary of the whole stored log as JSON. A plain read of storage: it loads no core,
+    /// appends no event, sets no alarm and touches no socket, so it cannot delay a merge
+    /// dispatch. The log is read a page at a time, as in `watch`.
+    async fn summary(&self) -> Result<Response> {
+        let storage = self.state.storage();
+        let mut events = Vec::new();
+        let mut start_seq = 0;
+        loop {
+            let page = store::read_events(&storage, start_seq, shell::REPLAY_PAGE)
+                .await
+                .map_err(|e| self.fail("read events", e))?;
+            let last_seq = page.last().map(|event| event.seq);
+            let page_len = page.len();
+            events.extend(page);
+            match shell::after_page(page_len, last_seq) {
+                ReplayStep::Next { start_seq: next } => start_seq = next,
+                ReplayStep::Done => break,
+            }
+        }
+        let body = shell::summary_report(&events).map_err(|e| self.fail("encode summary", e))?;
+        let headers = Headers::new();
+        headers.set("Content-Type", "application/json")?;
+        headers.set("Cache-Control", "no-store")?;
+        Ok(Response::ok(body)?.with_headers(headers))
     }
 
     fn read_session(&self, ws: &WebSocket) -> Result<Session> {

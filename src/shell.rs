@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::coordinator::{Config, Coordinator as Core, Effect, InvalidConfig};
-use crate::protocol::{AgentId, ClientMsg, ErrorCode, Event, RequestId, RunId, ServerMsg};
+use crate::protocol::{AgentId, ClientMsg, ErrorCode, Event, RequestId, RunId, ServerMsg, Summary};
 
 /// Lease length for every claim. A fixed value: nothing needs to tune it yet.
 pub const LEASE_MS: u64 = 30_000;
@@ -435,6 +435,91 @@ pub fn after_page(page_len: usize, last_seq: Option<u64>) -> ReplayStep {
     }
 }
 
+/// What the Worker serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route<'a> {
+    /// `/repo/<name>/ws`: the WebSocket upgrade.
+    Ws { repo: &'a str },
+    /// `/repo/<name>/summary`: the read-only evidence summary.
+    Summary { repo: &'a str },
+}
+
+/// The route a URL path names, given its segments, or `None` for any other path.
+pub fn parse_route<'a>(segments: &[&'a str]) -> Option<Route<'a>> {
+    match segments {
+        ["repo", repo, "ws"] if !repo.is_empty() => Some(Route::Ws { repo }),
+        ["repo", repo, "summary"] if !repo.is_empty() => Some(Route::Summary { repo }),
+        _ => None,
+    }
+}
+
+/// The body of `GET /repo/<name>/summary`: the counters over the whole log and the `seq` of its
+/// last event, so a reader can tell whether it is looking at newer data than before. An empty log
+/// has no head: `head_seq` is `null`, not 0, which is a real `seq`.
+pub fn summary_report(events: &[Event]) -> Result<String, serde_json::Error> {
+    #[derive(Serialize)]
+    struct Report {
+        summary: Summary,
+        head_seq: Option<u64>,
+    }
+    serde_json::to_string(&Report {
+        summary: Summary::from_events(events),
+        head_seq: events.last().map(|event| event.seq),
+    })
+}
+
+/// Why the Worker refuses a request before it reaches the Durable Object.
+#[cfg(feature = "runtime")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denied {
+    NotFound,
+    MethodNotAllowed,
+    /// The deployment does not serve this repo (`ALLOWED_REPO_PREFIX`).
+    Forbidden,
+    /// No valid identity token for this repo. The reason is for logs only; the answer is the
+    /// same 401 for every reason.
+    Unauthorized(crate::identity::IdentityError),
+}
+
+/// Everything the Worker knows about a request when it decides whether to serve it.
+#[cfg(feature = "runtime")]
+pub struct Inbound<'a> {
+    pub method: &'a str,
+    pub segments: &'a [&'a str],
+    pub allowed_prefix: Option<&'a str>,
+    pub signing_key: Option<&'a str>,
+    pub authorization: Option<&'a str>,
+    pub now_ms: u64,
+}
+
+/// Decide whether the Worker serves a request, and for which agent. The refusals come in a fixed
+/// order: path, method, repo prefix, token. A summary read takes `GET` only; the `ws` route leaves
+/// the method to the upgrade check in the Durable Object.
+#[cfg(feature = "runtime")]
+pub fn authorize<'a>(inbound: &Inbound<'a>) -> Result<(Route<'a>, AgentId), Denied> {
+    let route = parse_route(inbound.segments).ok_or(Denied::NotFound)?;
+    let repo = match route {
+        Route::Ws { repo } => repo,
+        Route::Summary { repo } => {
+            if inbound.method != "GET" {
+                return Err(Denied::MethodNotAllowed);
+            }
+            repo
+        }
+    };
+    if !repo_allowed(inbound.allowed_prefix, repo) {
+        return Err(Denied::Forbidden);
+    }
+    let agent = crate::identity::verify_bearer(
+        inbound.signing_key,
+        inbound.authorization,
+        repo,
+        inbound.now_ms,
+    )
+    .map_err(Denied::Unauthorized)?;
+    Ok((route, agent))
+}
+
 /// Where one message of a delivery plan goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -665,7 +750,10 @@ pub fn agent_to_withdraw(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ClaimId, EventKind, Fence, Intent, Mode, OnConflict, Scope, ScopeClaim};
+    use crate::protocol::{
+        ClaimId, CommitId, EventKind, Fence, Intent, Mode, OnConflict, Outcome, Scope, ScopeClaim,
+        Summary,
+    };
 
     #[test]
     fn repo_prefix_limits_which_repos_a_deployment_serves() {
@@ -2084,5 +2172,255 @@ mod tests {
         assert_eq!(agent_to_withdraw(&bound("a1"), &[], queued_only_a2), None);
         let to_withdraw = agent_to_withdraw(&bound("a2"), &[], queued_only_a2);
         assert_eq!(to_withdraw, Some(agent("a2")));
+    }
+
+    fn log_event(seq: u64, kind: EventKind) -> Event {
+        Event {
+            seq,
+            at_ms: 5,
+            run: RunId("test".to_string()),
+            kind,
+        }
+    }
+
+    fn shadow_denial() -> EventKind {
+        EventKind::ClaimShadowed {
+            agent: agent("a1"),
+            claim: ClaimId(2),
+            scopes: vec![],
+            conflicts: vec![],
+        }
+    }
+
+    fn verified_denial(outcome: Outcome) -> EventKind {
+        EventKind::DenialVerified {
+            shadow_claim: ClaimId(2),
+            blocking_claim: ClaimId(1),
+            outcome,
+        }
+    }
+
+    fn evidence_log() -> Vec<Event> {
+        let kinds = [
+            shadow_denial(),
+            shadow_denial(),
+            shadow_denial(),
+            verified_denial(Outcome::TextualConflict),
+            verified_denial(Outcome::Clean),
+            verified_denial(Outcome::Inconclusive),
+            EventKind::Merged {
+                claim: ClaimId(1),
+                head: CommitId("abc".to_string()),
+            },
+        ];
+        let mut log = Vec::new();
+        for (seq, kind) in kinds.into_iter().enumerate() {
+            log.push(log_event(seq as u64, kind));
+        }
+        log
+    }
+
+    fn report_json(events: &[Event]) -> serde_json::Value {
+        serde_json::from_str(&summary_report(events).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_summary_report_carries_the_numbers_from_events_and_the_head_seq() {
+        let log = evidence_log();
+        let report = report_json(&log);
+        assert_eq!(
+            report["summary"],
+            serde_json::to_value(Summary::from_events(&log)).unwrap()
+        );
+        assert_eq!(report["head_seq"], 6);
+        assert_eq!(report["summary"]["denials"], 3);
+        assert_eq!(report["summary"]["conflicts_prevented_verified"], 1);
+        assert_eq!(report["summary"]["false_alarms"], 1);
+        assert_eq!(report["summary"]["precision"], 0.5);
+        assert_eq!(report["summary"]["merges"], 1);
+    }
+
+    #[test]
+    fn the_summary_of_an_empty_log_is_all_zero_with_no_head() {
+        let report = report_json(&[]);
+        assert_eq!(
+            report["summary"],
+            serde_json::to_value(Summary::default()).unwrap()
+        );
+        assert_eq!(report["summary"]["precision"], serde_json::Value::Null);
+        assert_eq!(report["head_seq"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_head_seq_is_the_last_event_not_the_count() {
+        let log = [
+            log_event(41, shadow_denial()),
+            log_event(42, shadow_denial()),
+        ];
+        assert_eq!(report_json(&log)["head_seq"], 42);
+    }
+
+    fn path(url_path: &str) -> Vec<&str> {
+        url_path.split('/').skip(1).collect()
+    }
+
+    #[test]
+    fn the_worker_serves_ws_and_summary_paths_only() {
+        assert_eq!(
+            parse_route(&path("/repo/demo/ws")),
+            Some(Route::Ws { repo: "demo" })
+        );
+        assert_eq!(
+            parse_route(&path("/repo/demo/summary")),
+            Some(Route::Summary { repo: "demo" })
+        );
+        for other in [
+            "/",
+            "/repo",
+            "/repo/demo",
+            "/repo//summary",
+            "/repo//ws",
+            "/repo/demo/summary/",
+            "/repo/demo/summary/x",
+            "/repo/demo/events",
+            "/summary",
+        ] {
+            assert_eq!(parse_route(&path(other)), None, "{other}");
+        }
+    }
+
+    #[cfg(feature = "runtime")]
+    mod routes {
+        use super::*;
+        use crate::identity::IdentityError;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use hmac::{Hmac, KeyInit, Mac};
+        use sha2::Sha256;
+
+        const KEY: &str = "test-signing-key-not-a-secret";
+        const SIGNED_AT: u64 = 1_000_000;
+
+        fn token(key: &str, repo: &str, agent: &str, exp_ms: u64) -> String {
+            let payload =
+                serde_json::json!({"v": 1, "repo": repo, "agent": agent, "exp_ms": exp_ms});
+            let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
+            let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
+            mac.update(payload.as_bytes());
+            let mac = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+            format!("{payload}.{mac}")
+        }
+
+        fn bearer(repo: &str, agent: &str) -> String {
+            format!("Bearer {}", token(KEY, repo, agent, SIGNED_AT + 1))
+        }
+
+        fn ask(
+            method: &str,
+            url_path: &str,
+            prefix: Option<&str>,
+            authorization: Option<&str>,
+        ) -> Result<(String, AgentId), Denied> {
+            let segments = path(url_path);
+            let inbound = Inbound {
+                method,
+                segments: &segments,
+                allowed_prefix: prefix,
+                signing_key: Some(KEY),
+                authorization,
+                now_ms: SIGNED_AT,
+            };
+            authorize(&inbound).map(|(route, who)| (format!("{route:?}"), who))
+        }
+
+        #[test]
+        fn any_agent_of_the_repo_may_read_the_summary() {
+            let auth = bearer("demo", "dashboard");
+            let got = ask("GET", "/repo/demo/summary", None, Some(&auth));
+            assert_eq!(
+                got,
+                Ok((
+                    format!("{:?}", Route::Summary { repo: "demo" }),
+                    agent("dashboard")
+                ))
+            );
+            let other = bearer("demo", "a7");
+            assert!(ask("GET", "/repo/demo/summary", None, Some(&other)).is_ok());
+        }
+
+        #[test]
+        fn a_summary_read_without_a_valid_token_is_unauthorized() {
+            let get = |auth: Option<&str>| ask("GET", "/repo/demo/summary", None, auth);
+            let unauthorized = |got: Result<_, Denied>| matches!(got, Err(Denied::Unauthorized(_)));
+            assert!(unauthorized(get(None)));
+            assert!(unauthorized(get(Some("Bearer nonsense"))));
+            assert!(unauthorized(get(Some(&bearer("elsewhere", "dashboard")))));
+            let expired = format!("Bearer {}", token(KEY, "demo", "dashboard", SIGNED_AT));
+            assert!(unauthorized(get(Some(&expired))));
+            let forged = format!(
+                "Bearer {}",
+                token("another-key", "demo", "dashboard", SIGNED_AT + 1)
+            );
+            assert!(unauthorized(get(Some(&forged))));
+            let no_key = Inbound {
+                method: "GET",
+                segments: &path("/repo/demo/summary"),
+                allowed_prefix: None,
+                signing_key: None,
+                authorization: Some(&bearer("demo", "dashboard")),
+                now_ms: SIGNED_AT,
+            };
+            assert_eq!(
+                authorize(&no_key).unwrap_err(),
+                Denied::Unauthorized(IdentityError::NoSigningKey)
+            );
+        }
+
+        #[test]
+        fn a_prefixed_worker_refuses_other_repos_before_it_looks_at_the_token() {
+            let auth = bearer("demo", "dashboard");
+            let refused = ask("GET", "/repo/demo/summary", Some("swarm-"), Some(&auth));
+            assert_eq!(refused, Err(Denied::Forbidden));
+            let refused = ask("GET", "/repo/demo/summary", Some("swarm-"), None);
+            assert_eq!(refused, Err(Denied::Forbidden));
+            let auth = bearer("swarm-x", "dashboard");
+            assert!(ask("GET", "/repo/swarm-x/summary", Some("swarm-"), Some(&auth)).is_ok());
+        }
+
+        #[test]
+        fn the_summary_answers_get_only() {
+            let auth = bearer("demo", "dashboard");
+            for method in ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "get"] {
+                let got = ask(method, "/repo/demo/summary", None, Some(&auth));
+                assert_eq!(got, Err(Denied::MethodNotAllowed), "{method}");
+            }
+            assert_eq!(
+                ask("POST", "/repo/demo/summary", None, None),
+                Err(Denied::MethodNotAllowed),
+                "the method is judged before the token"
+            );
+        }
+
+        #[test]
+        fn the_ws_route_keeps_its_order_of_refusals() {
+            let auth = bearer("demo", "a1");
+            assert!(ask("GET", "/repo/demo/ws", None, Some(&auth)).is_ok());
+            assert!(
+                ask("POST", "/repo/demo/ws", None, Some(&auth)).is_ok(),
+                "the upgrade check, not the Worker, judges the method of a ws request"
+            );
+            assert_eq!(
+                ask("GET", "/repo/demo/ws", Some("swarm-"), Some(&auth)),
+                Err(Denied::Forbidden)
+            );
+            assert!(matches!(
+                ask("GET", "/repo/demo/ws", None, None),
+                Err(Denied::Unauthorized(_))
+            ));
+            assert_eq!(
+                ask("GET", "/nope", None, Some(&auth)),
+                Err(Denied::NotFound)
+            );
+        }
     }
 }
