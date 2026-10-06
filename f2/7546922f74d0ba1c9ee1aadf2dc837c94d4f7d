@@ -1,0 +1,4 @@
+intent: a burst of streamed events within 3s triggers exactly one summary fetch
+assumes: none
+rejected: none
+evidence: typecheck, oxlint, oxfmt clean; pnpm test 647 passed (646 + 1); mutant debounce 3000 -> 0 killed (1 failing)
