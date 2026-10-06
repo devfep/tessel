@@ -339,6 +339,27 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   `28e246b`; tree checked equal to a clean merge): 790 passed. Swarm Worker redeployed with
   `SHADOW_ENABLED = "true"` (`f6d0e4b1`). Follow-ups: SWARM-OBSERVER; matching a shadow's blocker
   by `conflict.held` scope (only over-waits today; the swarm opens no races).
+- [ ] **DASH-1** — PLAN §4, §9 Oct 7 (agent column, never cut per §11; judging: "live dashboard
+  with stats"): a read-only live dashboard served by the steward. It opens a `Watch` on the
+  coordinator for one repo and shows active claims and their holders, denials with the holder's
+  intent (quoted as untrusted data: escaped, never rendered as HTML), waits, races, merges, review
+  holds, verified denials, and the headline numbers from `Summary::from_events` (the same function
+  as the A/B table; a denial is never shown as a prevention). Needs: how the browser authenticates
+  to the steward for a read-only view (the orchestrator brings one recommendation before building).
+  Video segment 1:15–3:00 runs on it (PLAN §10).
+- [ ] **REVIEW-UI** — PLAN §4, §9 Oct 8: a review screen beside the dashboard for submissions held
+  under invariant 12: the reasons from `review_reasons`, the diff, the claim's intent and
+  assumptions (untrusted data), and approve/reject that sends `Review` as a configured reviewer.
+  `tessel review` stays the agent path (same outcome, agent-native). Needs a decision before
+  building: how a human in a browser acts as a reviewer agent (a reviewer identity token, minted
+  by the steward, held server side). After DASH-1.
+- [ ] **DEMO-TS** — PLAN §9 Oct 7, SUBMISSION_CHECKLIST ("demo repository the agents work on is
+  your own or permissively licensed"). Mostly exists: `tessel-swarm/src/demo.rs` generates a small
+  TypeScript shop (twelve functions in seven modules, one `node --test` file each, cross-module
+  calls) that every swarm run starts from. Left: a way to create that repo as a named Artifacts
+  repo for real agents (the video's 3–5 real agents beside the scripted ones, PLAN §9 Oct 10),
+  e.g. a `tessel-swarm demo-repo --repo swarm-demo` command, a LICENSE in it, and a check that the
+  CLI's tree-sitter labels its symbols as expected. No second demo repo.
 - [ ] **SWARM-OBSERVER** — from the SHADOW-2 review (both can only lower the reported count):
   (1) `on.rs` ~218: if the shared watcher stopped on a gap or gave up and the stale log owes
   nothing, the final wait returns Ok and `watcher.abort()` drops the error (never swallow it:
