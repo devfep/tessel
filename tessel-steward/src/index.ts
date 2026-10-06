@@ -1,4 +1,5 @@
 import { IDENTITY_TTL_MS, INVALID_NAME_MESSAGE, isValidName, signIdentityToken } from "./identity";
+import { handleDashboard } from "./dashboard";
 import { parsePushEvent } from "./push-event";
 import { handleMergeRequest } from "./merge-request";
 import { matchRoute, type Route } from "./routes";
@@ -142,12 +143,25 @@ function failure(route: Route, error: unknown): Response {
   return json({ error: `${route.kind} failed for ${route.repo}: ${error.message}`, code }, status);
 }
 
+async function handleDashboardSafely(request: Request, env: Env): Promise<Response> {
+  try {
+    return await handleDashboard(request, env);
+  } catch (error) {
+    console.error(JSON.stringify({ event: "dashboard_failed", message: String(error) }));
+    return new Response("the dashboard could not reach the coordinator", { status: 502 });
+  }
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
+    const { pathname } = new URL(request.url);
+    if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) {
+      return handleDashboardSafely(request, env);
+    }
     if (!(await isAuthorized(request, env))) {
       return json({ error: "send Authorization: Bearer <STEWARD_ADMIN_TOKEN>" }, 401);
     }
-    const route = matchRoute(new URL(request.url).pathname);
+    const route = matchRoute(pathname);
     if (request.method !== "POST" || route === undefined) {
       return json({ error: `expected ${USAGE}` }, 404);
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { matchRoute } from "./routes";
+import { matchDashboardRoute, matchRoute } from "./routes";
 
 describe("matchRoute", () => {
   it.each([
@@ -37,5 +37,25 @@ describe("matchRoute", () => {
     ["a leaf under tokens", "/repos/demo/tokens/x/identity"],
   ])("rejects %s", (_label, pathname) => {
     expect(matchRoute(pathname)).toBeUndefined();
+  });
+});
+
+describe("matchDashboardRoute", () => {
+  it.each([
+    ["/dashboard/demo", { kind: "page", repo: "demo" }],
+    ["/dashboard/demo/", { kind: "page", repo: "demo" }],
+    ["/dashboard/demo/events", { kind: "events", repo: "demo" }],
+    ["/dashboard/demo/summary", { kind: "summary", repo: "demo" }],
+  ])("matches %s", (pathname, route) => {
+    expect(matchDashboardRoute(pathname)).toEqual(route);
+  });
+
+  it.each([
+    ["the bare root", "/dashboard"],
+    ["another root", "/repos/demo"],
+    ["an unknown leaf", "/dashboard/demo/stream"],
+    ["a nested path", "/dashboard/demo/events/1"],
+  ])("rejects %s", (_label, pathname) => {
+    expect(matchDashboardRoute(pathname)).toBeUndefined();
   });
 });

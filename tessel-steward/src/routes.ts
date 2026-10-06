@@ -38,3 +38,20 @@ export function matchRoute(pathname: string): Route | undefined {
   }
   return undefined;
 }
+
+export type DashboardRoute = { kind: "page" | "events" | "summary"; repo: string };
+
+/** Matches `/dashboard/<repo>`, `/dashboard/<repo>/events` and `/dashboard/<repo>/summary`. */
+export function matchDashboardRoute(pathname: string): DashboardRoute | undefined {
+  const [root, repo, leaf, ...rest] = pathname.split("/").filter(Boolean);
+  if (root !== "dashboard" || repo === undefined || rest.length > 0) {
+    return undefined;
+  }
+  if (leaf === undefined) {
+    return { kind: "page", repo };
+  }
+  if (leaf === "events" || leaf === "summary") {
+    return { kind: leaf, repo };
+  }
+  return undefined;
+}

@@ -4,6 +4,10 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-04",
   "observability": { "enabled": true },
+  // Cloudflare Access sign-in for /dashboard: until the team domain and AUD tag are set, every
+  // /dashboard path answers 503. Viewers are the emails allowed through.
+  "vars": { "ACCESS_TEAM_DOMAIN": "", "ACCESS_AUD": "", "DASHBOARD_VIEWERS": "devfep@gmail.com" },
+  "services": [{ "binding": "COORDINATOR", "service": "tessel-coordinator" }],
   "secrets": { "required": ["STEWARD_ADMIN_TOKEN", "IDENTITY_SIGNING_KEY"] },
   "artifacts": [{ "binding": "ARTIFACTS", "namespace": "tessel" }],
   "queues": {
