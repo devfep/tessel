@@ -1,0 +1,4 @@
+intent: DASH-1a fix pass 1: bound the summary read (no Vec of the log, resume from a cached tally), bind-the-agent tests, log the path on 401
+assumes: events are never rewritten or removed, so a counted prefix stays valid; from_events is a per-event fold with precision derived at the end
+rejected: caching only head_seq (still O(N) per read); editing protocol.rs to add an incremental API (frozen)
+evidence: cargo test --workspace 817 passed (811 + 6); clippy -D warnings native and wasm clean; fmt clean; wasm 0 warnings; mutants M2/M4 and 6 tally mutants killed (one survived until a replay test was added)
