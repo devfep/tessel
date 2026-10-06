@@ -173,7 +173,7 @@ describe("the page", () => {
     const response = await get("/dashboard/demo");
     const html = await response.text();
     const policy = response.headers.get("Content-Security-Policy") ?? "";
-    const nonce = /script-src 'nonce-([^']+)'/.exec(policy)?.[1] ?? "";
+    const nonce = /<script nonce="([^"]+)">/.exec(html)?.[1] ?? "";
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/html");
     expect(nonce).not.toBe("");
@@ -181,7 +181,12 @@ describe("the page", () => {
     expect(html).not.toMatch(/<script[^>]*\ssrc=/);
     expect(html).not.toMatch(/<link|https?:\/\//);
     expect(policy).toContain("default-src 'none'");
-    expect(policy).not.toContain("unsafe-inline");
+    expect(policy).toContain(`script-src 'nonce-${nonce}';`);
+    expect(policy).toContain(`style-src 'nonce-${nonce}';`);
+    expect(html).toContain(`<style nonce="${nonce}">`);
+    for (const [name, value] of response.headers) {
+      expect(`${name}: ${value}`).not.toMatch(/unsafe-(inline|eval)/);
+    }
   });
 
   it("uses a new nonce on every response", async () => {

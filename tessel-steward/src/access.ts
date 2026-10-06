@@ -28,10 +28,13 @@ interface CachedKeys {
 }
 
 const keysByTeam = new Map<string, CachedKeys>();
+/** When each team's certs were last requested, whether or not the request succeeded. */
+const lastFetchAttemptMs = new Map<string, number>();
 
 /** Forgets cached signing keys. For tests. */
 export function clearAccessKeyCache(): void {
   keysByTeam.clear();
+  lastFetchAttemptMs.clear();
 }
 
 /**
@@ -83,6 +86,7 @@ async function loadKeys(
   if (!refresh && cached !== undefined && nowMs - cached.fetchedAtMs < CERTS_TTL_MS) {
     return cached.keys;
   }
+  lastFetchAttemptMs.set(teamDomain, nowMs);
   const response = await fetchImpl(`https://${teamDomain}/cdn-cgi/access/certs`);
   if (!response.ok) {
     throw new Error(`certs endpoint answered ${response.status}`);
@@ -181,8 +185,12 @@ export async function verifyAccessToken(
     return denied(503, "could not fetch the team's signing keys");
   }
   let key = typeof kid === "string" ? keys.get(kid) : undefined;
-  const fetchedAtMs = keysByTeam.get(config.teamDomain)?.fetchedAtMs ?? 0;
-  if (key === undefined && typeof kid === "string" && now() - fetchedAtMs >= CERTS_REFETCH_MIN_MS) {
+  const attemptedAtMs = lastFetchAttemptMs.get(config.teamDomain) ?? 0;
+  if (
+    key === undefined &&
+    typeof kid === "string" &&
+    now() - attemptedAtMs >= CERTS_REFETCH_MIN_MS
+  ) {
     try {
       key = (await loadKeys(config.teamDomain, fetchImpl, now(), true)).get(kid);
     } catch (error) {

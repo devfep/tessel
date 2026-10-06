@@ -116,6 +116,28 @@ describe("verifyAccessToken", () => {
     expect(fetches).toBe(2);
   });
 
+  it("keeps the one-a-minute limit while the certs endpoint is down", async () => {
+    let healthy = true;
+    let fetches = 0;
+    const good = signer.certsFetch();
+    const fetchImpl = ((input: RequestInfo | URL) => {
+      fetches += 1;
+      return healthy ? good(input) : Promise.resolve(new Response("x", { status: 500 }));
+    }) as typeof fetch;
+    const at = (offsetMs: number) => ({ fetchImpl, now: () => NOW_MS + offsetMs });
+    const unknown = await signer.sign(validClaims(), { kid: "nope" });
+
+    await verifyAccessToken(await signer.sign(validClaims()), CONFIG, at(0));
+    healthy = false;
+    expect(await verifyAccessToken(unknown, CONFIG, at(61_000))).toMatchObject({ status: 503 });
+    expect(fetches).toBe(2);
+    expect(await verifyAccessToken(unknown, CONFIG, at(62_000))).toMatchObject({ status: 401 });
+    expect(await verifyAccessToken(unknown, CONFIG, at(100_000))).toMatchObject({ status: 401 });
+    expect(fetches).toBe(2);
+    expect(await verifyAccessToken(unknown, CONFIG, at(122_000))).toMatchObject({ status: 503 });
+    expect(fetches).toBe(3);
+  });
+
   it("answers 503 when the refetch for an unknown kid fails", async () => {
     const urls: string[] = [];
     const good = signer.certsFetch(urls);
