@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 00:30 EDT.
+**As of:** 2026-10-06 17:58 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -64,10 +64,11 @@ run). A small sample: it shows the mechanism live, not a rate.
   before landing.
 - No other lane live. `.claude/worktrees/deploy` is a detached checkout of the trunk `d4e6335`
   used for deploys (holds `tessel-steward/node_modules`); remove it after the steward deploy.
-**Blocked: the steward deploy (DASH-1b live).** Docker Desktop was started at 00:19 for the
-steward's image build; its backend runs but `docker info` hangs (likely a Docker Desktop window
-waiting for a click: update, sign-in or terms). When Felix is back: look at Docker Desktop, then
-the orchestrator runs `npx wrangler deploy` in `.claude/worktrees/deploy/tessel-steward`.
+**Steward deployed with the dashboard** (Oct 6, 17:5x EDT, version `32b006fd`, after Felix
+restarted a hung Docker Desktop). Live: every `/dashboard/...` path answers 503 "sign-in not
+configured" (Access vars empty, fail closed); admin routes still 401 without the token; identity
+minting works. Next: Felix's Access app → commit `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` → redeploy →
+check the page signed in.
 **Decided (Felix delegated it, 23:05):** the dashboard and review screen sign in through
 Cloudflare Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths; the
 steward verifies the `Cf-Access-Jwt-Assertion` JWT (team certs, the application's AUD tag) and
@@ -142,6 +143,12 @@ right after each run.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
 **Known limits, recorded so nobody rediscovers them:**
+- `wrangler deploy` of the steward (two container images) can untag the toolchain image while it
+  starts pushing it ("Image does not exist remotely, pushing" then "Untagged" then "No such
+  image"); it failed this way on Oct 5 and twice on Oct 6. Workaround that worked: find the built
+  image id (`docker images` / the build log's "writing image sha256:…"), `docker tag <id>
+  tessel-steward-testrunner-toolchain:manual-push`, `npx wrangler containers push` that tag, then
+  `npx wrangler deploy` again ("Image already exists remotely, skipping push").
 - The first `GET /repo/<name>/summary` after a Durable Object wake scans the whole event log
   behind the input gate (later reads cost only new events; DASH-1a). Fine at demo sizes.
 - The coordinator checks an identity token only at the WebSocket upgrade, so an open socket
