@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PAGE_SCRIPT } from "./dashboard-page";
 
@@ -79,7 +79,14 @@ function intent(summary: string, assumptions: unknown[] = []): unknown {
   return { summary, task_ref: null, assumptions };
 }
 
-async function load(): Promise<Page> {
+type SetTimer = (callback: () => void, ms: number) => unknown;
+
+const runNow: SetTimer = (callback) => {
+  callback();
+  return 0;
+};
+
+async function load(setTimer: SetTimer = runNow): Promise<Page> {
   const nodes = new Map<string, FakeNode>();
   const created: string[] = [];
   const fetched: string[] = [];
@@ -106,16 +113,7 @@ async function load(): Promise<Page> {
     "setTimeout",
     PAGE_SCRIPT,
   );
-  run(
-    document,
-    FakeEventSource,
-    fakeFetch,
-    { pathname: "/dashboard/demo/" },
-    (callback: () => void) => {
-      callback();
-      return 0;
-    },
-  );
+  run(document, FakeEventSource, fakeFetch, { pathname: "/dashboard/demo/" }, setTimer);
   await Promise.resolve();
   let seq = 0;
   return {
@@ -281,6 +279,23 @@ describe("headline numbers", () => {
     const page = await load();
     await settle();
     expect(statLines(page)).toContain("0 Claims granted");
+  });
+
+  it("fetches the summary once for a burst of events within 3 seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const page = await load((callback, ms) => setTimeout(callback, ms));
+      expect(page.fetched).toHaveLength(1);
+      for (let i = 0; i < 5; i++) {
+        page.send("agent_connected", { agent: "a1" });
+      }
+      await vi.advanceTimersByTimeAsync(2999);
+      expect(page.fetched).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(page.fetched).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows n/a for precision before anything is verified", async () => {
