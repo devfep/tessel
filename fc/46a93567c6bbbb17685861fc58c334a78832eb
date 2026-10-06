@@ -1,0 +1,4 @@
+intent: record the steward deploy and the wrangler image-push workaround
+assumes: none
+rejected: retrying wrangler deploy unchanged (failed twice the same way)
+evidence: steward 32b006fd; /dashboard paths 503 sign-in not configured; admin 401 without token; identity mints
