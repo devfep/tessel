@@ -80,9 +80,10 @@ shadow work and never lands. The table says so, and only the shadow policy has t
 
 When the blocking work merges, the steward tries each submitted shadow commit against it, first
 on the trunk as it was before the merge (work that already fails there is inconclusive) and then
-after, and the coordinator logs `DenialVerified`. After the agents finish, the run polls the log
-until every trial the log still owes is there, for at most `--task-timeout-s`, and only then
-computes the table.
+after, and the coordinator logs `DenialVerified`. One extra connection follows the log for the
+whole run (the waiting agents read what it has seen, so waiting adds no polling to the
+coordinator). After the agents finish, the run waits until every trial the log still owes is
+there, for at most `--task-timeout-s`, and only then computes the table.
 
 The row "Conflicts prevented, verified by shadow runs" is `Summary::from_events` over the
 coordinator's log: verified preventions (a conflict), false alarms (clean), and beside them the

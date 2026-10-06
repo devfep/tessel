@@ -105,6 +105,23 @@ pub fn count(events: &[Event]) -> LogCounts {
     counts
 }
 
+/// Appends `event` to a log read from seq 0 in order. An event the log already has is ignored
+/// (`false`); one that skips a seq is an error, because counts over a log with a hole are wrong.
+pub fn append(log: &mut Vec<Event>, event: Event) -> anyhow::Result<bool> {
+    let next = log.len() as u64;
+    if event.seq < next {
+        return Ok(false);
+    }
+    if event.seq > next {
+        anyhow::bail!(
+            "the event log has a gap: expected seq {next}, got {}",
+            event.seq
+        );
+    }
+    log.push(event);
+    Ok(true)
+}
+
 /// How many shadow trials the log still owes: pairs of a shadow claim and the claim that blocked it
 /// where the shadow claim had submitted and is still live, and the blocker either merged after
 /// that submission or has not been decided yet, with no `DenialVerified` for the pair. The
@@ -417,6 +434,30 @@ mod tests {
         );
         log.push(verified(5, Outcome::TextualConflict));
         assert_eq!(awaiting_verification(&log), 0);
+    }
+
+    #[test]
+    fn an_appended_log_stays_gap_free_and_ignores_events_it_already_has() {
+        let mut log = Vec::new();
+        let released = |seq| {
+            event(
+                seq,
+                EventKind::ClaimReleased {
+                    claim: ClaimId(1),
+                    reason: tessel_coordinator::protocol::ReleaseReason::Agent,
+                },
+            )
+        };
+        assert!(append(&mut log, released(0)).unwrap());
+        assert!(append(&mut log, released(1)).unwrap());
+        assert!(
+            !append(&mut log, released(1)).unwrap(),
+            "a replayed event is ignored"
+        );
+        let gap = append(&mut log, released(3)).unwrap_err();
+        assert!(gap.to_string().contains("expected seq 2, got 3"), "{gap}");
+        assert_eq!(log.len(), 2, "a gap is not appended");
+        assert!(append(&mut log, released(2)).unwrap());
     }
 
     #[test]

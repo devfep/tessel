@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
 use tessel_coordinator::protocol::{
-    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, Fence, Intent,
-    OnConflict, ScopeClaim, ServerMsg, Summary,
+    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, EventKind, Fence,
+    Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
 };
 
 use crate::conn::{read_log, Conn};
@@ -149,6 +149,8 @@ struct Ctx {
     results: Mutex<Vec<TaskResult>>,
     scratch: PathBuf,
     config: OnConfig,
+    /// The log as the shared observer has read it so far: shadow policy only.
+    log: Option<tokio::sync::watch::Receiver<Vec<Event>>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -176,12 +178,22 @@ pub async fn run_on(
             waited_ms: 0,
         })
         .collect();
+    let (log, watcher) = if config.policy == Policy::Shadow {
+        let (tx, rx) = tokio::sync::watch::channel(Vec::new());
+        (
+            Some(rx),
+            Some(tokio::spawn(watch_log(endpoint.clone(), tx))),
+        )
+    } else {
+        (None, None)
+    };
     let ctx = Arc::new(Ctx {
         endpoint: endpoint.clone(),
         queue: Mutex::new(queue),
         results: Mutex::new(Vec::new()),
         scratch: scratch.to_path_buf(),
         config: config.clone(),
+        log,
     });
     let (stop_reviewer, stopped) = tokio::sync::watch::channel(false);
     let reviewer = config
@@ -201,7 +213,10 @@ pub async fn run_on(
     let wall_ms = millis(started);
     record_unrun(&ctx);
     if config.policy == Policy::Shadow && failure.is_none() {
-        await_verification(endpoint, config.task_timeout).await?;
+        await_verification(&ctx).await?;
+    }
+    if let Some(watcher) = watcher {
+        watcher.abort();
     }
     let _ = stop_reviewer.send(true);
     if let Some(reviewer) = reviewer {
@@ -226,24 +241,84 @@ pub async fn run_on(
     ))
 }
 
-/// Polls the log until every shadow trial it owes has been recorded, or `limit` has passed. The
-/// polls are a second apart because each one is a new observer connection, which the log records.
-/// Whatever is still owed at the limit stays out of the counts: the report says it never ran.
-async fn await_verification(endpoint: &Endpoint, limit: Duration) -> Result<()> {
-    let observer = endpoint.token_of(OBSERVER)?;
-    let deadline = Instant::now() + limit;
+/// Waits, on the shared log watch, until every shadow trial the log owes has been recorded, or
+/// `task_timeout` has passed. Whatever is still owed then stays out of the counts: the report says
+/// it never ran. An empty log is a watch that has not caught up, not a log that owes nothing.
+async fn await_verification(ctx: &Ctx) -> Result<()> {
+    let Some(mut log) = ctx.log.clone() else {
+        return Ok(());
+    };
+    let owed_nothing =
+        |events: &Vec<Event>| !events.is_empty() && events::awaiting_verification(events) == 0;
+    let waited = tokio::time::timeout(ctx.config.task_timeout, log.wait_for(owed_nothing)).await;
+    match waited {
+        Ok(Ok(_)) | Err(_) => Ok(()),
+        Ok(Err(_)) => anyhow::bail!("the log watch stopped before the shadow trials were logged"),
+    }
+}
+
+/// One connection that only follows the log: the run's single observer. It replays from seq 0
+/// once, appends every event to a log it keeps gap-free, and publishes the log on `tx`; waiters
+/// read that instead of connecting themselves, so waiting adds no load or log entries to the
+/// coordinator being measured. A dropped connection is reopened from the last seq it has; a gap
+/// ends the watch with an error, which wakes every waiter.
+async fn watch_log(endpoint: Endpoint, tx: tokio::sync::watch::Sender<Vec<Event>>) -> Result<()> {
+    let token = endpoint.token_of(OBSERVER)?;
+    let mut failures = 0_u32;
     loop {
-        let log = read_log(
-            &endpoint.ws_url,
-            observer,
-            OBSERVER,
-            Duration::from_secs(60),
-        )
-        .await?;
-        if events::awaiting_verification(&log) == 0 || Instant::now() >= deadline {
-            return Ok(());
+        let before = tx.borrow().len();
+        match follow_log(&endpoint.ws_url, token, &tx).await {
+            Followed::Gap(error) => return Err(error),
+            Followed::Closed(error) => {
+                failures = if tx.borrow().len() > before {
+                    0
+                } else {
+                    failures + 1
+                };
+                if failures > 5 {
+                    return Err(error.context("the log watch could not reconnect"));
+                }
+            }
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+enum Followed {
+    /// The connection ended; the watch may reopen it.
+    Closed(anyhow::Error),
+    /// The coordinator's log skipped a seq. Fatal.
+    Gap(anyhow::Error),
+}
+
+async fn follow_log(
+    url: &str,
+    token: &crate::endpoint::Token,
+    tx: &tokio::sync::watch::Sender<Vec<Event>>,
+) -> Followed {
+    let mut conn = match Conn::open(url, token).await {
+        Ok(conn) => conn,
+        Err(error) => return Followed::Closed(error),
+    };
+    let from_seq = tx.borrow().len() as u64;
+    let started = async {
+        conn.hello(OBSERVER, "observer").await?;
+        conn.send(&ClientMsg::Watch { from_seq }).await
+    };
+    if let Err(error) = started.await {
+        return Followed::Closed(error);
+    }
+    loop {
+        let event = match conn.recv(Duration::from_secs(3600)).await {
+            Ok(Some(ServerMsg::Event { event })) => event,
+            Ok(Some(_) | None) => continue,
+            Err(error) => return Followed::Closed(error),
+        };
+        let mut appended = Ok(false);
+        tx.send_modify(|log| appended = events::append(log, event));
+        if let Err(error) = appended {
+            return Followed::Gap(error);
+        }
     }
 }
 
@@ -607,23 +682,28 @@ async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) 
     })
 }
 
-/// Reads the log, on a fresh connection each time, until nothing is owed to `claim` any more: its
-/// trial is logged, or none can run (its blocker ended unmerged, or merged before it submitted).
-/// The claim is already `Accepted`, so its submission is in the log. It gives up after
+/// Waits, on the shared log watch, until nothing is owed to `claim` any more: its trial is logged,
+/// or none can run (its blocker ended unmerged, or merged before it submitted). It gives up after
 /// `trial_wait`; whatever is still owed then stays owed and the report counts it as never
-/// verified. A fresh connection because a socket may `Watch` only once, and the agent's own
-/// socket is busy with its claims.
+/// verified. The log must hold the claim's own submission first: until the watch has caught up
+/// with it, an empty log would owe nothing.
 async fn await_own_trial(ctx: &Ctx, claim: ClaimId) -> Result<()> {
-    let observer = ctx.endpoint.token_of(OBSERVER)?;
-    let deadline = Instant::now() + ctx.config.trial_wait;
-    loop {
-        let url = &ctx.endpoint.ws_url;
-        let log = read_log(url, observer, OBSERVER, Duration::from_secs(60)).await?;
-        if events::awaiting_verification_of(&log, claim) == 0 || Instant::now() >= deadline {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+    let Some(mut log) = ctx.log.clone() else {
+        return Ok(());
+    };
+    let settled = |events: &Vec<Event>| trial_settled(events, claim);
+    let waited = tokio::time::timeout(ctx.config.trial_wait, log.wait_for(settled)).await;
+    match waited {
+        Ok(Ok(_)) | Err(_) => Ok(()),
+        Ok(Err(_)) => anyhow::bail!("the log watch stopped before the trial was logged"),
     }
+}
+
+fn trial_settled(log: &[Event], claim: ClaimId) -> bool {
+    let submitted = log
+        .iter()
+        .any(|e| matches!(&e.kind, EventKind::Submitted { claim: c, .. } if *c == claim));
+    submitted && events::awaiting_verification_of(log, claim) == 0
 }
 
 /// Brings the working directory to the trunk's head and applies the task to it.
@@ -904,6 +984,14 @@ mod tests {
             waited_ms: 0,
             note: None,
         }
+    }
+
+    #[test]
+    fn a_log_the_watch_has_not_caught_up_with_settles_nothing() {
+        assert!(
+            !trial_settled(&[], ClaimId(2)),
+            "an empty log owes nothing but proves nothing"
+        );
     }
 
     #[test]

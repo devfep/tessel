@@ -515,20 +515,34 @@ async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
     let run = run(&tasks, config).await;
     let summary = &run.result.summary;
     let trials = run.result.shadow_trials;
-    assert!(trials.claims >= 2, "{:?}", run.result.results);
+    // A shadow claim submitted after its blocker merged is never tried, so it is never verified;
+    // every other one conflicts with its blocker and was tried.
+    assert_eq!(trials.inconclusive, 0, "{:?}", run.result.results);
     assert_eq!(
-        (
-            summary.conflicts_prevented_verified,
-            trials.inconclusive,
-            trials.never_verified
-        ),
-        (trials.claims, 0, 0),
-        "every shadow claim conflicts with its blocker and was tried: {:?}",
+        summary.conflicts_prevented_verified + trials.never_verified,
+        trials.claims,
+        "{:?}",
+        run.result.results
+    );
+    assert!(
+        summary.conflicts_prevented_verified >= 1,
+        "{:?}",
         run.result.results
     );
     assert_eq!(summary.false_alarms, 0);
     assert_eq!(summary.denials, trials.claims);
     assert_eq!(*summary, Summary::from_events(&run.result.events));
+    // However long the agents wait, the log holds only the observer's own connects: the run's
+    // single watcher and the final read.
+    let observers = run
+        .result
+        .events
+        .iter()
+        .filter(
+            |e| matches!(&e.kind, EventKind::AgentConnected { agent } if agent.0 == on::OBSERVER),
+        )
+        .count();
+    assert!(observers <= 2, "{observers} observer connects in the log");
     assert!(trials_precede_the_next_claim(&run.result.events) >= 1);
     // A second wait that never saw its trial would run to the limit.
     for shadowed in run
