@@ -1,0 +1,4 @@
+intent: a run whose shared log watcher failed, or whose watch lags behind an accepted shadow submit, must not report counts from a stale log
+assumes: tokio JoinHandle::is_finished is true once the watcher task returned
+rejected: none
+evidence: cargo test --workspace 795 passed (790 + 5 new); tessel-swarm lib run 3 times green; clippy -D warnings and fmt clean; mutants dropping the error, the accepted-claim guard and the owed-trial check each fail a new test
