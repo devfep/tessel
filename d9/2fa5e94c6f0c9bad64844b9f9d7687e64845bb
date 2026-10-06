@@ -1,0 +1,4 @@
+intent: record the live shadow run result and the reclaimed worktree
+assumes: none
+rejected: none
+evidence: docs/evidence/2026-10-05/swarm-seed1-shadow (events 30, 31)
