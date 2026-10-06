@@ -1,0 +1,4 @@
+intent: drop_finished_shadows returns effects and logs ClaimReleased{Settled} per drop; callers extend their effects; reviewer filled in ReviewDecided earlier commit
+assumes: a rejected blocker returns to active (stays live), so merge_outcome needs no sweep (test pins it)
+rejected: sweep in merge_outcome again: a rejection leaves the blocker live and landing queues a trial, so it changes nothing
+evidence: cargo test --workspace 836 passed; mutants no-settled-event, reviewer-not-filled, wrong-reason, no-sweep-handle/expire, no-sweep-after-outcome all killed; clippy coordinator/swarm clean
