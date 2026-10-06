@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 18:57 EDT.
+**As of:** 2026-10-06 19:32 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -26,8 +26,8 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** the Artifacts trunk `tessel-dogfood` is at `e894fbe` (ACCESS-VARS on DASH-1a `d4e6335`; tree
-checked equal to the two gated heads combined), mirrored to GitHub
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `7d00ad6` (SHADOW-GC by Felix's admin merge;
+tree checked equal to the gated `b143194`), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
 pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
 one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
@@ -55,15 +55,12 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:**
-- `impl-shadow-gc` (Sonnet), `.claude/worktrees/shadow-gc` (from `78e9f2a`), fork
-  `tessel-dogfood--lane-shadow-gc`; owns `src/coordinator.rs`, `src/coordinator/*.rs`. PARKED at
-  `3a3cbd2` (802 tests; review "With fixes": the non-blocking fixes are done) waiting for Felix's
-  protocol decision on `ReleaseReason::Settled`; daemon stopped, no claims held. Its first commit
-  `cd83a74` was made with no claims (late claims, record in the merge note). Must merge the trunk
-  before landing.
-- No other lane live. `.claude/worktrees/deploy` is a detached checkout of the trunk `d4e6335`
-  used for deploys (holds `tessel-steward/node_modules`); remove it after the steward deploy.
+**Agents:** none live. `.claude/worktrees/deploy` is a detached checkout of the trunk `7d00ad6`
+used for deploys (holds `tessel-steward/node_modules`); move it with `git -C .claude/worktrees/deploy
+checkout --detach origin/artifacts-trunk` before each deploy.
+**Coordinator head is stale** (`e894fbe`, the last merge it dispatched): the SHADOW-GC admin merge
+went around it (COORD-HEAD). CLI-BASE handles a stale head for lanes; the next coordinator-
+dispatched merge corrects it.
 **THE DASHBOARD IS LIVE behind Access** (Oct 6, 18:41 EDT; Felix signed in and saw it):
 https://tessel-steward.devfep.workers.dev/dashboard/tessel-dogfood shows 54 claims granted, 0
 denials, 0 verified, 0 false alarms, precision n/a, 7 merges, 6 reviews requested (equal to the
@@ -92,43 +89,38 @@ Wrangler cannot manage Access; the dashboard or an API token with Access edit ri
 right after each run.
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop running (restarted by Felix; needed for steward deploys).
-**Agents:** `impl-access-vars` (Sonnet), `.claude/worktrees/access-vars` (from `d4e6335`), fork
-`tessel-dogfood--lane-access-vars`; owns `tessel-steward/wrangler.jsonc`; stops before pushing for
-the orchestrator to read its diff (rule 00). `impl-shadow-gc` parked (above).
 
 **Deployed** on `devfep.workers.dev`:
-- `tessel-coordinator` version `8120ee30` (trunk `d4e6335`; deployed 00:16 from the trunk
-  checkout; `REVIEWERS = "felix,orchestrator"`, shadows off). Serves `GET /repo/<name>/summary`;
-  live: 200 JSON (`claims_granted` 54, `merges` 7, `reviews_requested` 6, `denials` 0,
-  `head_seq` 323), a second read leaves `head_seq` unchanged (no event appended), no token 401,
-  another repo's token 401, POST 405 `Allow: GET`. Every upgrade needs a steward-minted agent
-  token. The old `COORDINATOR_TOKEN` secret is unused and still set (a secret delete: Felix's).
-- `tessel-steward` version `fce132ca` (trunk `e894fbe`, deployed Oct 6 ~18:55 EDT from
-  `.claude/worktrees/deploy` with no command-line vars): the dashboard behind Access (team
+- `tessel-coordinator` version `923f39fb` (trunk `7d00ad6`, deployed Oct 6 ~19:25 EDT;
+  `REVIEWERS = "felix,orchestrator"`, shadows off): `ReleaseReason::Settled`, the filled
+  `reviewer`, `GET /repo/<name>/summary`. Loads its stored log: summary 56 granted, 8 merges,
+  `head_seq` 340. Earlier checks of the route: no event appended on read, 401 without/with another
+  repo's token, POST 405. Every upgrade needs a steward-minted agent token. The old
+  `COORDINATOR_TOKEN` secret is unused and still set (a secret delete: Felix's).
+- `tessel-steward` version `b9f110df` (trunk `7d00ad6`, deployed Oct 6 ~19:30 EDT from
+  `.claude/worktrees/deploy`; images already in the registry): the dashboard (now shows the release
+  reason and the reviewer) behind Access (team
   `fepdev`, AUD committed), service binding `COORDINATOR`; toolchain image (Rust, Node
   22, pnpm, GNU time, tini) on
   `standard-4` for repos with `tessel.toml`; the `lite` image otherwise. Admin routes need
   `STEWARD_ADMIN_TOKEN` (`tessel-steward/.dev.vars`): `POST /repos/<repo>` (create),
   `/forks/<fork>`, `/tokens` (fork write tokens), `/read-tokens`, `/agents/<agent>/identity`,
   `/test-runs`, `/merges` (admin merge; the only path that may change `tessel.toml`).
-- Artifacts (namespace `tessel`): `tessel-dogfood` (the trunk, `d4e6335`) and forks
+- Artifacts (namespace `tessel`): `tessel-dogfood` (the trunk, `7d00ad6`) and forks
   `tessel-dogfood--orchestrator` (at `aadba8b`, sprint/build lineage: do not submit from it),
   `tessel-dogfood--admin` (catch-ups), `tessel-dogfood--lane-<task>` per lane; `demo`,
   `demo--agent-1`; scratch `gate*-*` and `swarm-*` repos. Queue `tessel-artifacts-events` with its
   subscriptions as before.
-- `tessel-coordinator-swarm` version `a3825731` (trunk `d4e6335`, deployed 00:17;
-  `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only, `SHADOW_ENABLED = "true"`). Live: the
-  summary for `swarm-s1-tmgnje` (the 20:49 shadow run) reads 2 verified preventions, 0 false
-  alarms, precision 1.0, 2 denials, 4 merges, `head_seq` 32; `tessel-dogfood` gets 403.
+- `tessel-coordinator-swarm` version `4e65697d` (trunk `7d00ad6`, deployed Oct 6 ~19:25 EDT;
+  `REVIEWERS = "swarm-reviewer"`, `swarm-*` repos only, `SHADOW_ENABLED = "true"`, so it can emit
+  `Settled`). Loads its stored log: `swarm-s1-tmgnje` (the 20:49 shadow run) still reads 2 verified
+  preventions, precision 1.0, `head_seq` 32; `tessel-dogfood` gets 403.
 
 **Pending from Felix:**
-- RULED (Felix, Oct 6 ~18:50 EDT): `ReleaseReason::Settled` is ADDITIVE, no version bump (only
-  experiment runs emit it; every client is built from the trunk). SHADOW-GC resumed with it, plus
-  queued items (a) stale dead-code expectations, (b) the `reviews_requested` doc, (c) a filled
-  `reviewer` on `ReviewDecided`, and a CLAUDE.md sentence recording the ruling. Not included:
-  `AssumptionVerified.commit`, `RaceDecided.entries` (nothing would fill them yet). It lands by
-  Felix's admin merge (the "by hand" path for `src/protocol.rs`) after the Opus review and gate;
-  the orchestrator hands him the command.
+- DONE: `ReleaseReason::Settled` (ruled additive, Oct 6 ~18:50 EDT) landed with SHADOW-GC by
+  Felix's admin merge (trunk `7d00ad6`). Still queued for a later hand merge of
+  `src/protocol.rs`: `AssumptionVerified.commit`, `RaceDecided.entries` (only when something
+  fills them).
 0. Nothing blocking. The fork-push allow rule is in `.claude/settings.local.json` (Felix, 18:3x).
    Note: the existing `Bash(npx wrangler deploy *)` rule does not match a deploy piped through
    other commands; the orchestrator runs deploys bare. Production deploys, secret writes, Artifacts deletes and forced pushes are
@@ -470,11 +462,20 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   server frames but never gets heartbeats through is never declared dead while frames keep coming;
   claims lapse locally (no fail-open), but it never reconnects. Set the silence deadline from the
   oldest outstanding ping and clear it only on a matching pong; add a test (mutant L survives).
-- [ ] **SHADOW-GC** — from the SHADOW-1 review: submitted shadow claims are never removed (true
+- [x] **SHADOW-GC** — from the SHADOW-1 review: submitted shadow claims are never removed (true
   before SHADOW-1). They hold no locks, leases or queue positions, but state grows by one claim per
   shadow submit in experiment runs, and a shadow blocked only by a race can never be verified.
   Drop a submitted shadow claim once none of its `blocked_by` claims is live and none of its trials
   is queued. Before the swarm runs that use shadows at scale.
+  CLOSED 2026-10-06 at trunk `7d00ad6` by Felix's admin merge (it changes `src/protocol.rs`).
+  Review 1 "With fixes" (invariant 10: a drop logged no event) → Felix ruled
+  `ReleaseReason::Settled` additive; review 2 "With fixes" (CLAUDE.md wording narrowed to the one
+  ruling; a redundant clock advance). Each drop now logs `ClaimReleased { reason: Settled }`;
+  `ReviewDecided` carries the reviewing agent; stale dead-code expectations removed. Orchestrator
+  gate on `b143194`: 836 Rust, 649 steward. Admin merge `merged` in 140 s with the trunk gate.
+  Deployed: production `923f39fb`, swarm `4e65697d`, steward `b9f110df`; both coordinators load
+  their stored logs. First commit `cd83a74` had no claims (late claims); every later edit was
+  claimed first. Not exercised live yet: a `Settled` event (needs a shadow swarm run).
 - [x] **RACE-1** — PLAN §9 Oct 8: races (invariant 7) in the coordinator: open by a reviewer,
   join, outsiders denied with `Conflict.race`, entries ranked with `rank_entries` after a steward
   trial each, winner merged, losers rejected, `HumanPick` waits for `PickWinner`.
