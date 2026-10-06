@@ -1,0 +1,4 @@
+intent: record the live dashboard behind Access and the ACCESS-VARS dispatch
+assumes: none
+rejected: the Worker-wide Access switch (would lock the steward's admin routes)
+evidence: Felix's screenshot 18:41 (54 granted, 7 merges, 6 reviews, 0 denials); unsigned and forged requests 302; admin route 401
