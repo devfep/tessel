@@ -1,0 +1,4 @@
+intent: record the summary route's first-read scan and token-at-upgrade-only as known limits
+assumes: none
+rejected: none
+evidence: rev-dash-summary and rev-dash-ui findings
