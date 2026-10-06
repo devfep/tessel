@@ -417,7 +417,6 @@ impl Coordinator {
         report: &TrialReport,
         now_ms: u64,
     ) -> Vec<Effect> {
-        let now_ms = self.advance_clock(now_ms);
         if self
             .state
             .verification_in_flight
