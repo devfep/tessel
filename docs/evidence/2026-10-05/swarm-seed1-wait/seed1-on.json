@@ -1,0 +1,134 @@
+{
+  "event_count": 60,
+  "held_for_review_not_approved": 0,
+  "measured_agent_ms": {
+    "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, summed over attempts",
+    "on_work_later_rejected": 0,
+    "waiting": 372550,
+    "work_total": 15192
+  },
+  "mode": "on",
+  "policy": "wait",
+  "queued_waits_in_event_log": 5,
+  "rejected_in_event_log": 0,
+  "review_approvals_in_event_log": 4,
+  "review_rejections_in_event_log": 0,
+  "run": {
+    "agents": 6,
+    "overlap": 0.5,
+    "seed": 1,
+    "tasks": 10,
+    "work_ms": 300
+  },
+  "schema": "tessel-swarm/1",
+  "scripted_reviewer": true,
+  "summary_from_event_log": {
+    "assumptions_challenged": 1,
+    "assumptions_confirmed_broken": 0,
+    "base_moved_notices": 0,
+    "claims_granted": 9,
+    "conflicts_prevented_verified": 0,
+    "denials": 0,
+    "false_alarms": 0,
+    "merges": 9,
+    "precision": null,
+    "races_decided": 0,
+    "replay_conflicts": 0,
+    "replay_merges": 0,
+    "reviews_requested": 4
+  },
+  "target": "live",
+  "tasks": [
+    {
+      "agent": "a06",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 1,
+      "waited_ms": 53,
+      "work_ms": 1696
+    },
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 2,
+      "waited_ms": 52,
+      "work_ms": 1993
+    },
+    {
+      "agent": "a04",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 3,
+      "waited_ms": 41466,
+      "work_ms": 1880
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 4,
+      "waited_ms": 52,
+      "work_ms": 1590
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 5,
+      "waited_ms": 60718,
+      "work_ms": 1759
+    },
+    {
+      "agent": "a05",
+      "denials": 0,
+      "note": "no grant in time",
+      "result": "timed_out",
+      "task": 6,
+      "waited_ms": 120002,
+      "work_ms": 0
+    },
+    {
+      "agent": "a06",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 7,
+      "waited_ms": 109910,
+      "work_ms": 1655
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 8,
+      "waited_ms": 42,
+      "work_ms": 1358
+    },
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 9,
+      "waited_ms": 50,
+      "work_ms": 1352
+    },
+    {
+      "agent": "a04",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 10,
+      "waited_ms": 40205,
+      "work_ms": 1909
+    }
+  ],
+  "wall_ms": 171542
+}
