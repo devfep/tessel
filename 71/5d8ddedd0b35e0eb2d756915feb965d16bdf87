@@ -1,0 +1,4 @@
+intent: the one-a-minute cert refetch limit counts failed attempts too; the served CSP is asserted on the route response (nonce from the page, no unsafe-inline/eval in any header)
+assumes: none
+rejected: asserting only the policy substring: a mutant adding unsafe-inline survived the reviewer's run, so the test now checks every response header and the nonce taken from the page
+evidence: typecheck, oxlint, oxfmt clean; pnpm test 648 passed (647 + 1); mutants killed: csp script-src, style-src, default-src, extra header, attempt time recorded only on success
