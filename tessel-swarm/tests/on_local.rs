@@ -66,8 +66,7 @@ fn config(agents: usize, policy: Policy, work_ms: u64) -> OnConfig {
 
 /// Runs `tasks` on a fresh local target. `hook` runs on a blocking thread `delay` after the first
 /// claim is granted and gets the trunk directory, so a test can change main while an agent works.
-async fn run_with_hook(tasks: &[Task], config: OnConfig, hook: Option<(Duration, Hook)>) -> Run {
-    let scratch = tempfile::tempdir().unwrap();
+async fn start_server(config: &OnConfig, scratch: &std::path::Path) -> LocalServer {
     let repo = ScratchRepo::parse("swarm-test").unwrap();
     let names = on::principals(config.agents, config.scripted_reviewer);
     let reviewers: Vec<String> = if config.scripted_reviewer {
@@ -76,16 +75,21 @@ async fn run_with_hook(tasks: &[Task], config: OnConfig, hook: Option<(Duration,
         Vec::new()
     };
     let base = demo::base_tree();
-    let server = LocalServer::start(LocalSetup {
+    LocalServer::start(LocalSetup {
         repo: &repo,
-        scratch: &scratch.path().join("server"),
+        scratch: &scratch.join("server"),
         base: &base,
         names: &names,
         reviewers: &reviewers,
         shadow_enabled: config.policy == Policy::Shadow,
     })
     .await
-    .unwrap();
+    .unwrap()
+}
+
+async fn run_with_hook(tasks: &[Task], config: OnConfig, hook: Option<(Duration, Hook)>) -> Run {
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path()).await;
     if let Some((after, hook)) = hook {
         let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone()
         else {
@@ -727,4 +731,31 @@ async fn waiting_is_the_time_from_the_claim_to_its_answer_only() {
         "the second agent queued for the first one's work: {waits:?}"
     );
     run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_whose_log_watcher_cannot_connect_fails_with_the_watchers_error() {
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let config = config(2, Policy::Shadow, 300);
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path()).await;
+    let mut endpoint = server.endpoint.clone();
+    endpoint.tokens.insert(
+        on::OBSERVER.to_string(),
+        tessel_swarm::endpoint::Token::new("not-a-valid-token".into()),
+    );
+    let Err(error) = on::run_on(&endpoint, &tasks, &scratch.path().join("agents"), &config).await
+    else {
+        unreachable!("a run whose watcher failed must not succeed");
+    };
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("the log watch could not reconnect"),
+        "the watcher's error leads: {message}"
+    );
+    assert!(
+        message.contains("the log watch stopped before"),
+        "the failure it caused is kept as context: {message}"
+    );
+    server.shutdown().await;
 }

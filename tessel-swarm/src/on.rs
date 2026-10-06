@@ -216,18 +216,18 @@ pub async fn run_on(
     }
     let wall_ms = millis(started);
     record_unrun(&ctx);
-    if config.policy == Policy::Shadow && failure.is_none() {
-        await_verification(&ctx).await?;
-    }
+    let verified = if config.policy == Policy::Shadow && failure.is_none() {
+        await_verification(&ctx).await
+    } else {
+        Ok(())
+    };
     let watched = settle_watcher(watcher).await;
     let _ = stop_reviewer.send(true);
     if let Some(reviewer) = reviewer {
         reviewer.await.context("the reviewer task panicked")??;
     }
-    if let Some(error) = failure {
-        return Err(error);
-    }
-    watched?;
+    let outcome = failure.map_or(verified, Err);
+    with_watcher_error(outcome, watched)?;
     let observer = endpoint.token_of(OBSERVER)?;
     let events = read_log(
         &endpoint.ws_url,
@@ -274,15 +274,28 @@ fn verification_settled(events: &[Event], accepted: &[ClaimId]) -> bool {
 
 /// Ends the shared watcher. One that already stopped (a seq gap, or no way to reconnect) has an
 /// error that is returned, because counts read from the log it left behind cannot be trusted.
+/// Awaiting after `abort` still yields the real result of a task that had already finished.
 async fn settle_watcher(watcher: Option<tokio::task::JoinHandle<Result<()>>>) -> Result<()> {
     let Some(watcher) = watcher else {
         return Ok(());
     };
-    if !watcher.is_finished() {
-        watcher.abort();
-        return Ok(());
+    watcher.abort();
+    match watcher.await {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(anyhow::Error::new(error).context("the log watcher panicked")),
     }
-    watcher.await.context("the log watcher panicked")?
+}
+
+/// The run's outcome with the watcher's error as its root cause. An agent or the final wait often
+/// fails only because the watcher died, so the watcher's error leads and the other one is kept as
+/// context.
+fn with_watcher_error(outcome: Result<()>, watched: Result<()>) -> Result<()> {
+    match (outcome, watched) {
+        (outcome, Ok(())) => outcome,
+        (Ok(()), Err(watch)) => Err(watch),
+        (Err(error), Err(watch)) => Err(watch.context(format!("{error:#}"))),
+    }
 }
 
 /// One connection that only follows the log: the run's single observer. It replays from seq 0
@@ -1115,6 +1128,139 @@ mod tests {
         }
         let error = settle_watcher(Some(watcher)).await.unwrap_err();
         assert!(format!("{error:#}").contains("gap"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn a_watcher_that_finishes_just_as_it_is_ended_still_reports_its_error() {
+        let watcher = tokio::spawn(async { anyhow::bail!("the event log has a gap") });
+        tokio::task::yield_now().await;
+        let error = settle_watcher(Some(watcher)).await.unwrap_err();
+        assert!(format!("{error:#}").contains("gap"), "{error:#}");
+    }
+
+    #[test]
+    fn the_watchers_error_leads_and_the_failure_it_caused_is_kept() {
+        let both = with_watcher_error(
+            Err(anyhow::anyhow!("the log watch stopped")),
+            Err(anyhow::anyhow!("the event log has a gap")),
+        )
+        .unwrap_err();
+        let message = format!("{both:#}");
+        assert!(message.contains("the log watch stopped"), "{message}");
+        assert!(message.ends_with("the event log has a gap"), "{message}");
+        let alone = with_watcher_error(Ok(()), Err(anyhow::anyhow!("gap"))).unwrap_err();
+        assert_eq!(format!("{alone:#}"), "gap");
+        let other = with_watcher_error(Err(anyhow::anyhow!("agent")), Ok(())).unwrap_err();
+        assert_eq!(format!("{other:#}"), "agent");
+        with_watcher_error(Ok(()), Ok(())).unwrap();
+    }
+
+    fn ctx_watching(
+        accepted: Vec<ClaimId>,
+        timeout: Duration,
+    ) -> (Ctx, tokio::sync::watch::Sender<Vec<Event>>) {
+        let (tx, rx) = tokio::sync::watch::channel(Vec::new());
+        let ctx = Ctx {
+            endpoint: Endpoint {
+                ws_url: String::new(),
+                tokens: std::collections::HashMap::new(),
+                remote: crate::endpoint::Remote::Local {
+                    trunk: PathBuf::new(),
+                    forks: PathBuf::new(),
+                },
+            },
+            queue: Mutex::new(VecDeque::new()),
+            results: Mutex::new(Vec::new()),
+            scratch: PathBuf::new(),
+            config: OnConfig {
+                agents: 1,
+                policy: Policy::Shadow,
+                work_ms: 0,
+                task_timeout: timeout,
+                trial_wait: timeout,
+                max_denials: 1,
+                scripted_reviewer: false,
+            },
+            log: Some(rx),
+            accepted_shadows: Mutex::new(accepted),
+        };
+        (ctx, tx)
+    }
+
+    #[tokio::test]
+    async fn an_accepted_claim_whose_submit_never_reaches_the_log_is_waited_for_until_the_timeout()
+    {
+        let timeout = Duration::from_millis(300);
+        let (ctx, _tx) = ctx_watching(vec![ClaimId(2)], timeout);
+        let started = Instant::now();
+        await_verification(&ctx).await.unwrap();
+        assert!(
+            started.elapsed() >= timeout,
+            "settled on a log without the submit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_watch_that_ended_before_an_accepted_submit_arrived_is_an_error() {
+        let (ctx, tx) = ctx_watching(vec![ClaimId(2)], Duration::from_secs(30));
+        drop(tx);
+        let error = await_verification(&ctx).await.unwrap_err();
+        assert!(error.to_string().contains("log watch stopped"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_log_holding_every_accepted_submit_settles_at_once() {
+        let (ctx, tx) = ctx_watching(vec![ClaimId(2)], Duration::from_secs(30));
+        tx.send_modify(|log| log.push(submitted(0, 2)));
+        let started = Instant::now();
+        await_verification(&ctx).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A coordinator that answers the first submit it reads with `Accepted`.
+    async fn accepting_coordinator() -> String {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let Ok(ClientMsg::Submit { req, claim, .. }) = serde_json::from_str(&text) else {
+                    continue;
+                };
+                let accepted = ServerMsg::Accepted {
+                    req,
+                    claim,
+                    queue_position: 0,
+                };
+                let reply = serde_json::to_string(&accepted).unwrap();
+                socket.send(Message::text(reply)).await.unwrap();
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_shadow_submit_the_coordinator_accepted_is_owed_to_the_final_wait() {
+        let url = accepting_coordinator().await;
+        let token = crate::endpoint::Token::new("t".into());
+        let mut conn = Conn::open(&url, &token).await.unwrap();
+        let (ctx, _tx) = ctx_watching(Vec::new(), Duration::from_millis(100));
+        let held = Held {
+            claim: ClaimId(7),
+            fence: Fence(1),
+            scopes: Vec::new(),
+            shadow: true,
+        };
+        let pushed = Pushed {
+            sha: "c".repeat(40),
+            touched: Vec::new(),
+            granted: Instant::now(),
+        };
+        finish_shadow(&ctx, &mut conn, &held, pushed).await.unwrap();
+        assert_eq!(*lock(&ctx.accepted_shadows), [ClaimId(7)]);
     }
 
     #[tokio::test]
