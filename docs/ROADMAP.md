@@ -59,10 +59,18 @@ run). A small sample: it shows the mechanism live, not a rate.
   `tessel-dogfood--lane-swarm-observer`; owns `tessel-swarm/`.
 - `impl-shadow-gc` (Sonnet), `.claude/worktrees/shadow-gc`, fork `tessel-dogfood--lane-shadow-gc`;
   owns `src/coordinator*`, `src/shell.rs`, `src/runtime.rs`.
-**Open question for Felix (DASH-1, REVIEW-UI):** how a browser signs in. Recommended: Cloudflare
-Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths, Felix's email
-mapped to reviewer `felix`; explained to Felix at 23:00, no decision yet. Build the read-only views
-first; the sign-in plugs in last.
+**Decided (Felix delegated it, 23:05):** the dashboard and review screen sign in through
+Cloudflare Access (Zero Trust) in front of the steward's `/dashboard` and `/review` paths; the
+steward verifies the `Cf-Access-Jwt-Assertion` JWT (team certs, the application's AUD tag) and
+maps Felix's email to reviewer `felix`. Until Access is on, those paths answer "sign-in not
+configured" (fail closed). Order: DASH-1 after SHADOW-GC lands (DASH-1 needs a read-only
+`Summary` route in `src/runtime.rs`, which SHADOW-GC holds), then REVIEW-UI.
+**Access setup for Felix at his desk (about 5 minutes; the session cannot do it):** in the
+Cloudflare dashboard, Zero Trust → (first time: pick a team name and the Free plan; it may ask for
+a payment method) → Access → Applications → Add → Self-hosted: name `tessel-dashboard`, domain
+`tessel-steward.devfep.workers.dev`, paths `dashboard` and `review`; policy "Allow" with the
+include rule Emails = devfep@gmail.com; login method One-time PIN. Then send the orchestrator the
+team domain (`<team>.cloudflareaccess.com`) and the application's AUD tag (Overview tab).
 **Load note:** the load reached about 34 at 20:01 and about 73 at 20:41, mostly Spotlight
 (`mds_stores`) on gate copies' `target/` dirs plus the iOS simulators; gate copies are trashed
 right after each run.
