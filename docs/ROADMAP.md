@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-05 19:26 EDT.
+**As of:** 2026-10-05 20:08 EDT.
 **Orchestrator:** the Claude Code session in `repos/tessel` (resumed 15:30 after the context clear).
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
@@ -26,7 +26,7 @@ rejections, 5 queued waits and 4 script approvals over 60 events in 172 s; task 
 queue ahead did not clear. `off` (local replay, labelled local) landed 7 with 3 rejected (2
 textual conflicts, 1 broke the tests) in 5 s. For the Oct 10 A/B runs, set the wait timeout to fit
 live steward latency, and report this run's timeout as it happened.
-**Tip:** the Artifacts trunk `tessel-dogfood` is at `720094e` (SHADOW-1), mirrored to GitHub
+**Tip:** the Artifacts trunk `tessel-dogfood` is at `28e246b` (CLI-LIVENESS), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
 pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
 one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
@@ -50,11 +50,12 @@ swarm policy that exercises it live is SHADOW-2.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents** (dispatched 19:25, both from the trunk `720094e`, both stop for review before pushing):
-- `impl-shadow-2` (Sonnet), `.claude/worktrees/shadow-2`, fork `tessel-dogfood--lane-shadow-2`;
-  owns `tessel-swarm/` and `[env.swarm.vars]` in `wrangler.toml`.
-- `impl-cli-liveness` (Sonnet), `.claude/worktrees/cli-liveness`, fork
-  `tessel-dogfood--lane-cli-liveness`; owns `tessel-cli/`.
+**Agents:** `impl-shadow-2` (Sonnet), `.claude/worktrees/shadow-2` (cut from `720094e`), fork
+`tessel-dogfood--lane-shadow-2`; owns `tessel-swarm/` and `[env.swarm.vars]` in `wrangler.toml`.
+On fix pass 2 (second watch refused by the runtime; order-based tests). Before submitting it must
+merge the trunk `28e246b` (CLI-LIVENESS, disjoint files). CLI-LIVENESS closed 20:07.
+**Load note:** at 20:01 the load hit about 34, mostly Spotlight (`mds_stores`) indexing gate
+copies' `target/` dirs; gate copies are trashed right after each run.
 **Merge queue:** empty.
 **Background jobs:** none. Docker Desktop stopped.
 
@@ -334,18 +335,25 @@ blocks it); write `HEAD:refs/heads/main` or push in a separate command.
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
   trunk on every merge outcome. Design it before the next admin merge.
-- [ ] **CLI-LIVENESS** — found while dogfooding SHADOW-1: claim 35 expired while the lane's daemon
-  was running. Heartbeats get no reply (`src/coordinator.rs:824`); `send_heartbeat`
-  (`tessel-cli/src/daemon.rs:426-436`) pushes the local expiry forward once the frame is queued,
-  and the socket task never pings (`daemon.rs:1855` ignores ping/pong), so a half-open connection
-  heartbeats into nothing while the coordinator expires the claim and the daemon never notices.
-  Fix without a protocol change: send a WebSocket ping each tick; no inbound frame within about
-  lease/2 means a dead link: close, reconnect, and move the local expiry only on proof of delivery.
-  Check the lane's daemon log for a connected/closed gap around the expiry first.
+- [x] **CLI-LIVENESS** — found while dogfooding SHADOW-1: claim 35 expired while the lane's daemon
+  was running. Heartbeats get no reply; the daemon moved the local expiry when a heartbeat was
+  queued and never pinged, so a half-open link heartbeat into nothing. Now: a ping carrying the
+  heartbeat's send time on each tick; any inbound frame clears the silence deadline (lease/2,
+  else dead link → reconnect); the local expiry moves only on a pong echoing an outstanding send
+  time, anchored at the send time (never later than the coordinator's).
+  CLOSED 2026-10-05 at trunk `28e246b` (review "Yes" after one fix pass, which closed a fail-open
+  of up to lease/3: any server frame had counted as proof). Through the steward: claim 42 (one
+  `uncovered` refusal for missing `edit-signature`, then amended), held for review, approved by
+  `orchestrator` (event 249) after its gate on an archived `28e246b`: 772 passed. Live: the lane's
+  daemon on the new binary stayed online and renewed against the deployed coordinator, so the
+  deployed side echoes ping payloads. The daemon logs for claim 35 were gone (worktree removed).
 - [ ] **CLI-CONNECT-TIMEOUT** — from the CLI-LIVENESS review: heartbeats run only once the daemon
   is online, so a link that goes half-open after the WebSocket handshake but before `Welcome` sits
   in Connecting with no timeout (fails closed: claims lapse locally). Bound the wait for `Welcome`
-  and reconnect with the existing backoff.
+  and reconnect with the existing backoff. Also (CLI-LIVENESS re-review): a link that delivers
+  server frames but never gets heartbeats through is never declared dead while frames keep coming;
+  claims lapse locally (no fail-open), but it never reconnects. Set the silence deadline from the
+  oldest outstanding ping and clear it only on a matching pong; add a test (mutant L survives).
 - [ ] **SHADOW-GC** — from the SHADOW-1 review: submitted shadow claims are never removed (true
   before SHADOW-1). They hold no locks, leases or queue positions, but state grows by one claim per
   shadow submit in experiment runs, and a shadow blocked only by a race can never be verified.
