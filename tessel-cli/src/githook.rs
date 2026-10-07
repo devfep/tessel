@@ -401,8 +401,8 @@ fn chain_existing(dir: &Path, hook: GitHook) -> anyhow::Result<String> {
     ))
 }
 
-/// The hook file. It runs the binary found on `PATH`, else the one that installed it. When that
-/// is gone, a worktree with Tessel state fails closed and any other worktree of the repository
+/// The hook file. It runs the binary that installed it, else one found on `PATH`. When neither
+/// exists, a worktree with Tessel state fails closed and any other worktree of the repository
 /// passes after running the other tool's hook, so deleting the binary (a lane's `target/`, say)
 /// never breaks commits elsewhere. `exec` hands git's stdin on.
 fn shim_text(hook: GitHook, exe: &str) -> String {
@@ -410,7 +410,7 @@ fn shim_text(hook: GitHook, exe: &str) -> String {
     format!(
         "#!/bin/sh\n\
          {SHIM_MARKER}\n\
-         t=$(command -v tessel) || t={exe}\n\
+         t={exe}; [ -x \"$t\" ] || t=$(command -v tessel) || t=\n\
          [ -x \"$t\" ] && exec \"$t\" hook git {name} \"$@\"\n\
          [ -e \"$(git rev-parse --show-toplevel)/.tessel/state.json\" ] && {{ echo \"tessel: \
          binary missing; reinstall or use --no-verify\" >&2; exit 1; }}\n\

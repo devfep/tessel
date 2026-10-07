@@ -581,3 +581,71 @@ async fn concluding_a_merge_is_not_checked_by_pre_commit() -> Result<()> {
     );
     Ok(())
 }
+
+/// A directory holding a `tessel` that always exits 2, like a stale install.
+fn stub_tessel_dir() -> Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    executable_script(&dir.path().join("tessel"), "#!/bin/sh\nexit 2\n")?;
+    Ok(dir)
+}
+
+fn git_with_stub_first(dir: &Path, stub: &Path, args: &[&str]) -> Result<Done> {
+    let mut paths = vec![stub.to_path_buf()];
+    paths.extend(std::env::split_paths(&path_without_tessel()?));
+    Ok(Done::from(
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("PATH", std::env::join_paths(paths)?)
+            .output()?,
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_recorded_binary_is_preferred_to_one_on_path() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    install(&a1)?;
+    let stub = stub_tessel_dir()?;
+    write(&a1, "src/c.rs", "pub fn c() {}\n")?;
+    git(&a1.root(), &["add", "src/c.rs"])?;
+    let done = git_with_stub_first(&a1.root(), stub.path(), &["commit", "-q", "-m", "c"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_the_recorded_binary_the_one_on_path_is_used_whatever_it_says() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    install_then_delete_the_binary(&a1)?;
+    let stub = stub_tessel_dir()?;
+    write(&a1, "src/c.rs", "pub fn c() {}\n")?;
+    git(&a1.root(), &["add", "src/c.rs"])?;
+    let done = git_with_stub_first(&a1.root(), stub.path(), &["commit", "-q", "-m", "c"])?;
+    assert_ne!(
+        done.code, 0,
+        "the stub on PATH is run and its exit 2 stops the commit"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installing_from_a_build_directory_warns() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    let root = tempfile::tempdir()?;
+    let mut outputs = Vec::new();
+    for dir in ["target", "bin"] {
+        let copy = root.path().join(dir).join("tessel");
+        std::fs::create_dir_all(copy.parent().context("no parent")?)?;
+        std::fs::copy(env!("CARGO_BIN_EXE_tessel"), &copy)?;
+        let done = Command::new(&copy)
+            .args(["hook", "install", "--git"])
+            .current_dir(a1.root())
+            .output()?;
+        assert!(done.status.success(), "{done:?}");
+        outputs.push(String::from_utf8_lossy(&done.stdout).into_owned());
+    }
+    assert!(outputs[0].contains("warning:"), "{}", outputs[0]);
+    assert!(!outputs[1].contains("warning:"), "{}", outputs[1]);
+    Ok(())
+}
