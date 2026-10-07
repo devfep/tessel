@@ -28,7 +28,7 @@ use crate::plan::escalate;
 use crate::reconcile::{self, Local, Plan, ServerClaim};
 use crate::rpc::{self, ClaimOutcome, Reply, Request, SubmitOutcome};
 use crate::state::{append_notice, Connection, HeldClaim, Notice, NoticeKind, QueuedWait, State};
-use crate::worktree::Worktree;
+use crate::worktree::{Worktree, WorktreeError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FIRST_BACKOFF: Duration = Duration::from_millis(100);
@@ -356,16 +356,13 @@ impl Daemon {
         loop {
             let online = self.is_online();
             let reconnect_at = self.reconnect_at;
-            // Biased: after a stall the timers are due together with the pongs that renew the
-            // claims, and housekeeping must not judge a lease before those are applied.
             tokio::select! {
-                biased;
-                Some(incoming) = in_rx.recv() => self.on_incoming(incoming),
                 Some(command) = cmd_rx.recv() => {
                     if let Flow::Exit = self.on_command(command).await {
                         return Ok(());
                     }
                 }
+                Some(incoming) = in_rx.recv() => self.on_incoming(incoming).await,
                 () = tokio::time::sleep_until(self.next_heartbeat), if online => {
                     self.send_heartbeat();
                 }
@@ -388,7 +385,7 @@ impl Daemon {
         match open_socket(&self.config).await {
             Ok(socket) => {
                 self.generation += 1;
-                self.start_conn(socket);
+                self.start_conn(socket).await;
                 Ok(())
             }
             Err(ConnectFailure::Fatal(message)) if !self.ever_online => bail!("{message}"),
@@ -402,7 +399,8 @@ impl Daemon {
         }
     }
 
-    fn start_conn(&mut self, socket: Socket) {
+    async fn start_conn(&mut self, socket: Socket) {
+        let head = self.read_head().await;
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(socket_task(
             socket,
@@ -410,7 +408,7 @@ impl Daemon {
             self.in_tx.clone(),
             self.generation,
         ));
-        match self.worktree.head() {
+        match head {
             Ok(head) => self.state.base = head,
             Err(e) => self.log(&format!(
                 "cannot read HEAD, keeping {}: {e}",
@@ -425,6 +423,19 @@ impl Daemon {
         let _ = out_tx.send(Outgoing::Msg(hello));
         self.conn = Some(Conn { out: out_tx, task });
         self.log("connected; hello sent");
+    }
+
+    /// `git rev-parse HEAD`, run on a blocking thread so the loop and the socket task keep
+    /// running while git is slow.
+    async fn read_head(&self) -> Result<String, WorktreeError> {
+        let worktree = self.worktree.clone();
+        match tokio::task::spawn_blocking(move || worktree.head()).await {
+            Ok(head) => head,
+            Err(e) => Err(WorktreeError::Git {
+                args: "rev-parse HEAD".into(),
+                message: e.to_string(),
+            }),
+        }
     }
 
     fn schedule_reconnect(&mut self) {
@@ -482,18 +493,18 @@ impl Daemon {
             return Flow::Exit;
         }
         let now = now_ms();
+        // While the link is up the coordinator renews every claim on each heartbeat and says so
+        // when a lease ends (`LeaseExpired`), so a local expiry would only drop a live claim.
+        let online = self.is_online();
         let (live, lapsed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.state.claims)
             .into_iter()
-            .partition(|held| held.submitted || held.expires_at_ms > now);
+            .partition(|held| online || held.submitted || held.expires_at_ms > now);
         self.state.claims = live;
         for held in lapsed {
             self.log(&format!(
                 "claim {} lapsed locally: expiry {} now {now} last pong for heartbeat {:?} \
-                 online {} tick late {tick_late_ms} ms",
-                held.claim.0,
-                held.expires_at_ms,
-                self.last_pong_sent_ms,
-                self.is_online()
+                 tick late {tick_late_ms} ms",
+                held.claim.0, held.expires_at_ms, self.last_pong_sent_ms
             ));
             self.notify(
                 NoticeKind::LeaseExpired,
@@ -511,7 +522,7 @@ impl Daemon {
 
     // ---------- messages from the coordinator ----------
 
-    fn on_incoming(&mut self, incoming: Incoming) {
+    async fn on_incoming(&mut self, incoming: Incoming) {
         match incoming {
             Incoming::Msg { generation, msg } if generation == self.generation => {
                 self.on_server_msg(msg);
@@ -522,7 +533,7 @@ impl Daemon {
                 self.drain_deferred();
             }
             Incoming::Snapshot { generation, log } if generation == self.generation => {
-                self.on_snapshot(log);
+                self.on_snapshot(log).await;
             }
             Incoming::HeartbeatAnswered {
                 generation,
@@ -795,7 +806,7 @@ impl Daemon {
 
     /// Compares this agent's claims in the coordinator's log with the local ones, and repairs
     /// the difference. The rules are in `reconcile`.
-    fn on_snapshot(&mut self, log: Result<LogRead, String>) {
+    async fn on_snapshot(&mut self, log: Result<LogRead, String>) {
         let lost = std::mem::take(&mut self.lost_requests);
         let lost_releases = std::mem::take(&mut self.lost_releases);
         let LogRead { events, complete } = match log {
@@ -818,7 +829,7 @@ impl Daemon {
             }
         };
         let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
-        self.advance_base_from_log(&events);
+        self.advance_base_from_log(&events).await;
         self.log(&format!(
             "event log read: {} events ({}), {} live claims for this agent",
             events.len(),
@@ -856,13 +867,13 @@ impl Daemon {
     /// Moves the diff base forward to the newest of this agent's submissions that the log shows
     /// merged, for a `Merged` that arrived while the daemon was offline or stopped. A submitted
     /// claim can only end by merging, and only a commit that descends from the base moves it.
-    fn advance_base_from_log(&mut self, events: &[Event]) {
+    async fn advance_base_from_log(&mut self, events: &[Event]) {
         let me = AgentId(self.config.agent.clone());
         let root = self.worktree.root.clone();
         let mut moved = false;
         for commit in reconcile::landed_commits(&me, events) {
             let ahead = commit != self.state.start_base
-                && crate::submit::is_ancestor(&root, &self.state.start_base, &commit);
+                && is_ancestor_off_loop(&root, &self.state.start_base, &commit).await;
             if ahead {
                 self.state.start_base = commit;
                 moved = true;
@@ -1713,6 +1724,19 @@ async fn sleep_until_some(deadline: Option<Instant>) {
     }
 }
 
+/// `submit::is_ancestor` on a blocking thread. A git that cannot run, or a task that fails,
+/// answers `false`, as `is_ancestor` does for a commit it cannot find.
+async fn is_ancestor_off_loop(root: &std::path::Path, ancestor: &str, descendant: &str) -> bool {
+    let (root, ancestor, descendant) = (
+        root.to_path_buf(),
+        ancestor.to_string(),
+        descendant.to_string(),
+    );
+    tokio::task::spawn_blocking(move || crate::submit::is_ancestor(&root, &ancestor, &descendant))
+        .await
+        .unwrap_or(false)
+}
+
 // ---------- WebSocket ----------
 
 pub(crate) async fn open_socket(config: &Config) -> Result<Socket, ConnectFailure> {
@@ -2042,7 +2066,6 @@ async fn dispatch(request: Request, cmd_tx: &mpsc::Sender<Command>) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::FutureExt;
     use tessel_coordinator::protocol::Fence;
 
     fn held(claim: u64) -> HeldClaim {
@@ -2058,10 +2081,6 @@ mod tests {
     }
 
     fn daemon_in(dir: &std::path::Path) -> Daemon {
-        daemon_with_inbox(dir).0
-    }
-
-    fn daemon_with_inbox(dir: &std::path::Path) -> (Daemon, mpsc::UnboundedReceiver<Incoming>) {
         let init = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -2095,86 +2114,137 @@ mod tests {
             queued: None,
             updated_at_ms: 0,
         };
-        let (in_tx, in_rx) = mpsc::unbounded_channel();
-        (Daemon::new(worktree, config, state, in_tx), in_rx)
+        let (in_tx, _in_rx) = mpsc::unbounded_channel();
+        Daemon::new(worktree, config, state, in_tx)
     }
 
-    /// An online daemon whose claim 1 ran out by the local clock and whose housekeeping tick is
-    /// already due: what the loop finds when it was not scheduled for a while.
-    fn daemon_that_woke_late(dir: &std::path::Path) -> (Daemon, mpsc::UnboundedReceiver<Incoming>) {
-        let (mut daemon, in_rx) = daemon_with_inbox(dir);
-        daemon.state.lease_ms = Some(60_000);
-        daemon.state.claims = vec![HeldClaim {
-            expires_at_ms: now_ms().saturating_sub(1),
-            ..held(1)
-        }];
-        daemon.reconnect_at = None;
+    fn go_online(daemon: &mut Daemon) {
         let (out, _out_rx) = mpsc::unbounded_channel();
         daemon.conn = Some(Conn {
             out,
             task: tokio::spawn(async {}),
         });
-        daemon.next_housekeeping = Instant::now() - Duration::from_millis(10);
-        (daemon, in_rx)
     }
 
-    #[tokio::test]
-    async fn a_pong_already_received_renews_a_claim_before_housekeeping_judges_it() {
-        // The loop picks among ready branches, so one trial passes by luck half the time.
-        for trial in 0..24 {
-            let dir = tempfile::tempdir().unwrap();
-            let (mut daemon, in_rx) = daemon_that_woke_late(dir.path());
-            let pong = Incoming::HeartbeatAnswered {
-                generation: daemon.generation,
-                sent_ms: now_ms(),
-            };
-            let in_tx = daemon.in_tx.clone();
-            let (_cmd_tx, cmd_rx) = mpsc::channel(1);
-            {
-                let mut turn = Box::pin(daemon.main_loop(cmd_rx, in_rx));
-                // The first poll parks the loop on its due timers; the timers then fire while the
-                // pong arrives, so both are ready at the next poll.
-                assert!(turn.as_mut().now_or_never().is_none());
-                in_tx.send(pong).unwrap();
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                assert!(turn.as_mut().now_or_never().is_none());
-            }
-            assert_eq!(
-                daemon.state.claims.len(),
-                1,
-                "trial {trial}: claim dropped though its pong was waiting"
-            );
+    fn lapsed_claim(claim: u64) -> HeldClaim {
+        HeldClaim {
+            expires_at_ms: 5,
+            ..held(claim)
         }
     }
 
-    #[test]
-    fn a_local_lapse_is_logged_with_the_times_that_explain_it() {
+    fn daemon_log(daemon: &Daemon) -> String {
+        std::fs::read_to_string(daemon.worktree.log_path()).unwrap_or_default()
+    }
+
+    fn inbox(daemon: &Daemon) -> String {
+        std::fs::read_to_string(daemon.worktree.inbox_path()).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn an_online_daemon_keeps_a_claim_past_its_local_expiry() {
         let dir = tempfile::tempdir().unwrap();
         let mut daemon = daemon_in(dir.path());
-        daemon.state.claims = vec![HeldClaim {
-            expires_at_ms: 5,
-            ..held(7)
-        }];
-        daemon.last_pong_sent_ms = Some(4);
+        go_online(&mut daemon);
+        daemon.state.claims = vec![lapsed_claim(7)];
         assert!(matches!(daemon.housekeeping(), Flow::Continue));
-        assert!(daemon.state.claims.is_empty());
-        let log = std::fs::read_to_string(daemon.worktree.log_path()).unwrap();
-        assert!(
-            log.contains("claim 7 lapsed locally: expiry 5 now")
-                && log.contains("last pong for heartbeat Some(4) online false tick late"),
-            "{log}"
-        );
+        assert_eq!(daemon.state.claims.len(), 1);
+        assert!(!daemon_log(&daemon).contains("lapsed"));
+        assert!(!inbox(&daemon).contains("lease_expired"));
+    }
+
+    #[tokio::test]
+    async fn the_coordinators_lease_expiry_drops_a_claim_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        go_online(&mut daemon);
+        daemon.state.claims = vec![held(7), held(8)];
+        daemon.on_server_msg(ServerMsg::LeaseExpired {
+            claim: ClaimId(7),
+            fence: Fence(7),
+        });
+        let kept: Vec<u64> = daemon.state.claims.iter().map(|h| h.claim.0).collect();
+        assert_eq!(kept, vec![8]);
+        assert!(inbox(&daemon).contains("lease_expired"));
     }
 
     #[test]
-    fn a_slow_pong_is_logged_and_a_prompt_one_is_not() {
+    fn an_offline_daemon_lapses_a_claim_past_its_local_expiry() {
         let dir = tempfile::tempdir().unwrap();
         let mut daemon = daemon_in(dir.path());
-        daemon.on_heartbeat_answered(now_ms());
-        assert!(std::fs::read_to_string(daemon.worktree.log_path()).is_err());
-        daemon.on_heartbeat_answered(now_ms() - 60_000);
-        let log = std::fs::read_to_string(daemon.worktree.log_path()).unwrap();
-        assert!(log.contains("slow pong: heartbeat"), "{log}");
+        daemon.state.claims = vec![lapsed_claim(7), held(8)];
+        assert!(matches!(daemon.housekeeping(), Flow::Continue));
+        let kept: Vec<u64> = daemon.state.claims.iter().map(|h| h.claim.0).collect();
+        assert_eq!(kept, vec![8]);
+        assert!(inbox(&daemon).contains("lease_expired"));
+    }
+
+    #[test]
+    fn a_lapse_is_logged_with_the_pong_and_tick_times_that_explain_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.state.lease_ms = Some(30_000);
+        let sent_ms = now_ms() - 9_000;
+        daemon.on_heartbeat_answered(sent_ms);
+        assert_eq!(daemon.last_pong_sent_ms, Some(sent_ms));
+        assert!(
+            !daemon_log(&daemon).contains("slow pong"),
+            "a prompt pong is not logged"
+        );
+        daemon.state.claims = vec![lapsed_claim(7)];
+        daemon.next_housekeeping = Instant::now() - Duration::from_millis(2_000);
+        daemon.housekeeping();
+        let log = daemon_log(&daemon);
+        let (_, after) = log
+            .split_once("claim 7 lapsed locally: expiry 5 now ")
+            .unwrap();
+        assert!(
+            after.contains(&format!("last pong for heartbeat Some({sent_ms})")),
+            "{log}"
+        );
+        let (_, late) = after.split_once("tick late ").unwrap();
+        let late_ms: u64 = late.split_whitespace().next().unwrap().parse().unwrap();
+        assert!((2_000..4_000).contains(&late_ms), "{log}");
+    }
+
+    #[test]
+    fn a_pong_slower_than_a_heartbeat_interval_is_logged_with_its_delay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.on_heartbeat_answered(now_ms() - 11_000);
+        let log = daemon_log(&daemon);
+        let (_, after) = log.split_once("answered after ").unwrap();
+        let rtt: u64 = after.split_whitespace().next().unwrap().parse().unwrap();
+        assert!((11_000..13_000).contains(&rtt), "{log}");
+    }
+
+    fn commit_in(dir: &std::path::Path, message: &str) -> String {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["commit", "-q", "--allow-empty", "-m", message]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    #[tokio::test]
+    async fn git_reads_made_off_the_loop_give_the_answers_the_direct_calls_give() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = daemon_in(dir.path());
+        let first = commit_in(dir.path(), "one");
+        let second = commit_in(dir.path(), "two");
+        assert_eq!(daemon.read_head().await.unwrap(), second);
+        let root = dir.path();
+        assert!(is_ancestor_off_loop(root, &first, &second).await);
+        assert!(!is_ancestor_off_loop(root, &second, &first).await);
+        assert!(!is_ancestor_off_loop(root, "not-a-commit", &second).await);
     }
 
     #[test]
