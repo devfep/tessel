@@ -5,16 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-07 09:50 EDT.
+**As of:** 2026-10-07 11:58 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**Trunk:** `e648ad5` (DEMO-TS + SWARM-REVIEWER-ERR merged 09:4x; mirrored);
-`.claude/worktrees/deploy` is at `e648ad5`. Demo repo `swarm-demo` created live (see DEMO-TS).
-**In flight:** CLI-CONNECT-TIMEOUT (`lane-connect-timeout`, worktree
-`.claude/worktrees/connect-timeout`, fork `tessel-dogfood--lane-connect-timeout`, claim 66): Opus
-fixes applied (`791a7cd`), orchestrator read `be8788c`; PUSHED to its fork at `be8788c`; its
-`tessel submit` was REFUSED by the permission classifier ("Remote Repoint"), so WAITING ON FELIX
-to run the submit from the worktree (command in the 13:04Z handoff). Its base is `b446bf3`; the
-steward rebases over `e648ad5` (different files). Then gate + approve as orchestrator.
+**Trunk:** `bfcf625` (CLI-CONNECT-TIMEOUT merged; mirrored); `.claude/worktrees/deploy` is at
+`bfcf625`. Demo repo `swarm-demo` created live (see DEMO-TS).
+**In flight:** nothing. No lanes, reviews or background jobs; only the deploy worktree remains.
+Open tasks: REVIEW-UI (signed-in check by Felix), SWARM-FLAKE-SHADOW, GATE-PATH (process; done in
+practice for the last two gates), then the Oct 10 A/B runs and the milestone pull request.
+A lane's `tessel submit` can be refused by the classifier ("Remote Repoint"); Felix ran one.
 **Steward** `0f01d3fb` (REVIEW-UI live behind Access); coordinators `8d66fe32` / swarm
 `7b7ae508`. Felix to open `/review/tessel-dogfood` signed in; REVIEW-UI's box stays open until
 then. GATE-PATH: build the curl-free `PATH` in bash (zsh does not split `$PATH` on IFS).
@@ -603,13 +601,23 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `orchestrator` (event 249) after its gate on an archived `28e246b`: 772 passed. Live: the lane's
   daemon on the new binary stayed online and renewed against the deployed coordinator, so the
   deployed side echoes ping payloads. The daemon logs for claim 35 were gone (worktree removed).
-- [ ] **CLI-CONNECT-TIMEOUT** — from the CLI-LIVENESS review: heartbeats run only once the daemon
+- [x] **CLI-CONNECT-TIMEOUT** — from the CLI-LIVENESS review: heartbeats run only once the daemon
   is online, so a link that goes half-open after the WebSocket handshake but before `Welcome` sits
   in Connecting with no timeout (fails closed: claims lapse locally). Bound the wait for `Welcome`
   and reconnect with the existing backoff. Also (CLI-LIVENESS re-review): a link that delivers
   server frames but never gets heartbeats through is never declared dead while frames keep coming;
   claims lapse locally (no fail-open), but it never reconnects. Set the silence deadline from the
   oldest outstanding ping and clear it only on a matching pong; add a test (mutant L survives).
+  CLOSED 2026-10-07 at trunk `bfcf625` (review "With fixes" twice, no code bugs: a flaky 600 ms
+  healthy-link test, untested newer-pong and backoff behaviour, wall-clock ordering, and a blocked
+  write that could outlast the silence deadline). Now: `WELCOME_LIMIT` 15 s then reconnect with
+  backoff; silence from the oldest unanswered ping, cleared only by a pong that echoes it (and
+  every older one, by position); socket writes and the final close bounded by the earlier of the
+  silence deadline and 15 s. Felix ran the submit (the classifier refused the lane's
+  `tessel submit` as "Remote Repoint"); held (private `Daemon`/`Probes` signatures); gate on
+  `be8788c`: workspace 877 with `curl` removed from `PATH` at load 55, clippy 0; approved claim
+  66; merged patch-id equals the gated one (rebased over `e648ad5`). Not exercised: a real
+  half-open link or full send buffer. No deploy (CLI only).
 - [x] **SHADOW-GC** — from the SHADOW-1 review: submitted shadow claims are never removed (true
   before SHADOW-1). They hold no locks, leases or queue positions, but state grows by one claim per
   shadow submit in experiment runs, and a shadow blocked only by a race can never be verified.
