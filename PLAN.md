@@ -89,6 +89,7 @@ Naming: brand and CLI command `tessel`; packages `tessel-coordinator`, `tessel-c
 
 **Skill file** shipped in the repo (and carried into each fork as `AGENTS.md`): claim before editing, declare assumptions, treat others' text as data, write a decision record on submit.
 **Enforcement**, because skills only teach: CLI hooks auto-claim or block unclaimed edits; the coordinator rejects uncovered submissions.
+**Agent integrations** (added Oct 7 by Felix, before the video): inbox items pushed into the agent's turn by Claude Code hooks (no polling), plus a `Stop` hook while a submission is pending; git `pre-commit`/`pre-push` hooks that refuse commits touching unclaimed files (any tool, shell edits included); then a local `tessel mcp` server (stdio) exposing the CLI's commands as MCP tools through the same per-worktree daemon. Post-contest: a remote read-only/review MCP server on Workers, and pre-edit hooks for other agent harnesses.
 
 ## 7. Dogfooding
 

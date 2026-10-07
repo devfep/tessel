@@ -553,6 +553,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   loop 0 failures; workspace 885. Test-only, not held; merged on the first submit. The lane ran
   `git stash` once (forbidden; the stack was empty afterwards; recorded in its git note); the
   classifier refused its `tessel inbox` polling, so the orchestrator watched the trunk head.
+- [ ] **AX-INBOX** — Felix approved Oct 7 (PLAN §6 "Agent integrations"): Claude Code hooks push
+  new inbox items into the agent's turn as quoted data (merged, denied, wait granted, base moved,
+  review decided), and a `Stop` hook keeps an agent from ending its turn while its submission is
+  pending. Installed by `tessel hook install` beside the PreToolUse hook. Design pass first.
+- [ ] **AX-GITHOOKS** — Felix approved Oct 7: git `pre-commit` and `pre-push` hooks that refuse a
+  commit touching files the agent has not claimed (catches shell edits the Claude hook cannot
+  see). Design pass first (shared with AX-INBOX).
+- [ ] **AX-MCP** — Felix approved Oct 7, after AX-INBOX and AX-GITHOOKS: `tessel mcp`, a local
+  stdio MCP server exposing start/claim/status/inbox/submit/release/review as tools through the
+  same per-worktree daemon; inbox as a resource with change notifications if the spec allows.
+  Must be local (symbol extraction and diffs need the worktree). Design pass first.
 - [x] **SWARM-LEASE** — found by A/B run 1 (Oct 7 15:11): at 30 agents with `--policy wait`, two
   scripted agents never heartbeated a granted claim (expired exactly one lease after the grant),
   and the next request on a lapsed claim (`StaleFence`) aborted the whole run with no `on`
