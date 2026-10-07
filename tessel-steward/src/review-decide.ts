@@ -53,9 +53,14 @@ async function nextSeq(env: LinkEnv, repo: string, agent: string): Promise<numbe
 /** Reads one coordinator frame and returns the outcome it settles, if any. */
 function settle(
   message: Record<string, unknown>,
-  decision: { agent: string; claim: number; fromSeq: number },
+  decision: { agent: string; claim: number; fromSeq: number; welcomed: boolean },
 ): DecisionOutcome | undefined {
   if (message["type"] === "error") {
+    // Only an error that answers the Review, or one before the Review was sent, is a refusal.
+    // Any other error says nothing about whether the decision was logged, so it is not reported.
+    if (decision.welcomed && message["req"] !== REVIEW_REQ) {
+      return undefined;
+    }
     return {
       outcome: "refused",
       code: String(message["code"]),
@@ -86,6 +91,7 @@ function converse(
 ): Promise<DecisionOutcome> {
   return new Promise((resolve) => {
     let done = false;
+    let welcomed = false;
     const finish = (outcome: DecisionOutcome): void => {
       if (!done) {
         done = true;
@@ -105,11 +111,12 @@ function converse(
         return;
       }
       if (message["type"] === "welcome") {
+        welcomed = true;
         socket.send(JSON.stringify({ type: "watch", from_seq: fromSeq }));
         socket.send(JSON.stringify({ type: "review", req: REVIEW_REQ, ...request }));
         return;
       }
-      const outcome = settle(message, { agent, claim: request.claim, fromSeq });
+      const outcome = settle(message, { agent, claim: request.claim, fromSeq, welcomed });
       if (outcome !== undefined) {
         finish(outcome);
       }
@@ -126,6 +133,10 @@ function converse(
  * Sends one `Review` for `request.claim` as `agent` over a short-lived coordinator socket, then
  * waits up to `waitMs` for the coordinator's answer: its error, or the `review_decided` event in
  * its log. The identity token is signed here and never leaves the Worker.
+ *
+ * Each decision opens a socket that says `Hello`, so the coordinator logs one `agent_connected`
+ * for the reviewer agent per decision. Closing the socket withdraws that agent's queued `Wait`
+ * requests only when the agent has no other socket open.
  *
  * @param agent The reviewer agent the signed-in person maps to; it must be one of the repo's
  *   `REVIEWERS`, or the coordinator refuses.

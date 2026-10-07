@@ -4,7 +4,8 @@ import { CSRF_TTL_MS, mintCsrfToken, parseReviewerEmails, verifyCsrfToken } from
 
 const SECRET = "test-signing-key-not-a-secret";
 const NOW = 1_790_000_000_000;
-const SUBJECT = { email: "Felix@Example.com", repo: "demo", claim: 7 };
+const COMMIT = "a".repeat(40);
+const SUBJECT = { email: "Felix@Example.com", repo: "demo", claim: 7, commit: COMMIT };
 
 describe("parseReviewerEmails", () => {
   it("maps lowercased emails to agents", () => {
@@ -40,6 +41,7 @@ describe("csrf token", () => {
     ["another email", { email: "eve@example.com" }],
     ["another repo", { repo: "other" }],
     ["another claim", { claim: 8 }],
+    ["another commit", { commit: "b".repeat(40) }],
   ])("is refused for %s", async (_name, change) => {
     const token = await mintCsrfToken(SECRET, SUBJECT, NOW);
     expect(await verifyCsrfToken(SECRET, token, { ...SUBJECT, ...change }, NOW)).toBe(false);
@@ -49,6 +51,11 @@ describe("csrf token", () => {
     const token = await mintCsrfToken(SECRET, SUBJECT, NOW);
     expect(await verifyCsrfToken(SECRET, token, SUBJECT, NOW + CSRF_TTL_MS - 1)).toBe(true);
     expect(await verifyCsrfToken(SECRET, token, SUBJECT, NOW + CSRF_TTL_MS)).toBe(false);
+  });
+
+  it("is refused with an extra part appended to a valid token", async () => {
+    const token = await mintCsrfToken(SECRET, SUBJECT, NOW);
+    expect(await verifyCsrfToken(SECRET, `${token}.x`, SUBJECT, NOW)).toBe(false);
   });
 
   it("is refused under another key", async () => {

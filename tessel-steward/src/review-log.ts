@@ -21,6 +21,9 @@ function parse(data: unknown): Record<string, unknown> | undefined {
  * Reads the repo's whole event log through the coordinator's `Watch`, as `agent`, up to the last
  * event the summary reports. No `Hello` is sent, so reading writes nothing to the log.
  *
+ * Known limit: this replays from seq 0 every time and gives up after `waitMs`, so a very large
+ * log will time out. Folding from a summary instead is a later change.
+ *
  * @throws If the summary or the socket is refused, the socket closes early, or `waitMs` passes.
  */
 export async function readEvents(

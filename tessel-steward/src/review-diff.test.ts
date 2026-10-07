@@ -66,6 +66,9 @@ function happy(patch: GitResult = ok("diff --git a/x b/x\n+hi\n")): Responder {
   };
 }
 
+const cutOffNames: Responder = (argv) =>
+  argv.includes("--name-status") ? ok("M\0src/x.rs\0", { stdoutTruncated: true }) : happy()(argv);
+
 describe("runDiff", () => {
   it("reads the diff from the merge-base to the commit and lists the changed files", async () => {
     const { deps, log } = fakeDeps(happy());
@@ -142,6 +145,13 @@ describe("runDiff", () => {
         argv.includes(needle) ? { ...ok(), exitCode: 1 } : happy()(argv);
       expect(await runDiff(fakeDeps(respond).deps, COMMIT)).toEqual({ outcome: "error", reason });
     }
+  });
+
+  it("answers an error when the file list was cut off by the capture", async () => {
+    expect(await runDiff(fakeDeps(cutOffNames).deps, COMMIT)).toEqual({
+      outcome: "error",
+      reason: "listing the changed files failed (git exit 0)",
+    });
   });
 
   it("throws when a read token cannot be revoked", async () => {

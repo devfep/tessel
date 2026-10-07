@@ -25,6 +25,12 @@ async function render(items: HeldSubmission[], csrf: Map<number, string> = new M
   return { response, html: await response.text() };
 }
 
+describe("escapeHtml", () => {
+  it("escapes the five characters that can break out of text or an attribute", () => {
+    expect(escapeHtml(`&<>"'`)).toBe("&amp;&lt;&gt;&quot;&#39;");
+  });
+});
+
 describe("reviewPage escaping", () => {
   it("escapes every agent-written field so none becomes markup", async () => {
     const { html } = await render(

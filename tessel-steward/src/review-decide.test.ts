@@ -134,6 +134,38 @@ describe("sendReview", () => {
     });
   });
 
+  it("does not call an error for another request a refusal", async () => {
+    const socket = new FakeSocket(
+      scripted((push) => push({ type: "error", req: 99, code: "malformed", message: "other" })),
+    );
+    expect(await sendReview(link(socket).env, "demo", "felix", REQUEST, 30)).toEqual({
+      outcome: "unknown",
+      reason: "the coordinator did not answer in time",
+    });
+  });
+
+  it("does not call an error without a request id a refusal once the review is sent", async () => {
+    const socket = new FakeSocket(
+      scripted((push) => push({ type: "error", req: null, code: "malformed", message: "x" })),
+    );
+    const outcome = await sendReview(link(socket).env, "demo", "felix", REQUEST, 30);
+    expect(outcome.outcome).toBe("unknown");
+  });
+
+  it("calls an error before the welcome a refusal, since nothing was sent", async () => {
+    const socket = new FakeSocket((sent, push) => {
+      if (sent["type"] === "hello") {
+        push({ type: "error", req: null, code: "unsupported_protocol", message: "old" });
+      }
+    });
+    expect(await sendReview(link(socket).env, "demo", "felix", REQUEST)).toEqual({
+      outcome: "refused",
+      code: "unsupported_protocol",
+      message: "old",
+    });
+    expect(socket.sent.some((frame) => frame["type"] === "review")).toBe(false);
+  });
+
   it.each([
     ["another claim", { claim: 8 }],
     ["another reviewer", { reviewer: "orchestrator" }],

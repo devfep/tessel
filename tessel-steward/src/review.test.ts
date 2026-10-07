@@ -73,6 +73,7 @@ class FakeSocket {
 }
 
 let signer: TestSigner;
+let log: Array<Record<string, unknown>>;
 let sockets: FakeSocket[];
 let coordinatorCalls: number;
 let diffCalls: Array<[string, string, string]>;
@@ -84,6 +85,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  log = [...LOG];
   clearAccessKeyCache();
   sockets = [];
   coordinatorCalls = 0;
@@ -106,7 +108,7 @@ beforeEach(() => {
 function socketFor(): FakeSocket {
   const socket = new FakeSocket((frame, push) => {
     if (frame["type"] === "watch" && frame["from_seq"] === 0) {
-      for (const event of LOG) {
+      for (const event of log) {
         push({ type: "event", event });
       }
     } else if (frame["type"] === "hello") {
@@ -126,7 +128,7 @@ function env(overrides: Record<string, unknown> = {}): Env {
       if (new Headers(init.headers).get("Upgrade") === "websocket") {
         return Promise.resolve({ status: 101, webSocket: socketFor() } as unknown as Response);
       }
-      return Promise.resolve(Response.json({ summary: {}, head_seq: 2 }));
+      return Promise.resolve(Response.json({ summary: {}, head_seq: log.at(-1)?.["seq"] }));
     },
   };
   return {
@@ -186,11 +188,15 @@ async function decision(
   overrides: Record<string, unknown> = {},
   o: Options = {},
 ) {
-  const csrf = await mintCsrfToken(KEY, { email: VIEWER, repo: "demo", claim: 7 }, Date.now());
+  const csrf = await mintCsrfToken(
+    KEY,
+    { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+    Date.now(),
+  );
   return call("/review/demo/7/decision", {
     method: "POST",
     headers: { "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
-    body: { approve, note: "looks fine", csrf, ...overrides },
+    body: { approve, note: "looks fine", commit: COMMIT, csrf, ...overrides },
     ...o,
   });
 }
@@ -366,13 +372,17 @@ describe("deciding", () => {
 
   it("answers 502 when the coordinator cannot be reached, with nothing sent", async () => {
     const down = env({ COORDINATOR: { fetch: () => Promise.reject(new Error("unreachable")) } });
-    const csrf = await mintCsrfToken(KEY, { email: VIEWER, repo: "demo", claim: 7 }, Date.now());
+    const csrf = await mintCsrfToken(
+      KEY,
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      Date.now(),
+    );
     const response = await call(
       "/review/demo/7/decision",
       {
         method: "POST",
         headers: { "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
-        body: { approve: true, csrf },
+        body: { approve: true, commit: COMMIT, csrf },
       },
       down,
     );
@@ -387,13 +397,17 @@ async function refused(
   overrides: Record<string, unknown> = {},
   environment?: Env,
 ) {
-  const csrf = await mintCsrfToken(KEY, { email: VIEWER, repo: "demo", claim: 7 }, Date.now());
+  const csrf = await mintCsrfToken(
+    KEY,
+    { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+    Date.now(),
+  );
   const response = await call(
     "/review/demo/7/decision",
     {
       method: "POST",
       headers: { "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" },
-      body: { approve: true, csrf, ...overrides },
+      body: { approve: true, commit: COMMIT, csrf, ...overrides },
       ...options,
     },
     environment,
@@ -417,11 +431,15 @@ describe("forged and malformed decisions send nothing", () => {
     await refused(403, {
       headers: { Origin: "https://evil.example", "Content-Type": "application/json" },
     });
-    const csrf = await mintCsrfToken(KEY, { email: VIEWER, repo: "demo", claim: 7 }, Date.now());
+    const csrf = await mintCsrfToken(
+      KEY,
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      Date.now(),
+    );
     const ok = await call("/review/demo/7/decision", {
       method: "POST",
       headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-      body: { approve: true, csrf },
+      body: { approve: true, commit: COMMIT, csrf },
     });
     expect(ok.status).toBe(200);
   });
@@ -432,16 +450,24 @@ describe("forged and malformed decisions send nothing", () => {
   it("refuses a missing, foreign or expired decision token", async () => {
     await refused(403, {}, { csrf: undefined });
     await refused(403, {}, { csrf: "1.abc" });
-    const other = await mintCsrfToken(KEY, { email: VIEWER, repo: "demo", claim: 8 }, Date.now());
+    const other = await mintCsrfToken(
+      KEY,
+      { email: VIEWER, repo: "demo", claim: 8, commit: COMMIT },
+      Date.now(),
+    );
     await refused(403, {}, { csrf: other });
-    const old = await mintCsrfToken(KEY, { email: VIEWER, repo: "demo", claim: 7 }, 1000);
+    const old = await mintCsrfToken(
+      KEY,
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      1000,
+    );
     await refused(403, {}, { csrf: old });
   });
 
   it("refuses a viewer who is not a reviewer, even with a token minted for them", async () => {
     const csrf = await mintCsrfToken(
       KEY,
-      { email: "viewer@example.com", repo: "demo", claim: 7 },
+      { email: "viewer@example.com", repo: "demo", claim: 7, commit: COMMIT },
       Date.now(),
     );
     await refused(403, { email: "viewer@example.com" }, { csrf });
@@ -456,12 +482,90 @@ describe("forged and malformed decisions send nothing", () => {
     ["the note is too long", { note: "x".repeat(1100) }],
   ])("refuses when %s", (_name, overrides) => refused(400, {}, overrides));
 
-  it("refuses a body that is not JSON, and one that is too large", async () => {
-    await refused(400, { body: undefined, rawBody: "approve=true" });
-    await refused(400, { body: undefined, rawBody: JSON.stringify({ pad: "x".repeat(9000) }) });
+  it("refuses a body that is not JSON", () =>
+    refused(400, { body: undefined, rawBody: "approve=true" }));
+
+  it("refuses a valid body over the byte cap that is under it in characters", async () => {
+    const csrf = await mintCsrfToken(
+      KEY,
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      Date.now(),
+    );
+    const body = JSON.stringify({
+      approve: true,
+      commit: COMMIT,
+      csrf,
+      pad: "\u00e9".repeat(4500),
+    });
+    expect(body.length).toBeLessThan(8 * 1024);
+    expect(new TextEncoder().encode(body).length).toBeGreaterThan(8 * 1024);
+    await refused(413, { body: undefined, rawBody: body });
   });
+
+  it("refuses a declared Content-Length over the cap without reading the body", () =>
+    refused(413, {
+      headers: {
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/json",
+        "Content-Length": "100000",
+      },
+    }));
 
   it("is POST only", async () => {
     expect((await call("/review/demo/7/decision")).status).toBe(405);
+  });
+});
+
+describe("a page left open", () => {
+  const OTHER = "d".repeat(40);
+
+  it("shows the commit it is for, and a token bound to it", async () => {
+    const html = await (await call("/review/demo")).text();
+    expect(html).toContain(`data-commit="${COMMIT}"`);
+  });
+
+  it("cannot approve a commit that replaced the one shown", async () => {
+    log = [
+      ...LOG,
+      { seq: 3, event: "submit_rejected", claim: 7, reason: "x" },
+      { ...LOG[1], seq: 4, fork_commit: OTHER },
+      { ...LOG[2], seq: 5 },
+    ];
+    const response = await decision(true);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "the submission changed: reload" });
+    expect(reviews()).toEqual([]);
+  });
+
+  it("cannot approve a claim that is no longer held", async () => {
+    log = [...LOG, { seq: 3, event: "merged", claim: 7, base: COMMIT, head: COMMIT }];
+    expect((await decision(true)).status).toBe(409);
+    expect(reviews()).toEqual([]);
+  });
+
+  it("refuses a token minted for another commit, even if that commit is held now", async () => {
+    log = [
+      ...LOG,
+      { seq: 3, event: "submit_rejected", claim: 7, reason: "x" },
+      { ...LOG[1], seq: 4, fork_commit: OTHER },
+      { ...LOG[2], seq: 5 },
+    ];
+    expect((await decision(true, { commit: OTHER })).status).toBe(403);
+    expect(reviews()).toEqual([]);
+  });
+
+  it("refuses a decision that names no commit", async () => {
+    expect((await decision(true, { commit: undefined })).status).toBe(403);
+    expect(reviews()).toEqual([]);
+  });
+});
+
+describe("a viewer who is not a reviewer", () => {
+  it("cannot start a diff, and sees no diff button", async () => {
+    const viewer = { email: "viewer@example.com" };
+    expect((await call("/review/demo/7/diff", viewer)).status).toBe(403);
+    expect(diffCalls).toEqual([]);
+    const html = await (await call("/review/demo", viewer)).text();
+    expect(html).not.toContain('data-action="diff"');
   });
 });

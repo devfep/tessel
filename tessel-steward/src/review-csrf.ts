@@ -51,28 +51,32 @@ function key(secret: string): Promise<CryptoKey> {
   );
 }
 
-function message(email: string, repo: string, claim: number, expMs: number): Uint8Array {
-  return encoder.encode(`${DOMAIN}|${email.toLowerCase()}|${repo}|${claim}|${expMs}`);
+interface Subject {
+  email: string;
+  repo: string;
+  claim: number;
+  /** The fork commit the person was shown; a token for one commit is no use for another. */
+  commit: string;
+}
+
+function message(subject: Subject, expMs: number): Uint8Array {
+  const { email, repo, claim, commit } = subject;
+  return encoder.encode(`${DOMAIN}|${email.toLowerCase()}|${repo}|${claim}|${commit}|${expMs}`);
 }
 
 /**
- * A token that lets the signed-in `email` decide `claim` of `repo` until it expires, as
- * `<expMs>.<mac>`.
- * The MAC is HMAC-SHA256 under `secret` over a domain-separated message, so a token cannot be used
- * for another person, repo or claim, and an identity token cannot be used as one.
+ * A token that lets the signed-in `email` decide `claim` of `repo` at `commit` until it
+ * expires, as `<expMs>.<mac>`. The MAC is HMAC-SHA256 under `secret` over a domain-separated
+ * message, so a token cannot be used for another person, repo, claim or commit, and an
+ * identity token cannot be used as one.
  */
 export async function mintCsrfToken(
   secret: string,
-  subject: { email: string; repo: string; claim: number },
+  subject: Subject,
   nowMs: number,
 ): Promise<string> {
   const expMs = nowMs + CSRF_TTL_MS;
-  const { email, repo, claim } = subject;
-  const mac = await crypto.subtle.sign(
-    "HMAC",
-    await key(secret),
-    message(email, repo, claim, expMs),
-  );
+  const mac = await crypto.subtle.sign("HMAC", await key(secret), message(subject, expMs));
   return `${expMs}.${toBase64Url(new Uint8Array(mac))}`;
 }
 
@@ -80,7 +84,7 @@ export async function mintCsrfToken(
 export async function verifyCsrfToken(
   secret: string,
   token: unknown,
-  subject: { email: string; repo: string; claim: number },
+  subject: Subject,
   nowMs: number,
 ): Promise<boolean> {
   if (typeof token !== "string") {
@@ -100,6 +104,5 @@ export async function verifyCsrfToken(
   if (mac === undefined || !Number.isSafeInteger(expMs) || expMs <= nowMs) {
     return false;
   }
-  const { email, repo, claim } = subject;
-  return crypto.subtle.verify("HMAC", await key(secret), mac, message(email, repo, claim, expMs));
+  return crypto.subtle.verify("HMAC", await key(secret), mac, message(subject, expMs));
 }

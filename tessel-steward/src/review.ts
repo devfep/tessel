@@ -13,6 +13,7 @@ const VIEWER_AGENT = "dashboard";
 /** The coordinator refuses a longer note (`MAX_REVIEW_NOTE_BYTES` in `src/coordinator.rs`). */
 const MAX_NOTE_BYTES = 1024;
 const MAX_BODY_BYTES = 8 * 1024;
+const TOO_LARGE = "request body too large";
 
 type ReviewEnv = Pick<
   Env,
@@ -79,7 +80,12 @@ async function page(env: ReviewEnv, repo: string, session: Session, deps: Review
   const csrfByClaim = new Map<number, string>();
   if (session.reviewer !== undefined) {
     for (const item of held) {
-      const subject = { email: session.email, repo, claim: item.claim };
+      const subject = {
+        email: session.email,
+        repo,
+        claim: item.claim,
+        commit: item.forkCommit,
+      };
       csrfByClaim.set(
         item.claim,
         await mintCsrfToken(env.IDENTITY_SIGNING_KEY, subject, Date.now()),
@@ -89,7 +95,18 @@ async function page(env: ReviewEnv, repo: string, session: Session, deps: Review
   return reviewPage({ repo, nonce: crypto.randomUUID(), held, csrfByClaim });
 }
 
-async function diff(env: ReviewEnv, repo: string, claim: number, deps: ReviewDeps) {
+async function diff(
+  env: ReviewEnv,
+  route: { repo: string; claim: number },
+  session: Session,
+  deps: ReviewDeps,
+) {
+  const { repo, claim } = route;
+  if (session.reviewer === undefined) {
+    return json(403, {
+      error: "your account is not a listed reviewer: each diff starts a sandbox",
+    });
+  }
   const item = (await loadHeld(env, repo, deps)).find((held) => held.claim === claim);
   const commit = parseSha(item?.forkCommit);
   if (item === undefined || commit === undefined) {
@@ -103,16 +120,43 @@ async function diff(env: ReviewEnv, repo: string, claim: number, deps: ReviewDep
 interface Decision {
   approve: boolean;
   note: string;
+  /** The commit the page showed. */
+  commit: unknown;
   csrf: unknown;
+}
+
+/** Reads the body, refusing more than `MAX_BODY_BYTES` bytes without buffering past that. */
+async function readCapped(request: Request): Promise<string | undefined> {
+  if (Number(request.headers.get("Content-Length") ?? "0") > MAX_BODY_BYTES) {
+    return undefined;
+  }
+  if (request.body === null) {
+    return "";
+  }
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+    }
+    total += value.length;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(value);
+  }
 }
 
 async function readDecision(request: Request): Promise<Decision | string> {
   if (!(request.headers.get("Content-Type") ?? "").toLowerCase().startsWith("application/json")) {
     return "send Content-Type: application/json";
   }
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) {
-    return "request body too large";
+  const text = await readCapped(request);
+  if (text === undefined) {
+    return TOO_LARGE;
   }
   let body: unknown;
   try {
@@ -120,15 +164,13 @@ async function readDecision(request: Request): Promise<Decision | string> {
   } catch {
     return "request body is not JSON";
   }
-  const { approve, note, csrf } = (typeof body === "object" && body !== null ? body : {}) as {
-    approve?: unknown;
-    note?: unknown;
-    csrf?: unknown;
-  };
+  const { approve, note, commit, csrf } = (
+    typeof body === "object" && body !== null ? body : {}
+  ) as { approve?: unknown; note?: unknown; commit?: unknown; csrf?: unknown };
   if (typeof approve !== "boolean" || (note !== undefined && typeof note !== "string")) {
-    return "expected {approve: boolean, note?: string, csrf: string}";
+    return "expected {approve: boolean, note?: string, commit: string, csrf: string}";
   }
-  return { approve, note: note ?? "", csrf };
+  return { approve, note: note ?? "", commit, csrf };
 }
 
 /** The note always starts with the path the decision took, so the log shows it. */
@@ -148,6 +190,32 @@ function decisionResponse(outcome: DecisionOutcome): Response {
   }
 }
 
+/**
+ * Checks that the person was shown what is held now: the token must be for this person, claim
+ * and commit, and the claim must still be held at that commit. A page left open while the claim
+ * was rejected and submitted again must not approve the new commit unseen.
+ */
+async function checkShown(
+  env: ReviewEnv,
+  route: { repo: string; claim: number },
+  email: string,
+  decision: Decision,
+  deps: ReviewDeps,
+): Promise<Response | undefined> {
+  const { commit, csrf } = decision;
+  const subject = { email, ...route, commit: typeof commit === "string" ? commit : "" };
+  if (
+    typeof commit !== "string" ||
+    !(await verifyCsrfToken(env.IDENTITY_SIGNING_KEY, csrf, subject, Date.now()))
+  ) {
+    return json(403, { error: "missing or expired decision token: reload the page" });
+  }
+  const current = (await loadHeld(env, route.repo, deps)).find((h) => h.claim === route.claim);
+  return current?.forkCommit === commit
+    ? undefined
+    : json(409, { error: "the submission changed: reload" });
+}
+
 async function decide(
   env: ReviewEnv,
   request: Request,
@@ -164,15 +232,15 @@ async function decide(
   }
   const decision = await readDecision(request);
   if (typeof decision === "string") {
-    return json(400, { error: decision });
-  }
-  const subject = { email: session.email, ...route };
-  if (!(await verifyCsrfToken(env.IDENTITY_SIGNING_KEY, decision.csrf, subject, Date.now()))) {
-    return json(403, { error: "missing or expired decision token: reload the page" });
+    return json(decision === TOO_LARGE ? 413 : 400, { error: decision });
   }
   const note = composeNote(session.reviewer, decision.note);
   if (new TextEncoder().encode(note).length > MAX_NOTE_BYTES) {
     return json(400, { error: `the note is longer than ${MAX_NOTE_BYTES} bytes` });
+  }
+  const refusal = await checkShown(env, route, session.email, decision, deps);
+  if (refusal !== undefined) {
+    return refusal;
   }
   const outcome = await sendReview(
     env,
@@ -199,7 +267,7 @@ function dispatch(
     case "page":
       return page(env, route.repo, session, deps);
     case "diff":
-      return diff(env, route.repo, route.claim, deps);
+      return diff(env, route, session, deps);
     case "decision":
       return decide(env, request, route, session, deps);
   }
@@ -209,8 +277,12 @@ function dispatch(
  * Serves `/review/<repo>` (the held submissions), `/review/<repo>/<claim>/diff` (the diff, started
  * on demand) and `POST /review/<repo>/<claim>/decision` (approve or reject). Every path first
  * passes the Cloudflare Access check: 503 when sign-in is not configured, 401 without a valid
- * token, 403 for an email that is not a listed viewer. Deciding also needs a `REVIEWER_EMAILS`
- * entry for the email, a same-origin request, and the page's decision token.
+ * token, 403 for an email that is not a listed viewer. The diff, which starts a sandbox, and
+ * deciding also need a `REVIEWER_EMAILS` entry for the email; deciding also needs a same-origin
+ * request and the page's decision token for the commit shown.
+ *
+ * Known limit: the page replays the whole log from seq 0 on every load under a 10 s timeout, so a
+ * very large log will time out (502); a later change should fold from a summary instead.
  */
 export async function handleReview(
   request: Request,

@@ -415,6 +415,13 @@ mod tests {
         MergeOutcome::from_response(200, json)
     }
 
+    /// The steward's review screen derives an agent's fork as `<repo>--<agent>` in
+    /// `tessel-steward/src/review.ts`; it must change together with this.
+    #[test]
+    fn an_agents_fork_is_named_repo_dash_dash_agent() {
+        assert_eq!(fork_name("demo", &AgentId("a1".into())), "demo--a1");
+    }
+
     #[test]
     fn reads_every_outcome_the_steward_sends() {
         let step = r#"{"step":"test","exitCode":1,"stdout":"x","stderr":"y","stdoutTruncated":false,"stderrTruncated":false,"passed":false}"#;

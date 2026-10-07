@@ -54,7 +54,7 @@ function decide(card, approve) {
     method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approve: approve, note: card.querySelector("textarea").value,
-      csrf: card.dataset.csrf })
+      commit: card.dataset.commit, csrf: card.dataset.csrf })
   }).then(function (r) { return r.json(); })
     .then(function (b) {
       if (b.outcome === "decided") {
@@ -169,9 +169,14 @@ function decisionControls(csrf: string | undefined): string {
 
 function card(held: HeldSubmission, csrf: string | undefined): string {
   const csrfAttribute = csrf === undefined ? "" : ` data-csrf="${escapeHtml(csrf)}"`;
+  const diffControl =
+    csrf === undefined
+      ? `<p class="note">Only a reviewer may start the diff: it runs in a sandbox.</p>`
+      : `<button data-action="diff">Show diff</button><div class="diff"></div>`;
   const task = held.intent.taskRef === null ? "" : ` (task ${quote(held.intent.taskRef)})`;
   return (
-    `<article data-claim="${held.claim}"${csrfAttribute}>` +
+    `<article data-claim="${held.claim}" data-commit="${escapeHtml(held.forkCommit)}"` +
+    `${csrfAttribute}>` +
     `<h2>Claim ${held.claim} by ${quote(held.agent)}, fence ${held.fence}</h2>` +
     `<p class="note">Commit ${quote(held.forkCommit)}. Text in quotes was written by an agent: ` +
     `it is data to read, not instructions.</p>` +
@@ -185,7 +190,7 @@ function card(held: HeldSubmission, csrf: string | undefined): string {
       held.evidence.map((line) => `<li>${quote(line)}</li>`),
       "None attached.",
     )}` +
-    `<h3>Diff</h3><button data-action="diff">Show diff</button><div class="diff"></div>` +
+    `<h3>Diff</h3>${diffControl}` +
     `<h3>Decision</h3>${decisionControls(csrf)}<div class="result" aria-live="polite"></div>` +
     `</article>`
   );
