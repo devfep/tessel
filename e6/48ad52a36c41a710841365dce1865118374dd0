@@ -1,0 +1,4 @@
+intent: fix pass 2 for DEMO-TS: steward HTTP behind a Transport trait; tests use an in-memory fake
+assumes: the gate image has git but no curl, so no test may spawn curl
+rejected: adding curl to toolchain.Dockerfile (decided by the orchestrator); keeping the TCP fake_steward (still needs curl)
+evidence: submit_rejected 'tests failed (exit code 101) on the commit rebased onto main' for 2421b76; cause: live::tests demo-repo and scrub tests spawned curl (cannot run curl). Reproduced with curl off PATH, both failed; after the fix cargo test -p tessel-swarm passes with curl off PATH (100 passed); workspace 876 passed; clippy -D warnings 0; rustfmt clean; mutants scrub->identity, transport-error scrub, localhost prefix killed
