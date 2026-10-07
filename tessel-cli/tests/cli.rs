@@ -812,7 +812,8 @@ async fn the_hook_blocks_when_the_configuration_is_invalid_or_unreadable() -> Re
             reason = "says why the unreadable case was skipped when running as root"
         )]
         let () = eprintln!(
-            "this process can read a mode-000 file (root or CAP_DAC_OVERRIDE), so the unreadable case can't be set up here"
+            "this process can read a mode-000 file (root or CAP_DAC_OVERRIDE), so the unreadable \
+             case can't be set up here"
         );
         return Ok(());
     }
