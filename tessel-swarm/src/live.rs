@@ -160,6 +160,59 @@ pub struct LiveSetup<'a> {
     pub names: &'a [String],
 }
 
+/// Creates the repo and pushes `base` to its main as one commit. Returns the trunk remote, its
+/// write token and the commit id, which is the same for the same `base` on any machine.
+fn seed_trunk(
+    steward: &Steward,
+    repo: &ScratchRepo,
+    scratch: &Path,
+    base: &Tree,
+) -> Result<(String, Token, String)> {
+    let (trunk_url, trunk_token) = steward.create_repo(repo)?;
+    let seed_dir = scratch.join("seed");
+    std::fs::create_dir_all(&seed_dir)?;
+    let commit = git::init_repo(&Git::new(&seed_dir), base)?;
+    Git::new(&seed_dir)
+        .with_bearer(trunk_token.expose())
+        .run(&["push", "-q", "--force", &trunk_url, "HEAD:refs/heads/main"])?;
+    Ok((trunk_url, trunk_token, commit))
+}
+
+/// A named repository holding the demo's starting commit, for agents that are not scripted.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DemoRepo {
+    pub repo: String,
+    pub remote: String,
+    pub commit: String,
+    /// Fork name and remote per agent.
+    pub forks: Vec<(String, String)>,
+}
+
+/// Creates `repo`, pushes the demo's starting commit to its main and forks it once per agent.
+/// No fork token is minted, and no token is in the result. Blocking: run it on a blocking thread.
+pub fn create_demo_repo(
+    steward: &Steward,
+    repo: &ScratchRepo,
+    scratch: &Path,
+    agents: &[String],
+) -> Result<DemoRepo> {
+    let mut names = Vec::new();
+    for agent in agents {
+        names.push(fork_name(repo, agent)?);
+    }
+    let (remote, _, commit) = seed_trunk(steward, repo, scratch, &crate::demo::base_tree())?;
+    let mut forks = Vec::new();
+    for (agent, name) in agents.iter().zip(names) {
+        forks.push((name, steward.create_fork(repo, agent)?));
+    }
+    Ok(DemoRepo {
+        repo: repo.to_string(),
+        remote,
+        commit,
+        forks,
+    })
+}
+
 /// Creates the repo, pushes the starting commit to its main, forks it per agent and mints the
 /// tokens. Blocking: run it on a blocking thread.
 pub fn provision(setup: &LiveSetup<'_>) -> Result<Endpoint> {
@@ -167,13 +220,8 @@ pub fn provision(setup: &LiveSetup<'_>) -> Result<Endpoint> {
     if !(origin.starts_with("ws://") || origin.starts_with("wss://")) {
         bail!("the coordinator URL must start with ws:// or wss://");
     }
-    let (trunk_url, trunk_token) = setup.steward.create_repo(setup.repo)?;
-    let seed_dir = setup.scratch.join("seed");
-    std::fs::create_dir_all(&seed_dir)?;
-    git::init_repo(&Git::new(&seed_dir), setup.base)?;
-    Git::new(&seed_dir)
-        .with_bearer(trunk_token.expose())
-        .run(&["push", "-q", "--force", &trunk_url, "HEAD:refs/heads/main"])?;
+    let (trunk_url, trunk_token, _) =
+        seed_trunk(setup.steward, setup.repo, setup.scratch, setup.base)?;
     let mut forks = HashMap::new();
     for agent in setup.agents {
         let url = setup.steward.create_fork(setup.repo, agent)?;
@@ -197,6 +245,8 @@ pub fn provision(setup: &LiveSetup<'_>) -> Result<Endpoint> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -225,5 +275,111 @@ mod tests {
         for bad in ["", "a/b", "a b", "../demo", "a?x"] {
             assert!(fork_name(&repo, bad).is_err(), "{bad:?}");
         }
+    }
+
+    const SECRET: &str = "write-token-that-must-not-print";
+
+    /// A steward on localhost that answers `count` POSTs: a repo or fork answers with a bare
+    /// repository under `root` as its remote. Returns its origin and the paths it was asked for;
+    /// it stops waiting after five seconds, so a request that never comes fails the test.
+    fn fake_steward(root: &Path, count: usize) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://localhost:{}", listener.local_addr().unwrap().port());
+        let root = root.to_path_buf();
+        let handle = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while paths.len() < count && std::time::Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                let path = read_post(&mut stream);
+                let bare = root.join(path.trim_start_matches('/').replace('/', "_"));
+                let init = Command::new("git")
+                    .args(["init", "-q", "--bare"])
+                    .arg(&bare)
+                    .status();
+                assert!(init.unwrap().success());
+                let body = format!(
+                    "{{\"remote\":\"{}\",\"token\":\"{SECRET}\"}}",
+                    bare.display()
+                );
+                let reply = format!(
+                    "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(reply.as_bytes()).unwrap();
+                paths.push(path);
+            }
+            paths
+        });
+        (origin, handle)
+    }
+
+    fn read_post(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+        let mut seen = Vec::new();
+        let mut byte = [0u8; 1];
+        while !seen.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            seen.push(byte[0]);
+        }
+        let head = String::from_utf8(seen).unwrap();
+        let length = head
+            .to_ascii_lowercase()
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("content-length: ")
+                    .map(|n| n.trim().parse().unwrap())
+            })
+            .unwrap_or(0usize);
+        let mut body = vec![0u8; length];
+        stream.read_exact(&mut body).unwrap();
+        head.split_whitespace().nth(1).unwrap().to_string()
+    }
+
+    #[test]
+    fn a_demo_repo_gets_the_starting_commit_and_a_fork_per_agent_without_a_token_in_sight() {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin, server) = fake_steward(dir.path(), 3);
+        let steward = Steward::new(&origin, Token::new("admin".into())).unwrap();
+        let repo = ScratchRepo::parse("swarm-demo").unwrap();
+        let agents = vec!["a1".to_string(), "a2".to_string()];
+        let made = create_demo_repo(&steward, &repo, &dir.path().join("scratch"), &agents).unwrap();
+        assert_eq!(
+            server.join().unwrap(),
+            [
+                "/repos/swarm-demo",
+                "/repos/swarm-demo/forks/swarm-demo--a1",
+                "/repos/swarm-demo/forks/swarm-demo--a2",
+            ]
+        );
+        let reference = tempfile::tempdir().unwrap();
+        let commit = git::init_repo(&Git::new(reference.path()), &crate::demo::base_tree());
+        assert_eq!(Some(made.commit.as_str()), commit.ok().as_deref());
+        let main = Git::new(Path::new(&made.remote))
+            .run(&["rev-parse", "main"])
+            .unwrap();
+        assert_eq!(main, made.commit, "the trunk's main is the starting commit");
+        let names: Vec<&str> = made.forks.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["swarm-demo--a1", "swarm-demo--a2"]);
+        assert!(!format!("{made:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn a_bad_agent_name_is_refused_before_anything_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let steward = Steward::new("http://localhost:1", Token::new("admin".into())).unwrap();
+        let repo = ScratchRepo::parse("swarm-demo").unwrap();
+        let agents = vec!["a1".to_string(), "a/b".to_string()];
+        let error = create_demo_repo(&steward, &repo, dir.path(), &agents).unwrap_err();
+        assert!(
+            error.to_string().contains("not a valid agent name"),
+            "{error:#}"
+        );
     }
 }

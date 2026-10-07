@@ -223,11 +223,10 @@ pub async fn run_on(
     };
     let watched = settle_watcher(watcher).await;
     let _ = stop_reviewer.send(true);
-    if let Some(reviewer) = reviewer {
-        reviewer.await.context("the reviewer task panicked")??;
-    }
+    let reviewed = settle_reviewer(reviewer).await;
     let outcome = failure.map_or(verified, Err);
-    with_watcher_error(outcome, watched)?;
+    let outcome = with_cause(outcome, reviewed);
+    with_cause(outcome, watched)?;
     let observer = endpoint.token_of(OBSERVER)?;
     let events = read_log(
         &endpoint.ws_url,
@@ -287,14 +286,23 @@ async fn settle_watcher(watcher: Option<tokio::task::JoinHandle<Result<()>>>) ->
     }
 }
 
-/// The run's outcome with the watcher's error as its root cause. An agent or the final wait often
-/// fails only because the watcher died, so the watcher's error leads and the other one is kept as
-/// context.
-fn with_watcher_error(outcome: Result<()>, watched: Result<()>) -> Result<()> {
-    match (outcome, watched) {
+/// Waits for the scripted reviewer, which ends when told to stop. Its error is returned rather
+/// than propagated, so the caller can still report the watcher's.
+async fn settle_reviewer(reviewer: Option<tokio::task::JoinHandle<Result<()>>>) -> Result<()> {
+    let Some(reviewer) = reviewer else {
+        return Ok(());
+    };
+    reviewer.await.context("the reviewer task panicked")?
+}
+
+/// The run's outcome with a helper's error as its root cause. An agent or the final wait often
+/// fails only because the log watcher or the reviewer died, so that error leads and the other one
+/// is kept as context.
+fn with_cause(outcome: Result<()>, cause: Result<()>) -> Result<()> {
+    match (outcome, cause) {
         (outcome, Ok(())) => outcome,
-        (Ok(()), Err(watch)) => Err(watch),
-        (Err(error), Err(watch)) => Err(watch.context(format!("{error:#}"))),
+        (Ok(()), Err(cause)) => Err(cause),
+        (Err(error), Err(cause)) => Err(cause.context(format!("{error:#}"))),
     }
 }
 
@@ -1140,7 +1148,7 @@ mod tests {
 
     #[test]
     fn the_watchers_error_leads_and_the_failure_it_caused_is_kept() {
-        let both = with_watcher_error(
+        let both = with_cause(
             Err(anyhow::anyhow!("the log watch stopped")),
             Err(anyhow::anyhow!("the event log has a gap")),
         )
@@ -1148,11 +1156,11 @@ mod tests {
         let message = format!("{both:#}");
         assert!(message.contains("the log watch stopped"), "{message}");
         assert!(message.ends_with("the event log has a gap"), "{message}");
-        let alone = with_watcher_error(Ok(()), Err(anyhow::anyhow!("gap"))).unwrap_err();
+        let alone = with_cause(Ok(()), Err(anyhow::anyhow!("gap"))).unwrap_err();
         assert_eq!(format!("{alone:#}"), "gap");
-        let other = with_watcher_error(Err(anyhow::anyhow!("agent")), Ok(())).unwrap_err();
+        let other = with_cause(Err(anyhow::anyhow!("agent")), Ok(())).unwrap_err();
         assert_eq!(format!("{other:#}"), "agent");
-        with_watcher_error(Ok(()), Ok(())).unwrap();
+        with_cause(Ok(()), Ok(())).unwrap();
     }
 
     fn ctx_watching(

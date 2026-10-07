@@ -1263,6 +1263,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tessel-coordinator",
+ "tessel-swarm",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

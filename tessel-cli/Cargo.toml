@@ -30,6 +30,8 @@ tree-sitter-typescript = "=0.23.2"
 toml = { version = "=1.1.6", default-features = false, features = ["parse", "serde"] }
 
 [dev-dependencies]
+# Only its demo repository generator, so the symbol test reads the files agents will get.
+tessel-swarm = { path = "../tessel-swarm" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 

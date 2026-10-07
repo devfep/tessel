@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use tessel_swarm::endpoint::Token;
 use tessel_swarm::guard::ScratchRepo;
-use tessel_swarm::live::Steward;
+use tessel_swarm::live::{self, Steward};
 use tessel_swarm::on::Policy;
 use tessel_swarm::report;
 use tessel_swarm::run::{self, Spec};
@@ -39,6 +39,22 @@ enum Command {
     },
     /// Run the workload and write the results.
     Run(Box<RunArgs>),
+    /// Create the demo repository as a named repo on a deployed steward, for agents that are
+    /// not scripted. Needs `STEWARD_ADMIN_TOKEN`. Repositories are never deleted.
+    DemoRepo(DemoRepoArgs),
+}
+
+#[derive(clap::Args)]
+struct DemoRepoArgs {
+    /// Repository name; must be `swarm-<suffix>`.
+    #[arg(long)]
+    repo: String,
+    /// https:// origin of the steward Worker.
+    #[arg(long)]
+    steward: String,
+    /// Also fork the repository once per agent, e.g. `a1,a2`.
+    #[arg(long, value_delimiter = ',')]
+    agents: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -123,7 +139,25 @@ async fn main() -> Result<()> {
             write_out(&serde_json::to_string_pretty(&list)?)
         }
         Command::Run(args) => run_command(&args).await,
+        Command::DemoRepo(args) => demo_repo_command(&args),
     }
+}
+
+fn demo_repo_command(args: &DemoRepoArgs) -> Result<()> {
+    let repo = ScratchRepo::parse(&args.repo)?;
+    let admin = std::env::var("STEWARD_ADMIN_TOKEN")
+        .context("set STEWARD_ADMIN_TOKEN to create the demo repository")?;
+    let steward = Steward::new(&args.steward, Token::new(admin))?;
+    let scratch = tempfile::tempdir().context("cannot create a scratch directory")?;
+    let made = live::create_demo_repo(&steward, &repo, scratch.path(), &args.agents)?;
+    write_out(&format!(
+        "repo {}\nremote {}\ncommit {}",
+        made.repo, made.remote, made.commit
+    ))?;
+    for (name, remote) in &made.forks {
+        write_out(&format!("fork {name}\nremote {remote}"))?;
+    }
+    Ok(())
 }
 
 async fn run_command(args: &RunArgs) -> Result<()> {

@@ -126,6 +126,23 @@ per fork and an identity token per agent (the reviewer and an observer included)
 against the swarm coordinator. Scratch repositories stay in the namespace; there is no delete
 route.
 
+### A named demo repository for real agents
+
+```
+export STEWARD_ADMIN_TOKEN=...   # never printed
+target/debug/tessel-swarm demo-repo --repo swarm-demo --steward https://<steward host> \
+  --agents a1,a2
+```
+
+This creates the named repository `swarm-demo` (the same `swarm-<suffix>` rule as a run), pushes
+the demo's starting commit to its `main`, and with `--agents` forks it once per agent
+(`swarm-demo--a1`, `swarm-demo--a2`). It prints the repo name, the remotes and the commit id, and
+nothing else: no token. The same demo gives the same commit id every time, which also holds for
+the generated `LICENSE` (MIT, the root file's text) that makes the demo repository permissively
+licensed. It mints no write tokens and no identities; those come from the steward's own routes,
+as for any agent. A name that already exists is refused by the steward. Repositories are never
+deleted: there is no delete route, so choose names you will keep.
+
 ### The swarm coordinator
 
 The live swarm coordinator is a separate deployment of the same code, `tessel-coordinator-swarm`,

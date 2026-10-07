@@ -784,3 +784,31 @@ async fn a_run_whose_log_watcher_cannot_connect_fails_with_the_watchers_error() 
     );
     server.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reviewer_error_does_not_hide_the_watchers_error() {
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let config = config(2, Policy::Shadow, 1000);
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path()).await;
+    let mut endpoint = server.endpoint.clone();
+    endpoint.tokens.insert(
+        on::OBSERVER.to_string(),
+        tessel_swarm::endpoint::Token::new("not-a-valid-token".into()),
+    );
+    endpoint.tokens.remove(REVIEWER);
+    let Err(error) = on::run_on(&endpoint, &tasks, &scratch.path().join("agents"), &config).await
+    else {
+        unreachable!("a run whose watcher and reviewer failed must not succeed");
+    };
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("the log watch could not reconnect"),
+        "the watcher's error is reported: {message}"
+    );
+    assert!(
+        message.contains("no identity token for agent swarm-reviewer"),
+        "the reviewer's error is reported: {message}"
+    );
+    server.shutdown().await;
+}

@@ -862,4 +862,25 @@ class Panel extends React.Component {
         assert!(extract("Makefile", "all:\n").is_none());
         assert_eq!(language_of("a/b.mts"), Some(Language::TypeScript));
     }
+
+    #[test]
+    fn every_function_of_the_demo_shop_is_found_under_the_name_the_swarm_claims() {
+        let tree = tessel_swarm::demo::base_tree();
+        for (path, source) in &tree {
+            let Some(symbols) = extract(path, source) else {
+                assert!(
+                    language_of(path).is_none(),
+                    "{path} has a grammar but did not parse"
+                );
+                continue;
+            };
+            let found: Vec<String> = symbols.into_iter().map(|s| s.name).collect();
+            let wanted: Vec<&str> = tessel_swarm::demo::CATALOG
+                .iter()
+                .filter(|f| &f.path() == path)
+                .map(|f| f.name)
+                .collect();
+            assert_eq!(found, wanted, "{path}");
+        }
+    }
 }

@@ -249,6 +249,7 @@ pub fn base_tree() -> Tree {
             .into(),
     );
     tree.insert(".gitignore".into(), "node_modules/\n".into());
+    tree.insert("LICENSE".into(), include_str!("../../LICENSE").into());
     for f in &CATALOG {
         let file = tree
             .entry(f.path())
@@ -294,6 +295,15 @@ mod tests {
             assert!(tree.contains_key(&format!("test/{}.test.ts", f.name)));
         }
         assert_eq!(tree.keys().filter(|p| p.starts_with("src/")).count(), 7);
+    }
+
+    #[test]
+    fn the_demo_repository_is_mit_licensed() {
+        let tree = base_tree();
+        let license = &tree["LICENSE"];
+        assert!(license.starts_with("MIT License\n"), "{license}");
+        assert!(license.contains("Copyright (c) 2026 "), "{license}");
+        assert!(license.contains("Permission is hereby granted, free of charge"));
     }
 
     #[test]
