@@ -14,6 +14,7 @@ use tessel_coordinator::protocol::{uncovered, ClaimId, Mode, ScopeClaim};
 use crate::config::Config;
 use crate::daemon;
 use crate::hook::{self, Installed};
+use crate::inbox_hook;
 use crate::plan;
 use crate::render::{
     escape, needs_attention, notice_text, outcome_text, quote_untrusted, status_text, submit_text,
@@ -86,6 +87,19 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
         Command::Hook {
             action: HookAction::PreEdit { root },
         } => pre_edit(root).await,
+        Command::Hook {
+            action: HookAction::Inbox { root },
+        } => Ok(print_hook(&inbox_hook::inbox(
+            read_stdin(),
+            hook_root(root).as_deref(),
+        ))),
+        Command::Hook {
+            action: HookAction::Stop { root, wait_ms },
+        } => {
+            let wait = Duration::from_millis(wait_ms);
+            let output = inbox_hook::stop(read_stdin(), hook_root(root).as_deref(), wait).await;
+            Ok(print_hook(&output))
+        }
         Command::Hook {
             action: HookAction::Install,
         } => install(&cwd),
@@ -525,15 +539,33 @@ fn inbox(cwd: &Path, all: bool) -> anyhow::Result<ExitCode> {
 
 // ---------- hook ----------
 
-async fn pre_edit(root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
-    let root = root.or_else(|| {
+/// The worktree a hook guards: `--root`, else the directory Claude Code names.
+fn hook_root(root: Option<PathBuf>) -> Option<PathBuf> {
+    root.or_else(|| {
         std::env::var_os("CLAUDE_PROJECT_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from)
-    });
+    })
+}
+
+fn read_stdin() -> std::io::Result<Vec<u8>> {
     let mut stdin = Vec::new();
-    let read = std::io::stdin().read_to_end(&mut stdin).map(|_| stdin);
-    let verdict = hook::pre_edit(read, root.as_deref()).await;
+    std::io::stdin().read_to_end(&mut stdin).map(|_| stdin)
+}
+
+/// Prints what an always-allowing hook produced; the exit code is 0.
+fn print_hook(output: &inbox_hook::HookOutput) -> ExitCode {
+    if !output.stdout.is_empty() {
+        say(&output.stdout);
+    }
+    if !output.stderr.is_empty() {
+        complain(&output.stderr);
+    }
+    ExitCode::SUCCESS
+}
+
+async fn pre_edit(root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
+    let verdict = hook::pre_edit(read_stdin(), hook_root(root).as_deref()).await;
     if verdict.exit != 0 {
         complain(&verdict.message);
     }
@@ -544,9 +576,12 @@ fn install(cwd: &Path) -> anyhow::Result<ExitCode> {
     let worktree = Worktree::discover(cwd)?;
     let exe = std::env::current_exe().context("cannot locate the tessel binary")?;
     let word = match hook::install(&worktree, &exe)? {
-        Installed::Added => "installed the PreToolUse hook",
-        Installed::Updated => "updated the PreToolUse hook",
-        Installed::AlreadyPresent => "the PreToolUse hook was already installed",
+        Installed::Added => {
+            "installed the hooks (PreToolUse, PostToolUse, UserPromptSubmit, \
+                             SessionStart, Stop)"
+        }
+        Installed::Updated => "updated the hooks",
+        Installed::AlreadyPresent => "the hooks were already installed",
     };
     say(&format!("{word} in .claude/settings.local.json\n"));
     Ok(ExitCode::SUCCESS)

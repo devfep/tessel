@@ -20,7 +20,8 @@ log, commit or paste it.
 Then, once per worktree:
 
 ```
-tessel hook install     # writes the PreToolUse hook, pinned to this worktree, to
+tessel hook install     # writes the hooks (PreToolUse, PostToolUse, UserPromptSubmit,
+                        # SessionStart, Stop), pinned to this worktree, to
                         # .claude/settings.local.json; run again after moving the worktree
 tessel start "<one line: what this work is for>" [--task <issue-id>]
 ```
@@ -35,7 +36,13 @@ intent when they are denied, so make it specific. To change it, `tessel stop`, t
    every later claim is added to it (an amend under a new fence), so mixed modes share it.
    `--new`, `--assume` and `--wait` make a separate claim, because an amend carries none of them.
 2. Edit.
-3. `tessel inbox` between steps and before finishing. Act on every line marked `!`.
+3. Notices arrive in your turn: the installed hooks add unread inbox items (quoted, at most 10
+   at a time, then `+K more`) after each tool call, with each prompt and at session start. Act on
+   every line marked `!`. `tessel inbox` still shows the same items (they share one read cursor),
+   and `--all` shows the read ones. Without the hooks, run it between steps and before finishing.
+   While a submission is pending, the `Stop` hook waits up to two minutes for the steward and
+   keeps you going if it was rejected or is still queued; if the daemon is not running it lets you
+   stop.
 4. Commit. To have it merged, push to your fork and `tessel submit`; otherwise `tessel release
    <id>` (with no id it releases every unsubmitted claim, so commit first). `tessel stop` releases
    everything and stops the daemon; claims it could not confirm released stay held until their

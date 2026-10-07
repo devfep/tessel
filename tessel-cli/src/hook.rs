@@ -18,8 +18,54 @@ use crate::state::write_atomic;
 use crate::worktree::{Worktree, WorktreeError};
 
 const HOOK_TIMEOUT: Duration = Duration::from_secs(15);
-const HOOK_MATCHER: &str = "Edit|MultiEdit|Write|NotebookEdit";
-const HOOK_SUBCOMMAND: &str = "hook pre-edit";
+
+/// One entry `hook install` writes into `settings.local.json`.
+struct HookSpec {
+    event: &'static str,
+    /// The tools the hook runs for; `None` runs it for every occurrence of the event.
+    matcher: Option<&'static str>,
+    subcommand: &'static str,
+    /// Claude Code's own timeout in seconds; `None` leaves its default.
+    timeout: Option<u64>,
+}
+
+const PRE_EDIT: HookSpec = HookSpec {
+    event: "PreToolUse",
+    matcher: Some("Edit|MultiEdit|Write|NotebookEdit"),
+    subcommand: "hook pre-edit",
+    timeout: None,
+};
+
+/// Longer than the 120 s the stop hook waits for the steward.
+const STOP_TIMEOUT_SECS: u64 = 150;
+
+const HOOKS: [HookSpec; 5] = [
+    PRE_EDIT,
+    HookSpec {
+        event: "PostToolUse",
+        matcher: None,
+        subcommand: "hook inbox",
+        timeout: Some(10),
+    },
+    HookSpec {
+        event: "UserPromptSubmit",
+        matcher: None,
+        subcommand: "hook inbox",
+        timeout: Some(10),
+    },
+    HookSpec {
+        event: "SessionStart",
+        matcher: None,
+        subcommand: "hook inbox",
+        timeout: Some(10),
+    },
+    HookSpec {
+        event: "Stop",
+        matcher: None,
+        subcommand: "hook stop",
+        timeout: Some(STOP_TIMEOUT_SECS),
+    },
+];
 
 /// Exit code that lets the tool run.
 const EXIT_ALLOW: u8 = 0;
@@ -355,14 +401,26 @@ pub enum InstallError {
     Write { path: String, message: String },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Installed {
     Added,
     Updated,
     AlreadyPresent,
 }
 
-/// Merges the hook entry into `<worktree>/.claude/settings.local.json`, keeping everything else.
+impl Installed {
+    /// The outcome of two entries together: updated if either was (something already there
+    /// changed), else added if either was, else already present.
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Updated, _) | (_, Self::Updated) => Self::Updated,
+            (Self::Added, _) | (_, Self::Added) => Self::Added,
+            (Self::AlreadyPresent, Self::AlreadyPresent) => Self::AlreadyPresent,
+        }
+    }
+}
+
+/// Merges the hook entries into `<worktree>/.claude/settings.local.json`, keeping everything else.
 /// Running it twice changes nothing the second time.
 pub fn install(worktree: &Worktree, exe: &Path) -> Result<Installed, InstallError> {
     let path = worktree.root.join(".claude").join("settings.local.json");
@@ -386,19 +444,23 @@ pub fn install(worktree: &Worktree, exe: &Path) -> Result<Installed, InstallErro
             reason: "the tessel binary or the worktree path is not valid UTF-8".into(),
         });
     };
-    // Never write a hook `timeout` below `HOOK_TIMEOUT`: Claude Code does not block the edit when a
-    // hook times out, so a short timeout would let an edit through while the daemon is still
-    // answering.
-    let command = format!(
-        "{} {HOOK_SUBCOMMAND} --root {}",
-        shell_quote(exe),
-        shell_quote(root)
-    );
     let shape = |reason: &str| InstallError::Shape {
         path: shown.clone(),
         reason: reason.into(),
     };
-    let outcome = merge_entry(&mut doc, &command).map_err(shape)?;
+    let mut outcome = Installed::AlreadyPresent;
+    for spec in &HOOKS {
+        // Never write the pre-edit hook a `timeout` below `HOOK_TIMEOUT`: Claude Code does not
+        // block the edit when a hook times out, so a short timeout would let an edit through
+        // while the daemon is still answering.
+        let command = format!(
+            "{} {} --root {}",
+            shell_quote(exe),
+            spec.subcommand,
+            shell_quote(root)
+        );
+        outcome = outcome.combine(merge_entry(&mut doc, spec, &command).map_err(shape)?);
+    }
     if outcome == Installed::AlreadyPresent {
         return Ok(outcome);
     }
@@ -415,57 +477,87 @@ pub fn install(worktree: &Worktree, exe: &Path) -> Result<Installed, InstallErro
     Ok(outcome)
 }
 
-fn merge_entry(doc: &mut Value, command: &str) -> Result<Installed, &'static str> {
+fn merge_entry(doc: &mut Value, spec: &HookSpec, command: &str) -> Result<Installed, &'static str> {
     let root = doc.as_object_mut().ok_or("top level is not an object")?;
     let hooks = root
         .entry("hooks")
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .ok_or("`hooks` is not an object")?;
-    let pre = hooks
-        .entry("PreToolUse")
+    let entries = hooks
+        .entry(spec.event)
         .or_insert_with(|| json!([]))
         .as_array_mut()
-        .ok_or("`hooks.PreToolUse` is not an array")?;
+        .ok_or("`hooks.<event>` is not an array")?;
     let mut outcome = None;
-    for entry in pre.iter_mut() {
+    for entry in entries.iter_mut() {
         let Some(commands) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
             continue;
         };
+        let mut ours = false;
         for hook in commands {
-            let ours = hook
+            let is_ours = hook
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(is_our_command);
-            if !ours {
+                .is_some_and(|text| is_our_command(text, spec.subcommand));
+            if !is_ours {
                 continue;
             }
-            if hook["command"] == json!(command) {
-                outcome = outcome.or(Some(Installed::AlreadyPresent));
-            } else {
+            ours = true;
+            outcome = outcome.or(Some(Installed::AlreadyPresent));
+            if hook["command"] != json!(command) {
                 hook["command"] = json!(command);
                 outcome = Some(Installed::Updated);
             }
+            if let Some(timeout) = spec.timeout {
+                if hook["timeout"] != json!(timeout) {
+                    hook["timeout"] = json!(timeout);
+                    outcome = Some(Installed::Updated);
+                }
+            }
         }
-        if outcome.is_some() && entry["matcher"] != json!(HOOK_MATCHER) {
-            entry["matcher"] = json!(HOOK_MATCHER);
+        if ours && set_matcher(entry, spec.matcher) {
             outcome = Some(Installed::Updated);
         }
     }
     if let Some(outcome) = outcome {
         return Ok(outcome);
     }
-    pre.push(json!({
-        "matcher": HOOK_MATCHER,
-        "hooks": [{ "type": "command", "command": command }],
-    }));
+    let mut hook = json!({ "type": "command", "command": command });
+    if let Some(timeout) = spec.timeout {
+        hook["timeout"] = json!(timeout);
+    }
+    let mut entry = json!({ "hooks": [hook] });
+    if let Some(matcher) = spec.matcher {
+        entry["matcher"] = json!(matcher);
+    }
+    entries.push(entry);
     Ok(Installed::Added)
 }
 
-/// Our hook, in the old form (`<exe> hook pre-edit`) or the current one (`... --root <dir>`).
-fn is_our_command(command: &str) -> bool {
+/// Makes `entry`'s matcher `matcher`; true when that changed it.
+fn set_matcher(entry: &mut Value, matcher: Option<&str>) -> bool {
+    let Some(object) = entry.as_object_mut() else {
+        return false;
+    };
+    match matcher {
+        Some(matcher) if object.get("matcher") != Some(&json!(matcher)) => {
+            object.insert("matcher".into(), json!(matcher));
+            true
+        }
+        None if object.contains_key("matcher") => {
+            object.remove("matcher");
+            true
+        }
+        Some(_) | None => false,
+    }
+}
+
+/// Our hook for `subcommand`, in the old form (`<exe> hook pre-edit`) or the current one
+/// (`... --root <dir>`).
+fn is_our_command(command: &str, subcommand: &str) -> bool {
     command
-        .find(HOOK_SUBCOMMAND)
+        .find(subcommand)
         .is_some_and(|at| command[..at].contains("tessel"))
 }
 
@@ -483,6 +575,8 @@ fn shell_quote(text: &str) -> String {
 mod tests {
     use super::*;
 
+    const CMD: &str = "/bin/tessel hook pre-edit";
+
     #[test]
     fn merge_keeps_other_hooks_and_is_idempotent() {
         let mut doc = json!({
@@ -491,13 +585,10 @@ mod tests {
                 { "matcher": "Bash", "hooks": [{ "type": "command", "command": "other" }] }
             ] }
         });
-        assert_eq!(
-            merge_entry(&mut doc, "/bin/tessel hook pre-edit"),
-            Ok(Installed::Added)
-        );
+        assert_eq!(merge_entry(&mut doc, &PRE_EDIT, CMD), Ok(Installed::Added));
         let once = doc.clone();
         assert_eq!(
-            merge_entry(&mut doc, "/bin/tessel hook pre-edit"),
+            merge_entry(&mut doc, &PRE_EDIT, CMD),
             Ok(Installed::AlreadyPresent)
         );
         assert_eq!(doc, once);
@@ -508,37 +599,101 @@ mod tests {
     #[test]
     fn merge_upgrades_an_old_entry_without_root_in_place() {
         let mut doc = json!({});
-        merge_entry(&mut doc, "/bin/tessel hook pre-edit").unwrap();
+        merge_entry(&mut doc, &PRE_EDIT, CMD).unwrap();
         let new = "/bin/tessel hook pre-edit --root /work/a";
-        assert_eq!(merge_entry(&mut doc, new), Ok(Installed::Updated));
+        assert_eq!(
+            merge_entry(&mut doc, &PRE_EDIT, new),
+            Ok(Installed::Updated)
+        );
         assert_eq!(doc["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(1));
         assert_eq!(doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"], new);
-        assert_eq!(merge_entry(&mut doc, new), Ok(Installed::AlreadyPresent));
+        assert_eq!(
+            merge_entry(&mut doc, &PRE_EDIT, new),
+            Ok(Installed::AlreadyPresent)
+        );
         let moved = "/bin/tessel hook pre-edit --root /work/b";
-        assert_eq!(merge_entry(&mut doc, moved), Ok(Installed::Updated));
+        assert_eq!(
+            merge_entry(&mut doc, &PRE_EDIT, moved),
+            Ok(Installed::Updated)
+        );
     }
 
     #[test]
     fn merge_updates_a_moved_binary_in_place() {
         let mut doc = json!({});
-        merge_entry(&mut doc, "/old/tessel hook pre-edit").unwrap();
+        merge_entry(&mut doc, &PRE_EDIT, "/old/tessel hook pre-edit").unwrap();
         assert_eq!(
-            merge_entry(&mut doc, "/new/tessel hook pre-edit"),
+            merge_entry(&mut doc, &PRE_EDIT, CMD),
             Ok(Installed::Updated)
         );
         assert_eq!(doc["hooks"]["PreToolUse"].as_array().map(Vec::len), Some(1));
-        assert_eq!(
-            doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            "/new/tessel hook pre-edit"
-        );
+        assert_eq!(doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"], CMD);
     }
 
     #[test]
     fn merge_refuses_a_malformed_settings_file() {
         let mut doc = json!({ "hooks": [] });
-        assert!(merge_entry(&mut doc, "x tessel hook pre-edit").is_err());
+        assert!(merge_entry(&mut doc, &PRE_EDIT, "x tessel hook pre-edit").is_err());
         let mut doc = json!([]);
-        assert!(merge_entry(&mut doc, "x tessel hook pre-edit").is_err());
+        assert!(merge_entry(&mut doc, &PRE_EDIT, "x tessel hook pre-edit").is_err());
+        let mut doc = json!({ "hooks": { "Stop": {} } });
+        assert!(merge_entry(&mut doc, &HOOKS[4], "x tessel hook stop").is_err());
+    }
+
+    #[test]
+    fn each_subcommand_finds_only_its_own_entry() {
+        let inbox = &HOOKS[1];
+        let stop = &HOOKS[4];
+        assert!(is_our_command(
+            "/bin/tessel hook inbox --root /w",
+            inbox.subcommand
+        ));
+        assert!(!is_our_command(
+            "/bin/tessel hook inbox --root /w",
+            stop.subcommand
+        ));
+        assert!(!is_our_command("/bin/other hook inbox", inbox.subcommand));
+        let mut doc = json!({ "hooks": { "Stop": [
+            { "hooks": [{ "type": "command", "command": "their-stop-hook" }] }
+        ] } });
+        assert_eq!(
+            merge_entry(&mut doc, stop, "/bin/tessel hook stop --root /w"),
+            Ok(Installed::Added)
+        );
+        assert_eq!(doc["hooks"]["Stop"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            doc["hooks"]["Stop"][1]["hooks"][0]["timeout"],
+            STOP_TIMEOUT_SECS
+        );
+        assert!(doc["hooks"]["Stop"][1].get("matcher").is_none());
+    }
+
+    #[test]
+    fn merge_resets_a_changed_timeout_and_a_stray_matcher() {
+        let stop = &HOOKS[4];
+        let command = "/bin/tessel hook stop --root /w";
+        let mut doc = json!({ "hooks": { "Stop": [
+            { "matcher": "x", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }
+        ] } });
+        assert_eq!(merge_entry(&mut doc, stop, command), Ok(Installed::Updated));
+        assert_eq!(
+            doc["hooks"]["Stop"][0]["hooks"][0]["timeout"],
+            STOP_TIMEOUT_SECS
+        );
+        assert!(doc["hooks"]["Stop"][0].get("matcher").is_none());
+        assert_eq!(
+            merge_entry(&mut doc, stop, command),
+            Ok(Installed::AlreadyPresent)
+        );
+    }
+
+    #[test]
+    fn combined_outcomes_report_a_change_to_an_existing_entry_first() {
+        use Installed::{Added, AlreadyPresent, Updated};
+        assert_eq!(AlreadyPresent.combine(AlreadyPresent), AlreadyPresent);
+        assert_eq!(AlreadyPresent.combine(Added), Added);
+        assert_eq!(Added.combine(Updated), Updated);
+        assert_eq!(Updated.combine(Added), Updated);
     }
 
     #[test]

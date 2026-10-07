@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod daemon;
 mod hook;
+mod inbox_hook;
 mod plan;
 mod reconcile;
 mod render;
@@ -126,7 +127,24 @@ enum HookAction {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// Add the hook to `.claude/settings.local.json` in this worktree.
+    /// The `PostToolUse`, `UserPromptSubmit` and `SessionStart` hook: puts unread inbox notices
+    /// into the agent's context.
+    Inbox {
+        /// The worktree whose inbox to read; `hook install` writes it. Falls back to
+        /// `$CLAUDE_PROJECT_DIR`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// The `Stop` hook: keeps the agent from ending its turn while its submission is pending.
+    Stop {
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// How long to wait for the steward before blocking once, in milliseconds. The
+        /// installed hook timeout (150 s) must stay above it.
+        #[arg(long, default_value_t = 120_000, hide = true)]
+        wait_ms: u64,
+    },
+    /// Add the hooks to `.claude/settings.local.json` in this worktree.
     Install,
 }
 
@@ -160,6 +178,10 @@ fn main() -> ExitCode {
             block_on_panic();
             hook::EXIT_BLOCK
         }
+        // These hooks fail open: a failure must never block the agent.
+        Command::Hook {
+            action: HookAction::Inbox { .. } | HookAction::Stop { .. },
+        } => 0,
         Command::Start { .. }
         | Command::Claim { .. }
         | Command::Status { .. }
