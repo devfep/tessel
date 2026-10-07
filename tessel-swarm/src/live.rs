@@ -3,8 +3,8 @@
 //!
 //! Every route is built from a `ScratchRepo`, which only the target guard can produce, so this
 //! module cannot address `tessel-dogfood`, `demo` or any other repository. The steward is called
-//! with `curl` reading its configuration from stdin, so the admin token is never in an argument
-//! list, the environment of another process or the output.
+//! with `curl` reading its configuration from stdin (see `Transport`), so the admin token is never
+//! in an argument list, the environment of another process or the output.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -19,9 +19,70 @@ use crate::endpoint::{Endpoint, Remote, Token};
 use crate::git::{self, Git};
 use crate::guard::ScratchRepo;
 
+/// What the steward answered: the HTTP status and the body text.
+pub struct Reply {
+    pub status: u16,
+    pub body: String,
+}
+
+/// How a POST reaches the steward. The one production implementation runs `curl`; tests answer
+/// from memory, because the gate's Sandbox image has no `curl`.
+pub trait Transport {
+    /// POSTs `{}` to `url` with `Authorization: Bearer <bearer>`.
+    fn post(&self, url: &str, bearer: &str) -> Result<Reply>;
+}
+
+/// Runs `curl` with its configuration on stdin, so the bearer token is never in an argument list
+/// or the environment of another process.
+struct Curl;
+
+impl Transport for Curl {
+    fn post(&self, url: &str, bearer: &str) -> Result<Reply> {
+        let config = format!(
+            "url = \"{url}\"\nrequest = \"POST\"\nheader = \"Authorization: Bearer {bearer}\"\n\
+             header = \"Content-Type: application/json\"\ndata = \"{{}}\"\n"
+        );
+        let mut child = Command::new("curl")
+            .args([
+                "-sS",
+                "--max-time",
+                "120",
+                "-K",
+                "-",
+                "-w",
+                "\n%{http_code}",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("cannot run curl; the live target needs it to call the steward")?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("curl has no stdin"))?
+            .write_all(config.as_bytes())?;
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let (body, status) = text.rsplit_once('\n').unwrap_or(("", &text));
+        let status = status
+            .trim()
+            .parse()
+            .with_context(|| format!("curl reported the HTTP status {status:?}"))?;
+        Ok(Reply {
+            status,
+            body: body.to_string(),
+        })
+    }
+}
+
 pub struct Steward {
     base: String,
     admin: Token,
+    transport: Box<dyn Transport>,
 }
 
 fn is_name(text: &str) -> bool {
@@ -50,6 +111,10 @@ fn is_local_http(url: &str) -> bool {
 impl Steward {
     /// `base` is the steward Worker's origin, for example `https://tessel-steward.example.dev`.
     pub fn new(base: &str, admin: Token) -> Result<Self> {
+        Self::with_transport(base, admin, Box::new(Curl))
+    }
+
+    fn with_transport(base: &str, admin: Token, transport: Box<dyn Transport>) -> Result<Self> {
         let base = base.trim_end_matches('/').to_string();
         if !(base.starts_with("https://") || is_local_http(&base)) {
             bail!(
@@ -71,52 +136,33 @@ impl Steward {
         {
             bail!("STEWARD_ADMIN_TOKEN is empty or has a character that cannot go in a header");
         }
-        Ok(Self { base, admin })
+        Ok(Self {
+            base,
+            admin,
+            transport,
+        })
     }
 
     fn post(&self, path: &str) -> Result<Value> {
-        let config = format!(
-            "url = \"{}{path}\"\nrequest = \"POST\"\nheader = \"Authorization: Bearer {}\"\n\
-             header = \"Content-Type: application/json\"\ndata = \"{{}}\"\n",
-            self.base,
-            self.admin.expose()
-        );
-        let mut child = Command::new("curl")
-            .args([
-                "-sS",
-                "--max-time",
-                "120",
-                "-K",
-                "-",
-                "-w",
-                "\n%{http_code}",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("cannot run curl; the live target needs it to call the steward")?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("curl has no stdin"))?
-            .write_all(config.as_bytes())?;
-        let output = child.wait_with_output()?;
+        let url = format!("{}{path}", self.base);
         let scrub = |text: &str| text.replace(self.admin.expose(), "[redacted]");
-        if !output.status.success() {
-            let why = String::from_utf8_lossy(&output.stderr);
-            bail!("POST {path} failed: {}", scrub(why.trim()));
-        }
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let (body, status) = text.rsplit_once('\n').unwrap_or(("", &text));
-        if !status.starts_with('2') {
-            let detail = serde_json::from_str::<Value>(body)
+        let reply = self
+            .transport
+            .post(&url, self.admin.expose())
+            .map_err(|error| anyhow!("POST {path} failed: {}", scrub(&format!("{error:#}"))))?;
+        if !(200..300).contains(&reply.status) {
+            let detail = serde_json::from_str::<Value>(&reply.body)
                 .ok()
                 .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
                 .unwrap_or_default();
-            bail!("POST {path} answered HTTP {status}: {}", scrub(&detail));
+            bail!(
+                "POST {path} answered HTTP {}: {}",
+                reply.status,
+                scrub(&detail)
+            );
         }
-        serde_json::from_str(body).with_context(|| format!("POST {path} did not answer with JSON"))
+        serde_json::from_str(&reply.body)
+            .with_context(|| format!("POST {path} did not answer with JSON"))
     }
 
     fn field(reply: &Value, key: &str, path: &str) -> Result<String> {
@@ -261,7 +307,7 @@ pub fn provision(setup: &LiveSetup<'_>) -> Result<Endpoint> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -305,103 +351,102 @@ mod tests {
         }
     }
 
-    const SECRET: &str = "write-token-that-must-not-print";
+    const ADMIN: &str = "admin-token-that-must-not-print";
+    const ORIGIN: &str = "https://steward.test";
 
-    /// A steward on localhost that answers `count` POSTs: a repo or fork answers with a bare
-    /// repository under `root` as its remote, or with HTTP 409 and `refusal` as its error text.
-    /// Returns its origin and the paths it was asked for; it stops waiting after five seconds,
-    /// so a request that never comes fails the test.
-    fn fake_steward(
-        root: &Path,
-        count: usize,
-        refusal: Option<&'static str>,
-    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let origin = format!("http://localhost:{}", listener.local_addr().unwrap().port());
-        let root = root.to_path_buf();
-        let handle = std::thread::spawn(move || {
-            let mut paths = Vec::new();
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while paths.len() < count && std::time::Instant::now() < deadline {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    std::thread::sleep(Duration::from_millis(10));
-                    continue;
-                };
-                stream.set_nonblocking(false).unwrap();
-                let path = read_post(&mut stream);
-                if let Some(error) = refusal {
-                    let body = format!("{{\"error\":\"{error}\"}}");
-                    let reply = format!(
-                        "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\n\
-                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    stream.write_all(reply.as_bytes()).unwrap();
-                    paths.push(path);
-                    continue;
-                }
-                let bare = root.join(path.trim_start_matches('/').replace('/', "_"));
-                let init = Command::new("git")
-                    .args(["init", "-q", "--bare"])
-                    .arg(&bare)
-                    .status();
-                assert!(init.unwrap().success());
-                let body = format!(
-                    "{{\"remote\":\"{}\",\"token\":\"{SECRET}\"}}",
-                    bare.display()
-                );
-                let reply = format!(
-                    "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream.write_all(reply.as_bytes()).unwrap();
-                paths.push(path);
-            }
-            paths
-        });
-        (origin, handle)
+    enum Answer {
+        /// 201 with a new bare repository under the root as the remote.
+        Remotes,
+        Refuse(u16, &'static str),
+        Fail(&'static str),
     }
 
-    fn read_post(stream: &mut std::net::TcpStream) -> String {
-        use std::io::Read;
-        let mut seen = Vec::new();
-        let mut byte = [0u8; 1];
-        while !seen.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).unwrap();
-            seen.push(byte[0]);
-        }
-        let head = String::from_utf8(seen).unwrap();
-        let length = head
-            .to_ascii_lowercase()
-            .lines()
-            .find_map(|l| {
-                l.strip_prefix("content-length: ")
-                    .map(|n| n.trim().parse().unwrap())
+    /// A steward that answers from memory and records each POST's URL and bearer token.
+    struct Fake {
+        root: std::path::PathBuf,
+        answer: Answer,
+        seen: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl Fake {
+        fn new(root: &Path, answer: Answer) -> Arc<Self> {
+            Arc::new(Self {
+                root: root.to_path_buf(),
+                answer,
+                seen: std::sync::Mutex::new(Vec::new()),
             })
-            .unwrap_or(0usize);
-        let mut body = vec![0u8; length];
-        stream.read_exact(&mut body).unwrap();
-        head.split_whitespace().nth(1).unwrap().to_string()
+        }
+
+        fn paths(&self) -> Vec<String> {
+            let seen = self.seen.lock().unwrap();
+            let strip = |(url, _): &(String, String)| url.strip_prefix(ORIGIN).unwrap().to_string();
+            seen.iter().map(strip).collect()
+        }
+
+        fn steward(self: &Arc<Self>, admin: &str) -> Steward {
+            let transport = Box::new(Arc::clone(self));
+            Steward::with_transport(ORIGIN, Token::new(admin.into()), transport).unwrap()
+        }
+    }
+
+    impl Transport for Arc<Fake> {
+        fn post(&self, url: &str, bearer: &str) -> Result<Reply> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((url.to_string(), bearer.to_string()));
+            match &self.answer {
+                Answer::Fail(why) => bail!("{why}"),
+                Answer::Refuse(status, error) => Ok(Reply {
+                    status: *status,
+                    body: format!("{{\"error\":\"{error}\"}}"),
+                }),
+                Answer::Remotes => {
+                    let path = url.strip_prefix(ORIGIN).unwrap();
+                    let bare = self
+                        .root
+                        .join(path.trim_start_matches('/').replace('/', "_"));
+                    let init = Command::new("git")
+                        .args(["init", "-q", "--bare"])
+                        .arg(&bare)
+                        .status();
+                    if !init.is_ok_and(|status| status.success()) {
+                        bail!("cannot create a bare repository");
+                    }
+                    Ok(Reply {
+                        status: 201,
+                        body: format!(
+                            "{{\"remote\":\"{}\",\"token\":\"write-token\"}}",
+                            bare.display()
+                        ),
+                    })
+                }
+            }
+        }
     }
 
     #[test]
-    fn a_demo_repo_gets_the_starting_commit_and_a_fork_per_agent_without_a_token_in_sight() {
+    fn a_demo_repo_gets_the_starting_commit_and_a_fork_per_agent() {
         let dir = tempfile::tempdir().unwrap();
-        let (origin, server) = fake_steward(dir.path(), 3, None);
-        let steward = Steward::new(&origin, Token::new("admin".into())).unwrap();
+        let fake = Fake::new(dir.path(), Answer::Remotes);
+        let steward = fake.steward(ADMIN);
         let repo = ScratchRepo::parse("swarm-demo").unwrap();
         let agents = vec!["a1".to_string(), "a2".to_string()];
         let made = create_demo_repo(&steward, &repo, &dir.path().join("scratch"), &agents).unwrap();
         assert_eq!(
-            server.join().unwrap(),
+            fake.paths(),
             [
                 "/repos/swarm-demo",
                 "/repos/swarm-demo/forks/swarm-demo--a1",
                 "/repos/swarm-demo/forks/swarm-demo--a2",
             ]
         );
+        assert!(fake
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, bearer)| bearer == ADMIN));
         let reference = tempfile::tempdir().unwrap();
         let commit = git::init_repo(&Git::new(reference.path()), &crate::demo::base_tree());
         assert_eq!(Some(made.commit.as_str()), commit.ok().as_deref());
@@ -416,29 +461,40 @@ mod tests {
     #[test]
     fn the_admin_token_is_scrubbed_from_a_refusal_the_steward_echoes() {
         let dir = tempfile::tempdir().unwrap();
-        let admin = "admin-token-that-must-not-print";
         let echoed = "ALREADY_EXISTS for bearer admin-token-that-must-not-print";
-        let (origin, server) = fake_steward(dir.path(), 1, Some(echoed));
-        let steward = Steward::new(&origin, Token::new(admin.into())).unwrap();
+        let fake = Fake::new(dir.path(), Answer::Refuse(409, echoed));
         let repo = ScratchRepo::parse("swarm-demo").unwrap();
-        let error = create_demo_repo(&steward, &repo, dir.path(), &[]).unwrap_err();
-        assert_eq!(server.join().unwrap(), ["/repos/swarm-demo"]);
+        let error = create_demo_repo(&fake.steward(ADMIN), &repo, dir.path(), &[]).unwrap_err();
+        assert_eq!(fake.paths(), ["/repos/swarm-demo"]);
         let message = format!("{error:#}");
         assert!(message.contains("HTTP 409"), "{message}");
         assert!(message.contains("[redacted]"), "{message}");
-        assert!(!message.contains(admin), "{message}");
+        assert!(!message.contains(ADMIN), "{message}");
+    }
+
+    #[test]
+    fn the_admin_token_is_scrubbed_from_a_transport_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let why = "curl: (22) rejected bearer admin-token-that-must-not-print";
+        let fake = Fake::new(dir.path(), Answer::Fail(why));
+        let repo = ScratchRepo::parse("swarm-demo").unwrap();
+        let error = create_demo_repo(&fake.steward(ADMIN), &repo, dir.path(), &[]).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("[redacted]"), "{message}");
+        assert!(!message.contains(ADMIN), "{message}");
     }
 
     #[test]
     fn a_bad_agent_name_is_refused_before_anything_is_created() {
         let dir = tempfile::tempdir().unwrap();
-        let steward = Steward::new("http://localhost:1", Token::new("admin".into())).unwrap();
+        let fake = Fake::new(dir.path(), Answer::Remotes);
         let repo = ScratchRepo::parse("swarm-demo").unwrap();
         let agents = vec!["a1".to_string(), "a/b".to_string()];
-        let error = create_demo_repo(&steward, &repo, dir.path(), &agents).unwrap_err();
+        let error = create_demo_repo(&fake.steward(ADMIN), &repo, dir.path(), &agents).unwrap_err();
         assert!(
             error.to_string().contains("not a valid agent name"),
             "{error:#}"
         );
+        assert!(fake.paths().is_empty(), "no request was made");
     }
 }
