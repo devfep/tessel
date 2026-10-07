@@ -901,8 +901,10 @@ async fn a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive() {
     run.server.shutdown().await;
 }
 
-/// Waits until the log shows an agent queued, then closes that agent's socket from the
-/// coordinator's side without withdrawing its queued request. Returns the agent.
+const QUEUED_FOR: Duration = Duration::from_millis(300);
+
+/// Waits until the log shows an agent queued and then `QUEUED_FOR` more, then closes that agent's
+/// socket from the coordinator's side without withdrawing its queued request. Returns the agent.
 async fn cut_the_first_waiter(log: local::LogReader, cutter: local::Cutter) -> String {
     loop {
         let queued = log.events().into_iter().find_map(|e| {
@@ -912,6 +914,7 @@ async fn cut_the_first_waiter(log: local::LogReader, cutter: local::Cutter) -> S
             Some(agent.0)
         });
         if let Some(agent) = queued {
+            tokio::time::sleep(QUEUED_FOR).await;
             assert!(cutter.cut(&agent), "{agent} had an open socket");
             return agent;
         }
@@ -944,6 +947,12 @@ async fn an_agent_whose_connection_the_coordinator_closes_while_it_waits_ends_on
         note.contains("1011") && note.contains("coordinator error"),
         "{note}"
     );
+    let queued_for = u64::try_from(QUEUED_FOR.as_millis()).unwrap();
+    assert!(
+        cut_off.waited_ms >= queued_for,
+        "its queue wait is counted: {cut_off:?}"
+    );
+    assert_eq!(cut_off.work_ms, 0, "it never got to work: {cut_off:?}");
     let other = result.results.iter().find(|r| r.agent != waiter).unwrap();
     assert_eq!(other.result, Resolution::Merged, "{other:?}");
     assert_eq!(result.summary.merges, 1);
@@ -972,4 +981,84 @@ async fn an_agent_whose_connection_the_coordinator_closes_while_it_waits_ends_on
     };
     assert_accounted(&run, 2);
     run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_tasks_a_cut_off_agent_never_took_are_done_by_the_others() {
+    let tasks = [
+        body(1, "unitPrice"),
+        body(2, "unitPrice"),
+        body(3, "unitPrice"),
+        body(4, "unitPrice"),
+    ];
+    let config = OnConfig {
+        heartbeat_every: Duration::from_millis(100),
+        ..config(2, Policy::Wait, 800)
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path(), 600).await;
+    let cut = tokio::spawn(cut_the_first_waiter(server.reader(), server.cutter()));
+    let agents = scratch.path().join("agents");
+    let result = on::run_on(&server.endpoint, &tasks, &agents, &config)
+        .await
+        .unwrap();
+    let waiter = cut.await.unwrap();
+    let outcomes: Vec<(&str, Resolution)> = result
+        .results
+        .iter()
+        .map(|r| (r.agent.as_str(), r.result))
+        .collect();
+    let disconnected: Vec<&(&str, Resolution)> = outcomes
+        .iter()
+        .filter(|(_, r)| *r == Resolution::Disconnected)
+        .collect();
+    assert_eq!(disconnected, [&(waiter.as_str(), Resolution::Disconnected)]);
+    let merged = outcomes
+        .iter()
+        .filter(|(agent, r)| *r == Resolution::Merged && *agent != waiter)
+        .count();
+    assert_eq!(merged, 3, "{outcomes:?}");
+    let run = Run {
+        server,
+        result,
+        _scratch: scratch,
+    };
+    assert_accounted(&run, 4);
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_cut_off_while_it_works_has_its_work_time_counted_as_work() {
+    let config = OnConfig {
+        heartbeat_every: Duration::from_millis(100),
+        ..config(1, Policy::Wait, 1500)
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path(), 600).await;
+    let (log, cutter) = (server.reader(), server.cutter());
+    let cut = tokio::spawn(async move {
+        while !log
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::ClaimGranted { .. }))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(QUEUED_FOR).await;
+        assert!(cutter.cut("a01"), "a01 had an open socket");
+    });
+    let agents = scratch.path().join("agents");
+    let result = on::run_on(&server.endpoint, &[body(1, "unitPrice")], &agents, &config)
+        .await
+        .unwrap();
+    cut.await.unwrap();
+    let r = &result.results[0];
+    assert_eq!(r.result, Resolution::Disconnected, "{r:?}");
+    assert!(
+        r.work_ms >= 1500,
+        "the work it did is counted as work: {r:?}"
+    );
+    assert!(r.waited_ms < 1500, "and not as waiting: {r:?}");
+    assert_eq!(result.summary.merges, 0);
+    server.shutdown().await;
 }

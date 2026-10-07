@@ -525,14 +525,22 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
         let Some(mut item) = lock(&ctx.queue).pop_front() else {
             return Ok(());
         };
-        let step = match run_task(&ctx, &work, &mut conn, &name, &item.task).await {
+        let job = Job {
+            work: &work,
+            agent: &name,
+            task: &item.task,
+        };
+        let mut clock = Clock::default();
+        let step = match run_task(&ctx, &job, &mut conn, &mut clock).await {
             Ok(step) => step,
             Err(error) => {
                 let Some(closed) = error.downcast_ref::<Closed>() else {
                     return Err(error);
                 };
+                let (waited_ms, work_ms) = clock.spent();
+                item.waited_ms += waited_ms;
                 let note = Some(closed.to_string());
-                record(&ctx, &name, &item, Resolution::Disconnected, 0, note);
+                record(&ctx, &name, &item, Resolution::Disconnected, work_ms, note);
                 return Ok(());
             }
         };
@@ -634,15 +642,34 @@ struct Job<'a> {
     task: &'a Task,
 }
 
-async fn run_task(
-    ctx: &Ctx,
-    work: &Git,
-    conn: &mut Conn,
-    agent: &str,
-    task: &Task,
-) -> Result<Step> {
-    let (req, scopes) = send_claim(ctx, work, conn, task).await?;
+/// When a task's claim was sent and granted, and its work time once that is fixed: what an agent
+/// whose connection ends mid-task has spent on it.
+#[derive(Default)]
+struct Clock {
+    claimed: Option<Instant>,
+    granted: Option<Instant>,
+    work_ms: Option<u64>,
+}
+
+impl Clock {
+    /// Waiting (claim sent to grant, or to now if no grant came) and work (grant to the push, or
+    /// to now if the work was cut short), measured the way a finished task's are.
+    fn spent(&self) -> (u64, u64) {
+        let waited = match (self.claimed, self.granted) {
+            (Some(claimed), Some(granted)) => granted.saturating_duration_since(claimed),
+            (Some(claimed), None) => claimed.elapsed(),
+            (None, Some(_) | None) => Duration::ZERO,
+        };
+        let waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
+        let work_ms = self.work_ms.or(self.granted.map(millis)).unwrap_or(0);
+        (waited_ms, work_ms)
+    }
+}
+
+async fn run_task(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, clock: &mut Clock) -> Result<Step> {
+    let (req, scopes) = send_claim(ctx, job.work, conn, job.task).await?;
     let claimed = Instant::now();
+    clock.claimed = Some(claimed);
     let answer = await_grant(conn, req, scopes, ctx.config.task_timeout).await?;
     let waited_ms = millis(claimed);
     let held = match answer {
@@ -658,8 +685,8 @@ async fn run_task(
             return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0).waited(waited_ms))
         }
     };
-    let job = Job { work, agent, task };
-    let step = work_and_submit(ctx, &job, conn, held).await?;
+    clock.granted = Some(Instant::now());
+    let step = work_and_submit(ctx, job, conn, held, clock).await?;
     Ok(step.waited(waited_ms))
 }
 
@@ -697,7 +724,13 @@ async fn send_claim(
 /// With a grant in hand: edits the trunk as it stands now, commits, pushes and submits. A shadow
 /// claim skips the simulated work time, so that its submission is on record before the work that
 /// blocked it can merge, and is then left open: releasing it would drop its verification.
-async fn work_and_submit(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, held: Held) -> Result<Step> {
+async fn work_and_submit(
+    ctx: &Ctx,
+    job: &Job<'_>,
+    conn: &mut Conn,
+    held: Held,
+    clock: &mut Clock,
+) -> Result<Step> {
     let mut held = held;
     let timeout = ctx.config.task_timeout;
     let granted = Instant::now();
@@ -736,6 +769,7 @@ async fn work_and_submit(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, held: Held) 
         return finish_shadow(ctx, conn, &held, pushed).await;
     }
     let work_ms = millis(granted);
+    clock.work_ms = Some(work_ms);
     let end = submit_and_wait(conn, &held, &sha, touched, timeout).await?;
     Ok(Step {
         end: End::Done(end.0, end.1),
@@ -1680,6 +1714,37 @@ mod tests {
                 Some("rejected after the agent's connection closed"),
                 None
             ]
+        );
+    }
+
+    #[test]
+    fn a_task_cut_off_while_waiting_spent_its_time_waiting() {
+        let clock = Clock {
+            claimed: Instant::now().checked_sub(Duration::from_millis(200)),
+            ..Clock::default()
+        };
+        let (waited_ms, work_ms) = clock.spent();
+        assert!(waited_ms >= 200, "{waited_ms}");
+        assert_eq!(work_ms, 0);
+        assert_eq!(Clock::default().spent(), (0, 0));
+    }
+
+    #[test]
+    fn a_task_cut_off_after_its_grant_splits_waiting_from_work() {
+        let now = Instant::now();
+        let mut clock = Clock {
+            claimed: now.checked_sub(Duration::from_millis(300)),
+            granted: now.checked_sub(Duration::from_millis(100)),
+            work_ms: None,
+        };
+        let (waited_ms, work_ms) = clock.spent();
+        assert_eq!(waited_ms, 200, "claim to grant");
+        assert!(work_ms >= 100, "grant to now: {work_ms}");
+        clock.work_ms = Some(42);
+        assert_eq!(
+            clock.spent(),
+            (200, 42),
+            "work fixed at the push is not extended"
         );
     }
 

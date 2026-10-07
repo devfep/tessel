@@ -50,7 +50,9 @@ If an agent's connection to the coordinator ends (closed by the coordinator or b
 it had in hand is recorded as `disconnected`, with the close code and reason in its note, counted
 in its own table row; that agent stops and the others take the remaining tasks. A queued request
 the coordinator still grants to the agent afterwards lapses one lease later. If the log shows the
-task merged or rejected anyway, it is counted as that.
+task merged or rejected anyway, it is counted as that. Its waiting and work time are what it spent
+before the connection ended. A connection that ends while an agent releases a claim whose outcome it
+already has also records that task as `disconnected`: the table then under-counts, never inflates.
 Every count about the coordinator comes from reading its event log with `Watch` and running
 `Summary::from_events` over it. `SubmitRejected` and `WaitQueued` counts are taken from the same
 log, because `Summary` has no field for them. Wall time and agent-minutes are measured by the
