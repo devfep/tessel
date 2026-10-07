@@ -283,6 +283,7 @@ mod tests {
         assert!(effects.is_empty(), "{effects:?}");
         assert_eq!(head_of(&c), Some(sha(OLD)));
         assert!(unanswered(&c));
+        assert_eq!(c.next_head_read_ms(NOW + 2), Some(NOW + 2));
         let again = c.begin_head_read().expect("still due");
         assert_eq!(again.head_at_start, Some(sha(OLD)));
     }
