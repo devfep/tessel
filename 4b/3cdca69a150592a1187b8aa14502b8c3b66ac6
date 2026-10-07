@@ -1,0 +1,4 @@
+intent: DEMO-TS named demo repo for real agents; SWARM-REVIEWER-ERR report both errors
+assumes: the steward's repo and fork routes return token-free remotes; root LICENSE text is the demo's license
+rejected: new demo_repo module (logic fits live.rs beside provision); minting fork tokens (not asked, never printed)
+evidence: cargo test --workspace 873 passed (base 868 + 5); clippy -D warnings exit 0; rustfmt clean; 5 mutants killed
