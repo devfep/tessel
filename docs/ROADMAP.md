@@ -612,7 +612,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `curl` removed from `PATH`, clippy 0; approved claim 70; trunk tree equals the gated tree. The
   lane edited `tests/support/mod.rs` before claiming it once (rule 0). Not exercised: a real
   Claude Code session (next: a live check with a real agent). No deploy (CLI only).
-- [ ] **AX-GITHOOKS** — Felix approved Oct 7: git `pre-commit` and `pre-push` hooks that refuse a
+- [x] **AX-GITHOOKS** — Felix approved Oct 7: git `pre-commit` and `pre-push` hooks that refuse a
   commit touching files the agent has not claimed (catches shell edits the Claude hook cannot
   see). Design pass first (shared with AX-INBOX).
   DESIGNED Oct 7: hooks live in the common `.git/hooks` (`git rev-parse --git-path hooks`,
@@ -626,6 +626,20 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   acceptable (coordinator still rejects uncovered work, invariant 11). Owns new `githook.rs`,
   `submit.rs` (`touched_index`); after AX-INBOX merges. About 6 h. Note: `prek install`
   overwrites `.git/hooks`.
+  CLOSED 2026-10-07 at trunk `107fc13` (review "With fixes" twice). Install: `tessel hook install
+  --git`. The critical review finding: hooks live in the repo's COMMON hooks dir, so a shim that
+  exec'd a lane's `target/debug/tessel` would, once the lane was deleted, break every commit in
+  every worktree (main checkout included) and skip the chained hook. Now the shim (marker `#
+  tessel git hook`) prefers the recorded binary, then PATH, and falls through by itself: a
+  worktree with Tessel state and no binary fails closed with "binary missing; reinstall or use
+  --no-verify"; any other worktree runs `<name>.pre-tessel` and passes; install warns when the
+  binary is under a `target/`. Also: a stopped worktree (state `Stopped`) passes, a crashed
+  daemon (state `Online`) blocks; a merge being concluded (`MERGE_HEAD`) skips pre-commit
+  (pre-push and the coordinator still check). Coverage is symbol-level via `touched_index`. Held
+  (pub helpers, `Command`, `HookAction`); gate on `107fc13`: workspace 968 with `curl` removed from
+  `PATH`, clippy 0; approved claim 72; trunk tree equals the gated tree; the real repo's
+  `.git/hooks` was untouched throughout. The lane printed the first 80 characters of its minted
+  identity JSON once (header only; 24 h token). No deploy (CLI only).
 - [ ] **AX-MCP** — Felix approved Oct 7, after AX-INBOX and AX-GITHOOKS: `tessel mcp`, a local
   stdio MCP server exposing start/claim/status/inbox/submit/release/review as tools through the
   same per-worktree daemon; inbox as a resource with change notifications if the spec allows.
