@@ -442,6 +442,9 @@ pub enum Route<'a> {
     Ws { repo: &'a str },
     /// `/repo/<name>/summary`: the read-only evidence summary.
     Summary { repo: &'a str },
+    /// `/repo/<name>/trunk-moved`: the steward's poke that main moved. It carries no data the
+    /// coordinator uses; it only asks for the head to be read again.
+    TrunkMoved { repo: &'a str },
 }
 
 /// The route a URL path names, given its segments, or `None` for any other path.
@@ -449,6 +452,7 @@ pub fn parse_route<'a>(segments: &[&'a str]) -> Option<Route<'a>> {
     match segments {
         ["repo", repo, "ws"] if !repo.is_empty() => Some(Route::Ws { repo }),
         ["repo", repo, "summary"] if !repo.is_empty() => Some(Route::Summary { repo }),
+        ["repo", repo, "trunk-moved"] if !repo.is_empty() => Some(Route::TrunkMoved { repo }),
         _ => None,
     }
 }
@@ -535,7 +539,10 @@ impl SummaryTally {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Denied {
     NotFound,
-    MethodNotAllowed,
+    /// The route takes only this method.
+    MethodNotAllowed {
+        allow: &'static str,
+    },
     /// The deployment does not serve this repo (`ALLOWED_REPO_PREFIX`).
     Forbidden,
     /// No valid identity token for this repo. The reason is for logs only; the answer is the
@@ -555,19 +562,15 @@ pub struct Inbound<'a> {
 }
 
 /// Decide whether the Worker serves a request, and for which agent. The refusals come in a fixed
-/// order: path, method, repo prefix, token. A summary read takes `GET` only; the `ws` route leaves
-/// the method to the upgrade check in the Durable Object.
+/// order: path, method, repo prefix, token. A summary read takes `GET` only and a trunk poke
+/// `POST` only; the `ws` route leaves the method to the upgrade check in the Durable Object.
 #[cfg(feature = "runtime")]
 pub fn authorize<'a>(inbound: &Inbound<'a>) -> Result<(Route<'a>, AgentId), Denied> {
     let route = parse_route(inbound.segments).ok_or(Denied::NotFound)?;
     let repo = match route {
         Route::Ws { repo } => repo,
-        Route::Summary { repo } => {
-            if inbound.method != "GET" {
-                return Err(Denied::MethodNotAllowed);
-            }
-            repo
-        }
+        Route::Summary { repo } => only_method(inbound, "GET", repo)?,
+        Route::TrunkMoved { repo } => only_method(inbound, "POST", repo)?,
     };
     if !repo_allowed(inbound.allowed_prefix, repo) {
         return Err(Denied::Forbidden);
@@ -580,6 +583,20 @@ pub fn authorize<'a>(inbound: &Inbound<'a>) -> Result<(Route<'a>, AgentId), Deni
     )
     .map_err(Denied::Unauthorized)?;
     Ok((route, agent))
+}
+
+/// `repo`, if the request uses `allow` (compared exactly); else `MethodNotAllowed`.
+#[cfg(feature = "runtime")]
+fn only_method<'a>(
+    inbound: &Inbound<'_>,
+    allow: &'static str,
+    repo: &'a str,
+) -> Result<&'a str, Denied> {
+    if inbound.method == allow {
+        Ok(repo)
+    } else {
+        Err(Denied::MethodNotAllowed { allow })
+    }
 }
 
 /// Where one message of a delivery plan goes.
@@ -2464,6 +2481,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_worker_serves_the_trunk_poke_path() {
+        assert_eq!(
+            parse_route(&path("/repo/demo/trunk-moved")),
+            Some(Route::TrunkMoved { repo: "demo" })
+        );
+        for other in [
+            "/repo//trunk-moved",
+            "/repo/demo/trunk-moved/",
+            "/trunk-moved",
+        ] {
+            assert_eq!(parse_route(&path(other)), None, "{other}");
+        }
+    }
+
     #[cfg(feature = "runtime")]
     mod routes {
         use super::*;
@@ -2567,13 +2599,62 @@ mod tests {
             let auth = bearer("demo", "dashboard");
             for method in ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "get"] {
                 let got = ask(method, "/repo/demo/summary", None, Some(&auth));
-                assert_eq!(got, Err(Denied::MethodNotAllowed), "{method}");
+                assert_eq!(
+                    got,
+                    Err(Denied::MethodNotAllowed { allow: "GET" }),
+                    "{method}"
+                );
             }
             assert_eq!(
                 ask("POST", "/repo/demo/summary", None, None),
-                Err(Denied::MethodNotAllowed),
+                Err(Denied::MethodNotAllowed { allow: "GET" }),
                 "the method is judged before the token"
             );
+        }
+
+        #[test]
+        fn a_trunk_poke_with_a_token_for_its_repo_is_admitted() {
+            let auth = bearer("demo", "steward");
+            let got = ask("POST", "/repo/demo/trunk-moved", None, Some(&auth));
+            assert_eq!(
+                got,
+                Ok((
+                    format!("{:?}", Route::TrunkMoved { repo: "demo" }),
+                    agent("steward")
+                ))
+            );
+        }
+
+        #[test]
+        fn a_trunk_poke_without_a_valid_token_or_for_another_repo_is_refused() {
+            let post = |auth: Option<&str>| ask("POST", "/repo/demo/trunk-moved", None, auth);
+            let unauthorized = |got: Result<_, Denied>| matches!(got, Err(Denied::Unauthorized(_)));
+            assert!(unauthorized(post(None)));
+            assert!(unauthorized(post(Some("Bearer nonsense"))));
+            assert!(unauthorized(post(Some(&bearer("elsewhere", "steward")))));
+            let expired = format!("Bearer {}", token(KEY, "demo", "steward", SIGNED_AT));
+            assert!(unauthorized(post(Some(&expired))));
+            let auth = bearer("demo", "steward");
+            let refused = ask(
+                "POST",
+                "/repo/demo/trunk-moved",
+                Some("swarm-"),
+                Some(&auth),
+            );
+            assert_eq!(refused, Err(Denied::Forbidden));
+        }
+
+        #[test]
+        fn a_trunk_poke_takes_post_only() {
+            let auth = bearer("demo", "steward");
+            for method in ["GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "post"] {
+                let got = ask(method, "/repo/demo/trunk-moved", None, Some(&auth));
+                assert_eq!(
+                    got,
+                    Err(Denied::MethodNotAllowed { allow: "POST" }),
+                    "{method}"
+                );
+            }
         }
 
         #[test]

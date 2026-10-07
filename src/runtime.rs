@@ -32,6 +32,11 @@
 //! may read it; the refusals are the same (401 for every token fault, 403 for a repo the
 //! deployment does not serve), plus 405 for any method but `GET`. It is a plain read of stored
 //! events: no socket, no event appended, no alarm, and it never waits for a merge.
+//!
+//! Trunk moves: `POST /repo/<name>/trunk-moved` (same identity token, `POST` only) is the steward's
+//! poke that main moved without the coordinator, as an admin merge does. It carries nothing the
+//! Durable Object reads: it raises a stored flag and the alarm reads the trunk head from the
+//! steward's `/head` (`run_head_sync`), applied by `Core::trunk_read` as a compare-and-set.
 
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
@@ -40,9 +45,12 @@ use std::pin::pin;
 use std::task::Poll;
 use std::time::Duration;
 
-use crate::coordinator::{Coordinator as Core, Effect, MergeDispatch, VerifyDispatch};
+use crate::coordinator::{
+    head_request_body, parse_head_response, Coordinator as Core, Effect, MergeDispatch,
+    VerifyDispatch,
+};
 use crate::merge::{self, MergeOutcome, TrialOutcome, TrialReport};
-use crate::protocol::{AgentId, ClaimId, ClientMsg, ServerMsg};
+use crate::protocol::{AgentId, ClaimId, ClientMsg, CommitId, ServerMsg};
 use crate::shell::{
     self, keep_first, Action, Denied, Inbound, ReplayStep, Route, Session, StoreDecision,
     StoredSize, SummaryTally, Target, Work,
@@ -71,6 +79,12 @@ const STEWARD_MERGE_URL: &str = "https://steward.internal/merge";
 /// The URL of the steward's trial: test a fork's commit on main without merging it.
 const STEWARD_TRIAL_URL: &str = "https://steward.internal/trial";
 
+/// The URL of the steward's `/head`: read the head of the trunk's main.
+const STEWARD_HEAD_URL: &str = "https://steward.internal/head";
+
+/// How long the coordinator waits for the steward to read a head: one ref, not a test run.
+const HEAD_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How long the coordinator waits for the steward (see `merge::STEWARD_CALL_TIMEOUT_MS`).
 const STEWARD_CALL_TIMEOUT: Duration = Duration::from_millis(merge::STEWARD_CALL_TIMEOUT_MS);
 
@@ -81,8 +95,9 @@ enum Prepared {
     Refused,
 }
 
-/// Routes: GET /repo/<name>/ws (WebSocket upgrade) and GET /repo/<name>/summary (evidence
-/// summary) -> coordinator for <name>, for a request that carries an identity token for <name>.
+/// Routes: GET /repo/<name>/ws (WebSocket upgrade), GET /repo/<name>/summary (evidence summary)
+/// and POST /repo/<name>/trunk-moved (the steward's poke) -> coordinator for <name>, for a request
+/// that carries an identity token for <name>.
 /// `shell::authorize` decides; this only reads the request and answers its refusals.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -113,7 +128,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         Err(denied) => return refuse(denied, url.path()),
     };
     let repo = match route {
-        Route::Ws { repo } | Route::Summary { repo } => repo,
+        Route::Ws { repo } | Route::Summary { repo } | Route::TrunkMoved { repo } => repo,
     };
 
     let mut forwarded = req.clone_mut()?;
@@ -131,13 +146,14 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 /// token or the key.
 fn refuse(denied: Denied, path: &str) -> Result<Response> {
     match denied {
-        Denied::NotFound => {
-            Response::error("expected /repo/<name>/ws or /repo/<name>/summary", 404)
-        }
-        Denied::MethodNotAllowed => {
+        Denied::NotFound => Response::error(
+            "expected /repo/<name>/ws, /repo/<name>/summary or /repo/<name>/trunk-moved",
+            404,
+        ),
+        Denied::MethodNotAllowed { allow } => {
             let response = Response::error("method not allowed", 405)?;
             let headers = Headers::new();
-            headers.set("Allow", "GET")?;
+            headers.set("Allow", allow)?;
             Ok(response.with_headers(headers))
         }
         Denied::Forbidden => Response::error("this deployment does not serve that repo", 403),
@@ -188,6 +204,12 @@ impl DurableObject for Coordinator {
                 return Response::error(UNAUTHORIZED_BODY, 401);
             }
             return self.summary().await;
+        }
+        if let Some(Route::TrunkMoved { .. }) = shell::parse_route(&segments) {
+            if req.headers().get(VERIFIED_AGENT_HEADER)?.is_none() {
+                return Response::error(UNAUTHORIZED_BODY, 401);
+            }
+            return self.trunk_moved().await;
         }
         if req.headers().get("Upgrade")?.as_deref() != Some("websocket") {
             return Response::error("expected WebSocket upgrade", 426);
@@ -382,7 +404,65 @@ impl Coordinator {
         self.recover_cut_off_verification().await?;
         self.run_one_merge().await?;
         self.run_one_verification().await?;
+        self.run_head_sync().await?;
         self.ensure_alarm().await
+    }
+
+    /// The steward's poke: raise the head-sync flag and schedule the alarm. Nothing in the request
+    /// is read, so a caller cannot choose the head. Answers 202: the head is read by the alarm.
+    async fn trunk_moved(&self) -> Result<Response> {
+        self.ensure_loaded().await?;
+        let now_ms = now_ms();
+        let prepared = self.apply(Work::Plain, |core| core.trunk_moved(now_ms))?;
+        let applied = self.ready(prepared, "record trunk move")?;
+        let persisted = self.persist(applied).await?;
+        self.settle(&persisted, None).await?;
+        Response::empty().map(|response| response.with_status(202))
+    }
+
+    /// Read the trunk head from the steward if the core says one is due, then offer it to the
+    /// core. A failed call or an unusable answer is logged and offered as `None`, which clears
+    /// the flag (see `coordinator::trunk`). The answer is stored before anyone is told.
+    async fn run_head_sync(&self) -> Result<()> {
+        let read = self
+            .core
+            .borrow()
+            .as_ref()
+            .and_then(|core| core.begin_head_read());
+        let Some(read) = read else {
+            return Ok(());
+        };
+        let answer = self.ask_steward_for_head().await;
+        let prepared = self.apply(Work::Plain, |core| core.trunk_read(&read, answer, now_ms()))?;
+        let applied = self.ready(prepared, "apply trunk head")?;
+        let persisted = self.persist(applied).await?;
+        self.settle(&persisted, None).await
+    }
+
+    /// Ask the steward for the head of the trunk's main. `None` for a failed call, a timeout, a
+    /// non-200 and an answer without a head.
+    async fn ask_steward_for_head(&self) -> Option<CommitId> {
+        let call = self.call_steward_for(STEWARD_HEAD_URL, head_request_body(&self.repo()));
+        match with_timeout(call, HEAD_CALL_TIMEOUT).await {
+            Some(Ok((status, body))) => {
+                let head = parse_head_response(status, &body);
+                if head.is_none() {
+                    console_error!(
+                        "coordinator {}: steward /head gave no head ({status})",
+                        self.repo()
+                    );
+                }
+                head
+            }
+            Some(Err(e)) => {
+                console_error!("coordinator {}: steward /head failed: {e}", self.repo());
+                None
+            }
+            None => {
+                console_error!("coordinator {}: steward /head timed out", self.repo());
+                None
+            }
+        }
     }
 
     /// A verification marked in flight while this instance is not waiting on the steward was cut

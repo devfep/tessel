@@ -24,9 +24,11 @@
 
 mod merging;
 mod racing;
+mod trunk;
 mod verifying;
 
 pub use merging::MergeDispatch;
+pub use trunk::{head_request_body, parse_head_response, HeadRead};
 pub use verifying::VerifyDispatch;
 
 use std::collections::{hash_map, BTreeMap, HashMap};
@@ -294,6 +296,9 @@ struct CoordinatorState {
     reviewers: Vec<AgentId>,
     /// Main's head as the coordinator knows it. The steward will own this later.
     head: Option<CommitId>,
+    /// The steward said main moved and the head has not been re-read yet (see `trunk`).
+    #[serde(default)]
+    head_sync_due: bool,
     next_claim: u64,
     next_fence: u64,
     next_seq: u64,
@@ -385,6 +390,7 @@ impl Coordinator {
             config,
             reviewers: Vec::new(),
             head: None,
+            head_sync_due: false,
             next_claim: 1,
             next_fence: 1,
             next_seq: 0,

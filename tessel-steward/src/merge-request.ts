@@ -2,6 +2,9 @@ import { INVALID_NAME_MESSAGE, isValidName } from "./identity";
 import { isForkOf, parseMergeRequest, parseSha, parseTrialRequest, type Sha } from "./merge-types";
 import { reportTrial } from "./trial-report";
 
+/** The branch the steward merges into and the coordinator calls main. */
+const TRUNK_BRANCH = "main";
+
 function json(body: unknown, status: number): Response {
   return Response.json(body, { status });
 }
@@ -57,19 +60,34 @@ export async function handleTrialRequest(env: Env, repo: string, body: unknown):
   if (!isForkOf(repo, info)) {
     return json({ error: `${fork} is not a fork of ${repo}` }, 400);
   }
-  const commit = parsed.request.commit ?? (await forkHead(handle, info.defaultBranch));
+  const commit = parsed.request.commit ?? (await branchHead(handle, info.defaultBranch));
   const report = await reportTrial({ before, main, commit }, (tried, tryCommit) =>
     env.TEST_RUNNER.getByName(crypto.randomUUID()).trial(repo, fork, tried, tryCommit),
   );
   return json(report, 200);
 }
 
-/** The head of the fork's default branch, read through the Artifacts binding. */
-async function forkHead(handle: ArtifactsRepo, branch: string): Promise<Sha> {
+/**
+ * Reads the head of `repo`'s main through the Artifacts binding and answers 200 with
+ * `{ "head": <sha> }`, or 400 for an invalid repo name. Only the coordinator, through its binding,
+ * can ask. The coordinator uses it to learn where an admin merge left the trunk.
+ *
+ * @throws If the repo's main has no readable head.
+ */
+export async function handleHeadRequest(env: Env, repo: string): Promise<Response> {
+  if (!isValidName(repo)) {
+    return json({ error: INVALID_NAME_MESSAGE }, 400);
+  }
+  using handle = await env.ARTIFACTS.get(repo);
+  return json({ head: await branchHead(handle, TRUNK_BRANCH) }, 200);
+}
+
+/** The head of `branch`, read through the Artifacts binding. */
+async function branchHead(handle: ArtifactsRepo, branch: string): Promise<Sha> {
   const [newest] = await handle.log({ ref: branch, limit: 1 });
   const head = parseSha(newest?.hash);
   if (head === undefined) {
-    throw new Error("the fork has no readable head");
+    throw new Error(`the repo has no readable head on ${branch}`);
   }
   return head;
 }

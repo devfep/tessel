@@ -4,7 +4,9 @@ import { parsePushEvent } from "./push-event";
 import { handleMergeRequest } from "./merge-request";
 import { matchRoute, type Route } from "./routes";
 import type { TestRunResult } from "./test-runner";
+import { redactTokens } from "./redact";
 import { mintForkWriteToken } from "./token-policy";
+import { movesTrunkMain, pokeTrunkMoved } from "./trunk-poke";
 
 export { MergePushGateway, MergeReadGateway } from "./merge-gateway";
 export { MergeService } from "./merge-service";
@@ -152,6 +154,35 @@ async function handleDashboardSafely(request: Request, env: Env): Promise<Respon
   }
 }
 
+/**
+ * Logs one push event and, if it moved a trunk's main, pokes the coordinator to read the head
+ * again. A failed poke is logged and the message is retried, never thrown: a throw would retry
+ * the whole batch, and a poke is idempotent, so a redelivery is harmless.
+ */
+async function handlePushMessage(env: Env, message: Message): Promise<void> {
+  const parsed = parsePushEvent(message.body);
+  if (!parsed.ok) {
+    console.error(
+      JSON.stringify({ event: "unusable_message", id: message.id, reason: parsed.reason }),
+    );
+    message.ack();
+    return;
+  }
+  console.log(JSON.stringify({ event: "push", ...parsed.push }));
+  if (!movesTrunkMain(parsed.push)) {
+    message.ack();
+    return;
+  }
+  try {
+    await pokeTrunkMoved(env, parsed.push.repo);
+    message.ack();
+  } catch (error) {
+    const reason = redactTokens(error instanceof Error ? error.message : String(error));
+    console.error(JSON.stringify({ event: "trunk_poke_failed", repo: parsed.push.repo, reason }));
+    message.retry();
+  }
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const { pathname } = new URL(request.url);
@@ -172,17 +203,9 @@ export default {
     }
   },
 
-  async queue(batch, _env): Promise<void> {
+  async queue(batch, env): Promise<void> {
     for (const message of batch.messages) {
-      const parsed = parsePushEvent(message.body);
-      if (parsed.ok) {
-        console.log(JSON.stringify({ event: "push", ...parsed.push }));
-      } else {
-        console.error(
-          JSON.stringify({ event: "unusable_message", id: message.id, reason: parsed.reason }),
-        );
-      }
-      message.ack();
+      await handlePushMessage(env, message);
     }
   },
 } satisfies ExportedHandler<Env>;

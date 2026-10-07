@@ -379,8 +379,8 @@ impl Coordinator {
         Some(next.retry_at_ms.unwrap_or(0).max(now_ms))
     }
 
-    /// The earliest of the next lease expiry, the next merge dispatch and the next verification:
-    /// the one alarm time, an absolute time in milliseconds since the epoch never before `now_ms`.
+    /// The earliest of the next lease expiry, the next merge dispatch, the next verification and
+    /// the next head read: the one alarm time, an absolute time in milliseconds since the epoch never before `now_ms`.
     pub fn next_wake_ms(
         &self,
         merging_here: bool,
@@ -389,11 +389,11 @@ impl Coordinator {
     ) -> Option<u64> {
         let merge_side = self.next_alarm_ms(merging_here, now_ms);
         let verification = self.next_verification_ms(verifying_here, now_ms);
-        match (merge_side, verification) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(due), None) | (None, Some(due)) => Some(due),
-            (None, None) => None,
-        }
+        let head_read = self.next_head_read_ms(now_ms);
+        [merge_side, verification, head_read]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Apply the steward's answer for the verification `id` in flight. An answer for any other

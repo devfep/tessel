@@ -193,6 +193,48 @@ describe("MergeService /trial", () => {
   });
 });
 
+function postHead(body: unknown): Request {
+  return new Request("https://steward.internal/head", {
+    method: "POST",
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+}
+
+describe("MergeService /head", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("answers the head of the repo's main, and runs neither a merge nor a trial", async () => {
+    const { service, merge, trial, log } = build({ demo: null });
+    const response = await service.fetch(postHead({ repo: "demo" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ head: FORK_HEAD });
+    expect(log).toHaveBeenCalledWith({ ref: "main", limit: 1 });
+    expect(merge).not.toHaveBeenCalled();
+    expect(trial).not.toHaveBeenCalled();
+  });
+
+  it("answers 502 with a fixed message when main has no readable head", async () => {
+    const { service, log } = build({ demo: null });
+    log.mockResolvedValue([]);
+    const response = await service.fetch(postHead({ repo: "demo" }));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "head could not be read" });
+  });
+
+  it("answers 400 for a repo that is not a name, without reading anything", async () => {
+    const { service, log } = build({ demo: null });
+    expect((await service.fetch(postHead({ repo: "../x" }))).status).toBe(400);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 when the repo does not exist", async () => {
+    const { service } = build({});
+    expect((await service.fetch(postHead({ repo: "demo" }))).status).toBe(404);
+  });
+});
+
 describe("MergeService", () => {
   beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {});
