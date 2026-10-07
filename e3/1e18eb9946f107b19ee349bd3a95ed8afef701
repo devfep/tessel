@@ -1,0 +1,4 @@
+intent: a link that goes half-open before Welcome, or that carries server frames but no pongs, is declared dead and reconnected
+assumes: none
+rejected: lease/2 for the Welcome bound (the lease is unknown before Welcome); paused-time tests (tokio test-util is not a dependency)
+evidence: cargo test --workspace 874 passed 0 failed; clippy -D warnings clean; rustfmt --check clean; 7 mutants killed
