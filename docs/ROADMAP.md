@@ -560,6 +560,15 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   from the wait queue after a long wait never renews. Local runs (short waits) pass. Lane
   dispatched 17:03 (Opus, `.claude/worktrees/swarm-wait`); a close must become the task's outcome,
   not abort the run. The `shadow` A/B run waits for it.
+- [ ] **COORD-CLOSE-WITHDRAW** — found by SWARM-WAIT (Oct 7), checked by the orchestrator in the
+  trunk: when the Durable Object closes a socket itself (`close_socket`, `src/runtime.rs` ~285,
+  code 1011, after a failed dispatch or send), it does not withdraw that agent's queued request;
+  only `websocket_close`/`websocket_error` call `withdraw` (~250–262). Unless Cloudflare then also
+  delivers `websocket_close` for a server-initiated close (unverified), the queue later grants a
+  claim to a dead agent and every waiter behind it loses a lease. Affects real agents, not only the
+  swarm. Also unknown: WHY the swarm Worker closed agent sockets under 30 agents (needs
+  `wrangler tail` on `tessel-coordinator-swarm` during a run). Compat date is 2026-09-01, so the
+  explicit `ws.close()` requirement before 2026-04-07 does not apply.
 - [ ] **REVIEW-SENSITIVE** — from the UX review research (Oct 7): the coordinator calls
   `review_reasons(&touched, threatened, has_evidence, &[])` (`src/coordinator.rs` ~1286), so the
   sensitive-path hold reason can never fire; no list of sensitive paths is configured anywhere.
