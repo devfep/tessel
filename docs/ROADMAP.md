@@ -5,10 +5,23 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 19:36 EDT.
-**Orchestrator:** none. HANDOVER at 19:35 EDT Oct 6: Felix is clearing this session's context.
-Take the role on resume: read this block, `docs/BUILD-PROTOCOL.md` (§2 steward flow; §4 rules 00
-and 0), then `PLAN.md` §9. No lanes, reviews or background jobs are running; nothing is half done.
+**As of:** 2026-10-06 20:42 EDT.
+**Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
+**In flight:** LINT-RULE2 + CLI-CLIPPY-810, one lane (`lane-lint-rule2`, Sonnet, worktree
+`.claude/worktrees/lint-rule2`, fork `tessel-dogfood--lane-lint-rule2`, claim 57). Opus review
+"With fixes" twice (root crate also needs `match_wildcard_for_single_variants`; restore the
+`cli.rs:810` `eprintln!` under `#[expect]`; split a long line); both fixed; orchestrator read
+`7d7f4c9`; GO 20:4x: pushing and submitting. Felix minted the fork token himself (the classifier
+refused the lane's own mint). Workspace tests 836 (= base).
+**Done this session:** shadow swarm run (next action 1): seed 2, 10 tasks, 4 agents, 3 verified
+preventions, 0 false alarms, first live `Settled` releases (events 40, 48, 50); evidence in
+`docs/evidence/2026-10-06/` (`sprint/build` `5a08ad3`). COORD-HEAD design done (Opus, read-only):
+recommendation C, below under COORD-HEAD; its lane waits for the lint lane, which edits
+`src/shell.rs` and `src/coordinator/*`.
+**Permissions (Felix, 20:4x):** `.claude/settings.local.json` allows `Edit(docs/ROADMAP.md)` and
+`bash <session scratchpad>/orch/mint-lane-token.sh <lane>` (mints a lane fork's 1 h write token
+into a 0600 git include file, unprinted). Both rules name this session's scratchpad; move the
+script to `tools/` if they must outlive it.
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
 by `Bash(npx wrangler deploy *)` when run bare (no pipe); lane pushes to `tessel-dogfood--*` forks
@@ -467,6 +480,23 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
   trunk on every merge outcome. Design it before the next admin merge.
+  DESIGNED 2026-10-06 (Opus, read-only; orchestrator chose C). Why it matters beyond welcome: race
+  trials use `state.head` as both `before` and `main` (`racing.rs` ~563), so after an admin merge
+  they rank entries against a trunk that no longer exists; and no `BaseMoved` reaches agents whose
+  claims overlap an admin-merged change. Merges themselves are safe (the steward rebases on the real
+  main). C: the steward's queue consumer (today it only logs), on a push to `refs/heads/main` of a
+  non-fork repo, pokes a new coordinator route `/repo/<r>/trunk-moved` over the `COORDINATOR`
+  binding. The body is never trusted: the coordinator sets a persisted `#[serde(default)]
+  head_sync_due` flag (core state, not protocol) and an alarm; the alarm reads the trunk head from
+  a new steward `/head` path over the binding-only merge service; the head moves only when no merge
+  is in flight and `state.head` is unchanged since the read began (compare-and-set); same, empty or
+  all-zero heads change nothing. Logged as the existing `BaseMoved{head, by: "steward", notified:
+  []}`. No `src/protocol.rs` change. Lane owns `src/coordinator.rs`, `src/shell.rs`,
+  `src/runtime.rs`, `tessel-steward/src/index.ts`, `tessel-steward/src/merge-service.ts`. Tests
+  first: idle read moves head and logs one `BaseMoved`; in-flight merge, moved-meanwhile, same and
+  all-zero reads change nothing; next welcome carries the new head; route auth; vitest for the
+  queue poke (non-fork main only) and `/head`. Live: after the next trunk push, `welcome` carries
+  the trunk sha and the dashboard feed shows `BaseMoved` by steward.
 - [x] **CLI-LIVENESS** — found while dogfooding SHADOW-1: claim 35 expired while the lane's daemon
   was running. Heartbeats get no reply; the daemon moved the local expiry when a heartbeat was
   queued and never pinged, so a half-open link heartbeat into nothing. Now: a ping carrying the
