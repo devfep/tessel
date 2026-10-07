@@ -1,0 +1,4 @@
+intent: admin merges go around the coordinator, so its head went stale; a trunk push now makes the coordinator re-read the head through the steward
+assumes: the Artifacts push event for refs/heads/main arrives after the push is readable via log(); forks are the repos whose name holds '--'; the trunk's branch is main
+rejected: retrying an unusable read (hot loop on a failing steward; flag is cleared, next push re-raises it); waiting for an in-flight merge (its land sets head, the kept flag then re-checks); a bool-only poke carrying the sha (body would be trusted)
+evidence: cargo test --workspace 854 passed (836 base + 18, predicted 854); steward vitest 666 passed (649 base + 17, predicted 666); clippy -D warnings exit 0; rustfmt check clean; wasm32 build 0 warnings; oxlint/oxfmt/tsc clean; 8 Rust and 6 steward mutants each killed, files restored byte-identical
