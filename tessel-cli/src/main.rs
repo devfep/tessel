@@ -3,6 +3,7 @@
 mod commands;
 mod config;
 mod daemon;
+mod githook;
 mod hook;
 mod inbox_hook;
 mod plan;
@@ -104,7 +105,7 @@ enum Command {
     },
     /// Release everything, close the socket and stop the daemon.
     Stop,
-    /// Claude Code hook integration.
+    /// Claude Code and git hook integration.
     Hook {
         #[command(subcommand)]
         action: HookAction,
@@ -144,8 +145,27 @@ enum HookAction {
         #[arg(long, default_value_t = 120_000, hide = true)]
         wait_ms: u64,
     },
-    /// Add the hooks to `.claude/settings.local.json` in this worktree.
-    Install,
+    /// Add the Claude Code hooks to `.claude/settings.local.json` in this worktree, or with
+    /// `--git` install the git `pre-commit` and `pre-push` hooks that refuse unclaimed changes.
+    Install {
+        /// Install the git hooks into this repository's hooks directory instead.
+        #[arg(long)]
+        git: bool,
+    },
+    /// The git hook `install --git` writes. Git runs it, with its own arguments and stdin.
+    Git {
+        #[arg(value_enum)]
+        name: GitHook,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
+/// The git hooks Tessel installs.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum GitHook {
+    PreCommit,
+    PrePush,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -191,7 +211,7 @@ fn main() -> ExitCode {
         | Command::Review { .. }
         | Command::Stop
         | Command::Hook {
-            action: HookAction::Install,
+            action: HookAction::Install { .. } | HookAction::Git { .. },
         }
         | Command::Daemon { .. } => 1,
     };

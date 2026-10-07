@@ -191,6 +191,35 @@ pub fn touched(root: &Path, base: &str, commit: &str) -> anyhow::Result<Vec<Scop
         return Ok(files);
     }
     let fork_point = merge_base(root, base, commit)?;
+    Ok(expand_symbols(root, files, &fork_point, commit))
+}
+
+/// What the index would commit, as `touched` would report it for a commit made now: the diff runs
+/// from the merge base of `base` and `HEAD`, and the new side of a modified file is read from the
+/// index.
+pub fn touched_index(root: &Path, base: &str) -> anyhow::Result<Vec<ScopeClaim>> {
+    let fork_point = merge_base(root, base, "HEAD")?;
+    let out = git(
+        root,
+        &[
+            "diff",
+            "--cached",
+            "--name-status",
+            "-z",
+            "-M",
+            "--no-ext-diff",
+            &fork_point,
+        ],
+    )
+    .with_context(|| format!("cannot compute what the index changes since {fork_point}"))?;
+    let files = parse_name_status(&out)?;
+    Ok(expand_symbols(root, files, &fork_point, ""))
+}
+
+/// Replaces each `edit-body` file scope with the scopes of the symbols that changed between `from`
+/// and `to` (the index when `to` is empty); the file scope stays where the extractor cannot see
+/// the change.
+fn expand_symbols(root: &Path, files: Vec<ScopeClaim>, from: &str, to: &str) -> Vec<ScopeClaim> {
     let mut out = Vec::new();
     for claim in files {
         let Scope::File { path } = &claim.scope else {
@@ -201,13 +230,12 @@ pub fn touched(root: &Path, base: &str, commit: &str) -> anyhow::Result<Vec<Scop
             out.push(claim);
             continue;
         }
-        let symbols = changed_symbols(root, &fork_point, commit, path);
-        match symbols {
+        match changed_symbols(root, from, to, path) {
             Some(scopes) => out.extend(scopes),
             None => out.push(claim),
         }
     }
-    Ok(out)
+    out
 }
 
 fn merge_base(root: &Path, base: &str, commit: &str) -> anyhow::Result<String> {
@@ -373,6 +401,66 @@ mod tests {
                 claim("src/new.rs", Mode::Create)
             ]
         );
+    }
+
+    #[test]
+    fn the_index_is_read_at_symbol_level_and_ignores_unstaged_edits() {
+        let dir = repo();
+        let root = dir.path();
+        let base = head(root);
+        std::fs::write(root.join("src/new.rs"), "pub fn new() {}\n").unwrap();
+        std::fs::write(root.join("src/edit.rs"), "pub fn edit() { 1; }\n").unwrap();
+        std::fs::write(root.join("src/keep.rs"), "pub fn keep() { 2; }\n").unwrap();
+        run(root, &["add", "src/new.rs", "src/edit.rs"]);
+        let got = touched_index(root, &base).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                symbol("src/edit.rs", "edit::edit", Mode::EditBody),
+                claim("src/new.rs", Mode::Create)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_index_is_measured_from_the_merge_base_so_earlier_commits_count() {
+        let dir = repo();
+        let root = dir.path();
+        let base = head(root);
+        commit_file(root, "src/edit.rs", "pub fn edit() { 1; }\n");
+        std::fs::write(root.join("src/gone.rs"), "pub fn gone() { 3; }\n").unwrap();
+        run(root, &["add", "src/gone.rs"]);
+        let got = touched_index(root, &base).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                symbol("src/edit.rs", "edit::edit", Mode::EditBody),
+                symbol("src/gone.rs", "gone::gone", Mode::EditBody)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_index_diff_starts_at_the_merge_base_not_at_the_base_itself() {
+        let dir = repo();
+        let root = dir.path();
+        let fork = head(root);
+        let tip = commit_file(root, "src/edit.rs", "pub fn edit() { 1; }\n");
+        run(root, &["checkout", "-q", "-b", "work", &fork]);
+        std::fs::write(root.join("src/gone.rs"), "pub fn gone() { 3; }\n").unwrap();
+        run(root, &["add", "src/gone.rs"]);
+        let got = touched_index(root, &tip).unwrap();
+        assert_eq!(
+            got,
+            vec![symbol("src/gone.rs", "gone::gone", Mode::EditBody)]
+        );
+    }
+
+    #[test]
+    fn an_empty_index_touches_nothing() {
+        let dir = repo();
+        let root = dir.path();
+        assert!(touched_index(root, &head(root)).unwrap().is_empty());
     }
 
     #[test]

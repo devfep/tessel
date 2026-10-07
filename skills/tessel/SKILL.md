@@ -51,6 +51,11 @@ intent when they are denied, so make it specific. To change it, `tessel stop`, t
 The hook does not see shell commands (`sed`, redirects): claim those files first. It resolves
 symlinks and ignores paths outside the worktree and under `.git/` and `.tessel/`.
 
+Where `tessel hook install --git` has put git hooks in the repository, `git commit` and `git push`
+in a worktree you started refuse changes your unsubmitted claims do not cover, shell edits
+included, and print the `tessel claim` command to run. `--no-verify` skips the check, but the
+coordinator still rejects a submission your claims do not cover.
+
 ## Scopes and modes
 
 A scope is `dir/`, `path/file.rs`, or `path/file.rs::qualified::name`. Paths are repo-relative:

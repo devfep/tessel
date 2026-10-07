@@ -311,7 +311,7 @@ fn parse_edits<'a>(tool: &str, input: &'a Value) -> Option<Vec<Replace<'a>>> {
 }
 
 /// A scope as the agent would type it to `tessel claim`.
-fn claim_arg(scope: &Scope) -> String {
+pub fn claim_arg(scope: &Scope) -> String {
     match scope {
         Scope::Dir { path } => format!("{path}/"),
         Scope::File { path } => path.clone(),
@@ -561,7 +561,7 @@ fn is_our_command(command: &str, subcommand: &str) -> bool {
         .is_some_and(|at| command[..at].contains("tessel"))
 }
 
-fn shell_quote(text: &str) -> String {
+pub fn shell_quote(text: &str) -> String {
     let safe = text
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':'));

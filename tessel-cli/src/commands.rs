@@ -13,6 +13,7 @@ use tessel_coordinator::protocol::{uncovered, ClaimId, Mode, ScopeClaim};
 
 use crate::config::Config;
 use crate::daemon;
+use crate::githook;
 use crate::hook::{self, Installed};
 use crate::inbox_hook;
 use crate::plan;
@@ -101,8 +102,17 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             Ok(print_hook(&output))
         }
         Command::Hook {
-            action: HookAction::Install,
+            action: HookAction::Install { git: false },
         } => install(&cwd),
+        Command::Hook {
+            action: HookAction::Install { git: true },
+        } => {
+            say(&githook::install(&cwd)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Hook {
+            action: HookAction::Git { name, args },
+        } => githook::run(&cwd, name, &args).await,
         Command::Daemon { summary, task } => {
             let worktree = Worktree::discover(&cwd)?;
             let config = load_config(&worktree)?;
