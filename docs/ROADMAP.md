@@ -7,10 +7,11 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 **As of:** 2026-10-06 22:45 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight:** no lanes. Trunk `b446bf3` (REVIEW-UI merged; mirrored); `.claude/worktrees/deploy`
-is at `b446bf3`. WAITING ON FELIX: steward deploy (REVIEW-UI's routes and `REVIEWER_EMAILS`;
-coordinators unchanged), then he opens `/review/tessel-dogfood` behind Access. CLI-LEASE-LOAD
-closed at trunk `4b394c9`.
+**In flight:** no lanes, reviews or background jobs. Trunk `b446bf3` (mirrored);
+`.claude/worktrees/deploy` is at `b446bf3`. Steward `0f01d3fb` deployed by Felix (REVIEW-UI live
+behind Access; coordinators unchanged at `8d66fe32` / swarm `7b7ae508`). Felix to open
+`/review/tessel-dogfood` signed in. The first real held submission is the end-to-end test: approve
+it from the browser, then check the log shows the note "felix via review UI:".
 **Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
 `cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
 unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
@@ -469,8 +470,11 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `review_decided`). Steward tests 803. Held (moved dashboard helpers); gate on `35989a9`: pnpm
   803, typecheck/oxlint/oxfmt 0, cargo 860, clippy 0; approved claim 65; the merged change's
   patch-id equals the gated one (rebased over `4b394c9`). Left: a ~1 s race closed only by
-  `Review.fork_commit` (queued for the protocol hand merge). NOT YET LIVE: steward deploy, then a
-  check behind Access by Felix.
+  `Review.fork_commit` (queued for the protocol hand merge). DEPLOYED Oct 6 ~22:50 EDT by Felix:
+  steward `0f01d3fb` (`REVIEWER_EMAILS` bound). From outside: GET `/review/tessel-dogfood`, GET
+  `/diff`, a forged assertion and the decision POST all get 302 to the Access login; admin routes
+  still answer 401. Not yet seen signed in: Felix opening the page, a held submission's diff from
+  a real container, an approval from the browser.
 - [ ] **DEMO-TS** — PLAN §9 Oct 7, SUBMISSION_CHECKLIST ("demo repository the agents work on is
   your own or permissively licensed"). Mostly exists: `tessel-swarm/src/demo.rs` generates a small
   TypeScript shop (twelve functions in seven modules, one `node --test` file each, cross-module
