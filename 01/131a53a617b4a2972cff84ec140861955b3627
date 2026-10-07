@@ -1,0 +1,4 @@
+intent: AX-INBOX: two small asserts on awaiting_review (plan sets true; adopt copies the flag)
+assumes: none
+rejected: none
+evidence: cargo test -p tessel-cli all pass; clippy -D warnings exit 0; rustfmt clean; mutants killed: adopt not copying the flag (daemon unit test), plan correcting only to false (plan test)
