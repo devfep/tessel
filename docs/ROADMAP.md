@@ -553,13 +553,23 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   loop 0 failures; workspace 885. Test-only, not held; merged on the first submit. The lane ran
   `git stash` once (forbidden; the stack was empty afterwards; recorded in its git note); the
   classifier refused its `tessel inbox` polling, so the orchestrator watched the trunk head.
-- [ ] **SWARM-WAIT** — found by the A/B run 1 RERUN (Oct 7 16:46–17:01, trunk `d9fb232`, repo
+- [x] **SWARM-WAIT** — found by the A/B run 1 RERUN (Oct 7 16:46–17:01, trunk `d9fb232`, repo
   `swarm-s3-tmk1p6`): exit 1 "the coordinator closed the connection", no `on` results; 38 of 40
   merged. Claims 22 (a05, granted after 357 s in the queue) and 36 (a20, after 624 s) expired one
   lease after the grant with no renewal, as did claims 12 and 19 in the first run: an agent granted
   from the wait queue after a long wait never renews. Local runs (short waits) pass. Lane
   dispatched 17:03 (Opus, `.claude/worktrees/swarm-wait`); a close must become the task's outcome,
   not abort the run. The `shadow` A/B run waits for it.
+  CLOSED 2026-10-07 at trunk `43edf24` (review "With fixes" twice). Harness cause, proven: an
+  agent's own socket closing made `Conn::recv` return a plain error that `agent_main` propagated,
+  aborting the run; the dead agents' queued requests were later granted to nobody and lapsed
+  (coordinator side: COORD-CLOSE-WITHDRAW). Now a close is the task's outcome `disconnected` (own
+  A/B row), the agent stops while the others finish, and its time is recorded honestly (wait =
+  claim→grant/close, work = grant→push/close; review and merge-queue time is not work, as for a
+  finished task). A local `Cutter` fault reproduces the live log. Felix ran the submit (the
+  classifier refused it as "Out-of-Place Publication"); held; gate on `d69edba`: workspace 908
+  with `curl` removed from `PATH` at load 50, clippy 0; approved claim 71; merged patch-id equals
+  the gated one (rebased over the CLI commits). Why the live sockets closed is still unknown.
 - [ ] **CLI-CLAIM-EXISTS** — three lanes on Oct 7 passed a space-joined zsh variable to
   `tessel claim`, which created one scope named "a.rs b.rs c.rs" with no warning; the submit was
   then refused as uncovered. `claim` should warn (or refuse, with an override) when a file scope
