@@ -449,6 +449,17 @@ mod tests {
         assert!(super::plan(&truncated, &live, &events)
             .set_awaiting_review
             .is_empty());
+        let requested = &events[..3];
+        let live_requested = live_claims(&AgentId("a1".into()), requested);
+        let mut submitted = held(1, 1, "a.rs");
+        submitted.submitted = true;
+        let idle = [submitted];
+        let waiting = Local {
+            claims: &idle,
+            ..local
+        };
+        let wanted = super::plan(&waiting, &live_requested, requested);
+        assert_eq!(wanted.set_awaiting_review, vec![(ClaimId(1), true)]);
         let fresh = HashSet::from([ClaimId(1)]);
         let recent = Local {
             fresh: &fresh,
@@ -629,6 +640,17 @@ mod tests {
         let plan = plan_for(&[], &events, &[], &[]);
         assert_eq!(plan.adopt.len(), 1);
         assert!(plan.adopt[0].1.submitted);
+    }
+
+    #[test]
+    fn an_unexplained_claim_whose_last_review_event_is_a_request_is_adopted_as_awaiting() {
+        let events = vec![
+            granted(0, "a1", 7, 9, "a.rs"),
+            submitted_event(1, 7, "a.rs"),
+            review_requested(2, 7),
+        ];
+        let plan = plan_for(&[], &events, &[], &[]);
+        assert!(plan.adopt[0].1.awaiting_review);
     }
 
     fn plan_for(

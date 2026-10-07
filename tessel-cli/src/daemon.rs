@@ -2233,6 +2233,24 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn an_adopted_claim_keeps_the_review_flag_the_log_showed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let server = |awaiting_review| ServerClaim {
+            fence: Fence(9),
+            scopes: Vec::new(),
+            race: None,
+            submitted: true,
+            submitted_commit: Some("f".into()),
+            awaiting_review,
+        };
+        assert!(daemon.adopt(ClaimId(7), server(true)).awaiting_review);
+        assert!(!daemon.adopt(ClaimId(8), server(false)).awaiting_review);
+        let stored = daemon.state.claims.iter().find(|h| h.claim == ClaimId(7));
+        assert!(stored.is_some_and(|held| held.awaiting_review));
+    }
+
     fn lapsed_claim(claim: u64) -> HeldClaim {
         HeldClaim {
             expires_at_ms: 5,
