@@ -1,0 +1,4 @@
+intent: record COORD-HEAD's live check and close the task
+assumes: steward 31b4be89 and coordinator 8d66fe32 as deployed from trunk 3c50a5e
+rejected: none
+evidence: live: no token 401, non-steward 403, GET 405, unknown repo 204; demo stale head fixed in 5 s, base_moved by steward logged
