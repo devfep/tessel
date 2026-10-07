@@ -1,0 +1,4 @@
+intent: AX-INBOX fix pass 2: Stop must not allow early after a reviewer approves
+assumes: after approval the coordinator sends only Accepted, which the daemon handles in on_accepted's 'already' branch
+rejected: seeding review state from inbox history - approval writes no notice, so history goes stale
+evidence: cargo test --workspace --locked 928 passed 0 failed; clippy -D warnings exit 0; rustfmt clean; tessel-cli tests pass with curl absent from PATH; mutant (not clearing awaiting_review on Accepted) fails the new test
