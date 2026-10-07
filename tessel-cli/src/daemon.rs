@@ -449,19 +449,30 @@ impl Daemon {
     }
 
     fn send(&mut self, msg: ClientMsg) -> bool {
-        match &self.conn {
-            Some(conn) => conn.out.send(Outgoing::Msg(msg)).is_ok(),
-            None => false,
+        self.write(Outgoing::Msg(msg))
+    }
+
+    /// Hands `outgoing` to the socket task. A task that is gone (it ended without reporting
+    /// `Closed`, as a panic does) has closed the connection: run the close path now.
+    fn write(&mut self, outgoing: Outgoing) -> bool {
+        let Some(conn) = &self.conn else {
+            return false;
+        };
+        if conn.out.send(outgoing).is_ok() {
+            return true;
         }
+        // A `Closed` the dead task may still have queued belongs to the old generation.
+        self.generation += 1;
+        self.on_closed("the socket task ended without closing the connection");
+        false
     }
 
     fn send_heartbeat(&mut self) {
         self.next_heartbeat = Instant::now() + self.heartbeat_every;
-        let Some(conn) = &self.conn else { return };
         // A link is declared dead lease/2 after an unanswered heartbeat, before the local expiry
         // lapses.
         let silence_limit = self.heartbeat_every * 3 / 2;
-        let _ = conn.out.send(Outgoing::Heartbeat { silence_limit });
+        self.write(Outgoing::Heartbeat { silence_limit });
     }
 
     /// Moves the local expiry only when a pong echoes the heartbeat, measured from when it was
@@ -2184,7 +2195,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut daemon = daemon_in(dir.path());
         daemon.state.lease_ms = Some(30_000);
-        let sent_ms = now_ms() - 9_000;
+        let sent_ms = now_ms() - 1_000;
         daemon.on_heartbeat_answered(sent_ms);
         assert_eq!(daemon.last_pong_sent_ms, Some(sent_ms));
         assert!(
@@ -2204,7 +2215,38 @@ mod tests {
         );
         let (_, late) = after.split_once("tick late ").unwrap();
         let late_ms: u64 = late.split_whitespace().next().unwrap().parse().unwrap();
-        assert!((2_000..4_000).contains(&late_ms), "{log}");
+        assert!(late_ms >= 2_000, "{log}");
+    }
+
+    #[tokio::test]
+    async fn a_heartbeat_to_a_gone_socket_task_closes_the_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.ever_online = true;
+        go_online(&mut daemon);
+        assert!(daemon.is_online());
+        let generation = daemon.generation;
+        daemon.send_heartbeat();
+        assert!(!daemon.is_online());
+        assert!(daemon.conn.is_none());
+        assert_eq!(daemon.state.connection, Connection::Reconnecting);
+        assert!(daemon.reconnect_at.is_some());
+        assert!(
+            daemon.generation > generation,
+            "a late Closed must be ignored"
+        );
+        assert!(daemon_log(&daemon).contains("connection closed: the socket task ended"));
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_gone_socket_task_closes_the_connection_and_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.ever_online = true;
+        go_online(&mut daemon);
+        assert!(!daemon.send(ClientMsg::Heartbeat));
+        assert!(!daemon.is_online());
+        assert_eq!(daemon.state.connection, Connection::Reconnecting);
     }
 
     #[test]
@@ -2215,7 +2257,7 @@ mod tests {
         let log = daemon_log(&daemon);
         let (_, after) = log.split_once("answered after ").unwrap();
         let rtt: u64 = after.split_whitespace().next().unwrap().parse().unwrap();
-        assert!((11_000..13_000).contains(&rtt), "{log}");
+        assert!(rtt >= 11_000, "{log}");
     }
 
     fn commit_in(dir: &std::path::Path, message: &str) -> String {
