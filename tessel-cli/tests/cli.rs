@@ -807,9 +807,7 @@ async fn the_hook_blocks_when_the_configuration_is_invalid_or_unreadable() -> Re
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000))?;
     if std::fs::read(&config).is_ok() {
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))?;
-        eprintln!(
-            "this process can read a mode-000 file (root or CAP_DAC_OVERRIDE), so the unreadable case can't be set up here"
-        );
+        // Root or CAP_DAC_OVERRIDE reads a mode-000 file, so the unreadable case can't be set up.
         return Ok(());
     }
     let started = a1.tessel(&["start", "never"])?;
@@ -1470,9 +1468,11 @@ async fn a_reconnect_says_hello_with_the_current_head() -> Result<()> {
     let bases: Vec<String> = fake
         .received("a1")
         .into_iter()
-        .filter_map(|m| match m {
-            ClientMsg::Hello { base, .. } => Some(base.0),
-            _ => None,
+        .filter_map(|m| {
+            let ClientMsg::Hello { base, .. } = m else {
+                return None;
+            };
+            Some(base.0)
         })
         .collect();
     assert_eq!(bases.last(), Some(&head));

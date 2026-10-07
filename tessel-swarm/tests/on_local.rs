@@ -205,9 +205,11 @@ async fn a_denied_agent_picks_other_work_and_comes_back() {
         .result
         .events
         .iter()
-        .filter_map(|e| match &e.kind {
-            EventKind::ClaimGranted { intent, .. } => Some(intent.summary.clone()),
-            _ => None,
+        .filter_map(|e| {
+            let EventKind::ClaimGranted { intent, .. } = &e.kind else {
+                return None;
+            };
+            Some(intent.summary.clone())
         })
         .collect();
     // Which agent claimed first depends on timing; the later of the pair waited on the holder.
@@ -308,17 +310,19 @@ async fn a_rejected_submission_releases_its_claim_for_the_next_agent() {
     let granted = |label: &str| {
         events
             .iter()
-            .position(|e| match &e.kind {
-                EventKind::ClaimGranted { intent, .. } => intent.summary.starts_with(label),
-                _ => false,
+            .position(|e| {
+                let EventKind::ClaimGranted { intent, .. } = &e.kind else {
+                    return false;
+                };
+                intent.summary.starts_with(label)
             })
             .unwrap()
     };
-    let restock_claim = events.iter().find_map(|e| match &e.kind {
-        EventKind::ClaimGranted { claim, intent, .. } if intent.summary.starts_with("t03") => {
-            Some(*claim)
-        }
-        _ => None,
+    let restock_claim = events.iter().find_map(|e| {
+        let EventKind::ClaimGranted { claim, intent, .. } = &e.kind else {
+            return None;
+        };
+        intent.summary.starts_with("t03").then_some(*claim)
     });
     let restock_merged = events
         .iter()
@@ -363,9 +367,11 @@ fn shadow_claims(run: &Run) -> Vec<ClaimId> {
     run.result
         .events
         .iter()
-        .filter_map(|e| match &e.kind {
-            EventKind::ClaimShadowed { claim, .. } => Some(*claim),
-            _ => None,
+        .filter_map(|e| {
+            let EventKind::ClaimShadowed { claim, .. } = &e.kind else {
+                return None;
+            };
+            Some(*claim)
         })
         .collect()
 }
@@ -405,13 +411,16 @@ async fn a_shadowed_agent_submits_for_verification_and_the_conflict_is_counted_f
     );
     let verdicts: Vec<Outcome> = events
         .iter()
-        .filter_map(|e| match &e.kind {
-            EventKind::DenialVerified {
+        .filter_map(|e| {
+            let EventKind::DenialVerified {
                 shadow_claim,
                 outcome,
                 ..
-            } if *shadow_claim == shadow => Some(*outcome),
-            _ => None,
+            } = &e.kind
+            else {
+                return None;
+            };
+            (*shadow_claim == shadow).then_some(*outcome)
         })
         .collect();
     assert_eq!(verdicts, [Outcome::TextualConflict]);
@@ -479,15 +488,20 @@ fn trials_precede_the_next_claim(events: &[Event]) -> usize {
         let EventKind::ClaimShadowed { agent, claim, .. } = &event.kind else {
             continue;
         };
-        let verified = |e: &Event| match &e.kind {
-            EventKind::DenialVerified { shadow_claim, .. } => shadow_claim == claim,
-            _ => false,
+        let verified = |e: &Event| {
+            let EventKind::DenialVerified { shadow_claim, .. } = &e.kind else {
+                return false;
+            };
+            shadow_claim == claim
         };
         let tried = events.iter().rposition(verified);
-        let next = events[at + 1..].iter().position(|e| match &e.kind {
-            EventKind::ClaimGranted { agent: a, .. }
-            | EventKind::ClaimShadowed { agent: a, .. } => a == agent,
-            _ => false,
+        let next = events[at + 1..].iter().position(|e| {
+            let (EventKind::ClaimGranted { agent: a, .. }
+            | EventKind::ClaimShadowed { agent: a, .. }) = &e.kind
+            else {
+                return false;
+            };
+            a == agent
         });
         if let (Some(tried), Some(next)) = (tried, next) {
             assert!(
@@ -577,9 +591,11 @@ async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_count
     };
     let blocker = events
         .iter()
-        .find_map(|e| match &e.kind {
-            EventKind::Merged { claim, .. } => Some(*claim),
-            _ => None,
+        .find_map(|e| {
+            let EventKind::Merged { claim, .. } = &e.kind else {
+                return None;
+            };
+            Some(*claim)
         })
         .unwrap();
     assert!(

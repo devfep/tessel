@@ -48,9 +48,11 @@ async fn held_submission() -> Result<(Fake, Agent, Agent, u64)> {
 fn reviews(fake: &Fake, agent: &str) -> Vec<(bool, Option<String>)> {
     fake.received(agent)
         .into_iter()
-        .filter_map(|msg| match msg {
-            ClientMsg::Review { approve, note, .. } => Some((approve, note)),
-            _ => None,
+        .filter_map(|msg| {
+            let ClientMsg::Review { approve, note, .. } = msg else {
+                return None;
+            };
+            Some((approve, note))
         })
         .collect()
 }
@@ -179,9 +181,11 @@ async fn an_older_decision_on_the_claim_does_not_confirm_a_new_one() -> Result<(
 fn hello_bases(fake: &Fake, agent: &str) -> Vec<String> {
     fake.received(agent)
         .into_iter()
-        .filter_map(|msg| match msg {
-            ClientMsg::Hello { base, .. } => Some(base.0),
-            _ => None,
+        .filter_map(|msg| {
+            let ClientMsg::Hello { base, .. } = msg else {
+                return None;
+            };
+            Some(base.0)
         })
         .collect()
 }

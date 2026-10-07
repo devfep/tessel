@@ -153,7 +153,20 @@ pub async fn read_log(
             ServerMsg::Error { code, message, .. } => {
                 bail!("event log read refused ({code:?}): {message}")
             }
-            _ => {}
+            ServerMsg::Granted { .. }
+            | ServerMsg::Denied { .. }
+            | ServerMsg::Shadowed { .. }
+            | ServerMsg::Queued { .. }
+            | ServerMsg::Accepted { .. }
+            | ServerMsg::Merged { .. }
+            | ServerMsg::SubmitRejected { .. }
+            | ServerMsg::Uncovered { .. }
+            | ServerMsg::ReviewRequired { .. }
+            | ServerMsg::BaseMoved { .. }
+            | ServerMsg::AssumptionChallenged { .. }
+            | ServerMsg::LeaseExpired { .. }
+            | ServerMsg::RaceOpened { .. }
+            | ServerMsg::RaceResult { .. } => {}
         }
     }
     for (index, event) in events.iter().enumerate() {

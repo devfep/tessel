@@ -590,9 +590,11 @@ mod tests {
     fn verified_events(effects: &[Effect]) -> Vec<(ClaimId, Outcome)> {
         logged(effects)
             .into_iter()
-            .filter_map(|kind| match kind {
-                EventKind::AssumptionVerified { claim, outcome, .. } => Some((*claim, *outcome)),
-                _ => None,
+            .filter_map(|kind| {
+                let EventKind::AssumptionVerified { claim, outcome, .. } = kind else {
+                    return None;
+                };
+                Some((*claim, *outcome))
             })
             .collect()
     }
@@ -1458,13 +1460,16 @@ mod tests {
     fn denial_events(effects: &[Effect]) -> Vec<(ClaimId, ClaimId, Outcome)> {
         logged(effects)
             .into_iter()
-            .filter_map(|kind| match kind {
-                EventKind::DenialVerified {
+            .filter_map(|kind| {
+                let EventKind::DenialVerified {
                     shadow_claim,
                     blocking_claim,
                     outcome,
-                } => Some((*shadow_claim, *blocking_claim, *outcome)),
-                _ => None,
+                } = kind
+                else {
+                    return None;
+                };
+                Some((*shadow_claim, *blocking_claim, *outcome))
             })
             .collect()
     }
@@ -2027,12 +2032,17 @@ mod tests {
     fn settled(effects: &[Effect]) -> Vec<ClaimId> {
         logged(effects)
             .into_iter()
-            .filter_map(|kind| match kind {
-                EventKind::ClaimReleased {
-                    claim,
-                    reason: ReleaseReason::Settled,
-                } => Some(*claim),
-                _ => None,
+            .filter_map(|kind| {
+                let EventKind::ClaimReleased { claim, reason } = kind else {
+                    return None;
+                };
+                match reason {
+                    ReleaseReason::Settled => Some(*claim),
+                    ReleaseReason::Agent
+                    | ReleaseReason::LeaseExpired
+                    | ReleaseReason::LostRace
+                    | ReleaseReason::Merged => None,
+                }
             })
             .collect()
     }
@@ -2081,14 +2091,10 @@ mod tests {
         let events = all_events(&slices);
         let mut live = HashSet::new();
         for event in &events {
-            match &event.kind {
-                EventKind::ClaimShadowed { claim, .. } => {
-                    live.insert(*claim);
-                }
-                EventKind::ClaimReleased { claim, .. } => {
-                    live.remove(claim);
-                }
-                _ => {}
+            if let EventKind::ClaimShadowed { claim, .. } = &event.kind {
+                live.insert(*claim);
+            } else if let EventKind::ClaimReleased { claim, .. } = &event.kind {
+                live.remove(claim);
             }
         }
         assert!(live.is_empty(), "the log still shows {live:?} alive");
@@ -2184,9 +2190,11 @@ mod tests {
 
         let reviewers: Vec<_> = logged(&effects)
             .into_iter()
-            .filter_map(|kind| match kind {
-                EventKind::ReviewDecided { reviewer, .. } => Some(reviewer.clone()),
-                _ => None,
+            .filter_map(|kind| {
+                let EventKind::ReviewDecided { reviewer, .. } = kind else {
+                    return None;
+                };
+                Some(reviewer.clone())
             })
             .collect();
         assert_eq!(reviewers, [Some(agent("felix"))]);

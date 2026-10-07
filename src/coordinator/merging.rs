@@ -806,9 +806,11 @@ mod tests {
         let events = logged(&effects);
         let notified: Vec<&Vec<AgentId>> = events
             .iter()
-            .filter_map(|k| match k {
-                EventKind::BaseMoved { notified, .. } => Some(notified),
-                _ => None,
+            .filter_map(|k| {
+                let EventKind::BaseMoved { notified, .. } = k else {
+                    return None;
+                };
+                Some(notified)
             })
             .collect();
         assert_eq!(notified, [&vec![agent("reader"), agent("dir-reader")]]);
@@ -1567,9 +1569,11 @@ mod tests {
         assert_eq!(notices(&effects, "reader").len(), 1);
         let notified: Vec<&Vec<AgentId>> = logged(&effects)
             .into_iter()
-            .filter_map(|k| match k {
-                EventKind::BaseMoved { notified, .. } => Some(notified),
-                _ => None,
+            .filter_map(|k| {
+                let EventKind::BaseMoved { notified, .. } = k else {
+                    return None;
+                };
+                Some(notified)
             })
             .collect();
         assert_eq!(notified, [&vec![agent("reader")]]);

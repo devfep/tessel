@@ -330,9 +330,11 @@ fn symbol(name: &str, mode: Mode) -> ScopeClaim {
 fn sent_touched(fake: &Fake) -> Vec<ScopeClaim> {
     fake.received("a1")
         .into_iter()
-        .find_map(|msg| match msg {
-            ClientMsg::Submit { touched, .. } => Some(touched),
-            _ => None,
+        .find_map(|msg| {
+            let ClientMsg::Submit { touched, .. } = msg else {
+                return None;
+            };
+            Some(touched)
         })
         .unwrap_or_default()
 }

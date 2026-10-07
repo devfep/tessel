@@ -36,3 +36,6 @@ proptest = "1.11.0"
 [profile.release]
 opt-level = "s"
 lto = true
+
+[lints.clippy]
+wildcard_enum_match_arm = "deny"

@@ -44,7 +44,11 @@ impl Worktree {
     pub fn discover(cwd: &Path) -> Result<Self, WorktreeError> {
         let top = git(cwd, &["rev-parse", "--show-toplevel"]).map_err(|e| match e {
             WorktreeError::Git { message, .. } => WorktreeError::NotARepo(message),
-            other => other,
+            other @ (WorktreeError::NotARepo(_)
+            | WorktreeError::NoGit(_)
+            | WorktreeError::SocketPathTooLong(_)
+            | WorktreeError::SocketDir { .. }
+            | WorktreeError::Io { .. }) => other,
         })?;
         let root = Path::new(&top)
             .canonicalize()
