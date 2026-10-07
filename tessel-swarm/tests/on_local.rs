@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use std::time::Duration;
 
-use tessel_coordinator::protocol::{ClaimId, Event, EventKind, Outcome, Summary};
+use tessel_coordinator::protocol::{ClaimId, Event, EventKind, Outcome, ReleaseReason, Summary};
 use tessel_swarm::conn::HEARTBEAT_EVERY;
 use tessel_swarm::demo;
 use tessel_swarm::git::{self, Checks, Git};
@@ -864,6 +864,112 @@ async fn a_lapsed_claim_is_that_tasks_outcome_and_the_run_goes_on() {
         assert!(note.starts_with("claim lapsed (lease expired)"), "{note}");
     }
     assert_eq!(run.result.summary.merges, 0);
+    assert_accounted(&run, 2);
+    run.server.shutdown().await;
+}
+
+fn lease_expired(log: &[Event]) -> Vec<ClaimId> {
+    log.iter()
+        .filter_map(|e| {
+            let EventKind::ClaimReleased { claim, reason } = e.kind else {
+                return None;
+            };
+            (reason == ReleaseReason::LeaseExpired).then_some(claim)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive() {
+    // The holder works for five leases while the other agent waits in the queue, so the waiter's
+    // grant arrives long after its claim was sent. Its claim must still be renewed.
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let config = OnConfig {
+        heartbeat_every: Duration::from_millis(80),
+        ..config(2, Policy::Wait, 2000)
+    };
+    let run = run_with_lease(&tasks, config, 400).await;
+    let outcomes: Vec<Resolution> = run.result.results.iter().map(|r| r.result).collect();
+    assert_eq!(outcomes, [Resolution::Merged, Resolution::Merged]);
+    assert_eq!(run.result.waits_in_log, 1);
+    assert!(
+        run.result.results.iter().any(|r| r.waited_ms >= 1600),
+        "one agent waited for several leases: {:?}",
+        run.result.results
+    );
+    assert!(lease_expired(&run.result.events).is_empty());
+    run.server.shutdown().await;
+}
+
+/// Waits until the log shows an agent queued, then closes that agent's socket from the
+/// coordinator's side without withdrawing its queued request. Returns the agent.
+async fn cut_the_first_waiter(log: local::LogReader, cutter: local::Cutter) -> String {
+    loop {
+        let queued = log.events().into_iter().find_map(|e| {
+            let EventKind::WaitQueued { agent, .. } = e.kind else {
+                return None;
+            };
+            Some(agent.0)
+        });
+        if let Some(agent) = queued {
+            assert!(cutter.cut(&agent), "{agent} had an open socket");
+            return agent;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_whose_connection_the_coordinator_closes_while_it_waits_ends_only_its_task() {
+    // What the live log showed: a queued claim granted long after it was sent lapses exactly one
+    // lease later, because the coordinator closed the waiter's socket but kept its request.
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let config = OnConfig {
+        heartbeat_every: Duration::from_millis(100),
+        ..config(2, Policy::Wait, 1500)
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path(), 600).await;
+    let cut = tokio::spawn(cut_the_first_waiter(server.reader(), server.cutter()));
+    let agents = scratch.path().join("agents");
+    let result = on::run_on(&server.endpoint, &tasks, &agents, &config)
+        .await
+        .unwrap();
+    let waiter = cut.await.unwrap();
+    let mine = |r: &&on::TaskResult| r.agent == waiter;
+    let cut_off = result.results.iter().find(mine).unwrap();
+    assert_eq!(cut_off.result, Resolution::Disconnected, "{cut_off:?}");
+    let note = cut_off.note.as_deref().unwrap_or_default();
+    assert!(
+        note.contains("1011") && note.contains("coordinator error"),
+        "{note}"
+    );
+    let other = result.results.iter().find(|r| r.agent != waiter).unwrap();
+    assert_eq!(other.result, Resolution::Merged, "{other:?}");
+    assert_eq!(result.summary.merges, 1);
+    // The coordinator still granted the request of the agent it had cut off, to no socket, and
+    // that claim lapses one lease later: the live log's signature.
+    let granted_to_waiter = result.events.iter().find_map(|e| {
+        let EventKind::ClaimGranted { agent, claim, .. } = &e.kind else {
+            return None;
+        };
+        (agent.0 == waiter).then_some(*claim)
+    });
+    let granted_to_waiter = granted_to_waiter.expect("the cut-off waiter's request was granted");
+    let mut lapsed = Vec::new();
+    for _ in 0..100 {
+        lapsed = lease_expired(&server.log());
+        if !lapsed.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(lapsed, [granted_to_waiter]);
+    let run = Run {
+        server,
+        result,
+        _scratch: scratch,
+    };
     assert_accounted(&run, 2);
     run.server.shutdown().await;
 }

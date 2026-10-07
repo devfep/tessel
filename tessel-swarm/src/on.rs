@@ -17,7 +17,7 @@ use tessel_coordinator::protocol::{
     EventKind, Fence, Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
 };
 
-use crate::conn::{read_log, Conn};
+use crate::conn::{read_log, Closed, Conn};
 use crate::endpoint::Endpoint;
 use crate::events;
 use crate::git::{self, Checks, Git};
@@ -102,6 +102,9 @@ pub enum Resolution {
     /// The claim's lease ran out before the work was done, so its fence was retired and the
     /// work could not be submitted. The task is not finished; the run goes on.
     Lapsed,
+    /// The agent's connection to the coordinator ended (closed or broken) before the task was
+    /// done. The agent stops; a claim the coordinator grants it afterwards lapses there.
+    Disconnected,
     /// No agent was left to take it: every agent had stopped.
     NotRun,
     /// Denied under the shadow policy: worked and submitted for verification, never to merge.
@@ -442,28 +445,34 @@ fn summarize(
     }
 }
 
-/// An agent that stops waiting leaves its submission with the coordinator, which may still decide
-/// it before the log is read. The log is the record, so a timed-out task whose claim the log
-/// shows as merged or rejected is counted as that, and the table cannot count it twice.
+/// An agent that stops waiting, or whose connection ends, leaves its submission with the
+/// coordinator, which may still decide it before the log is read. The log is the record, so such a
+/// task whose claim the log shows as merged or rejected is counted as that, and the table cannot
+/// count it twice.
 fn settled(results: Vec<TaskResult>, counts: &events::LogCounts) -> Vec<TaskResult> {
     let mut results = results;
-    for r in results
-        .iter_mut()
-        .filter(|r| r.result == Resolution::TimedOut)
-    {
+    for r in &mut results {
+        let why = match r.result {
+            Resolution::TimedOut => "the agent stopped waiting",
+            Resolution::Disconnected => "the agent's connection closed",
+            Resolution::Merged
+            | Resolution::Rejected
+            | Resolution::Starved
+            | Resolution::Failed
+            | Resolution::Lapsed
+            | Resolution::NotRun
+            | Resolution::Shadowed => continue,
+        };
         let label = format!("t{:02}", r.task);
-        let (to, note) = if counts.merged_task_refs.contains(&label) {
-            (Resolution::Merged, "merged after the agent stopped waiting")
+        let (to, verb) = if counts.merged_task_refs.contains(&label) {
+            (Resolution::Merged, "merged")
         } else if counts.rejected_task_refs.contains(&label) {
-            (
-                Resolution::Rejected,
-                "rejected after the agent stopped waiting",
-            )
+            (Resolution::Rejected, "rejected")
         } else {
             continue;
         };
         r.result = to;
-        r.note = Some(note.to_string());
+        r.note = Some(format!("{verb} after {why}"));
     }
     results
 }
@@ -516,7 +525,17 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
         let Some(mut item) = lock(&ctx.queue).pop_front() else {
             return Ok(());
         };
-        let step = run_task(&ctx, &work, &mut conn, &name, &item.task).await?;
+        let step = match run_task(&ctx, &work, &mut conn, &name, &item.task).await {
+            Ok(step) => step,
+            Err(error) => {
+                let Some(closed) = error.downcast_ref::<Closed>() else {
+                    return Err(error);
+                };
+                let note = Some(closed.to_string());
+                record(&ctx, &name, &item, Resolution::Disconnected, 0, note);
+                return Ok(());
+            }
+        };
         item.waited_ms += step.waited_ms;
         let work_ms = step.work_ms;
         match step.end {
@@ -1361,6 +1380,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_connection_dropped_without_a_close_frame_ends_as_closed() {
+        // The scripted coordinator drops the socket when it has no reply left.
+        let mut conn = connect(Vec::new()).await;
+        conn.send(&ClientMsg::Watch { from_seq: 0 }).await.unwrap();
+        let error = conn.recv(Duration::from_secs(5)).await.unwrap_err();
+        assert!(error.downcast_ref::<Closed>().is_some(), "{error:#}");
+        assert!(
+            error
+                .to_string()
+                .starts_with("the coordinator closed the connection ("),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
     async fn the_late_answer_to_a_release_is_not_the_answer_to_the_next_claim() {
         let mut conn = connect(vec![stale(1), granted(2, 9)]).await;
         release(&mut conn, &held(3)).await.unwrap();
@@ -1617,6 +1651,48 @@ mod tests {
             .note
             .as_deref()
             .is_some_and(|n| n.contains("stopped waiting")));
+    }
+
+    #[test]
+    fn a_disconnected_task_the_log_shows_decided_is_counted_as_decided() {
+        let cut_off = |task| TaskResult {
+            result: Resolution::Disconnected,
+            ..timed_out(task)
+        };
+        let mut counts = events::LogCounts::default();
+        counts.merged_task_refs.insert("t02".into());
+        counts.rejected_task_refs.insert("t03".into());
+        let settled = settled(vec![cut_off(2), cut_off(3), cut_off(4)], &counts);
+        let got: Vec<Resolution> = settled.iter().map(|r| r.result).collect();
+        assert_eq!(
+            got,
+            [
+                Resolution::Merged,
+                Resolution::Rejected,
+                Resolution::Disconnected
+            ]
+        );
+        let notes: Vec<Option<&str>> = settled.iter().map(|r| r.note.as_deref()).collect();
+        assert_eq!(
+            notes,
+            [
+                Some("merged after the agent's connection closed"),
+                Some("rejected after the agent's connection closed"),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lapsed_task_is_not_settled_by_a_log_that_shows_its_task_merged() {
+        let lapsed = TaskResult {
+            result: Resolution::Lapsed,
+            ..timed_out(2)
+        };
+        let mut counts = events::LogCounts::default();
+        counts.merged_task_refs.insert("t02".into());
+        let settled = settled(vec![lapsed], &counts);
+        assert_eq!(settled[0].result, Resolution::Lapsed);
     }
 
     #[test]

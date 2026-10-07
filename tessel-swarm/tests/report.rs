@@ -215,6 +215,8 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
         result(3, Resolution::NotRun),
         result(4, Resolution::Rejected),
         result(5, Resolution::Lapsed),
+        result(6, Resolution::Disconnected),
+        result(7, Resolution::Disconnected),
     ];
     let table = ab_markdown(
         &header_of(&config(), 9, 10, 0.5),
@@ -233,11 +235,12 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
     row("of which broke the build", "1", "n/a");
     row("of which broke the tests", "4", "n/a");
     row(
-        "Not finished (starved, timed out, failed, lapsed, not run)",
+        "Not finished (starved, timed out, failed, lapsed, disconnected, not run)",
         "0",
-        "3",
+        "5",
     );
     row("of which the claim lapsed (lease expired)", "n/a", "1");
+    row("of which the agent's connection closed", "n/a", "2");
     row("Landed per minute", "3.0", "12.0");
     row("Wall time (ms)", "60000", "30000");
     row("Agent-minutes of work later rejected", "0.500", "0.100");
@@ -331,7 +334,7 @@ fn the_shadow_policy_adds_its_own_rows_and_a_note_about_landed_counts() {
         cells(&table, "Agent-minutes on shadow work (never merged)")[2],
         "1.500"
     );
-    let unfinished = "Not finished (starved, timed out, failed, lapsed, not run)";
+    let unfinished = "Not finished (starved, timed out, failed, lapsed, disconnected, not run)";
     assert_eq!(
         cells(&table, unfinished)[2],
         "0",

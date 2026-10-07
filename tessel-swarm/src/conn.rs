@@ -24,6 +24,25 @@ pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(8);
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// The connection to the coordinator ended: it was closed, or it broke. `how` says which, with the
+/// close code and reason when the coordinator sent them.
+#[derive(Debug)]
+pub struct Closed {
+    pub how: String,
+}
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the coordinator closed the connection ({})", self.how)
+    }
+}
+
+impl std::error::Error for Closed {}
+
+fn closed(how: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(Closed { how: how.into() })
+}
+
 pub struct Conn {
     socket: Socket,
     next_req: u64,
@@ -78,7 +97,7 @@ impl Conn {
         self.socket
             .send(Message::text(text))
             .await
-            .context("the coordinator closed the connection while sending")
+            .map_err(|e| closed(format!("while sending: {e}")))
     }
 
     /// Marks `req` as one whose answer nobody reads. A `StaleFence` for it is dropped, because the
@@ -116,7 +135,15 @@ impl Conn {
                         self.send(&ClientMsg::Heartbeat).await?;
                     }
                 }
-                Ok(None | Some(Err(_))) => bail!("the coordinator closed the connection"),
+                Ok(None) => return Err(closed("without a close frame")),
+                Ok(Some(Err(e))) => return Err(closed(e.to_string())),
+                Ok(Some(Ok(Message::Close(frame)))) => {
+                    let how = frame.map_or_else(
+                        || "close frame without a code".to_string(),
+                        |f| format!("code {}: {}", u16::from(f.code), f.reason),
+                    );
+                    return Err(closed(how));
+                }
                 Ok(Some(Ok(Message::Text(text)))) => {
                     let msg =
                         serde_json::from_str(&text).context("unreadable coordinator message")?;

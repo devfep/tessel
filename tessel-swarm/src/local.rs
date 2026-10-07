@@ -4,7 +4,8 @@
 //! `tessel-cli/tests/support/mod.rs` builds the same kind of fake for the CLI's tests, but it is
 //! test-only and tied to that crate's binary, so it cannot be linked from here. This one keeps
 //! the pattern (same `shell` functions, same core calls, replies before events as the Durable
-//! Object does) without the fault injection. The steward differs on purpose: the CLI's fake
+//! Object does) without the fault injection, except `Cutter`, which closes an agent's socket
+//! from the coordinator's side. The steward differs on purpose: the CLI's fake
 //! always reports a merge, this one cherry-picks the submitted commit onto the trunk, runs the
 //! tests, and reports `Conflict` or `TestsFailed` when that is what happened.
 //!
@@ -29,10 +30,12 @@ use tessel_coordinator::merge::{MergeOutcome, StepExit, TrialOutcome, TrialRepor
 use tessel_coordinator::protocol::{AgentId, CommitId, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::demo::Tree;
@@ -61,6 +64,8 @@ struct SocketEntry {
     bound: Option<AgentId>,
     watching: bool,
     tx: mpsc::UnboundedSender<ServerMsg>,
+    /// Told to close the socket from the coordinator's side (see `Cutter`).
+    cut: Arc<Notify>,
 }
 
 struct State {
@@ -121,6 +126,29 @@ pub struct LocalServer {
 
 #[derive(Clone)]
 pub struct LogReader(Arc<Hub>);
+
+/// Closes an agent's sockets from the coordinator's side, the way the Durable Object does when it
+/// closes a socket itself (a dispatch that failed, a send that failed): close code 1011, and the
+/// agent's queued request is not withdrawn, so a grant can still go to an agent nobody hears.
+#[derive(Clone)]
+pub struct Cutter(Arc<Hub>);
+
+impl Cutter {
+    /// Closes every socket bound to `agent`. Returns whether there was one.
+    pub fn cut(&self, agent: &str) -> bool {
+        let mut state = lock(&self.0.state);
+        let mut cut = false;
+        state.sockets.retain(|entry| {
+            let bound = entry.bound.as_ref().is_some_and(|a| a.0 == agent);
+            if bound {
+                entry.cut.notify_one();
+                cut = true;
+            }
+            !bound
+        });
+        cut
+    }
+}
 
 impl LogReader {
     pub fn events(&self) -> Vec<Event> {
@@ -215,6 +243,11 @@ impl LocalServer {
     /// A handle that reads the log from another task while the server runs.
     pub fn reader(&self) -> LogReader {
         LogReader(Arc::clone(&self.hub))
+    }
+
+    /// A handle that closes agents' sockets from the coordinator's side while the server runs.
+    pub fn cutter(&self) -> Cutter {
+        Cutter(Arc::clone(&self.hub))
     }
 
     pub fn addr(&self) -> Option<SocketAddr> {
@@ -437,6 +470,7 @@ async fn serve(stream: TcpStream, hub: Arc<Hub>, mut stop: watch::Receiver<bool>
         return;
     };
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
+    let cut = Arc::new(Notify::new());
     let id = {
         let mut state = lock(&hub.state);
         state.next_socket += 1;
@@ -446,6 +480,7 @@ async fn serve(stream: TcpStream, hub: Arc<Hub>, mut stop: watch::Receiver<bool>
             bound: None,
             watching: false,
             tx,
+            cut: Arc::clone(&cut),
         });
         id
     };
@@ -454,8 +489,22 @@ async fn serve(stream: TcpStream, hub: Arc<Hub>, mut stop: watch::Receiver<bool>
         ..Session::default()
     };
     loop {
+        // Biased: a cut also drops this socket's sender, and the cut must win over that.
         tokio::select! {
+            biased;
             _ = stop.changed() => break,
+            () = cut.notified() => {
+                let frame = CloseFrame {
+                    code: CloseCode::Error,
+                    reason: "coordinator error".into(),
+                };
+                let _ = socket.close(Some(frame)).await;
+                // Read until the agent answers the close: dropping the socket with its heartbeats
+                // unread resets the connection, and the agent would never see the close frame.
+                let drained = async { while let Some(Ok(_)) = socket.next().await {} };
+                let _ = tokio::time::timeout(Duration::from_secs(5), drained).await;
+                return;
+            }
             outgoing = rx.recv() => {
                 let Some(msg) = outgoing else { break };
                 let Ok(text) = serde_json::to_string(&msg) else { break };

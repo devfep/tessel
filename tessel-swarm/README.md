@@ -46,6 +46,11 @@ lives for one lease (30 s) after the last one. If a claim lapses anyway, the coo
 its next message with `StaleFence`. That task is recorded as `lapsed`: not finished, counted in
 its own table row, with the note "claim lapsed (lease expired)". Its agent takes another task
 and the run goes on.
+If an agent's connection to the coordinator ends (closed by the coordinator or broken), the task
+it had in hand is recorded as `disconnected`, with the close code and reason in its note, counted
+in its own table row; that agent stops and the others take the remaining tasks. A queued request
+the coordinator still grants to the agent afterwards lapses one lease later. If the log shows the
+task merged or rejected anyway, it is counted as that.
 Every count about the coordinator comes from reading its event log with `Watch` and running
 `Summary::from_events` over it. `SubmitRejected` and `WaitQueued` counts are taken from the same
 log, because `Summary` has no field for them. Wall time and agent-minutes are measured by the
