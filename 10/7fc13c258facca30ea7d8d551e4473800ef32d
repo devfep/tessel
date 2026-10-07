@@ -1,0 +1,4 @@
+intent: fix pass 2: the shim runs the binary that installed it first and falls back to PATH, so a stale tessel on PATH cannot break commits
+assumes: none new
+rejected: none
+evidence: tessel-cli 372 passed, workspace --locked 968 (965+3, predicted); clippy -D warnings 0; rustfmt clean; 2 mutants killed (PATH-first order, in_build_directory)
