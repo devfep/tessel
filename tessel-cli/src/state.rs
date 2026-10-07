@@ -26,6 +26,10 @@ pub struct HeldClaim {
     /// The fork commit of the submission, to move the diff base to when it merges.
     #[serde(default)]
     pub submitted_commit: Option<String>,
+    /// The coordinator holds the submission for a human (`ReviewRequired`) and has not yet put it
+    /// in the merge queue (`Accepted` after approval).
+    #[serde(default)]
+    pub awaiting_review: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

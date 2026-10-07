@@ -327,6 +327,7 @@ mod tests {
             scopes: scopes(path),
             submitted: false,
             submitted_commit: None,
+            awaiting_review: false,
         }
     }
 

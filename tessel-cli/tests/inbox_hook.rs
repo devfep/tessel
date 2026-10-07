@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use support::{eventually, git, Agent, Done, Fake};
-use tessel_coordinator::protocol::{ClaimId, CommitId, ReviewReason, Scope, ServerMsg};
+use tessel_coordinator::protocol::{ClaimId, CommitId, RequestId, ReviewReason, Scope, ServerMsg};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 const SHORT: Duration = Duration::from_secs(8);
@@ -635,5 +635,39 @@ async fn the_frame_says_agent_written_names_are_data_too() -> Result<()> {
         context.contains("symbol names and agent names"),
         "{context}"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_keeps_waiting_once_a_reviewed_submission_is_back_in_the_merge_queue() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = submitted_claim(&a1)?;
+    let agent = &a1;
+    let awaiting = |want: bool| {
+        eventually(SHORT, move || {
+            let status = agent.status()?;
+            Ok((status["state"]["claims"][0]["awaiting_review"] == want).then_some(()))
+        })
+    };
+    fake.push(
+        "a1",
+        ServerMsg::ReviewRequired {
+            claim: ClaimId(claim),
+            reasons: vec![ReviewReason::NoTestEvidence],
+        },
+    );
+    awaiting(true).await?;
+    fake.push(
+        "a1",
+        ServerMsg::Accepted {
+            req: RequestId(900),
+            claim: ClaimId(claim),
+            queue_position: 1,
+        },
+    );
+    awaiting(false).await?;
+    assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
+    let reason = blocked_reason(&run_stop(&a1, 700, &stop_event(false))?)?;
+    assert!(reason.contains("merge queue"), "{reason}");
     Ok(())
 }

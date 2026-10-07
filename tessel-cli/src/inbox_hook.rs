@@ -189,23 +189,10 @@ struct Progress {
 }
 
 impl Progress {
-    /// Starts from the notices already in the inbox. A claim whose latest notice is
-    /// `ReviewRequired` is still waiting for its human; an older merge or rejection belongs to an
-    /// earlier round of the same claim and says nothing about the current one.
-    fn seeded(submitted: &[ClaimId], history: &[(usize, Notice)]) -> Self {
-        let mut latest: Vec<(ClaimId, Settled)> = Vec::new();
-        for (_, notice) in history {
-            let Some((claim, settled)) = notice.server.as_ref().and_then(settles) else {
-                continue;
-            };
-            latest.retain(|(seen, _)| *seen != claim);
-            latest.push((claim, settled));
-        }
-        let in_review = latest
-            .into_iter()
-            .filter(|(claim, settled)| *settled == Settled::InReview && submitted.contains(claim))
-            .map(|(claim, _)| claim)
-            .collect();
+    /// Starts from the daemon's view: `in_review` are the submitted claims a human still has to
+    /// approve. That comes from the live status, not from the inbox, because an approval leaves
+    /// no notice behind it.
+    fn new(submitted: &[ClaimId], in_review: Vec<ClaimId>) -> Self {
         Self {
             submitted: submitted.to_vec(),
             merged: Vec::new(),
@@ -296,7 +283,13 @@ async fn try_stop(
     if submitted.is_empty() {
         return unread_rejection(&worktree);
     }
-    wait_for_steward(&worktree, &submitted, wait).await
+    let in_review = live
+        .claims
+        .iter()
+        .filter(|claim| claim.submitted && claim.awaiting_review)
+        .map(|claim| claim.claim)
+        .collect();
+    wait_for_steward(&worktree, Progress::new(&submitted, in_review), wait).await
 }
 
 /// Nothing is submitted, but a rejection the agent has not read yet still keeps it going: a
@@ -328,12 +321,12 @@ async fn live_state(worktree: &Worktree) -> Result<State, String> {
 
 async fn wait_for_steward(
     worktree: &Worktree,
-    submitted: &[ClaimId],
+    mut progress: Progress,
     wait: Duration,
 ) -> Result<HookOutput, String> {
-    let history = state::notices_from(worktree, 0).map_err(|e| e.to_string())?;
-    let mut next = history.len();
-    let mut progress = Progress::seeded(submitted, &history);
+    let mut next = state::notices_from(worktree, 0)
+        .map_err(|e| e.to_string())?
+        .len();
     let started = Instant::now();
     loop {
         if progress.step() == Step::AllSettled {
@@ -350,7 +343,7 @@ async fn wait_for_steward(
             }
         }
         if started.elapsed() >= wait && progress.step() != Step::AllSettled {
-            return Ok(block(&still_pending(submitted, wait)));
+            return Ok(block(&still_pending(&progress.submitted, wait)));
         }
         tokio::time::sleep(STOP_POLL).await;
     }
@@ -404,25 +397,10 @@ mod tests {
         }
     }
 
-    fn history(msgs: Vec<ServerMsg>) -> Vec<(usize, Notice)> {
-        msgs.into_iter()
-            .enumerate()
-            .map(|(index, msg)| {
-                let notice = Notice {
-                    at_ms: 0,
-                    kind: NoticeKind::Error,
-                    note: String::new(),
-                    server: Some(msg),
-                };
-                (index, notice)
-            })
-            .collect()
-    }
-
     #[test]
     fn with_several_submitted_claims_the_wait_ends_only_when_all_are_settled() {
         let both = [ClaimId(1), ClaimId(2)];
-        let mut progress = Progress::seeded(&both, &[]);
+        let mut progress = Progress::new(&both, Vec::new());
         assert_eq!(progress.step(), Step::Waiting);
         assert_eq!(progress.observe(&merged(1)), Step::Waiting);
         assert_eq!(progress.observe(&merged(9)), Step::Waiting);
@@ -435,22 +413,20 @@ mod tests {
 
     #[test]
     fn a_rejection_of_any_submitted_claim_ends_the_wait_at_once() {
-        let mut progress = Progress::seeded(&[ClaimId(1), ClaimId(2)], &[]);
+        let mut progress = Progress::new(&[ClaimId(1), ClaimId(2)], Vec::new());
         assert_eq!(progress.observe(&merged(1)), Step::Waiting);
         assert_eq!(progress.observe(&rejected(2)), Step::Rejected);
         assert_eq!(progress.observe(&rejected(7)), Step::Waiting);
     }
 
     #[test]
-    fn only_a_latest_review_notice_counts_from_the_history() {
+    fn claims_the_daemon_reports_in_review_count_as_settled() {
         let both = [ClaimId(1), ClaimId(2)];
-        let old = history(vec![review(1), review(2), rejected(2), merged(5)]);
-        let progress = Progress::seeded(&both, &old);
-        assert_eq!(progress.in_review, vec![ClaimId(1)]);
-        assert_eq!(progress.step(), Step::Waiting);
-        let all = history(vec![review(1), review(2)]);
-        assert_eq!(Progress::seeded(&both, &all).step(), Step::AllSettled);
-        let other = history(vec![review(3)]);
-        assert_eq!(Progress::seeded(&both, &other).step(), Step::Waiting);
+        assert_eq!(
+            Progress::new(&both, vec![ClaimId(1), ClaimId(2)]).step(),
+            Step::AllSettled
+        );
+        assert_eq!(Progress::new(&both, vec![ClaimId(1)]).step(), Step::Waiting);
+        assert_eq!(Progress::new(&both, vec![ClaimId(3)]).step(), Step::Waiting);
     }
 }

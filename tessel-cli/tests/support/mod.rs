@@ -602,10 +602,10 @@ fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
 
 // ---------- agents: real git repos running the real binary ----------
 
-/// One agent's worktree: a temp git repo with two source files and its own `tessel` config.
 /// Longest any test waits for one `tessel` command with piped input.
 const COMMAND_DEADLINE: Duration = Duration::from_secs(30);
 
+/// One agent's worktree: a temp git repo with two source files and its own `tessel` config.
 pub struct Agent {
     pub name: String,
     pub token: String,

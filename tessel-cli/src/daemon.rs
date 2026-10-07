@@ -788,6 +788,7 @@ impl Daemon {
                 scopes: pending.scopes,
                 submitted: false,
                 submitted_commit: None,
+                awaiting_review: false,
             };
             self.state.claims.push(held.clone());
             held
@@ -954,6 +955,9 @@ impl Daemon {
             if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
                 held.submitted = submitted;
                 held.submitted_commit = commit;
+                if !submitted {
+                    held.awaiting_review = false;
+                }
             }
             let note = if submitted {
                 format!(
@@ -1022,6 +1026,7 @@ impl Daemon {
                 scopes: Vec::new(),
                 submitted: false,
                 submitted_commit: None,
+                awaiting_review: false,
             };
             self.send_release(&held);
             let note = format!(
@@ -1047,6 +1052,7 @@ impl Daemon {
             scopes: server.scopes,
             submitted: server.submitted,
             submitted_commit: server.submitted_commit,
+            awaiting_review: false,
         };
         self.state.claims.push(held.clone());
         held
@@ -1100,6 +1106,7 @@ impl Daemon {
         let renewed = now_ms().saturating_add(self.state.lease_ms.unwrap_or(0));
         if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
             held.submitted = submitted;
+            held.awaiting_review = false;
             held.submitted_commit = if submitted {
                 commit.or_else(|| held.submitted_commit.take())
             } else {
@@ -1110,6 +1117,15 @@ impl Daemon {
             }
         }
         self.fresh.insert(claim);
+        self.persist();
+    }
+
+    /// Records whether `claim` waits for a reviewer, so `status` and the stop hook can tell a
+    /// claim in the merge queue from one a human still has to approve.
+    fn set_awaiting_review(&mut self, claim: ClaimId, awaiting: bool) {
+        if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
+            held.awaiting_review = awaiting;
+        }
         self.persist();
     }
 
@@ -1171,6 +1187,7 @@ impl Daemon {
                     .iter()
                     .any(|h| h.claim == claim && h.submitted);
                 if already {
+                    self.set_awaiting_review(claim, false);
                     self.log(&format!(
                         "claim {} accepted after its review notice",
                         claim.0
@@ -1227,6 +1244,7 @@ impl Daemon {
             let outcome = SubmitOutcome::ReviewRequired { reasons };
             let _ = pending.reply.send(Reply::Submit { outcome });
         }
+        self.set_awaiting_review(claim, true);
         self.notify(
             NoticeKind::ReviewRequired,
             &format!(
@@ -2144,6 +2162,7 @@ mod tests {
             scopes: Vec::new(),
             submitted: false,
             submitted_commit: None,
+            awaiting_review: false,
         }
     }
 
