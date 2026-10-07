@@ -5,13 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 20:45 EDT.
+**As of:** 2026-10-06 21:47 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight:** COORD-HEAD, one lane (`lane-coord-head`, Sonnet, dispatched 20:45, worktree
-`.claude/worktrees/coord-head` from trunk `7d7f4c9`, fork `tessel-dogfood--lane-coord-head`),
-implementing design C (see its task entry). Stops before push for the Opus review. Load ~20, so
-one lane only.
-**Done this session:** LINT-RULE2 + CLI-CLIPPY-810 closed at trunk `7d7f4c9` (mirrored; no
+**In flight:** no lanes. COORD-HEAD merged at trunk `3c50a5e` (mirrored); WAITING ON FELIX to
+deploy (the classifier refused `cd … && npx wrangler deploy`): steward first (its `/head` path
+must be live before the coordinator's alarm calls it), then `tessel-coordinator`, then
+`--env swarm`, all from `.claude/worktrees/deploy` (now at `3c50a5e`). Then the orchestrator
+checks live: an admin-style trunk push → `BaseMoved` by `steward`, `welcome` head = trunk.
+Load hit 98 at 21:44 (other sessions).
+**Done this session:** COORD-HEAD merged (above). Filed CLI-LEASE-LOAD. LINT-RULE2 + CLI-CLIPPY-810 closed at trunk `7d7f4c9` (mirrored; no
 deploy needed: lints and tests only). Felix minted that lane's fork token himself (the classifier
 refused the lane's own mint); later lanes use the allowed mint script below. Shadow swarm run (next action 1): seed 2, 10 tasks, 4 agents, 3 verified
 preventions, 0 false alarms, first live `Settled` releases (events 40, 48, 50); evidence in
@@ -486,7 +488,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
-- [ ] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
+- [x] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
   trunk on every merge outcome. Design it before the next admin merge.
@@ -507,6 +509,21 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   all-zero reads change nothing; next welcome carries the new head; route auth; vitest for the
   queue poke (non-fork main only) and `/head`. Live: after the next trunk push, `welcome` carries
   the trunk sha and the dashboard feed shows `BaseMoved` by steward.
+  MERGED 2026-10-06 at trunk `3c50a5e` (review "With fixes": a poke during a read was lost, and
+  every steward push would have created production Durable Objects for scratch repos; fixed with
+  poke counters `head_pokes`/`head_synced`/`head_tried`, a known-repo check that answers 204 with
+  no write, a steward-only route (`Denied::NotSteward`), and a failed read kept pending without
+  waking by itself; re-check "Yes", one survivor killed by an added assertion). Held for review
+  (signatures of `CoordinatorState`, `Denied`, `Route`, `forkHead`); orchestrator gate on
+  `3c50a5e`: cargo test 859, clippy 0, pnpm test 666, typecheck/oxlint/oxfmt 0, wasm 0 warnings;
+  approved claim 60; trunk tree equals the gated tree. Each steward merge now costs one extra poke
+  and a no-op `/head` read. NOT YET LIVE: deploy steward first, then both coordinators, then check.
+- [ ] **CLI-LEASE-LOAD** — found by the COORD-HEAD lane at load 20–90: claims 58 and 59 got
+  `lease_expired` ("no heartbeat reached the coordinator") about 180 s after the grant while the
+  daemon (one pid throughout) reported `connection: online`; later a reconcile said the
+  coordinator still held 58 after the daemon had dropped it. Daemon logs were not kept, so sent-
+  and-lost and never-sent are not told apart. Reproduce under load (e.g. `nice`d CPU hog), log
+  heartbeat send and pong times, then fix. Not the same as CLI-LIVENESS (half-open link).
 - [x] **CLI-LIVENESS** — found while dogfooding SHADOW-1: claim 35 expired while the lane's daemon
   was running. Heartbeats get no reply; the daemon moved the local expiry when a heartbeat was
   queued and never pinged, so a half-open link heartbeat into nothing. Now: a ping carrying the
