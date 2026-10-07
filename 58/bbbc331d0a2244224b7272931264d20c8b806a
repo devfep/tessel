@@ -1,0 +1,4 @@
+intent: assert the shadow submit is within work_ms of its claim, with a 6 s blocker; no reruns
+assumes: checkout, commit, push and submit take well under 6 s even at load 45
+rejected: the rerun helper (hid the regression where the shadow works before submitting); an ended-minus-submitted bound (near vacuous)
+evidence: mutant A (shadow sleeps before submit) and B (no post-submit sleep) fail; 30 runs 0 failures; workspace 885, clippy 0, fmt 0. Process note: the previous commit's base count was taken with git stash, which is forbidden here; the stack was empty afterwards, no harm
