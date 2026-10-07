@@ -5,14 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 22:03 EDT.
+**As of:** 2026-10-06 22:33 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight (dispatched 22:02, load 9):** CLI-LEASE-LOAD (`lane-lease-load`, Sonnet, worktree
-`.claude/worktrees/lease-load`, fork `tessel-dogfood--lane-lease-load`; root cause first, owns
-`tessel-cli/` and possibly `src/coordinator*`) and REVIEW-UI (`lane-review-ui`, Sonnet, worktree
-`.claude/worktrees/review-ui`, fork `tessel-dogfood--lane-review-ui`; PHASE 1 = plan only, stops
-for the orchestrator's go; owns `tessel-steward/src/` review and dashboard files). Both from trunk
-`3c50a5e`. Fork write tokens minted 22:00 expire 23:00; re-mint at each go.
+**In flight:** REVIEW-UI (`lane-review-ui`, Sonnet, worktree `.claude/worktrees/review-ui`, fork
+`tessel-dogfood--lane-review-ui`): Opus "Yes" at `35989a9` after one fix pass (stale page could
+approve an unseen commit; false "refused"); GO 22:32: re-claiming, pushing, submitting. After it
+merges: Felix deploys the steward (`/review` routes, `REVIEWER_EMAILS`), then a live check behind
+Access. CLI-LEASE-LOAD closed at trunk `4b394c9` (mirrored).
 **Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
 `cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
 unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
@@ -531,12 +530,23 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   trunk's `58119c2` within 5 s of a steward poke, logged as `base_moved` by `steward`; no token
   401, non-steward 403, GET 405, unknown repo 204. Evidence `docs/evidence/2026-10-06/
   coord-head-live/`. The queue consumer's own poke is not yet seen live (next trunk push).
-- [ ] **CLI-LEASE-LOAD** — found by the COORD-HEAD lane at load 20–90: claims 58 and 59 got
+- [x] **CLI-LEASE-LOAD** — found by the COORD-HEAD lane at load 20–90: claims 58 and 59 got
   `lease_expired` ("no heartbeat reached the coordinator") about 180 s after the grant while the
   daemon (one pid throughout) reported `connection: online`; later a reconcile said the
   coordinator still held 58 after the daemon had dropped it. Daemon logs were not kept, so sent-
   and-lost and never-sent are not told apart. Reproduce under load (e.g. `nice`d CPU hog), log
   heartbeat send and pong times, then fix. Not the same as CLI-LIVENESS (half-open link).
+  CLOSED 2026-10-06 at trunk `4b394c9` (review "With fixes", then "Yes"). The defect: while online,
+  housekeeping dropped a claim on its local expiry and told nobody; heartbeats renew all of an
+  agent's claims, so the coordinator kept holding it (blocking others) while `submit` said "no
+  claim is held", until a reconnect reconciled. Now, online, only the coordinator's
+  `LeaseExpired` drops a claim; offline the local lapse applies as before; a failed send to a dead
+  socket task runs the close path. The likely stall source, synchronous `git` on the
+  single-threaded runtime (HEAD on connect, `is_ancestor` per landed commit), now runs on blocking
+  threads. The stall itself was inferred, never seen live: `daemon.log` now records each local
+  lapse (expiry, now, last pong, tick lateness) and each slow pong. Held for review (five private
+  `Daemon` methods became async); orchestrator gate on `4b394c9`: workspace 867, clippy 0;
+  approved claim 63; trunk tree equals the gated tree. No Worker deploy (CLI only).
 - [x] **CLI-LIVENESS** — found while dogfooding SHADOW-1: claim 35 expired while the lane's daemon
   was running. Heartbeats get no reply; the daemon moved the local expiry when a heartbeat was
   queued and never pinged, so a half-open link heartbeat into nothing. Now: a ping carrying the
