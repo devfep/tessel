@@ -1,0 +1,4 @@
+intent: fix pass 1: the shim in the shared hooks dir must not break other worktrees when the tessel binary is deleted; a stopped worktree and a merge conclusion must pass; kill two survivors
+assumes: git sets MERGE_HEAD (found with rev-parse --git-path) while a conflicted merge is concluded and runs pre-commit then; a clean git merge runs no pre-commit; a chained hook is run by exec from the shim so stdin reaches it
+rejected: allowing commits when the daemon is down and no claims are held (it would defeat the check after a crash; only state Stopped passes)
+evidence: cargo test --workspace --locked 965 passed (957 + 7 integration + 1 unit, predicted); tessel-cli with curl absent 369; clippy -D warnings exit 0; rustfmt clean; 6 mutants killed (collapse removed, exit code, stopped, merge, chain fallback, fail-closed)
