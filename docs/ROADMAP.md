@@ -574,6 +574,15 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `tessel claim`, which created one scope named "a.rs b.rs c.rs" with no warning; the submit was
   then refused as uncovered. `claim` should warn (or refuse, with an override) when a file scope
   does not exist in the worktree and is not being created (`--mode create`).
+- [ ] **SWARM-RECONNECT** — A/B run 3 (Oct 7 19:31–19:39, trunk `43edf24`, `wrangler tail` on):
+  at 19:39:36–37 every WebSocket dropped at once with no close frame (17 queued agents withdrawn
+  in one instant; the Durable Object kept running, one script version, all 376 invocations ok, CPU
+  0–24 ms: a transport reset between the Mac and the edge, cause undecided), and the scripted
+  reviewer's reset aborted the run (by design), losing 16 merges of evidence. Lane dispatched
+  19:44: agents and the reviewer reconnect with backoff and resume; reconnects recorded per task.
+  Next live run measures: reconnects and close codes per connection, `cf.colo` per `/ws` request
+  plus a 5 s ping from the Mac (edge restart vs local loss), DO wall time per message (0.7–1.1 s at
+  ~0 CPU in run 3) and per alarm (18–23 s).
 - [ ] **COORD-CLOSE-WITHDRAW** — found by SWARM-WAIT (Oct 7), checked by the orchestrator in the
   trunk: when the Durable Object closes a socket itself (`close_socket`, `src/runtime.rs` ~285,
   code 1011, after a failed dispatch or send), it does not withdraw that agent's queued request;
