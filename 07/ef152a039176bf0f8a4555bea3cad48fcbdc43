@@ -1,0 +1,4 @@
+intent: keep scripted agents' leases alive during work and make a lapse a per-task outcome
+assumes: coordinator answers a release on a retired fence with Error{req,StaleFence}, and a heartbeat renews every claim
+rejected: ignoring every Error without a matching req (would hide real refusals of releases)
+evidence: cargo test --workspace --locked 897 passed; clippy -D warnings and rustfmt clean; tessel-swarm tests pass without curl on PATH; local 40 task 30 agent wait run completes, 40 merged
