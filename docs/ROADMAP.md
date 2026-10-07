@@ -9,11 +9,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
 **Trunk:** `58bbbc3` (SWARM-FLAKE-SHADOW merged; mirrored). Demo repo `swarm-demo` created live
 (see DEMO-TS). REVIEW-UI closed (Felix checked the page signed in, 12:35).
-**In flight (Felix said proceed, 14:5x):** the Oct 10 scripted A/B runs, started early, one at a
-time on the swarm Worker (shared steward): run 1 `--policy wait`, seed 3, 40 tasks, 30 agents,
-overlap 0.5, `--task-timeout-s 1800`, started 14:55 in the background, output in the session
-scratchpad `orch/ab-wait/`; run 2 the same with `--policy shadow` after it. Raw output goes to
-`docs/evidence/2026-10-07/`. The 3–5 real agents are for the video session with Felix.
+**In flight (Felix said proceed, 14:5x):** the Oct 10 scripted A/B runs, started early. Run 1
+(`--policy wait`, seed 3, 40 tasks, 30 agents, overlap 0.5, `--task-timeout-s 1800`, live, repo
+`swarm-s3-tmjwju`) FAILED at 15:11 after 16.5 min: the harness exited on `claim refused
+(StaleFence)`, so no `on` results were written (only the local `off` replay). The coordinator log
+(257 events, 36 of 40 merged) shows claims 12 (a08) and 19 (a24) released `lease_expired`
+exactly 30 s after their grants, never heartbeated. Log and off JSON kept in the session
+scratchpad `orch/ab-wait/`. SWARM-LEASE lane dispatched 15:13 (`lane-swarm-lease`, worktree
+`.claude/worktrees/swarm-lease`, fork `tessel-dogfood--lane-swarm-lease`, from `58bbbc3`):
+root-cause the lapse; a lapsed claim must become that task's outcome, not abort the run. Run 2
+(`shadow`) waits for it. The 3–5 real agents are for the video session with Felix.
 Open: GATE-PATH (process; done in practice for the last three gates), then the Oct 10 A/B runs
 and the milestone pull request.
 **Classifier refusals of normal lane steps today:** a lane's fork-token mint (now a Felix-allowed
@@ -548,6 +553,11 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   loop 0 failures; workspace 885. Test-only, not held; merged on the first submit. The lane ran
   `git stash` once (forbidden; the stack was empty afterwards; recorded in its git note); the
   classifier refused its `tessel inbox` polling, so the orchestrator watched the trunk head.
+- [ ] **SWARM-LEASE** — found by A/B run 1 (Oct 7 15:11): at 30 agents with `--policy wait`, two
+  scripted agents never heartbeated a granted claim (expired exactly one lease after the grant),
+  and the next request on a lapsed claim (`StaleFence`) aborted the whole run with no `on`
+  results. Root-cause the lapse; record a lapsed claim as that task's outcome ("not finished:
+  claim lapsed") and keep running.
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
