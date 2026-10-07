@@ -603,6 +603,9 @@ fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
 // ---------- agents: real git repos running the real binary ----------
 
 /// One agent's worktree: a temp git repo with two source files and its own `tessel` config.
+/// Longest any test waits for one `tessel` command with piped input.
+const COMMAND_DEADLINE: Duration = Duration::from_secs(30);
+
 pub struct Agent {
     pub name: String,
     pub token: String,
@@ -726,7 +729,17 @@ impl Agent {
         if let Some(mut pipe) = child.stdin.take() {
             pipe.write_all(stdin)?;
         }
-        Ok(Done::from(child.wait_with_output()?))
+        // A command that never ends fails the test instead of hanging it.
+        let pid = child.id();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(child.wait_with_output());
+        });
+        let Ok(output) = receiver.recv_timeout(COMMAND_DEADLINE) else {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+            bail!("tessel {args:?} did not finish within {COMMAND_DEADLINE:?}");
+        };
+        Ok(Done::from(output?))
     }
 
     /// Runs the daemon in the foreground of a child process, as `tessel start` would detach it.

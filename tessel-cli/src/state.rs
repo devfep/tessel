@@ -259,9 +259,13 @@ pub fn take_inbox_bounded(
     })
 }
 
-/// How many lines the inbox holds now.
-pub fn inbox_len(worktree: &Worktree) -> Result<usize, StateError> {
-    Ok(read_lines(&worktree.inbox_path())?.len())
+/// The notices past the cursor, without moving it.
+pub fn unread_notices(worktree: &Worktree) -> Result<Vec<Notice>, StateError> {
+    let start = read_cursor(worktree);
+    Ok(notices_from(worktree, start)?
+        .into_iter()
+        .map(|(_, notice)| notice)
+        .collect())
 }
 
 /// The notices from line `start` on, with their line numbers. Does not move the cursor.
@@ -324,7 +328,11 @@ pub fn unread_count(worktree: &Worktree) -> Result<usize, StateError> {
 
 fn read_lines(path: &Path) -> Result<Vec<String>, StateError> {
     match std::fs::read_to_string(path) {
-        Ok(text) => Ok(text.lines().map(str::to_string).collect()),
+        Ok(text) => {
+            // A line the daemon is still appending has no newline yet; it is not a notice.
+            let complete = text.rfind('\n').map_or("", |last| &text[..=last]);
+            Ok(complete.lines().map(str::to_string).collect())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(source) => Err(StateError::Io {
             path: path.display().to_string(),
@@ -393,6 +401,25 @@ mod tests {
         let distinct: BTreeSet<&String> = seen.iter().collect();
         assert_eq!(seen.len(), 300);
         assert_eq!(distinct.len(), 300);
+    }
+
+    #[test]
+    fn a_half_written_last_line_is_not_a_notice_until_it_is_finished() {
+        let (_dir, worktree) = temp_worktree();
+        let line = r#"{"at_ms":1,"kind":"reconciled","note":"whole","server":null}"#;
+        let half = &line[..20];
+        std::fs::write(worktree.inbox_path(), format!("{line}\n{half}")).unwrap();
+        let render = |n: &Notice| n.note.clone();
+        let first = take_inbox_bounded(&worktree, &render, 10, 100).unwrap();
+        assert_eq!(
+            (first.text.as_str(), first.shown, first.more),
+            ("whole", 1, 0)
+        );
+        assert_eq!(take_inbox(&worktree, true).unwrap().len(), 1);
+        std::fs::write(worktree.inbox_path(), format!("{line}\n{line}\n")).unwrap();
+        let rest = take_inbox_bounded(&worktree, &render, 10, 100).unwrap();
+        assert_eq!((rest.text.as_str(), rest.shown), ("whole", 1));
+        assert_eq!(unread_count(&worktree).unwrap(), 0);
     }
 
     #[test]
