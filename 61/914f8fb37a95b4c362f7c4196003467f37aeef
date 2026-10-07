@@ -1,0 +1,4 @@
+intent: AX-INBOX fix pass 3: awaiting_review survives a reconnect; an approval missed while offline is read from the log
+assumes: the coordinator writes Submitted before ReviewRequested (coordinator.rs ~1267/1305); ReviewDecided ends the review round
+rejected: a protocol change - the event log already carries ReviewRequested/ReviewDecided
+evidence: cargo test --workspace --locked 932 passed 0 failed; clippy -D warnings exit 0; rustfmt clean; tessel-cli passes with curl absent from PATH; mutants killed: no plan correction, no apply, Submitted not clearing the flag; adopt path (flag copied for ghost claims) survives - untested
