@@ -158,6 +158,11 @@ right after each run.
    with `felix` and `orchestrator` both listed the log cannot show who approved. Proposed: add
    `#[serde(default)] reviewer: Option<AgentId>` to it. Until then the orchestrator puts
    "orchestrator: Opus Yes, gate <sha>" in every approval's note.
+   New (REVIEW-UI review, Oct 6 22:31): add `#[serde(default)] fork_commit: Option<CommitId>` to
+   `ClientMsg::Review`, and have the coordinator refuse a Review whose commit differs from the held
+   submission. Closes a ~1 s race in the review screen (a stale page re-reads the log, then the
+   claim is rejected, resubmitted and held again before its Review lands). Needs a small coordinator
+   change beside the protocol line, so a lane prepares it and Felix merges it.
 2. `SUBMISSION_CHECKLIST.md` says Artifacts billing starts Oct 15; the pricing page says Oct 14.
 3. An untracked `AGENTS.md` (a copy of `CLAUDE.md`) sits in the repo root; left untracked.
 
