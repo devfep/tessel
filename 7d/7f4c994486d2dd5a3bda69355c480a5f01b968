@@ -1,0 +1,4 @@
+intent: keep the restored skip message within the 100-char line limit
+assumes: none
+rejected: none
+evidence: clippy -p tessel-cli --all-targets -D warnings exit 0; rustfmt --check exit 0; no added line over 100 chars vs 7d00ad6
