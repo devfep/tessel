@@ -166,6 +166,8 @@ struct Daemon {
     next_heartbeat: Instant,
     heartbeat_every: Duration,
     next_housekeeping: Instant,
+    /// `sent_ms` of the newest heartbeat a pong answered, kept for the lapse log line.
+    last_pong_sent_ms: Option<u64>,
     ever_online: bool,
 }
 
@@ -312,6 +314,7 @@ impl Daemon {
             next_heartbeat: now + DEFAULT_HEARTBEAT,
             heartbeat_every: DEFAULT_HEARTBEAT,
             next_housekeeping: now + HOUSEKEEPING_EVERY,
+            last_pong_sent_ms: None,
             ever_online: false,
         }
     }
@@ -353,13 +356,16 @@ impl Daemon {
         loop {
             let online = self.is_online();
             let reconnect_at = self.reconnect_at;
+            // Biased: after a stall the timers are due together with the pongs that renew the
+            // claims, and housekeeping must not judge a lease before those are applied.
             tokio::select! {
+                biased;
+                Some(incoming) = in_rx.recv() => self.on_incoming(incoming),
                 Some(command) = cmd_rx.recv() => {
                     if let Flow::Exit = self.on_command(command).await {
                         return Ok(());
                     }
                 }
-                Some(incoming) = in_rx.recv() => self.on_incoming(incoming),
                 () = tokio::time::sleep_until(self.next_heartbeat), if online => {
                     self.send_heartbeat();
                 }
@@ -454,6 +460,13 @@ impl Daemon {
     /// heartbeat interval.
     fn on_heartbeat_answered(&mut self, sent_ms: u64) {
         let renewed = sent_ms.saturating_add(self.state.lease_ms.unwrap_or(0));
+        self.last_pong_sent_ms = Some(sent_ms);
+        let rtt_ms = now_ms().saturating_sub(sent_ms);
+        if u128::from(rtt_ms) > self.heartbeat_every.as_millis() {
+            self.log(&format!(
+                "slow pong: heartbeat {sent_ms} answered after {rtt_ms} ms"
+            ));
+        }
         for held in &mut self.state.claims {
             held.expires_at_ms = held.expires_at_ms.max(renewed);
         }
@@ -461,6 +474,9 @@ impl Daemon {
     }
 
     fn housekeeping(&mut self) -> Flow {
+        let tick_late_ms = Instant::now()
+            .saturating_duration_since(self.next_housekeeping)
+            .as_millis();
         self.next_housekeeping = Instant::now() + HOUSEKEEPING_EVERY;
         if !self.worktree.dir().exists() {
             return Flow::Exit;
@@ -471,6 +487,14 @@ impl Daemon {
             .partition(|held| held.submitted || held.expires_at_ms > now);
         self.state.claims = live;
         for held in lapsed {
+            self.log(&format!(
+                "claim {} lapsed locally: expiry {} now {now} last pong for heartbeat {:?} \
+                 online {} tick late {tick_late_ms} ms",
+                held.claim.0,
+                held.expires_at_ms,
+                self.last_pong_sent_ms,
+                self.is_online()
+            ));
             self.notify(
                 NoticeKind::LeaseExpired,
                 &format!(
@@ -2018,6 +2042,7 @@ async fn dispatch(request: Request, cmd_tx: &mpsc::Sender<Command>) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::FutureExt;
     use tessel_coordinator::protocol::Fence;
 
     fn held(claim: u64) -> HeldClaim {
@@ -2033,6 +2058,10 @@ mod tests {
     }
 
     fn daemon_in(dir: &std::path::Path) -> Daemon {
+        daemon_with_inbox(dir).0
+    }
+
+    fn daemon_with_inbox(dir: &std::path::Path) -> (Daemon, mpsc::UnboundedReceiver<Incoming>) {
         let init = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -2066,8 +2095,86 @@ mod tests {
             queued: None,
             updated_at_ms: 0,
         };
-        let (in_tx, _in_rx) = mpsc::unbounded_channel();
-        Daemon::new(worktree, config, state, in_tx)
+        let (in_tx, in_rx) = mpsc::unbounded_channel();
+        (Daemon::new(worktree, config, state, in_tx), in_rx)
+    }
+
+    /// An online daemon whose claim 1 ran out by the local clock and whose housekeeping tick is
+    /// already due: what the loop finds when it was not scheduled for a while.
+    fn daemon_that_woke_late(dir: &std::path::Path) -> (Daemon, mpsc::UnboundedReceiver<Incoming>) {
+        let (mut daemon, in_rx) = daemon_with_inbox(dir);
+        daemon.state.lease_ms = Some(60_000);
+        daemon.state.claims = vec![HeldClaim {
+            expires_at_ms: now_ms().saturating_sub(1),
+            ..held(1)
+        }];
+        daemon.reconnect_at = None;
+        let (out, _out_rx) = mpsc::unbounded_channel();
+        daemon.conn = Some(Conn {
+            out,
+            task: tokio::spawn(async {}),
+        });
+        daemon.next_housekeeping = Instant::now() - Duration::from_millis(10);
+        (daemon, in_rx)
+    }
+
+    #[tokio::test]
+    async fn a_pong_already_received_renews_a_claim_before_housekeeping_judges_it() {
+        // The loop picks among ready branches, so one trial passes by luck half the time.
+        for trial in 0..24 {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut daemon, in_rx) = daemon_that_woke_late(dir.path());
+            let pong = Incoming::HeartbeatAnswered {
+                generation: daemon.generation,
+                sent_ms: now_ms(),
+            };
+            let in_tx = daemon.in_tx.clone();
+            let (_cmd_tx, cmd_rx) = mpsc::channel(1);
+            {
+                let mut turn = Box::pin(daemon.main_loop(cmd_rx, in_rx));
+                // The first poll parks the loop on its due timers; the timers then fire while the
+                // pong arrives, so both are ready at the next poll.
+                assert!(turn.as_mut().now_or_never().is_none());
+                in_tx.send(pong).unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                assert!(turn.as_mut().now_or_never().is_none());
+            }
+            assert_eq!(
+                daemon.state.claims.len(),
+                1,
+                "trial {trial}: claim dropped though its pong was waiting"
+            );
+        }
+    }
+
+    #[test]
+    fn a_local_lapse_is_logged_with_the_times_that_explain_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.state.claims = vec![HeldClaim {
+            expires_at_ms: 5,
+            ..held(7)
+        }];
+        daemon.last_pong_sent_ms = Some(4);
+        assert!(matches!(daemon.housekeeping(), Flow::Continue));
+        assert!(daemon.state.claims.is_empty());
+        let log = std::fs::read_to_string(daemon.worktree.log_path()).unwrap();
+        assert!(
+            log.contains("claim 7 lapsed locally: expiry 5 now")
+                && log.contains("last pong for heartbeat Some(4) online false tick late"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_slow_pong_is_logged_and_a_prompt_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.on_heartbeat_answered(now_ms());
+        assert!(std::fs::read_to_string(daemon.worktree.log_path()).is_err());
+        daemon.on_heartbeat_answered(now_ms() - 60_000);
+        let log = std::fs::read_to_string(daemon.worktree.log_path()).unwrap();
+        assert!(log.contains("slow pong: heartbeat"), "{log}");
     }
 
     #[test]
