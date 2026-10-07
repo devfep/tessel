@@ -5,15 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 20:42 EDT.
+**As of:** 2026-10-06 20:45 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight:** LINT-RULE2 + CLI-CLIPPY-810, one lane (`lane-lint-rule2`, Sonnet, worktree
-`.claude/worktrees/lint-rule2`, fork `tessel-dogfood--lane-lint-rule2`, claim 57). Opus review
-"With fixes" twice (root crate also needs `match_wildcard_for_single_variants`; restore the
-`cli.rs:810` `eprintln!` under `#[expect]`; split a long line); both fixed; orchestrator read
-`7d7f4c9`; GO 20:4x: pushing and submitting. Felix minted the fork token himself (the classifier
-refused the lane's own mint). Workspace tests 836 (= base).
-**Done this session:** shadow swarm run (next action 1): seed 2, 10 tasks, 4 agents, 3 verified
+**In flight:** COORD-HEAD, one lane (`lane-coord-head`, Sonnet, dispatched 20:45, worktree
+`.claude/worktrees/coord-head` from trunk `7d7f4c9`, fork `tessel-dogfood--lane-coord-head`),
+implementing design C (see its task entry). Stops before push for the Opus review. Load ~20, so
+one lane only.
+**Done this session:** LINT-RULE2 + CLI-CLIPPY-810 closed at trunk `7d7f4c9` (mirrored; no
+deploy needed: lints and tests only). Felix minted that lane's fork token himself (the classifier
+refused the lane's own mint); later lanes use the allowed mint script below. Shadow swarm run (next action 1): seed 2, 10 tasks, 4 agents, 3 verified
 preventions, 0 false alarms, first live `Settled` releases (events 40, 48, 50); evidence in
 `docs/evidence/2026-10-06/` (`sprint/build` `5a08ad3`). COORD-HEAD design done (Opus, read-only):
 recommendation C, below under COORD-HEAD; its lane waits for the lint lane, which edits
@@ -465,14 +465,24 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   follow-up read by the orchestrator: a deterministic shadow in the watcher-failure test). Through
   the steward: claim 44 (late claim on `on.rs` in the first commit; one `uncovered` refusal),
   approved by `orchestrator` (event 283) after its gate on `c79712a`: 802 passed.
-- [ ] **LINT-RULE2** — from the SHADOW-GC pass 2 review: CLAUDE.md rule 2 (no `_` wildcards on
+- [x] **LINT-RULE2** — from the SHADOW-GC pass 2 review: CLAUDE.md rule 2 (no `_` wildcards on
   protocol enums) is enforced by review only; a `_ =>` arm on `ReleaseReason` passed clippy.
   Turn on clippy's `wildcard_enum_match_arm` (restriction group) for the workspace crates, with
   `#[expect(..., reason)]` only where a wildcard on a non-protocol enum is deliberate.
-- [ ] **CLI-CLIPPY-810** — `cargo clippy --workspace --all-targets -- -D warnings` fails on a
+  CLOSED 2026-10-06 at trunk `7d7f4c9` with CLI-CLIPPY-810 (one lane; review "With fixes" twice:
+  the root crate also needed `match_wildcard_for_single_variants`, since a one-variant `_` in
+  `src/` passed; then a long line). 23 sites fixed, no `#[expect]`; one-variant extractors in test
+  helpers became `let … else`. Mutants: one- and two-variant wildcards fail clippy in the root
+  crate, tessel-cli and tessel-swarm. Workspace tests 836 (= base). Through the steward: claim 57,
+  not held, merged on the first submit; trunk tree equals the reviewed tree. Not covered by any
+  lint: wildcards inside `matches!` and slice patterns (test assertions only today).
+- [x] **CLI-CLIPPY-810** — `cargo clippy --workspace --all-targets -- -D warnings` fails on a
   pre-existing `eprintln!` (`print_stderr`) at `tessel-cli/tests/cli.rs:810`; every review today
   had to except it. Replace it with the test harness's own reporting or an `#[expect]` with a
   reason, so the workspace clippy gate is clean again.
+  CLOSED 2026-10-06 at trunk `7d7f4c9` (with LINT-RULE2): the message stays, under
+  `#[expect(clippy::print_stderr, reason)]` on a `let () = eprintln!(…)` statement, the narrowest
+  placement clippy honours. Workspace clippy `-D warnings` exits 0.
 - [ ] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
