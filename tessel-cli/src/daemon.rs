@@ -2035,7 +2035,7 @@ async fn within_write_limit(
     match tokio::time::timeout_at(deadline, write).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(format!("send failed: {e}")),
-        Err(_) => Err(format!("a write blocked for {WRITE_LIMIT:?}; link dead")),
+        Err(_) => Err("a write did not finish by its deadline; link dead".to_string()),
     }
 }
 
