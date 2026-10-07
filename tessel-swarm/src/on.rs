@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Serialize;
 use tessel_coordinator::protocol::{
-    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, Event, EventKind, Fence,
-    Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
+    uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event,
+    EventKind, Fence, Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
 };
 
 use crate::conn::{read_log, Conn};
@@ -51,11 +51,27 @@ pub struct OnConfig {
     /// Under the shadow policy: longest a shadow agent waits for the trial of its own claim before
     /// it takes another task. The run still waits up to `task_timeout` at the end.
     pub trial_wait: Duration,
+    /// How often an agent that holds a claim tells the coordinator it is alive: well inside the
+    /// lease, or the claim lapses.
+    pub heartbeat_every: Duration,
     /// How often a skipped task may be denied before its agent gives up on it.
     pub max_denials: u32,
     /// Answer every submission held for review with an approval. On by default, for the local
     /// target and the swarm coordinator, where it is the only reviewer.
     pub scripted_reviewer: bool,
+}
+
+const LAPSED: &str = "claim lapsed (lease expired)";
+
+/// How a refusal ends a task: a retired fence means the claim's lease ran out.
+fn refused(what: &str, code: ErrorCode, message: &str) -> (Resolution, String) {
+    if code == ErrorCode::StaleFence {
+        return (Resolution::Lapsed, format!("{LAPSED}: {what} refused"));
+    }
+    (
+        Resolution::Failed,
+        format!("{what} refused ({code:?}): {message}"),
+    )
 }
 
 pub fn agent_names(count: usize) -> Vec<String> {
@@ -83,6 +99,9 @@ pub enum Resolution {
     Starved,
     TimedOut,
     Failed,
+    /// The claim's lease ran out before the work was done, so its fence was retired and the
+    /// work could not be submitted. The task is not finished; the run goes on.
+    Lapsed,
     /// No agent was left to take it: every agent had stopped.
     NotRun,
     /// Denied under the shadow policy: worked and submitted for verification, never to merge.
@@ -489,7 +508,9 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
     let remote = ctx.endpoint.remote.clone();
     let (work, head) = tokio::task::spawn_blocking(move || remote.checkout(&dir)).await??;
     let token = ctx.endpoint.token_of(&name)?;
-    let mut conn = Conn::open(&ctx.endpoint.ws_url, token).await?;
+    let mut conn = Conn::open(&ctx.endpoint.ws_url, token)
+        .await?
+        .with_heartbeat(ctx.config.heartbeat_every);
     conn.hello(&name, &head).await?;
     loop {
         let Some(mut item) = lock(&ctx.queue).pop_front() else {
@@ -662,17 +683,20 @@ async fn work_and_submit(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, held: Held) 
     let timeout = ctx.config.task_timeout;
     let granted = Instant::now();
     // Main may have moved while this agent waited: edit what is there now, not what was.
-    let (tree, after) = checkout_and_edit(ctx, job.work, job.task).await?;
+    let edit = checkout_and_edit(ctx, job.work, job.task);
+    let (tree, after) = conn.keep_alive(edit).await??;
     let touched = tasks::touched(&tree, &after);
-    if let Some(note) = ensure_covered(conn, &mut held, &touched).await? {
+    if let Some((resolution, note)) = ensure_covered(conn, &mut held, &touched).await? {
         release(conn, &held).await?;
-        return Ok(Step::done(Resolution::Failed, note, millis(granted)));
+        return Ok(Step::done(resolution, note, millis(granted)));
     }
     if !held.shadow {
-        tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
+        let work = tokio::time::sleep(Duration::from_millis(ctx.config.work_ms));
+        conn.keep_alive(work).await?;
     }
     // A shadow agent submits first and spends its work time afterwards (`finish_shadow`).
-    let pushed = commit_and_push(ctx, job.work, job.agent, &after, job.task).await;
+    let push = commit_and_push(ctx, job.work, job.agent, &after, job.task);
+    let pushed = conn.keep_alive(push).await?;
     let sha = match pushed {
         Ok(sha) => sha,
         Err(error) => {
@@ -725,10 +749,11 @@ async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) 
         return Ok(Step::done(resolution, note, millis(granted)));
     }
     lock(&ctx.accepted_shadows).push(held.claim);
-    tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
+    let work = tokio::time::sleep(Duration::from_millis(ctx.config.work_ms));
+    conn.keep_alive(work).await?;
     let work_ms = millis(granted);
     let waiting = Instant::now();
-    await_own_trial(ctx, held.claim).await?;
+    conn.keep_alive(await_own_trial(ctx, held.claim)).await??;
     Ok(Step {
         end: End::Done(resolution, note),
         work_ms,
@@ -829,7 +854,11 @@ async fn await_grant(
                 }));
             }
             Some(ServerMsg::Denied { req: r, .. }) if r == req => return Ok(Grant::Denied),
-            Some(ServerMsg::Error { code, message, .. }) => {
+            Some(ServerMsg::Error {
+                req: r,
+                code,
+                message,
+            }) if r.is_none_or(|r| r == req) => {
                 anyhow::bail!("claim refused ({code:?}): {message}");
             }
             Some(_) => {}
@@ -842,7 +871,7 @@ async fn ensure_covered(
     conn: &mut Conn,
     held: &mut Held,
     touched: &[ScopeClaim],
-) -> Result<Option<String>> {
+) -> Result<Option<(Resolution, String)>> {
     let missing = uncovered(&held.scopes, touched);
     if missing.is_empty() {
         return Ok(None);
@@ -864,23 +893,29 @@ async fn ensure_covered(
                 return Ok(None);
             }
             Some(ServerMsg::Denied { req: r, .. }) if r == req => {
-                return Ok(Some("the amended scopes are held by another agent".into()));
+                let note = "the amended scopes are held by another agent";
+                return Ok(Some((Resolution::Failed, note.into())));
             }
-            Some(ServerMsg::Error { code, message, .. }) => {
-                return Ok(Some(format!("amend refused ({code:?}): {message}")));
+            Some(ServerMsg::Error {
+                req: r,
+                code,
+                message,
+            }) if r.is_none_or(|r| r == req) => {
+                return Ok(Some(refused("amend", code, &message)));
             }
             Some(_) => {}
-            None => return Ok(Some("no answer to the amend".into())),
+            None => return Ok(Some((Resolution::Failed, "no answer to the amend".into()))),
         }
     }
 }
 
 async fn release(conn: &mut Conn, held: &Held) -> Result<()> {
-    let req = Some(conn.next_req());
+    let req = conn.next_req();
+    conn.forget(req);
     conn.send(&ClientMsg::Release {
         claim: held.claim,
         fence: held.fence,
-        req,
+        req: Some(req),
     })
     .await
 }
@@ -965,10 +1000,8 @@ async fn submit_shadow(
                 ));
             }
             Some(ServerMsg::Error { code, message, .. }) => {
-                return Ok((
-                    Resolution::Failed,
-                    Some(format!("shadow submit refused ({code:?}): {message}")),
-                ));
+                let (resolution, note) = refused("shadow submit", code, &message);
+                return Ok((resolution, Some(note)));
             }
             Some(_) => {}
         }
@@ -1014,10 +1047,8 @@ async fn submit_and_wait(
                 ));
             }
             Some(ServerMsg::Error { code, message, .. }) => {
-                return Ok((
-                    Resolution::Failed,
-                    Some(format!("submit refused ({code:?}): {message}")),
-                ));
+                let (resolution, note) = refused("submit", code, &message);
+                return Ok((resolution, Some(note)));
             }
             Some(_) => {}
         }
@@ -1027,7 +1058,7 @@ async fn submit_and_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tessel_coordinator::protocol::RunId;
+    use tessel_coordinator::protocol::{ErrorCode, RequestId, RunId};
 
     fn timed_out(task: usize) -> TaskResult {
         TaskResult {
@@ -1190,6 +1221,7 @@ mod tests {
                 work_ms: 0,
                 task_timeout: timeout,
                 trial_wait: timeout,
+                heartbeat_every: crate::conn::HEARTBEAT_EVERY,
                 max_denials: 1,
                 scripted_reviewer: false,
             },
@@ -1273,6 +1305,294 @@ mod tests {
         };
         finish_shadow(&ctx, &mut conn, &held, pushed).await.unwrap();
         assert_eq!(*lock(&ctx.accepted_shadows), [ClaimId(7)]);
+    }
+
+    /// A coordinator that answers each message it reads (a heartbeat excepted) with the next of
+    /// `replies`, in order.
+    async fn scripted_coordinator(replies: Vec<ServerMsg>) -> String {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut replies = replies.into_iter();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                if matches!(serde_json::from_str(&text), Ok(ClientMsg::Heartbeat)) {
+                    continue;
+                }
+                let Some(reply) = replies.next() else { break };
+                let reply = serde_json::to_string(&reply).unwrap();
+                socket.send(Message::text(reply)).await.unwrap();
+            }
+        });
+        url
+    }
+
+    fn stale(req: u64) -> ServerMsg {
+        ServerMsg::Error {
+            req: Some(RequestId(req)),
+            code: ErrorCode::StaleFence,
+            message: "claim is no longer active and its fence is retired".into(),
+        }
+    }
+
+    fn granted(req: u64, claim: u64) -> ServerMsg {
+        ServerMsg::Granted {
+            req: RequestId(req),
+            claim: ClaimId(claim),
+            fence: Fence(claim),
+            expires_at_ms: 0,
+            race: None,
+            at_risk: Vec::new(),
+        }
+    }
+
+    fn held(claim: u64) -> Held {
+        Held {
+            claim: ClaimId(claim),
+            fence: Fence(claim),
+            scopes: Vec::new(),
+            shadow: false,
+        }
+    }
+
+    async fn connect(replies: Vec<ServerMsg>) -> Conn {
+        let url = scripted_coordinator(replies).await;
+        let token = crate::endpoint::Token::new("t".into());
+        Conn::open(&url, &token).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_late_answer_to_a_release_is_not_the_answer_to_the_next_claim() {
+        let mut conn = connect(vec![stale(1), granted(2, 9)]).await;
+        release(&mut conn, &held(3)).await.unwrap();
+        let req = conn.next_req();
+        let claim = ClientMsg::Claim {
+            req,
+            intent: Intent {
+                summary: "t01: x".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            scopes: Vec::new(),
+            on_conflict: OnConflict::Wait,
+        };
+        conn.send(&claim).await.unwrap();
+        let answer = await_grant(&mut conn, req, Vec::new(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(matches!(answer, Grant::Granted(h) if h.claim == ClaimId(9)));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_of_a_release_that_is_not_a_lapse_is_an_error_not_a_claim_answer() {
+        let refusal = ServerMsg::Error {
+            req: Some(RequestId(1)),
+            code: ErrorCode::NotOwner,
+            message: "not yours".into(),
+        };
+        let mut conn = connect(vec![refusal]).await;
+        release(&mut conn, &held(3)).await.unwrap();
+        let error = conn.recv(Duration::from_secs(5)).await.unwrap_err();
+        assert!(error.to_string().contains("NotOwner"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_refusal_of_some_other_request_is_not_the_answer_to_this_claim() {
+        let mut conn = connect(vec![stale(7), granted(1, 9)]).await;
+        let other = ClientMsg::Release {
+            claim: ClaimId(1),
+            fence: Fence(1),
+            req: Some(RequestId(7)),
+        };
+        conn.send(&other).await.unwrap();
+        let req = conn.next_req();
+        let claim = ClientMsg::Claim {
+            req,
+            intent: Intent {
+                summary: "t01: x".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            scopes: Vec::new(),
+            on_conflict: OnConflict::Wait,
+        };
+        conn.send(&claim).await.unwrap();
+        let answer = await_grant(&mut conn, req, Vec::new(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(matches!(answer, Grant::Granted(_)));
+    }
+
+    #[tokio::test]
+    async fn the_late_answer_to_a_release_is_not_the_outcome_of_the_next_submit() {
+        let merged = ServerMsg::Merged {
+            claim: ClaimId(4),
+            head: CommitId("d".repeat(40)),
+        };
+        let mut conn = connect(vec![stale(1), merged]).await;
+        release(&mut conn, &held(3)).await.unwrap();
+        let (resolution, note) = submit_and_wait(
+            &mut conn,
+            &held(4),
+            &"c".repeat(40),
+            Vec::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!((resolution, note), (Resolution::Merged, None));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_of_the_claim_being_awaited_still_ends_the_wait() {
+        let mut conn = connect(vec![stale(1)]).await;
+        let req = conn.next_req();
+        conn.send(&ClientMsg::Release {
+            claim: ClaimId(1),
+            fence: Fence(1),
+            req: Some(req),
+        })
+        .await
+        .unwrap();
+        let error = await_grant(&mut conn, req, Vec::new(), Duration::from_secs(5))
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("claim refused"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_submit_on_a_retired_fence_is_a_lapse_not_a_failure() {
+        let mut conn = connect(vec![stale(1)]).await;
+        let (resolution, note) = submit_and_wait(
+            &mut conn,
+            &held(3),
+            &"c".repeat(40),
+            Vec::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolution, Resolution::Lapsed);
+        assert_eq!(
+            note.as_deref(),
+            Some("claim lapsed (lease expired): submit refused")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shadow_submit_on_a_retired_fence_is_a_lapse_too() {
+        let mut conn = connect(vec![stale(1)]).await;
+        let (resolution, _) = submit_shadow(
+            &mut conn,
+            &held(3),
+            &"c".repeat(40),
+            Vec::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolution, Resolution::Lapsed);
+    }
+
+    #[tokio::test]
+    async fn a_submit_refused_for_another_reason_is_a_failure_with_the_reason() {
+        let refusal = ServerMsg::Error {
+            req: Some(RequestId(1)),
+            code: ErrorCode::NotOwner,
+            message: "not yours".into(),
+        };
+        let mut conn = connect(vec![refusal]).await;
+        let (resolution, note) = submit_and_wait(
+            &mut conn,
+            &held(3),
+            &"c".repeat(40),
+            Vec::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolution, Resolution::Failed);
+        assert_eq!(
+            note.as_deref(),
+            Some("submit refused (NotOwner): not yours")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_amend_on_a_retired_fence_is_a_lapse() {
+        let mut conn = connect(vec![stale(1)]).await;
+        let mut claim = held(3);
+        let touched = [ScopeClaim {
+            scope: tessel_coordinator::protocol::Scope::File {
+                path: "src/a.ts".into(),
+            },
+            mode: tessel_coordinator::protocol::Mode::EditBody,
+        }];
+        let (resolution, note) = ensure_covered(&mut conn, &mut claim, &touched)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution, Resolution::Lapsed);
+        assert!(note.starts_with("claim lapsed (lease expired)"), "{note}");
+    }
+
+    #[tokio::test]
+    async fn work_that_does_not_read_the_socket_still_sends_heartbeats() {
+        let url = counting_coordinator().await;
+        let token = crate::endpoint::Token::new("t".into());
+        let mut conn = Conn::open(&url, &token)
+            .await
+            .unwrap()
+            .with_heartbeat(Duration::from_millis(20));
+        conn.keep_alive(tokio::time::sleep(Duration::from_millis(300)))
+            .await
+            .unwrap();
+        conn.send(&ClientMsg::Release {
+            claim: ClaimId(1),
+            fence: Fence(1),
+            req: None,
+        })
+        .await
+        .unwrap();
+        let reply = conn.recv(Duration::from_secs(5)).await.unwrap();
+        let beats = match reply {
+            Some(ServerMsg::Accepted { queue_position, .. }) => queue_position,
+            other => unreachable!("expected the heartbeat count, got {other:?}"),
+        };
+        assert!((2..=16).contains(&beats), "{beats} heartbeats");
+    }
+
+    /// A coordinator that counts heartbeats and reports the count in reply to a release.
+    async fn counting_coordinator() -> String {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut beats = 0;
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                match serde_json::from_str(&text) {
+                    Ok(ClientMsg::Heartbeat) => beats += 1,
+                    Ok(ClientMsg::Release { .. }) => {
+                        let count = ServerMsg::Accepted {
+                            req: RequestId(0),
+                            claim: ClaimId(0),
+                            queue_position: beats,
+                        };
+                        let reply = serde_json::to_string(&count).unwrap();
+                        socket.send(Message::text(reply)).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        });
+        url
     }
 
     #[tokio::test]

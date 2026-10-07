@@ -41,6 +41,10 @@ It runs against the local target and against the swarm coordinator (below), wher
 reviewer. Held and approved counts come from the log.
 An agent that times out stops, and the tasks nobody took are recorded as not run, so every task
 is merged, rejected, shadowed or not finished.
+An agent sends a heartbeat every 8 s while it works as well as while it waits, because a claim
+lives for one lease (30 s) after the last one. If a claim lapses anyway, the coordinator refuses
+its next message with `StaleFence`; that task is recorded as `lapsed` (not finished, with the
+note "claim lapsed (lease expired)"), its agent takes another task, and the run goes on.
 Every count about the coordinator comes from reading its event log with `Watch` and running
 `Summary::from_events` over it. `SubmitRejected` and `WaitQueued` counts are taken from the same
 log, because `Summary` has no field for them. Wall time and agent-minutes are measured by the

@@ -5,6 +5,7 @@
 use std::time::Duration;
 
 use tessel_coordinator::protocol::Summary;
+use tessel_swarm::conn::HEARTBEAT_EVERY;
 use tessel_swarm::off::{self, Counts, OffConfig, OffResult};
 use tessel_swarm::on::{OnConfig, OnResult, Policy, Resolution, ShadowTrials, TaskResult};
 use tessel_swarm::report::{ab_markdown, header_of, off_json, on_json, SCHEMA};
@@ -78,6 +79,7 @@ fn config() -> OnConfig {
         work_ms: 0,
         task_timeout: Duration::from_secs(1),
         trial_wait: Duration::from_secs(1),
+        heartbeat_every: HEARTBEAT_EVERY,
         max_denials: 1,
         scripted_reviewer: false,
     }
@@ -212,6 +214,7 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
         result(2, Resolution::TimedOut),
         result(3, Resolution::NotRun),
         result(4, Resolution::Rejected),
+        result(5, Resolution::Lapsed),
     ];
     let table = ab_markdown(
         &header_of(&config(), 9, 10, 0.5),
@@ -230,9 +233,9 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
     row("of which broke the build", "1", "n/a");
     row("of which broke the tests", "4", "n/a");
     row(
-        "Not finished (starved, timed out, failed, not run)",
+        "Not finished (starved, timed out, failed, lease lapsed, not run)",
         "0",
-        "2",
+        "3",
     );
     row("Landed per minute", "3.0", "12.0");
     row("Wall time (ms)", "60000", "30000");
@@ -327,7 +330,7 @@ fn the_shadow_policy_adds_its_own_rows_and_a_note_about_landed_counts() {
         cells(&table, "Agent-minutes on shadow work (never merged)")[2],
         "1.500"
     );
-    let unfinished = "Not finished (starved, timed out, failed, not run)";
+    let unfinished = "Not finished (starved, timed out, failed, lease lapsed, not run)";
     assert_eq!(
         cells(&table, unfinished)[2],
         "0",

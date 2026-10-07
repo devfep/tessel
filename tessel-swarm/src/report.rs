@@ -172,7 +172,7 @@ fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -
         row("of which broke the build", &n(counts.build_failed), "n/a"),
         row("of which broke the tests", &n(counts.tests_failed), "n/a"),
         row(
-            "Not finished (starved, timed out, failed, not run)",
+            "Not finished (starved, timed out, failed, lease lapsed, not run)",
             "0",
             &unfinished.to_string(),
         ),

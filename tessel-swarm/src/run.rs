@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::conn::HEARTBEAT_EVERY;
 use crate::demo;
 use crate::guard::{check_coordinator, ScratchRepo};
 use crate::live::{self, LiveSetup, Steward};
-use crate::local::{LocalServer, LocalSetup};
+use crate::local::{self, LocalServer, LocalSetup};
 use crate::off::{self, OffConfig, OffResult};
 use crate::on::{self, OnConfig, OnResult, Policy, REVIEWER};
 use crate::tasks::Task;
@@ -34,6 +35,7 @@ impl Spec {
             work_ms: self.work_ms,
             task_timeout: self.task_timeout,
             trial_wait: self.task_timeout,
+            heartbeat_every: HEARTBEAT_EVERY,
             max_denials: self.max_denials,
             scripted_reviewer: self.scripted_reviewer,
         }
@@ -84,6 +86,7 @@ pub async fn run_on_local(spec: &Spec, tasks: &[Task], repo: &ScratchRepo) -> Re
         names: &names,
         reviewers: &reviewers,
         shadow_enabled: spec.policy == Policy::Shadow,
+        lease_ms: local::LEASE_MS,
     })
     .await?;
     let result = on::run_on(

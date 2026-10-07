@@ -8,10 +8,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tessel_coordinator::protocol::{ClaimId, Event, EventKind, Outcome, Summary};
+use tessel_swarm::conn::HEARTBEAT_EVERY;
 use tessel_swarm::demo;
 use tessel_swarm::git::{self, Checks, Git};
 use tessel_swarm::guard::ScratchRepo;
-use tessel_swarm::local::{LocalServer, LocalSetup};
+use tessel_swarm::local::{self, LocalServer, LocalSetup};
 use tessel_swarm::off::{self, OffConfig};
 use tessel_swarm::on::{self, OnConfig, OnResult, Policy, Resolution, REVIEWER};
 use tessel_swarm::tasks::{Kind, Task};
@@ -59,6 +60,7 @@ fn config(agents: usize, policy: Policy, work_ms: u64) -> OnConfig {
         work_ms,
         task_timeout: Duration::from_secs(60),
         trial_wait: Duration::from_secs(60),
+        heartbeat_every: HEARTBEAT_EVERY,
         max_denials: 400,
         scripted_reviewer: true,
     }
@@ -66,7 +68,7 @@ fn config(agents: usize, policy: Policy, work_ms: u64) -> OnConfig {
 
 /// Runs `tasks` on a fresh local target. `hook` runs on a blocking thread `delay` after the first
 /// claim is granted and gets the trunk directory, so a test can change main while an agent works.
-async fn start_server(config: &OnConfig, scratch: &std::path::Path) -> LocalServer {
+async fn start_server(config: &OnConfig, scratch: &std::path::Path, lease_ms: u64) -> LocalServer {
     let repo = ScratchRepo::parse("swarm-test").unwrap();
     let names = on::principals(config.agents, config.scripted_reviewer);
     let reviewers: Vec<String> = if config.scripted_reviewer {
@@ -82,14 +84,28 @@ async fn start_server(config: &OnConfig, scratch: &std::path::Path) -> LocalServ
         names: &names,
         reviewers: &reviewers,
         shadow_enabled: config.policy == Policy::Shadow,
+        lease_ms,
     })
     .await
     .unwrap()
 }
 
 async fn run_with_hook(tasks: &[Task], config: OnConfig, hook: Option<(Duration, Hook)>) -> Run {
+    run_leased(tasks, config, hook, local::LEASE_MS).await
+}
+
+async fn run_with_lease(tasks: &[Task], config: OnConfig, lease_ms: u64) -> Run {
+    run_leased(tasks, config, None, lease_ms).await
+}
+
+async fn run_leased(
+    tasks: &[Task],
+    config: OnConfig,
+    hook: Option<(Duration, Hook)>,
+    lease_ms: u64,
+) -> Run {
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&config, scratch.path()).await;
+    let server = start_server(&config, scratch.path(), lease_ms).await;
     if let Some((after, hook)) = hook {
         let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone()
         else {
@@ -643,6 +659,7 @@ async fn shutdown_closes_open_connections() {
         names: &names,
         reviewers: &[REVIEWER.to_string()],
         shadow_enabled: false,
+        lease_ms: local::LEASE_MS,
     })
     .await
     .unwrap();
@@ -750,7 +767,7 @@ async fn a_run_whose_log_watcher_cannot_connect_fails_with_the_watchers_error() 
     // the final wait has an accepted shadow submit to wait for.
     let config = config(2, Policy::Shadow, 1000);
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&config, scratch.path()).await;
+    let server = start_server(&config, scratch.path(), local::LEASE_MS).await;
     let mut endpoint = server.endpoint.clone();
     endpoint.tokens.insert(
         on::OBSERVER.to_string(),
@@ -784,7 +801,7 @@ async fn a_reviewer_error_does_not_hide_the_watchers_error() {
     let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
     let config = config(2, Policy::Shadow, 1000);
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&config, scratch.path()).await;
+    let server = start_server(&config, scratch.path(), local::LEASE_MS).await;
     let mut endpoint = server.endpoint.clone();
     endpoint.tokens.insert(
         on::OBSERVER.to_string(),
@@ -805,4 +822,47 @@ async fn a_reviewer_error_does_not_hide_the_watchers_error() {
         "the reviewer's error is reported: {message}"
     );
     server.shutdown().await;
+}
+
+/// A lease short enough to lapse during the simulated work, and a heartbeat well inside it.
+fn short_lease(heartbeat_every: Duration) -> OnConfig {
+    OnConfig {
+        heartbeat_every,
+        ..config(1, Policy::Wait, 1500)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_is_kept_alive_while_its_agent_works() {
+    let run = run_with_lease(
+        &[body(1, "unitPrice")],
+        short_lease(Duration::from_millis(100)),
+        600,
+    )
+    .await;
+    assert_eq!(
+        run.result.results[0].result,
+        Resolution::Merged,
+        "{:?}",
+        run.result.results
+    );
+    assert_eq!(run.result.summary.merges, 1);
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lapsed_claim_is_that_tasks_outcome_and_the_run_goes_on() {
+    let tasks = [body(1, "unitPrice"), body(2, "restock")];
+    let never = Duration::from_secs(3600);
+    let run = run_with_lease(&tasks, short_lease(never), 600).await;
+    let results = &run.result.results;
+    assert_eq!(results.len(), 2, "{results:?}");
+    for r in results {
+        assert_eq!(r.result, Resolution::Lapsed, "{r:?}");
+        let note = r.note.as_deref().unwrap_or_default();
+        assert!(note.starts_with("claim lapsed (lease expired)"), "{note}");
+    }
+    assert_eq!(run.result.summary.merges, 0);
+    assert_accounted(&run, 2);
+    run.server.shutdown().await;
 }

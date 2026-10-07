@@ -1,11 +1,12 @@
 //! One WebSocket connection to a coordinator, speaking the real protocol types.
 
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    AgentId, ClientMsg, CommitId, Event, RequestId, ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClientMsg, CommitId, ErrorCode, Event, RequestId, ServerMsg, PROTOCOL_VERSION,
 };
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -19,13 +20,16 @@ use crate::events;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Well inside the 30 s lease, so a claim held through a long wait is renewed.
-const HEARTBEAT_EVERY: Duration = Duration::from_secs(8);
+pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(8);
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub struct Conn {
     socket: Socket,
     next_req: u64,
+    heartbeat_every: Duration,
+    /// Requests nobody waits on (a release): their answer is not for whoever reads next.
+    unawaited: Vec<RequestId>,
 }
 
 /// Installs the TLS provider `wss://` needs. Harmless if one is already installed.
@@ -51,7 +55,16 @@ impl Conn {
         Ok(Self {
             socket,
             next_req: 0,
+            heartbeat_every: HEARTBEAT_EVERY,
+            unawaited: Vec::new(),
         })
+    }
+
+    /// How often `recv` and `keep_alive` send a heartbeat.
+    #[must_use]
+    pub fn with_heartbeat(mut self, every: Duration) -> Self {
+        self.heartbeat_every = every;
+        self
     }
 
     pub fn next_req(&mut self) -> RequestId {
@@ -67,6 +80,28 @@ impl Conn {
             .context("the coordinator closed the connection while sending")
     }
 
+    /// Marks `req` as one whose answer nobody reads. A `StaleFence` for it is dropped, because the
+    /// claim it named is already gone, which is what a release is for; any other refusal ends the
+    /// next `recv` with an error, so that it is not taken for the answer to a later request.
+    pub fn forget(&mut self, req: RequestId) {
+        self.unawaited.push(req);
+    }
+
+    /// Runs `work` while sending a heartbeat every `heartbeat_every`, so that the claims this
+    /// connection holds do not lapse during work that does not read the socket.
+    pub async fn keep_alive<T>(&mut self, work: impl Future<Output = T>) -> Result<T> {
+        tokio::pin!(work);
+        let mut tick = tokio::time::interval(self.heartbeat_every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                out = &mut work => return Ok(out),
+                _ = tick.tick() => self.send(&ClientMsg::Heartbeat).await?,
+            }
+        }
+    }
+
     /// The next message, or `None` after `limit`. Sends a heartbeat while it waits.
     pub async fn recv(&mut self, limit: Duration) -> Result<Option<ServerMsg>> {
         let deadline = Instant::now() + limit;
@@ -74,7 +109,7 @@ impl Conn {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return Ok(None);
             };
-            match tokio::time::timeout(left.min(HEARTBEAT_EVERY), self.socket.next()).await {
+            match tokio::time::timeout(left.min(self.heartbeat_every), self.socket.next()).await {
                 Err(_) => {
                     if Instant::now() < deadline {
                         self.send(&ClientMsg::Heartbeat).await?;
@@ -84,11 +119,34 @@ impl Conn {
                 Ok(Some(Ok(Message::Text(text)))) => {
                     let msg =
                         serde_json::from_str(&text).context("unreadable coordinator message")?;
+                    if self.is_late_refusal(&msg)? {
+                        continue;
+                    }
                     return Ok(Some(msg));
                 }
                 Ok(Some(Ok(_))) => {}
             }
         }
+    }
+
+    /// Whether `msg` refuses an unawaited request because its claim is gone: nothing to act on.
+    fn is_late_refusal(&mut self, msg: &ServerMsg) -> Result<bool> {
+        let ServerMsg::Error {
+            req: Some(req),
+            code,
+            message,
+        } = msg
+        else {
+            return Ok(false);
+        };
+        let Some(at) = self.unawaited.iter().position(|r| r == req) else {
+            return Ok(false);
+        };
+        self.unawaited.swap_remove(at);
+        if *code != ErrorCode::StaleFence {
+            bail!("a request nobody awaited was refused ({code:?}): {message}");
+        }
+        Ok(true)
     }
 
     /// `Hello`, then waits for `Welcome`.

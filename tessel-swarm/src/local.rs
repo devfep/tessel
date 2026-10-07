@@ -40,7 +40,8 @@ use crate::endpoint::{Endpoint, Remote, Token};
 use crate::git::{self, Checks, Git};
 use crate::guard::ScratchRepo;
 
-const LEASE_MS: u64 = 30_000;
+/// The lease the local coordinator grants, the same as the swarm coordinator's.
+pub const LEASE_MS: u64 = 30_000;
 
 fn now_ms() -> u64 {
     let since = SystemTime::now()
@@ -137,6 +138,8 @@ pub struct LocalSetup<'a> {
     pub reviewers: &'a [String],
     /// Allow `OnConflict::Shadow` and run the trials it queues: for the shadow policy only.
     pub shadow_enabled: bool,
+    /// How long a claim lives without a heartbeat.
+    pub lease_ms: u64,
 }
 
 impl LocalServer {
@@ -154,7 +157,7 @@ impl LocalServer {
         }
         let mut core = Coordinator::new(Config {
             run: RunId("swarm-on".into()),
-            lease_ms: LEASE_MS,
+            lease_ms: setup.lease_ms,
             shadow_enabled: setup.shadow_enabled,
         })?;
         core.set_reviewers(setup.reviewers.iter().map(|r| AgentId(r.clone())).collect());
