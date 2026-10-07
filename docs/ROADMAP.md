@@ -553,6 +553,14 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   loop 0 failures; workspace 885. Test-only, not held; merged on the first submit. The lane ran
   `git stash` once (forbidden; the stack was empty afterwards; recorded in its git note); the
   classifier refused its `tessel inbox` polling, so the orchestrator watched the trunk head.
+- [ ] **REVIEW-SENSITIVE** — from the UX review research (Oct 7): the coordinator calls
+  `review_reasons(&touched, threatened, has_evidence, &[])` (`src/coordinator.rs` ~1286), so the
+  sensitive-path hold reason can never fire; no list of sensitive paths is configured anywhere.
+  Decide where the list lives (repo config read by the steward, or coordinator var) and wire it.
+- [ ] **REVIEW-NOTE** — from the UX review research: a reviewer's note never reaches the agent (a
+  test pins it: `the_review_note_never_reaches_a_reason_or_a_message`, merging.rs ~1249); a
+  rejected agent sees only "rejected in review". Delivering the note is a protocol question
+  (untrusted text to an agent, rule 4): needs a design and Felix's ruling.
 - [ ] **AX-INBOX** — Felix approved Oct 7 (PLAN §6 "Agent integrations"): Claude Code hooks push
   new inbox items into the agent's turn as quoted data (merged, denied, wait granted, base moved,
   review decided), and a `Stop` hook keeps an agent from ending its turn while its submission is
