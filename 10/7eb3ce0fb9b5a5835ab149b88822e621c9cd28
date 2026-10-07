@@ -1,0 +1,4 @@
+intent: stop housekeeping from dropping a claim whose renewing pong is already queued
+assumes: a stalled process wakes with socket reads dispatched before timers, so the pong is in the inbox when the loop runs
+rejected: skipping lapse judgement on a late tick; the stall cause is not proven, so no second guard
+evidence: cargo test --workspace 862 passed; new race test fails without biased select; clippy -D warnings clean
