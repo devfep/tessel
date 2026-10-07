@@ -1,0 +1,4 @@
+intent: review fixes for the Welcome bound and oldest-ping silence deadline
+assumes: none
+rejected: a test for the write bound (filling a half-open send buffer is not deterministic)
+evidence: cargo test --workspace 876 passed 0 failed; clippy -D warnings clean; rustfmt clean; mutants own_only, reset_backoff, by_value killed
