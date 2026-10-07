@@ -5,15 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 21:47 EDT.
+**As of:** 2026-10-06 22:00 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight:** no lanes. COORD-HEAD merged at trunk `3c50a5e` (mirrored); WAITING ON FELIX to
-deploy (the classifier refused `cd … && npx wrangler deploy`): steward first (its `/head` path
-must be live before the coordinator's alarm calls it), then `tessel-coordinator`, then
-`--env swarm`, all from `.claude/worktrees/deploy` (now at `3c50a5e`). Then the orchestrator
-checks live: an admin-style trunk push → `BaseMoved` by `steward`, `welcome` head = trunk.
-Load hit 98 at 21:44 (other sessions).
-**Done this session:** COORD-HEAD merged (above). Filed CLI-LEASE-LOAD. LINT-RULE2 + CLI-CLIPPY-810 closed at trunk `7d7f4c9` (mirrored; no
+**In flight:** nothing. No lanes, reviews or background jobs.
+**Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
+`cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
+unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
+`tessel-coordinator-swarm` `7b7ae508`. These supersede the versions listed under Deployed below.
+**Done this session:** COORD-HEAD closed live (trunk `3c50a5e`; stale `demo` head fixed by a
+steward poke; see its entry). Filed CLI-LEASE-LOAD. LINT-RULE2 + CLI-CLIPPY-810 closed at trunk `7d7f4c9` (mirrored; no
 deploy needed: lints and tests only). Felix minted that lane's fork token himself (the classifier
 refused the lane's own mint); later lanes use the allowed mint script below. Shadow swarm run (next action 1): seed 2, 10 tasks, 4 agents, 3 verified
 preventions, 0 false alarms, first live `Settled` releases (events 40, 48, 50); evidence in
@@ -219,12 +219,11 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 `git diff --name-status`: A → create, M → edit_body).
 
 **Next actions on resume (in order; Felix approved this order at 19:3x EDT Oct 6):**
-1. A shadow swarm run on the swarm Worker (`tessel-swarm run --target live --policy shadow`,
-   `--task-timeout-s 300`, built from the trunk) to see a `Settled` release live and the dashboard
-   on a swarm repo; keep the raw output in `docs/evidence/<date>/`.
-2. COORD-HEAD: design (one recommendation) so admin merges stop leaving the coordinator's head
-   stale; then a lane.
-3. LINT-RULE2 and CLI-CLIPPY-810 (small; one lane can take both).
+1–3. DONE Oct 6 evening: shadow swarm run (seed 2, `Settled` live; the dashboard reads the
+   production coordinator only, so swarm repos do not show there), COORD-HEAD (closed live),
+   LINT-RULE2 and CLI-CLIPPY-810.
+3b. CLI-LEASE-LOAD (filed 21:46): claims lapsed under load with the daemon online. Reproduce
+   first; it affects every lane on a busy Mac.
 4. REVIEW-UI (Access is in place; approvals from the browser as reviewer `felix`).
 5. Oct 10: A/B runs at 30–50 agents with `wait` and `shadow` policies, then the milestone pull
    request from `artifacts-trunk` with `/code-review` and `/security-review`. Before it, land the
@@ -517,7 +516,11 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   (signatures of `CoordinatorState`, `Denied`, `Route`, `forkHead`); orchestrator gate on
   `3c50a5e`: cargo test 859, clippy 0, pnpm test 666, typecheck/oxlint/oxfmt 0, wasm 0 warnings;
   approved claim 60; trunk tree equals the gated tree. Each steward merge now costs one extra poke
-  and a no-op `/head` read. NOT YET LIVE: deploy steward first, then both coordinators, then check.
+  and a no-op `/head` read. CLOSED live 21:58 EDT on steward `31b4be89`, coordinator `8d66fe32`
+  (swarm `7b7ae508`), deployed by Felix: on `demo` a stale welcome head (`000…001`) became the
+  trunk's `58119c2` within 5 s of a steward poke, logged as `base_moved` by `steward`; no token
+  401, non-steward 403, GET 405, unknown repo 204. Evidence `docs/evidence/2026-10-06/
+  coord-head-live/`. The queue consumer's own poke is not yet seen live (next trunk push).
 - [ ] **CLI-LEASE-LOAD** — found by the COORD-HEAD lane at load 20–90: claims 58 and 59 got
   `lease_expired` ("no heartbeat reached the coordinator") about 180 s after the grant while the
   daemon (one pid throughout) reported `connection: online`; later a reconcile said the
