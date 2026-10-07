@@ -1,0 +1,4 @@
+intent: fix pass 1: bind decision to shown commit, honest refusals, byte body cap, reviewer-only diff
+assumes: coordinator error frames for a Review carry the Review's req
+rejected: ignoring non-matching errors vs ending unknown at once: kept waiting so a later review_decided still reports decided
+evidence: pnpm test, typecheck, oxlint, oxfmt clean; cargo test -p tessel-coordinator merge 59 passed; 10 mutants killed
