@@ -980,6 +980,7 @@ impl Daemon {
             refresh,
             rescope,
             set_submitted,
+            set_awaiting_review,
             answer_lost,
             release_again,
             adopt,
@@ -991,6 +992,18 @@ impl Daemon {
         }
         self.repair_local_claims(refresh, rescope);
         self.apply_submitted(set_submitted);
+        for (claim, awaiting) in set_awaiting_review {
+            self.set_awaiting_review(claim, awaiting);
+            self.log(&format!(
+                "claim {} is {} review according to the event log",
+                claim.0,
+                if awaiting {
+                    "awaiting"
+                } else {
+                    "no longer awaiting"
+                }
+            ));
+        }
         let mut lost: Vec<Option<PendingClaim>> = lost.into_iter().map(Some).collect();
         for (index, claim, server) in answer_lost {
             let held = self.adopt(claim, server);
@@ -1052,7 +1065,7 @@ impl Daemon {
             scopes: server.scopes,
             submitted: server.submitted,
             submitted_commit: server.submitted_commit,
-            awaiting_review: false,
+            awaiting_review: server.awaiting_review,
         };
         self.state.claims.push(held.clone());
         held
@@ -1126,6 +1139,7 @@ impl Daemon {
         if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
             held.awaiting_review = awaiting;
         }
+        self.fresh.insert(claim);
         self.persist();
     }
 

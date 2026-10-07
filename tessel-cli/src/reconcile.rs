@@ -21,6 +21,8 @@ pub struct ServerClaim {
     pub submitted: bool,
     /// The fork commit of the submission while `submitted`.
     pub submitted_commit: Option<String>,
+    /// Held for a human: `ReviewRequested` and not yet decided, resubmitted or rejected.
+    pub awaiting_review: bool,
 }
 
 /// The claims `agent` holds after replaying `events` in order, with each claim's latest fence
@@ -46,6 +48,7 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                         race: *race,
                         submitted: false,
                         submitted_commit: None,
+                        awaiting_review: false,
                     },
                 );
             }
@@ -65,12 +68,24 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                 if let Some(held) = live.get_mut(&claim.0) {
                     held.submitted = true;
                     held.submitted_commit = Some(fork_commit.0.clone());
+                    held.awaiting_review = false;
                 }
             }
             EventKind::SubmitRejected { claim, .. } => {
                 if let Some(held) = live.get_mut(&claim.0) {
                     held.submitted = false;
                     held.submitted_commit = None;
+                    held.awaiting_review = false;
+                }
+            }
+            EventKind::ReviewRequested { claim, .. } => {
+                if let Some(held) = live.get_mut(&claim.0) {
+                    held.awaiting_review = true;
+                }
+            }
+            EventKind::ReviewDecided { claim, .. } => {
+                if let Some(held) = live.get_mut(&claim.0) {
+                    held.awaiting_review = false;
                 }
             }
             EventKind::ClaimReleased { claim, .. } | EventKind::Merged { claim, .. } => {
@@ -82,8 +97,6 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
             | EventKind::ClaimShadowed { .. }
             | EventKind::WaitQueued { .. }
             | EventKind::WaitWithdrawn { .. }
-            | EventKind::ReviewRequested { .. }
-            | EventKind::ReviewDecided { .. }
             | EventKind::BaseMoved { .. }
             | EventKind::AssumptionChallenged { .. }
             | EventKind::RaceOpened { .. }
@@ -206,6 +219,10 @@ pub struct Plan {
     /// (now true), or one the steward rejected (now false). Only a complete read decides this,
     /// and never for a claim whose state changed since the new connection was welcomed.
     pub set_submitted: Vec<(ClaimId, bool, Option<String>)>,
+    /// Local claims whose review flag differs from the log's, for any reason: an approval that
+    /// landed while the connection was down leaves no other trace. Complete reads only, and never
+    /// for a claim whose state changed since the new connection was welcomed.
+    pub set_awaiting_review: Vec<(ClaimId, bool)>,
     /// Live claims that answer a request whose reply was lost: index into `lost_requests`.
     pub answer_lost: Vec<(usize, ClaimId, ServerClaim)>,
     /// Live claims this daemon tried to release before the socket dropped.
@@ -221,6 +238,11 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
     let mut plan = Plan::default();
     let ended = ended_claims(events);
     for held in local.claims {
+        let settled = local.complete && !local.fresh.contains(&held.claim);
+        let review = live.get(&held.claim.0).map(|server| server.awaiting_review);
+        if let Some(flag) = review.filter(|flag| settled && *flag != held.awaiting_review) {
+            plan.set_awaiting_review.push((held.claim, flag));
+        }
         match live.get(&held.claim.0) {
             Some(server) if server.fence > held.fence => {
                 plan.refresh.push((held.claim, server.fence));
@@ -331,6 +353,28 @@ mod tests {
         }
     }
 
+    fn review_requested(seq: u64, claim: u64) -> Event {
+        event(
+            seq,
+            EventKind::ReviewRequested {
+                claim: ClaimId(claim),
+                reasons: Vec::new(),
+            },
+        )
+    }
+
+    fn review_decided(seq: u64, claim: u64, approve: bool) -> Event {
+        event(
+            seq,
+            EventKind::ReviewDecided {
+                claim: ClaimId(claim),
+                approve,
+                note: None,
+                reviewer: None,
+            },
+        )
+    }
+
     fn released(seq: u64, claim: u64) -> Event {
         event(
             seq,
@@ -339,6 +383,80 @@ mod tests {
                 reason: ReleaseReason::Agent,
             },
         )
+    }
+
+    fn awaiting(events: &[Event]) -> bool {
+        live_claims(&AgentId("a1".into()), events)[&1].awaiting_review
+    }
+
+    #[test]
+    fn a_claim_is_awaiting_review_from_the_request_until_the_decision() {
+        let mut events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            submitted_event(1, 1, "a.rs"),
+            review_requested(2, 1),
+        ];
+        assert!(awaiting(&events));
+        events.push(review_decided(3, 1, true));
+        assert!(!awaiting(&events));
+    }
+
+    #[test]
+    fn a_rejected_and_resubmitted_claim_waits_for_review_only_when_asked_again() {
+        let mut events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            submitted_event(1, 1, "a.rs"),
+            review_requested(2, 1),
+            rejected_event(3, 1),
+        ];
+        assert!(!awaiting(&events));
+        events.push(submitted_event(4, 1, "a.rs"));
+        assert!(!awaiting(&events));
+        events.push(review_requested(5, 1));
+        assert!(awaiting(&events));
+        events.push(submitted_event(6, 1, "a.rs"));
+        assert!(!awaiting(&events), "a resubmission starts a new round");
+    }
+
+    #[test]
+    fn the_plan_corrects_every_local_claim_whose_review_flag_differs() {
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            submitted_event(1, 1, "a.rs"),
+            review_requested(2, 1),
+            review_decided(3, 1, true),
+        ];
+        let live = live_claims(&AgentId("a1".into()), &events);
+        let mut claim = held(1, 1, "a.rs");
+        claim.submitted = true;
+        claim.awaiting_review = true;
+        let fresh = HashSet::new();
+        let none = HashSet::new();
+        let claims = [claim];
+        let local = Local {
+            claims: &claims,
+            fresh: &fresh,
+            lost_requests: &[],
+            lost_releases: &none,
+            complete: true,
+        };
+        let plan = plan(&local, &live, &events);
+        assert_eq!(plan.set_awaiting_review, vec![(ClaimId(1), false)]);
+        let truncated = Local {
+            complete: false,
+            ..local
+        };
+        assert!(super::plan(&truncated, &live, &events)
+            .set_awaiting_review
+            .is_empty());
+        let fresh = HashSet::from([ClaimId(1)]);
+        let recent = Local {
+            fresh: &fresh,
+            ..local
+        };
+        assert!(super::plan(&recent, &live, &events)
+            .set_awaiting_review
+            .is_empty());
     }
 
     #[test]

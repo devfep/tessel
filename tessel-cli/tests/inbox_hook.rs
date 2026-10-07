@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use support::{eventually, git, Agent, Done, Fake};
-use tessel_coordinator::protocol::{ClaimId, CommitId, RequestId, ReviewReason, Scope, ServerMsg};
+use tessel_coordinator::protocol::{
+    ClaimId, ClientMsg, CommitId, RequestId, ReviewReason, Scope, ServerMsg,
+};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 const SHORT: Duration = Duration::from_secs(8);
@@ -666,6 +668,49 @@ async fn stop_keeps_waiting_once_a_reviewed_submission_is_back_in_the_merge_queu
         },
     );
     awaiting(false).await?;
+    assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
+    let reason = blocked_reason(&run_stop(&a1, 700, &stop_event(false))?)?;
+    assert!(reason.contains("merge queue"), "{reason}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approval_that_lands_while_offline_is_rebuilt_from_the_log_on_reconnect() -> Result<()> {
+    let fake = Fake::start(30_000, &[("a1", TOK1), ("r1", "tok-r1-S3CRETvalue")]).await?;
+    fake.set_reviewers(&["r1"]);
+    let a1 = Agent::new(&fake, "a1", TOK1)?;
+    a1.start("delete b")?;
+    let args = ["claim", "src/b.rs", "--mode", "edit-signature"];
+    assert_eq!(a1.tessel(&args)?.code, 0);
+    git(&a1.root(), &["rm", "-q", "src/b.rs"])?;
+    git(&a1.root(), &["commit", "-q", "-m", "delete b"])?;
+    assert_eq!(a1.tessel(&["submit", "--evidence", "ok"])?.code, 7);
+    let claim = a1.status()?["state"]["claims"][0]["claim"]
+        .as_u64()
+        .context("no claim")?;
+    let flag =
+        || -> Result<Value> { Ok(a1.status()?["state"]["claims"][0]["awaiting_review"].clone()) };
+    assert_eq!(flag()?, true);
+
+    fake.set_accepting(false);
+    fake.drop_connections();
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["connection"] != "online").then_some(()))
+    })
+    .await?;
+    fake.act(
+        "r1",
+        ClientMsg::Review {
+            req: RequestId(1),
+            claim: ClaimId(claim),
+            approve: true,
+            note: None,
+        },
+    );
+    assert_eq!(flag()?, true, "the daemon cannot know yet");
+
+    fake.set_accepting(true);
+    eventually(SHORT, || Ok((flag()? == false).then_some(()))).await?;
     assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
     let reason = blocked_reason(&run_stop(&a1, 700, &stop_event(false))?)?;
     assert!(reason.contains("merge queue"), "{reason}");
