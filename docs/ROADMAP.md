@@ -5,17 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-07 11:58 EDT.
+**As of:** 2026-10-07 13:21 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**Trunk:** `bfcf625` (CLI-CONNECT-TIMEOUT merged; mirrored); `.claude/worktrees/deploy` is at
-`bfcf625`. Demo repo `swarm-demo` created live (see DEMO-TS).
-**In flight:** nothing. No lanes, reviews or background jobs; only the deploy worktree remains.
-Open tasks: SWARM-FLAKE-SHADOW, GATE-PATH (process; done in
-practice for the last two gates), then the Oct 10 A/B runs and the milestone pull request.
-A lane's `tessel submit` can be refused by the classifier ("Remote Repoint"); Felix ran one.
-**Steward** `0f01d3fb` (REVIEW-UI live behind Access); coordinators `8d66fe32` / swarm
-`7b7ae508`. Felix to open `/review/tessel-dogfood` signed in; REVIEW-UI's box stays open until
-then. GATE-PATH: build the curl-free `PATH` in bash (zsh does not split `$PATH` on IFS).
+**Trunk:** `58bbbc3` (SWARM-FLAKE-SHADOW merged; mirrored). Demo repo `swarm-demo` created live
+(see DEMO-TS). REVIEW-UI closed (Felix checked the page signed in, 12:35).
+**In flight:** `lane-flake-shadow` cleaning up (tessel stop, trash tokens); then nothing.
+Open: GATE-PATH (process; done in practice for the last three gates), then the Oct 10 A/B runs
+and the milestone pull request.
+**Classifier refusals of normal lane steps today:** a lane's fork-token mint (now a Felix-allowed
+script the orchestrator runs), one lane's `tessel submit` ("Remote Repoint"; Felix ran it), one
+lane's `tessel inbox` polling ("Out-of-Place Publication"; the orchestrator watched the trunk head
+instead). An allow rule for the lanes' `tessel` binary would make this hands-off; Felix's call.
+**Steward** `0f01d3fb`; coordinators `8d66fe32` / swarm `7b7ae508`. GATE-PATH: build the
+curl-free `PATH` in bash (zsh does not split `$PATH` on IFS).
 **Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
 `cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
 unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
@@ -527,11 +529,21 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   CLOSED 2026-10-06 at trunk `7d7f4c9` (with LINT-RULE2): the message stays, under
   `#[expect(clippy::print_stderr, reason)]` on a `let () = eprintln!(…)` statement, the narrowest
   placement clippy honours. Workspace clippy `-D warnings` exits 0.
-- [ ] **SWARM-FLAKE-SHADOW** — from the DEMO-TS review (Oct 7): `tessel-swarm/tests/on_local.rs`
+- [x] **SWARM-FLAKE-SHADOW** — from the DEMO-TS review (Oct 7): `tessel-swarm/tests/on_local.rs`
   ~601 `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` failed once in
   6 runs at load 45 on its ordering assert (passed 5 reruns). Timing-dependent; it runs in the
   steward's gate, so it can reject an unrelated lane on a busy machine. Make the ordering
   deterministic or assert only what the harness guarantees.
+  CLOSED 2026-10-07 at trunk `58bbbc3` (review "With fixes", then "Yes"). Not a product bug: the
+  old assert raced the shadow's git steps against the blocker's 2.5 s work time; the coordinator
+  only promises a trial for shadow work submitted before the blocker's `Merged`, and later work is
+  labelled never verified. The lane's first fix reran the scenario until the race went its way,
+  which hid the very regression the test exists for (a mutant that submits late passed 5/5); now
+  the blocker works 6 s and the test asserts hard that the shadow submits within that of its
+  `ClaimShadowed`, and that its work time is counted (~12x headroom on measured git time). 30-run
+  loop 0 failures; workspace 885. Test-only, not held; merged on the first submit. The lane ran
+  `git stash` once (forbidden; the stack was empty afterwards; recorded in its git note); the
+  classifier refused its `tessel inbox` polling, so the orchestrator watched the trunk head.
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
