@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-07 16:48 EDT. SWARM-LEASE closed at trunk `d9fb232`; A/B run 1 RERUN (wait, seed 3, 40 tasks, 30 agents) started 16:47 from it, output `orch/ab-wait2/`. Felix asked (16:4x) for bold UI/UX proposals: three Opus research agents (dashboard, human review flow, CLI and first run) are writing to the session scratchpad `ux/`; proposals only, no code.
+**As of:** 2026-10-07 17:04 EDT. A/B rerun FAILED again (see SWARM-WAIT); lanes live: AX-INBOX (`lane-ax-inbox`) and SWARM-WAIT (`lane-swarm-wait`, Opus). UX plan published for Felix: https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd (three decisions pending).  Earlier: SWARM-LEASE closed at trunk `d9fb232`; A/B run 1 RERUN (wait, seed 3, 40 tasks, 30 agents) started 16:47 from it, output `orch/ab-wait2/`. Felix asked (16:4x) for bold UI/UX proposals: three Opus research agents (dashboard, human review flow, CLI and first run) are writing to the session scratchpad `ux/`; proposals only, no code.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
 **Trunk:** `58bbbc3` (SWARM-FLAKE-SHADOW merged; mirrored). Demo repo `swarm-demo` created live
 (see DEMO-TS). REVIEW-UI closed (Felix checked the page signed in, 12:35).
@@ -553,6 +553,13 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   loop 0 failures; workspace 885. Test-only, not held; merged on the first submit. The lane ran
   `git stash` once (forbidden; the stack was empty afterwards; recorded in its git note); the
   classifier refused its `tessel inbox` polling, so the orchestrator watched the trunk head.
+- [ ] **SWARM-WAIT** — found by the A/B run 1 RERUN (Oct 7 16:46–17:01, trunk `d9fb232`, repo
+  `swarm-s3-tmk1p6`): exit 1 "the coordinator closed the connection", no `on` results; 38 of 40
+  merged. Claims 22 (a05, granted after 357 s in the queue) and 36 (a20, after 624 s) expired one
+  lease after the grant with no renewal, as did claims 12 and 19 in the first run: an agent granted
+  from the wait queue after a long wait never renews. Local runs (short waits) pass. Lane
+  dispatched 17:03 (Opus, `.claude/worktrees/swarm-wait`); a close must become the task's outcome,
+  not abort the run. The `shadow` A/B run waits for it.
 - [ ] **REVIEW-SENSITIVE** — from the UX review research (Oct 7): the coordinator calls
   `review_reasons(&touched, threatened, has_evidence, &[])` (`src/coordinator.rs` ~1286), so the
   sensitive-path hold reason can never fire; no list of sensitive paths is configured anywhere.
