@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-07 13:21 EDT.
+**As of:** 2026-10-07 16:48 EDT. SWARM-LEASE closed at trunk `d9fb232`; A/B run 1 RERUN (wait, seed 3, 40 tasks, 30 agents) started 16:47 from it, output `orch/ab-wait2/`. Felix asked (16:4x) for bold UI/UX proposals: three Opus research agents (dashboard, human review flow, CLI and first run) are writing to the session scratchpad `ux/`; proposals only, no code.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
 **Trunk:** `58bbbc3` (SWARM-FLAKE-SHADOW merged; mirrored). Demo repo `swarm-demo` created live
 (see DEMO-TS). REVIEW-UI closed (Felix checked the page signed in, 12:35).
@@ -553,11 +553,22 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   loop 0 failures; workspace 885. Test-only, not held; merged on the first submit. The lane ran
   `git stash` once (forbidden; the stack was empty afterwards; recorded in its git note); the
   classifier refused its `tessel inbox` polling, so the orchestrator watched the trunk head.
-- [ ] **SWARM-LEASE** — found by A/B run 1 (Oct 7 15:11): at 30 agents with `--policy wait`, two
+- [x] **SWARM-LEASE** — found by A/B run 1 (Oct 7 15:11): at 30 agents with `--policy wait`, two
   scripted agents never heartbeated a granted claim (expired exactly one lease after the grant),
   and the next request on a lapsed claim (`StaleFence`) aborted the whole run with no `on`
   results. Root-cause the lapse; record a lapsed claim as that task's outcome ("not finished:
   claim lapsed") and keep running.
+  CLOSED 2026-10-07 at trunk `d9fb232` (review "With fixes", then "Yes"). Two harness bugs: the
+  scripted agent heartbeated only while reading the socket, so checkout, the work sleep and the
+  push (>30 s under load) went unrenewed; and the late `StaleFence` answer to a lapsed claim's
+  release was read as the refusal of the agent's next claim, which ended the run. Now
+  `Conn::keep_alive` heartbeats during work (it only sends; frames stay buffered for the next
+  read, so none are lost), late release refusals are dropped, and a `StaleFence` on amend/submit
+  is the task's outcome `lapsed`, with its own A/B table row. The shadow test's failures at load
+  ~115 were load, not this lane (4/4 on base and branch at 30–55). Felix pushed and submitted
+  (the classifier refused the lane's push as "Remote Repoint"); held; gate on `d9fb232`:
+  workspace 898 with `curl` removed from `PATH`, clippy 0; approved claim 69; trunk tree equals
+  the gated tree. A/B run 1 rerun started 16:47 from this build.
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
