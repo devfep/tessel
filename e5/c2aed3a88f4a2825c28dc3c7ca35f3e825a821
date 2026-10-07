@@ -1,0 +1,4 @@
+intent: stop the daemon dropping claims the coordinator still holds while online
+assumes: the coordinator's LeaseExpired is delivered while the link is up; a dead link closes after silence_limit and offline lapse applies
+rejected: biased select; current_thread runtime means a blocking call stalls the socket task too, so inbox-first does not help and can starve the heartbeat timer
+evidence: cargo test --workspace 865 passed; clippy -D warnings clean; mutants on the online guard, last pong, slow-pong threshold and tick lateness are caught
