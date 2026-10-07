@@ -1,0 +1,5 @@
+intent: fix review pass 1 of COORD-HEAD: lost update on a poke during a read, production DO creation for unknown repos, poke auth, failed-read retry without a hot loop
+assumes: a coordinator repo always has STATE_KEY stored once any agent has connected; the steward signs its poke token as agent 'steward'
+rejected: a bool plus re-check (still loses a poke in the await); clearing the flag on a failed read (drops the move); loading the core to test for a known repo (creates state)
+cost: every steward merge now pushes to main and so costs one extra poke plus a no-op /head read (the head already equals the landed one)
+evidence: cargo test --workspace 859 passed (836 base + 23, predicted 859; one CLI integration test timed out once at load 90 and passed on rerun); steward vitest 666 (unchanged, predicted 666); clippy -D warnings exit 0; rustfmt clean; wasm32 0 warnings; tsc/oxlint/oxfmt clean; mutants C1-C4 (counter), K1-K2 (known repo), A1 (steward only) each killed, files restored byte-identical
