@@ -1,0 +1,4 @@
+intent: a dead socket task must mark the daemon offline so the reconnect and offline lapse apply
+assumes: a failed mpsc send means the task is gone; the task owns the receiver
+rejected: none
+evidence: cargo test -p tessel-cli 291 passed; clippy -D warnings clean; mutants on the heartbeat failure path and the generation bump are caught
