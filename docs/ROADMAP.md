@@ -9,7 +9,11 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
 **Trunk:** `58bbbc3` (SWARM-FLAKE-SHADOW merged; mirrored). Demo repo `swarm-demo` created live
 (see DEMO-TS). REVIEW-UI closed (Felix checked the page signed in, 12:35).
-**In flight:** `lane-flake-shadow` cleaning up (tessel stop, trash tokens); then nothing.
+**In flight (Felix said proceed, 14:5x):** the Oct 10 scripted A/B runs, started early, one at a
+time on the swarm Worker (shared steward): run 1 `--policy wait`, seed 3, 40 tasks, 30 agents,
+overlap 0.5, `--task-timeout-s 1800`, started 14:55 in the background, output in the session
+scratchpad `orch/ab-wait/`; run 2 the same with `--policy shadow` after it. Raw output goes to
+`docs/evidence/2026-10-07/`. The 3–5 real agents are for the video session with Felix.
 Open: GATE-PATH (process; done in practice for the last three gates), then the Oct 10 A/B runs
 and the milestone pull request.
 **Classifier refusals of normal lane steps today:** a lane's fork-token mint (now a Felix-allowed
