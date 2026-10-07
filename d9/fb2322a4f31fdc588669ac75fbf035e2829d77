@@ -1,0 +1,4 @@
+intent: harden the keep-alive tests, add the slow-remote test, give lapsed claims their own A/B row
+assumes: a submitted claim never expires (coordinator.rs), so no heartbeat is needed after a shadow submit
+rejected: a git hook to slow the sync (the harness runs git with hooks disabled); a wrapper git on PATH in its own test binary instead
+evidence: workspace 897 passed + 1 timing test failed at load 115 (a_shadow_submission_is_on_record_early, passes alone); clippy, rustfmt clean; tessel-swarm passes without curl; keep-alive test 10/10; local 30-agent run 40 landed
