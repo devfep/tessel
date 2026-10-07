@@ -1,0 +1,4 @@
+intent: pin that a disconnected task's work ends at the push, so held review time is not work
+assumes: none
+rejected: none
+evidence: cargo test --workspace --locked 908 passed (predicted 908); tessel-swarm 123 passed with curl absent; clippy -D warnings and rustfmt clean; mutant removing clock.work_ms at the push now fails the test (work_ms 3489)
