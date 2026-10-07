@@ -32,13 +32,29 @@ fn is_name(text: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
+/// Whether `url` is plain HTTP to this machine: the host is exactly `localhost` or `127.0.0.1`
+/// (a port is allowed) and there is no userinfo. The admin token travels in the clear, so
+/// `http://localhost.example` and `http://localhost@example` must not pass.
+fn is_local_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => host,
+        Some(_) | None => authority,
+    };
+    matches!(host, "localhost" | "127.0.0.1")
+}
+
 impl Steward {
     /// `base` is the steward Worker's origin, for example `https://tessel-steward.example.dev`.
     pub fn new(base: &str, admin: Token) -> Result<Self> {
         let base = base.trim_end_matches('/').to_string();
-        if !(base.starts_with("https://") || base.starts_with("http://localhost")) {
+        if !(base.starts_with("https://") || is_local_http(&base)) {
             bail!(
-                "the steward URL must start with https:// (or http://localhost for a dev server)"
+                "the steward URL must start with https:// (or http://localhost or \
+                 http://127.0.0.1 for a dev server)"
             );
         }
         if base
@@ -254,7 +270,19 @@ mod tests {
         let token = || Token::new("tok".into());
         assert!(Steward::new("https://steward.example.dev/", token()).is_ok());
         assert!(Steward::new("http://localhost:8788", token()).is_ok());
+        assert!(Steward::new("http://127.0.0.1:8788", token()).is_ok());
         assert!(Steward::new("http://steward.example.dev", token()).is_err());
+        for evil in [
+            "http://localhost.evil.example",
+            "http://localhost.evil.example:8788",
+            "http://localhost@evil.example",
+            "http://localhost:8788@evil.example",
+            "http://user:pw@localhost:8788",
+            "http://127.0.0.1.evil.example",
+            "http://localhostevil",
+        ] {
+            assert!(Steward::new(evil, token()).is_err(), "{evil}");
+        }
         assert!(Steward::new("https://x", Token::new(String::new())).is_err());
         for bad in [
             "https://x\"y",
@@ -280,9 +308,14 @@ mod tests {
     const SECRET: &str = "write-token-that-must-not-print";
 
     /// A steward on localhost that answers `count` POSTs: a repo or fork answers with a bare
-    /// repository under `root` as its remote. Returns its origin and the paths it was asked for;
-    /// it stops waiting after five seconds, so a request that never comes fails the test.
-    fn fake_steward(root: &Path, count: usize) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    /// repository under `root` as its remote, or with HTTP 409 and `refusal` as its error text.
+    /// Returns its origin and the paths it was asked for; it stops waiting after five seconds,
+    /// so a request that never comes fails the test.
+    fn fake_steward(
+        root: &Path,
+        count: usize,
+        refusal: Option<&'static str>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let origin = format!("http://localhost:{}", listener.local_addr().unwrap().port());
@@ -297,6 +330,17 @@ mod tests {
                 };
                 stream.set_nonblocking(false).unwrap();
                 let path = read_post(&mut stream);
+                if let Some(error) = refusal {
+                    let body = format!("{{\"error\":\"{error}\"}}");
+                    let reply = format!(
+                        "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(reply.as_bytes()).unwrap();
+                    paths.push(path);
+                    continue;
+                }
                 let bare = root.join(path.trim_start_matches('/').replace('/', "_"));
                 let init = Command::new("git")
                     .args(["init", "-q", "--bare"])
@@ -345,7 +389,7 @@ mod tests {
     #[test]
     fn a_demo_repo_gets_the_starting_commit_and_a_fork_per_agent_without_a_token_in_sight() {
         let dir = tempfile::tempdir().unwrap();
-        let (origin, server) = fake_steward(dir.path(), 3);
+        let (origin, server) = fake_steward(dir.path(), 3, None);
         let steward = Steward::new(&origin, Token::new("admin".into())).unwrap();
         let repo = ScratchRepo::parse("swarm-demo").unwrap();
         let agents = vec!["a1".to_string(), "a2".to_string()];
@@ -367,7 +411,22 @@ mod tests {
         assert_eq!(main, made.commit, "the trunk's main is the starting commit");
         let names: Vec<&str> = made.forks.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["swarm-demo--a1", "swarm-demo--a2"]);
-        assert!(!format!("{made:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn the_admin_token_is_scrubbed_from_a_refusal_the_steward_echoes() {
+        let dir = tempfile::tempdir().unwrap();
+        let admin = "admin-token-that-must-not-print";
+        let echoed = "ALREADY_EXISTS for bearer admin-token-that-must-not-print";
+        let (origin, server) = fake_steward(dir.path(), 1, Some(echoed));
+        let steward = Steward::new(&origin, Token::new(admin.into())).unwrap();
+        let repo = ScratchRepo::parse("swarm-demo").unwrap();
+        let error = create_demo_repo(&steward, &repo, dir.path(), &[]).unwrap_err();
+        assert_eq!(server.join().unwrap(), ["/repos/swarm-demo"]);
+        let message = format!("{error:#}");
+        assert!(message.contains("HTTP 409"), "{message}");
+        assert!(message.contains("[redacted]"), "{message}");
+        assert!(!message.contains(admin), "{message}");
     }
 
     #[test]

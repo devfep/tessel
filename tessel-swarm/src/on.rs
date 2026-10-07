@@ -210,7 +210,11 @@ pub async fn run_on(
     }
     let mut failure = None;
     for agent in agents {
-        if let Err(error) = agent.await.context("an agent task panicked")? {
+        let ended = agent
+            .await
+            .context("an agent task panicked")
+            .and_then(|r| r);
+        if let Err(error) = ended {
             failure.get_or_insert(error);
         }
     }

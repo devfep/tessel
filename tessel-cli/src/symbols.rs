@@ -883,4 +883,56 @@ class Panel extends React.Component {
             assert_eq!(found, wanted, "{path}");
         }
     }
+
+    fn symbol_names(tree: &tessel_swarm::demo::Tree, path: &str) -> Vec<String> {
+        let symbols = extract(path, &tree[path]);
+        assert!(symbols.is_some(), "{path} did not parse");
+        symbols.unwrap().into_iter().map(|s| s.name).collect()
+    }
+
+    fn assert_agrees_with_the_swarm(tree: &tessel_swarm::demo::Tree, context: &str) {
+        for path in tree.keys().filter(|p| p.starts_with("src/")) {
+            let swarm: Vec<String> = tessel_swarm::code::functions(&tree[path])
+                .into_iter()
+                .map(|f| f.name)
+                .collect();
+            assert_eq!(symbol_names(tree, path), swarm, "{context}: {path}");
+        }
+    }
+
+    #[test]
+    fn symbols_agree_with_the_swarms_view_through_every_generated_edit() {
+        use tessel_coordinator::protocol::{Mode, Scope};
+        use tessel_swarm::{demo, tasks};
+
+        for seed in 1..=10 {
+            let list = tasks::generate(seed, 24, 0.5).unwrap();
+            let mut tree = demo::base_tree();
+            for task in &list {
+                let context = format!("seed {seed} {}", task.label());
+                let mut claims = tasks::dependencies(task, &tree);
+                let after = tasks::apply(task, &tree).unwrap();
+                claims.extend(tasks::touched(&tree, &after));
+                for claim in claims {
+                    let Scope::Symbol(id) = &claim.scope else {
+                        continue;
+                    };
+                    let in_before = match claim.mode {
+                        Mode::Depend | Mode::EditSignature => true,
+                        Mode::EditBody | Mode::Create => false,
+                    };
+                    let tree_of_claim = if in_before { &tree } else { &after };
+                    let names = symbol_names(tree_of_claim, &id.path);
+                    assert!(
+                        names.contains(&id.qualified_name),
+                        "{context}: {} {:?} is not among {names:?}",
+                        id.path,
+                        claim.mode
+                    );
+                }
+                tree = after;
+                assert_agrees_with_the_swarm(&tree, &context);
+            }
+        }
+    }
 }

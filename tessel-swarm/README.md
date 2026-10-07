@@ -139,9 +139,15 @@ the demo's starting commit to its `main`, and with `--agents` forks it once per 
 (`swarm-demo--a1`, `swarm-demo--a2`). It prints the repo name, the remotes and the commit id, and
 nothing else: no token. The same demo gives the same commit id every time, which also holds for
 the generated `LICENSE` (MIT, the root file's text) that makes the demo repository permissively
-licensed. It mints no write tokens and no identities; those come from the steward's own routes,
-as for any agent. A name that already exists is refused by the steward. Repositories are never
-deleted: there is no delete route, so choose names you will keep.
+licensed.
+
+The steward's create route returns a write token for the new trunk; the command uses it for the
+one push and drops it. It mints no fork tokens and no identities; those come from the steward's
+own routes, as for any agent. Artifacts reports an existing name as `ALREADY_EXISTS`, which the
+steward answers with HTTP 409; nothing is pushed because the push follows the create. If a later
+step fails (the push or a fork), the trunk already exists, so a re-run is refused at the create:
+use a new name. Repositories are never deleted: there is no delete route, so choose names you
+will keep.
 
 ### The swarm coordinator
 
