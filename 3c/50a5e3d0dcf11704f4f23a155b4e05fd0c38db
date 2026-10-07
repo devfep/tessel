@@ -1,0 +1,4 @@
+intent: kill the reviewer mutant that advanced head_tried before the compare-and-set in trunk_read
+assumes: none
+rejected: none
+evidence: cargo test -p tessel-coordinator trunk 21 passed; with head_tried moved above the CAS the test read_after_the_head_changed_meanwhile... fails (20 passed, 1 failed); restored byte-identical, 21 passed; rustfmt clean
