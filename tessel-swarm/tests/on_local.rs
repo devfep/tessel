@@ -574,33 +574,70 @@ async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
     run.server.shutdown().await;
 }
 
+/// A shadow run, and when it ended in unix milliseconds.
+struct ShadowRun {
+    run: Run,
+    ended_ms: u64,
+}
+
+fn unix_ms() -> u64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    u64::try_from(since.as_millis()).unwrap()
+}
+
+/// `seq` of the first event `pick` accepts.
+fn first_seq(events: &[Event], pick: impl Fn(&EventKind) -> bool) -> Option<u64> {
+    events.iter().find(|e| pick(&e.kind)).map(|e| e.seq)
+}
+
+/// Runs two conflicting tasks under the shadow policy until the shadow work was submitted before
+/// the blocker merged. The shadow agent skips its work time to get ahead of that merge, but how far
+/// ahead it gets is a race against the machine: on a loaded host its git steps can outlast the
+/// blocker's work time. The coordinator then rightly tries nothing, because work submitted after
+/// the merge has no baseline from before it, so that run says nothing about shadow trials. `None`
+/// when no attempt got ahead.
+async fn shadow_run_that_got_ahead(work_ms: u64) -> Option<ShadowRun> {
+    const ATTEMPTS: usize = 5;
+    for _ in 0..ATTEMPTS {
+        let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+        let run = run(&tasks, config(2, Policy::Shadow, work_ms)).await;
+        let ended_ms = unix_ms();
+        let events = &run.result.events;
+        let shadows = shadow_claims(&run);
+        assert_eq!(shadows.len(), 1, "{:?}", run.result.results);
+        let submitted = first_seq(
+            events,
+            |k| matches!(k, EventKind::Submitted { claim, .. } if *claim == shadows[0]),
+        );
+        let merged = first_seq(events, |k| matches!(k, EventKind::Merged { .. }));
+        if submitted.unwrap() < merged.unwrap() {
+            return Some(ShadowRun { run, ended_ms });
+        }
+        run.server.shutdown().await;
+    }
+    None
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted() {
     let work_ms = 2500;
-    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
-    let run = run(&tasks, config(2, Policy::Shadow, work_ms)).await;
-    let events = &run.result.events;
-    let shadows = shadow_claims(&run);
-    assert_eq!(shadows.len(), 1, "{:?}", run.result.results);
-    let submitted_at = |wanted: ClaimId| {
-        events
-            .iter()
-            .find(|e| matches!(&e.kind, EventKind::Submitted { claim, .. } if *claim == wanted))
-            .unwrap()
-            .seq
+    let Some(ShadowRun { run, ended_ms }) = shadow_run_that_got_ahead(work_ms).await else {
+        unreachable!("the shadow work was submitted after the blocker merged in every attempt");
     };
-    let blocker = events
+    let events = &run.result.events;
+    let shadow = shadow_claims(&run)[0];
+    let submitted = events
         .iter()
-        .find_map(|e| {
-            let EventKind::Merged { claim, .. } = &e.kind else {
-                return None;
-            };
-            Some(*claim)
-        })
+        .find(|e| matches!(&e.kind, EventKind::Submitted { claim, .. } if *claim == shadow))
         .unwrap();
+    // The agent submits first and then spends its work time, so the run cannot have ended before
+    // that time has passed since the submission.
     assert!(
-        submitted_at(shadows[0]) < submitted_at(blocker),
-        "the shadow work is submitted before the blocker's own submission"
+        ended_ms - submitted.at_ms >= work_ms,
+        "the shadow work was submitted {} ms before the run ended, not {work_ms} ms",
+        ended_ms - submitted.at_ms
     );
     let shadowed = run
         .result
