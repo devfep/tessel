@@ -1,0 +1,4 @@
+intent: the write timeout message no longer claims WRITE_LIMIT when the silence deadline cut it short
+assumes: none
+rejected: none
+evidence: cargo test -p tessel-cli --bin tessel daemon 19 passed; clippy -D warnings clean; rustfmt clean
