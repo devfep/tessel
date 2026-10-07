@@ -1,0 +1,4 @@
+intent: turn on clippy::wildcard_enum_match_arm (deny) in all three crates so rule 2 is machine-checked; drop the eprintln in cli.rs so workspace clippy is clean
+assumes: single-variant extractors in tests can use let-else (the lint does not cover it); no protocol enum needed an #[expect]
+rejected: #[expect] on protocol enums (forbidden); listing ~35 EventKind variants in each test extractor (noise, no added safety)
+evidence: clippy --workspace --all-targets -D warnings exit 0; cargo test --workspace 836 passed (base 836); mutant _ arm on ReleaseReason failed clippy, restored passes
