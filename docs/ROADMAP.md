@@ -584,7 +584,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   test pins it: `the_review_note_never_reaches_a_reason_or_a_message`, merging.rs ~1249); a
   rejected agent sees only "rejected in review". Delivering the note is a protocol question
   (untrusted text to an agent, rule 4): needs a design and Felix's ruling.
-- [ ] **AX-INBOX** — Felix approved Oct 7 (PLAN §6 "Agent integrations"): Claude Code hooks push
+- [x] **AX-INBOX** — Felix approved Oct 7 (PLAN §6 "Agent integrations"): Claude Code hooks push
   new inbox items into the agent's turn as quoted data (merged, denied, wait granted, base moved,
   review decided), and a `Stop` hook keeps an agent from ending its turn while its submission is
   pending. Installed by `tessel hook install` beside the PreToolUse hook. Design pass first.
@@ -599,6 +599,19 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   pending → block once with the queue position; `stop_hook_active` → allow. Install generalizes
   `merge_entry` (event, matcher, subcommand), keeps user entries, idempotent. Owns new
   `inbox_hook.rs`, `state.rs`, `hook.rs`; `main.rs` arms only. About 6 h.
+  CLOSED 2026-10-07 at trunk `01131a5` (review "With fixes" three times, then "Yes"). Hook
+  contract checked against code.claude.com/docs/en/hooks: all three context events use JSON
+  `hookSpecificOutput.additionalContext`. Fixes from review: an open review made every Stop wait
+  120 s and block falsely (now the daemon keeps `awaiting_review` per held claim, set on
+  ReviewRequired, cleared on Accepted/rejection/unsubmit, and rebuilt from the event log on
+  reconnect so an approval missed offline is not lost); a test-level timeout so the "no bound"
+  mutant fails instead of hanging; headless agents are blocked on an unread rejection; Stop
+  allows only when every submitted claim is settled; a half-written inbox line is no longer
+  skipped; the frame says paths and agent names are agent-written too. Quoting, cap and flock were
+  verified sound. Held (hook/state/reconcile signatures); gate on `01131a5`: workspace 934 with
+  `curl` removed from `PATH`, clippy 0; approved claim 70; trunk tree equals the gated tree. The
+  lane edited `tests/support/mod.rs` before claiming it once (rule 0). Not exercised: a real
+  Claude Code session (next: a live check with a real agent). No deploy (CLI only).
 - [ ] **AX-GITHOOKS** — Felix approved Oct 7: git `pre-commit` and `pre-push` hooks that refuse a
   commit touching files the agent has not claimed (catches shell edits the Claude hook cannot
   see). Design pass first (shared with AX-INBOX).
