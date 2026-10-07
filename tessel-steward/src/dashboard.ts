@@ -1,12 +1,11 @@
 import { readAccessConfig, verifyAccessToken, type AccessDeps } from "./access";
 import { dashboardPage } from "./dashboard-page";
-import { INVALID_NAME_MESSAGE, isValidName, signIdentityToken } from "./identity";
+import { fetchSummary, openCoordinatorSocket } from "./coordinator-link";
+import { INVALID_NAME_MESSAGE, isValidName } from "./identity";
 import { matchDashboardRoute } from "./routes";
-import { relayWatch, type UpstreamSocket } from "./sse-relay";
+import { relayWatch } from "./sse-relay";
 
-/** The dashboard's token is used once, to open one request, so it only needs to outlive that. */
-const DASHBOARD_TOKEN_TTL_MS = 60 * 1000;
-const COORDINATOR_ORIGIN = "https://coordinator.internal";
+const DASHBOARD_AGENT = "dashboard";
 
 type DashboardEnv = Pick<
   Env,
@@ -17,40 +16,14 @@ function plain(status: number, message: string): Response {
   return new Response(message, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-async function coordinatorHeaders(env: DashboardEnv, repo: string): Promise<Headers> {
-  const token = await signIdentityToken(env.IDENTITY_SIGNING_KEY, {
-    repo,
-    agent: "dashboard",
-    expMs: Date.now() + DASHBOARD_TOKEN_TTL_MS,
-  });
-  return new Headers({ Authorization: `Bearer ${token}` });
-}
-
 async function proxySummary(env: DashboardEnv, repo: string): Promise<Response> {
-  const headers = await coordinatorHeaders(env, repo);
-  const upstream = await env.COORDINATOR.fetch(`${COORDINATOR_ORIGIN}/repo/${repo}/summary`, {
-    headers,
-  });
+  const upstream = await fetchSummary(env, repo, DASHBOARD_AGENT);
   if (!upstream.ok) {
     return plain(502, `the coordinator answered ${upstream.status} for the summary`);
   }
   return new Response(upstream.body, {
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
-}
-
-async function openWatchSocket(env: DashboardEnv, repo: string): Promise<UpstreamSocket> {
-  const headers = await coordinatorHeaders(env, repo);
-  headers.set("Upgrade", "websocket");
-  const upstream = await env.COORDINATOR.fetch(`${COORDINATOR_ORIGIN}/repo/${repo}/ws`, {
-    headers,
-  });
-  const { webSocket } = upstream;
-  if (webSocket === null || webSocket === undefined) {
-    throw new Error(`the coordinator refused the watch with ${upstream.status}`);
-  }
-  webSocket.accept();
-  return webSocket;
 }
 
 function resumeSeq(request: Request): number {
@@ -64,7 +37,7 @@ function resumeSeq(request: Request): number {
 
 function events(env: DashboardEnv, request: Request, repo: string): Response {
   return new Response(
-    relayWatch(() => openWatchSocket(env, repo), resumeSeq(request)),
+    relayWatch(() => openCoordinatorSocket(env, repo, DASHBOARD_AGENT), resumeSeq(request)),
     {
       headers: {
         "Content-Type": "text/event-stream",

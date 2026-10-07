@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { matchDashboardRoute, matchRoute } from "./routes";
+import { matchDashboardRoute, matchReviewRoute, matchRoute } from "./routes";
 
 describe("matchRoute", () => {
   it.each([
@@ -57,5 +57,29 @@ describe("matchDashboardRoute", () => {
     ["a nested path", "/dashboard/demo/events/1"],
   ])("rejects %s", (_label, pathname) => {
     expect(matchDashboardRoute(pathname)).toBeUndefined();
+  });
+});
+
+describe("matchReviewRoute", () => {
+  it.each([
+    ["/review/demo", { kind: "page", repo: "demo" }],
+    ["/review/demo/", { kind: "page", repo: "demo" }],
+    ["/review/demo/12/diff", { kind: "diff", repo: "demo", claim: 12 }],
+    ["/review/demo/0/decision", { kind: "decision", repo: "demo", claim: 0 }],
+  ])("matches %s", (pathname, route) => {
+    expect(matchReviewRoute(pathname)).toEqual(route);
+  });
+
+  it.each([
+    ["the bare root", "/review"],
+    ["another root", "/dashboard/demo"],
+    ["a claim without a leaf", "/review/demo/12"],
+    ["an unknown leaf", "/review/demo/12/approve"],
+    ["a non-numeric claim", "/review/demo/abc/diff"],
+    ["a signed claim", "/review/demo/-1/diff"],
+    ["a claim past safe integers", "/review/demo/99999999999999999999/diff"],
+    ["a nested path", "/review/demo/1/diff/x"],
+  ])("rejects %s", (_label, pathname) => {
+    expect(matchReviewRoute(pathname)).toBeUndefined();
   });
 });

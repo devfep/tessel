@@ -55,3 +55,26 @@ export function matchDashboardRoute(pathname: string): DashboardRoute | undefine
   }
   return undefined;
 }
+
+export type ReviewRoute =
+  | { kind: "page"; repo: string }
+  | { kind: "diff" | "decision"; repo: string; claim: number };
+
+/**
+ * Matches `/review/<repo>`, `/review/<repo>/<claim>/diff` and `/review/<repo>/<claim>/decision`.
+ * A claim is a plain decimal id.
+ */
+export function matchReviewRoute(pathname: string): ReviewRoute | undefined {
+  const [root, repo, claim, leaf, ...rest] = pathname.split("/").filter(Boolean);
+  if (root !== "review" || repo === undefined || rest.length > 0) {
+    return undefined;
+  }
+  if (claim === undefined) {
+    return { kind: "page", repo };
+  }
+  const id = /^\d+$/.test(claim) ? Number(claim) : Number.NaN;
+  if (!Number.isSafeInteger(id) || (leaf !== "diff" && leaf !== "decision")) {
+    return undefined;
+  }
+  return { kind: leaf, repo, claim: id };
+}

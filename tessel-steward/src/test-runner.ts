@@ -10,7 +10,8 @@ import {
   runStep,
   userOptions,
 } from "./container-step";
-import { executeMerge, executeTrial } from "./merge-executor";
+import { executeDiff, executeMerge, executeTrial } from "./merge-executor";
+import type { DiffOutcome } from "./review-diff";
 import {
   parseMergeRequest,
   parseTrialSide,
@@ -127,6 +128,23 @@ export class TestRunner extends DurableObject<Env> {
       throw new Error("trial needs a repo name, a fork name, a 40-hex main and a 40-hex commit");
     }
     return executeTrial(this.ctx, this.env, repo, parsed.request);
+  }
+
+  /**
+   * Reads what `commit` of `fork` changes relative to main of `repo`, for a person to review. Holds
+   * read tokens only and runs git only. See `runDiff`.
+   *
+   * Call this on a Durable Object instance with a new random name for each diff.
+   *
+   * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
+   *   start, or a read token could not be revoked.
+   */
+  async diff(repo: string, fork: string, commit: string): Promise<DiffOutcome> {
+    const sha = parseSha(commit);
+    if (sha === undefined || !isValidName(repo) || !isValidName(fork)) {
+      throw new Error("diff needs a repo name, a fork name and a 40-hex commit");
+    }
+    return executeDiff(this.ctx, this.env, repo, fork, sha);
   }
 
   /**

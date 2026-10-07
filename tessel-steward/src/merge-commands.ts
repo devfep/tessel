@@ -147,6 +147,23 @@ export function changedFilesCommand(workspace: string, base: Sha, head: Sha): Gi
   ]);
 }
 
+/**
+ * Stdout is the patch of `base..head` for a person to read: renames detected, no colour, and no
+ * external diff or text conversion program (a repo's attributes name those, and repo code must not
+ * run here). Pass the merge-base as `base` to see only what the commit adds.
+ */
+export function diffCommand(workspace: string, base: Sha, head: Sha): GitCommand {
+  return local(workspace, [
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "-M",
+    `${base}..${head}`,
+    "--",
+  ]);
+}
+
 /** Stdout is the content of `path` in the commit `commit` (exit non-zero when it is not there). */
 export function showFileCommand(workspace: string, commit: Sha, path: string): GitCommand {
   return local(workspace, ["show", `${commit}:${path}`]);

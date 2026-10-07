@@ -5,6 +5,7 @@ import {
   baseCommand,
   cloneCommand,
   conflictsCommand,
+  diffCommand,
   fetchForkCommand,
   parseNulSeparated,
   pushCommand,
@@ -108,5 +109,23 @@ describe("parseNulSeparated", () => {
 
   it("returns no paths for empty output", () => {
     expect(parseNulSeparated("")).toEqual([]);
+  });
+});
+
+describe("diffCommand", () => {
+  it("diffs the merge-base against the commit with no repo-named program, one argv element each", () => {
+    const { argv } = diffCommand("/workspace", sha("a"), sha("b"));
+    expect(argv).toEqual([
+      "git",
+      "-C",
+      "/workspace",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "-M",
+      `${"a".repeat(40)}..${"b".repeat(40)}`,
+      "--",
+    ]);
   });
 });

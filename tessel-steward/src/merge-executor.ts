@@ -8,6 +8,7 @@ import {
 import { readGatePlan, startOptions } from "./gate-plan";
 import { MAIN_BRANCH, type GitCommand } from "./merge-commands";
 import { runMerge, runTrial, type MergeDeps, type TrialDeps } from "./merge-steps";
+import { runDiff, type ChangedFile, type DiffOutcome } from "./review-diff";
 import {
   isForkOf,
   isSafeBranchName,
@@ -278,6 +279,43 @@ export async function executeTrial(
     async () => request.main,
     async ({ deps }: TrialSandbox) =>
       redactTrialOutcome(await runTrial(deps, request.main, request.commit)),
+  );
+}
+
+/** Redacts Artifacts tokens from every string of a diff outcome before it leaves the Worker. */
+function redactDiff(outcome: DiffOutcome): DiffOutcome {
+  switch (outcome.outcome) {
+    case "ok":
+      return {
+        ...outcome,
+        diff: redactTokens(outcome.diff),
+        files: outcome.files.map((file): ChangedFile => ({
+          ...file,
+          path: redactTokens(file.path),
+          ...(file.from === undefined ? {} : { from: redactTokens(file.from) }),
+        })),
+      };
+    case "error":
+      return { ...outcome, reason: redactTokens(outcome.reason) };
+  }
+}
+
+/**
+ * Reads what `commit` of `fork` changes relative to main, for a person reviewing it. Like a
+ * trial it holds read tokens only (none is a write token) and runs no repo code: git only.
+ * Call this on a Durable Object instance with a new random name for each diff.
+ *
+ * @throws As `withSandbox` does.
+ */
+export async function executeDiff(
+  ctx: DurableObjectState,
+  env: Env,
+  repo: string,
+  fork: string,
+  commit: Sha,
+): Promise<DiffOutcome> {
+  return withSandbox(ctx, env, repo, fork, pinCurrentMain, async ({ deps }: TrialSandbox) =>
+    redactDiff(await runDiff(deps, commit)),
   );
 }
 

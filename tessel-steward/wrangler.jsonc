@@ -11,6 +11,9 @@
     "ACCESS_TEAM_DOMAIN": "fepdev.cloudflareaccess.com",
     "ACCESS_AUD": "81ae313c892cf190f69330a71a9b0f600aa31e340d43a8dcd54eb629dfd33b08",
     "DASHBOARD_VIEWERS": "devfep@gmail.com",
+    // Who may approve or reject on /review, as comma-separated email=agent pairs. The agent must be
+    // in the coordinator's REVIEWERS. Empty means nobody may decide; viewing is unaffected.
+    "REVIEWER_EMAILS": "devfep@gmail.com=felix",
   },
   "services": [{ "binding": "COORDINATOR", "service": "tessel-coordinator" }],
   "secrets": { "required": ["STEWARD_ADMIN_TOKEN", "IDENTITY_SIGNING_KEY"] },

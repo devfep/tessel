@@ -1,5 +1,6 @@
 import { IDENTITY_TTL_MS, INVALID_NAME_MESSAGE, isValidName, signIdentityToken } from "./identity";
 import { handleDashboard } from "./dashboard";
+import { handleReview } from "./review";
 import { parsePushEvent } from "./push-event";
 import { handleMergeRequest } from "./merge-request";
 import { matchRoute, type Route } from "./routes";
@@ -188,6 +189,9 @@ export default {
     const { pathname } = new URL(request.url);
     if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) {
       return handleDashboardSafely(request, env);
+    }
+    if (pathname === "/review" || pathname.startsWith("/review/")) {
+      return handleReview(request, env);
     }
     if (!(await isAuthorized(request, env))) {
       return json({ error: "send Authorization: Bearer <STEWARD_ADMIN_TOKEN>" }, 401);
