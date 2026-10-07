@@ -33,10 +33,11 @@
 //! deployment does not serve), plus 405 for any method but `GET`. It is a plain read of stored
 //! events: no socket, no event appended, no alarm, and it never waits for a merge.
 //!
-//! Trunk moves: `POST /repo/<name>/trunk-moved` (same identity token, `POST` only) is the steward's
-//! poke that main moved without the coordinator, as an admin merge does. It carries nothing the
-//! Durable Object reads: it raises a stored flag and the alarm reads the trunk head from the
-//! steward's `/head` (`run_head_sync`), applied by `Core::trunk_read` as a compare-and-set.
+//! Trunk moves: `POST /repo/<name>/trunk-moved` (the steward's identity token only) is the
+//! steward's poke that main moved without the coordinator, as an admin merge does. It carries
+//! nothing the Durable Object reads: it is counted (a repo with no stored state is ignored, 204),
+//! and the alarm reads the trunk head from the steward's `/head` (`run_head_sync`), applied by
+//! `Core::trunk_read` as a compare-and-set.
 
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
@@ -52,8 +53,8 @@ use crate::coordinator::{
 use crate::merge::{self, MergeOutcome, TrialOutcome, TrialReport};
 use crate::protocol::{AgentId, ClaimId, ClientMsg, CommitId, ServerMsg};
 use crate::shell::{
-    self, keep_first, Action, Denied, Inbound, ReplayStep, Route, Session, StoreDecision,
-    StoredSize, SummaryTally, Target, Work,
+    self, keep_first, Action, Denied, Inbound, PokeReply, ReplayStep, Route, Session,
+    StoreDecision, StoredSize, SummaryTally, Target, Work,
 };
 use crate::store::{self, Applied, Dispatch, Persisted};
 use worker::*;
@@ -157,6 +158,10 @@ fn refuse(denied: Denied, path: &str) -> Result<Response> {
             Ok(response.with_headers(headers))
         }
         Denied::Forbidden => Response::error("this deployment does not serve that repo", 403),
+        Denied::NotSteward => {
+            console_error!("coordinator: refused {path}: not the steward");
+            Response::error("only the steward may report a trunk move", 403)
+        }
         Denied::Unauthorized(reason) => {
             console_error!("coordinator: refused {path}: {reason:?}");
             Response::error(UNAUTHORIZED_BODY, 401)
@@ -396,7 +401,9 @@ impl Coordinator {
     /// The alarm: expire leases, recover a merge or verification a restart cut off, run at most
     /// one merge, then at most one verification (the core offers none while a merge is due). One
     /// of each per alarm keeps each invocation short and lets lease expiry run first every time.
-    /// Each step stores its result under the hard limit and delivers it.
+    /// Each step stores its result under the hard limit and delivers it. The head read waits for
+    /// the steward for up to `HEAD_CALL_TIMEOUT`, and it runs inside the alarm, so it can delay the
+    /// next lease expiry by that long when a poke arrives.
     async fn run_alarm(&self) -> Result<()> {
         self.ensure_loaded().await?;
         self.expire_at(now_ms()).await?;
@@ -408,9 +415,20 @@ impl Coordinator {
         self.ensure_alarm().await
     }
 
-    /// The steward's poke: raise the head-sync flag and schedule the alarm. Nothing in the request
-    /// is read, so a caller cannot choose the head. Answers 202: the head is read by the alarm.
+    /// The steward's poke: count it and schedule the alarm. Nothing in the request is read, so a
+    /// caller cannot choose the head. Answers 202: the head is read by the alarm. A repo with no
+    /// stored state is not one this coordinator serves: answers 204 and loads, stores and
+    /// schedules nothing, so a push to any other repo cannot create a Durable Object's state.
     async fn trunk_moved(&self) -> Result<Response> {
+        let stored: Option<String> = self
+            .state
+            .storage()
+            .get(shell::STATE_KEY)
+            .await
+            .map_err(|e| self.fail("read state for a trunk poke", e))?;
+        if shell::poke_reply(stored.as_deref()) == PokeReply::UnknownRepo {
+            return Response::empty().map(|response| response.with_status(204));
+        }
         self.ensure_loaded().await?;
         let now_ms = now_ms();
         let prepared = self.apply(Work::Plain, |core| core.trunk_moved(now_ms))?;

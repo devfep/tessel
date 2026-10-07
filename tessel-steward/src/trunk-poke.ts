@@ -2,7 +2,10 @@ import { isValidName, signIdentityToken } from "./identity";
 import type { Push } from "./push-event";
 
 const TRUNK_REF = "refs/heads/main";
-/** Separates a fork's name from its trunk's: `<trunk>--<agent>`. A trunk's name never holds it. */
+/**
+ * Separates a fork's name from its trunk's: `<trunk>--<agent>`. Nothing stops a trunk from holding
+ * it; what bounds the pokes is the coordinator, which ignores a repo it holds no state for.
+ */
 const FORK_SEPARATOR = "--";
 /** The token opens one request, so it only needs to outlive that. */
 const POKE_TOKEN_TTL_MS = 60 * 1000;

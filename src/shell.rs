@@ -545,6 +545,8 @@ pub enum Denied {
     },
     /// The deployment does not serve this repo (`ALLOWED_REPO_PREFIX`).
     Forbidden,
+    /// A valid token, but not the steward's: only the steward may poke a trunk move.
+    NotSteward,
     /// No valid identity token for this repo. The reason is for logs only; the answer is the
     /// same 401 for every reason.
     Unauthorized(crate::identity::IdentityError),
@@ -582,7 +584,34 @@ pub fn authorize<'a>(inbound: &Inbound<'a>) -> Result<(Route<'a>, AgentId), Deni
         inbound.now_ms,
     )
     .map_err(Denied::Unauthorized)?;
+    if let Route::TrunkMoved { .. } = route {
+        if agent.0 != TRUNK_POKE_AGENT {
+            return Err(Denied::NotSteward);
+        }
+    }
     Ok((route, agent))
+}
+
+/// The only agent that may poke a trunk move: the steward signs its own token for it.
+#[cfg(feature = "runtime")]
+const TRUNK_POKE_AGENT: &str = "steward";
+
+/// What a trunk poke is answered with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PokeReply {
+    /// The repo has no stored state: nothing is loaded, stored or scheduled (204). Only repos this
+    /// coordinator already serves are kept in step, so a push to any other repo creates nothing.
+    UnknownRepo,
+    /// The poke was counted (202).
+    Recorded,
+}
+
+/// The reply to a trunk poke, given the repo's stored state (`STATE_KEY`), if any.
+pub fn poke_reply(stored_state: Option<&str>) -> PokeReply {
+    match stored_state {
+        Some(_) => PokeReply::Recorded,
+        None => PokeReply::UnknownRepo,
+    }
 }
 
 /// `repo`, if the request uses `allow` (compared exactly); else `MethodNotAllowed`.
@@ -2482,6 +2511,16 @@ mod tests {
     }
 
     #[test]
+    fn a_poke_for_a_repo_with_no_stored_state_is_dropped() {
+        assert_eq!(poke_reply(None), PokeReply::UnknownRepo);
+    }
+
+    #[test]
+    fn a_poke_for_a_repo_with_stored_state_is_recorded() {
+        assert_eq!(poke_reply(Some("{}")), PokeReply::Recorded);
+    }
+
+    #[test]
     fn the_worker_serves_the_trunk_poke_path() {
         assert_eq!(
             parse_route(&path("/repo/demo/trunk-moved")),
@@ -2642,6 +2681,15 @@ mod tests {
                 Some(&auth),
             );
             assert_eq!(refused, Err(Denied::Forbidden));
+        }
+
+        #[test]
+        fn a_trunk_poke_from_any_agent_but_the_steward_is_refused() {
+            for who in ["a1", "dashboard", "Steward", "steward2"] {
+                let auth = bearer("demo", who);
+                let got = ask("POST", "/repo/demo/trunk-moved", None, Some(&auth));
+                assert_eq!(got, Err(Denied::NotSteward), "{who}");
+            }
         }
 
         #[test]

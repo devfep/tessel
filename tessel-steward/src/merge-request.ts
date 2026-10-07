@@ -1,9 +1,7 @@
 import { INVALID_NAME_MESSAGE, isValidName } from "./identity";
+import { MAIN_BRANCH } from "./merge-commands";
 import { isForkOf, parseMergeRequest, parseSha, parseTrialRequest, type Sha } from "./merge-types";
 import { reportTrial } from "./trial-report";
-
-/** The branch the steward merges into and the coordinator calls main. */
-const TRUNK_BRANCH = "main";
 
 function json(body: unknown, status: number): Response {
   return Response.json(body, { status });
@@ -79,7 +77,7 @@ export async function handleHeadRequest(env: Env, repo: string): Promise<Respons
     return json({ error: INVALID_NAME_MESSAGE }, 400);
   }
   using handle = await env.ARTIFACTS.get(repo);
-  return json({ head: await branchHead(handle, TRUNK_BRANCH) }, 200);
+  return json({ head: await branchHead(handle, MAIN_BRANCH) }, 200);
 }
 
 /** The head of `branch`, read through the Artifacts binding. */

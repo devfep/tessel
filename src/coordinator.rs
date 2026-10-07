@@ -296,9 +296,16 @@ struct CoordinatorState {
     reviewers: Vec<AgentId>,
     /// Main's head as the coordinator knows it. The steward will own this later.
     head: Option<CommitId>,
-    /// The steward said main moved and the head has not been re-read yet (see `trunk`).
+    /// How many times the steward has said main moved (see `trunk`).
     #[serde(default)]
-    head_sync_due: bool,
+    head_pokes: u64,
+    /// The pokes a head read has answered: pokes up to this count are reflected in `head`.
+    #[serde(default)]
+    head_synced: u64,
+    /// The pokes a head read has been tried for, answered or not. A failed read counts here
+    /// but not in `head_synced`, so it is pending without being a reason to wake.
+    #[serde(default)]
+    head_tried: u64,
     next_claim: u64,
     next_fence: u64,
     next_seq: u64,
@@ -390,7 +397,9 @@ impl Coordinator {
             config,
             reviewers: Vec::new(),
             head: None,
-            head_sync_due: false,
+            head_pokes: 0,
+            head_synced: 0,
+            head_tried: 0,
             next_claim: 1,
             next_fence: 1,
             next_seq: 0,

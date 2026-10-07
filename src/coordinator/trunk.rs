@@ -2,19 +2,23 @@
 //! merge queue, so only the steward knows the new trunk head.
 //!
 //! The steward's push event reaches the coordinator as a bare poke (`trunk_moved`) that carries no
-//! data, so nothing in the request can set the head: it only raises `head_sync_due`, a persisted
-//! flag, and the alarm does the rest. The shell asks the steward for the trunk head through its
-//! binding-only merge service, then offers the answer to `trunk_read`.
+//! data, so nothing in the request can set the head: it only counts (`head_pokes`, persisted), and
+//! the alarm does the rest. The shell asks the steward for the trunk head through its binding-only
+//! merge service, then offers the answer to `trunk_read`.
 //!
 //! Decisions made here:
+//! - A poke is a count, not a flag, so a poke that arrives while a read is awaiting the steward is
+//!   not lost: a read acknowledges only the pokes counted when it began (`head_synced`), and any
+//!   later poke leaves another read due.
 //! - The read is a compare-and-set. The Durable Object handles other events while it waits for the
 //!   steward, so `trunk_read` applies the answer only if no merge is in flight and `head` is still
-//!   what it was when the read began. Otherwise nothing changes and the flag stays, so the next
-//!   alarm reads again. A merge that is in flight is not waited for: its own landing sets `head`,
-//!   and the flag then makes the alarm check that the trunk has not moved past it.
-//! - An answer that is the current head, or no usable head (the call failed, or the answer was
-//!   empty or all zeros), changes nothing but clears the flag. Keeping it would retry a failing
-//!   steward in a hot loop; the next push to main raises the flag again.
+//!   what it was when the read began. Otherwise nothing changes and the read stays due, so the
+//!   next alarm reads again. A merge that is in flight is not waited for: its own landing sets
+//!   `head`, and the pending pokes then make the alarm check that the trunk has not moved past it.
+//! - An answer that is the current head acknowledges the pokes and changes nothing else.
+//! - No usable answer (the call failed, or the answer was empty or all zeros) leaves the pokes
+//!   pending but is no reason to wake (`head_tried`): a failing steward is not retried in a hot
+//!   loop. The next poke, or any alarm that runs anyway (a merge, a lease), reads again.
 //! - The move is logged as `BaseMoved { by: "steward", notified: [] }`. Nobody is notified: the
 //!   touched scopes of an admin merge are unknown to the coordinator, and claims are not touched.
 
@@ -29,6 +33,8 @@ const STEWARD_AGENT: &str = "steward";
 pub struct HeadRead {
     /// `head` when the read began. `trunk_read` applies the answer only if it is still this.
     pub head_at_start: Option<CommitId>,
+    /// The pokes counted when the read began: the most it acknowledges.
+    pub pokes: u64,
 }
 
 /// What the coordinator sends the steward's `/head`: read the head of `repo`'s main.
@@ -53,26 +59,32 @@ fn is_null_head(head: &CommitId) -> bool {
 }
 
 impl Coordinator {
-    /// The steward says main moved: raise the flag. The request carries nothing the core uses.
+    /// The steward says main moved: count it. The request carries nothing the core uses.
     /// Persisted with the rest of the state by the caller.
     pub fn trunk_moved(&mut self, now_ms: u64) -> Vec<Effect> {
         self.advance_clock(now_ms);
-        self.state.head_sync_due = true;
+        self.state.head_pokes = self.state.head_pokes.saturating_add(1);
         Vec::new()
     }
 
-    /// The head read to make now, if the flag is raised and no merge is in flight.
+    /// The head read to make now, if a poke is unanswered and no merge is in flight. It is also
+    /// offered after a failed read, so any alarm that runs anyway retries it.
     pub fn begin_head_read(&self) -> Option<HeadRead> {
-        if !self.state.head_sync_due || self.state.merge_in_flight.is_some() {
+        if self.state.head_pokes <= self.state.head_synced || self.state.merge_in_flight.is_some() {
             return None;
         }
         Some(HeadRead {
             head_at_start: self.state.head.clone(),
+            pokes: self.state.head_pokes,
         })
     }
 
-    /// The alarm time of the head read: now, while one is due.
+    /// The alarm time of the head read: now, while a poke has not been tried yet. A poke whose
+    /// read failed is pending but not a reason to wake.
     pub fn next_head_read_ms(&self, now_ms: u64) -> Option<u64> {
+        if self.state.head_pokes <= self.state.head_tried {
+            return None;
+        }
         self.begin_head_read().map(|_| now_ms)
     }
 
@@ -84,17 +96,19 @@ impl Coordinator {
         now_ms: u64,
     ) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
-        if !self.state.head_sync_due {
+        if self.state.head_pokes <= self.state.head_synced {
             return Vec::new();
         }
         if self.state.merge_in_flight.is_some() || self.state.head != read.head_at_start {
             return Vec::new();
         }
-        self.state.head_sync_due = false;
-        let Some(head) = answer else {
-            return Vec::new();
+        self.state.head_tried = self.state.head_tried.max(read.pokes);
+        let head = match answer {
+            Some(head) if !is_null_head(&head) => head,
+            Some(_) | None => return Vec::new(),
         };
-        if is_null_head(&head) || self.state.head.as_ref() == Some(&head) {
+        self.state.head_synced = self.state.head_synced.max(read.pokes);
+        if self.state.head.as_ref() == Some(&head) {
             return Vec::new();
         }
         self.state.head = Some(head.clone());
@@ -173,6 +187,11 @@ mod tests {
         (c, read)
     }
 
+    /// A poke has not been answered by a usable read.
+    fn unanswered(c: &Coordinator) -> bool {
+        c.state.head_pokes > c.state.head_synced
+    }
+
     fn head_of(c: &Coordinator) -> Option<CommitId> {
         c.state.head.clone()
     }
@@ -229,7 +248,7 @@ mod tests {
         assert_eq!(*by, agent("steward"));
         assert!(notified.is_empty());
         assert_eq!(effects.len(), 1, "nothing is sent to anyone: {effects:?}");
-        assert!(!c.state.head_sync_due);
+        assert!(!unanswered(&c));
         assert_eq!(c.begin_head_read(), None);
     }
 
@@ -240,7 +259,7 @@ mod tests {
         let effects = c.trunk_read(&read, Some(sha(TRUNK)), NOW + 1);
         assert!(effects.is_empty(), "{effects:?}");
         assert_eq!(head_of(&c), Some(sha(OLD)));
-        assert!(c.state.head_sync_due);
+        assert!(unanswered(&c));
     }
 
     #[test]
@@ -263,7 +282,7 @@ mod tests {
         let effects = c.trunk_read(&read, Some(sha(TRUNK)), NOW + 1);
         assert!(effects.is_empty(), "{effects:?}");
         assert_eq!(head_of(&c), Some(sha(OLD)));
-        assert!(c.state.head_sync_due);
+        assert!(unanswered(&c));
         let again = c.begin_head_read().expect("still due");
         assert_eq!(again.head_at_start, Some(sha(OLD)));
     }
@@ -274,7 +293,7 @@ mod tests {
         let effects = c.trunk_read(&read, Some(sha(OLD)), NOW + 1);
         assert!(effects.is_empty(), "{effects:?}");
         assert_eq!(head_of(&c), Some(sha(OLD)));
-        assert!(!c.state.head_sync_due);
+        assert!(!unanswered(&c));
     }
 
     #[test]
@@ -289,8 +308,53 @@ mod tests {
             let effects = c.trunk_read(&read, answer.clone(), NOW + 1);
             assert!(effects.is_empty(), "{answer:?}: {effects:?}");
             assert_eq!(head_of(&c), Some(sha(OLD)), "{answer:?}");
-            assert!(!c.state.head_sync_due, "{answer:?}");
+            assert!(unanswered(&c), "{answer:?}: the move is not dropped");
+            assert_eq!(
+                c.next_head_read_ms(NOW + 2),
+                None,
+                "{answer:?}: no wake of its own"
+            );
         }
+    }
+
+    #[test]
+    fn a_failed_read_is_retried_by_the_next_poke_or_the_next_alarm_that_runs_anyway() {
+        let (mut c, read) = poked();
+        c.trunk_read(&read, None, NOW + 1);
+        assert_eq!(c.next_head_read_ms(NOW + 2), None);
+        let retry = c
+            .begin_head_read()
+            .expect("still pending for an alarm that runs anyway");
+        assert_eq!(c.next_wake_ms(false, false, NOW + 2), None);
+        c.trunk_moved(NOW + 3);
+        assert_eq!(c.next_head_read_ms(NOW + 4), Some(NOW + 4));
+        let effects = c.trunk_read(&retry, Some(sha(TRUNK)), NOW + 5);
+        assert_eq!(head_of(&c), Some(sha(TRUNK)));
+        assert_eq!(effects.len(), 1, "{effects:?}");
+        assert!(
+            unanswered(&c),
+            "the poke made after the read began is still pending"
+        );
+    }
+
+    #[test]
+    fn a_poke_that_arrives_during_a_read_leaves_another_read_due() {
+        let (mut c, read) = poked();
+        c.trunk_moved(NOW + 1);
+        let effects = c.trunk_read(&read, Some(sha(TRUNK)), NOW + 2);
+        assert_eq!(
+            effects.len(),
+            1,
+            "the head the read saw is applied: {effects:?}"
+        );
+        assert!(unanswered(&c), "the second poke is not acknowledged");
+        let next = c.begin_head_read().expect("another read is due");
+        assert_eq!(next.head_at_start, Some(sha(TRUNK)));
+        assert_eq!(c.next_head_read_ms(NOW + 3), Some(NOW + 3));
+        let effects = c.trunk_read(&next, Some(sha(NEWER)), NOW + 4);
+        assert_eq!(effects.len(), 1, "{effects:?}");
+        assert_eq!(head_of(&c), Some(sha(NEWER)));
+        assert!(!unanswered(&c));
     }
 
     #[test]
@@ -299,6 +363,7 @@ mod tests {
         hello(&mut c, "a1", OLD);
         let read = HeadRead {
             head_at_start: Some(sha(OLD)),
+            pokes: 0,
         };
         assert!(c.trunk_read(&read, Some(sha(TRUNK)), NOW).is_empty());
         assert_eq!(head_of(&c), Some(sha(OLD)));
@@ -336,7 +401,10 @@ mod tests {
     fn a_state_stored_before_the_flag_existed_loads_with_it_down() {
         let c = core();
         let mut state: serde_json::Value = serde_json::to_value(&c).unwrap();
-        state.as_object_mut().unwrap().remove("head_sync_due");
+        let fields = state.as_object_mut().unwrap();
+        for field in ["head_pokes", "head_synced", "head_tried"] {
+            fields.remove(field);
+        }
         let loaded: Coordinator = serde_json::from_value(state).unwrap();
         assert_eq!(loaded.begin_head_read(), None);
     }

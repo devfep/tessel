@@ -96,7 +96,7 @@ describe("movesTrunkMain", () => {
 });
 
 describe("pokeTrunkMoved", () => {
-  it("posts an empty body to the repo's trunk-moved route with a steward token for that repo", async () => {
+  it("posts an empty body to the trunk-moved route with a steward token for the repo", async () => {
     await pokeTrunkMoved(env(), "demo");
     expect(calls).toHaveLength(1);
     const [call] = calls;

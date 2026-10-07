@@ -380,7 +380,8 @@ impl Coordinator {
     }
 
     /// The earliest of the next lease expiry, the next merge dispatch, the next verification and
-    /// the next head read: the one alarm time, an absolute time in milliseconds since the epoch never before `now_ms`.
+    /// the next head read: the one alarm time, an absolute time in milliseconds since the epoch
+    /// never before `now_ms`.
     pub fn next_wake_ms(
         &self,
         merging_here: bool,
