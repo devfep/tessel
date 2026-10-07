@@ -516,6 +516,14 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   CLOSED 2026-10-06 at trunk `7d7f4c9` (with LINT-RULE2): the message stays, under
   `#[expect(clippy::print_stderr, reason)]` on a `let () = eprintln!(…)` statement, the narrowest
   placement clippy honours. Workspace clippy `-D warnings` exits 0.
+- [ ] **SWARM-FLAKE-SHADOW** — from the DEMO-TS review (Oct 7): `tessel-swarm/tests/on_local.rs`
+  ~601 `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` failed once in
+  6 runs at load 45 on its ordering assert (passed 5 reruns). Timing-dependent; it runs in the
+  steward's gate, so it can reject an unrelated lane on a busy machine. Make the ordering
+  deterministic or assert only what the harness guarantees.
+- [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
+  gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
+  gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
 - [ ] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
