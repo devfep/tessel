@@ -50,10 +50,43 @@ const EXIT_REVIEW_UNCONFIRMED: u8 = 9;
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What a command produced: text for stdout and stderr and the exit code. Commands return this
+/// instead of printing, so `tessel mcp` can answer with it while stdout stays the transport.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Report {
+    pub stdout: String,
+    pub stderr: String,
+    pub code: u8,
+}
+
+impl Report {
+    fn ok(stdout: String) -> Self {
+        Self {
+            stdout,
+            ..Self::default()
+        }
+    }
+
+    fn with_code(stdout: String, code: u8) -> Self {
+        Self {
+            stdout,
+            code,
+            ..Self::default()
+        }
+    }
+
+    /// Prints both streams and returns the exit code.
+    fn emit(self) -> ExitCode {
+        say(&self.stdout);
+        complain(&self.stderr);
+        ExitCode::from(self.code)
+    }
+}
+
 pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     match command {
-        Command::Start { summary, task } => start(&cwd, summary, task).await,
+        Command::Start { summary, task } => Ok(start(&cwd, summary, task).await?.emit()),
         Command::Claim {
             scopes,
             mode,
@@ -67,24 +100,30 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
                 assume,
                 new,
             };
-            claim(&cwd, &scopes, options).await
+            Ok(claim(&cwd, &scopes, options).await?.emit())
         }
-        Command::Status { json } => status(&cwd, json).await,
-        Command::Inbox { all } => inbox(&cwd, all),
-        Command::Release { claim } => release(&cwd, claim).await,
+        Command::Status { json } => Ok(status(&cwd, json).await?.emit()),
+        Command::Inbox { all } => Ok(inbox(&cwd, all)?.emit()),
+        Command::Release { claim } => Ok(release(&cwd, claim).await?.emit()),
         Command::Submit {
             claim,
             evidence,
             rejected,
             commit,
-        } => submit(&cwd, claim, &evidence, &rejected, commit.as_deref()).await,
+        } => Ok(submit(&cwd, claim, &evidence, &rejected, commit.as_deref())
+            .await?
+            .emit()),
         Command::Review {
             claim,
             approve,
             reject: _,
             note,
-        } => review(&cwd, claim, approve, note).await,
+        } => Ok(review(&cwd, claim, approve, note).await?.emit()),
         Command::Stop => stop(&cwd).await,
+        Command::Mcp { root } => {
+            crate::mcp::serve(root).await?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Hook {
             action: HookAction::PreEdit { root },
         } => pre_edit(root).await,
@@ -158,20 +197,19 @@ async fn call_daemon(worktree: &Worktree, request: &Request) -> anyhow::Result<R
 
 // ---------- start ----------
 
-async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow::Result<ExitCode> {
+pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow::Result<Report> {
     let worktree = Worktree::discover(cwd)?;
     load_config(&worktree)?;
     worktree.prepare_dir()?;
     if let Ok(Reply::Status { state }) =
         rpc::call(&worktree.sock(), &Request::Status, Duration::from_secs(2)).await
     {
-        say(&format!(
+        return Ok(Report::ok(format!(
             "daemon already running for this worktree (pid {}, agent {}, {})\n",
             state.pid,
             state.agent,
             connection_word(state.connection)
-        ));
-        return Ok(ExitCode::SUCCESS);
+        )));
     }
     // An unreadable state file would reset the submit base to HEAD and hide earlier commits.
     if let Err(e) = State::read(&worktree) {
@@ -217,11 +255,10 @@ async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow::Res
             rpc::call(&worktree.sock(), &Request::Status, Duration::from_secs(1)).await
         {
             if state.connection == Connection::Online {
-                say(&format!(
+                return Ok(Report::ok(format!(
                     "started: agent {} is online on repo {} (pid {})\n",
                     state.agent, state.repo, state.pid
-                ));
-                return Ok(ExitCode::SUCCESS);
+                )));
             }
         }
         if tokio::time::Instant::now() >= deadline {
@@ -259,14 +296,14 @@ fn log_tail(worktree: &Worktree) -> String {
 // ---------- claim / release / stop ----------
 
 /// What `tessel claim` was asked besides the scopes.
-struct ClaimOptions {
-    mode: Mode,
-    wait: bool,
-    assume: Vec<String>,
-    new: bool,
+pub struct ClaimOptions {
+    pub mode: Mode,
+    pub wait: bool,
+    pub assume: Vec<String>,
+    pub new: bool,
 }
 
-async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<ExitCode> {
+pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<Report> {
     let ClaimOptions {
         mode,
         wait,
@@ -294,16 +331,16 @@ async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Re
         "tessel claim {} --wait",
         crate::render::escape(&args.join(" "))
     );
-    say(&outcome_text(&outcome, &hint));
-    Ok(ExitCode::from(match outcome {
+    let code = match outcome {
         ClaimOutcome::Granted { .. } | ClaimOutcome::Covered => 0,
         ClaimOutcome::Denied { .. } => EXIT_DENIED,
         ClaimOutcome::Queued { .. } => EXIT_QUEUED,
         ClaimOutcome::Refused { .. } => 1,
-    }))
+    };
+    Ok(Report::with_code(outcome_text(&outcome, &hint), code))
 }
 
-async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<ExitCode> {
+pub async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<Report> {
     let worktree = Worktree::discover(cwd)?;
     let request = Request::Release {
         claim: claim.map(ClaimId),
@@ -313,19 +350,20 @@ async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<ExitCode> {
             claims,
             kept_submitted,
         } => {
-            if claims.is_empty() {
-                say("nothing to release\n");
+            let mut text = if claims.is_empty() {
+                "nothing to release\n".to_string()
             } else {
-                say(&format!("released claim(s) {}\n", id_list(&claims)));
-            }
+                format!("released claim(s) {}\n", id_list(&claims))
+            };
             if !kept_submitted.is_empty() {
-                say(&format!(
+                let kept = format!(
                     "kept claim(s) {}: submitted claims stay with the coordinator until they merge \
                      or are rejected\n",
                     id_list(&kept_submitted)
-                ));
+                );
+                text.push_str(&kept);
             }
-            Ok(ExitCode::SUCCESS)
+            Ok(Report::ok(text))
         }
         Reply::Failed { message } => bail!("{message}"),
         Reply::Status { .. }
@@ -340,13 +378,13 @@ async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<ExitCode> {
 /// Hands one claim's finished work to the coordinator for the steward to merge. Everything that
 /// can be checked here is checked before anything is sent: the evidence, the claim, the commit
 /// and that the claim covers every file the commit changed.
-async fn submit(
+pub async fn submit(
     cwd: &Path,
     claim: Option<u64>,
     evidence: &[String],
     rejected: &[String],
     commit: Option<&str>,
-) -> anyhow::Result<ExitCode> {
+) -> anyhow::Result<Report> {
     let worktree = Worktree::discover(cwd)?;
     let decisions = submit::decisions(evidence, rejected)?;
     let Reply::Status { state } = call_daemon(&worktree, &Request::Status).await? else {
@@ -373,11 +411,12 @@ async fn submit(
     }
     let missing = uncovered(&held.scopes, &touched);
     if !missing.is_empty() {
-        say(&uncovered_text(held.claim, &missing, true));
-        return Ok(ExitCode::from(EXIT_UNCOVERED));
+        let text = uncovered_text(held.claim, &missing, true);
+        return Ok(Report::with_code(text, EXIT_UNCOVERED));
     }
+    let mut text = String::new();
     if touched.iter().any(|t| t.mode == Mode::EditSignature) {
-        say(
+        text.push_str(
             "note: the commit changes signatures or deletes or renames files (edit-signature); the \
              coordinator holds such a change for human review before it merges\n",
         );
@@ -393,22 +432,23 @@ async fn submit(
     let Reply::Submit { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
     };
-    say(&submit_text(&outcome, claim, &fork_commit, &escape(&fork)));
-    Ok(ExitCode::from(match outcome {
+    text.push_str(&submit_text(&outcome, claim, &fork_commit, &escape(&fork)));
+    let code = match outcome {
         SubmitOutcome::Accepted { .. } => 0,
         SubmitOutcome::Uncovered { .. } => EXIT_UNCOVERED,
         SubmitOutcome::ReviewRequired { .. } => EXIT_REVIEW_REQUIRED,
         SubmitOutcome::Refused { .. } => EXIT_SUBMIT_REFUSED,
-    }))
+    };
+    Ok(Report::with_code(text, code))
 }
 
 /// A reviewer's decision on a held submission. Exit 0 only when the event log holds it.
-async fn review(
+pub async fn review(
     cwd: &Path,
     claim: u64,
     approve: bool,
     note: Option<String>,
-) -> anyhow::Result<ExitCode> {
+) -> anyhow::Result<Report> {
     review::check_note(note.as_deref())?;
     // A reviewer needs no checkout: the decision is about a claim the coordinator holds.
     let worktree = match Worktree::discover(cwd) {
@@ -426,28 +466,27 @@ async fn review(
     let verdict = if approve { "approved" } else { "rejected" };
     let decision = review::decide(&config, &base, ClaimId(claim), approve, note).await?;
     match decision {
-        Decision::Confirmed => {
-            say(&format!(
-                "claim {claim} {verdict}: the decision is in the event log\n"
-            ));
-            Ok(ExitCode::SUCCESS)
-        }
-        Decision::Refused { message, .. } => {
-            complain(&format!(
+        Decision::Confirmed => Ok(Report::ok(format!(
+            "claim {claim} {verdict}: the decision is in the event log\n"
+        ))),
+        Decision::Refused { message, .. } => Ok(Report {
+            stderr: format!(
                 "tessel: claim {claim} was not {verdict}; the coordinator refused.\n{}",
                 quote_untrusted("the coordinator", &message)
-            ));
-            Ok(ExitCode::from(EXIT_REVIEW_REFUSED))
-        }
-        Decision::Unconfirmed => {
-            complain(&format!(
+            ),
+            code: EXIT_REVIEW_REFUSED,
+            ..Report::default()
+        }),
+        Decision::Unconfirmed => Ok(Report {
+            stderr: format!(
                 "tessel: claim {claim}: the coordinator sent no refusal, but the {verdict} \
                  decision is not in the event log. It may still land, so do not assume it failed. \
                  Run the review again: if the decision landed, the coordinator refuses the \
                  second try with not_awaiting_review.\n"
-            ));
-            Ok(ExitCode::from(EXIT_REVIEW_UNCONFIRMED))
-        }
+            ),
+            code: EXIT_REVIEW_UNCONFIRMED,
+            ..Report::default()
+        }),
     }
 }
 
@@ -507,7 +546,7 @@ fn id_list(claims: &[ClaimId]) -> String {
 
 // ---------- status / inbox ----------
 
-async fn status(cwd: &Path, json: bool) -> anyhow::Result<ExitCode> {
+pub async fn status(cwd: &Path, json: bool) -> anyhow::Result<Report> {
     let worktree = Worktree::discover(cwd)?;
     let live = rpc::call(&worktree.sock(), &Request::Status, Duration::from_secs(5)).await;
     let (running, state) = match live {
@@ -517,24 +556,23 @@ async fn status(cwd: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let unread = state::unread_count(&worktree)?;
     if json {
         let doc = json!({ "daemon_running": running, "state": state, "unread_inbox": unread });
-        say(&format!(
+        return Ok(Report::ok(format!(
             "{}\n",
             crate::render::json_safe(&serde_json::to_string_pretty(&doc)?)
-        ));
-        return Ok(ExitCode::SUCCESS);
+        )));
     }
-    match state {
-        Some(state) => say(&status_text(&state, running, unread)),
-        None => say("daemon: not running; run `tessel start \"<intent>\"`\n"),
-    }
-    Ok(ExitCode::SUCCESS)
+    Ok(Report::ok(match state {
+        Some(state) => status_text(&state, running, unread),
+        None => "daemon: not running; run `tessel start \"<intent>\"`\n".to_string(),
+    }))
 }
 
-fn inbox(cwd: &Path, all: bool) -> anyhow::Result<ExitCode> {
+pub fn inbox(cwd: &Path, all: bool) -> anyhow::Result<Report> {
     let worktree = Worktree::discover(cwd)?;
     let notices = state::take_inbox(&worktree, all)?;
+    let mut text = String::new();
     if notices.is_empty() {
-        say("inbox empty\n");
+        text.push_str("inbox empty\n");
     }
     for notice in &notices {
         let marker = if needs_attention(notice.kind) {
@@ -542,9 +580,10 @@ fn inbox(cwd: &Path, all: bool) -> anyhow::Result<ExitCode> {
         } else {
             " "
         };
-        say(&format!("{marker} {}", notice_text(notice)));
+        let line = format!("{marker} {}", notice_text(notice));
+        text.push_str(&line);
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(Report::ok(text))
 }
 
 // ---------- hook ----------

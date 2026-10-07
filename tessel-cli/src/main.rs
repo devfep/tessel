@@ -6,6 +6,7 @@ mod daemon;
 mod githook;
 mod hook;
 mod inbox_hook;
+mod mcp;
 mod plan;
 mod reconcile;
 mod render;
@@ -105,6 +106,12 @@ enum Command {
     },
     /// Release everything, close the socket and stop the daemon.
     Stop,
+    /// Serve the commands as tools of a local MCP server on stdin and stdout.
+    Mcp {
+        /// The worktree to serve; each tool call finds its daemon afresh.
+        #[arg(long)]
+        root: PathBuf,
+    },
     /// Claude Code and git hook integration.
     Hook {
         #[command(subcommand)]
@@ -210,6 +217,7 @@ fn main() -> ExitCode {
         | Command::Submit { .. }
         | Command::Review { .. }
         | Command::Stop
+        | Command::Mcp { .. }
         | Command::Hook {
             action: HookAction::Install { .. } | HookAction::Git { .. },
         }

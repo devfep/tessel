@@ -742,6 +742,16 @@ impl Agent {
         Ok(Done::from(output?))
     }
 
+    /// Spawns `tessel args...` with piped stdin, stdout and stderr, for a long-lived session.
+    pub fn spawn_piped(&self, args: &[&str]) -> Result<std::process::Child> {
+        Ok(self
+            .command(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?)
+    }
+
     /// Runs the daemon in the foreground of a child process, as `tessel start` would detach it.
     pub fn spawn_daemon(&self, summary: &str) -> Result<std::process::Child> {
         let child = self

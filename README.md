@@ -95,6 +95,15 @@ The coordinator refuses to start on a missing `RUN` or any other `SHADOW_ENABLED
 read only when a repo has no stored state yet; an existing repo keeps the values it was created
 with, and changing them later has no effect on it.
 
+## MCP server
+
+`tessel mcp --root <worktree>` serves the CLI commands as tools of a local stdio MCP server
+(`tessel_start`, `tessel_claim`, `tessel_status`, `tessel_inbox`, `tessel_submit`,
+`tessel_release`, `tessel_review`). It must run on the machine with the worktree, because symbol
+extraction and diffs read it. Register it with Claude Code:
+
+    claude mcp add --scope local tessel -- /abs/path/to/tessel mcp --root /abs/path/to/worktree
+
 ## Deploy
     npx wrangler deploy
     websocat wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws \

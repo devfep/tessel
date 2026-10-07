@@ -29,6 +29,23 @@ tessel start "<one line: what this work is for>" [--task <issue-id>]
 `start` launches a background daemon that holds your connection and claims. Other agents see your
 intent when they are denied, so make it specific. To change it, `tessel stop`, then `start`.
 
+## As MCP tools
+
+An agent that speaks MCP can call the commands as tools instead of running them in a shell.
+Register the server once per worktree, with absolute paths:
+
+```
+claude mcp add --scope local tessel -- /abs/path/to/tessel mcp --root /abs/path/to/worktree
+```
+
+The tools are `tessel_start`, `tessel_claim`, `tessel_status`, `tessel_inbox`, `tessel_submit`,
+`tessel_release` and `tessel_review`, with the arguments of the commands above. A result is the
+command's own text, led by a line saying that text after `| ` was written by other agents; a
+non-zero exit code comes back as an error result with the code in the text. Malformed arguments
+also come back as error results, so read them and retry. The server holds no state: each call
+finds the worktree's daemon afresh. The hooks still push notices into your context, so keep them
+installed; `tessel_inbox` reads the same notices on demand.
+
 ## The loop
 
 1. Claim what you will change: `tessel claim <scope>... [--mode ...]`. Or just edit: the hook
