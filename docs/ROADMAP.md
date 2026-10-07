@@ -5,9 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 22:00 EDT.
+**As of:** 2026-10-06 22:03 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight:** nothing. No lanes, reviews or background jobs.
+**In flight (dispatched 22:02, load 9):** CLI-LEASE-LOAD (`lane-lease-load`, Sonnet, worktree
+`.claude/worktrees/lease-load`, fork `tessel-dogfood--lane-lease-load`; root cause first, owns
+`tessel-cli/` and possibly `src/coordinator*`) and REVIEW-UI (`lane-review-ui`, Sonnet, worktree
+`.claude/worktrees/review-ui`, fork `tessel-dogfood--lane-review-ui`; PHASE 1 = plan only, stops
+for the orchestrator's go; owns `tessel-steward/src/` review and dashboard files). Both from trunk
+`3c50a5e`. Fork write tokens minted 22:00 expire 23:00; re-mint at each go.
 **Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
 `cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
 unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
