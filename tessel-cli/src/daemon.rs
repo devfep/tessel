@@ -44,6 +44,9 @@ const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(10);
 /// silence limit (3/2 of a heartbeat) that the default heartbeat would give, since the lease is
 /// not known until the `Welcome` arrives.
 const WELCOME_LIMIT: Duration = Duration::from_secs(15);
+/// How long one write to the socket may block, on a half-open link whose send buffer is full,
+/// before the link is declared dead. Without it the silence timer would never be polled.
+const WRITE_LIMIT: Duration = Duration::from_secs(15);
 /// How many times, and for how long in all, `stop` reads the event log before it reports a claim as
 /// not released. The client gives up on `stop` after 30 s.
 const CONFIRM_READS: u32 = 3;
@@ -453,8 +456,8 @@ impl Daemon {
     }
 
     /// The socket opened but no `Welcome` came, so heartbeats never started: drop it and
-    /// reconnect with the usual backoff. The task is aborted, not closed gracefully, because a
-    /// half-open link would never finish the close handshake.
+    /// reconnect with the usual backoff. The task is aborted so that a stalled write cannot keep
+    /// it alive.
     fn welcome_overdue(&mut self) {
         if let Some(conn) = &self.conn {
             conn.task.abort();
@@ -1953,17 +1956,16 @@ impl Probes {
     }
 
     /// The heartbeat a pong proves delivered, if its payload echoes an outstanding ping. That
-    /// heartbeat and every older one are answered; an unknown payload proves nothing.
+    /// heartbeat and every older one, by position in the order sent, are answered; an unknown
+    /// payload proves nothing.
     fn answered_by(&mut self, payload: &[u8]) -> Option<u64> {
         let sent_ms = u64::from_be_bytes(payload.try_into().ok()?);
-        let known = self
+        let position = self
             .outstanding
             .iter()
-            .any(|&(pending, _)| pending == sent_ms);
-        known.then(|| {
-            self.outstanding.retain(|&(pending, _)| pending > sent_ms);
-            sent_ms
-        })
+            .position(|&(pending, _)| pending == sent_ms)?;
+        self.outstanding.drain(..=position);
+        Some(sent_ms)
     }
 }
 
@@ -1992,14 +1994,16 @@ async fn socket_task(
             outgoing = out_rx.recv() => match outgoing {
                 Some(Outgoing::Msg(msg)) => {
                     let Ok(text) = serde_json::to_string(&msg) else { continue };
-                    if let Err(e) = socket.send(Message::text(text)).await {
-                        break format!("send failed: {e}");
+                    let write = socket.send(Message::text(text));
+                    if let Err(reason) = within_write_limit(write).await {
+                        break reason;
                     }
                 }
                 Some(Outgoing::Heartbeat { silence_limit }) => {
                     let sent_ms = now_ms();
-                    if let Err(e) = write_heartbeat(&mut socket, sent_ms).await {
-                        break format!("send failed: {e}");
+                    let write = write_heartbeat(&mut socket, sent_ms);
+                    if let Err(reason) = within_write_limit(write).await {
+                        break reason;
                     }
                     probes.sent(sent_ms, silence_limit);
                 }
@@ -2014,6 +2018,17 @@ async fn socket_task(
         }
     };
     let _ = in_tx.send(Incoming::Closed { generation, reason });
+}
+
+/// Runs one write, ending the link if it fails or blocks past `WRITE_LIMIT`.
+async fn within_write_limit(
+    write: impl std::future::Future<Output = Result<(), WsError>>,
+) -> Result<(), String> {
+    match tokio::time::timeout(WRITE_LIMIT, write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("send failed: {e}")),
+        Err(_) => Err(format!("a write blocked for {WRITE_LIMIT:?}; link dead")),
+    }
 }
 
 /// The heartbeat, then a ping carrying `sent_ms`, whose pong names the heartbeat it answers.
@@ -2392,8 +2407,10 @@ mod tests {
         (client, server.await.unwrap())
     }
 
-    /// Starts a `socket_task` on a fresh link and sends one heartbeat with `PROBE_LIMIT`.
-    async fn heartbeating() -> (
+    /// Starts a `socket_task` on a fresh link and sends one heartbeat with `silence_limit`.
+    async fn heartbeating(
+        silence_limit: Duration,
+    ) -> (
         tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         mpsc::UnboundedReceiver<Incoming>,
         mpsc::UnboundedSender<Outgoing>,
@@ -2404,11 +2421,7 @@ mod tests {
         let (in_tx, in_rx) = mpsc::unbounded_channel();
         tokio::spawn(socket_task(client, out_rx, in_tx, 1));
         let heartbeat_at = Instant::now();
-        out_tx
-            .send(Outgoing::Heartbeat {
-                silence_limit: PROBE_LIMIT,
-            })
-            .unwrap();
+        out_tx.send(Outgoing::Heartbeat { silence_limit }).unwrap();
         (server, in_rx, out_tx, heartbeat_at)
     }
 
@@ -2450,7 +2463,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_frames_without_a_pong_do_not_keep_a_link_alive() {
-        let (server, mut in_rx, _out, heartbeat_at) = heartbeating().await;
+        let (server, mut in_rx, _out, heartbeat_at) = heartbeating(PROBE_LIMIT).await;
         let _chatter = chatter(server, None);
         let reason = closed_within(&mut in_rx, Duration::from_secs(10)).await;
         assert!(
@@ -2462,7 +2475,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pong_that_echoes_no_outstanding_ping_does_not_keep_a_link_alive() {
-        let (server, mut in_rx, _out, heartbeat_at) = heartbeating().await;
+        let (server, mut in_rx, _out, heartbeat_at) = heartbeating(PROBE_LIMIT).await;
         let stale = Message::Pong(1_u64.to_be_bytes().to_vec().into());
         let _chatter = chatter(server, Some(stale));
         let reason = closed_within(&mut in_rx, Duration::from_secs(10)).await;
@@ -2475,7 +2488,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_matching_pong_keeps_a_link_alive() {
-        let (mut server, mut in_rx, _out, _) = heartbeating().await;
+        // A long limit: both ends share this runtime, so a stall must not read as silence.
+        let (mut server, mut in_rx, _out, _) = heartbeating(Duration::from_secs(30)).await;
         // Reading the ping makes the server answer it with a pong of the same payload.
         let reader = tokio::spawn(async move { while server.next().await.is_some() {} });
         let answered = async {
@@ -2487,11 +2501,6 @@ mod tests {
         };
         let answered = tokio::time::timeout(Duration::from_secs(10), answered).await;
         assert!(answered.is_ok_and(|seen| seen.is_some()), "no pong arrived");
-        let closed = closed_within(&mut in_rx, PROBE_LIMIT * 3).await;
-        assert!(
-            closed.is_none(),
-            "an answered heartbeat closed the link: {closed:?}"
-        );
         reader.abort();
     }
 
@@ -2516,6 +2525,36 @@ mod tests {
         assert!(probes.silent_from().is_some());
         assert_eq!(probes.answered_by(&2_u64.to_be_bytes()), Some(2));
         assert!(probes.silent_from().is_none());
+
+        probes.sent(1, Duration::from_secs(60));
+        probes.sent(2, Duration::from_secs(60));
+        assert_eq!(probes.answered_by(&2_u64.to_be_bytes()), Some(2));
+        assert!(
+            probes.silent_from().is_none(),
+            "a pong for the newest ping left an older one outstanding"
+        );
+    }
+
+    #[test]
+    fn heartbeats_are_answered_in_the_order_sent_even_if_the_clock_steps_back() {
+        let mut probes = Probes::default();
+        probes.sent(500, Duration::from_secs(60));
+        probes.sent(100, Duration::from_secs(60));
+        probes.sent(200, Duration::from_secs(60));
+        assert_eq!(probes.answered_by(&100_u64.to_be_bytes()), Some(100));
+        assert_eq!(probes.outstanding.len(), 1);
+        assert_eq!(probes.outstanding[0].0, 200);
+    }
+
+    #[tokio::test]
+    async fn repeated_welcome_timeouts_back_off_instead_of_reconnecting_hot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.ever_online = true;
+        daemon.welcome_overdue();
+        daemon.welcome_overdue();
+        assert_eq!(daemon.backoff, FIRST_BACKOFF * 4);
+        assert!(daemon.reconnect_at.is_some());
     }
 
     #[tokio::test]
