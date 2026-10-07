@@ -1955,6 +1955,13 @@ impl Probes {
         self.outstanding.first().map(|&(_, deadline)| deadline)
     }
 
+    /// When a write must have finished: `WRITE_LIMIT` from now, or the silence deadline if that
+    /// comes first, so a blocked write never delays declaring the link dead.
+    fn write_deadline(&self) -> Instant {
+        let limit = Instant::now() + WRITE_LIMIT;
+        self.silent_from().map_or(limit, |silent| silent.min(limit))
+    }
+
     /// The heartbeat a pong proves delivered, if its payload echoes an outstanding ping. That
     /// heartbeat and every older one, by position in the order sent, are answered; an unknown
     /// payload proves nothing.
@@ -1995,20 +2002,20 @@ async fn socket_task(
                 Some(Outgoing::Msg(msg)) => {
                     let Ok(text) = serde_json::to_string(&msg) else { continue };
                     let write = socket.send(Message::text(text));
-                    if let Err(reason) = within_write_limit(write).await {
+                    if let Err(reason) = within_write_limit(probes.write_deadline(), write).await {
                         break reason;
                     }
                 }
                 Some(Outgoing::Heartbeat { silence_limit }) => {
                     let sent_ms = now_ms();
                     let write = write_heartbeat(&mut socket, sent_ms);
-                    if let Err(reason) = within_write_limit(write).await {
+                    if let Err(reason) = within_write_limit(probes.write_deadline(), write).await {
                         break reason;
                     }
                     probes.sent(sent_ms, silence_limit);
                 }
                 None => {
-                    let _ = socket.close(None).await;
+                    let _ = within_write_limit(probes.write_deadline(), socket.close(None)).await;
                     break "closed locally".to_string();
                 }
             },
@@ -2020,11 +2027,12 @@ async fn socket_task(
     let _ = in_tx.send(Incoming::Closed { generation, reason });
 }
 
-/// Runs one write, ending the link if it fails or blocks past `WRITE_LIMIT`.
+/// Runs one write, ending the link if it fails or is still blocked at `deadline`.
 async fn within_write_limit(
+    deadline: Instant,
     write: impl std::future::Future<Output = Result<(), WsError>>,
 ) -> Result<(), String> {
-    match tokio::time::timeout(WRITE_LIMIT, write).await {
+    match tokio::time::timeout_at(deadline, write).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(format!("send failed: {e}")),
         Err(_) => Err(format!("a write blocked for {WRITE_LIMIT:?}; link dead")),
@@ -2532,6 +2540,27 @@ mod tests {
         assert!(
             probes.silent_from().is_none(),
             "a pong for the newest ping left an older one outstanding"
+        );
+    }
+
+    #[test]
+    fn a_write_is_cut_off_at_the_silence_deadline_when_that_comes_before_the_write_limit() {
+        let mut probes = Probes::default();
+        let before = Instant::now();
+        let unbounded = probes.write_deadline();
+        assert!(
+            unbounded >= before + WRITE_LIMIT,
+            "no outstanding ping: now + limit"
+        );
+        assert!(unbounded <= Instant::now() + WRITE_LIMIT);
+        probes.sent(1, Duration::from_secs(1));
+        let silent = probes.silent_from().unwrap();
+        assert_eq!(probes.write_deadline(), silent);
+        let mut late = Probes::default();
+        late.sent(1, WRITE_LIMIT * 2);
+        assert!(
+            late.write_deadline() <= Instant::now() + WRITE_LIMIT,
+            "capped at the limit"
         );
     }
 
