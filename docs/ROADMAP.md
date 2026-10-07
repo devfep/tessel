@@ -560,6 +560,10 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   from the wait queue after a long wait never renews. Local runs (short waits) pass. Lane
   dispatched 17:03 (Opus, `.claude/worktrees/swarm-wait`); a close must become the task's outcome,
   not abort the run. The `shadow` A/B run waits for it.
+- [ ] **CLI-CLAIM-EXISTS** — three lanes on Oct 7 passed a space-joined zsh variable to
+  `tessel claim`, which created one scope named "a.rs b.rs c.rs" with no warning; the submit was
+  then refused as uncovered. `claim` should warn (or refuse, with an override) when a file scope
+  does not exist in the worktree and is not being created (`--mode create`).
 - [ ] **COORD-CLOSE-WITHDRAW** — found by SWARM-WAIT (Oct 7), checked by the orchestrator in the
   trunk: when the Durable Object closes a socket itself (`close_socket`, `src/runtime.rs` ~285,
   code 1011, after a failed dispatch or send), it does not withdraw that agent's queued request;
