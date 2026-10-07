@@ -13,12 +13,15 @@
 
 mod support;
 
+use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::Result;
-use support::{git, Agent, Done, Fake};
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use support::{eventually, git, Agent, Done, Fake};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 
@@ -200,10 +203,22 @@ async fn another_worktree_of_the_same_repository_is_untouched() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_daemon_that_is_down_blocks_with_the_way_out() -> Result<()> {
+async fn a_daemon_that_died_blocks_with_the_way_out() -> Result<()> {
     let (_fake, a1) = started().await?;
-    assert_eq!(a1.tessel(&["stop"])?.code, 0);
-    assert!(a1.root().join(".tessel/state.json").exists());
+    let pid = a1.status()?["state"]["pid"].as_u64().context("no pid")?;
+    assert!(Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()?
+        .success());
+    eventually(Duration::from_secs(8), || {
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()?
+            .status
+            .success();
+        Ok((!alive).then_some(()))
+    })
+    .await?;
     let done = commit_file(&a1, "src/c.rs", "pub fn c() {}\n")?;
     assert_ne!(done.code, 0, "{}", done.all());
     assert!(done.stderr.contains("tessel start"), "{}", done.stderr);
@@ -318,7 +333,7 @@ async fn installing_again_changes_nothing() -> Result<()> {
     executable_script(&hooks_dir(&a1).join("pre-push"), "#!/bin/sh\nexit 0\n")?;
     install(&a1)?;
     let shim = std::fs::read_to_string(hooks_dir(&a1).join("pre-commit"))?;
-    assert_eq!(shim.lines().count(), 2, "{shim}");
+    assert_eq!(shim.lines().nth(1), Some("# tessel git hook"), "{shim}");
     assert!(shim.contains(" hook git pre-commit \"$@\""), "{shim}");
 
     let again = a1.tessel(&["hook", "install", "--git"])?;
@@ -404,5 +419,165 @@ async fn a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for() -> R
     assert_ne!(done.code, 0, "{}", done.all());
     assert!(done.stderr.contains("src/c.rs (create)"), "{}", done.stderr);
     assert!(!done.stderr.contains("src/d.rs"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_worktree_is_not_guarded() -> Result<()> {
+    let (_fake, a1) = started().await?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    assert!(a1.root().join(".tessel/state.json").exists());
+    let done = commit_file(&a1, "src/c.rs", "pub fn c() {}\n")?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    Ok(())
+}
+
+/// `PATH` without a directory that holds a `tessel`, so a shim's own lookup finds none.
+fn path_without_tessel() -> Result<std::ffi::OsString> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path)
+        .filter(|dir| !dir.join("tessel").exists())
+        .collect();
+    Ok(std::env::join_paths(dirs)?)
+}
+
+/// Installs the hooks from a copy of the binary, then deletes the copy, as removing a lane's
+/// `target/` would.
+fn install_then_delete_the_binary(agent: &Agent) -> Result<()> {
+    let bin = tempfile::tempdir()?;
+    let copy = bin.path().join("tessel");
+    std::fs::copy(env!("CARGO_BIN_EXE_tessel"), &copy)?;
+    let done = Command::new(&copy)
+        .args(["hook", "install", "--git"])
+        .current_dir(agent.root())
+        .output()?;
+    assert!(done.status.success(), "{done:?}");
+    std::fs::remove_file(&copy)?;
+    Ok(())
+}
+
+fn git_without_tessel(dir: &Path, args: &[&str]) -> Result<Done> {
+    Ok(Done::from(
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("PATH", path_without_tessel()?)
+            .output()?,
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_binary_leaves_other_worktrees_committing_and_runs_the_chained_hook() -> Result<()>
+{
+    let (_fake, a1) = world().await?;
+    executable_script(
+        &hooks_dir(&a1).join("pre-commit"),
+        "#!/bin/sh\necho chained-ran >&2\nexit 0\n",
+    )?;
+    install_then_delete_the_binary(&a1)?;
+    write(&a1, "src/c.rs", "pub fn c() {}\n")?;
+    git(&a1.root(), &["add", "src/c.rs"])?;
+    let done = git_without_tessel(&a1.root(), &["commit", "-q", "-m", "c"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.stderr.contains("chained-ran"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_binary_blocks_a_worktree_that_has_tessel_state() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    install_then_delete_the_binary(&a1)?;
+    a1.start("edit things")?;
+    write(&a1, "src/c.rs", "pub fn c() {}\n")?;
+    git(&a1.root(), &["add", "src/c.rs"])?;
+    let done = git_without_tessel(&a1.root(), &["commit", "-q", "-m", "c"])?;
+    assert_ne!(done.code, 0, "{}", done.all());
+    assert!(done.stderr.contains("binary missing"), "{}", done.stderr);
+    assert!(done.stderr.contains("--no-verify"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_binary_still_hands_pre_push_stdin_to_the_chained_hook() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    let record = a1.root().join(".git/record.stdin");
+    let script = format!("#!/bin/sh\ncat > {}\nexit 0\n", record.display());
+    executable_script(&hooks_dir(&a1).join("pre-push"), &script)?;
+    install_then_delete_the_binary(&a1)?;
+    let remote = bare_remote(&a1)?;
+    let done = git_without_tessel(&a1.root(), &["push", "-q", "origin", "HEAD:refs/heads/one"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(remote_has(remote.path(), "one"));
+    let stdin = std::fs::read_to_string(&record)?;
+    assert!(stdin.contains(" refs/heads/one "), "{stdin}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_chained_hook_exit_code_is_passed_on() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    executable_script(&hooks_dir(&a1).join("pre-commit"), "#!/bin/sh\nexit 7\n")?;
+    install(&a1)?;
+    let done = Command::new(hooks_dir(&a1).join("pre-commit"))
+        .current_dir(a1.root())
+        .output()?;
+    assert_eq!(done.status.code(), Some(7), "{done:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn more_changed_symbols_than_a_submission_holds_are_judged_as_their_file() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    let functions = |marker: u32| -> String {
+        let mut text = String::new();
+        for i in 0..260 {
+            let _ = writeln!(text, "pub fn f{i}() {{ {marker}; }}");
+        }
+        text
+    };
+    write(&a1, "src/many.rs", &functions(0))?;
+    git(&a1.root(), &["add", "src/many.rs"])?;
+    git(&a1.root(), &["commit", "-q", "-m", "many"])?;
+    install(&a1)?;
+    a1.start("edit things")?;
+    for batch in [0..130, 130..260] {
+        let scopes: Vec<String> = batch.map(|i| format!("src/many.rs::many::f{i}")).collect();
+        let mut args = vec!["claim"];
+        args.extend(scopes.iter().map(String::as_str));
+        assert_eq!(a1.tessel(&args)?.code, 0);
+    }
+    let done = commit_file(&a1, "src/many.rs", &functions(1))?;
+    assert_ne!(done.code, 0, "{}", done.all());
+    assert!(
+        done.stderr.contains("src/many.rs (edit-body)"),
+        "{}",
+        done.stderr
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concluding_a_merge_is_not_checked_by_pre_commit() -> Result<()> {
+    let (_fake, a1) = started().await?;
+    let root = a1.root();
+    git(&root, &["checkout", "-q", "-b", "side"])?;
+    write(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
+    git(&root, &["commit", "-q", "--no-verify", "-am", "side"])?;
+    git(&root, &["checkout", "-q", "-"])?;
+    write(&a1, "src/a.rs", "pub fn a() { 2; }\n")?;
+    git(&root, &["commit", "-q", "--no-verify", "-am", "main"])?;
+    let merged = git_done(&root, &["merge", "-q", "side"])?;
+    assert_ne!(merged.code, 0, "the merge must conflict: {}", merged.all());
+
+    write(&a1, "src/a.rs", "pub fn a() { 3; }\n")?;
+    git(&root, &["add", "src/a.rs"])?;
+    let done = git_done(&root, &["commit", "-q", "--no-edit"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(
+        done.stderr.contains("concluding a merge"),
+        "{}",
+        done.stderr
+    );
     Ok(())
 }

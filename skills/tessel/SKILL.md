@@ -54,7 +54,10 @@ symlinks and ignores paths outside the worktree and under `.git/` and `.tessel/`
 Where `tessel hook install --git` has put git hooks in the repository, `git commit` and `git push`
 in a worktree you started refuse changes your unsubmitted claims do not cover, shell edits
 included, and print the `tessel claim` command to run. `--no-verify` skips the check, but the
-coordinator still rejects a submission your claims do not cover.
+coordinator still rejects a submission your claims do not cover. A worktree after `tessel stop`
+is not checked. Concluding a merge (`MERGE_HEAD` present) skips the commit check with a note:
+`pre-push` and the coordinator still check the merge commit, and a clean `git merge` never runs
+`pre-commit`, because no `pre-merge-commit` hook is installed.
 
 ## Scopes and modes
 

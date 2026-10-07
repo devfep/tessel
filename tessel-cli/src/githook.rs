@@ -1,6 +1,7 @@
 //! The git `pre-commit` and `pre-push` hooks: refuse a commit or push that changes anything the
 //! agent has not claimed, whichever tool made the change (a shell edit included). `install`
-//! writes a two-line shim into the repository's hooks directory; the shim runs `tessel hook git`.
+//! writes a small shell shim into the repository's hooks directory; the shim runs `tessel hook git`
+//! and, when the binary is gone, falls through by itself (see `shim_text`).
 //!
 //! The hooks live in the directory every worktree of the repository shares, so each run gates
 //! itself: a worktree with no `.tessel/state.json` passes. An existing hook of another tool is
@@ -20,7 +21,7 @@ use crate::hook::{claim_arg, shell_quote};
 use crate::plan;
 use crate::render::{escape, mode_text, scope_text};
 use crate::rpc::{self, Reply, Request};
-use crate::state::State;
+use crate::state::{Connection, State};
 use crate::submit;
 use crate::worktree::Worktree;
 use crate::GitHook;
@@ -28,6 +29,9 @@ use crate::GitHook;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 const CHAINED_SUFFIX: &str = ".pre-tessel";
 const EXIT_REFUSED: u8 = 1;
+const SHIM_MARKER: &str = "# tessel git hook";
+const MERGE_NOTE: &str = "tessel: concluding a merge, so the pre-commit coverage check is \
+skipped; pre-push and the coordinator still check the merge commit\n";
 const ALL_HOOKS: [GitHook; 2] = [GitHook::PreCommit, GitHook::PrePush];
 
 impl GitHook {
@@ -61,10 +65,31 @@ pub async fn run(cwd: &Path, hook: GitHook, args: &[String]) -> anyhow::Result<E
     if !worktree.state_path().exists() {
         return Ok(ExitCode::SUCCESS);
     }
-    let state = daemon_state(&worktree, hook).await?;
-    let held = unsubmitted_scopes(&state);
+    if hook == GitHook::PreCommit && merge_in_progress(&worktree.root)? {
+        let _ = std::io::stderr().write_all(MERGE_NOTE.as_bytes());
+        return Ok(ExitCode::SUCCESS);
+    }
+    let Some(state) = daemon_state(&worktree, hook).await? else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    let missing = uncovered_changes(&worktree.root, hook, &state, &stdin)?;
+    if missing.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let _ = std::io::stderr().write_all(refusal_text(hook, &missing).as_bytes());
+    Ok(ExitCode::from(EXIT_REFUSED))
+}
+
+/// The scopes the commit or push changes that no unsubmitted claim covers.
+fn uncovered_changes(
+    root: &Path,
+    hook: GitHook,
+    state: &State,
+    stdin: &[u8],
+) -> anyhow::Result<Vec<ScopeClaim>> {
+    let held = unsubmitted_scopes(state);
     let mut missing = Vec::new();
-    for touched in touched_ranges(&worktree.root, hook, &state, &stdin)? {
+    for touched in touched_ranges(root, hook, state, stdin)? {
         let touched = plan::collapse(touched, &held, plan::MAX_SCOPES_PER_MESSAGE);
         for scope in uncovered(&held, &touched) {
             if !missing.contains(&scope) {
@@ -72,11 +97,14 @@ pub async fn run(cwd: &Path, hook: GitHook, args: &[String]) -> anyhow::Result<E
             }
         }
     }
-    if missing.is_empty() {
-        return Ok(ExitCode::SUCCESS);
-    }
-    let _ = std::io::stderr().write_all(refusal_text(hook, &missing).as_bytes());
-    Ok(ExitCode::from(EXIT_REFUSED))
+    Ok(missing)
+}
+
+/// Whether `git commit` is concluding a merge. The diff base is the history of `HEAD`, which
+/// does not hold the merged-in side, so the index would look like the merged work was never
+/// claimed.
+fn merge_in_progress(root: &Path) -> anyhow::Result<bool> {
+    Ok(git_path(root, "MERGE_HEAD")?.exists())
 }
 
 fn read_stdin() -> anyhow::Result<Vec<u8>> {
@@ -97,10 +125,13 @@ fn unsubmitted_scopes(state: &State) -> Vec<ScopeClaim> {
         .collect()
 }
 
-async fn daemon_state(worktree: &Worktree, hook: GitHook) -> anyhow::Result<State> {
+/// The daemon's state, or `None` when `tessel stop` ended it: a stopped worktree holds nothing
+/// and is not guarded.
+async fn daemon_state(worktree: &Worktree, hook: GitHook) -> anyhow::Result<Option<State>> {
     match rpc::call(&worktree.sock(), &Request::Status, STATUS_TIMEOUT).await {
-        Ok(Reply::Status { state }) => Ok(*state),
+        Ok(Reply::Status { state }) => Ok(Some(*state)),
         Ok(_) => bail!("the daemon answered the status request with something unexpected"),
+        Err(_) if stopped(worktree) => Ok(None),
         Err(e) => bail!(
             "this worktree has Tessel state (.tessel/state.json) but its daemon does not answer \
              ({e}), so the {} cannot be checked against your claims. Run `tessel start \
@@ -109,6 +140,16 @@ async fn daemon_state(worktree: &Worktree, hook: GitHook) -> anyhow::Result<Stat
             hook.action()
         ),
     }
+}
+
+fn stopped(worktree: &Worktree) -> bool {
+    matches!(
+        State::read(worktree),
+        Ok(Some(State {
+            connection: Connection::Stopped,
+            ..
+        }))
+    )
 }
 
 /// The scopes to check: the index for a commit, one range per pushed commit for a push.
@@ -274,6 +315,15 @@ pub fn install(cwd: &Path) -> anyhow::Result<String> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("cannot create the hooks directory {}", dir.display()))?;
     let mut report = String::new();
+    if in_build_directory(Path::new(exe)) {
+        let _ = writeln!(
+            report,
+            "warning: {} is in a build directory that goes away with its worktree. The hooks fall \
+             back safely without it, but install a stable binary (`cargo install --path \
+             tessel-cli`) and run this again from it.",
+            escape(exe)
+        );
+    }
     for hook in ALL_HOOKS {
         report.push_str(&install_one(&dir, hook, exe)?);
     }
@@ -351,11 +401,21 @@ fn chain_existing(dir: &Path, hook: GitHook) -> anyhow::Result<String> {
     ))
 }
 
+/// The hook file. It runs the binary found on `PATH`, else the one that installed it. When that
+/// is gone, a worktree with Tessel state fails closed and any other worktree of the repository
+/// passes after running the other tool's hook, so deleting the binary (a lane's `target/`, say)
+/// never breaks commits elsewhere. `exec` hands git's stdin on.
 fn shim_text(hook: GitHook, exe: &str) -> String {
+    let name = hook.name();
     format!(
-        "#!/bin/sh\nexec {} hook git {} \"$@\"\n",
-        shell_quote(exe),
-        hook.name()
+        "#!/bin/sh\n\
+         {SHIM_MARKER}\n\
+         t=$(command -v tessel) || t={exe}\n\
+         [ -x \"$t\" ] && exec \"$t\" hook git {name} \"$@\"\n\
+         [ -e \"$(git rev-parse --show-toplevel)/.tessel/state.json\" ] && {{ echo \"tessel: \
+         binary missing; reinstall or use --no-verify\" >&2; exit 1; }}\n\
+         h=\"$(dirname \"$0\")/{name}{CHAINED_SUFFIX}\"; [ -x \"$h\" ] && exec \"$h\" \"$@\"; exit 0\n",
+        exe = shell_quote(exe),
     )
 }
 
@@ -363,11 +423,13 @@ fn shim_text(hook: GitHook, exe: &str) -> String {
 fn is_tessel_shim(text: &str, hook: GitHook) -> bool {
     let mut lines = text.lines();
     lines.next() == Some("#!/bin/sh")
-        && lines.next().is_some_and(|line| {
-            line.starts_with("exec ")
-                && line.ends_with(&format!(" hook git {} \"$@\"", hook.name()))
-        })
-        && lines.next().is_none()
+        && lines.next() == Some(SHIM_MARKER)
+        && text.contains(&format!(" hook git {} \"$@\"", hook.name()))
+}
+
+/// Whether `exe` sits in a Cargo `target/` directory, which goes away with its worktree.
+fn in_build_directory(exe: &Path) -> bool {
+    exe.components().any(|part| part.as_os_str() == "target")
 }
 
 fn write_executable(path: &Path, text: &str) -> anyhow::Result<()> {
@@ -389,15 +451,20 @@ fn write_executable(path: &Path, text: &str) -> anyhow::Result<()> {
 /// The hooks directory git uses for `cwd`'s repository: `core.hooksPath` when set, else the
 /// common `.git/hooks` of every worktree.
 fn hooks_dir(cwd: &Path) -> anyhow::Result<PathBuf> {
+    git_path(cwd, "hooks")
+}
+
+/// Where git keeps `name` for the worktree at `cwd` (`git rev-parse --git-path`).
+fn git_path(cwd: &Path, name: &str) -> anyhow::Result<PathBuf> {
     let output = Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["rev-parse", "--path-format=absolute", "--git-path", "hooks"])
+        .args(["rev-parse", "--path-format=absolute", "--git-path", name])
         .output()
         .context("cannot run git; is git installed?")?;
     if !output.status.success() {
         bail!(
-            "git rev-parse --git-path hooks failed: {}",
+            "git rev-parse --git-path {name} failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
@@ -441,10 +508,14 @@ mod tests {
         assert!(is_tessel_shim(&shim, GitHook::PreCommit));
         assert!(!is_tessel_shim(&shim, GitHook::PrePush));
         assert!(!is_tessel_shim("#!/bin/sh\nprek run\n", GitHook::PreCommit));
-        assert!(!is_tessel_shim(
-            &format!("{shim}extra\n"),
-            GitHook::PreCommit
-        ));
+    }
+
+    #[test]
+    fn a_cargo_target_directory_is_a_build_directory() {
+        assert!(in_build_directory(Path::new(
+            "/work/lane/target/debug/tessel"
+        )));
+        assert!(!in_build_directory(Path::new("/usr/local/bin/tessel")));
     }
 
     #[test]
