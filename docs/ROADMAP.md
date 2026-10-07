@@ -10,7 +10,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 **Trunk:** `bfcf625` (CLI-CONNECT-TIMEOUT merged; mirrored); `.claude/worktrees/deploy` is at
 `bfcf625`. Demo repo `swarm-demo` created live (see DEMO-TS).
 **In flight:** nothing. No lanes, reviews or background jobs; only the deploy worktree remains.
-Open tasks: REVIEW-UI (signed-in check by Felix), SWARM-FLAKE-SHADOW, GATE-PATH (process; done in
+Open tasks: SWARM-FLAKE-SHADOW, GATE-PATH (process; done in
 practice for the last two gates), then the Oct 10 A/B runs and the milestone pull request.
 A lane's `tessel submit` can be refused by the classifier ("Remote Repoint"); Felix ran one.
 **Steward** `0f01d3fb` (REVIEW-UI live behind Access); coordinators `8d66fe32` / swarm
@@ -458,7 +458,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   CLOSED 2026-10-06: ACCESS-VARS merged through the steward (claim 55, trunk `e894fbe`, diff read
   by the orchestrator under rule 00); steward redeployed from the trunk alone (`fce132ca`):
   unsigned → 302 to the fepdev login, admin route → 401.
-- [ ] **REVIEW-UI** — PLAN §4, §9 Oct 8: a review screen beside the dashboard for submissions held
+- [x] **REVIEW-UI** — PLAN §4, §9 Oct 8: a review screen beside the dashboard for submissions held
   under invariant 12: the reasons from `review_reasons`, the diff, the claim's intent and
   assumptions (untrusted data), and approve/reject that sends `Review` as a configured reviewer.
   `tessel review` stays the agent path (same outcome, agent-native). Needs a decision before
@@ -477,8 +477,11 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `Review.fork_commit` (queued for the protocol hand merge). DEPLOYED Oct 6 ~22:50 EDT by Felix:
   steward `0f01d3fb` (`REVIEWER_EMAILS` bound). From outside: GET `/review/tessel-dogfood`, GET
   `/diff`, a forged assertion and the decision POST all get 302 to the Access login; admin routes
-  still answer 401. Not yet seen signed in: Felix opening the page, a held submission's diff from
-  a real container, an approval from the browser.
+  still answer 401. CLOSED 2026-10-07 12:35 EDT: Felix opened `/review/tessel-dogfood` signed in
+  through Access; it rendered "Held for review: tessel-dogfood … Nothing is held for review",
+  which is correct (claims 65–67 were approved before merging). Not yet exercised live: a held
+  submission's diff from a real container and an approval from the browser; the next held
+  submission is that test (check the log for the note "felix via review UI:").
 - [x] **DEMO-TS** — PLAN §9 Oct 7, SUBMISSION_CHECKLIST ("demo repository the agents work on is
   your own or permissively licensed"). Mostly exists: `tessel-swarm/src/demo.rs` generates a small
   TypeScript shop (twelve functions in seven modules, one `node --test` file each, cross-module
