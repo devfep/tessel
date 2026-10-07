@@ -5,21 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 22:45 EDT.
+**As of:** 2026-10-07 09:50 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**As of (update):** 2026-10-07 08:37 EDT. Felix said proceed. DISPATCHED two lanes from trunk
-`b446bf3`, load ~11: DEMO-TS + SWARM-REVIEWER-ERR (`lane-demo-ts`, `.claude/worktrees/demo-ts`,
-fork `tessel-dogfood--lane-demo-ts`; owns `tessel-swarm/`; adds `tessel-swarm demo-repo`, a
-LICENSE in the generated repo, a tree-sitter labelling test; the orchestrator runs the live
-`demo-repo` after merge) and CLI-CONNECT-TIMEOUT (`lane-connect-timeout`,
-`.claude/worktrees/connect-timeout`, fork `tessel-dogfood--lane-connect-timeout`; owns
-`tessel-cli/src/daemon.rs`). Both stop before push. REVIEW-UI's box stays open until Felix's
-signed-in check.
-**Before that:** no lanes, reviews or background jobs. Trunk `b446bf3` (mirrored);
-`.claude/worktrees/deploy` is at `b446bf3`. Steward `0f01d3fb` deployed by Felix (REVIEW-UI live
-behind Access; coordinators unchanged at `8d66fe32` / swarm `7b7ae508`). Felix to open
-`/review/tessel-dogfood` signed in. The first real held submission is the end-to-end test: approve
-it from the browser, then check the log shows the note "felix via review UI:".
+**Trunk:** `e648ad5` (DEMO-TS + SWARM-REVIEWER-ERR merged 09:4x; mirrored);
+`.claude/worktrees/deploy` is at `e648ad5`. Demo repo `swarm-demo` created live (see DEMO-TS).
+**In flight:** CLI-CONNECT-TIMEOUT (`lane-connect-timeout`, worktree
+`.claude/worktrees/connect-timeout`, fork `tessel-dogfood--lane-connect-timeout`, claim 66): Opus
+fixes applied (`791a7cd`), orchestrator read `be8788c`; PUSHED to its fork at `be8788c`; its
+`tessel submit` was REFUSED by the permission classifier ("Remote Repoint"), so WAITING ON FELIX
+to run the submit from the worktree (command in the 13:04Z handoff). Its base is `b446bf3`; the
+steward rebases over `e648ad5` (different files). Then gate + approve as orchestrator.
+**Steward** `0f01d3fb` (REVIEW-UI live behind Access); coordinators `8d66fe32` / swarm
+`7b7ae508`. Felix to open `/review/tessel-dogfood` signed in; REVIEW-UI's box stays open until
+then. GATE-PATH: build the curl-free `PATH` in bash (zsh does not split `$PATH` on IFS).
 **Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
 `cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
 unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
@@ -483,13 +481,25 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `/diff`, a forged assertion and the decision POST all get 302 to the Access login; admin routes
   still answer 401. Not yet seen signed in: Felix opening the page, a held submission's diff from
   a real container, an approval from the browser.
-- [ ] **DEMO-TS** — PLAN §9 Oct 7, SUBMISSION_CHECKLIST ("demo repository the agents work on is
+- [x] **DEMO-TS** — PLAN §9 Oct 7, SUBMISSION_CHECKLIST ("demo repository the agents work on is
   your own or permissively licensed"). Mostly exists: `tessel-swarm/src/demo.rs` generates a small
   TypeScript shop (twelve functions in seven modules, one `node --test` file each, cross-module
   calls) that every swarm run starts from. Left: a way to create that repo as a named Artifacts
   repo for real agents (the video's 3–5 real agents beside the scripted ones, PLAN §9 Oct 10),
   e.g. a `tessel-swarm demo-repo --repo swarm-demo` command, a LICENSE in it, and a check that the
   CLI's tree-sitter labels its symbols as expected. No second demo repo.
+  CLOSED 2026-10-07 at trunk `e648ad5` (with SWARM-REVIEWER-ERR; review "With fixes": the admin-
+  token scrub was untested, `starts_with("http://localhost")` let `http://localhost.evil.example`
+  receive the admin token over plain HTTP (pre-existing, now reachable), the README overstated
+  the existing-name refusal, and the symbols test covered only the base tree; re-check "Yes").
+  The first submit was REJECTED by the steward's Sandbox gate: the new tests spawned `curl`, which
+  the gate image lacks (passed on the Mac); fixed with a `Transport` boundary so tests use an
+  in-memory steward (filed GATE-PATH). Gate on `e648ad5`: workspace 876 with `--locked` and `curl`
+  removed from `PATH`, clippy 0; approved claim 67; trunk tree equals the gated tree. `on_local.rs`
+  was claimed after its edit (rule 0; recorded in the git note). LIVE 09:4x: `tessel-swarm
+  demo-repo --repo swarm-demo --agents agent-1,agent-2,agent-3,agent-4` created `swarm-demo` at
+  starting commit `71a4e8a` (MIT LICENSE, seven modules, 12 `node --test` tests pass on a clone)
+  and forks `swarm-demo--agent-1` … `--agent-4`. Permanent: Artifacts repos are never deleted.
 - [x] **SWARM-OBSERVER** — from the SHADOW-2 review (both could only lower the reported count):
   a failed shared log watcher's error was dropped at the end of a run, and the final wait trusted
   any non-empty log. Now the watcher is aborted then awaited, its error leads (the agent's or the
@@ -524,9 +534,12 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
-- [ ] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
+- [x] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
+  CLOSED 2026-10-07 at trunk `e648ad5` (DEMO-TS lane): `settle_reviewer` returns the reviewer's
+  result and `with_cause` attaches both errors; an agent panic no longer returns before the
+  watcher and reviewer are settled (that part untested).
 - [x] **COORD-HEAD** — the coordinator's head moves only on merges it dispatched, so admin merges
   (DOGFOOD-3, the `8432f8c` catch-up) leave it stale and every welcome reports an old head. Options:
   the admin merge route tells the coordinator, or the coordinator adopts the steward's reported
