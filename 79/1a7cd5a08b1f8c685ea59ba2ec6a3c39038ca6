@@ -1,0 +1,4 @@
+intent: a blocked write must not delay declaring the link dead past the oldest ping's deadline; bound the close too
+assumes: none
+rejected: a test with a full send buffer (not deterministic); the deadline choice is tested as a pure helper
+evidence: cargo test --workspace 877 passed 0 failed; clippy -D warnings clean; rustfmt clean; mutant always-now+WRITE_LIMIT killed
