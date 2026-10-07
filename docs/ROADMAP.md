@@ -567,7 +567,10 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   delivers `websocket_close` for a server-initiated close (unverified), the queue later grants a
   claim to a dead agent and every waiter behind it loses a lease. Affects real agents, not only the
   swarm. Also unknown: WHY the swarm Worker closed agent sockets under 30 agents (needs
-  `wrangler tail` on `tessel-coordinator-swarm` during a run). Compat date is 2026-09-01, so the
+  `wrangler tail` on `tessel-coordinator-swarm` during a run). The SWARM-WAIT reviewer adds a
+  second path with the same signature: `close_socket(ws, "send failed")` at `src/runtime.rs` ~840
+  when the GRANT itself fails to send (granted, then lapsed one lease later, 0 `wait_withdrawn`).
+  Compat date is 2026-09-01, so the
   explicit `ws.close()` requirement before 2026-04-07 does not apply.
 - [ ] **REVIEW-SENSITIVE** — from the UX review research (Oct 7): the coordinator calls
   `review_reasons(&touched, threatened, has_evidence, &[])` (`src/coordinator.rs` ~1286), so the
