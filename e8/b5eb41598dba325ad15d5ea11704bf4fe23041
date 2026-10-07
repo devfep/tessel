@@ -1,0 +1,4 @@
+intent: root crate has no pedantic, so match_wildcard_for_single_variants is denied there explicitly; restore the root-skip eprintln under an expect
+assumes: #[expect] on a bare macro statement does not apply, so it sits on a let () binding
+rejected: comment-only skip (silent when running as root); fn-level expect (broader than needed)
+evidence: clippy --workspace --all-targets -D warnings exit 0; cargo test --workspace 836 passed; runtime.rs Action::Reject mutant fails clippy, restored passes
