@@ -1,0 +1,4 @@
+intent: an agent's closed connection becomes its task's outcome (disconnected), not a run abort
+assumes: the coordinator keeps a queued request when it closes a socket itself (runtime.rs close_socket does not withdraw); unverified live
+rejected: reconnecting under the same agent name (a stale queued grant would bind to the new socket and heartbeats would keep an unknown claim alive)
+evidence: cargo test --workspace --locked 903 passed (predicted 903); tessel-swarm 118 passed with curl absent; clippy -D warnings clean; rustfmt check clean; 7 mutants killed; local run seed 3 40 tasks 30 agents wait: 40 landed
