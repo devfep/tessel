@@ -565,13 +565,46 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   new inbox items into the agent's turn as quoted data (merged, denied, wait granted, base moved,
   review decided), and a `Stop` hook keeps an agent from ending its turn while its submission is
   pending. Installed by `tessel hook install` beside the PreToolUse hook. Design pass first.
+  DESIGNED Oct 7 (Opus, docs cited: code.claude.com/docs/en/hooks): `tessel hook inbox --root R`
+  on PostToolUse (no matcher; `hookSpecificOutput.additionalContext`), UserPromptSubmit and
+  SessionStart (stdout); reads `.tessel/inbox.jsonl` with the shared cursor (no daemon needed),
+  `take_inbox_bounded` (10 notices / 4,000 chars, then "+K more: run `tessel inbox`"; cursor
+  advances only past what was shown; `flock`), rendered through `notice_text` (quoted). Fails
+  OPEN (context only; edits stay guarded by the fail-closed pre-edit hook and the coordinator).
+  `tessel hook stop` (timeout 150): nothing submitted or daemon offline → allow; else up to 120 s:
+  SubmitRejected/Uncovered → block with the quoted reason; Merged or ReviewRequired → allow;
+  pending → block once with the queue position; `stop_hook_active` → allow. Install generalizes
+  `merge_entry` (event, matcher, subcommand), keeps user entries, idempotent. Owns new
+  `inbox_hook.rs`, `state.rs`, `hook.rs`; `main.rs` arms only. About 6 h.
 - [ ] **AX-GITHOOKS** — Felix approved Oct 7: git `pre-commit` and `pre-push` hooks that refuse a
   commit touching files the agent has not claimed (catches shell edits the Claude hook cannot
   see). Design pass first (shared with AX-INBOX).
+  DESIGNED Oct 7: hooks live in the common `.git/hooks` (`git rev-parse --git-path hooks`,
+  honours `core.hooksPath`; refuse a relative hooksPath); a 2-line `exec tessel hook git <name>`
+  shim; an existing hook is renamed `<name>.pre-tessel` and chained first; the hook gates itself
+  (no `.tessel/state.json` → exit 0, so other worktrees are untouched; no
+  `extensions.worktreeConfig`). Claims from the `Status` RPC (unsubmitted union); daemon down
+  with state present → block with "run `tessel start`, or `--no-verify`". pre-commit: index vs
+  the merge base of `diff_base`, new `touched_index` + `plan::collapse` + `uncovered` (symbol
+  level, like submit). pre-push: same check per non-zero local sha. `--no-verify` bypass is
+  acceptable (coordinator still rejects uncovered work, invariant 11). Owns new `githook.rs`,
+  `submit.rs` (`touched_index`); after AX-INBOX merges. About 6 h. Note: `prek install`
+  overwrites `.git/hooks`.
 - [ ] **AX-MCP** — Felix approved Oct 7, after AX-INBOX and AX-GITHOOKS: `tessel mcp`, a local
   stdio MCP server exposing start/claim/status/inbox/submit/release/review as tools through the
   same per-worktree daemon; inbox as a resource with change notifications if the spec allows.
   Must be local (symbol extraction and diffs need the worktree). Design pass first.
+  DESIGNED Oct 7: `rmcp =3.5.1` (official SDK, Apache-2.0, MSRV 1.88; `default-features=false`,
+  server + macros + transport-io; tokio `io-std`); lock gains 28 packages, none removed or bumped;
+  licenses all MIT/Apache, `cargo deny check licenses` ok. Tools tessel_start/claim/status/inbox/
+  submit/release/review returning the CLI's own (quoted) text; non-zero exit → `isError`; bad
+  args → -32602. Commands must first return `Report{text,code}` instead of printing (stdout is
+  the transport). Inbox is a tool (hooks push notices). `tessel mcp --root R`, registered with
+  `claude mcp add --scope local`. LANDING (lockfile): rebase onto trunk, lock diff additions only,
+  LOCKFILE FREEZE for every other lane; with Felix's OK deploy the steward from the lane checkout
+  so the toolchain image carries the new crates; trunk `test-runs` still passes; submit through the
+  steward; re-check `test-runs`; lift the freeze. No admin merge. Risk: rmcp/Claude Code protocol
+  version agreement unverified until the live check. After AX-GITHOOKS. About 8 h.
 - [x] **SWARM-LEASE** — found by A/B run 1 (Oct 7 15:11): at 30 agents with `--policy wait`, two
   scripted agents never heartbeated a granted claim (expired exactly one lease after the grant),
   and the next request on a lapsed claim (`StaleFence`) aborted the whole run with no `on`
