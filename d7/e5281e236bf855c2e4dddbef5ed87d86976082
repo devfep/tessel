@@ -1,0 +1,4 @@
+intent: AX-INBOX fix pass 1: Stop hook handles an earlier review notice, several submitted claims, unread rejections; partial inbox lines are not notices; tests cannot hang
+assumes: the daemon keeps submitted=true while a claim waits for review (daemon.rs ~1225)
+rejected: a stale SubmitRejected/Merged in the history counts as settled - claim ids repeat across rounds, so only a latest ReviewRequired is trusted from history
+evidence: cargo test --workspace --locked 927 passed 0 failed (920 + 7 new); clippy -D warnings exit 0; rustfmt clean; tessel-cli tests with curl absent from PATH pass; 6 mutants killed (120 s bound now fails after the 30 s test deadline, stale-history, unread rejection, all->any, merged ignored, partial line)
