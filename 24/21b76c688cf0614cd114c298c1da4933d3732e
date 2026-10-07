@@ -1,0 +1,4 @@
+intent: fix pass 1 for DEMO-TS (scrub test, localhost host check, symbols loop, README accuracy, agent panic settles helpers)
+assumes: Artifacts ALREADY_EXISTS maps to HTTP 409 on the steward (per reviewer)
+rejected: none
+evidence: cargo test --workspace 875 passed (base 868 + 7: previous 5, scrub, symbols loop); clippy -D warnings exit 0; rustfmt clean; mutants scrub->identity, prefix check restored, symbols in_before flipped and swarm view broken all killed. Rule 0: tessel-swarm/tests/on_local.rs was claimed after its edit in 4b3cdca. The agent-panic change in on.rs has no test.
