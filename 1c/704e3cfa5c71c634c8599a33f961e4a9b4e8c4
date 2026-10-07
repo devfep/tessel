@@ -1,0 +1,4 @@
+intent: record the waiting and work a disconnected task actually spent, split at the grant
+assumes: none
+rejected: one undivided duration as waited_ms (would hide work time from the rejected-work row)
+evidence: cargo test --workspace --locked 907 passed (predicted 907); tessel-swarm 122 passed with curl absent; clippy -D warnings and rustfmt clean; mutants 6 of 7 killed (removing clock.work_ms at the push survives: it differs from grant-to-close by ms); local run seed 3 40 tasks 30 agents wait: 40 landed
