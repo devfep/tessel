@@ -40,6 +40,10 @@ const CLOSE_GRACE: Duration = Duration::from_secs(2);
 const SNAPSHOT_LIMIT: Duration = Duration::from_secs(5);
 /// Until the coordinator's `Welcome` says otherwise.
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(10);
+/// How long a socket may stay open without a `Welcome` before the link is declared dead: the
+/// silence limit (3/2 of a heartbeat) that the default heartbeat would give, since the lease is
+/// not known until the `Welcome` arrives.
+const WELCOME_LIMIT: Duration = Duration::from_secs(15);
 /// How many times, and for how long in all, `stop` reads the event log before it reports a claim as
 /// not released. The client gives up on `stop` after 30 s.
 const CONFIRM_READS: u32 = 3;
@@ -166,6 +170,9 @@ struct Daemon {
     next_heartbeat: Instant,
     heartbeat_every: Duration,
     next_housekeeping: Instant,
+    /// When the link is declared dead if the current socket has not been welcomed by then.
+    welcome_deadline: Option<Instant>,
+    welcome_limit: Duration,
     /// `sent_ms` of the newest heartbeat a pong answered, kept for the lapse log line.
     last_pong_sent_ms: Option<u64>,
     ever_online: bool,
@@ -314,6 +321,8 @@ impl Daemon {
             next_heartbeat: now + DEFAULT_HEARTBEAT,
             heartbeat_every: DEFAULT_HEARTBEAT,
             next_housekeeping: now + HOUSEKEEPING_EVERY,
+            welcome_deadline: None,
+            welcome_limit: WELCOME_LIMIT,
             last_pong_sent_ms: None,
             ever_online: false,
         }
@@ -356,6 +365,7 @@ impl Daemon {
         loop {
             let online = self.is_online();
             let reconnect_at = self.reconnect_at;
+            let welcome_at = self.welcome_deadline;
             tokio::select! {
                 Some(command) = cmd_rx.recv() => {
                     if let Flow::Exit = self.on_command(command).await {
@@ -368,6 +378,9 @@ impl Daemon {
                 }
                 () = sleep_until_some(reconnect_at), if reconnect_at.is_some() => {
                     self.try_connect().await?;
+                }
+                () = sleep_until_some(welcome_at), if welcome_at.is_some() => {
+                    self.welcome_overdue();
                 }
                 () = tokio::time::sleep_until(self.next_housekeeping) => {
                     if let Flow::Exit = self.housekeeping() {
@@ -422,6 +435,7 @@ impl Daemon {
         };
         let _ = out_tx.send(Outgoing::Msg(hello));
         self.conn = Some(Conn { out: out_tx, task });
+        self.welcome_deadline = Some(Instant::now() + self.welcome_limit);
         self.log("connected; hello sent");
     }
 
@@ -436,6 +450,22 @@ impl Daemon {
                 message: e.to_string(),
             }),
         }
+    }
+
+    /// The socket opened but no `Welcome` came, so heartbeats never started: drop it and
+    /// reconnect with the usual backoff. The task is aborted, not closed gracefully, because a
+    /// half-open link would never finish the close handshake.
+    fn welcome_overdue(&mut self) {
+        if let Some(conn) = &self.conn {
+            conn.task.abort();
+        }
+        // A `Closed` the aborted task may still have queued belongs to the old generation.
+        self.generation += 1;
+        let reason = format!(
+            "no Welcome within {:?} of the handshake; link dead",
+            self.welcome_limit
+        );
+        self.on_closed(&reason);
     }
 
     fn schedule_reconnect(&mut self) {
@@ -561,6 +591,7 @@ impl Daemon {
 
     fn on_closed(&mut self, reason: &str) {
         self.conn = None;
+        self.welcome_deadline = None;
         if let Some(read) = self.snapshot.take() {
             read.abort();
         }
@@ -709,6 +740,7 @@ impl Daemon {
         self.ever_online = true;
         self.backoff = FIRST_BACKOFF;
         self.state.connection = Connection::Online;
+        self.welcome_deadline = None;
         self.state.lease_ms = Some(lease_ms);
         self.state.last_error = None;
         self.heartbeat_every = Duration::from_millis((lease_ms / 3).max(1));
@@ -1899,41 +1931,45 @@ fn is_connection_of(event: &Event, agent: &AgentId) -> bool {
     }
 }
 
-/// Heartbeats written on one socket whose pong has not come back, and when the link is declared
-/// dead if no frame of any kind arrives first.
+/// Heartbeats written on one socket whose pong has not come back. The link is declared dead when
+/// the oldest of them has gone unanswered for its silence limit, however many other frames arrive
+/// meanwhile: only a pong echoing a ping proves the heartbeats get through.
 #[derive(Default)]
 struct Probes {
-    /// `sent_ms` of each unanswered heartbeat, which is also the payload of its ping.
-    outstanding: Vec<u64>,
-    silent_from: Option<Instant>,
+    /// `sent_ms` of each unanswered heartbeat, which is also the payload of its ping, with the
+    /// instant at which an unanswered heartbeat declares the link dead.
+    outstanding: Vec<(u64, Instant)>,
 }
 
 impl Probes {
-    /// Any frame shows the link is alive, whatever it carries.
-    fn heard_something(&mut self) {
-        self.silent_from = None;
+    fn sent(&mut self, sent_ms: u64, silence_limit: Duration) {
+        self.outstanding
+            .push((sent_ms, Instant::now() + silence_limit));
     }
 
-    fn sent(&mut self, sent_ms: u64, silence_limit: Duration) {
-        self.outstanding.push(sent_ms);
-        self.silent_from
-            .get_or_insert(Instant::now() + silence_limit);
+    /// When the link is declared dead: the deadline of the oldest unanswered heartbeat.
+    fn silent_from(&self) -> Option<Instant> {
+        self.outstanding.first().map(|&(_, deadline)| deadline)
     }
 
     /// The heartbeat a pong proves delivered, if its payload echoes an outstanding ping. That
     /// heartbeat and every older one are answered; an unknown payload proves nothing.
     fn answered_by(&mut self, payload: &[u8]) -> Option<u64> {
         let sent_ms = u64::from_be_bytes(payload.try_into().ok()?);
-        self.outstanding.contains(&sent_ms).then(|| {
-            self.outstanding.retain(|&pending| pending > sent_ms);
+        let known = self
+            .outstanding
+            .iter()
+            .any(|&(pending, _)| pending == sent_ms);
+        known.then(|| {
+            self.outstanding.retain(|&(pending, _)| pending > sent_ms);
             sent_ms
         })
     }
 }
 
 /// Owns the socket: forwards frames to the daemon and daemon messages to the socket. Ends when
-/// the socket closes, the daemon drops its sender or the link goes silent after a heartbeat, and
-/// then reports `Closed`.
+/// the socket closes, the daemon drops its sender or a heartbeat goes unanswered for its silence
+/// limit, and then reports `Closed`.
 async fn socket_task(
     mut socket: Socket,
     mut out_rx: mpsc::UnboundedReceiver<Outgoing>,
@@ -1944,12 +1980,9 @@ async fn socket_task(
     let reason = loop {
         tokio::select! {
             frame = socket.next() => {
-                if let Some(Ok(message)) = &frame {
-                    probes.heard_something();
-                    if let Message::Pong(payload) = message {
-                        if let Some(sent_ms) = probes.answered_by(payload) {
-                            let _ = in_tx.send(Incoming::HeartbeatAnswered { generation, sent_ms });
-                        }
+                if let Some(Ok(Message::Pong(payload))) = &frame {
+                    if let Some(sent_ms) = probes.answered_by(payload) {
+                        let _ = in_tx.send(Incoming::HeartbeatAnswered { generation, sent_ms });
                     }
                 }
                 if let Some(reason) = forward_frame(frame, &in_tx, generation) {
@@ -1975,8 +2008,8 @@ async fn socket_task(
                     break "closed locally".to_string();
                 }
             },
-            () = sleep_until_some(probes.silent_from), if probes.silent_from.is_some() => {
-                break "no frame from the coordinator since a heartbeat; link dead".to_string();
+            () = sleep_until_some(probes.silent_from()), if probes.silent_from().is_some() => {
+                break "no pong from the coordinator since a heartbeat; link dead".to_string();
             },
         }
     };
@@ -2092,6 +2125,13 @@ mod tests {
     }
 
     fn daemon_in(dir: &std::path::Path) -> Daemon {
+        daemon_for(dir, "ws://127.0.0.1:1").0
+    }
+
+    fn daemon_for(
+        dir: &std::path::Path,
+        coordinator: &str,
+    ) -> (Daemon, mpsc::UnboundedReceiver<Incoming>) {
         let init = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
@@ -2101,7 +2141,7 @@ mod tests {
         let worktree = Worktree::discover(dir).unwrap();
         worktree.prepare_dir().unwrap();
         let config = Config::load(dir, |name| match name {
-            "TESSEL_COORDINATOR" => Some("ws://127.0.0.1:1".to_string()),
+            "TESSEL_COORDINATOR" => Some(coordinator.to_string()),
             "TESSEL_REPO" => Some("demo".to_string()),
             "TESSEL_AGENT" => Some("a1".to_string()),
             "TESSEL_TOKEN" => Some("tok".to_string()),
@@ -2125,8 +2165,8 @@ mod tests {
             queued: None,
             updated_at_ms: 0,
         };
-        let (in_tx, _in_rx) = mpsc::unbounded_channel();
-        Daemon::new(worktree, config, state, in_tx)
+        let (in_tx, in_rx) = mpsc::unbounded_channel();
+        (Daemon::new(worktree, config, state, in_tx), in_rx)
     }
 
     fn go_online(daemon: &mut Daemon) {
@@ -2324,5 +2364,205 @@ mod tests {
         );
         assert!(daemon.state.claims[0].submitted);
         assert!(!daemon.state.claims[1].submitted);
+    }
+
+    const PROBE_LIMIT: Duration = Duration::from_millis(600);
+
+    fn base_moved() -> Message {
+        let msg = ServerMsg::BaseMoved {
+            head: CommitId("d".repeat(40)),
+            by: AgentId("a2".into()),
+            affected: Vec::new(),
+        };
+        Message::text(serde_json::to_string(&msg).unwrap())
+    }
+
+    /// A client socket as `socket_task` sees it, and the server's end of the same link.
+    async fn linked() -> (
+        Socket,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let (client, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        (client, server.await.unwrap())
+    }
+
+    /// Starts a `socket_task` on a fresh link and sends one heartbeat with `PROBE_LIMIT`.
+    async fn heartbeating() -> (
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        mpsc::UnboundedReceiver<Incoming>,
+        mpsc::UnboundedSender<Outgoing>,
+        Instant,
+    ) {
+        let (client, server) = linked().await;
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let (in_tx, in_rx) = mpsc::unbounded_channel();
+        tokio::spawn(socket_task(client, out_rx, in_tx, 1));
+        let heartbeat_at = Instant::now();
+        out_tx
+            .send(Outgoing::Heartbeat {
+                silence_limit: PROBE_LIMIT,
+            })
+            .unwrap();
+        (server, in_rx, out_tx, heartbeat_at)
+    }
+
+    /// Why the link closed, if it does within `within`; frames and pongs seen meanwhile are
+    /// dropped.
+    async fn closed_within(
+        in_rx: &mut mpsc::UnboundedReceiver<Incoming>,
+        within: Duration,
+    ) -> Option<String> {
+        let wait = async {
+            loop {
+                if let Incoming::Closed { reason, .. } = in_rx.recv().await? {
+                    return Some(reason);
+                }
+            }
+        };
+        tokio::time::timeout(within, wait).await.ok().flatten()
+    }
+
+    /// Answers nothing, but keeps sending server frames and `extra` (a pong of the wrong
+    /// payload, say) every 50 ms: the link looks alive and no heartbeat gets through.
+    fn chatter(
+        mut server: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        extra: Option<Message>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                let mut frames = vec![base_moved()];
+                frames.extend(extra.clone());
+                for frame in frames {
+                    if server.send(frame).await.is_err() {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn server_frames_without_a_pong_do_not_keep_a_link_alive() {
+        let (server, mut in_rx, _out, heartbeat_at) = heartbeating().await;
+        let _chatter = chatter(server, None);
+        let reason = closed_within(&mut in_rx, Duration::from_secs(10)).await;
+        assert!(
+            reason.is_some_and(|r| r.contains("link dead")),
+            "not declared dead"
+        );
+        assert!(heartbeat_at.elapsed() >= PROBE_LIMIT, "declared dead early");
+    }
+
+    #[tokio::test]
+    async fn a_pong_that_echoes_no_outstanding_ping_does_not_keep_a_link_alive() {
+        let (server, mut in_rx, _out, heartbeat_at) = heartbeating().await;
+        let stale = Message::Pong(1_u64.to_be_bytes().to_vec().into());
+        let _chatter = chatter(server, Some(stale));
+        let reason = closed_within(&mut in_rx, Duration::from_secs(10)).await;
+        assert!(
+            reason.is_some_and(|r| r.contains("link dead")),
+            "not declared dead"
+        );
+        assert!(heartbeat_at.elapsed() >= PROBE_LIMIT, "declared dead early");
+    }
+
+    #[tokio::test]
+    async fn a_matching_pong_keeps_a_link_alive() {
+        let (mut server, mut in_rx, _out, _) = heartbeating().await;
+        // Reading the ping makes the server answer it with a pong of the same payload.
+        let reader = tokio::spawn(async move { while server.next().await.is_some() {} });
+        let answered = async {
+            loop {
+                if let Incoming::HeartbeatAnswered { .. } = in_rx.recv().await? {
+                    return Some(());
+                }
+            }
+        };
+        let answered = tokio::time::timeout(Duration::from_secs(10), answered).await;
+        assert!(answered.is_ok_and(|seen| seen.is_some()), "no pong arrived");
+        let closed = closed_within(&mut in_rx, PROBE_LIMIT * 3).await;
+        assert!(
+            closed.is_none(),
+            "an answered heartbeat closed the link: {closed:?}"
+        );
+        reader.abort();
+    }
+
+    #[test]
+    fn the_silence_deadline_follows_the_oldest_unanswered_heartbeat() {
+        let mut probes = Probes::default();
+        assert!(probes.silent_from().is_none());
+        probes.sent(1, Duration::from_secs(60));
+        let first = Instant::now() + Duration::from_secs(60);
+        std::thread::sleep(Duration::from_millis(5));
+        probes.sent(2, Duration::from_secs(60));
+        let oldest = probes.silent_from().unwrap();
+        assert!(oldest <= first, "a newer heartbeat moved the deadline");
+        assert_eq!(probes.answered_by(&1_u64.to_be_bytes()), Some(1));
+        assert!(
+            probes.silent_from().is_some_and(|next| next > oldest),
+            "the deadline did not move to the next heartbeat"
+        );
+        assert_eq!(probes.answered_by(&1_u64.to_be_bytes()), None);
+        assert_eq!(probes.answered_by(&9_u64.to_be_bytes()), None);
+        assert_eq!(probes.answered_by(b"short"), None);
+        assert!(probes.silent_from().is_some());
+        assert_eq!(probes.answered_by(&2_u64.to_be_bytes()), Some(2));
+        assert!(probes.silent_from().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_link_that_never_welcomes_is_dropped_and_reconnected() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (accepted_tx, mut accepted_rx) = mpsc::unbounded_channel();
+        // Completes every handshake, then says nothing and never closes.
+        let server = tokio::spawn(async move {
+            let mut open = Vec::new();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                open.push(tokio_tungstenite::accept_async(stream).await.unwrap());
+                let _ = accepted_tx.send(Instant::now());
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let (mut daemon, in_rx) = daemon_for(dir.path(), &url);
+        daemon.state.connection = Connection::Connecting;
+        daemon.state.claims.clear();
+        daemon.welcome_limit = PROBE_LIMIT;
+        daemon.reconnect_at = Some(Instant::now());
+        let (_cmd_tx, cmd_rx) = mpsc::channel(1);
+        let two_handshakes = async {
+            let first = accepted_rx.recv().await.unwrap();
+            let second = accepted_rx.recv().await.unwrap();
+            second.duration_since(first)
+        };
+        let gap = tokio::select! {
+            result = daemon.main_loop(cmd_rx, in_rx) => panic!("daemon ended: {result:?}"),
+            gap = tokio::time::timeout(Duration::from_secs(10), two_handshakes) => gap,
+        };
+        server.abort();
+        let gap = gap.expect("no reconnect after a socket that was never welcomed");
+        assert!(
+            gap >= PROBE_LIMIT,
+            "reconnected after {gap:?}, before the Welcome limit"
+        );
+        assert!(daemon_log(&daemon).contains("no Welcome within"));
+    }
+
+    #[tokio::test]
+    async fn a_welcome_ends_the_wait_for_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.welcome_deadline = Some(Instant::now() + PROBE_LIMIT);
+        daemon.on_welcome("a".repeat(40), 30_000);
+        assert!(daemon.welcome_deadline.is_none());
     }
 }
