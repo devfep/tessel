@@ -749,11 +749,11 @@ async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) 
         return Ok(Step::done(resolution, note, millis(granted)));
     }
     lock(&ctx.accepted_shadows).push(held.claim);
-    let work = tokio::time::sleep(Duration::from_millis(ctx.config.work_ms));
-    conn.keep_alive(work).await?;
+    // A submitted claim never expires, so the rest needs no heartbeat.
+    tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
     let work_ms = millis(granted);
     let waiting = Instant::now();
-    conn.keep_alive(await_own_trial(ctx, held.claim)).await??;
+    await_own_trial(ctx, held.claim).await?;
     Ok(Step {
         end: End::Done(resolution, note),
         work_ms,
@@ -896,11 +896,7 @@ async fn ensure_covered(
                 let note = "the amended scopes are held by another agent";
                 return Ok(Some((Resolution::Failed, note.into())));
             }
-            Some(ServerMsg::Error {
-                req: r,
-                code,
-                message,
-            }) if r.is_none_or(|r| r == req) => {
+            Some(ServerMsg::Error { code, message, .. }) => {
                 return Ok(Some(refused("amend", code, &message)));
             }
             Some(_) => {}

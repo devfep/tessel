@@ -824,20 +824,21 @@ async fn a_reviewer_error_does_not_hide_the_watchers_error() {
     server.shutdown().await;
 }
 
-/// A lease short enough to lapse during the simulated work, and a heartbeat well inside it.
-fn short_lease(heartbeat_every: Duration) -> OnConfig {
+/// One agent whose simulated work outlasts the lease, with a heartbeat of `heartbeat_every`.
+fn lease_config(heartbeat_every: Duration, work_ms: u64) -> OnConfig {
     OnConfig {
         heartbeat_every,
-        ..config(1, Policy::Wait, 1500)
+        ..config(1, Policy::Wait, work_ms)
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_is_kept_alive_while_its_agent_works() {
+    // The work takes twice the lease; the heartbeat is fifteen times inside it.
     let run = run_with_lease(
         &[body(1, "unitPrice")],
-        short_lease(Duration::from_millis(100)),
-        600,
+        lease_config(Duration::from_millis(200), 6000),
+        3000,
     )
     .await;
     assert_eq!(
@@ -854,7 +855,7 @@ async fn a_claim_is_kept_alive_while_its_agent_works() {
 async fn a_lapsed_claim_is_that_tasks_outcome_and_the_run_goes_on() {
     let tasks = [body(1, "unitPrice"), body(2, "restock")];
     let never = Duration::from_secs(3600);
-    let run = run_with_lease(&tasks, short_lease(never), 600).await;
+    let run = run_with_lease(&tasks, lease_config(never, 1500), 600).await;
     let results = &run.result.results;
     assert_eq!(results.len(), 2, "{results:?}");
     for r in results {

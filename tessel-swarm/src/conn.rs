@@ -28,7 +28,8 @@ pub struct Conn {
     socket: Socket,
     next_req: u64,
     heartbeat_every: Duration,
-    /// Requests nobody waits on (a release): their answer is not for whoever reads next.
+    /// Requests nobody waits on (a release): their answer is not for whoever reads next. A release
+    /// that succeeds gets no reply, so its entry stays; the list is bounded by the releases sent.
     unawaited: Vec<RequestId>,
 }
 

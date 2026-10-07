@@ -145,6 +145,11 @@ fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -
                 && r.result != Resolution::Shadowed
         })
         .count();
+    let lapsed = on
+        .results
+        .iter()
+        .filter(|r| r.result == Resolution::Lapsed)
+        .count();
     let counts = &off.counts;
     let off_rejected = counts.textual_conflicts + counts.build_failed + counts.tests_failed;
     let n = |value: u64| value.to_string();
@@ -172,9 +177,14 @@ fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -
         row("of which broke the build", &n(counts.build_failed), "n/a"),
         row("of which broke the tests", &n(counts.tests_failed), "n/a"),
         row(
-            "Not finished (starved, timed out, failed, lease lapsed, not run)",
+            "Not finished (starved, timed out, failed, lapsed, not run)",
             "0",
             &unfinished.to_string(),
+        ),
+        row(
+            "of which the claim lapsed (lease expired)",
+            "n/a",
+            &lapsed.to_string(),
         ),
         row(
             "Claims denied outright (a denial is not a prevented conflict)",
