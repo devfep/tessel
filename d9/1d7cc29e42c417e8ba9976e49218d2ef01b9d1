@@ -1,0 +1,4 @@
+intent: make the shadow-ordering test assert load-independent properties
+assumes: the shadow agent's git steps normally finish within the blocker's work time
+rejected: raising work_ms (a larger margin, still a race); holding the blocker's submit until shadows are on record (harness change beyond the flake)
+evidence: 50 runs 0 failures before and after; 3s shadow lag fails the old assert at on_local.rs:601; mutant (shadow works before submit) fails the new one; workspace 885 pass, clippy 0, fmt 0, curl-free PATH tessel-swarm green
