@@ -7,7 +7,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 **As of:** 2026-10-06 22:45 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight:** no lanes, reviews or background jobs. Trunk `b446bf3` (mirrored);
+**As of (update):** 2026-10-07 08:37 EDT. Felix said proceed. DISPATCHED two lanes from trunk
+`b446bf3`, load ~11: DEMO-TS + SWARM-REVIEWER-ERR (`lane-demo-ts`, `.claude/worktrees/demo-ts`,
+fork `tessel-dogfood--lane-demo-ts`; owns `tessel-swarm/`; adds `tessel-swarm demo-repo`, a
+LICENSE in the generated repo, a tree-sitter labelling test; the orchestrator runs the live
+`demo-repo` after merge) and CLI-CONNECT-TIMEOUT (`lane-connect-timeout`,
+`.claude/worktrees/connect-timeout`, fork `tessel-dogfood--lane-connect-timeout`; owns
+`tessel-cli/src/daemon.rs`). Both stop before push. REVIEW-UI's box stays open until Felix's
+signed-in check.
+**Before that:** no lanes, reviews or background jobs. Trunk `b446bf3` (mirrored);
 `.claude/worktrees/deploy` is at `b446bf3`. Steward `0f01d3fb` deployed by Felix (REVIEW-UI live
 behind Access; coordinators unchanged at `8d66fe32` / swarm `7b7ae508`). Felix to open
 `/review/tessel-dogfood` signed in. The first real held submission is the end-to-end test: approve
