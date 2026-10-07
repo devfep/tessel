@@ -1,0 +1,4 @@
+intent: review screen at /review with on-demand diff and approve/reject as reviewer felix
+assumes: coordinator Watch needs no Hello and accepts Watch after Hello from a reviewer; fork name is <repo>--<agent> as src/merge.rs fork_name; REVIEWERS on the deployed coordinator includes felix
+rejected: client-side event folding on the page (server-side fold is testable and escapes in one place); starting the diff container on page load (cost, ruling 1)
+evidence: pnpm test 788 passed (base 666); typecheck, oxlint, oxfmt --check clean; 13 mutants killed
