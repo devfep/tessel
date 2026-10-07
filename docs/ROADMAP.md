@@ -5,13 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-06 22:33 EDT.
+**As of:** 2026-10-06 22:45 EDT.
 **Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**In flight:** REVIEW-UI (`lane-review-ui`, Sonnet, worktree `.claude/worktrees/review-ui`, fork
-`tessel-dogfood--lane-review-ui`): Opus "Yes" at `35989a9` after one fix pass (stale page could
-approve an unseen commit; false "refused"); GO 22:32: re-claiming, pushing, submitting. After it
-merges: Felix deploys the steward (`/review` routes, `REVIEWER_EMAILS`), then a live check behind
-Access. CLI-LEASE-LOAD closed at trunk `4b394c9` (mirrored).
+**In flight:** no lanes. Trunk `b446bf3` (REVIEW-UI merged; mirrored); `.claude/worktrees/deploy`
+is at `b446bf3`. WAITING ON FELIX: steward deploy (REVIEW-UI's routes and `REVIEWER_EMAILS`;
+coordinators unchanged), then he opens `/review/tessel-dogfood` behind Access. CLI-LEASE-LOAD
+closed at trunk `4b394c9`.
 **Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
 `cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
 unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
@@ -460,6 +459,18 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `tessel review` stays the agent path (same outcome, agent-native). Needs a decision before
   building: how a human in a browser acts as a reviewer agent (a reviewer identity token, minted
   by the steward, held server side). After DASH-1.
+  MERGED 2026-10-06 at trunk `b446bf3` (plan approved with five rulings; review "With fixes": a
+  stale page could approve a commit it never showed, and any coordinator error read as "refused";
+  re-check "Yes"). Routes `GET /review/<repo>`, `GET /review/<repo>/<claim>/diff` (reviewers only,
+  a git-only sandbox diff against the merge base, 200 KB cap, read tokens revoked after the
+  fetch), `POST /review/<repo>/<claim>/decision` (Access JWT, `REVIEWER_EMAILS` mapping,
+  same-origin + JSON + byte cap, HMAC token bound to email/repo/claim/commit, log re-read before
+  sending, exactly one `Review` noted "felix via review UI:", "decided" only on the logged
+  `review_decided`). Steward tests 803. Held (moved dashboard helpers); gate on `35989a9`: pnpm
+  803, typecheck/oxlint/oxfmt 0, cargo 860, clippy 0; approved claim 65; the merged change's
+  patch-id equals the gated one (rebased over `4b394c9`). Left: a ~1 s race closed only by
+  `Review.fork_commit` (queued for the protocol hand merge). NOT YET LIVE: steward deploy, then a
+  check behind Access by Felix.
 - [ ] **DEMO-TS** — PLAN §9 Oct 7, SUBMISSION_CHECKLIST ("demo repository the agents work on is
   your own or permissively licensed"). Mostly exists: `tessel-swarm/src/demo.rs` generates a small
   TypeScript shop (twelve functions in seven modules, one `node --test` file each, cross-module
