@@ -1,0 +1,4 @@
+intent: close review gaps in server-close withdraw (RejectAndClose, batch continue, closed flag, log agent)
+assumes: runtime may list a server-closed socket as open until its close event
+rejected: withdrawing on the grant-send-failure path: the granted agent is no longer queued, so nothing is withdrawn; it needs a release reason that does not exist (protocol freeze). NOT fixed here, filed separately
+evidence: cargo test --workspace --locked --no-fail-fast 988 passed (+4); clippy, fmt, wasm 0 warnings; 3 mutants killed
