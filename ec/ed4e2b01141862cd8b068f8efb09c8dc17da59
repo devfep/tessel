@@ -1,0 +1,4 @@
+intent: hand over the build state before Felix clears the context
+assumes: AX-MCP lane daemon pid 50370 stays up for its landing
+rejected: none
+evidence: no tokens in copied evidence (rg scan); shellcheck clean on tools/mint-lane-token.sh
