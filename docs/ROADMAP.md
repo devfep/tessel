@@ -65,9 +65,9 @@ the trunk head with a read token (`git ls-remote`) instead of lane inbox loops; 
 patch-id equality, `tools/mirror.sh`, deploy what changed (Felix runs `cd … && npx wrangler
 deploy`), close the box. Lanes must never pattern-kill (`pkill`) or `git stash`; one lane did each.
 Mac load ran 20–100 all day from other sessions (Spotlight, iOS simulators, xcodebuild).
-**Permissions:** `.claude/settings.local.json` allows `Edit(docs/ROADMAP.md)` and the old
-scratchpad path of the mint script; the script now lives in `tools/mint-lane-token.sh` (takes
-`<lane> <dir>`), so a matching rule for it needs adding by Felix.
+**Permissions:** `.claude/settings.local.json` allows `Edit(docs/ROADMAP.md)` and (Felix, Oct 8)
+`Bash(bash tools/mint-lane-token.sh *)` plus its absolute-path form; the script takes
+`<lane> <dir>`. The old scratchpad rule is removed.
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
 by `Bash(npx wrangler deploy *)` when run bare (no pipe); lane pushes to `tessel-dogfood--*` forks
