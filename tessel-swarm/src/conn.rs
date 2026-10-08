@@ -21,6 +21,8 @@ use crate::endpoint::Token;
 use crate::events;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a connection that is done may take to answer its close frame.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Most times one task may reopen its connection; the next end of the connection ends the task.
 pub const MAX_RESETS_PER_TASK: u32 = 10;
 /// The longest pause before a reconnect try, however many tries came before it.
@@ -378,20 +380,32 @@ impl Conn {
     }
 
     /// The whole event log as of now, read on a second, short-lived connection for the same agent
-    /// that closes when the read ends, so this connection does not become a watcher. The agent's
-    /// other connection keeps it connected when this one closes. Fails with a [`Closed`] that gave
-    /// up: the caller does not try again.
+    /// that is closed with a close frame when the read ends, so this connection does not become a
+    /// watcher. The agent's other connection keeps it connected when this one closes. A failed
+    /// read is tried again after the policy's pauses, up to its tries; then it fails with a
+    /// [`Closed`] that gave up.
     pub async fn snapshot(&self) -> Result<Vec<Event>> {
         let Some((agent, base)) = self.identity.clone() else {
             return Err(closed("no hello to repeat on a log connection"));
         };
-        match self.handshake(&agent, &base, Some(0)).await {
-            Ok((_closed_on_drop, log)) => Ok(log),
-            Err(error) => Err(anyhow::Error::new(Closed {
-                how: format!("could not read the log after reconnecting: {error:#}"),
-                gave_up: true,
-            })),
+        let mut last = anyhow!("no try was allowed");
+        for attempt in 0..self.policy.tries {
+            match self.handshake(&agent, &base, Some(0)).await {
+                Ok((mut reader, log)) => {
+                    let _ = tokio::time::timeout(CLOSE_TIMEOUT, reader.socket.close(None)).await;
+                    return Ok(log);
+                }
+                Err(error) => last = error,
+            }
+            tokio::time::sleep(self.policy.delay(attempt)).await;
         }
+        Err(anyhow::Error::new(Closed {
+            how: format!(
+                "could not read the log after reconnecting, {} tries, the last: {last:#}",
+                self.policy.tries
+            ),
+            gave_up: true,
+        }))
     }
 
     /// Reads up to the `Welcome` and, when a replay was asked for, up to the connection's own
@@ -576,5 +590,70 @@ mod tests {
         let error = conn.keep_alive(work).await.unwrap_err();
         assert!(error.downcast_ref::<Closed>().is_some(), "{error:#}");
         assert_eq!(conn.reconnects(), 0);
+    }
+
+    /// Answers the first connection as a normal agent, closes the second at once, and gives later
+    /// ones a `Welcome` and an `AgentConnected`. Counts the connections.
+    async fn flaky_log_coordinator() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = std::sync::Arc::clone(&count);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let nth = seen.fetch_add(1, Ordering::SeqCst) + 1;
+                tokio::spawn(async move {
+                    if nth == 2 {
+                        return;
+                    }
+                    let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                        return;
+                    };
+                    while let Some(Ok(Message::Text(text))) = socket.next().await {
+                        if !matches!(serde_json::from_str(&text), Ok(ClientMsg::Hello { .. })) {
+                            continue;
+                        }
+                        let welcome = ServerMsg::Welcome {
+                            head: CommitId("h".into()),
+                            lease_ms: 30_000,
+                            protocol: PROTOCOL_VERSION,
+                        };
+                        let connected = ServerMsg::Event {
+                            event: Event {
+                                seq: 0,
+                                at_ms: 0,
+                                run: tessel_coordinator::protocol::RunId("t".into()),
+                                kind: tessel_coordinator::protocol::EventKind::AgentConnected {
+                                    agent: AgentId("a01".into()),
+                                },
+                            },
+                        };
+                        for msg in [welcome, connected] {
+                            let text = serde_json::to_string(&msg).unwrap();
+                            socket.send(Message::text(text)).await.unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        (url, count)
+    }
+
+    #[tokio::test]
+    async fn a_log_read_that_fails_once_is_tried_again_and_then_succeeds() {
+        let (url, connections) = flaky_log_coordinator().await;
+        let token = Token::new("t".into());
+        let mut conn = Conn::open(&url, &token)
+            .await
+            .unwrap()
+            .with_reconnect(Reconnect {
+                tries: 3,
+                first_delay: Duration::from_millis(5),
+            });
+        conn.hello("a01", "base").await.unwrap();
+        let log = conn.snapshot().await.unwrap();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

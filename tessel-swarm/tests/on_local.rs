@@ -1001,7 +1001,7 @@ async fn the_tasks_a_cut_off_agent_never_took_are_done_by_the_others() {
         ..config(2, Policy::Wait, 800)
     };
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&config, scratch.path(), 600).await;
+    let server = start_server(&config, scratch.path(), 3000).await;
     let cut = tokio::spawn(cut_the_first_waiter(server.reader(), server.cutter()));
     let agents = scratch.path().join("agents");
     let result = on::run_on(&server.endpoint, &tasks, &agents, &config)
