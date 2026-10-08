@@ -260,14 +260,14 @@ impl DurableObject for Coordinator {
         reason: String,
         was_clean: bool,
     ) -> Result<()> {
-        let agent = self.bound_agent(&ws);
+        let agent = self.log_agent_of(&ws);
         let line = shell::close_log_line(code, was_clean, &reason, agent.as_ref());
         console_log!("coordinator {}: {line}", self.repo());
         self.withdraw(std::slice::from_ref(&ws)).await
     }
 
     async fn websocket_error(&self, ws: WebSocket, error: Error) -> Result<()> {
-        let agent = self.bound_agent(&ws);
+        let agent = self.log_agent_of(&ws);
         let line = shell::error_log_line(&error.to_string(), agent.as_ref());
         console_error!("coordinator {}: {line}", self.repo());
         self.withdraw(std::slice::from_ref(&ws)).await
@@ -724,7 +724,7 @@ impl Coordinator {
     }
 
     /// The agent a socket speaks for (see `shell::session_agent`), if its attachment can be read.
-    fn bound_agent(&self, ws: &WebSocket) -> Option<AgentId> {
+    fn log_agent_of(&self, ws: &WebSocket) -> Option<AgentId> {
         let session = self.read_session(ws).ok()?;
         shell::session_agent(&session).cloned()
     }
@@ -777,6 +777,7 @@ impl Coordinator {
     }
 
     async fn withdraw_agent(&self, agent: &AgentId) -> Result<()> {
+        self.ensure_loaded().await?;
         let now_ms = now_ms();
         let prepared = self.apply(Work::Plain, |core| core.disconnect(agent, now_ms))?;
         let applied = self.ready(prepared, "withdraw queued request")?;
