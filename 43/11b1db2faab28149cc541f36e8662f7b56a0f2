@@ -1,0 +1,4 @@
+intent: server-initiated socket closes withdraw the agent's queued request; log close causes
+assumes: Cloudflare may not deliver websocket_close for a server-initiated close (unverified); a double withdraw is a no-op
+rejected: making close_socket async (it is called inside sync deliver); deliver now returns the sockets it closed and settle withdraws them after persist
+evidence: cargo test --workspace --locked 984 passed (+6); clippy -D warnings, fmt, wasm build 0 warnings; 3 mutants killed
