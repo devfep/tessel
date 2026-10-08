@@ -74,6 +74,51 @@ harness.
   keeps the rejection reason as text that the harness does not parse, so `on` has no per-kind
   split of its rejections.
 
+## Connection resets
+
+A connection that ends without the agent asking for it (a network or edge reset, with no close
+frame, as the live run of 7 October showed: every socket dropped within a second) does not end the
+run. Each agent and the scripted reviewer reopen the connection: up to 5 tries, pausing 0.5 s,
+1 s, 2 s, 4 s and 8 s before them, each time with a fresh `hello`. The pauses have no jitter.
+
+A reconnect is not free, and not invisible:
+
+- The coordinator withdrew the agent's queued request when its socket closed, and anything it
+  sent while the agent was gone is lost. So the agent reads the event log from seq 0 on the new
+  connection and works out where its task stands from the log alone: no claim yet (it sends the
+  claim again, and **its wait starts over** in the coordinator's queue, though the time it had
+  already waited stays counted in its waiting), a request still queued (it waits for that grant,
+  and does not send a second claim), a claim held (it carries on: it does the work again if the
+  submission was not logged, and waits for the outcome if it was, without submitting twice), or a
+  claim that ended while it was gone. A merge or a rejection found that way is that task's `merged`
+  or `rejected`; a lease that ran out is its `lapsed`. A rejected claim that is still open is
+  released.
+- An agent that is only doing its work (editing, testing, committing) reopens the connection and
+  goes on without starting over; its claims were renewed by its next heartbeat, and it learns at
+  its next request, which names the fence, if one lapsed.
+- An agent that read the log this way keeps watching it on that connection (the protocol has no
+  way to stop), so it receives every later event and ignores them. Waiting after such a reset
+  costs the coordinator more traffic than waiting before one.
+- The reviewer reopens its connection and watches the log from the seq after the last one it saw.
+  It keeps the held submissions it has seen and not yet seen decided, and sends an approval again
+  after a reconnect for each of them that is still undecided, so a submission is neither missed nor
+  decided twice.
+- If the tries run out, the agent's task ends as `disconnected`, as it did before reconnecting
+  existed, and the reason in the task's `note` names the tries. If the reviewer cannot reconnect,
+  the run fails with an error that names them. One task survives at most 10 reconnects.
+- The shadow policy does not reconnect: its trials are tied to the claim they were sent on, so an
+  agent under it whose connection ends is `disconnected`.
+
+Each task in the JSON has a `reconnects` count, and the run has
+`connection_resets_survived_by_agents` (the sum). The A/B table's row "Connection resets
+survived" is that sum; the reviewer's reconnects are not in it, though the log's `AgentConnected`
+events for `swarm-reviewer` show them. It counts resets that were survived and says nothing about
+what a reset cost: the waits that restarted are in the waiting numbers and the merges that came
+late are in the wall time.
+
+The local target can cut every socket at once (`Cutter::reset_all`, `Cutter::reset_on`) and refuse
+chosen agents' reconnects (`Cutter::refuse_new`), which is how the tests exercise all of this.
+
 ## The shadow policy
 
 With `--policy shadow` an agent whose claim conflicts claims with `OnConflict::Shadow`. It is

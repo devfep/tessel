@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::conn::HEARTBEAT_EVERY;
+use crate::conn::{Reconnect, HEARTBEAT_EVERY};
 use crate::demo;
 use crate::guard::{check_coordinator, ScratchRepo};
 use crate::live::{self, LiveSetup, Steward};
@@ -38,6 +38,7 @@ impl Spec {
             heartbeat_every: HEARTBEAT_EVERY,
             max_denials: self.max_denials,
             scripted_reviewer: self.scripted_reviewer,
+            reconnect: Reconnect::STANDARD,
         }
     }
 }

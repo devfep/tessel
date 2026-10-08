@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tessel_coordinator::protocol::{ClaimId, Event, EventKind, Outcome, ReleaseReason, Summary};
-use tessel_swarm::conn::HEARTBEAT_EVERY;
+use tessel_swarm::conn::{Reconnect, HEARTBEAT_EVERY};
 use tessel_swarm::demo;
 use tessel_swarm::git::{self, Checks, Git};
 use tessel_swarm::guard::ScratchRepo;
@@ -63,6 +63,7 @@ fn config(agents: usize, policy: Policy, work_ms: u64) -> OnConfig {
         heartbeat_every: HEARTBEAT_EVERY,
         max_denials: 400,
         scripted_reviewer: true,
+        reconnect: Reconnect::OFF,
     }
 }
 

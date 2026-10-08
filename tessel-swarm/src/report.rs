@@ -92,6 +92,7 @@ pub fn on_json(header: &Header, target: &str, policy: Policy, on: &OnResult) -> 
         "review_approvals_in_event_log": on.reviews_approved,
         "review_rejections_in_event_log": on.reviews_rejected,
         "scripted_reviewer": on.scripted_reviewer,
+        "connection_resets_survived_by_agents": resets_survived(on),
         "tasks": on.results,
         "measured_agent_ms": {
             "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, \
@@ -114,6 +115,12 @@ pub fn on_json(header: &Header, target: &str, policy: Policy, on: &OnResult) -> 
         });
     }
     value
+}
+
+/// Times an agent's connection ended without its asking and it opened a new one, over all tasks.
+/// The scripted reviewer's reconnects are not in it.
+fn resets_survived(on: &OnResult) -> u64 {
+    on.results.iter().map(|r| u64::from(r.reconnects)).sum()
 }
 
 /// Tenths, from integers: 69.8 landed per minute.
@@ -228,10 +235,28 @@ fn table_rows(header: &Header, policy: Policy, off: &OffResult, on: &OnResult) -
             &minutes(on.work_ms_total),
         ),
     ];
+    add_resets_row(&mut rows, on);
     if policy == Policy::Shadow {
         add_shadow_rows(&mut rows, on);
     }
     rows
+}
+
+/// Where the connection closed row ends the outcomes, the resets agents got through: those tasks
+/// are in the other rows, not this one.
+fn add_resets_row(rows: &mut Vec<[String; 3]>, on: &OnResult) {
+    let at = rows
+        .iter()
+        .position(|r| r[0].starts_with("Claims denied outright"))
+        .unwrap_or(rows.len());
+    rows.insert(
+        at,
+        row(
+            "Connection resets survived (agents reopened the connection; their waits restarted)",
+            "n/a",
+            &resets_survived(on).to_string(),
+        ),
+    );
 }
 
 /// Rows that only the shadow policy has: how many tasks ended as shadow work, and the agent time

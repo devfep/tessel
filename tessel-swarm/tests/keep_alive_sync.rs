@@ -9,7 +9,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
-use tessel_swarm::conn::HEARTBEAT_EVERY;
+use tessel_swarm::conn::{Reconnect, HEARTBEAT_EVERY};
 use tessel_swarm::demo;
 use tessel_swarm::guard::ScratchRepo;
 use tessel_swarm::local::{LocalServer, LocalSetup};
@@ -61,6 +61,7 @@ async fn a_claim_survives_a_checkout_and_a_push_slower_than_its_lease() {
         heartbeat_every: HEARTBEAT_EVERY.min(Duration::from_millis(100)),
         max_denials: 400,
         scripted_reviewer: true,
+        reconnect: Reconnect::OFF,
     };
     let repo = ScratchRepo::parse("swarm-test").unwrap();
     let names = on::principals(1, true);

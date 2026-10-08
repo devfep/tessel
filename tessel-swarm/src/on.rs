@@ -14,12 +14,12 @@ use clap::ValueEnum;
 use serde::Serialize;
 use tessel_coordinator::protocol::{
     uncovered, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event,
-    EventKind, Fence, Intent, OnConflict, ScopeClaim, ServerMsg, Summary,
+    EventKind, Fence, Intent, OnConflict, RequestId, ScopeClaim, ServerMsg, Summary,
 };
 
-use crate::conn::{read_log, Closed, Conn};
+use crate::conn::{read_log, Closed, Conn, Reconnect};
 use crate::endpoint::Endpoint;
-use crate::events;
+use crate::events::{self, Open, Standing};
 use crate::git::{self, Checks, Git};
 use crate::tasks::{self, Kind, Task};
 
@@ -59,6 +59,9 @@ pub struct OnConfig {
     /// Answer every submission held for review with an approval. On by default, for the local
     /// target and the swarm coordinator, where it is the only reviewer.
     pub scripted_reviewer: bool,
+    /// How an agent or the reviewer whose connection ends without being asked to reopens it. The
+    /// shadow policy's agents never reconnect: its trials are tied to the claim they were sent on.
+    pub reconnect: Reconnect,
 }
 
 const LAPSED: &str = "claim lapsed (lease expired)";
@@ -103,7 +106,8 @@ pub enum Resolution {
     /// work could not be submitted. The task is not finished; the run goes on.
     Lapsed,
     /// The agent's connection to the coordinator ended (closed or broken) before the task was
-    /// done. The agent stops; a claim the coordinator grants it afterwards lapses there.
+    /// done, and it could not be reopened (or the policy allows no reopening). The agent stops; a
+    /// claim the coordinator grants it afterwards lapses there.
     Disconnected,
     /// No agent was left to take it: every agent had stopped.
     NotRun,
@@ -122,6 +126,9 @@ pub struct TaskResult {
     /// Time from sending a claim to its answer (a grant, a denial or a timeout), summed over the
     /// attempts. Time spent preparing the claim and backing off between attempts is not in it.
     pub waited_ms: u64,
+    /// Times the agent's connection ended without its asking and it opened a new one while on
+    /// this task.
+    pub reconnects: u32,
     pub note: Option<String>,
 }
 
@@ -163,6 +170,7 @@ struct Item {
     task: Task,
     denials: u32,
     waited_ms: u64,
+    reconnects: u32,
 }
 
 struct Ctx {
@@ -201,6 +209,7 @@ pub async fn run_on(
             task,
             denials: 0,
             waited_ms: 0,
+            reconnects: 0,
         })
         .collect();
     let (log, watcher) = if config.policy == Policy::Shadow {
@@ -479,25 +488,73 @@ fn settled(results: Vec<TaskResult>, counts: &events::LogCounts) -> Vec<TaskResu
 
 /// Approves every submission held for review. It runs on the local target and on the swarm
 /// coordinator (live included), where it is the only reviewer. It ends when told to stop, so its
-/// errors surface.
+/// errors surface. A connection that ends under it is reopened and the log is followed on from
+/// the last event it saw, so no held submission is missed and none is decided twice; if it cannot
+/// be reopened the error names the tries.
 async fn review_loop(ctx: Arc<Ctx>, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let token = ctx.endpoint.token_of(REVIEWER)?;
-    let mut conn = Conn::open(&ctx.endpoint.ws_url, token).await?;
+    let mut conn = Conn::open(&ctx.endpoint.ws_url, token)
+        .await?
+        .with_reconnect(ctx.config.reconnect);
     conn.hello(REVIEWER, "reviewer").await?;
     conn.send(&ClientMsg::Watch { from_seq: 0 }).await?;
-    let mut decided: HashSet<ClaimId> = HashSet::new();
+    let mut desk = Desk::default();
     loop {
-        let message = tokio::select! {
+        let worked = tokio::select! {
             _ = stop.changed() => return Ok(()),
-            message = conn.recv(Duration::from_secs(3600)) => message?,
+            worked = desk.work(&mut conn) => worked,
         };
-        let Some(ServerMsg::Event { event }) = message else {
+        let Err(error) = worked else {
             continue;
         };
-        let Some(claim) = events::review_requested(&event.kind) else {
-            continue;
+        let reopenable = error.downcast_ref::<Closed>().is_some_and(|c| !c.gave_up);
+        if !reopenable || !conn.can_reconnect() {
+            return Err(error);
+        }
+        let replayed = tokio::select! {
+            _ = stop.changed() => return Ok(()),
+            replayed = conn.reconnect(Some(desk.next_seq)) => replayed?,
         };
-        if decided.insert(claim) {
+        desk.resume(&replayed);
+    }
+}
+
+/// What the scripted reviewer knows: how far it has read the log and which held submissions are
+/// still undecided.
+#[derive(Default)]
+struct Desk {
+    /// The first seq it has not seen.
+    next_seq: u64,
+    /// Requested for review, no decision seen yet.
+    pending: HashSet<ClaimId>,
+    /// Pending claims whose approval was sent on the current connection.
+    sent: HashSet<ClaimId>,
+}
+
+impl Desk {
+    fn note(&mut self, event: &Event) {
+        self.next_seq = self.next_seq.max(event.seq + 1);
+        if let Some(claim) = events::review_requested(&event.kind) {
+            self.pending.insert(claim);
+        }
+        if let Some(claim) = events::review_decided(&event.kind) {
+            self.pending.remove(&claim);
+        }
+    }
+
+    /// On a new connection: nothing was sent on it yet, and `replayed` is what the log added.
+    fn resume(&mut self, replayed: &[Event]) {
+        self.sent.clear();
+        for event in replayed {
+            self.note(event);
+        }
+    }
+
+    /// Approves what is pending and unsent, then reads one message.
+    async fn work(&mut self, conn: &mut Conn) -> Result<()> {
+        let mut unsent: Vec<ClaimId> = self.pending.difference(&self.sent).copied().collect();
+        unsent.sort_by_key(|claim| claim.0);
+        for claim in unsent {
             let req = conn.next_req();
             let note = Some("scripted reviewer".to_string());
             conn.send(&ClientMsg::Review {
@@ -507,7 +564,13 @@ async fn review_loop(ctx: Arc<Ctx>, mut stop: tokio::sync::watch::Receiver<bool>
                 note,
             })
             .await?;
+            self.sent.insert(claim);
         }
+        if let Some(ServerMsg::Event { event }) = conn.recv(Duration::from_secs(3600)).await? {
+            conn.begin_task();
+            self.note(&event);
+        }
+        Ok(())
     }
 }
 
@@ -517,9 +580,14 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
     let remote = ctx.endpoint.remote.clone();
     let (work, head) = tokio::task::spawn_blocking(move || remote.checkout(&dir)).await??;
     let token = ctx.endpoint.token_of(&name)?;
+    let reconnect = match ctx.config.policy {
+        Policy::Shadow => Reconnect::OFF,
+        Policy::Wait | Policy::Skip => ctx.config.reconnect,
+    };
     let mut conn = Conn::open(&ctx.endpoint.ws_url, token)
         .await?
-        .with_heartbeat(ctx.config.heartbeat_every);
+        .with_heartbeat(ctx.config.heartbeat_every)
+        .with_reconnect(reconnect);
     conn.hello(&name, &head).await?;
     loop {
         let Some(mut item) = lock(&ctx.queue).pop_front() else {
@@ -530,8 +598,11 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
             agent: &name,
             task: &item.task,
         };
-        let mut clock = Clock::default();
-        let step = match run_task(&ctx, &job, &mut conn, &mut clock).await {
+        conn.begin_task();
+        let mut clock = Clock::starting_at(conn.reconnects());
+        let ended = run_task(&ctx, &job, &mut conn, &mut clock).await;
+        item.reconnects += conn.reconnects() - clock.reconnects_before;
+        let step = match ended {
             Ok(step) => step,
             Err(error) => {
                 let Some(closed) = error.downcast_ref::<Closed>() else {
@@ -581,6 +652,7 @@ fn record(
         denials: item.denials,
         work_ms,
         waited_ms: item.waited_ms,
+        reconnects: item.reconnects,
         note,
     });
 }
@@ -621,6 +693,17 @@ struct Held {
     shadow: bool,
 }
 
+impl From<Open> for Held {
+    fn from(open: Open) -> Self {
+        Self {
+            claim: open.claim,
+            fence: open.fence,
+            scopes: open.scopes,
+            shadow: false,
+        }
+    }
+}
+
 enum Grant {
     /// Granted, or shadowed (`Held::shadow`): the agent may work either way.
     Granted(Held),
@@ -649,45 +732,212 @@ struct Clock {
     claimed: Option<Instant>,
     granted: Option<Instant>,
     work_ms: Option<u64>,
+    /// Waiting that a connection reset cut short: the claim was sent again afterwards.
+    lost_wait_ms: u64,
+    /// The connection's reconnect count when the task began.
+    reconnects_before: u32,
 }
 
 impl Clock {
+    fn starting_at(reconnects_before: u32) -> Self {
+        Self {
+            reconnects_before,
+            ..Self::default()
+        }
+    }
+
     /// Waiting (claim sent to grant, or to now if no grant came) and work (grant to the push, or
     /// to now if the work was cut short), measured the way a finished task's are.
     fn spent(&self) -> (u64, u64) {
+        let work_ms = self.work_ms.or(self.granted.map(millis)).unwrap_or(0);
+        (self.waited_ms(), work_ms)
+    }
+
+    /// Claim sent to grant (or to now), plus the waits a reset cut short.
+    fn waited_ms(&self) -> u64 {
         let waited = match (self.claimed, self.granted) {
             (Some(claimed), Some(granted)) => granted.saturating_duration_since(claimed),
             (Some(claimed), None) => claimed.elapsed(),
             (None, Some(_) | None) => Duration::ZERO,
         };
         let waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX);
-        let work_ms = self.work_ms.or(self.granted.map(millis)).unwrap_or(0);
-        (waited_ms, work_ms)
+        self.lost_wait_ms.saturating_add(waited_ms)
+    }
+
+    /// The claim is to be sent again: the wait so far stays counted and a new one starts.
+    fn restart_wait(&mut self) {
+        self.lost_wait_ms = self.waited_ms();
+        self.claimed = None;
+        self.granted = None;
+    }
+
+    /// A claim the log shows granted that the agent never saw granted: work starts now.
+    fn adopt_grant(&mut self) {
+        if self.granted.is_none() {
+            self.granted = Some(Instant::now());
+        }
     }
 }
 
+/// Where a task stands when an attempt starts: at the beginning, or where the log says it was
+/// when the connection broke.
+enum Stage {
+    Claim,
+    /// The claim was sent and is still queued: wait for its grant.
+    Grant {
+        req: RequestId,
+        scopes: Vec<ScopeClaim>,
+    },
+    /// The claim is open and the work is not in: do it (again) and submit.
+    Work(Held),
+    /// The work is submitted: wait for the outcome.
+    Outcome(Held),
+    /// The log already shows how the task ended. `held` is the claim to release, if it is open.
+    Settled {
+        held: Option<Held>,
+        resolution: Resolution,
+        note: String,
+    },
+}
+
+/// Runs one task. A connection that ends under it is reopened, if the connection may be (and has
+/// not been too often for this task), and the task goes on from where the coordinator's log says it stood, because whatever the coordinator
+/// sent while the agent was gone is lost and the queued request was withdrawn.
 async fn run_task(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, clock: &mut Clock) -> Result<Step> {
+    let mut stage = Stage::Claim;
+    loop {
+        match advance(ctx, job, conn, clock, stage).await {
+            Ok(step) => return Ok(step.waited(clock.waited_ms())),
+            Err(error) => stage = resume(job, conn, clock, error).await?,
+        }
+    }
+}
+
+async fn advance(
+    ctx: &Ctx,
+    job: &Job<'_>,
+    conn: &mut Conn,
+    clock: &mut Clock,
+    stage: Stage,
+) -> Result<Step> {
+    match stage {
+        Stage::Claim => claim_and_work(ctx, job, conn, clock).await,
+        Stage::Grant { req, scopes } => granted_and_work(ctx, job, conn, clock, req, scopes).await,
+        Stage::Work(held) => work_and_submit(ctx, job, conn, held, clock).await,
+        Stage::Outcome(held) => {
+            let (resolution, note) = await_outcome(conn, &held, ctx.config.task_timeout).await?;
+            Ok(Step {
+                end: End::Done(resolution, note),
+                work_ms: clock.spent().1,
+                waited_ms: 0,
+            })
+        }
+        Stage::Settled {
+            held,
+            resolution,
+            note,
+        } => {
+            if let Some(held) = held {
+                release(conn, &held).await?;
+            }
+            Ok(Step::done(resolution, note, clock.spent().1))
+        }
+    }
+}
+
+async fn claim_and_work(
+    ctx: &Ctx,
+    job: &Job<'_>,
+    conn: &mut Conn,
+    clock: &mut Clock,
+) -> Result<Step> {
     let (req, scopes) = send_claim(ctx, job.work, conn, job.task).await?;
-    let claimed = Instant::now();
-    clock.claimed = Some(claimed);
+    clock.claimed = Some(Instant::now());
+    granted_and_work(ctx, job, conn, clock, req, scopes).await
+}
+
+/// Waits for the answer to a claim already sent, and with a grant does the work.
+async fn granted_and_work(
+    ctx: &Ctx,
+    job: &Job<'_>,
+    conn: &mut Conn,
+    clock: &mut Clock,
+    req: RequestId,
+    scopes: Vec<ScopeClaim>,
+) -> Result<Step> {
     let answer = await_grant(conn, req, scopes, ctx.config.task_timeout).await?;
-    let waited_ms = millis(claimed);
     let held = match answer {
         Grant::Granted(held) => held,
         Grant::Denied => {
             return Ok(Step {
                 end: End::Denied,
                 work_ms: 0,
-                waited_ms,
+                waited_ms: 0,
             })
         }
-        Grant::TimedOut => {
-            return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0).waited(waited_ms))
-        }
+        Grant::TimedOut => return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0)),
     };
     clock.granted = Some(Instant::now());
-    let step = work_and_submit(ctx, job, conn, held, clock).await?;
-    Ok(step.waited(waited_ms))
+    work_and_submit(ctx, job, conn, held, clock).await
+}
+
+/// After `error` ended an attempt: reopens the connection, reads the log and says where the task
+/// stands. An error that is not a closed connection, a connection that may not be reopened, or a
+/// task that has been reset too often ends the task with `error`.
+async fn resume(
+    job: &Job<'_>,
+    conn: &mut Conn,
+    clock: &mut Clock,
+    error: anyhow::Error,
+) -> Result<Stage> {
+    let reopenable = error.downcast_ref::<Closed>().is_some_and(|c| !c.gave_up);
+    if !reopenable || !conn.can_reconnect() {
+        return Err(error);
+    }
+    let log = conn.reconnect(Some(0)).await?;
+    Ok(stage_from(
+        events::standing(&log, job.agent, &job.task.label()),
+        clock,
+    ))
+}
+
+fn stage_from(standing: Standing, clock: &mut Clock) -> Stage {
+    let settled = |held, resolution, note: &str| Stage::Settled {
+        held,
+        resolution,
+        note: note.to_string(),
+    };
+    match standing {
+        Standing::Unclaimed => {
+            clock.restart_wait();
+            Stage::Claim
+        }
+        Standing::Queued { req, scopes } => Stage::Grant { req, scopes },
+        Standing::Open(open) => {
+            clock.adopt_grant();
+            let submitted = open.submitted;
+            let held = Held::from(open);
+            if submitted {
+                Stage::Outcome(held)
+            } else {
+                Stage::Work(held)
+            }
+        }
+        Standing::Merged => settled(
+            None,
+            Resolution::Merged,
+            "merged while the connection was down",
+        ),
+        Standing::Rejected { reason, open } => {
+            settled(open.map(Held::from), Resolution::Rejected, &reason)
+        }
+        Standing::Lapsed => settled(None, Resolution::Lapsed, LAPSED),
+        Standing::Released => settled(
+            None,
+            Resolution::Failed,
+            "the claim was released while the connection was down",
+        ),
+    }
 }
 
 /// Plans the claim for the edit as the trunk stands and sends it.
@@ -696,7 +946,7 @@ async fn send_claim(
     work: &Git,
     conn: &mut Conn,
     task: &Task,
-) -> Result<(tessel_coordinator::protocol::RequestId, Vec<ScopeClaim>)> {
+) -> Result<(RequestId, Vec<ScopeClaim>)> {
     let (tree, after) = checkout_and_edit(ctx, work, task).await?;
     let mut scopes = tasks::plan_claims(&tasks::touched(&tree, &after));
     scopes.extend(tasks::dependencies(task, &tree));
@@ -733,7 +983,7 @@ async fn work_and_submit(
 ) -> Result<Step> {
     let mut held = held;
     let timeout = ctx.config.task_timeout;
-    let granted = Instant::now();
+    let granted = clock.granted.unwrap_or_else(Instant::now);
     // Main may have moved while this agent waited: edit what is there now, not what was.
     let edit = checkout_and_edit(ctx, job.work, job.task);
     let (tree, after) = conn.keep_alive(edit).await??;
@@ -869,7 +1119,7 @@ fn assumptions_of(task: &Task, tree: &crate::demo::Tree) -> Vec<Assumption> {
 
 async fn await_grant(
     conn: &mut Conn,
-    req: tessel_coordinator::protocol::RequestId,
+    req: RequestId,
     scopes: Vec<ScopeClaim>,
     limit: Duration,
 ) -> Result<Grant> {
@@ -1065,6 +1315,15 @@ async fn submit_and_wait(
     limit: Duration,
 ) -> Result<(Resolution, Option<String>)> {
     send_submit(conn, held, sha, touched).await?;
+    await_outcome(conn, held, limit).await
+}
+
+/// Waits for the merge, the rejection or the refusal of a submission already sent.
+async fn await_outcome(
+    conn: &mut Conn,
+    held: &Held,
+    limit: Duration,
+) -> Result<(Resolution, Option<String>)> {
     let deadline = Instant::now() + limit;
     loop {
         let Some(left) = deadline.checked_duration_since(Instant::now()) else {
@@ -1117,8 +1376,102 @@ mod tests {
             denials: 0,
             work_ms: 0,
             waited_ms: 0,
+            reconnects: 0,
             note: None,
         }
+    }
+
+    fn review_event(seq: u64, kind: EventKind) -> Event {
+        Event {
+            seq,
+            at_ms: 0,
+            run: tessel_coordinator::protocol::RunId("t".into()),
+            kind,
+        }
+    }
+
+    fn requested(seq: u64, claim: u64) -> Event {
+        let claim = ClaimId(claim);
+        let reasons = Vec::new();
+        review_event(seq, EventKind::ReviewRequested { claim, reasons })
+    }
+
+    fn decided(seq: u64, claim: u64) -> Event {
+        let kind = EventKind::ReviewDecided {
+            claim: ClaimId(claim),
+            approve: true,
+            note: None,
+            reviewer: None,
+        };
+        review_event(seq, kind)
+    }
+
+    #[test]
+    fn the_reviewer_asks_the_log_for_what_it_has_not_seen_and_keeps_what_is_undecided() {
+        let mut desk = Desk::default();
+        desk.note(&requested(4, 1));
+        desk.note(&requested(5, 2));
+        desk.sent.insert(ClaimId(1));
+        assert_eq!(desk.next_seq, 6);
+        // The connection broke before claim 1's approval was seen in the log; claim 2's decision
+        // happened while it was gone.
+        desk.resume(&[decided(6, 2), requested(7, 3)]);
+        assert_eq!(
+            desk.next_seq, 8,
+            "the next watch starts after the last event"
+        );
+        let mut pending: Vec<u64> = desk.pending.iter().map(|c| c.0).collect();
+        pending.sort_unstable();
+        assert_eq!(
+            pending,
+            [1, 3],
+            "decided claims drop out, undecided ones stay"
+        );
+        assert!(
+            desk.sent.is_empty(),
+            "nothing was sent on the new connection yet"
+        );
+    }
+
+    #[test]
+    fn a_decision_seen_after_a_request_is_not_asked_for_again() {
+        let mut desk = Desk::default();
+        desk.note(&requested(0, 1));
+        desk.note(&decided(1, 1));
+        desk.note(&requested(2, 2));
+        assert_eq!(desk.pending.len(), 1);
+        assert!(desk.pending.contains(&ClaimId(2)));
+        assert_eq!(desk.next_seq, 3);
+    }
+
+    #[test]
+    fn a_wait_cut_short_by_a_reset_stays_counted_when_the_claim_is_sent_again() {
+        let now = Instant::now();
+        let mut clock = Clock {
+            claimed: now.checked_sub(Duration::from_millis(300)),
+            ..Clock::default()
+        };
+        clock.restart_wait();
+        assert!(clock.claimed.is_none() && clock.granted.is_none());
+        assert!(clock.waited_ms() >= 300, "{}", clock.waited_ms());
+        clock.claimed = now.checked_sub(Duration::from_millis(100));
+        clock.granted = Some(now);
+        assert!(
+            clock.waited_ms() >= 400,
+            "both waits: {}",
+            clock.waited_ms()
+        );
+        clock.restart_wait();
+        assert!(clock.waited_ms() >= 400, "and again: {}", clock.waited_ms());
+    }
+
+    #[test]
+    fn a_grant_the_agent_never_saw_starts_its_work_clock_once() {
+        let mut clock = Clock::default();
+        clock.adopt_grant();
+        let first = clock.granted.unwrap();
+        clock.adopt_grant();
+        assert_eq!(clock.granted, Some(first), "a grant already seen is kept");
     }
 
     #[test]
@@ -1273,6 +1626,7 @@ mod tests {
                 heartbeat_every: crate::conn::HEARTBEAT_EVERY,
                 max_denials: 1,
                 scripted_reviewer: false,
+                reconnect: crate::conn::Reconnect::OFF,
             },
             log: Some(rx),
             accepted_shadows: Mutex::new(accepted),
@@ -1736,6 +2090,7 @@ mod tests {
             claimed: now.checked_sub(Duration::from_millis(300)),
             granted: now.checked_sub(Duration::from_millis(100)),
             work_ms: None,
+            ..Clock::default()
         };
         let (waited_ms, work_ms) = clock.spent();
         assert_eq!(waited_ms, 200, "claim to grant");

@@ -68,11 +68,25 @@ struct SocketEntry {
     cut: Arc<Notify>,
 }
 
+/// Resets every socket when an event satisfies `when` (see `Cutter::reset_on`).
+struct Tripwire {
+    when: Box<dyn Fn(&Event) -> bool + Send>,
+    /// Agents whose new connections are refused from then on.
+    refuse: Vec<String>,
+    /// Fire on every matching event, not just the first.
+    repeat: bool,
+}
+
 struct State {
     core: Coordinator,
     sockets: Vec<SocketEntry>,
     events: Vec<Event>,
     next_socket: u64,
+    /// Agents whose new connections get a 503 at the handshake: a coordinator they cannot reach.
+    refused: Vec<String>,
+    /// Handshakes turned away because the agent was in `refused`.
+    turned_away: usize,
+    tripwire: Option<Tripwire>,
 }
 
 struct Hub {
@@ -110,8 +124,47 @@ impl State {
                     event: event.clone(),
                 });
             }
+            let tripped = self.tripwire.as_ref().is_some_and(|t| (t.when)(&event));
             self.events.push(event);
+            if tripped {
+                self.trip();
+            }
         }
+    }
+
+    /// Fires the tripwire: resets every socket and refuses the agents it names. A tripwire that
+    /// does not repeat is spent.
+    fn trip(&mut self) {
+        let Some(tripwire) = self.tripwire.as_ref() else {
+            return;
+        };
+        let (refuse, repeat) = (tripwire.refuse.clone(), tripwire.repeat);
+        if !repeat {
+            self.tripwire = None;
+        }
+        self.refused = refuse;
+        self.reset_sockets();
+    }
+
+    /// Ends every socket without a close frame and withdraws each agent's queued request at
+    /// once, as the Durable Object does when a socket closes. Returns how many sockets ended.
+    fn reset_sockets(&mut self) -> usize {
+        let sockets = std::mem::take(&mut self.sockets);
+        let mut agents: Vec<AgentId> = Vec::new();
+        for entry in &sockets {
+            if let Some(agent) = &entry.bound {
+                if !agents.contains(agent) {
+                    agents.push(agent.clone());
+                }
+            }
+        }
+        for agent in agents {
+            let effects = self.core.disconnect(&agent, now_ms());
+            let (events, outbound) = shell::split_effects(effects);
+            self.flush(None, events, outbound);
+        }
+        // Dropping the entries drops their senders, which ends each socket's task without a close.
+        sockets.len()
     }
 }
 
@@ -147,6 +200,47 @@ impl Cutter {
             !bound
         });
         cut
+    }
+
+    /// Resets every socket at once, as the network does: no close frame, the connection just
+    /// ends, for the agents, the reviewer and the watchers alike. Each agent's queued request is
+    /// withdrawn at once (logging `WaitWithdrawn`), as the Durable Object does when a socket
+    /// closes; claims stay under their lease. Returns how many sockets were reset.
+    pub fn reset_all(&self) -> usize {
+        lock(&self.0.state).reset_sockets()
+    }
+
+    /// Resets every socket (as `reset_all`) at the instant the first event satisfying `when` is
+    /// logged, inside the same step that logged it and before anything is delivered to the agents
+    /// that step wrote to, and from then on refuses new connections from the agents in `refuse`
+    /// (turned away at the handshake). The cut happens once.
+    pub fn reset_on(&self, when: impl Fn(&Event) -> bool + Send + 'static, refuse: Vec<String>) {
+        lock(&self.0.state).tripwire = Some(Tripwire {
+            when: Box::new(when),
+            refuse,
+            repeat: false,
+        });
+    }
+
+    /// Like `reset_on`, but cuts again at every event that satisfies `when`: a network that keeps
+    /// failing.
+    pub fn reset_on_each(&self, when: impl Fn(&Event) -> bool + Send + 'static) {
+        lock(&self.0.state).tripwire = Some(Tripwire {
+            when: Box::new(when),
+            refuse: Vec::new(),
+            repeat: true,
+        });
+    }
+
+    /// How many connection attempts were turned away because the agent was refused.
+    pub fn turned_away(&self) -> usize {
+        lock(&self.0.state).turned_away
+    }
+
+    /// Lets the agents in `refuse` open no new connection (turned away at the handshake); an
+    /// empty list lets everyone in again. Sockets that are already open are not touched.
+    pub fn refuse_new(&self, refuse: Vec<String>) {
+        lock(&self.0.state).refused = refuse;
     }
 }
 
@@ -203,6 +297,9 @@ impl LocalServer {
                 sockets: Vec::new(),
                 events: Vec::new(),
                 next_socket: 0,
+                refused: Vec::new(),
+                turned_away: 0,
+                tripwire: None,
             }),
             tokens,
             path: path.clone(),
@@ -449,7 +546,16 @@ async fn serve(stream: TcpStream, hub: Arc<Hub>, mut stop: watch::Receiver<bool>
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
-        match bearer.and_then(|token| known.tokens.get(token)) {
+        let open = |agent: &&String| {
+            let mut state = lock(&known.state);
+            let refused = state.refused.contains(agent);
+            state.turned_away += usize::from(refused);
+            !refused
+        };
+        match bearer
+            .and_then(|token| known.tokens.get(token))
+            .filter(open)
+        {
             Some(agent) if request.uri().path() == known.path => {
                 *lock(&seen) = Some(AgentId(agent.clone()));
                 Ok(response)

@@ -3,7 +3,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tessel_coordinator::protocol::{AgentId, ClaimId, Event, EventKind, Outcome};
+use tessel_coordinator::protocol::{
+    AgentId, ClaimId, Event, EventKind, Fence, Outcome, ReleaseReason, RequestId, ScopeClaim,
+};
 
 /// Counts taken from the log itself, next to what `Summary::from_events` gives.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -251,6 +253,200 @@ pub fn review_requested(kind: &EventKind) -> Option<ClaimId> {
         | EventKind::Merged { .. }
         | EventKind::SubmitRejected { .. }
         | EventKind::ReviewDecided { .. }
+        | EventKind::BaseMoved { .. }
+        | EventKind::AssumptionChallenged { .. }
+        | EventKind::RaceOpened { .. }
+        | EventKind::RaceDecided { .. }
+        | EventKind::DenialVerified { .. }
+        | EventKind::AssumptionVerified { .. }
+        | EventKind::ReplayMerged { .. } => None,
+    }
+}
+
+/// The claim an agent holds for one task, as the log last showed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Open {
+    pub claim: ClaimId,
+    pub fence: Fence,
+    pub scopes: Vec<ScopeClaim>,
+    /// A `Submitted` is in the log: the work went in and an outcome is owed.
+    pub submitted: bool,
+}
+
+/// What became of the claim an agent was granted for a task: what an agent whose connection broke
+/// reads from the log to learn where it stands, since messages sent while it was gone are lost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Standing {
+    /// No claim was granted for the task and no request for it is queued: a queued request is
+    /// withdrawn when its agent's last socket closes.
+    Unclaimed,
+    /// A request for the task is still queued, because the coordinator closed the agent's socket
+    /// without withdrawing it. The grant will be sent to the agent's next connection.
+    Queued {
+        req: RequestId,
+        scopes: Vec<ScopeClaim>,
+    },
+    Open(Open),
+    Merged,
+    /// The submission was rejected. `open` is the claim while the agent has not released it.
+    Rejected {
+        reason: String,
+        open: Option<Open>,
+    },
+    /// The claim ended without a merge and not by the agent's release: its lease ran out.
+    Lapsed,
+    /// The agent released the claim.
+    Released,
+}
+
+/// The standing of the claim `agent` was granted for `task_ref`, from `log` read from seq 0. A
+/// task is granted at most one claim per agent, so the last grant is the one.
+pub fn standing(log: &[Event], agent: &str, task_ref: &str) -> Standing {
+    let mut now = Standing::Unclaimed;
+    for event in log {
+        if let EventKind::WaitQueued {
+            agent: who,
+            req,
+            scopes,
+            intent,
+            ..
+        } = &event.kind
+        {
+            if who.0 == agent && intent.task_ref.as_deref() == Some(task_ref) {
+                now = Standing::Queued {
+                    req: *req,
+                    scopes: scopes.clone(),
+                };
+            }
+            continue;
+        }
+        if let EventKind::ClaimGranted {
+            agent: who,
+            claim,
+            fence,
+            scopes,
+            intent,
+            ..
+        } = &event.kind
+        {
+            if who.0 == agent && intent.task_ref.as_deref() == Some(task_ref) {
+                now = Standing::Open(Open {
+                    claim: *claim,
+                    fence: *fence,
+                    scopes: scopes.clone(),
+                    submitted: false,
+                });
+            }
+            continue;
+        }
+        now = follow(now, &event.kind);
+    }
+    now
+}
+
+/// `now` after `kind`, if `kind` is about the claim `now` is about.
+fn follow(now: Standing, kind: &EventKind) -> Standing {
+    match now {
+        Standing::Queued { req, scopes } => {
+            let withdrawn = matches!(
+                kind,
+                EventKind::WaitWithdrawn { req: gone, .. } if *gone == req
+            );
+            if withdrawn {
+                Standing::Unclaimed
+            } else {
+                Standing::Queued { req, scopes }
+            }
+        }
+        Standing::Open(open) => follow_open(open, kind),
+        Standing::Rejected {
+            reason,
+            open: Some(open),
+        } => {
+            let released = matches!(
+                kind,
+                EventKind::ClaimReleased { claim, .. } if *claim == open.claim
+            );
+            Standing::Rejected {
+                reason,
+                open: (!released).then_some(open),
+            }
+        }
+        Standing::Unclaimed
+        | Standing::Merged
+        | Standing::Rejected { open: None, .. }
+        | Standing::Lapsed
+        | Standing::Released => now,
+    }
+}
+
+fn follow_open(mut open: Open, kind: &EventKind) -> Standing {
+    match kind {
+        EventKind::ClaimAmended {
+            claim,
+            fence,
+            added,
+        } if *claim == open.claim => {
+            open.fence = *fence;
+            open.scopes.extend(added.iter().cloned());
+        }
+        EventKind::Submitted { claim, .. } if *claim == open.claim => open.submitted = true,
+        EventKind::Merged { claim, .. } if *claim == open.claim => return Standing::Merged,
+        EventKind::SubmitRejected { claim, reason } if *claim == open.claim => {
+            return Standing::Rejected {
+                reason: reason.clone(),
+                open: Some(open),
+            };
+        }
+        EventKind::ClaimReleased { claim, reason } if *claim == open.claim => {
+            return match reason {
+                ReleaseReason::Agent => Standing::Released,
+                ReleaseReason::Merged => Standing::Merged,
+                ReleaseReason::LeaseExpired | ReleaseReason::LostRace | ReleaseReason::Settled => {
+                    Standing::Lapsed
+                }
+            };
+        }
+        EventKind::AgentConnected { .. }
+        | EventKind::ClaimGranted { .. }
+        | EventKind::ClaimDenied { .. }
+        | EventKind::ClaimShadowed { .. }
+        | EventKind::ClaimAmended { .. }
+        | EventKind::ClaimReleased { .. }
+        | EventKind::WaitQueued { .. }
+        | EventKind::WaitWithdrawn { .. }
+        | EventKind::Submitted { .. }
+        | EventKind::Merged { .. }
+        | EventKind::SubmitRejected { .. }
+        | EventKind::ReviewRequested { .. }
+        | EventKind::ReviewDecided { .. }
+        | EventKind::BaseMoved { .. }
+        | EventKind::AssumptionChallenged { .. }
+        | EventKind::RaceOpened { .. }
+        | EventKind::RaceDecided { .. }
+        | EventKind::DenialVerified { .. }
+        | EventKind::AssumptionVerified { .. }
+        | EventKind::ReplayMerged { .. } => {}
+    }
+    Standing::Open(open)
+}
+
+/// The claim a `ReviewDecided` event decided.
+pub fn review_decided(kind: &EventKind) -> Option<ClaimId> {
+    match kind {
+        EventKind::ReviewDecided { claim, .. } => Some(*claim),
+        EventKind::AgentConnected { .. }
+        | EventKind::ClaimGranted { .. }
+        | EventKind::ClaimDenied { .. }
+        | EventKind::ClaimShadowed { .. }
+        | EventKind::ClaimAmended { .. }
+        | EventKind::ClaimReleased { .. }
+        | EventKind::WaitQueued { .. }
+        | EventKind::WaitWithdrawn { .. }
+        | EventKind::Submitted { .. }
+        | EventKind::Merged { .. }
+        | EventKind::SubmitRejected { .. }
+        | EventKind::ReviewRequested { .. }
         | EventKind::BaseMoved { .. }
         | EventKind::AssumptionChallenged { .. }
         | EventKind::RaceOpened { .. }
@@ -543,5 +739,228 @@ mod tests {
             counts.shadow_inconclusive, 1,
             "a clean trial is not inconclusive"
         );
+    }
+
+    fn file(path: &str, mode: tessel_coordinator::protocol::Mode) -> ScopeClaim {
+        ScopeClaim {
+            scope: tessel_coordinator::protocol::Scope::File { path: path.into() },
+            mode,
+        }
+    }
+
+    fn granted(seq: u64, agent: &str, claim: u64, fence: u64, task_ref: &str) -> Event {
+        event(
+            seq,
+            EventKind::ClaimGranted {
+                agent: AgentId(agent.into()),
+                claim: ClaimId(claim),
+                fence: Fence(fence),
+                scopes: vec![file("a.ts", tessel_coordinator::protocol::Mode::EditBody)],
+                intent: tessel_coordinator::protocol::Intent {
+                    summary: "s".into(),
+                    task_ref: Some(task_ref.into()),
+                    assumptions: Vec::new(),
+                },
+                race: None,
+                at_risk: Vec::new(),
+            },
+        )
+    }
+
+    fn released(seq: u64, claim: u64, reason: ReleaseReason) -> Event {
+        let claim = ClaimId(claim);
+        event(seq, EventKind::ClaimReleased { claim, reason })
+    }
+
+    fn open_of(standing: Standing) -> Open {
+        let Standing::Open(open) = standing else {
+            unreachable!("expected an open claim, got {standing:?}");
+        };
+        open
+    }
+
+    #[test]
+    fn a_task_nobody_was_granted_is_unclaimed_whoever_else_holds_claims() {
+        let log = [
+            granted(0, "a01", 1, 10, "t01"),
+            granted(1, "a02", 2, 11, "t02"),
+        ];
+        assert_eq!(standing(&log, "a01", "t02"), Standing::Unclaimed);
+        assert_eq!(standing(&log, "a03", "t01"), Standing::Unclaimed);
+        assert_eq!(standing(&[], "a01", "t01"), Standing::Unclaimed);
+    }
+
+    #[test]
+    fn a_granted_claim_is_open_with_its_latest_fence_and_every_scope() {
+        let amended = event(
+            2,
+            EventKind::ClaimAmended {
+                claim: ClaimId(1),
+                fence: Fence(12),
+                added: vec![file("b.ts", tessel_coordinator::protocol::Mode::Create)],
+            },
+        );
+        let other = event(
+            3,
+            EventKind::ClaimAmended {
+                claim: ClaimId(2),
+                fence: Fence(99),
+                added: Vec::new(),
+            },
+        );
+        let log = [
+            granted(0, "a01", 1, 10, "t01"),
+            granted(1, "a02", 2, 11, "t02"),
+            amended,
+            other,
+        ];
+        let open = open_of(standing(&log, "a01", "t01"));
+        assert_eq!((open.claim, open.fence), (ClaimId(1), Fence(12)));
+        assert_eq!(open.scopes.len(), 2);
+        assert!(!open.submitted);
+    }
+
+    #[test]
+    fn a_submitted_claim_is_open_and_marked_submitted_until_it_merges() {
+        let submitted = |seq, claim| {
+            event(
+                seq,
+                EventKind::Submitted {
+                    claim: ClaimId(claim),
+                    fork_commit: tessel_coordinator::protocol::CommitId("c".into()),
+                    touched: Vec::new(),
+                    decisions: tessel_coordinator::protocol::DecisionRecord::default(),
+                },
+            )
+        };
+        let mut log = vec![
+            granted(0, "a01", 1, 10, "t01"),
+            granted(1, "a02", 2, 11, "t02"),
+            submitted(2, 2),
+        ];
+        assert!(
+            !open_of(standing(&log, "a01", "t01")).submitted,
+            "claim 2's"
+        );
+        log.push(submitted(3, 1));
+        assert!(open_of(standing(&log, "a01", "t01")).submitted);
+        let head = tessel_coordinator::protocol::CommitId("h".into());
+        log.push(event(
+            4,
+            EventKind::Merged {
+                claim: ClaimId(1),
+                head,
+            },
+        ));
+        assert_eq!(standing(&log, "a01", "t01"), Standing::Merged);
+        log.push(released(5, 1, ReleaseReason::Merged));
+        assert_eq!(standing(&log, "a01", "t01"), Standing::Merged);
+    }
+
+    #[test]
+    fn a_rejected_claim_stays_open_for_release_until_the_agent_releases_it() {
+        let rejected = event(
+            1,
+            EventKind::SubmitRejected {
+                claim: ClaimId(1),
+                reason: "tests failed".into(),
+            },
+        );
+        let mut log = vec![granted(0, "a01", 1, 10, "t01"), rejected];
+        let Standing::Rejected { reason, open } = standing(&log, "a01", "t01") else {
+            unreachable!("expected a rejection");
+        };
+        assert_eq!(reason, "tests failed");
+        assert_eq!(open.map(|o| o.claim), Some(ClaimId(1)));
+        log.push(released(2, 1, ReleaseReason::Agent));
+        let Standing::Rejected { open, .. } = standing(&log, "a01", "t01") else {
+            unreachable!("expected a rejection");
+        };
+        assert_eq!(open, None, "released, nothing left to release");
+    }
+
+    #[test]
+    fn a_claim_released_other_than_by_a_merge_is_lapsed_unless_the_agent_released_it() {
+        let lapsed = |reason| {
+            let log = [granted(0, "a01", 1, 10, "t01"), released(1, 1, reason)];
+            standing(&log, "a01", "t01")
+        };
+        assert_eq!(lapsed(ReleaseReason::LeaseExpired), Standing::Lapsed);
+        assert_eq!(lapsed(ReleaseReason::LostRace), Standing::Lapsed);
+        assert_eq!(lapsed(ReleaseReason::Settled), Standing::Lapsed);
+        assert_eq!(lapsed(ReleaseReason::Agent), Standing::Released);
+        assert_eq!(lapsed(ReleaseReason::Merged), Standing::Merged);
+    }
+
+    #[test]
+    fn another_claims_release_does_not_end_this_one() {
+        let log = [
+            granted(0, "a01", 1, 10, "t01"),
+            granted(1, "a02", 2, 11, "t02"),
+            released(2, 2, ReleaseReason::LeaseExpired),
+        ];
+        open_of(standing(&log, "a01", "t01"));
+    }
+
+    #[test]
+    fn review_decided_names_the_claim_and_nothing_else_does() {
+        let decided = EventKind::ReviewDecided {
+            claim: ClaimId(7),
+            approve: true,
+            note: None,
+            reviewer: None,
+        };
+        assert_eq!(review_decided(&decided), Some(ClaimId(7)));
+        let requested = EventKind::ReviewRequested {
+            claim: ClaimId(7),
+            reasons: Vec::new(),
+        };
+        assert_eq!(review_decided(&requested), None);
+    }
+
+    fn queued(seq: u64, agent: &str, req: u64, task_ref: &str) -> Event {
+        event(
+            seq,
+            EventKind::WaitQueued {
+                agent: AgentId(agent.into()),
+                req: RequestId(req),
+                scopes: vec![file("a.ts", tessel_coordinator::protocol::Mode::EditBody)],
+                intent: tessel_coordinator::protocol::Intent {
+                    summary: "s".into(),
+                    task_ref: Some(task_ref.into()),
+                    assumptions: Vec::new(),
+                },
+                position: 1,
+            },
+        )
+    }
+
+    #[test]
+    fn a_queued_request_stays_queued_until_it_is_withdrawn_or_granted() {
+        let withdrawn = |req| {
+            event(
+                1,
+                EventKind::WaitWithdrawn {
+                    agent: AgentId("a01".into()),
+                    req: RequestId(req),
+                },
+            )
+        };
+        let mut log = vec![queued(0, "a01", 5, "t01")];
+        let Standing::Queued { req, scopes } = standing(&log, "a01", "t01") else {
+            unreachable!("expected a queued request");
+        };
+        assert_eq!((req, scopes.len()), (RequestId(5), 1));
+        assert_eq!(standing(&log, "a02", "t01"), Standing::Unclaimed);
+        log.push(withdrawn(9));
+        assert!(matches!(
+            standing(&log, "a01", "t01"),
+            Standing::Queued { .. }
+        ));
+        log.push(withdrawn(5));
+        assert_eq!(standing(&log, "a01", "t01"), Standing::Unclaimed);
+        log.push(queued(2, "a01", 6, "t01"));
+        log.push(granted(3, "a01", 1, 10, "t01"));
+        open_of(standing(&log, "a01", "t01"));
     }
 }

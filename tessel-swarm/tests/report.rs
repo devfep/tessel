@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use tessel_coordinator::protocol::Summary;
-use tessel_swarm::conn::HEARTBEAT_EVERY;
+use tessel_swarm::conn::{Reconnect, HEARTBEAT_EVERY};
 use tessel_swarm::off::{self, Counts, OffConfig, OffResult};
 use tessel_swarm::on::{OnConfig, OnResult, Policy, Resolution, ShadowTrials, TaskResult};
 use tessel_swarm::report::{ab_markdown, header_of, off_json, on_json, SCHEMA};
@@ -64,6 +64,7 @@ fn on_result() -> OnResult {
             denials: 0,
             work_ms: 300,
             waited_ms: 0,
+            reconnects: 0,
             note: None,
         }],
         work_ms_total: 600,
@@ -82,6 +83,7 @@ fn config() -> OnConfig {
         heartbeat_every: HEARTBEAT_EVERY,
         max_denials: 1,
         scripted_reviewer: false,
+        reconnect: Reconnect::OFF,
     }
 }
 
@@ -173,6 +175,7 @@ fn result(task: usize, result: Resolution) -> TaskResult {
         denials: 0,
         work_ms: 0,
         waited_ms: 0,
+        reconnects: 0,
         note: None,
     }
 }
@@ -246,6 +249,7 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
     row("Agent-minutes of work later rejected", "0.500", "0.100");
     row("Agent-minutes of work in total", "2.000", "1.500");
     row("Held for review (not approved)", "n/a", "2");
+    row(RESETS_ROW, "n/a", "0");
     on.reviews_approved = 5;
     on.reviews_rejected = 1;
     let table = ab_markdown(
@@ -260,6 +264,8 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
     assert_eq!(cells(&table, "Review rejections")[2], "1");
 }
 
+const RESETS_ROW: &str =
+    "Connection resets survived (agents reopened the connection; their waits restarted)";
 const SHADOW_ROW: &str = "Conflicts prevented, verified by shadow runs";
 
 fn shadow_result() -> OnResult {
@@ -360,4 +366,21 @@ fn the_json_carries_the_shadow_counts_only_for_the_shadow_policy() {
     assert_eq!(shadow["shadow_verification"]["never_verified"], 1);
     let wait = on_json(&header, "local", Policy::Wait, &shadow_result());
     assert!(wait.get("shadow_verification").is_none());
+}
+
+#[test]
+fn connection_resets_survived_is_the_sum_of_the_tasks_reconnects_in_the_table_and_the_json() {
+    let mut on = on_result();
+    let survived = |task, reconnects| {
+        let mut r = result(task, Resolution::Merged);
+        r.reconnects = reconnects;
+        r
+    };
+    on.results = vec![survived(1, 2), survived(2, 0), survived(3, 3)];
+    let header = header_of(&config(), 9, 3, 0.5);
+    let table = ab_markdown(&header, "local", Policy::Wait, &off_result(), &on);
+    assert_eq!(cells(&table, RESETS_ROW), [RESETS_ROW, "n/a", "5"]);
+    let json = on_json(&header, "local", Policy::Wait, &on);
+    assert_eq!(json["connection_resets_survived_by_agents"], 5);
+    assert_eq!(json["tasks"][2]["reconnects"], 3);
 }
