@@ -5,8 +5,8 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-08 09:20 EDT.
-**Orchestrator:** taken 02:51 (session after the context clear). On a later resume: read this
+**As of:** 2026-10-08 09:19 EDT. **HANDOVER: Felix is switching Claude subscriptions; this session ends.**
+**Orchestrator:** none. Take the role on resume (Felix's "proceed"): read this
 block, `docs/BUILD-PROTOCOL.md` (§2; §4 rules 00 and 0), `PLAN.md` §6 and §9, then the open boxes
 below. No lanes, reviews or background jobs are running.
 **Trunk:** `4033791` (AX-MCP; mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is
@@ -34,9 +34,9 @@ trunk. The lane merged the trunk (`fc09fed`); the same tree passed locally (1029
 no curl) and in a Sandbox test-run on the fork; resubmitted, Felix approved 09:13, merged 09:16 as
 `4033791`; trunk tree equals `fc09fed`'s. The Sandbox failure is an unidentified intermittent
 cargo test (the trial result keeps only the last step's output): filed GATE-OUTPUT.
-**Approvals:** `scratchpad/orch-review.sh <claim> "<note>"` (throwaway worktree, minted
-`orchestrator` identity, `tessel review --approve`, stop) is what Felix runs; offered him an
-allow rule for it.
+**Approvals:** `tools/orch-review.sh <claim> "<note>"` (throwaway worktree, minted `orchestrator`
+identity, `tessel review --approve`, stop, worktree removed) is what Felix runs as a `!` command;
+offered him an allow rule for it. Pending from Felix: that rule; Little Snitch filtering back on.
 **Landed Oct 7 (all reviewed, gated, merged through the steward; see each box):** SWARM-FLAKE-SHADOW
 `58bbbc3`, SWARM-LEASE `d9fb232`, AX-INBOX `01131a5`, AX-GITHOOKS `107fc13`, SWARM-WAIT `43edf24`,
 COORD-CLOSE-WITHDRAW `9c086e9`, SWARM-RECONNECT `e7250de`; plus DEMO-TS/SWARM-REVIEWER-ERR,
