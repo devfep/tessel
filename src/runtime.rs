@@ -295,7 +295,22 @@ impl Coordinator {
     }
 
     fn close_socket(&self, ws: &WebSocket, reason: &str) {
-        if let Err(e) = ws.close(Some(1011), Some(reason)) {
+        self.close_with(ws, 1011, reason);
+    }
+
+    /// Close a socket from here and mark its session closed first, so the runtime still listing
+    /// it as open shields no agent from a withdrawal.
+    fn close_with(&self, ws: &WebSocket, code: u16, reason: &str) {
+        if let Ok(session) = self.read_session(ws) {
+            let closed = Session {
+                closed: true,
+                ..session
+            };
+            if let Err(e) = self.write_session(ws, &closed) {
+                console_error!("coordinator {}: {e}", self.repo());
+            }
+        }
+        if let Err(e) = ws.close(Some(code), Some(reason)) {
             console_error!("coordinator {}: close failed: {e}", self.repo());
         }
     }
@@ -314,9 +329,8 @@ impl Coordinator {
             Action::Reject(reply) => send(ws, &reply),
             Action::RejectAndClose(reply) => {
                 let sent = send(ws, &reply);
-                if let Err(e) = ws.close(Some(CLOSE_POLICY_VIOLATION), Some("identity mismatch")) {
-                    console_error!("coordinator {}: close failed: {e}", self.repo());
-                }
+                self.close_with(ws, CLOSE_POLICY_VIOLATION, "identity mismatch");
+                self.withdraw_closed(std::slice::from_ref(ws)).await;
                 sent
             }
             Action::Watch { from_seq } => self.watch(ws, session, from_seq).await,
@@ -709,9 +723,10 @@ impl Coordinator {
         }
     }
 
-    /// The agent a socket is bound to, if its attachment can be read and it said hello.
+    /// The agent a socket speaks for (see `shell::session_agent`), if its attachment can be read.
     fn bound_agent(&self, ws: &WebSocket) -> Option<AgentId> {
-        self.read_session(ws).ok().and_then(|session| session.agent)
+        let session = self.read_session(ws).ok()?;
+        shell::session_agent(&session).cloned()
     }
 
     /// `withdraw` for sockets this Durable Object closed itself, where no handler returns the
@@ -750,14 +765,23 @@ impl Coordinator {
             slot.as_ref()
                 .is_some_and(|core| core.has_queued_request(agent))
         };
+        let mut first_error = None;
         for agent in shell::agents_to_withdraw(&sessions, &others, queued) {
-            let now_ms = now_ms();
-            let prepared = self.apply(Work::Plain, |core| core.disconnect(&agent, now_ms))?;
-            let applied = self.ready(prepared, "withdraw queued request")?;
-            let persisted = self.persist(applied).await?;
-            self.settle(&persisted, None).await?;
+            let withdrawn = self.withdraw_agent(&agent).await;
+            if let Err(e) = &withdrawn {
+                console_error!("coordinator {}: withdraw failed: {e}", self.repo());
+            }
+            keep_first(&mut first_error, withdrawn);
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
+    }
+
+    async fn withdraw_agent(&self, agent: &AgentId) -> Result<()> {
+        let now_ms = now_ms();
+        let prepared = self.apply(Work::Plain, |core| core.disconnect(agent, now_ms))?;
+        let applied = self.ready(prepared, "withdraw queued request")?;
+        let persisted = self.persist(applied).await?;
+        self.settle(&persisted, None).await
     }
 
     /// Store the call's state and events in one transaction. On failure the cached core is
@@ -878,7 +902,12 @@ impl Coordinator {
                         continue;
                     };
                     if let Err(e) = send(ws, &msg) {
-                        console_error!("coordinator {}: send to a socket failed: {e}", self.repo());
+                        let agent = sessions.get(index).and_then(shell::session_agent);
+                        console_error!(
+                            "coordinator {}: send to a socket failed: agent={} {e}",
+                            self.repo(),
+                            shell::log_agent(agent)
+                        );
                         self.close_socket(ws, "send failed");
                         dead.push(ws.clone());
                     }

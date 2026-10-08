@@ -55,6 +55,10 @@ pub struct Session {
     /// `None` means the socket is not watching.
     #[serde(default)]
     pub watch_from: Option<u64>,
+    /// Set when the Durable Object closed this socket itself. The runtime may still list a
+    /// closed socket as open, so a closed session shields no agent from a withdrawal.
+    #[serde(default)]
+    pub closed: bool,
 }
 
 /// What the shell does with one parsed client message.
@@ -849,7 +853,10 @@ pub fn agent_to_withdraw(
     has_queued: impl Fn(&AgentId) -> bool,
 ) -> Option<AgentId> {
     let agent = closing.agent.as_ref()?;
-    if bound_indexes(agent, others).is_empty() && has_queued(agent) {
+    let shielded = others
+        .iter()
+        .any(|other| !other.closed && other.agent.as_ref() == Some(agent));
+    if !shielded && has_queued(agent) {
         return Some(agent.clone());
     }
     None
@@ -874,6 +881,12 @@ pub fn agents_to_withdraw(
         }
     }
     agents
+}
+
+/// The agent a socket speaks for in logs: the one it said hello as, else the one the Worker
+/// verified at the upgrade.
+pub fn session_agent(session: &Session) -> Option<&AgentId> {
+    session.agent.as_ref().or(session.verified.as_ref())
 }
 
 const LOG_TEXT_MAX_CHARS: usize = 120;
@@ -949,6 +962,7 @@ mod tests {
             verified: Some(agent(name)),
             agent: Some(agent(name)),
             watch_from: None,
+            closed: false,
         }
     }
 
@@ -1002,6 +1016,7 @@ mod tests {
             verified: Some(agent("a1")),
             agent: Some(agent("a1")),
             watch_from: Some(0),
+            closed: false,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert_eq!(serde_json::from_str::<Session>(&json).unwrap(), session);
@@ -1224,6 +1239,7 @@ mod tests {
             verified: Some(agent("a1")),
             agent: None,
             watch_from: Some(7),
+            closed: false,
         };
         let mut core = new_core();
         let (who, effects) = run(&mut core, &session, hello("a1"));
@@ -1300,6 +1316,7 @@ mod tests {
             verified: None,
             agent: None,
             watch_from: Some(0),
+            closed: false,
         };
         let sessions = [Session::default(), watcher.clone(), bound("a1"), watcher];
         assert_eq!(watcher_indexes(&sessions, 0), vec![1, 3]);
@@ -1576,6 +1593,7 @@ mod tests {
             verified: None,
             agent: None,
             watch_from: Some(0),
+            closed: false,
         };
         let again = decide(&watcher, &msg(r#"{"type":"watch","from_seq":0}"#));
         assert_eq!(reject_code(again), ErrorCode::Malformed);
@@ -1640,6 +1658,7 @@ mod tests {
             verified: None,
             agent: None,
             watch_from: Some(0),
+            closed: false,
         }
     }
 
@@ -1710,6 +1729,7 @@ mod tests {
             verified: None,
             agent: Some(agent("a1")),
             watch_from: Some(0),
+            closed: false,
         };
         let outbound = [Outbound::Reply(binary_rejection())];
         let plan = plan_delivery(&outbound, &[event_at(0), event_at(1)], &[sender]);
@@ -1727,6 +1747,7 @@ mod tests {
             verified: None,
             agent: None,
             watch_from: Some(watch_from),
+            closed: false,
         }
     }
 
@@ -2441,6 +2462,60 @@ mod tests {
         let queued = |who: &AgentId| core.has_queued_request(who);
         let twin = [bound("b"), bound("c")];
         assert!(agents_to_withdraw(&[bound("b")], &twin, queued).is_empty());
+    }
+
+    fn closed(mut session: Session) -> Session {
+        session.closed = true;
+        session
+    }
+
+    #[test]
+    fn a_closed_but_listed_socket_shields_nobody_and_a_live_one_does() {
+        let core = queue_b_then_c();
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let dead_twin = [closed(bound("b"))];
+        assert_eq!(
+            agent_to_withdraw(&bound("b"), &dead_twin, queued),
+            Some(agent("b"))
+        );
+        let doomed = agents_to_withdraw(&[bound("b")], &dead_twin, queued);
+        assert_eq!(doomed, vec![agent("b")]);
+        let live_twin = [closed(bound("b")), bound("b")];
+        assert_eq!(agent_to_withdraw(&bound("b"), &live_twin, queued), None);
+    }
+
+    #[test]
+    fn the_session_flag_for_a_closed_socket_survives_the_attachment_round_trip() {
+        let stored = serde_json::to_string(&closed(bound("b"))).unwrap();
+        let back: Session = serde_json::from_str(&stored).unwrap();
+        assert!(back.closed);
+        let old: Session = serde_json::from_str(r#"{"agent":"b"}"#).unwrap();
+        assert!(!old.closed, "an attachment from before the flag is open");
+    }
+
+    #[test]
+    fn a_hello_for_another_agent_on_a_bound_socket_withdraws_the_bound_agents_request() {
+        let core = queue_b_then_c();
+        let session = bound("b");
+        let action = decide(&session, &hello("c"));
+        let Action::RejectAndClose(_) = action else {
+            panic!("expected a rejection that closes, got {action:?}");
+        };
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let doomed = agents_to_withdraw(&[closed(session)], &[bound("c")], queued);
+        assert_eq!(doomed, vec![agent("b")]);
+    }
+
+    #[test]
+    fn a_log_names_the_verified_agent_of_a_socket_that_never_said_hello() {
+        assert_eq!(session_agent(&verified("a1")), Some(&agent("a1")));
+        assert_eq!(session_agent(&bound("a2")), Some(&agent("a2")));
+        assert_eq!(session_agent(&Session::default()), None);
+        let relabelled = Session {
+            agent: Some(agent("a2")),
+            ..verified("a1")
+        };
+        assert_eq!(session_agent(&relabelled), Some(&agent("a2")));
     }
 
     #[test]
