@@ -1,0 +1,4 @@
+intent: finish() requires the stdout channel to disconnect within 2 s of the server exiting
+assumes: none
+rejected: none
+evidence: tessel-cli 377 passed, clippy 0, fmt ok; silent mutant (daemon stdout inherit) fails in ~3 s with 'stdout still held open'
