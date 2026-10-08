@@ -1,0 +1,4 @@
+intent: fix pass 1 of SWARM-RECONNECT review
+assumes: a second socket closing does not withdraw a request while the agent's first socket is open
+rejected: reacting to own WaitWithdrawn in await_grant (agents no longer watch, so the event never reaches them; the socket closing is the signal)
+evidence: workspace 1013 tests 0 failed at load 57; swarm 158 with curl absent; clippy, rustfmt, Cargo.lock unchanged; local 30-agent wait run 40/40; mutants all killed except the equivalent reset_all disconnect
