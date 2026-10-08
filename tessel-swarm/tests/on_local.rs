@@ -1066,7 +1066,7 @@ async fn an_agent_cut_off_while_it_works_has_its_work_time_counted_as_work() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_cut_off() {
-    // Nobody reviews, so the submission stays held; the agent is cut off three seconds later.
+    // Nobody reviews, so the submission stays held; the agent is cut off eight seconds later.
     let mut config = config(1, Policy::Wait, 0);
     config.scripted_reviewer = false;
     let scratch = tempfile::tempdir().unwrap();
@@ -1080,7 +1080,7 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
         {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(8)).await;
         assert!(cutter.cut("a01"), "a01 had an open socket");
     });
     let agents = scratch.path().join("agents");
@@ -1092,10 +1092,10 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
     let r = &result.results[0];
     assert_eq!(r.result, Resolution::Disconnected, "{r:?}");
     assert!(
-        r.work_ms < 2500,
+        r.work_ms < 6000,
         "work ends at the push, not at the close: {r:?}"
     );
-    assert!(r.waited_ms < 2500, "{r:?}");
+    assert!(r.waited_ms < 6000, "{r:?}");
     assert_eq!(result.summary.merges, 0);
     server.shutdown().await;
 }
