@@ -1,0 +1,4 @@
+intent: record the AX-MCP landing, the root cause of the failed image pushes and the Sandbox flake
+assumes: none
+rejected: Docker Desktop proxy as the cause (crane and curl from the host failed the same way; Ethernet passed)
+evidence: trunk 4033791 tree equals fc09fed; mirror e7250de..4033791; curl upload tests listed in STATE
