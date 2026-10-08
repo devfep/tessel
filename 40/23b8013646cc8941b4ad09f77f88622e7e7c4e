@@ -1,0 +1,4 @@
+intent: fix pass 2 of SWARM-RECONNECT review
+assumes: none
+rejected: returning a non-final Closed from snapshot (resume does not loop on its own errors)
+evidence: workspace 1014 tests 0 failed at load 44-64; swarm 159 with curl absent; clippy, rustfmt clean; local run 40/40; mutant limiting snapshot to one try fails the new test
