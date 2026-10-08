@@ -583,6 +583,9 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Next live run measures: reconnects and close codes per connection, `cf.colo` per `/ws` request
   plus a 5 s ping from the Mac (edge restart vs local loss), DO wall time per message (0.7–1.1 s at
   ~0 CPU in run 3) and per alarm (18–23 s).
+- [ ] **SWARM-SHADOW-RECONNECT** — from the SWARM-RECONNECT review (Oct 7): the shadow policy does
+  not reconnect, so a mass reset during the planned live shadow A/B run marks every agent
+  disconnected. Do before that run (shadow trials are tied to the claim they were sent on).
 - [ ] **COORD-UNDELIVERED-GRANT** — from the COORD-CLOSE-WITHDRAW review (Oct 7): when a
   `Granted` fails to send (`deliver`, `src/runtime.rs` ~880), the socket is closed but the granted
   agent is no longer queued, so nothing is withdrawn and it holds the claim until its lease lapses
