@@ -231,6 +231,11 @@ impl DurableObject for Coordinator {
             ..Session::default()
         };
         self.write_session(&pair.server, &session)?;
+        console_log!(
+            "coordinator {}: socket accepted: agent={}",
+            self.repo(),
+            shell::log_agent(session.verified.as_ref())
+        );
         Response::from_websocket(pair.client)
     }
 
@@ -243,6 +248,7 @@ impl DurableObject for Coordinator {
         if let Err(e) = &result {
             console_error!("coordinator {}: closing socket: {e}", self.repo());
             self.close_socket(&ws, "coordinator error");
+            self.withdraw_closed(std::slice::from_ref(&ws)).await;
         }
         result
     }
@@ -250,15 +256,21 @@ impl DurableObject for Coordinator {
     async fn websocket_close(
         &self,
         ws: WebSocket,
-        _code: usize,
-        _reason: String,
-        _was_clean: bool,
+        code: usize,
+        reason: String,
+        was_clean: bool,
     ) -> Result<()> {
-        self.withdraw(&ws).await
+        let agent = self.bound_agent(&ws);
+        let line = shell::close_log_line(code, was_clean, &reason, agent.as_ref());
+        console_log!("coordinator {}: {line}", self.repo());
+        self.withdraw(std::slice::from_ref(&ws)).await
     }
 
-    async fn websocket_error(&self, ws: WebSocket, _error: Error) -> Result<()> {
-        self.withdraw(&ws).await
+    async fn websocket_error(&self, ws: WebSocket, error: Error) -> Result<()> {
+        let agent = self.bound_agent(&ws);
+        let line = shell::error_log_line(&error.to_string(), agent.as_ref());
+        console_error!("coordinator {}: {line}", self.repo());
+        self.withdraw(std::slice::from_ref(&ws)).await
     }
 
     async fn alarm(&self) -> Result<Response> {
@@ -697,18 +709,39 @@ impl Coordinator {
         }
     }
 
-    /// A socket closed or failed. If it was bound and no other open socket is bound to the same
-    /// agent, withdraw the agent's queued request: nobody is left to receive its grant.
-    async fn withdraw(&self, closing: &WebSocket) -> Result<()> {
-        let session = self.read_session(closing)?;
+    /// The agent a socket is bound to, if its attachment can be read and it said hello.
+    fn bound_agent(&self, ws: &WebSocket) -> Option<AgentId> {
+        self.read_session(ws).ok().and_then(|session| session.agent)
+    }
+
+    /// `withdraw` for sockets this Durable Object closed itself, where no handler returns the
+    /// error: log it, so it is not lost.
+    async fn withdraw_closed(&self, closed: &[WebSocket]) {
+        if let Err(e) = self.withdraw(closed).await {
+            console_error!(
+                "coordinator {}: withdraw after close failed: {e}",
+                self.repo()
+            );
+        }
+    }
+
+    /// Sockets closed or failed. Each agent bound to one of them, with no other open socket
+    /// bound to it, loses its queued request: nobody is left to receive its grant. `closing`
+    /// is excluded from the open sockets, because a socket closed here may still be listed.
+    /// Each withdrawal is applied, then persisted, then settled, as any other call.
+    async fn withdraw(&self, closing: &[WebSocket]) -> Result<()> {
+        let mut sessions = Vec::with_capacity(closing.len());
+        for socket in closing {
+            sessions.push(self.read_session(socket)?);
+        }
         let open: Vec<WebSocket> = self
             .state
             .get_websockets()
             .into_iter()
-            .filter(|socket| socket != closing)
+            .filter(|socket| !closing.contains(socket))
             .collect();
         let others = self.read_sessions(&open);
-        if session.agent.is_none() {
+        if sessions.iter().all(|session| session.agent.is_none()) {
             return Ok(());
         }
         self.ensure_loaded().await?;
@@ -717,14 +750,14 @@ impl Coordinator {
             slot.as_ref()
                 .is_some_and(|core| core.has_queued_request(agent))
         };
-        let Some(agent) = shell::agent_to_withdraw(&session, &others, queued) else {
-            return Ok(());
-        };
-        let now_ms = now_ms();
-        let prepared = self.apply(Work::Plain, |core| core.disconnect(&agent, now_ms))?;
-        let applied = self.ready(prepared, "withdraw queued request")?;
-        let persisted = self.persist(applied).await?;
-        self.settle(&persisted, None).await
+        for agent in shell::agents_to_withdraw(&sessions, &others, queued) {
+            let now_ms = now_ms();
+            let prepared = self.apply(Work::Plain, |core| core.disconnect(&agent, now_ms))?;
+            let applied = self.ready(prepared, "withdraw queued request")?;
+            let persisted = self.persist(applied).await?;
+            self.settle(&persisted, None).await?;
+        }
+        Ok(())
     }
 
     /// Store the call's state and events in one transaction. On failure the cached core is
@@ -787,9 +820,12 @@ impl Coordinator {
     /// stored and answered, and an error here would close the client's socket. The next call
     /// reschedules, and the alarm handler ends by rescheduling with its error returned.
     async fn settle(&self, persisted: &Persisted, reply_to: Option<&WebSocket>) -> Result<()> {
-        let delivered = self.deliver(persisted, reply_to);
+        let (delivered, dead) = self.deliver(persisted, reply_to);
         if let Err(e) = self.reschedule(persisted.next_alarm_ms()).await {
             console_error!("coordinator {}: {e}", self.repo());
+        }
+        if !dead.is_empty() {
+            Box::pin(self.withdraw_closed(&dead)).await;
         }
         delivered
     }
@@ -809,8 +845,13 @@ impl Coordinator {
 
     /// Send what `shell::plan_delivery` plans. Only a failed send to the socket that sent the
     /// message is an error. A failed send to any other socket closes that socket and delivery
-    /// goes on, so one dead watcher cannot close the sender or make an alarm retry.
-    fn deliver(&self, persisted: &Persisted, reply_to: Option<&WebSocket>) -> Result<()> {
+    /// goes on, so one dead watcher cannot close the sender or make an alarm retry; the sockets it
+    /// closed are returned, for `settle` to withdraw their agents.
+    fn deliver(
+        &self,
+        persisted: &Persisted,
+        reply_to: Option<&WebSocket>,
+    ) -> (Result<()>, Vec<WebSocket>) {
         let sockets = if shell::needs_sessions(persisted.outbound(), persisted.events()) {
             self.state.get_websockets()
         } else {
@@ -818,6 +859,7 @@ impl Coordinator {
         };
         let sessions = self.read_sessions(&sockets);
         let mut sender_error = None;
+        let mut dead = Vec::new();
         for (target, msg) in
             shell::plan_delivery(persisted.outbound(), persisted.events(), &sessions)
         {
@@ -838,11 +880,12 @@ impl Coordinator {
                     if let Err(e) = send(ws, &msg) {
                         console_error!("coordinator {}: send to a socket failed: {e}", self.repo());
                         self.close_socket(ws, "send failed");
+                        dead.push(ws.clone());
                     }
                 }
             }
         }
-        sender_error.map_or(Ok(()), Err)
+        (sender_error.map_or(Ok(()), Err), dead)
     }
 
     /// The session of each open socket. A socket whose attachment cannot be read is closed and

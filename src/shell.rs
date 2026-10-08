@@ -855,6 +855,67 @@ pub fn agent_to_withdraw(
     None
 }
 
+/// The agents whose queued request to withdraw when every socket in `closing` has gone away
+/// (the sockets the Durable Object closed itself, which may still be listed as open). `others`
+/// must exclude all of `closing`, so two dead sockets of one agent do not shield each other.
+/// Each agent appears once, in the order of `closing`.
+pub fn agents_to_withdraw(
+    closing: &[Session],
+    others: &[Session],
+    has_queued: impl Fn(&AgentId) -> bool,
+) -> Vec<AgentId> {
+    let mut agents = Vec::new();
+    for session in closing {
+        let Some(agent) = agent_to_withdraw(session, others, &has_queued) else {
+            continue;
+        };
+        if !agents.contains(&agent) {
+            agents.push(agent);
+        }
+    }
+    agents
+}
+
+const LOG_TEXT_MAX_CHARS: usize = 120;
+
+/// Text from a client or an error, made safe for one log line: cut to 120 characters, with
+/// control characters (newlines among them) written as escapes.
+fn log_text(raw: &str) -> String {
+    let mut clean = String::new();
+    for c in raw.chars().take(LOG_TEXT_MAX_CHARS) {
+        if c.is_control() {
+            clean.extend(c.escape_default());
+        } else {
+            clean.push(c);
+        }
+    }
+    clean
+}
+
+pub fn log_agent(agent: Option<&AgentId>) -> String {
+    agent.map_or_else(|| "-".to_string(), |agent| log_text(&agent.0))
+}
+
+/// The log line for a closed socket: what the peer or the runtime said, and who it was.
+pub fn close_log_line(
+    code: usize,
+    was_clean: bool,
+    reason: &str,
+    agent: Option<&AgentId>,
+) -> String {
+    let (reason, agent) = (log_text(reason), log_agent(agent));
+    format!("socket closed: code={code} clean={was_clean} reason=\"{reason}\" agent={agent}")
+}
+
+/// The log line for a failed socket.
+pub fn error_log_line(error: &str, agent: Option<&AgentId>) -> String {
+    format!(
+        "socket error: \"{}\" agent={}",
+        log_text(error),
+        log_agent(agent)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2280,6 +2341,158 @@ mod tests {
         assert_eq!(agent_to_withdraw(&bound("a1"), &[], queued_only_a2), None);
         let to_withdraw = agent_to_withdraw(&bound("a2"), &[], queued_only_a2);
         assert_eq!(to_withdraw, Some(agent("a2")));
+    }
+
+    fn claim_files(req: u64, paths: &[&str], on_conflict: OnConflict) -> ClientMsg {
+        let scopes = paths
+            .iter()
+            .map(|path| ScopeClaim {
+                scope: Scope::File {
+                    path: (*path).into(),
+                },
+                mode: Mode::EditBody,
+            })
+            .collect();
+        ClientMsg::Claim {
+            req: RequestId(req),
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: vec![],
+            },
+            scopes,
+            on_conflict,
+        }
+    }
+
+    /// `a` holds x.rs (claim 1) and `e` holds y.rs; `b` waits on both, `c` waits behind `b`.
+    fn queue_b_then_c() -> Core {
+        let mut core = new_core();
+        core.handle(
+            &agent("a"),
+            claim_files(1, &["x.rs"], OnConflict::Fail),
+            NOW,
+        );
+        core.handle(
+            &agent("e"),
+            claim_files(1, &["y.rs"], OnConflict::Fail),
+            NOW,
+        );
+        core.handle(
+            &agent("b"),
+            claim_files(7, &["y.rs", "x.rs"], OnConflict::Wait),
+            NOW,
+        );
+        core.handle(
+            &agent("c"),
+            claim_files(8, &["x.rs"], OnConflict::Wait),
+            NOW,
+        );
+        let release = ClientMsg::Release {
+            claim: ClaimId(1),
+            fence: Fence(1),
+            req: None,
+        };
+        core.handle(&agent("a"), release, NOW);
+        core
+    }
+
+    #[test]
+    fn a_server_closed_only_socket_withdraws_its_request_and_grants_the_next_waiter() {
+        let mut core = queue_b_then_c();
+        let others = [bound("c"), bound("e"), watcher()];
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let doomed = agents_to_withdraw(&[bound("b")], &others, queued);
+        assert_eq!(doomed, vec![agent("b")]);
+
+        let (events, outbound) = split_effects(core.disconnect(&doomed[0], NOW));
+        let kinds: Vec<&EventKind> = events.iter().map(|event| &event.kind).collect();
+        let [EventKind::WaitWithdrawn {
+            agent: withdrawn,
+            req,
+        }, EventKind::ClaimGranted {
+            agent: granted,
+            fence: stored_fence,
+            ..
+        }] = kinds[..]
+        else {
+            panic!("expected WaitWithdrawn then ClaimGranted, got {kinds:?}");
+        };
+        assert_eq!((withdrawn, *req), (&agent("b"), RequestId(7)));
+        assert_eq!(granted, &agent("c"));
+        let [Outbound::Notify {
+            agent: to,
+            msg: ServerMsg::Granted { fence, .. },
+        }] = &outbound[..]
+        else {
+            panic!("expected one Granted notice, got {outbound:?}");
+        };
+        assert_eq!(to, &agent("c"));
+        assert_eq!(
+            fence, stored_fence,
+            "the notice carries the fence that is stored"
+        );
+        assert!(!core.has_queued_request(&agent("b")));
+    }
+
+    #[test]
+    fn a_server_closed_socket_withdraws_nothing_while_another_socket_of_the_agent_is_open() {
+        let core = queue_b_then_c();
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let twin = [bound("b"), bound("c")];
+        assert!(agents_to_withdraw(&[bound("b")], &twin, queued).is_empty());
+    }
+
+    #[test]
+    fn a_second_close_of_a_withdrawn_agent_is_a_no_op() {
+        let mut core = queue_b_then_c();
+        core.disconnect(&agent("b"), NOW);
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        assert!(agents_to_withdraw(&[bound("b")], &[bound("c")], queued).is_empty());
+        assert!(core.disconnect(&agent("b"), NOW).is_empty());
+    }
+
+    #[test]
+    fn two_server_closed_sockets_of_one_agent_withdraw_it_once() {
+        let core = queue_b_then_c();
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let closing = [bound("b"), bound("c"), bound("b"), watcher()];
+        let doomed = agents_to_withdraw(&closing, &[bound("e")], queued);
+        assert_eq!(doomed, vec![agent("b"), agent("c")]);
+        let shielded = agents_to_withdraw(&closing, &[bound("b")], queued);
+        assert_eq!(shielded, vec![agent("c")]);
+    }
+
+    #[test]
+    fn a_close_line_names_the_code_the_cleanliness_the_reason_and_the_agent() {
+        let line = close_log_line(1006, false, "gone", Some(&agent("a1")));
+        assert_eq!(
+            line,
+            r#"socket closed: code=1006 clean=false reason="gone" agent=a1"#
+        );
+        let unbound = close_log_line(1000, true, "", None);
+        assert_eq!(
+            unbound,
+            r#"socket closed: code=1000 clean=true reason="" agent=-"#
+        );
+        assert_eq!(
+            error_log_line("boom", Some(&agent("a1"))),
+            r#"socket error: "boom" agent=a1"#
+        );
+    }
+
+    #[test]
+    fn a_log_line_cuts_a_long_reason_and_escapes_control_characters() {
+        let long = close_log_line(1011, true, &"x".repeat(500), None);
+        assert_eq!(long.matches('x').count(), 120);
+        let forged = close_log_line(1011, true, "ok\ncoordinator: forged\r\u{1b}[0m", None);
+        assert!(!forged.contains('\n') && !forged.contains('\r') && !forged.contains('\u{1b}'));
+        assert!(
+            forged.contains(r"ok\ncoordinator: forged\r\u{1b}[0m"),
+            "{forged}"
+        );
+        let error = error_log_line("a\tb", None);
+        assert_eq!(error, r#"socket error: "a\tb" agent=-"#);
     }
 
     fn log_event(seq: u64, kind: EventKind) -> Event {
