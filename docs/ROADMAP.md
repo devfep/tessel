@@ -5,44 +5,69 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-07 20:29 EDT. LOCKFILE FREEZE in force for AX-MCP's landing: no lane may change Cargo.lock or tessel-steward/pnpm-lock.yaml until AX-MCP merges. AX-MCP Opus fixes applied at `dd71588`; waiting on Felix to deploy the steward from `.claude/worktrees/ax-mcp` (image rebuild with rmcp's 28 crates). COORD-CLOSE-WITHDRAW pushed `9c086e9`, waiting on Felix to run its submit (classifier). SWARM-RECONNECT building. Earlier: Trunk `43edf24` (SWARM-WAIT, AX-INBOX, AX-GITHOOKS merged). Live A/B run 3 (wait, seed 3, 40 tasks, 30 agents) started 19:31 from `43edf24` WITH `wrangler tail` on tessel-coordinator-swarm (scratchpad `orch/swarm-tail.jsonl`, `orch/ab-wait3/`) to catch why sockets close. AX-MCP lane building. Earlier (17:04): A/B rerun FAILED again (see SWARM-WAIT); lanes live: AX-INBOX (`lane-ax-inbox`) and SWARM-WAIT (`lane-swarm-wait`, Opus). UX plan published for Felix: https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd (three decisions pending).  Earlier: SWARM-LEASE closed at trunk `d9fb232`; A/B run 1 RERUN (wait, seed 3, 40 tasks, 30 agents) started 16:47 from it, output `orch/ab-wait2/`. Felix asked (16:4x) for bold UI/UX proposals: three Opus research agents (dashboard, human review flow, CLI and first run) are writing to the session scratchpad `ux/`; proposals only, no code.
-**Orchestrator:** this session (resumed 19:43 EDT Oct 6 after Felix's context clear).
-**Trunk:** `58bbbc3` (SWARM-FLAKE-SHADOW merged; mirrored). Demo repo `swarm-demo` created live
-(see DEMO-TS). REVIEW-UI closed (Felix checked the page signed in, 12:35).
-**In flight (Felix said proceed, 14:5x):** the Oct 10 scripted A/B runs, started early. Run 1
-(`--policy wait`, seed 3, 40 tasks, 30 agents, overlap 0.5, `--task-timeout-s 1800`, live, repo
-`swarm-s3-tmjwju`) FAILED at 15:11 after 16.5 min: the harness exited on `claim refused
-(StaleFence)`, so no `on` results were written (only the local `off` replay). The coordinator log
-(257 events, 36 of 40 merged) shows claims 12 (a08) and 19 (a24) released `lease_expired`
-exactly 30 s after their grants, never heartbeated. Log and off JSON kept in the session
-scratchpad `orch/ab-wait/`. SWARM-LEASE lane dispatched 15:13 (`lane-swarm-lease`, worktree
-`.claude/worktrees/swarm-lease`, fork `tessel-dogfood--lane-swarm-lease`, from `58bbbc3`):
-root-cause the lapse; a lapsed claim must become that task's outcome, not abort the run. Run 2
-(`shadow`) waits for it. The 3–5 real agents are for the video session with Felix.
-Open: GATE-PATH (process; done in practice for the last three gates), then the Oct 10 A/B runs
-and the milestone pull request.
-**Classifier refusals of normal lane steps today:** a lane's fork-token mint (now a Felix-allowed
-script the orchestrator runs), one lane's `tessel submit` ("Remote Repoint"; Felix ran it), one
-lane's `tessel inbox` polling ("Out-of-Place Publication"; the orchestrator watched the trunk head
-instead). An allow rule for the lanes' `tessel` binary would make this hands-off; Felix's call.
-**Steward** `0f01d3fb`; coordinators `8d66fe32` / swarm `7b7ae508`. GATE-PATH: build the
-curl-free `PATH` in bash (zsh does not split `$PATH` on IFS).
-**Deployed now** (all from trunk `3c50a5e`, by Felix at ~21:50; the classifier refuses
-`cd … && npx wrangler deploy`, so Felix runs deploys from a command the orchestrator hands him
-unless he adds a rule): steward `31b4be89`, `tessel-coordinator` `8d66fe32`,
-`tessel-coordinator-swarm` `7b7ae508`. These supersede the versions listed under Deployed below.
-**Done this session:** COORD-HEAD closed live (trunk `3c50a5e`; stale `demo` head fixed by a
-steward poke; see its entry). Filed CLI-LEASE-LOAD. LINT-RULE2 + CLI-CLIPPY-810 closed at trunk `7d7f4c9` (mirrored; no
-deploy needed: lints and tests only). Felix minted that lane's fork token himself (the classifier
-refused the lane's own mint); later lanes use the allowed mint script below. Shadow swarm run (next action 1): seed 2, 10 tasks, 4 agents, 3 verified
-preventions, 0 false alarms, first live `Settled` releases (events 40, 48, 50); evidence in
-`docs/evidence/2026-10-06/` (`sprint/build` `5a08ad3`). COORD-HEAD design done (Opus, read-only):
-recommendation C, below under COORD-HEAD; its lane waits for the lint lane, which edits
-`src/shell.rs` and `src/coordinator/*`.
-**Permissions (Felix, 20:4x):** `.claude/settings.local.json` allows `Edit(docs/ROADMAP.md)` and
-`bash <session scratchpad>/orch/mint-lane-token.sh <lane>` (mints a lane fork's 1 h write token
-into a 0600 git include file, unprinted). Both rules name this session's scratchpad; move the
-script to `tools/` if they must outlive it.
+**As of:** 2026-10-08 ~00:00 EDT. **HANDOVER: Felix is clearing this session's context.**
+**Orchestrator:** none. Take the role on resume: read this block, `docs/BUILD-PROTOCOL.md` (§2;
+§4 rules 00 and 0), `PLAN.md` §6 and §9, then the open boxes below. No lanes, reviews or
+background jobs are running EXCEPT the AX-MCP lane's tessel daemon (pid 50370, worktree
+`.claude/worktrees/ax-mcp`, claim 76 held) kept for its landing.
+**Trunk:** `e7250de` (mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is at
+`9c086e9` (move it with `git -C .claude/worktrees/deploy checkout --detach origin/artifacts-trunk`).
+**Landed Oct 7 (all reviewed, gated, merged through the steward; see each box):** SWARM-FLAKE-SHADOW
+`58bbbc3`, SWARM-LEASE `d9fb232`, AX-INBOX `01131a5`, AX-GITHOOKS `107fc13`, SWARM-WAIT `43edf24`,
+COORD-CLOSE-WITHDRAW `9c086e9`, SWARM-RECONNECT `e7250de`; plus DEMO-TS/SWARM-REVIEWER-ERR,
+CLI-CONNECT-TIMEOUT, REVIEW-UI (closed signed in), `swarm-demo` repo created live.
+**Deployed:** coordinators from `9c086e9` by Felix (production `7fc954ea`, swarm `dffde46a`:
+COORD-CLOSE-WITHDRAW live); steward `0f01d3fb` (from `b446bf3`; unchanged steward code since).
+**NEXT ACTIONS on resume (in order):**
+1. **AX-MCP landing (blocked on an image push).** Reviewed ("Yes" after fixes), commit `dd71588` on
+   `task-ax-mcp`, fork `tessel-dogfood--lane-ax-mcp`, not yet pushed; claim 76. LOCKFILE FREEZE in
+   force: no lane may change `Cargo.lock` or `tessel-steward/pnpm-lock.yaml` until it merges. The
+   gate image must carry rmcp's 28 crates: the toolchain image `6291dda4eb71` (tag
+   `tessel-steward-testrunner-toolchain:mcp-push`) is built locally; `wrangler containers push`
+   uploads every layer but `822d16b5` (the 318 MB `/usr/local/cargo` layer), which fails every time
+   with `use of closed network connection` on Docker Desktop's internal proxy `192.168.65.1:3128`
+   (also with Little Snitch filtering off; the layer reads back fine with `docker save`; a bigger
+   layer pushed fine). Next try: push from the host bypassing Docker's VM network, e.g. `crane`
+   (Apache-2.0, `brew install crane`) from `docker save` output — first find how to authenticate
+   to `registry.cloudflare.com` (wrangler's docker login). Then Felix runs `npx wrangler deploy` in
+   `.claude/worktrees/ax-mcp/tessel-steward` ("Image already exists remotely"), then POST
+   `/repos/tessel-dogfood/test-runs` on the trunk must pass, then the lane pushes (mint token with
+   `bash tools/mint-lane-token.sh ax-mcp <scratch dir>`) and submits, gate, approve, merge,
+   lift the freeze. Live check after: `claude --debug` shows negotiated protocol 2026-07-28, 7
+   tools in `/mcp`, `tessel_start` leaves stdout parseable. Felix asked to turn Little Snitch
+   filtering back on (it was not the cause).
+2. **Live A/B `wait` run** on the reconnecting harness (build `tessel-swarm` from the trunk in the
+   deploy worktree; same args as `docs/evidence/2026-10-07/README.md`), with `wrangler tail` on
+   `tessel-coordinator-swarm` (record `cf.colo`) and a 5 s ping from the Mac; keep raw output in
+   `docs/evidence/<date>/`; stop the tail by PID after. No live `on` numbers exist yet.
+3. SWARM-SHADOW-RECONNECT (before the live `shadow` run), then the `shadow` A/B run.
+4. Felix's three UX decisions: https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd (build order:
+   the Floor, the review decision card, the CLI decision-card envelope; `tessel init` in or out;
+   post-contest list). Nothing UX is built until he answers.
+5. Smaller open: CLI-CLAIM-EXISTS, REVIEW-SENSITIVE, REVIEW-NOTE (needs Felix), COORD-UNDELIVERED-
+   GRANT (needs Felix: a new ReleaseReason variant; recommendation: leave it), GATE-PATH.
+6. Oct 10–12: milestone pull request from `artifacts-trunk` with `/code-review` and
+   `/security-review` (land the current `docs/ROADMAP.md` through the steward first), then the video.
+**Pending from Felix:** the UX decisions (4); COORD-UNDELIVERED-GRANT and REVIEW-NOTE rulings; the
+protocol hand-merge list below (now also `Review.fork_commit`); an allow rule for lane `tessel`
+commands (offered: `Bash(cd /Users/felixpatawah/repos/tessel/.claude/worktrees/* && target/debug/
+tessel *)`), since the classifier refused lane `tessel submit` four times and a fork push once
+on Oct 7 and Felix ran them by hand.
+**How lanes ran on Oct 7 (keep doing this):** worktree from `origin/artifacts-trunk`; fork via
+`POST /repos/tessel-dogfood/forks/tessel-dogfood--lane-<task>`; the lane mints its own identity
+and claims EACH file as a SEPARATE argument with all modes up front (three lanes passed a
+space-joined zsh variable as one bogus scope); stop before push; Opus review of a `git archive`
+snapshot; fix passes; orchestrator reads any post-Yes commit (rule 00); orchestrator mints the
+fork token (`tools/mint-lane-token.sh`), lane pushes and submits; if held, the orchestrator gates
+an archived copy with `curl` REMOVED from PATH (build the PATH in bash; build tests first with the
+normal PATH) and `--no-fail-fast`, then `tessel review <id> --approve` as `orchestrator`; watch
+the trunk head with a read token (`git ls-remote`) instead of lane inbox loops; check tree or
+patch-id equality, `tools/mirror.sh`, deploy what changed (Felix runs `cd … && npx wrangler
+deploy`), close the box. Lanes must never pattern-kill (`pkill`) or `git stash`; one lane did each.
+Mac load ran 20–100 all day from other sessions (Spotlight, iOS simulators, xcodebuild).
+**Permissions:** `.claude/settings.local.json` allows `Edit(docs/ROADMAP.md)` and the old
+scratchpad path of the mint script; the script now lives in `tools/mint-lane-token.sh` (takes
+`<lane> <dir>`), so a matching rule for it needs adding by Felix.
 The session's permission classifier refuses secret writes, Artifacts deletes, forced pushes and
 settings edits, so Felix runs those from a command the orchestrator hands him. Deploys are allowed
 by `Bash(npx wrangler deploy *)` when run bare (no pipe); lane pushes to `tessel-dogfood--*` forks
