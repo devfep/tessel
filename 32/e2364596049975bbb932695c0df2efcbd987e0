@@ -1,0 +1,4 @@
+intent: make the held-for-review cut-off test robust under load
+assumes: none
+rejected: none
+evidence: test passes; mutant removing clock.work_ms = Some(work_ms) fails it (work_ms 9105 >= 6000)
