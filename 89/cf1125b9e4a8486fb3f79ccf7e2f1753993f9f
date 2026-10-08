@@ -1,0 +1,4 @@
+intent: review fixes for tessel mcp: deadlines in the test client, quoted review refusal asserted, empty-scopes message, MCP wording of the not-running hint, dead evidence check removed
+assumes: none
+rejected: waiting for stdout EOF in finish(); a daemon holding the pipe open hangs it. Now bounded and leaked lines are read after exit
+evidence: workspace 973 passed, tessel-cli passes without curl, clippy 0, fmt ok, deny licenses ok, lock additions only; mutant (daemon inherits stdout and prints) fails in 5 s with 'stdout carried a non-JSON line'
