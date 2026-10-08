@@ -1,0 +1,4 @@
+intent: batch withdrawals survive one agent's failed persist; rename log-only helper
+assumes: ensure_loaded is cheap when the core is cached
+rejected: none
+evidence: tessel-coordinator --lib passes; clippy -D warnings, fmt, wasm 0 warnings
