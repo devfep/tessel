@@ -583,6 +583,12 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Next live run measures: reconnects and close codes per connection, `cf.colo` per `/ws` request
   plus a 5 s ping from the Mac (edge restart vs local loss), DO wall time per message (0.7–1.1 s at
   ~0 CPU in run 3) and per alarm (18–23 s).
+- [ ] **COORD-UNDELIVERED-GRANT** — from the COORD-CLOSE-WITHDRAW review (Oct 7): when a
+  `Granted` fails to send (`deliver`, `src/runtime.rs` ~880), the socket is closed but the granted
+  agent is no longer queued, so nothing is withdrawn and it holds the claim until its lease lapses
+  (one lease lost for waiters behind it). Releasing it early needs a release reason the protocol
+  does not have (`ReleaseReason` is frozen; a new variant needs Felix's ruling). A reconnecting
+  agent can adopt the claim from the log (SWARM-RECONNECT). Pending Felix.
 - [ ] **COORD-CLOSE-WITHDRAW** — found by SWARM-WAIT (Oct 7), checked by the orchestrator in the
   trunk: when the Durable Object closes a socket itself (`close_socket`, `src/runtime.rs` ~285,
   code 1011, after a failed dispatch or send), it does not withdraw that agent's queued request;
