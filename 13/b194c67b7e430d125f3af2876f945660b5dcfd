@@ -1,0 +1,4 @@
+intent: checkpoint for a new session; keep the orchestrator approval script in the repo
+assumes: tessel-steward/.dev.vars holds STEWARD_ADMIN_TOKEN; the ax-mcp worktree's tessel build stays until TESSEL_BIN is given
+rejected: leaving the script in the session scratchpad (a new session cannot see it)
+evidence: shellcheck and shfmt clean; script ran twice by Felix on Oct 8 (claim 77 approved both times)
