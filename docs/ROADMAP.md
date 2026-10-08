@@ -574,7 +574,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `tessel claim`, which created one scope named "a.rs b.rs c.rs" with no warning; the submit was
   then refused as uncovered. `claim` should warn (or refuse, with an override) when a file scope
   does not exist in the worktree and is not being created (`--mode create`).
-- [ ] **SWARM-RECONNECT** — A/B run 3 (Oct 7 19:31–19:39, trunk `43edf24`, `wrangler tail` on):
+- [x] **SWARM-RECONNECT** — A/B run 3 (Oct 7 19:31–19:39, trunk `43edf24`, `wrangler tail` on):
   at 19:39:36–37 every WebSocket dropped at once with no close frame (17 queued agents withdrawn
   in one instant; the Durable Object kept running, one script version, all 376 invocations ok, CPU
   0–24 ms: a transport reset between the Mac and the edge, cause undecided), and the scripted
@@ -583,6 +583,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Next live run measures: reconnects and close codes per connection, `cf.colo` per `/ws` request
   plus a 5 s ping from the Mac (edge restart vs local loss), DO wall time per message (0.7–1.1 s at
   ~0 CPU in run 3) and per alarm (18–23 s).
+  CLOSED 2026-10-07 at trunk `e7250de` (review "With fixes" twice). Agents and the scripted
+  reviewer reconnect (5 tries, full jitter, 0.5 s doubling to 8 s; per-task cap 10); after a
+  reconnect an agent reads the log on a short-lived second connection (retried, closed with a
+  close frame) and `events::standing` decides the stage (no double claim — withdrawals matched on
+  agent AND request, the review's reproduced bug; no double submit; lost denials counted from the
+  log); the reviewer resumes its Watch from the last seen seq and re-sends undecided approvals.
+  JSON `reconnects`; A/B row "Connection resets agents reopened" (a reopened connection does not
+  mean the task merged). The shadow policy does not reconnect (SWARM-SHADOW-RECONNECT). Load-
+  sensitive tests made relative (shadow submission, held-for-review work time, cut-off tasks).
+  Held; gate on `4023b80`: 1014 with `curl` removed from `PATH`, `--no-fail-fast`, clippy 0;
+  approved claim 75; merged patch-id equals the gated one.
 - [ ] **SWARM-SHADOW-RECONNECT** — from the SWARM-RECONNECT review (Oct 7): the shadow policy does
   not reconnect, so a mass reset during the planned live shadow A/B run marks every agent
   disconnected. Do before that run (shadow trials are tied to the claim they were sent on).
