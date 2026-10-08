@@ -589,7 +589,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   (one lease lost for waiters behind it). Releasing it early needs a release reason the protocol
   does not have (`ReleaseReason` is frozen; a new variant needs Felix's ruling). A reconnecting
   agent can adopt the claim from the log (SWARM-RECONNECT). Pending Felix.
-- [ ] **COORD-CLOSE-WITHDRAW** — found by SWARM-WAIT (Oct 7), checked by the orchestrator in the
+- [x] **COORD-CLOSE-WITHDRAW** — found by SWARM-WAIT (Oct 7), checked by the orchestrator in the
   trunk: when the Durable Object closes a socket itself (`close_socket`, `src/runtime.rs` ~285,
   code 1011, after a failed dispatch or send), it does not withdraw that agent's queued request;
   only `websocket_close`/`websocket_error` call `withdraw` (~250–262). Unless Cloudflare then also
@@ -599,7 +599,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `wrangler tail` on `tessel-coordinator-swarm` during a run). The SWARM-WAIT reviewer adds a
   second path with the same signature: `close_socket(ws, "send failed")` at `src/runtime.rs` ~840
   when the GRANT itself fails to send (granted, then lapsed one lease later, 0 `wait_withdrawn`).
-  Compat date is 2026-09-01, so the
+  MERGED 2026-10-07 at trunk `9c086e9` (review "With fixes", then "Yes"): server-initiated closes
+  (dispatch error 1011, send failure, identity mismatch 1008) now withdraw the agent's queued
+  request through a pure `shell::agents_to_withdraw`; a closed socket (session `closed: true`,
+  serde default) cannot shield the agent's other socket; each withdrawal is apply → persist →
+  settle, so rule 6 holds through the settle → withdraw recursion (bounded); one agent's failure
+  no longer stops the batch. Logs for accept/close (code, clean, clamped reason, agent)/error/
+  failed withdraw. Out of scope: a grant that fails to send (COORD-UNDELIVERED-GRANT). Held;
+  gate on `9c086e9`: 988 with `curl` removed from `PATH` (`--no-fail-fast`; an earlier run lost
+  the known flaky swarm timing test at load 76), clippy 0, wasm 0 warnings; approved claim 74;
+  trunk tree equals the gated tree. NOT YET LIVE: needs both coordinators deployed. Compat date
+  is 2026-09-01, so the
   explicit `ws.close()` requirement before 2026-04-07 does not apply.
 - [ ] **REVIEW-SENSITIVE** — from the UX review research (Oct 7): the coordinator calls
   `review_reasons(&touched, threatened, has_evidence, &[])` (`src/coordinator.rs` ~1286), so the
