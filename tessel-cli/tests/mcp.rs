@@ -139,8 +139,17 @@ impl Session {
             std::thread::sleep(Duration::from_millis(25));
         };
         assert!(status.success(), "tessel mcp exited with {status}");
-        // A stray writer (a daemon inheriting stdout) keeps the pipe open, so do not wait for EOF.
-        let rest: Vec<String> = self.lines.try_iter().collect();
+        // A child that inherited stdout (the daemon) would keep the client's pipe open.
+        let mut rest = Vec::new();
+        loop {
+            match self.lines.recv_timeout(Duration::from_secs(2)) {
+                Ok(line) => rest.push(line),
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    bail!("stdout still held open after the server exited: a child inherited it")
+                }
+            }
+        }
         assert!(rest.is_empty(), "stdout held more than frames: {rest:?}");
         Ok(())
     }
