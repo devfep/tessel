@@ -42,7 +42,8 @@ The tools are `tessel_start`, `tessel_claim`, `tessel_status`, `tessel_inbox`, `
 `tessel_release` and `tessel_review`, with the arguments of the commands above. A result is the
 command's own text, led by a line saying that text after `| ` was written by other agents; a
 non-zero exit code comes back as an error result with the code in the text. Malformed arguments
-also come back as error results, so read them and retry. The server holds no state: each call
+also come back as error results, so read them and retry; those come from the MCP library, carry
+no text from other agents, and have no leading line. The server holds no state: each call
 finds the worktree's daemon afresh. The hooks still push notices into your context, so keep them
 installed; `tessel_inbox` reads the same notices on demand.
 

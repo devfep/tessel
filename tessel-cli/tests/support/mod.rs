@@ -742,13 +742,14 @@ impl Agent {
         Ok(Done::from(output?))
     }
 
-    /// Spawns `tessel args...` with piped stdin, stdout and stderr, for a long-lived session.
+    /// Spawns `tessel args...` with piped stdin and stdout and no stderr, for a long-lived
+    /// session.
     pub fn spawn_piped(&self, args: &[&str]) -> Result<std::process::Child> {
         Ok(self
             .command(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()?)
     }
 

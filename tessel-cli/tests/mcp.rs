@@ -13,7 +13,9 @@
 mod support;
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout};
+use std::process::{Child, ChildStdin};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -30,11 +32,15 @@ async fn world() -> Result<(Fake, Agent, Agent)> {
     Ok((fake, a1, a2))
 }
 
+/// Longest the client waits for a response or for the server to exit.
+const DEADLINE: Duration = Duration::from_secs(20);
+
 /// A minimal MCP client. Every line the server writes to stdout must be a JSON-RPC frame.
 struct Session {
     child: Child,
     stdin: Option<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    /// Lines the server wrote to stdout, read by a thread so a stuck pipe cannot hang a test.
+    lines: Receiver<String>,
     next_id: u64,
 }
 
@@ -44,10 +50,18 @@ impl Session {
         let mut child = agent.spawn_piped(&["mcp", "--root", &root])?;
         let stdin = child.stdin.take();
         let stdout = BufReader::new(child.stdout.take().context("no stdout")?);
+        let (sender, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines().map_while(std::result::Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         let mut session = Self {
             child,
             stdin,
-            stdout,
+            lines,
             next_id: 1,
         };
         let init = session.request(
@@ -81,10 +95,15 @@ impl Session {
         frame["params"] = params;
         self.send(&frame)?;
         loop {
-            let mut line = String::new();
-            if self.stdout.read_line(&mut line)? == 0 {
-                bail!("the server closed stdout before answering {method}");
-            }
+            let line = match self.lines.recv_timeout(DEADLINE) {
+                Ok(line) => line,
+                Err(RecvTimeoutError::Timeout) => {
+                    bail!("no answer to {method} within {DEADLINE:?}")
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!("the server closed stdout before answering {method}")
+                }
+            };
             let frame: Value = serde_json::from_str(&line)
                 .with_context(|| format!("stdout carried a non-JSON line: {line:?}"))?;
             assert_eq!(frame["jsonrpc"], "2.0", "not a JSON-RPC frame: {line:?}");
@@ -108,10 +127,20 @@ impl Session {
     /// Closes stdin, waits for the server and requires stdout to be empty after it.
     fn finish(mut self) -> Result<()> {
         drop(self.stdin.take());
-        let mut rest = String::new();
-        std::io::Read::read_to_string(&mut self.stdout, &mut rest)?;
-        let status = self.child.wait()?;
+        let deadline = Instant::now() + DEADLINE;
+        let status = loop {
+            if let Some(status) = self.child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                self.child.kill()?;
+                bail!("tessel mcp did not exit within {DEADLINE:?} of stdin closing");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
         assert!(status.success(), "tessel mcp exited with {status}");
+        // A stray writer (a daemon inheriting stdout) keeps the pipe open, so do not wait for EOF.
+        let rest: Vec<String> = self.lines.try_iter().collect();
         assert!(rest.is_empty(), "stdout held more than frames: {rest:?}");
         Ok(())
     }
@@ -241,6 +270,9 @@ async fn bad_arguments_are_error_results_and_unknown_tools_are_protocol_errors()
     assert!(is_error(&missing), "{missing}");
     let bad_decision = session.call("tessel_review", json!({ "claim": 1, "decision": "maybe" }))?;
     assert!(is_error(&bad_decision), "{bad_decision}");
+    let no_scopes = session.call("tessel_claim", json!({ "scopes": [] }))?;
+    assert!(is_error(&no_scopes), "{no_scopes}");
+    assert!(text_of(&no_scopes).contains("at least one"), "{no_scopes}");
     let no_evidence = session.call("tessel_submit", json!({ "evidence": [] }))?;
     assert!(is_error(&no_evidence), "{no_evidence}");
     assert!(
@@ -264,7 +296,9 @@ async fn a_refused_review_and_a_claim_without_a_daemon_are_error_results() -> Re
     assert!(text_of(&no_daemon).contains("not running"), "{no_daemon}");
     let claim = session.call("tessel_claim", json!({ "scopes": ["src/a.rs"] }))?;
     assert!(is_error(&claim), "{claim}");
-    assert!(text_of(&claim).contains("tessel_start") || text_of(&claim).contains("tessel start"));
+    let hint = text_of(&claim);
+    assert!(hint.contains("call tessel_start"), "{hint}");
+    assert!(!hint.contains("tessel start"), "{hint}");
 
     let review = session.call(
         "tessel_review",
@@ -272,5 +306,15 @@ async fn a_refused_review_and_a_claim_without_a_daemon_are_error_results() -> Re
     )?;
     assert!(is_error(&review), "{review}");
     assert!(text_of(&review).contains("exit code 8"), "{review}");
+    let text = text_of(&review);
+    assert!(text.contains("the coordinator refused"), "{text}");
+    let quoted: Vec<&str> = text.lines().filter(|l| l.contains("reviewer")).collect();
+    assert!(!quoted.is_empty(), "{text}");
+    for line in quoted {
+        assert!(
+            line.starts_with("  | "),
+            "refusal text not quoted: {line:?}"
+        );
+    }
     session.finish()
 }
