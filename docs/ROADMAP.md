@@ -5,37 +5,50 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-08 ~00:00 EDT. **HANDOVER: Felix is clearing this session's context.**
-**Orchestrator:** none. Take the role on resume: read this block, `docs/BUILD-PROTOCOL.md` (§2;
-§4 rules 00 and 0), `PLAN.md` §6 and §9, then the open boxes below. No lanes, reviews or
-background jobs are running EXCEPT the AX-MCP lane's tessel daemon (pid 50370, worktree
-`.claude/worktrees/ax-mcp`, claim 76 held) kept for its landing.
-**Trunk:** `e7250de` (mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is at
-`9c086e9` (move it with `git -C .claude/worktrees/deploy checkout --detach origin/artifacts-trunk`).
+**As of:** 2026-10-08 09:20 EDT.
+**Orchestrator:** taken 02:51 (session after the context clear). On a later resume: read this
+block, `docs/BUILD-PROTOCOL.md` (§2; §4 rules 00 and 0), `PLAN.md` §6 and §9, then the open boxes
+below. No lanes, reviews or background jobs are running.
+**Trunk:** `4033791` (AX-MCP; mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is
+at `9c086e9` (move it with `git -C .claude/worktrees/deploy checkout --detach origin/artifacts-trunk`).
+**LOCKFILE FREEZE LIFTED** (AX-MCP merged 09:16).
+**Oct 8 overnight, AX-MCP landing:** the image push failure was NOT Docker: the Wi-Fi link between
+this Mac and the Optimum Ubee gateway (192.168.1.1) corrupts long TLS uploads to Cloudflare
+(`bad record MAC`). Evidence: plain curl to `speed.cloudflare.com/__up` and our `*.workers.dev`
+fails after 0.2–37 MB over Wi-Fi (IPv4 and IPv6, HTTP/1.1 and 2, TLS 1.2 and 1.3, 1 MB/s or full);
+the same Mac passes on the iPhone hotspot (3/3) and over the Thunderbolt Ethernet `en23` to the
+same gateway (6/6 × 30 MB, 2/2 × 150 MB); a gateway reboot did not help; the only enabled
+data-path filters are Apple's firewall and Little Snitch (content filters cannot modify bytes).
+Unexplained: 30 MB uploads to AWS (httpbin) passed 3/3 over Wi-Fi. **Large Cloudflare uploads
+(image pushes, deploys with new images) must go over Ethernet**: turn Wi-Fi off for the push
+(`networksetup -setairportpower en0 off`, back `on` after). Pushing tools: `crane` and `regctl`
+(brew, Apache-2.0) authenticate with `wrangler containers registries credentials
+registry.cloudflare.com --push --pull --json` piped to `--password-stdin`/`--pass-stdin`, config
+in the scratchpad; the registry advertises `Oci-Chunk-Max-Length: 200000000`.
+Then: steward `02db259b` deployed by Felix from the ax-mcp worktree (toolchain image with rmcp);
+trunk `test-runs` passed; lane claim 76 had lease-expired, re-claimed as 77; submitted, held,
+gated, approved by Felix (the classifier refuses the orchestrator's approval as self-approval);
+the merge was refused once ("tests failed (exit code 101) on the commit rebased onto main"). My
+gate had run on the lane's old base `107fc13`, not the trunk: always gate the tree merged with the
+trunk. The lane merged the trunk (`fc09fed`); the same tree passed locally (1029 + 803, offline,
+no curl) and in a Sandbox test-run on the fork; resubmitted, Felix approved 09:13, merged 09:16 as
+`4033791`; trunk tree equals `fc09fed`'s. The Sandbox failure is an unidentified intermittent
+cargo test (the trial result keeps only the last step's output): filed GATE-OUTPUT.
+**Approvals:** `scratchpad/orch-review.sh <claim> "<note>"` (throwaway worktree, minted
+`orchestrator` identity, `tessel review --approve`, stop) is what Felix runs; offered him an
+allow rule for it.
 **Landed Oct 7 (all reviewed, gated, merged through the steward; see each box):** SWARM-FLAKE-SHADOW
 `58bbbc3`, SWARM-LEASE `d9fb232`, AX-INBOX `01131a5`, AX-GITHOOKS `107fc13`, SWARM-WAIT `43edf24`,
 COORD-CLOSE-WITHDRAW `9c086e9`, SWARM-RECONNECT `e7250de`; plus DEMO-TS/SWARM-REVIEWER-ERR,
 CLI-CONNECT-TIMEOUT, REVIEW-UI (closed signed in), `swarm-demo` repo created live.
 **Deployed:** coordinators from `9c086e9` by Felix (production `7fc954ea`, swarm `dffde46a`:
-COORD-CLOSE-WITHDRAW live); steward `0f01d3fb` (from `b446bf3`; unchanged steward code since).
+COORD-CLOSE-WITHDRAW live); steward `02db259b` (Oct 8 04:1x, from the ax-mcp worktree: steward code
+equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker deploy.
 **NEXT ACTIONS on resume (in order):**
-1. **AX-MCP landing (blocked on an image push).** Reviewed ("Yes" after fixes), commit `dd71588` on
-   `task-ax-mcp`, fork `tessel-dogfood--lane-ax-mcp`, not yet pushed; claim 76. LOCKFILE FREEZE in
-   force: no lane may change `Cargo.lock` or `tessel-steward/pnpm-lock.yaml` until it merges. The
-   gate image must carry rmcp's 28 crates: the toolchain image `6291dda4eb71` (tag
-   `tessel-steward-testrunner-toolchain:mcp-push`) is built locally; `wrangler containers push`
-   uploads every layer but `822d16b5` (the 318 MB `/usr/local/cargo` layer), which fails every time
-   with `use of closed network connection` on Docker Desktop's internal proxy `192.168.65.1:3128`
-   (also with Little Snitch filtering off; the layer reads back fine with `docker save`; a bigger
-   layer pushed fine). Next try: push from the host bypassing Docker's VM network, e.g. `crane`
-   (Apache-2.0, `brew install crane`) from `docker save` output — first find how to authenticate
-   to `registry.cloudflare.com` (wrangler's docker login). Then Felix runs `npx wrangler deploy` in
-   `.claude/worktrees/ax-mcp/tessel-steward` ("Image already exists remotely"), then POST
-   `/repos/tessel-dogfood/test-runs` on the trunk must pass, then the lane pushes (mint token with
-   `bash tools/mint-lane-token.sh ax-mcp <scratch dir>`) and submits, gate, approve, merge,
-   lift the freeze. Live check after: `claude --debug` shows negotiated protocol 2026-07-28, 7
-   tools in `/mcp`, `tessel_start` leaves stdout parseable. Felix asked to turn Little Snitch
-   filtering back on (it was not the cause).
+1. **AX-MCP live check** (the box stays open until it passes): register `tessel mcp` with
+   `claude mcp add --scope local` in a lane worktree; `claude --debug` must show the negotiated
+   protocol 2026-07-28, 7 tools in `/mcp`, and `tessel_start` must leave stdout parseable. Felix asked
+   to turn Little Snitch filtering back on (it was not the cause). GATE-OUTPUT (new, below).
 2. **Live A/B `wait` run** on the reconnecting harness (build `tessel-swarm` from the trunk in the
    deploy worktree; same args as `docs/evidence/2026-10-07/README.md`), with `wrangler tail` on
    `tessel-coordinator-swarm` (record `cf.colo`) and a 5 s ping from the Mac; keep raw output in
@@ -729,6 +742,8 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   so the toolchain image carries the new crates; trunk `test-runs` still passes; submit through the
   steward; re-check `test-runs`; lift the freeze. No admin merge. Risk: rmcp/Claude Code protocol
   version agreement unverified until the live check. After AX-GITHOOKS. About 8 h.
+  MERGED 2026-10-08 09:16 EDT at trunk `4033791` (claim 77, approved by Felix; tree equals the
+  gated `fc09fed`); lockfile freeze lifted. Open until the live check passes (STATE action 1).
 - [x] **SWARM-LEASE** — found by A/B run 1 (Oct 7 15:11): at 30 agents with `--policy wait`, two
   scripted agents never heartbeated a granted claim (expired exactly one lease after the grant),
   and the next request on a lapsed claim (`StaleFence`) aborted the whole run with no `on`
@@ -748,6 +763,11 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
+- [ ] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
+  "tests failed (exit code 101)", then the same tree passed a Sandbox test-run and the next merge.
+  The trial result keeps only the last step's stdout/stderr (the pnpm step), so the failing cargo
+  test is unknown. Keep each step's output (or the failing step's tail) in the trial result and
+  the `submit_rejected` notice, so an intermittent failure names its test. Steward only.
 - [x] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
