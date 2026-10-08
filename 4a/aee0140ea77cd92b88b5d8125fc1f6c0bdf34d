@@ -1,0 +1,4 @@
+intent: SWARM-RECONNECT: agents and the scripted reviewer survive connection resets
+assumes: the coordinator withdraws a queued request when an agent's last socket closes and replays the log before the Welcome on a Watch sent ahead of the Hello
+rejected: re-reading state from Welcome (it carries no claims); resuming without the log (a Merged sent while gone is lost); a per-task cap in the agent loop (a heartbeat reconnect bypassed it, so the cap lives in Conn)
+evidence: cargo test --workspace --locked 1009 tests (978 at 43edf24 + 31 new); 1006 passed and 3 timing assertions in on_local failed under load 65-165 in full runs, each passes alone; tessel-swarm 154 tests all pass with curl absent from PATH; clippy -D warnings and rustfmt clean; local run seed 3, 40 tasks, 30 agents, wait completes (40 merged, 0 resets); 24 mutants, 23 killed, 1 equivalent
