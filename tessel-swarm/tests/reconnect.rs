@@ -22,11 +22,11 @@ const QUICK: Reconnect = Reconnect {
     first_delay: Duration::from_millis(20),
 };
 
-/// For tests that keep the agent out until something happens in the log: enough tries (about 28 s
-/// of pauses) that a loaded machine does not run them out first. A test that passes never waits
-/// them out.
+/// For tests that keep the agent out until something happens in the log: enough tries (about 26 s
+/// of pauses on average) that a loaded machine does not run them out first. A test that passes
+/// never waits them out.
 const PATIENT: Reconnect = Reconnect {
-    tries: 8,
+    tries: 10,
     first_delay: Duration::from_millis(200),
 };
 
@@ -149,12 +149,26 @@ fn assert_accounted(result: &OnResult, tasks: usize) {
 }
 
 #[test]
-fn the_pause_before_each_try_doubles_from_half_a_second_and_stops_at_eight() {
-    let pauses: Vec<u128> = (0..7)
-        .map(|attempt| Reconnect::STANDARD.delay(attempt).as_millis())
+fn the_longest_pause_before_each_try_doubles_from_half_a_second_and_stops_at_eight() {
+    let ceilings: Vec<u128> = (0..7)
+        .map(|attempt| Reconnect::STANDARD.ceiling(attempt).as_millis())
         .collect();
-    assert_eq!(pauses, [500, 1000, 2000, 4000, 8000, 8000, 8000]);
+    assert_eq!(ceilings, [500, 1000, 2000, 4000, 8000, 8000, 8000]);
     assert_eq!(Reconnect::STANDARD.tries, 5);
+}
+
+#[test]
+fn each_pause_is_a_random_share_of_its_ceiling() {
+    let mut seen = std::collections::HashSet::new();
+    for attempt in 0..7 {
+        let ceiling = Reconnect::STANDARD.ceiling(attempt);
+        for _ in 0..50 {
+            let pause = Reconnect::STANDARD.delay(attempt);
+            assert!(pause <= ceiling, "{pause:?} over {ceiling:?}");
+            seen.insert(pause);
+        }
+    }
+    assert!(seen.len() > 100, "the pauses vary: {} distinct", seen.len());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -418,7 +432,7 @@ async fn a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_s
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             cutter.refuse_new(vec![REVIEWER.to_string()]);
-            while connected_count(&log, "a01") < 2 {
+            while connected_count(&log, "a01") < 3 {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

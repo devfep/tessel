@@ -252,7 +252,7 @@ fn add_resets_row(rows: &mut Vec<[String; 3]>, on: &OnResult) {
     rows.insert(
         at,
         row(
-            "Connection resets survived (agents reopened the connection; their waits restarted)",
+            "Connection resets agents reopened",
             "n/a",
             &resets_survived(on).to_string(),
         ),

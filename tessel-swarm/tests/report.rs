@@ -264,8 +264,7 @@ fn every_cell_of_the_table_is_pinned_to_the_number_it_shows() {
     assert_eq!(cells(&table, "Review rejections")[2], "1");
 }
 
-const RESETS_ROW: &str =
-    "Connection resets survived (agents reopened the connection; their waits restarted)";
+const RESETS_ROW: &str = "Connection resets agents reopened";
 const SHADOW_ROW: &str = "Conflicts prevented, verified by shadow runs";
 
 fn shadow_result() -> OnResult {

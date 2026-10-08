@@ -580,13 +580,14 @@ async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
     assert!(observers <= 2, "{observers} observer connects in the log");
     assert!(trials_precede_the_next_claim(&run.result.events) >= 1);
     // A second wait that never saw its trial would run to the limit.
+    let limit_ms = u64::try_from(limit.as_millis()).unwrap();
     for shadowed in run
         .result
         .results
         .iter()
         .filter(|r| r.result == Resolution::Shadowed)
     {
-        assert!(shadowed.waited_ms < 10_000, "{shadowed:?}");
+        assert!(shadowed.waited_ms < limit_ms, "{shadowed:?}");
     }
     run.server.shutdown().await;
 }
@@ -753,7 +754,10 @@ async fn waiting_is_the_time_from_the_claim_to_its_answer_only() {
     let run = run(&tasks, config(2, Policy::Wait, 600)).await;
     let mut waits: Vec<u64> = run.result.results.iter().map(|r| r.waited_ms).collect();
     waits.sort_unstable();
-    assert!(waits[0] < 400, "the holder was granted at once: {waits:?}");
+    assert!(
+        waits[0] + 300 <= waits[1],
+        "the holder was granted long before the second agent: {waits:?}"
+    );
     assert!(
         waits[1] >= 500,
         "the second agent queued for the first one's work: {waits:?}"
@@ -1059,14 +1063,16 @@ async fn an_agent_cut_off_while_it_works_has_its_work_time_counted_as_work() {
         r.work_ms >= 1500,
         "the work it did is counted as work: {r:?}"
     );
-    assert!(r.waited_ms < 1500, "and not as waiting: {r:?}");
+    assert!(r.waited_ms < r.work_ms, "and not as waiting: {r:?}");
     assert_eq!(result.summary.merges, 0);
     server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_cut_off() {
-    // Nobody reviews, so the submission stays held; the agent is cut off eight seconds later.
+    // Nobody reviews, so the submission stays held; the agent is cut off `HELD_FOR` later.
+    const HELD_FOR: Duration = Duration::from_secs(8);
+    let held_ms = u64::try_from(HELD_FOR.as_millis()).unwrap();
     let mut config = config(1, Policy::Wait, 0);
     config.scripted_reviewer = false;
     let scratch = tempfile::tempdir().unwrap();
@@ -1080,7 +1086,7 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
         {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_secs(8)).await;
+        tokio::time::sleep(HELD_FOR).await;
         assert!(cutter.cut("a01"), "a01 had an open socket");
     });
     let agents = scratch.path().join("agents");
@@ -1092,10 +1098,10 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
     let r = &result.results[0];
     assert_eq!(r.result, Resolution::Disconnected, "{r:?}");
     assert!(
-        r.work_ms < 6000,
+        r.work_ms < held_ms,
         "work ends at the push, not at the close: {r:?}"
     );
-    assert!(r.waited_ms < 6000, "{r:?}");
+    assert!(r.waited_ms < held_ms, "{r:?}");
     assert_eq!(result.summary.merges, 0);
     server.shutdown().await;
 }

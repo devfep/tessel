@@ -1,6 +1,8 @@
 //! One WebSocket connection to a coordinator, speaking the real protocol types.
 
+use std::collections::hash_map::RandomState;
 use std::future::Future;
+use std::hash::Hasher;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -53,7 +55,8 @@ fn closed(how: impl Into<String>) -> anyhow::Error {
 }
 
 /// How a connection that ended without the agent asking for it is reopened: `tries` attempts, the
-/// first after `first_delay` and each later one after twice the one before, up to eight seconds.
+/// first within `first_delay` and each later one within twice the one before, up to eight seconds,
+/// each pause a random share of that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reconnect {
     pub tries: u32,
@@ -66,19 +69,28 @@ impl Reconnect {
         tries: 0,
         first_delay: Duration::ZERO,
     };
-    /// Five tries after 0.5 s, 1 s, 2 s, 4 s and 8 s.
+    /// Five tries within 0.5 s, 1 s, 2 s, 4 s and 8 s.
     pub const STANDARD: Self = Self {
         tries: 5,
         first_delay: Duration::from_millis(500),
     };
 
-    /// The pause before try number `attempt`, counting from 0.
+    /// The longest pause before try number `attempt`, counting from 0.
     #[must_use]
-    pub fn delay(self, attempt: u32) -> Duration {
+    pub fn ceiling(self, attempt: u32) -> Duration {
         let doublings = 2_u32.saturating_pow(attempt);
         self.first_delay
             .saturating_mul(doublings)
             .min(MAX_RECONNECT_DELAY)
+    }
+
+    /// The pause before try number `attempt`: anywhere from none to the ceiling ("full jitter"),
+    /// so that agents cut at the same instant do not all come back at the same instant.
+    #[must_use]
+    pub fn delay(self, attempt: u32) -> Duration {
+        let random = std::hash::BuildHasher::build_hasher(&RandomState::new()).finish();
+        let nanos = self.ceiling(attempt).as_nanos() * u128::from(random) / u128::from(u64::MAX);
+        Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
     }
 }
 
@@ -337,6 +349,18 @@ impl Conn {
         base: &str,
         watch_from: Option<u64>,
     ) -> Result<Vec<Event>> {
+        let (fresh, replayed) = self.handshake(agent, base, watch_from).await?;
+        self.socket = fresh.socket;
+        self.unawaited.clear();
+        Ok(replayed)
+    }
+
+    async fn handshake(
+        &self,
+        agent: &str,
+        base: &str,
+        watch_from: Option<u64>,
+    ) -> Result<(Self, Vec<Event>)> {
         let mut fresh = Self::open(&self.url, &self.token)
             .await?
             .with_heartbeat(self.heartbeat_every);
@@ -350,9 +374,24 @@ impl Conn {
         };
         fresh.send(&hello).await?;
         let replayed = fresh.read_replay(agent, watch_from.is_some()).await?;
-        self.socket = fresh.socket;
-        self.unawaited.clear();
-        Ok(replayed)
+        Ok((fresh, replayed))
+    }
+
+    /// The whole event log as of now, read on a second, short-lived connection for the same agent
+    /// that closes when the read ends, so this connection does not become a watcher. The agent's
+    /// other connection keeps it connected when this one closes. Fails with a [`Closed`] that gave
+    /// up: the caller does not try again.
+    pub async fn snapshot(&self) -> Result<Vec<Event>> {
+        let Some((agent, base)) = self.identity.clone() else {
+            return Err(closed("no hello to repeat on a log connection"));
+        };
+        match self.handshake(&agent, &base, Some(0)).await {
+            Ok((_closed_on_drop, log)) => Ok(log),
+            Err(error) => Err(anyhow::Error::new(Closed {
+                how: format!("could not read the log after reconnecting: {error:#}"),
+                gave_up: true,
+            })),
+        }
     }
 
     /// Reads up to the `Welcome` and, when a replay was asked for, up to the connection's own

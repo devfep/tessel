@@ -339,18 +339,32 @@ pub fn standing(log: &[Event], agent: &str, task_ref: &str) -> Standing {
             }
             continue;
         }
-        now = follow(now, &event.kind);
+        now = follow(now, &event.kind, agent);
     }
     now
 }
 
+/// How many times `agent` was denied a claim for `task_ref`, from `log` read from seq 0. A denial
+/// is answered once; one the agent never heard shows here and not in its own count.
+pub fn denials(log: &[Event], agent: &str, task_ref: &str) -> u32 {
+    let denied = log.iter().filter(|e| {
+        matches!(
+            &e.kind,
+            EventKind::ClaimDenied { agent: who, intent, .. }
+                if who.0 == agent && intent.task_ref.as_deref() == Some(task_ref)
+        )
+    });
+    u32::try_from(denied.count()).unwrap_or(u32::MAX)
+}
+
 /// `now` after `kind`, if `kind` is about the claim `now` is about.
-fn follow(now: Standing, kind: &EventKind) -> Standing {
+fn follow(now: Standing, kind: &EventKind, agent: &str) -> Standing {
     match now {
         Standing::Queued { req, scopes } => {
             let withdrawn = matches!(
                 kind,
-                EventKind::WaitWithdrawn { req: gone, .. } if *gone == req
+                EventKind::WaitWithdrawn { agent: who, req: gone }
+                    if *gone == req && who.0 == agent
             );
             if withdrawn {
                 Standing::Unclaimed
@@ -962,5 +976,48 @@ mod tests {
         log.push(queued(2, "a01", 6, "t01"));
         log.push(granted(3, "a01", 1, 10, "t01"));
         open_of(standing(&log, "a01", "t01"));
+    }
+
+    #[test]
+    fn another_agents_withdrawal_with_the_same_request_id_leaves_the_request_queued() {
+        let withdrawn = event(
+            1,
+            EventKind::WaitWithdrawn {
+                agent: AgentId("a02".into()),
+                req: RequestId(5),
+            },
+        );
+        let log = [queued(0, "a01", 5, "t01"), withdrawn];
+        assert!(matches!(
+            standing(&log, "a01", "t01"),
+            Standing::Queued { .. }
+        ));
+    }
+
+    #[test]
+    fn denials_are_counted_for_the_agent_and_task_alone() {
+        let denied = |seq, agent: &str, task_ref: &str| {
+            event(
+                seq,
+                EventKind::ClaimDenied {
+                    agent: AgentId(agent.into()),
+                    scopes: Vec::new(),
+                    intent: tessel_coordinator::protocol::Intent {
+                        summary: "s".into(),
+                        task_ref: Some(task_ref.into()),
+                        assumptions: Vec::new(),
+                    },
+                    conflicts: Vec::new(),
+                },
+            )
+        };
+        let log = [
+            denied(0, "a01", "t01"),
+            denied(1, "a01", "t01"),
+            denied(2, "a02", "t01"),
+            denied(3, "a01", "t02"),
+        ];
+        assert_eq!(denials(&log, "a01", "t01"), 2);
+        assert_eq!(denials(&log, "a03", "t01"), 0);
     }
 }

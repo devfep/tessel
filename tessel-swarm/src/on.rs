@@ -597,6 +597,7 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
             work: &work,
             agent: &name,
             task: &item.task,
+            denials: item.denials,
         };
         conn.begin_task();
         let mut clock = Clock::starting_at(conn.reconnects());
@@ -723,6 +724,8 @@ struct Job<'a> {
     work: &'a Git,
     agent: &'a str,
     task: &'a Task,
+    /// Denials of this task the agent has heard about.
+    denials: u32,
 }
 
 /// When a task's claim was sent and granted, and its work time once that is fixed: what an agent
@@ -783,6 +786,8 @@ impl Clock {
 /// when the connection broke.
 enum Stage {
     Claim,
+    /// The claim was denied and the denial was lost with the connection.
+    Denied,
     /// The claim was sent and is still queued: wait for its grant.
     Grant {
         req: RequestId,
@@ -801,8 +806,9 @@ enum Stage {
 }
 
 /// Runs one task. A connection that ends under it is reopened, if the connection may be (and has
-/// not been too often for this task), and the task goes on from where the coordinator's log says it stood, because whatever the coordinator
-/// sent while the agent was gone is lost and the queued request was withdrawn.
+/// not been too often for this task), and the task goes on from where the coordinator's log says
+/// it stood, because whatever the coordinator sent while the agent was gone is lost and the
+/// queued request was withdrawn.
 async fn run_task(ctx: &Ctx, job: &Job<'_>, conn: &mut Conn, clock: &mut Clock) -> Result<Step> {
     let mut stage = Stage::Claim;
     loop {
@@ -822,6 +828,11 @@ async fn advance(
 ) -> Result<Step> {
     match stage {
         Stage::Claim => claim_and_work(ctx, job, conn, clock).await,
+        Stage::Denied => Ok(Step {
+            end: End::Denied,
+            work_ms: 0,
+            waited_ms: 0,
+        }),
         Stage::Grant { req, scopes } => granted_and_work(ctx, job, conn, clock, req, scopes).await,
         Stage::Work(held) => work_and_submit(ctx, job, conn, held, clock).await,
         Stage::Outcome(held) => {
@@ -894,20 +905,22 @@ async fn resume(
     if !reopenable || !conn.can_reconnect() {
         return Err(error);
     }
-    let log = conn.reconnect(Some(0)).await?;
-    Ok(stage_from(
-        events::standing(&log, job.agent, &job.task.label()),
-        clock,
-    ))
+    conn.reconnect(None).await?;
+    let log = conn.snapshot().await?;
+    let label = job.task.label();
+    let lost_denial = events::denials(&log, job.agent, &label) > job.denials;
+    let standing = events::standing(&log, job.agent, &label);
+    Ok(stage_from(standing, lost_denial, clock))
 }
 
-fn stage_from(standing: Standing, clock: &mut Clock) -> Stage {
+fn stage_from(standing: Standing, lost_denial: bool, clock: &mut Clock) -> Stage {
     let settled = |held, resolution, note: &str| Stage::Settled {
         held,
         resolution,
         note: note.to_string(),
     };
     match standing {
+        Standing::Unclaimed if lost_denial => Stage::Denied,
         Standing::Unclaimed => {
             clock.restart_wait();
             Stage::Claim
@@ -1442,6 +1455,19 @@ mod tests {
         assert_eq!(desk.pending.len(), 1);
         assert!(desk.pending.contains(&ClaimId(2)));
         assert_eq!(desk.next_seq, 3);
+    }
+
+    #[test]
+    fn a_denial_lost_with_the_connection_sends_the_task_back_as_denied() {
+        let mut clock = Clock::default();
+        assert!(matches!(
+            stage_from(Standing::Unclaimed, true, &mut clock),
+            Stage::Denied
+        ));
+        assert!(matches!(
+            stage_from(Standing::Unclaimed, false, &mut clock),
+            Stage::Claim
+        ));
     }
 
     #[test]
