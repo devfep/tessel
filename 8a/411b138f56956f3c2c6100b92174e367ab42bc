@@ -1,0 +1,4 @@
+intent: keep the raw fresh-clone result with its one failure named
+assumes: none
+rejected: none
+evidence: the logs themselves
