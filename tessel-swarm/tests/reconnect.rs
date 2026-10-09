@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tessel_coordinator::protocol::{Event, EventKind, ReleaseReason};
+use tessel_coordinator::protocol::{ClaimId, Event, EventKind, ReleaseReason};
 use tessel_swarm::conn::{Reconnect, MAX_RESETS_PER_TASK};
 use tessel_swarm::demo;
 use tessel_swarm::guard::ScratchRepo;
@@ -598,20 +598,174 @@ async fn a_wait_that_a_reset_cut_short_is_counted_whole() {
     run.server.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_shadow_policy_does_not_reconnect() {
-    let tasks = [body(1, "unitPrice")];
-    let mut cfg = config(1, 800, QUICK);
+/// Heartbeats too far apart to fire during a test: the shadow agent's first use of its connection
+/// after a cut is then its own request, which is what sends it through the log.
+const NO_BEAT: Duration = Duration::from_secs(30);
+
+fn shadow_config(work_ms: u64, heartbeat_every: Duration) -> OnConfig {
+    let mut cfg = config(2, work_ms, PATIENT);
     cfg.policy = Policy::Shadow;
-    cfg.scripted_reviewer = false;
+    cfg.heartbeat_every = heartbeat_every;
+    cfg
+}
+
+fn shadow_claims(events: &[Event]) -> Vec<(String, ClaimId)> {
+    let mut found = Vec::new();
+    for event in events {
+        if let EventKind::ClaimShadowed { agent, claim, .. } = &event.kind {
+            found.push((agent.0.clone(), *claim));
+        }
+    }
+    found
+}
+
+/// Closes the shadow agent's sockets 40 ms after the log shows its claim shadowed: the answer was
+/// read, the work is under way and nothing is submitted. With `until_lapse` the agent is also
+/// turned away until the lease of its claim has run out. Returns the agent's name.
+fn cut_the_shadow_agent(
+    server: &LocalServer,
+    until_lapse: bool,
+) -> tokio::task::JoinHandle<String> {
+    let (log, cutter) = (server.reader(), server.cutter());
+    tokio::spawn(async move {
+        let agent = loop {
+            if let Some((agent, _)) = shadow_claims(&log.events()).into_iter().next() {
+                break agent;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        };
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        if until_lapse {
+            cutter.refuse_new(vec![agent.clone()]);
+        }
+        assert!(cutter.cut(&agent), "{agent} had an open socket");
+        if until_lapse {
+            let lapsed = |log: &local::LogReader| {
+                count(&log.events(), |k| {
+                    matches!(
+                        k,
+                        EventKind::ClaimReleased {
+                            reason: ReleaseReason::LeaseExpired,
+                            ..
+                        }
+                    )
+                }) > 0
+            };
+            while !lapsed(&log) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            cutter.refuse_new(Vec::new());
+        }
+        agent
+    })
+}
+
+fn submissions_of(events: &[Event], claim: ClaimId) -> usize {
+    count(
+        events,
+        |k| matches!(k, EventKind::Submitted { claim: c, .. } if *c == claim),
+    )
+}
+
+fn outcomes(result: &OnResult) -> Vec<String> {
+    let mut found: Vec<String> = result
+        .results
+        .iter()
+        .map(|r| format!("{:?}", r.result))
+        .collect();
+    found.sort();
+    found
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shadow_agent_cut_before_it_submitted_goes_on_with_the_same_claim() {
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let cfg = shadow_config(1000, NO_BEAT);
+    let mut cut = None;
     let run = run_with(&tasks, &cfg, local::LEASE_MS, |server| {
-        let granted = |e: &Event| matches!(e.kind, EventKind::ClaimGranted { .. });
-        server.cutter().reset_on(granted, Vec::new());
+        cut = Some(cut_the_shadow_agent(server, false));
     })
     .await;
-    let r = &run.result.results[0];
-    assert_eq!(r.result, Resolution::Disconnected, "{r:?}");
-    assert_eq!(r.reconnects, 0, "{r:?}");
+    let agent = cut.unwrap().await.unwrap();
+    let events = &run.result.events;
+    let shadows = shadow_claims(events);
+    assert_eq!(
+        shadows.len(),
+        1,
+        "no second claim for the task: {shadows:?}"
+    );
+    assert_eq!(submissions_of(events, shadows[0].1), 1, "submitted once");
+    assert_eq!(outcomes(&run.result), ["Merged", "Shadowed"]);
+    let mine = run
+        .result
+        .results
+        .iter()
+        .find(|r| r.agent == agent)
+        .unwrap();
+    assert_eq!(mine.result, Resolution::Shadowed, "{mine:?}");
+    assert!(mine.reconnects >= 1, "{mine:?}");
+    let tried = count(events, |k| matches!(k, EventKind::DenialVerified { .. }));
+    assert_eq!(tried, 1, "its trial ran and reached the log");
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mass_reset_as_a_claim_is_shadowed_does_not_end_the_shadow_agent() {
+    // Every socket is reset in the step that logs the shadow claim, so the agent never hears the
+    // answer: it cannot know the claim's fence and claims the task again.
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let cfg = shadow_config(1000, Duration::from_millis(100));
+    let run = run_with(&tasks, &cfg, local::LEASE_MS, |server| {
+        let shadowed = |e: &Event| matches!(e.kind, EventKind::ClaimShadowed { .. });
+        server.cutter().reset_on(shadowed, Vec::new());
+    })
+    .await;
+    assert_eq!(outcomes(&run.result), ["Merged", "Shadowed"]);
+    let events = &run.result.events;
+    let (agent, _) = shadow_claims(events).pop().unwrap();
+    let mine = run
+        .result
+        .results
+        .iter()
+        .find(|r| r.agent == agent)
+        .unwrap();
+    assert!(mine.reconnects >= 1, "{mine:?}");
+    let tried = count(events, |k| matches!(k, EventKind::DenialVerified { .. }));
+    assert_eq!(tried, 1, "the claim it went on with was tried");
+    run.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shadow_claim_that_lapsed_while_its_agent_was_gone_is_that_tasks_lapsed_outcome() {
+    let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
+    let cfg = shadow_config(1000, NO_BEAT);
+    let mut cut = None;
+    let run = run_with(&tasks, &cfg, 5000, |server| {
+        cut = Some(cut_the_shadow_agent(server, true));
+    })
+    .await;
+    let agent = cut.unwrap().await.unwrap();
+    let events = &run.result.events;
+    let shadows = shadow_claims(events);
+    assert_eq!(
+        shadows.len(),
+        1,
+        "no second claim for the task: {shadows:?}"
+    );
+    assert_eq!(
+        submissions_of(events, shadows[0].1),
+        0,
+        "it never submitted"
+    );
+    assert_eq!(outcomes(&run.result), ["Lapsed", "Merged"]);
+    let mine = run
+        .result
+        .results
+        .iter()
+        .find(|r| r.agent == agent)
+        .unwrap();
+    assert_eq!(mine.result, Resolution::Lapsed, "{mine:?}");
+    assert_eq!(mine.reconnects, 1, "{mine:?}");
     run.server.shutdown().await;
 }
 

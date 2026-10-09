@@ -59,12 +59,12 @@ pub struct OnConfig {
     /// Answer every submission held for review with an approval. On by default, for the local
     /// target and the swarm coordinator, where it is the only reviewer.
     pub scripted_reviewer: bool,
-    /// How an agent or the reviewer whose connection ends without being asked to reopens it. The
-    /// shadow policy's agents never reconnect: its trials are tied to the claim they were sent on.
+    /// How an agent or the reviewer whose connection ends without being asked to reopens it.
     pub reconnect: Reconnect,
 }
 
 const LAPSED: &str = "claim lapsed (lease expired)";
+const SHADOW_SUBMITTED: &str = "shadow: submitted for verification, never queued to merge";
 
 /// How a refusal ends a task: a retired fence means the claim's lease ran out.
 fn refused(what: &str, code: ErrorCode, message: &str) -> (Resolution, String) {
@@ -580,14 +580,10 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
     let remote = ctx.endpoint.remote.clone();
     let (work, head) = tokio::task::spawn_blocking(move || remote.checkout(&dir)).await??;
     let token = ctx.endpoint.token_of(&name)?;
-    let reconnect = match ctx.config.policy {
-        Policy::Shadow => Reconnect::OFF,
-        Policy::Wait | Policy::Skip => ctx.config.reconnect,
-    };
     let mut conn = Conn::open(&ctx.endpoint.ws_url, token)
         .await?
         .with_heartbeat(ctx.config.heartbeat_every)
-        .with_reconnect(reconnect);
+        .with_reconnect(ctx.config.reconnect);
     conn.hello(&name, &head).await?;
     loop {
         let Some(mut item) = lock(&ctx.queue).pop_front() else {
@@ -686,6 +682,7 @@ impl Step {
 }
 
 /// A granted claim: what to present to amend, release or submit it.
+#[derive(Clone)]
 struct Held {
     claim: ClaimId,
     fence: Fence,
@@ -694,13 +691,24 @@ struct Held {
     shadow: bool,
 }
 
-impl From<Open> for Held {
-    fn from(open: Open) -> Self {
+impl Held {
+    /// The claim the log shows open. `shadow` says whether it is a shadow claim, which the log
+    /// does not.
+    fn of(open: Open, shadow: bool) -> Self {
         Self {
             claim: open.claim,
             fence: open.fence,
             scopes: open.scopes,
-            shadow: false,
+            shadow,
+        }
+    }
+
+    fn as_open(&self) -> Open {
+        Open {
+            claim: self.claim,
+            fence: self.fence,
+            scopes: self.scopes.clone(),
+            submitted: false,
         }
     }
 }
@@ -739,6 +747,10 @@ struct Clock {
     lost_wait_ms: u64,
     /// The connection's reconnect count when the task began.
     reconnects_before: u32,
+    /// The shadow claim the agent was given for this task, as it was given. The log's
+    /// `ClaimShadowed` holds neither the fence nor the task, so after a reset this is how the
+    /// agent knows which claim is its own.
+    shadow: Option<Held>,
 }
 
 impl Clock {
@@ -797,6 +809,8 @@ enum Stage {
     Work(Held),
     /// The work is submitted: wait for the outcome.
     Outcome(Held),
+    /// A shadow claim's work is submitted: wait for its trial.
+    Trial(Held),
     /// The log already shows how the task ended. `held` is the claim to release, if it is open.
     Settled {
         held: Option<Held>,
@@ -842,6 +856,10 @@ async fn advance(
                 work_ms: clock.spent().1,
                 waited_ms: 0,
             })
+        }
+        Stage::Trial(held) => {
+            let granted = clock.granted.unwrap_or_else(Instant::now);
+            shadow_trial(ctx, held.claim, granted).await
         }
         Stage::Settled {
             held,
@@ -889,6 +907,9 @@ async fn granted_and_work(
         Grant::TimedOut => return Ok(Step::done(Resolution::TimedOut, "no grant in time", 0)),
     };
     clock.granted = Some(Instant::now());
+    if held.shadow {
+        clock.shadow = Some(held.clone());
+    }
     work_and_submit(ctx, job, conn, held, clock).await
 }
 
@@ -909,7 +930,10 @@ async fn resume(
     let log = conn.snapshot().await?;
     let label = job.task.label();
     let lost_denial = events::denials(&log, job.agent, &label) > job.denials;
-    let standing = events::standing(&log, job.agent, &label);
+    let standing = match &clock.shadow {
+        Some(held) => events::standing_of(&log, held.as_open()),
+        None => events::standing(&log, job.agent, &label),
+    };
     Ok(stage_from(standing, lost_denial, clock))
 }
 
@@ -928,21 +952,34 @@ fn stage_from(standing: Standing, lost_denial: bool, clock: &mut Clock) -> Stage
         Standing::Queued { req, scopes } => Stage::Grant { req, scopes },
         Standing::Open(open) => {
             clock.adopt_grant();
-            let submitted = open.submitted;
-            let held = Held::from(open);
-            if submitted {
-                Stage::Outcome(held)
-            } else {
-                Stage::Work(held)
+            let (submitted, shadow) = (open.submitted, clock.shadow.is_some());
+            let held = Held::of(open, shadow);
+            match (submitted, shadow) {
+                (false, _) => Stage::Work(held),
+                (true, false) => Stage::Outcome(held),
+                (true, true) => Stage::Trial(held),
             }
         }
+        Standing::Settled => match clock.shadow.clone() {
+            Some(held) => Stage::Trial(held),
+            None => settled(
+                None,
+                Resolution::Failed,
+                "the claim was settled, which only a shadow claim can be",
+            ),
+        },
         Standing::Merged => settled(
             None,
             Resolution::Merged,
             "merged while the connection was down",
         ),
         Standing::Rejected { reason, open } => {
-            settled(open.map(Held::from), Resolution::Rejected, &reason)
+            let shadow = clock.shadow.is_some();
+            settled(
+                open.map(|o| Held::of(o, shadow)),
+                Resolution::Rejected,
+                &reason,
+            )
         }
         Standing::Lapsed => settled(None, Resolution::Lapsed, LAPSED),
         Standing::Released => settled(
@@ -1064,14 +1101,21 @@ async fn finish_shadow(ctx: &Ctx, conn: &mut Conn, held: &Held, pushed: Pushed) 
         let note = note.unwrap_or_default();
         return Ok(Step::done(resolution, note, millis(granted)));
     }
-    lock(&ctx.accepted_shadows).push(held.claim);
+    shadow_trial(ctx, held.claim, granted).await
+}
+
+/// The rest of a shadow task once its submission is accepted (or the log shows it): the claim is
+/// owed to the final wait, the work time is spent and the agent waits for its own trial. The wait
+/// reads the shared log watch, not the agent's connection, so a reset cannot cost the trial.
+async fn shadow_trial(ctx: &Ctx, claim: ClaimId, granted: Instant) -> Result<Step> {
+    lock(&ctx.accepted_shadows).push(claim);
     // A submitted claim never expires, so the rest needs no heartbeat.
     tokio::time::sleep(Duration::from_millis(ctx.config.work_ms)).await;
     let work_ms = millis(granted);
     let waiting = Instant::now();
-    await_own_trial(ctx, held.claim).await?;
+    await_own_trial(ctx, claim).await?;
     Ok(Step {
-        end: End::Done(resolution, note),
+        end: End::Done(Resolution::Shadowed, Some(SHADOW_SUBMITTED.into())),
         work_ms,
         waited_ms: millis(waiting),
     })
@@ -1301,8 +1345,7 @@ async fn submit_shadow(
         match conn.recv(left).await? {
             None => return Ok((Resolution::TimedOut, Some("no answer to the submit".into()))),
             Some(ServerMsg::Accepted { claim, .. }) if claim == held.claim => {
-                let note = "shadow: submitted for verification, never queued to merge";
-                return Ok((Resolution::Shadowed, Some(note.into())));
+                return Ok((Resolution::Shadowed, Some(SHADOW_SUBMITTED.into())));
             }
             Some(ServerMsg::Uncovered { claim, .. }) if claim == held.claim => {
                 release(conn, held).await?;
@@ -1467,6 +1510,199 @@ mod tests {
         assert!(matches!(
             stage_from(Standing::Unclaimed, false, &mut clock),
             Stage::Claim
+        ));
+    }
+
+    fn shadow_clock() -> Clock {
+        Clock {
+            shadow: Some(Held {
+                shadow: true,
+                ..held(2)
+            }),
+            ..Clock::default()
+        }
+    }
+
+    fn open_claim(submitted: bool) -> Open {
+        Open {
+            claim: ClaimId(2),
+            fence: Fence(2),
+            scopes: Vec::new(),
+            submitted,
+        }
+    }
+
+    #[test]
+    fn a_shadow_claim_not_yet_submitted_goes_on_to_work_as_a_shadow() {
+        let mut clock = shadow_clock();
+        let stage = stage_from(Standing::Open(open_claim(false)), false, &mut clock);
+        assert!(matches!(stage, Stage::Work(h) if h.shadow && h.claim == ClaimId(2)));
+    }
+
+    #[test]
+    fn a_shadow_claim_already_submitted_waits_for_its_trial_not_for_a_merge() {
+        let mut clock = shadow_clock();
+        let stage = stage_from(Standing::Open(open_claim(true)), false, &mut clock);
+        assert!(matches!(stage, Stage::Trial(h) if h.claim == ClaimId(2)));
+    }
+
+    #[test]
+    fn a_shadow_claim_dropped_as_settled_still_waits_for_its_trial_to_be_on_record() {
+        let mut clock = shadow_clock();
+        let stage = stage_from(Standing::Settled, false, &mut clock);
+        assert!(matches!(stage, Stage::Trial(h) if h.claim == ClaimId(2)));
+    }
+
+    #[test]
+    fn a_shadow_claim_whose_lease_ran_out_is_the_tasks_lapsed_outcome() {
+        let mut clock = shadow_clock();
+        let stage = stage_from(Standing::Lapsed, false, &mut clock);
+        assert!(matches!(
+            stage,
+            Stage::Settled {
+                held: None,
+                resolution: Resolution::Lapsed,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_claim_that_is_not_a_shadow_claim_still_waits_for_its_outcome() {
+        let mut clock = Clock::default();
+        let stage = stage_from(Standing::Open(open_claim(true)), false, &mut clock);
+        assert!(matches!(stage, Stage::Outcome(h) if !h.shadow));
+    }
+
+    /// A coordinator that, for every connection, answers a `Hello` with `log` as a replay, a
+    /// `Welcome` and the connection's own `AgentConnected`: what `Conn::snapshot` reads.
+    async fn log_coordinator(log: Vec<Event>) -> String {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    while let Some(Ok(Message::Text(text))) = socket.next().await {
+                        let Ok(ClientMsg::Hello { agent, .. }) = serde_json::from_str(&text) else {
+                            continue;
+                        };
+                        let welcome = ServerMsg::Welcome {
+                            head: CommitId("h".into()),
+                            lease_ms: 30_000,
+                            protocol: tessel_coordinator::protocol::PROTOCOL_VERSION,
+                        };
+                        let marker =
+                            review_event(log.len() as u64, EventKind::AgentConnected { agent });
+                        let mut replies: Vec<ServerMsg> = log
+                            .iter()
+                            .map(|event| ServerMsg::Event {
+                                event: event.clone(),
+                            })
+                            .collect();
+                        replies.push(welcome);
+                        replies.push(ServerMsg::Event { event: marker });
+                        for reply in replies {
+                            let text = serde_json::to_string(&reply).unwrap();
+                            socket.send(Message::text(text)).await.unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        url
+    }
+
+    fn shadow_events(more: Vec<EventKind>) -> Vec<Event> {
+        let shadowed = EventKind::ClaimShadowed {
+            agent: tessel_coordinator::protocol::AgentId("a02".into()),
+            claim: ClaimId(2),
+            scopes: Vec::new(),
+            conflicts: Vec::new(),
+        };
+        std::iter::once(shadowed)
+            .chain(more)
+            .enumerate()
+            .map(|(seq, kind)| review_event(seq as u64, kind))
+            .collect()
+    }
+
+    fn submission() -> EventKind {
+        EventKind::Submitted {
+            claim: ClaimId(2),
+            fork_commit: CommitId("c".repeat(40)),
+            touched: Vec::new(),
+            decisions: DecisionRecord::default(),
+        }
+    }
+
+    /// Where a shadow agent that held claim 2 stands after its connection broke and `log` was read.
+    async fn shadow_stage_after_reset(log: Vec<Event>) -> Stage {
+        let url = log_coordinator(log).await;
+        let token = crate::endpoint::Token::new("t".into());
+        let mut conn = Conn::open(&url, &token)
+            .await
+            .unwrap()
+            .with_reconnect(Reconnect {
+                tries: 3,
+                first_delay: Duration::from_millis(5),
+            });
+        conn.hello("a02", "base").await.unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let work = Git::new(scratch.path());
+        let task = Task {
+            id: 2,
+            func: "unitPrice".into(),
+            kind: Kind::Body,
+        };
+        let job = Job {
+            work: &work,
+            agent: "a02",
+            task: &task,
+            denials: 0,
+        };
+        let mut clock = shadow_clock();
+        let error = anyhow::Error::new(Closed {
+            how: "reset".into(),
+            gave_up: false,
+        });
+        let stage = resume(&job, &mut conn, &mut clock, error).await.unwrap();
+        assert_eq!(conn.reconnects(), 1);
+        stage
+    }
+
+    #[tokio::test]
+    async fn a_shadow_agent_that_reconnects_before_it_submitted_works_on_its_own_claim() {
+        let stage = Box::pin(shadow_stage_after_reset(shadow_events(Vec::new()))).await;
+        assert!(
+            matches!(stage, Stage::Work(h) if h.shadow && h.claim == ClaimId(2) && h.fence == Fence(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shadow_agent_that_reconnects_after_it_submitted_waits_for_its_trial_and_submits_no_more(
+    ) {
+        let stage = Box::pin(shadow_stage_after_reset(shadow_events(vec![submission()]))).await;
+        assert!(matches!(stage, Stage::Trial(h) if h.claim == ClaimId(2)));
+    }
+
+    #[tokio::test]
+    async fn a_shadow_agent_that_reconnects_after_its_lease_ran_out_is_lapsed() {
+        let lapse = EventKind::ClaimReleased {
+            claim: ClaimId(2),
+            reason: tessel_coordinator::protocol::ReleaseReason::LeaseExpired,
+        };
+        let stage = Box::pin(shadow_stage_after_reset(shadow_events(vec![lapse]))).await;
+        assert!(matches!(
+            stage,
+            Stage::Settled {
+                held: None,
+                resolution: Resolution::Lapsed,
+                ..
+            }
         ));
     }
 

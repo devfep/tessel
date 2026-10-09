@@ -297,6 +297,9 @@ pub enum Standing {
     Lapsed,
     /// The agent released the claim.
     Released,
+    /// A submitted shadow claim was dropped because nothing is owed through it any more: its
+    /// blockers ended and its trials are logged. The claim is done, not lapsed.
+    Settled,
 }
 
 /// The standing of the claim `agent` was granted for `task_ref`, from `log` read from seq 0. A
@@ -340,6 +343,17 @@ pub fn standing(log: &[Event], agent: &str, task_ref: &str) -> Standing {
             continue;
         }
         now = follow(now, &event.kind, agent);
+    }
+    now
+}
+
+/// The standing of a claim the agent already holds, from `log` read from seq 0. A shadow claim's
+/// `ClaimShadowed` carries neither its fence nor its task, so the agent that was given the claim
+/// keeps `open` itself and asks the log only what became of it since.
+pub fn standing_of(log: &[Event], open: Open) -> Standing {
+    let mut now = Standing::Open(open);
+    for event in log {
+        now = follow(now, &event.kind, "");
     }
     now
 }
@@ -390,7 +404,8 @@ fn follow(now: Standing, kind: &EventKind, agent: &str) -> Standing {
         | Standing::Merged
         | Standing::Rejected { open: None, .. }
         | Standing::Lapsed
-        | Standing::Released => now,
+        | Standing::Released
+        | Standing::Settled => now,
     }
 }
 
@@ -416,9 +431,8 @@ fn follow_open(mut open: Open, kind: &EventKind) -> Standing {
             return match reason {
                 ReleaseReason::Agent => Standing::Released,
                 ReleaseReason::Merged => Standing::Merged,
-                ReleaseReason::LeaseExpired | ReleaseReason::LostRace | ReleaseReason::Settled => {
-                    Standing::Lapsed
-                }
+                ReleaseReason::Settled => Standing::Settled,
+                ReleaseReason::LeaseExpired | ReleaseReason::LostRace => Standing::Lapsed,
             };
         }
         EventKind::AgentConnected { .. }
@@ -894,14 +908,14 @@ mod tests {
     }
 
     #[test]
-    fn a_claim_released_other_than_by_a_merge_is_lapsed_unless_the_agent_released_it() {
+    fn a_claim_released_other_than_by_a_merge_is_lapsed_unless_the_agent_released_or_settled_it() {
         let lapsed = |reason| {
             let log = [granted(0, "a01", 1, 10, "t01"), released(1, 1, reason)];
             standing(&log, "a01", "t01")
         };
         assert_eq!(lapsed(ReleaseReason::LeaseExpired), Standing::Lapsed);
         assert_eq!(lapsed(ReleaseReason::LostRace), Standing::Lapsed);
-        assert_eq!(lapsed(ReleaseReason::Settled), Standing::Lapsed);
+        assert_eq!(lapsed(ReleaseReason::Settled), Standing::Settled);
         assert_eq!(lapsed(ReleaseReason::Agent), Standing::Released);
         assert_eq!(lapsed(ReleaseReason::Merged), Standing::Merged);
     }
@@ -1019,5 +1033,69 @@ mod tests {
         ];
         assert_eq!(denials(&log, "a01", "t01"), 2);
         assert_eq!(denials(&log, "a03", "t01"), 0);
+    }
+
+    fn known_shadow() -> Open {
+        Open {
+            claim: ClaimId(2),
+            fence: Fence(7),
+            scopes: Vec::new(),
+            submitted: false,
+        }
+    }
+
+    #[test]
+    fn a_known_shadow_claim_the_log_shows_unsubmitted_is_open_and_unsubmitted() {
+        let now = standing_of(&shadowed_pair(), known_shadow());
+        assert_eq!(now, Standing::Open(known_shadow()));
+    }
+
+    #[test]
+    fn a_known_shadow_claim_the_log_shows_submitted_is_open_and_submitted() {
+        let mut log = shadowed_pair();
+        log.push(submitted(2, 2));
+        let open = open_of(standing_of(&log, known_shadow()));
+        assert!(open.submitted);
+        assert_eq!(open.fence, Fence(7), "the fence the agent was given stays");
+    }
+
+    #[test]
+    fn another_claims_submission_is_not_the_known_shadow_claims() {
+        let mut log = shadowed_pair();
+        log.push(submitted(2, 1));
+        assert_eq!(
+            standing_of(&log, known_shadow()),
+            Standing::Open(known_shadow())
+        );
+    }
+
+    #[test]
+    fn a_known_shadow_claim_whose_lease_ran_out_has_lapsed() {
+        let mut log = shadowed_pair();
+        log.push(released(2, 2, ReleaseReason::LeaseExpired));
+        assert_eq!(standing_of(&log, known_shadow()), Standing::Lapsed);
+    }
+
+    #[test]
+    fn a_submitted_shadow_claim_dropped_as_settled_is_settled_not_lapsed() {
+        let mut log = shadowed_pair();
+        log.push(submitted(2, 2));
+        log.push(released(3, 2, ReleaseReason::Settled));
+        assert_eq!(standing_of(&log, known_shadow()), Standing::Settled);
+    }
+
+    #[test]
+    fn an_amend_of_a_known_shadow_claim_moves_its_fence() {
+        let mut log = shadowed_pair();
+        log.push(event(
+            2,
+            EventKind::ClaimAmended {
+                claim: ClaimId(2),
+                fence: Fence(9),
+                added: Vec::new(),
+            },
+        ));
+        let open = open_of(standing_of(&log, known_shadow()));
+        assert_eq!(open.fence, Fence(9));
     }
 }

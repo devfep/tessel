@@ -108,8 +108,13 @@ A reconnect is not free, and not invisible:
 - If the tries run out, the agent's task ends as `disconnected`, as it did before reconnecting
   existed, and the reason in the task's `note` names the tries. If the reviewer cannot reconnect,
   the run fails with an error that names them. One task survives at most 10 reconnects.
-- The shadow policy does not reconnect: its trials are tied to the claim they were sent on, so an
-  agent under it whose connection ends is `disconnected`.
+- Shadow-policy agents reconnect like the others. A shadow claim's `ClaimShadowed` event holds
+  neither its fence nor its task, so the agent keeps the claim it was given and asks the log only
+  what became of it: not submitted, it goes on with the same claim; submitted, it waits for its
+  trial and submits nothing again; past its lease, the task is `lapsed`. The wait for the trial
+  reads the shared log watch, not the agent's connection. If the reset comes before the agent has
+  read the answer to its claim, it cannot know the claim's fence and claims the task again; the
+  first claim stays unsubmitted until its lease ends and has no trial.
 
 Each task in the JSON has a `reconnects` count, and the run has
 `connection_resets_survived_by_agents` (the sum). The A/B table's row "Connection resets agents
