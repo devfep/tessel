@@ -1,0 +1,4 @@
+intent: tighten the transient push classifier per review
+assumes: git prints a status as error: 5xx at the end of its line
+rejected: three digits then any non-digit, because it still matched error: 500 lines
+evidence: cargo test -p tessel-swarm 186 passed; clippy and rustfmt clean
