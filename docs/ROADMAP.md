@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 09:20 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 09:40 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -43,8 +43,17 @@ Mac gate on an archive of `ac8a38a` at load 90–105 (other sessions): 1 failure
 a pre-existing test with a fixed 6 s bound on the shadow's submit; the lane saw 6.5–7.6 s pushes
 under load, 3 failures in 9 runs), everything else passed. Ruling: the lane did not touch that
 test and the Sandbox passed the same tree, so the submission is approved on the Sandbox pass plus
-the Mac pass at `82ed1e4`; the test is filed as SWARM-ONLOCAL-LOAD (below) for the same lane right
-after the merge, before the live `shadow` run.
+the Mac pass at `82ed1e4`; the test is filed as SWARM-ONLOCAL-LOAD (below).
+**Steward refused `ac8a38a` too (09:19, before the approval; "tests failed (exit code 101)").**
+A second Sandbox `test-runs` on the same fork commit failed on ANOTHER pre-existing test:
+tessel-cli `githook.rs` `without_the_recorded_binary_the_one_on_path_is_used_whatever_it_says`,
+`Text file busy (os error 26)`: a Linux fork/exec race between parallel tests that `fs::copy` the
+tessel binary and exec it (CLI-GITHOOK-ETXTBSY, below). So the TRUNK's suite is flaky in the
+Sandbox (two independent flakes seen in three runs; AX-MCP's one refusal on Oct 8 was likely one
+of them). The lane fixes both in its pass (09:25 on_local, 09:40 githook; it owns
+`tests/on_local.rs` and `tessel-cli/tests/githook.rs` for this), then push, submit, approve.
+Claims 78 and 79 were released by the lane's `tessel stop` each time; the approval of 79 (09:22)
+landed after its refusal and decided nothing.
 **Orchestrator tooling this session** (scratchpad `orch/`): `ab-run.sh <policy> <out>`,
 `gate.sh <wt> <sha> <copy>` (curl off PATH), `test-run.sh <repo> <out.json>` (Sandbox gate of a
 repo's main; the json names failing tests), `watch-trunk.sh <old-sha>` (ls-remote with a read
@@ -827,6 +836,13 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   push alone takes 6.5–7.6 s. Make the bound relative to a measured baseline in the test (as
   SWARM-RECONNECT did for its load-sensitive tests) or assert order instead of a wall-clock bound.
   Small; same lane; before the live `shadow` run.
+- [ ] **CLI-GITHOOK-ETXTBSY** — from the SWARM-SHADOW-RECONNECT landing (Oct 9): in the Sandbox
+  (Linux), `tessel-cli/tests/githook.rs` `without_the_recorded_binary_the_one_on_path_is_used_whatever_it_says`
+  fails intermittently with `Text file busy (os error 26)`: `install_then_delete_the_binary` and
+  `installing_from_a_build_directory_warns` copy the tessel binary with `std::fs::copy` and exec
+  it, while other test threads fork children that inherit the open write descriptor until their
+  exec. Copy binaries through a child process (`cp`) so no test thread holds the descriptor.
+  Never reproduces on macOS. Fixed in the SWARM-SHADOW-RECONNECT lane's pass.
 - [ ] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
   "tests failed (exit code 101)", then the same tree passed a Sandbox test-run and the next merge.
   The trial result keeps only the last step's stdout/stderr (the pnpm step), so the failing cargo
