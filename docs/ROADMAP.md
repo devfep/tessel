@@ -5,15 +5,24 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 07:25 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 07:45 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
-`docs/evidence/2026-10-09/ax-mcp-live-check/`). The `tessel` MCP server stays registered in Claude
+`docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
+40 tasks, 30 agents, 07:25–07:40, harness `4033791`, Wi-Fi off so the run went over Ethernet):
+`on` landed 40/40, 0 rejected, 0 lapsed, 0 closed, 0 reconnects, 29 queued waits, 20 scripted
+approvals, 837 s; `off` (local replay) 14/40 with 26 rejected in 14 s. Every edge request at
+`IAD`, 759 DO invocations (mean wall 0.95 s, max 20.4 s), ping 222/222 max 101 ms. Raw output and
+README in `docs/evidence/2026-10-09/ab-wait/`. The `tessel` MCP server stays registered in Claude
 Code's local scope for `.claude/worktrees/ax-mcp` (`claude mcp remove tessel -s local` there
 removes it); that worktree's `.tessel/config.toml` (gitignored, 0600) holds a `lane-ax-mcp`
 identity minted 07:19; its daemon is stopped.
-**Now:** action 2, the live A/B `wait` run (building `tessel-swarm` from the trunk in
-`.claude/worktrees/deploy`, now at `4033791`).
+**Now:** action 3. Lane `lane-swarm-shadow-reconnect` (Sonnet) dispatched 07:43 in
+`.claude/worktrees/swarm-shadow-reconnect` (branch `task-swarm-shadow-reconnect`, fork
+`tessel-dogfood--lane-swarm-shadow-reconnect` created); brief in the session scratchpad
+`orch/brief-swarm-shadow-reconnect.md`; owns `tessel-swarm/src/{on,events,conn}.rs`. Then the
+live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
+`scratchpad/orch/ab-run.sh <policy> <out-dir>`).
 **Trunk:** `4033791` (AX-MCP; mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is
 at `4033791`.
 **LOCKFILE FREEZE LIFTED** (AX-MCP merged 09:16).
@@ -52,7 +61,7 @@ equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker 
 **NEXT ACTIONS (in order):**
 1. DONE 07:20: AX-MCP live check. Still pending from Felix: Little Snitch filtering back on (it
    was not the cause). GATE-OUTPUT (new, below).
-2. **Live A/B `wait` run** on the reconnecting harness (build `tessel-swarm` from the trunk in the
+2. DONE 07:40 (see above). Was: **Live A/B `wait` run** on the reconnecting harness (build `tessel-swarm` from the trunk in the
    deploy worktree; same args as `docs/evidence/2026-10-07/README.md`), with `wrangler tail` on
    `tessel-coordinator-swarm` (record `cf.colo`) and a 5 s ping from the Mac; keep raw output in
    `docs/evidence/<date>/`; stop the tail by PID after. No live `on` numbers exist yet.
@@ -132,7 +141,7 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** none live. `.claude/worktrees/deploy` is a detached checkout of the trunk `7d00ad6`
+**Agents:** `lane-swarm-shadow-reconnect` (implementer, since 07:43). `.claude/worktrees/deploy` is a detached checkout of the trunk `7d00ad6`
 used for deploys (holds `tessel-steward/node_modules`); move it with `git -C .claude/worktrees/deploy
 checkout --detach origin/artifacts-trunk` before each deploy.
 **Coordinator head is stale** (`e894fbe`, the last merge it dispatched): the SHADOW-GC admin merge

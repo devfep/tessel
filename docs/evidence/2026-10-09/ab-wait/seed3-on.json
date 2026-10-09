@@ -1,0 +1,445 @@
+{
+  "connection_resets_survived_by_agents": 0,
+  "event_count": 274,
+  "held_for_review_not_approved": 0,
+  "measured_agent_ms": {
+    "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, summed over attempts",
+    "on_work_later_rejected": 0,
+    "waiting": 12511849,
+    "work_total": 90958
+  },
+  "mode": "on",
+  "policy": "wait",
+  "queued_waits_in_event_log": 29,
+  "rejected_in_event_log": 0,
+  "review_approvals_in_event_log": 20,
+  "review_rejections_in_event_log": 0,
+  "run": {
+    "agents": 30,
+    "overlap": 0.5,
+    "seed": 3,
+    "tasks": 40,
+    "work_ms": 300
+  },
+  "schema": "tessel-swarm/1",
+  "scripted_reviewer": true,
+  "summary_from_event_log": {
+    "assumptions_challenged": 1,
+    "assumptions_confirmed_broken": 0,
+    "base_moved_notices": 2,
+    "claims_granted": 40,
+    "conflicts_prevented_verified": 0,
+    "denials": 0,
+    "false_alarms": 0,
+    "merges": 40,
+    "precision": null,
+    "races_decided": 0,
+    "replay_conflicts": 0,
+    "replay_merges": 0,
+    "reviews_requested": 20
+  },
+  "target": "live",
+  "tasks": [
+    {
+      "agent": "a13",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 1,
+      "waited_ms": 113,
+      "work_ms": 2027
+    },
+    {
+      "agent": "a11",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 2,
+      "waited_ms": 24445,
+      "work_ms": 1926
+    },
+    {
+      "agent": "a10",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 3,
+      "waited_ms": 224966,
+      "work_ms": 2099
+    },
+    {
+      "agent": "a25",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 4,
+      "waited_ms": 36,
+      "work_ms": 1993
+    },
+    {
+      "agent": "a04",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 5,
+      "waited_ms": 244658,
+      "work_ms": 2519
+    },
+    {
+      "agent": "a09",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 6,
+      "waited_ms": 41,
+      "work_ms": 1868
+    },
+    {
+      "agent": "a26",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 7,
+      "waited_ms": 105081,
+      "work_ms": 1688
+    },
+    {
+      "agent": "a05",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 8,
+      "waited_ms": 352292,
+      "work_ms": 1962
+    },
+    {
+      "agent": "a20",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 9,
+      "waited_ms": 434934,
+      "work_ms": 2276
+    },
+    {
+      "agent": "a19",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 10,
+      "waited_ms": 35,
+      "work_ms": 1795
+    },
+    {
+      "agent": "a18",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 11,
+      "waited_ms": 331802,
+      "work_ms": 2733
+    },
+    {
+      "agent": "a06",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 12,
+      "waited_ms": 145315,
+      "work_ms": 1969
+    },
+    {
+      "agent": "a17",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 13,
+      "waited_ms": 414994,
+      "work_ms": 2055
+    },
+    {
+      "agent": "a21",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 14,
+      "waited_ms": 39,
+      "work_ms": 1903
+    },
+    {
+      "agent": "a27",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 15,
+      "waited_ms": 45,
+      "work_ms": 1889
+    },
+    {
+      "agent": "a15",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 16,
+      "waited_ms": 506861,
+      "work_ms": 2212
+    },
+    {
+      "agent": "a16",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 17,
+      "waited_ms": 545702,
+      "work_ms": 2765
+    },
+    {
+      "agent": "a24",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 18,
+      "waited_ms": 528987,
+      "work_ms": 2262
+    },
+    {
+      "agent": "a07",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 19,
+      "waited_ms": 331637,
+      "work_ms": 2591
+    },
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 20,
+      "waited_ms": 394106,
+      "work_ms": 2776
+    },
+    {
+      "agent": "a08",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 21,
+      "waited_ms": 39,
+      "work_ms": 1955
+    },
+    {
+      "agent": "a22",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 22,
+      "waited_ms": 39,
+      "work_ms": 1949
+    },
+    {
+      "agent": "a12",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 23,
+      "waited_ms": 286956,
+      "work_ms": 2740
+    },
+    {
+      "agent": "a29",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 24,
+      "waited_ms": 166094,
+      "work_ms": 1720
+    },
+    {
+      "agent": "a28",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 25,
+      "waited_ms": 612703,
+      "work_ms": 2455
+    },
+    {
+      "agent": "a30",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 26,
+      "waited_ms": 568822,
+      "work_ms": 2140
+    },
+    {
+      "agent": "a14",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 27,
+      "waited_ms": 568686,
+      "work_ms": 2139
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 28,
+      "waited_ms": 38,
+      "work_ms": 1753
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 29,
+      "waited_ms": 612657,
+      "work_ms": 2980
+    },
+    {
+      "agent": "a23",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 30,
+      "waited_ms": 371138,
+      "work_ms": 1792
+    },
+    {
+      "agent": "a13",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 31,
+      "waited_ms": 567603,
+      "work_ms": 2115
+    },
+    {
+      "agent": "a19",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 32,
+      "waited_ms": 623393,
+      "work_ms": 2105
+    },
+    {
+      "agent": "a09",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 33,
+      "waited_ms": 36,
+      "work_ms": 1234
+    },
+    {
+      "agent": "a25",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 34,
+      "waited_ms": 603762,
+      "work_ms": 2244
+    },
+    {
+      "agent": "a21",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 35,
+      "waited_ms": 523469,
+      "work_ms": 3198
+    },
+    {
+      "agent": "a27",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 36,
+      "waited_ms": 605565,
+      "work_ms": 3235
+    },
+    {
+      "agent": "a08",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 37,
+      "waited_ms": 642705,
+      "work_ms": 2558
+    },
+    {
+      "agent": "a22",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 38,
+      "waited_ms": 644342,
+      "work_ms": 3609
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 39,
+      "waited_ms": 527678,
+      "work_ms": 3984
+    },
+    {
+      "agent": "a11",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 40,
+      "waited_ms": 35,
+      "work_ms": 1745
+    }
+  ],
+  "wall_ms": 837059
+}
