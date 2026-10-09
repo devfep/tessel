@@ -1,0 +1,4 @@
+intent: close the box with the merge sha; start the final fresh-clone gate
+assumes: none
+rejected: none
+evidence: trunk tree 489eb2c equals e164717's; mirror.sh fast-forwarded 8c958b3..e164717
