@@ -5,8 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 11:35 EDT. **Orchestrator idle: every dispatchable box is closed; the rest
-waits on Felix (see "Open boxes left") or on the Oct 10–12 milestone steps.** **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 16:50 EDT. **Milestone step 1 in progress (Felix's "proceed", 16:40):
+landing this roadmap, `docs/BUILD-PROTOCOL.md`, the PLAN §6 line and `docs/evidence/` (Oct 5–9)
+on the Artifacts trunk through the steward as one commit from `lane-docs-milestone` (worktree
+`.claude/worktrees/docs-milestone`, branch `task-docs-milestone`, fork
+`tessel-dogfood--lane-docs-milestone`, identity minted 16:45). The orchestrator runs this lane
+itself: docs only, no product code, no Opus review (rule 00: the orchestrator wrote and read every
+line). Next: the milestone pull request from `artifacts-trunk` to `main` with `/code-review` and
+`/security-review`, the fresh-clone test, then the video script for Felix. Every dispatchable
+box stays closed; the rest waits on Felix (see "Open boxes left").** **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -31,9 +38,9 @@ Both PLAN §9 Oct 10 A/B runs (`wait`, `shadow`) now have live numbers a day ear
 **Now / next:** (a) Felix's three UX decisions (action 4 below) gate all UX work; (b) smaller
 open boxes (CLI-CLAIM-EXISTS, REVIEW-SENSITIVE, GATE-PATH, SWARM-PUSH-RETRY; GATE-OUTPUT needs
 Felix's permission call, see the classifier note) when the Mac has headroom (load 45–100 from
-other sessions all morning); (c) Oct 10–12: land `docs/ROADMAP.md` through the steward, the
-milestone pull request from `artifacts-trunk` with `/code-review` and `/security-review`, the
-video. The deploy worktree is at `8e9ceed`; no Worker deploy is pending.
+other sessions all morning); (c) Oct 10–12, STARTED 16:50 a day early: land the docs through the steward (in
+progress), the milestone pull request from `artifacts-trunk` with `/code-review` and
+`/security-review`, the fresh-clone test, the video. The deploy worktree is at `8e9ceed`; no Worker deploy is pending.
 History of the landing: lane `lane-swarm-shadow-reconnect` (Sonnet) dispatched 07:43 in
 `.claude/worktrees/swarm-shadow-reconnect` (branch `task-swarm-shadow-reconnect`, fork
 `tessel-dogfood--lane-swarm-shadow-reconnect` created); brief in the session scratchpad
@@ -144,8 +151,9 @@ equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker 
    post-contest list). Nothing UX is built until he answers.
 5. Smaller open: CLI-CLAIM-EXISTS, REVIEW-SENSITIVE, REVIEW-NOTE (needs Felix), COORD-UNDELIVERED-
    GRANT (needs Felix: a new ReleaseReason variant; recommendation: leave it), GATE-PATH.
-6. Oct 10–12: milestone pull request from `artifacts-trunk` with `/code-review` and
-   `/security-review` (land the current `docs/ROADMAP.md` through the steward first), then the video.
+6. STARTED 16:50. Oct 10–12: milestone pull request from `artifacts-trunk` with `/code-review` and
+   `/security-review` (land the current `docs/ROADMAP.md` through the steward first: in progress),
+   the fresh-clone test, then the video.
 **Pending from Felix:** the UX decisions (4); COORD-UNDELIVERED-GRANT and REVIEW-NOTE rulings; the
 protocol hand-merge list below (now also `Review.fork_commit`); an allow rule for lane `tessel`
 commands (offered: `Bash(cd /Users/felixpatawah/repos/tessel/.claude/worktrees/* && target/debug/
@@ -214,8 +222,9 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** none live; every lane worktree is reclaimed (only `ax-mcp`, kept for its `tessel`
-binary that `tools/orch-review.sh` uses, and `deploy` remain). No background jobs; Wi-Fi on. One lane at a
+**Agents:** `lane-docs-milestone`, run by the orchestrator in `.claude/worktrees/docs-milestone`.
+Also kept: `ax-mcp` (its `tessel` binary serves `tools/orch-review.sh`) and `deploy` (trunk
+`c6d6c76`; `tessel-cli` build started 16:45 so claims use the current CLI). Wi-Fi on. One lane at a
 time while other sessions keep the load at 20–100 (a reviewer saw load 493 once).
 **Open boxes left:** REVIEW-SENSITIVE (recommendation above, needs Felix's yes), REVIEW-NOTE
 (needs Felix), COORD-UNDELIVERED-GRANT (needs Felix), GATE-PATH, GATE-OUTPUT (classifier call),
