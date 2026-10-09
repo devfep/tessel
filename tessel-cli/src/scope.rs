@@ -24,6 +24,10 @@ pub enum ScopeError {
          something you are about to create"
     )]
     Missing { scope: String },
+    #[error("scope {scope:?} is not a directory in this worktree")]
+    NotDirectory { scope: String },
+    #[error("scope {scope:?} is not a file in this worktree: a symbol scope names a file")]
+    NotFile { scope: String },
 }
 
 /// Parses one scope argument. A trailing `/` makes a directory; `::` splits a file path from a
@@ -57,23 +61,52 @@ pub fn parse(arg: &str) -> Result<Scope, ScopeError> {
 }
 
 /// Refuses `scope` (parsed from `arg`) when the file or directory it names is absent from the
-/// worktree `root`. A symbol scope needs its file. Claims in `create` mode skip this check
-/// because they name what the agent is about to add.
+/// worktree `root` and from `HEAD`, so a file deleted or renamed before the claim can still be
+/// claimed. A directory scope must name a directory and a symbol scope a file. Claims in
+/// `create` mode skip the check because they name what the agent is about to add.
 pub fn check_exists(root: &Path, arg: &str, scope: &Scope, mode: Mode) -> Result<(), ScopeError> {
     match mode {
         Mode::Create => return Ok(()),
         Mode::Depend | Mode::EditBody | Mode::EditSignature => {}
     }
-    let path = match scope {
-        Scope::File { path } | Scope::Dir { path } => path,
-        Scope::Symbol(symbol) => &symbol.path,
+    let (path, is_dir_scope, is_symbol) = match scope {
+        Scope::File { path } => (path, false, false),
+        Scope::Dir { path } => (path, true, false),
+        Scope::Symbol(symbol) => (&symbol.path, false, true),
     };
-    if root.join(path).exists() {
+    let full = root.join(path);
+    let scope_text = arg.to_string();
+    if full.exists() {
+        if is_dir_scope && !full.is_dir() {
+            return Err(ScopeError::NotDirectory { scope: scope_text });
+        }
+        if is_symbol && full.is_dir() {
+            return Err(ScopeError::NotFile { scope: scope_text });
+        }
         return Ok(());
     }
-    Err(ScopeError::Missing {
-        scope: arg.to_string(),
-    })
+    if exists_at_head(root, path, is_dir_scope) {
+        return Ok(());
+    }
+    Err(ScopeError::Missing { scope: scope_text })
+}
+
+/// Whether `HEAD` holds `path` (a tree when `want_tree`), as `git cat-file -t` reports.
+fn exists_at_head(root: &Path, path: &str, want_tree: bool) -> bool {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "-t"])
+        .arg(format!("HEAD:{path}"))
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let is_tree = output.stdout.trim_ascii() == b"tree";
+    !want_tree || is_tree
 }
 
 /// A scope argument holding whitespace is usually several paths joined into one word.

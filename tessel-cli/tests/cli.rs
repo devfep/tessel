@@ -518,6 +518,76 @@ async fn a_scope_with_whitespace_warns_on_stderr_without_refusing() -> Result<()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_deleted_before_the_claim_can_still_be_claimed() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("delete a file")?;
+    git(&a1.root(), &["rm", "-q", "src/b.rs"])?;
+    let done = a1.tessel(&["claim", "--mode", "edit-signature", "src/b.rs"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let symbol = a1.tessel(&["claim", "--mode", "edit-signature", "src/b.rs::b"])?;
+    assert_eq!(symbol.code, 0, "{}", symbol.all());
+    let never = a1.tessel(&["claim", "--mode", "edit-signature", "src/never.rs"])?;
+    assert_eq!(never.code, 1, "{}", never.all());
+    assert!(never.stderr.contains("does not exist"), "{}", never.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_directory_deleted_before_the_claim_can_still_be_claimed() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("delete a directory")?;
+    git(&a1.root(), &["rm", "-r", "-q", "src"])?;
+    let done = a1.tessel(&["claim", "--mode", "edit-signature", "src/"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let file_as_dir = a1.tessel(&["claim", "--mode", "edit-signature", "src/a.rs/"])?;
+    assert_eq!(file_as_dir.code, 1, "{}", file_as_dir.all());
+    assert!(
+        file_as_dir.stderr.contains("does not exist"),
+        "{}",
+        file_as_dir.stderr
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn existence_is_checked_against_the_worktree_root_not_the_cwd() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("claim from a subdirectory")?;
+    std::fs::write(a1.root().join("src/untracked.rs"), "pub fn u() {}\n")?;
+    let done = a1.tessel_in(&["claim", "src/untracked.rs", "src/a.rs"], "src")?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_directory_scope_naming_a_file_is_refused() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("dir scope on a file")?;
+    let done = a1.tessel(&["claim", "src/a.rs/"])?;
+    assert_eq!(done.code, 1, "{}", done.all());
+    assert!(done.stderr.contains("src/a.rs/"), "{}", done.stderr);
+    assert!(
+        done.stderr.contains("is not a directory"),
+        "{}",
+        done.stderr
+    );
+    assert_eq!(claim_ids(&a1)?, Vec::<u64>::new());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_symbol_scope_whose_path_is_a_directory_is_refused() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("symbol on a directory")?;
+    let done = a1.tessel(&["claim", "src::helper"])?;
+    assert_eq!(done.code, 1, "{}", done.all());
+    assert!(done.stderr.contains("src::helper"), "{}", done.stderr);
+    assert!(done.stderr.contains("is not a file"), "{}", done.stderr);
+    assert_eq!(claim_ids(&a1)?, Vec::<u64>::new());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn modes_directories_and_symbols_reach_the_coordinator() -> Result<()> {
     let (_fake, a1, a2) = world(30_000).await?;
     a1.start("mixed scopes")?;
