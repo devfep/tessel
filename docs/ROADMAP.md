@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 10:45 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 10:55 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -205,9 +205,12 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-cli-claim-exists` stopping after `merged` (worktree
-`.claude/worktrees/cli-claim-exists`, branch `task-cli-claim-exists` to reclaim). One lane at a
-time while other sessions keep the load at 40–100 (a reviewer saw load 493 once).
+**Agents:** `lane-swarm-push-retry` (Sonnet implementer, since 10:52) in
+`.claude/worktrees/swarm-push-retry` (branch `task-swarm-push-retry`, fork
+`tessel-dogfood--lane-swarm-push-retry`); brief `scratchpad/orch/brief-swarm-push-retry.md`; owns
+`tessel-swarm/src/{git,live,on,report}.rs` and their tests. The cli-claim-exists worktree and
+branch are reclaimed. One lane at a time while other sessions keep the load at 20–100 (a
+reviewer saw load 493 once).
 **REVIEW-SENSITIVE recommendation for Felix** (design, not built): the sensitive-path list lives
 in the repo's `tessel.toml` (`[review] sensitive = ["src/protocol.rs", ...]`), read by the steward
 with the gate config and sent to the coordinator with each merge-time coverage check, so the hold
