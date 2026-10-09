@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 17:40 EDT. **SWARM-RECONNECT-FIRST-CONNECT lane reported `e164717`
+**As of:** 2026-10-09 17:45 EDT. **MERGED 17:41: SWARM-RECONNECT-FIRST-CONNECT at trunk `e164717`**
+(claim 85, no hold; the trunk fast-forwarded; tree `489eb2c` equals the lane commit's; mirrored to
+GitHub `artifacts-trunk`, so pull request 2 now carries 243 commits; lane daemon stopped, worktree,
+branch and token file reclaimed). **Running: the fresh-clone test again on `e164717`** (scratchpad
+`fresh-clone/run2`, same script); when it passes, or fails only on the filed load flakes with each
+passing alone, the pull request body gets the result and the orchestrator merges it into `main`
+(BUILD-PROTOCOL §2). History: the lane reported `e164717`
 (tests/reconnect.rs only: `after_connected` helper, a unit test of it, the one call site; the
 reviewer-refusing tests left alone with a reason in the note); orchestrator read it (rule 00,
 test-only, no Opus pass), gated it in place with `curl` off the PATH (reconnect suite 3/3 exit 0,
@@ -984,7 +990,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `Submitted` precedes the holder's `Submitted`, and the shadow's result still counts `work_ms`),
   or compare against the shadow's own measured git time. Also seen once in the same gate:
   `local::tests::work_that_already_fails_on_main...` (passes alone). Small; next swarm lane.
-- [ ] **SWARM-RECONNECT-FIRST-CONNECT** — from the fresh-clone test (Oct 9): `tests/reconnect.rs`
+- [x] **SWARM-RECONNECT-FIRST-CONNECT** — from the fresh-clone test (Oct 9): `tests/reconnect.rs`
   `agents_that_cannot_reconnect_end_as_disconnected_after_their_tries` arms its cut on the first
   `ClaimGranted` and refuses both agents; on a loaded Mac the second agent's first connection
   comes after that grant, is refused with 401, and the harness fails the whole run ("cannot
@@ -993,6 +999,11 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   the tripwire closure); same guard for any other test with a refused list. Open question for the
   harness: an agent refused at its FIRST handshake should perhaps end `Disconnected` after its
   tries instead of failing the run. Lane `lane-swarm-reconnect-cut` dispatched 17:12.
+  CLOSED 2026-10-09 at trunk `e164717` (test-only): `after_connected(agents, then)` wraps the
+  tripwire so it cannot fire until every listed agent has an `AgentConnected` event, with a unit
+  test of the helper (3 mutants caught); the reviewer-refusing tests keep their single trigger
+  (a let-through there would mean no cut at all). Reconnect suite 5/5 (lane) and 3/3
+  (orchestrator, `curl` off PATH). The harness question stays open (see the box text).
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
