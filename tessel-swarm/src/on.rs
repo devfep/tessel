@@ -1677,16 +1677,46 @@ mod tests {
     #[tokio::test]
     async fn a_shadow_agent_that_reconnects_before_it_submitted_works_on_its_own_claim() {
         let stage = Box::pin(shadow_stage_after_reset(shadow_events(Vec::new()))).await;
-        assert!(
-            matches!(stage, Stage::Work(h) if h.shadow && h.claim == ClaimId(2) && h.fence == Fence(2))
-        );
+        let Stage::Work(held) = stage else {
+            unreachable!("expected the work to go on");
+        };
+        assert!(held.shadow && held.claim == ClaimId(2) && held.fence == Fence(2));
     }
 
     #[tokio::test]
-    async fn a_shadow_agent_that_reconnects_after_it_submitted_waits_for_its_trial_and_submits_no_more(
-    ) {
+    async fn a_shadow_agent_that_reconnects_after_submitting_waits_for_its_trial_only() {
         let stage = Box::pin(shadow_stage_after_reset(shadow_events(vec![submission()]))).await;
         assert!(matches!(stage, Stage::Trial(h) if h.claim == ClaimId(2)));
+    }
+
+    #[tokio::test]
+    async fn a_trial_awaited_after_a_reconnect_is_owed_to_the_final_wait() {
+        let (ctx, log) = ctx_watching(Vec::new(), Duration::from_secs(5));
+        log.send(shadow_events(vec![submission()])).unwrap();
+        let mut conn = connect(Vec::new()).await;
+        let scratch = tempfile::tempdir().unwrap();
+        let work = Git::new(scratch.path());
+        let task = Task {
+            id: 2,
+            func: "unitPrice".into(),
+            kind: Kind::Body,
+        };
+        let job = Job {
+            work: &work,
+            agent: "a02",
+            task: &task,
+            denials: 0,
+        };
+        let mut clock = shadow_clock();
+        let stage = Stage::Trial(Held {
+            shadow: true,
+            ..held(2)
+        });
+        let step = advance(&ctx, &job, &mut conn, &mut clock, stage)
+            .await
+            .unwrap();
+        assert!(matches!(step.end, End::Done(Resolution::Shadowed, _)));
+        assert_eq!(*lock(&ctx.accepted_shadows), [ClaimId(2)]);
     }
 
     #[tokio::test]
