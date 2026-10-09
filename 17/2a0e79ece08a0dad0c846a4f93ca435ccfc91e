@@ -1,0 +1,4 @@
+intent: keep the merge refusal, its named cause and the session's tooling in STATE
+assumes: the test-runs route's stdout is the same gate the merge path runs
+rejected: none
+evidence: test-run json saved in the session scratchpad (orch/test-run-ssr-82ed1e4.json)
