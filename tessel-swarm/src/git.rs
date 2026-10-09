@@ -29,19 +29,23 @@ pub const PUSH_BACKOFF: Reconnect = Reconnect {
 #[must_use]
 pub fn push_failure_is_transient(output: &str) -> bool {
     const CONNECTION: [&str; 4] = [
-        "Service unavailable",
-        "Connection reset",
-        "Could not resolve host",
-        "Failed to connect",
+        "service unavailable",
+        "connection reset",
+        "could not resolve host",
+        "failed to connect",
     ];
-    CONNECTION.iter().any(|needle| output.contains(needle)) || mentions_server_error(output)
+    let lower = output.to_lowercase();
+    CONNECTION.iter().any(|needle| lower.contains(needle)) || mentions_server_error(&lower)
 }
 
-/// `error: 5xx`, as in `error: 503` and `The requested URL returned error: 502`.
+/// A line ending in `error: 5xx`, as in `error: 503` and `The requested URL returned error: 502`.
+/// Text after the code (`error: 500 lines`) means it was not a status.
 fn mentions_server_error(output: &str) -> bool {
-    output.match_indices("error: 5").any(|(at, marker)| {
-        let digits = &output.as_bytes()[at + marker.len()..];
-        digits.len() >= 2 && digits[..2].iter().all(u8::is_ascii_digit)
+    output.lines().any(|line| {
+        let Some((_, code)) = line.trim_end().rsplit_once("error: ") else {
+            return false;
+        };
+        code.len() == 3 && code.starts_with('5') && code.bytes().all(|b| b.is_ascii_digit())
     })
 }
 
@@ -343,6 +347,8 @@ mod tests {
     fn server_errors_and_lost_connections_are_transient() {
         for text in [
             "remote: Service unavailable\nerror: 503",
+            "remote: Service Unavailable",
+            "fatal: CONNECTION RESET by peer",
             "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502",
             "fatal: unable to access 'https://x/': The requested URL returned error: 500",
             "fatal: unable to access 'https://x/': Connection reset by peer",
@@ -361,6 +367,9 @@ mod tests {
             "fatal: Authentication failed for 'https://x/'",
             " ! [rejected] HEAD -> main (non-fast-forward)\nerror: failed to push some refs",
             "error: 5 files changed",
+            "error: 50 files changed",
+            "error: 500 lines",
+            "error: 5034",
             "error: 5",
             "",
         ] {
