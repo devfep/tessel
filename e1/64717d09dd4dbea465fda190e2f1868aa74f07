@@ -1,0 +1,4 @@
+intent: arm the cut of agents_that_cannot_reconnect_end_as_disconnected_after_their_tries only once a01 and a02 have each connected (after_connected helper, plus a deterministic unit test of it)
+assumes: AgentConnected is logged in order before the same agent's ClaimGranted; a02 gets a later ClaimGranted once connected
+rejected: deferring the cut to the last AgentConnected when the grant came first (would reset a02 inside its own handshake, the same first-connect failure); guarding the two reviewer-refusing tests (one trigger event only, a let-through would mean no cut at all)
+evidence: reconnect binary 5/5 exit 0 (20 tests); tessel-swarm crate 3/3 exit 0; clippy -D warnings and rustfmt clean; 3 mutants fail the new unit test; workspace 1067 passed, 1 failed (swarm local::tests::work_that_already_fails_on_main..., load flake, passes alone twice)
