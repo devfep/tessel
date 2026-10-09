@@ -28,8 +28,12 @@ pub const PUSH_BACKOFF: Reconnect = Reconnect {
 /// credential or a non-fast-forward is the same on the next try, so it is not one.
 #[must_use]
 pub fn push_failure_is_transient(output: &str) -> bool {
-    const CONNECTION: [&str; 4] = [
+    const CONNECTION: [&str; 8] = [
         "service unavailable",
+        "internal server error",
+        "bad gateway",
+        "gateway timeout",
+        "gateway time-out",
         "connection reset",
         "could not resolve host",
         "failed to connect",
@@ -348,6 +352,8 @@ mod tests {
         for text in [
             "remote: Service unavailable\nerror: 503",
             "remote: Service Unavailable",
+            "fatal: unable to access 'https://x/': The requested URL returned error: 502 Bad Gateway",
+            "error: 504 Gateway Time-out",
             "fatal: CONNECTION RESET by peer",
             "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502",
             "fatal: unable to access 'https://x/': The requested URL returned error: 500",
