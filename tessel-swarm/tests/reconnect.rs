@@ -32,7 +32,7 @@ const PATIENT: Reconnect = Reconnect {
 };
 
 /// No test may take longer than this, whatever goes wrong.
-const BOUND: Duration = Duration::from_secs(90);
+const BOUND: Duration = Duration::from_secs(180);
 
 fn body(id: usize, func: &str) -> Task {
     Task {

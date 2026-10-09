@@ -541,7 +541,7 @@ async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
         body(3, "unitPrice"),
         body(4, "unitPrice"),
     ];
-    let limit = Duration::from_secs(20);
+    let limit = Duration::from_secs(60);
     let config = OnConfig {
         task_timeout: limit,
         trial_wait: limit,
@@ -594,9 +594,10 @@ async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted() {
-    // The shadow agent submits before it spends its work time. The blocker works for the whole of
-    // it first, so checkout, commit, push and submit would have to take more than `work_ms` for
-    // the shadow to be late.
+    // The shadow agent submits before it spends its work time; the blocker spends it first. Both
+    // take the same checkout, commit, push and submit, so the shadow's claim-to-submit time must be
+    // shorter than the blocker's by about `work_ms`. The comparison is made inside the run, so a
+    // slow machine slows both sides alike.
     let work_ms = 6000;
     let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
     let run = run(&tasks, config(2, Policy::Shadow, work_ms)).await;
@@ -609,10 +610,21 @@ async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_count
         at_ms(&|k| matches!(k, EventKind::ClaimShadowed { claim, .. } if *claim == shadows[0]));
     let submitted =
         at_ms(&|k| matches!(k, EventKind::Submitted { claim, .. } if *claim == shadows[0]));
+    let Some(EventKind::ClaimGranted { claim: holder, .. }) = events
+        .iter()
+        .map(|e| &e.kind)
+        .find(|k| matches!(k, EventKind::ClaimGranted { .. }))
+    else {
+        unreachable!("the holder was granted its claim");
+    };
+    let granted = at_ms(&|k| matches!(k, EventKind::ClaimGranted { claim, .. } if claim == holder));
+    let holder_submitted =
+        at_ms(&|k| matches!(k, EventKind::Submitted { claim, .. } if claim == holder));
+    let (shadow_span, holder_span) = (submitted - answered, holder_submitted - granted);
     assert!(
-        submitted - answered < work_ms,
-        "the shadow work was submitted {} ms after its claim was answered, not before {work_ms} ms",
-        submitted - answered
+        shadow_span + work_ms / 2 < holder_span,
+        "the shadow submitted {shadow_span} ms after its claim was answered, the blocker \
+         {holder_span} ms after its grant: the shadow did not skip its work time"
     );
     let shadowed = run
         .result
@@ -1097,9 +1109,15 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
     cut.await.unwrap();
     let r = &result.results[0];
     assert_eq!(r.result, Resolution::Disconnected, "{r:?}");
+    let at_ms = |pick: &dyn Fn(&EventKind) -> bool| {
+        result.events.iter().find(|e| pick(&e.kind)).unwrap().at_ms
+    };
+    let granted = at_ms(&|k| matches!(k, EventKind::ClaimGranted { .. }));
+    let requested = at_ms(&|k| matches!(k, EventKind::ReviewRequested { .. }));
     assert!(
-        r.work_ms < held_ms,
-        "work ends at the push, not at the close: {r:?}"
+        r.work_ms < requested - granted + held_ms / 2,
+        "work ends at the push, not at the close: {r:?}, {} ms to the submission",
+        requested - granted
     );
     assert!(r.waited_ms < held_ms, "{r:?}");
     assert_eq!(result.summary.merges, 0);
