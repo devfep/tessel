@@ -1,0 +1,4 @@
+intent: CLI-CLAIM-EXISTS: tessel claim refuses a file, directory or symbol scope whose path is missing unless mode is create; warns on whitespace in a scope
+assumes: exit 1 is the CLI's argument-error code (ScopeError returns through main's failure path); there is no --create flag, only --mode create
+rejected: a new --create flag (brief forbids new flags); refusing in the daemon (the CLI owns the worktree path)
+evidence: cargo test --workspace 1052 passed 0 failed (1046 + 6 new); clippy -D warnings clean; rustfmt clean; 8 mutants killed
