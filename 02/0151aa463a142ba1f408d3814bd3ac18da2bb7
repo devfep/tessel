@@ -1,0 +1,4 @@
+intent: record the live shadow numbers with their raw output and file the push-retry gap
+assumes: the Artifacts 503 was transient (the other 39 pushes in the run succeeded)
+rejected: none
+evidence: run.log exit=0; jq over seed3-on.json, wrangler-tail.jsonl and ping-5s.log as quoted in the README; no art_v token in any evidence file
