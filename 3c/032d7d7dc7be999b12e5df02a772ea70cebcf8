@@ -1,0 +1,4 @@
+intent: hand the milestone merge to Felix with the exact command; leave an idle, resumable STATE
+assumes: GitHub keeps artifacts-trunk after the merge (no --delete-branch)
+rejected: pursuing the merge another way after the classifier's denial
+evidence: trunk tree 74e0544 equals db31287's; pull request 2 open, 244 commits, two review comments
