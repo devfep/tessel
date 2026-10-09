@@ -352,7 +352,7 @@ mod tests {
         for text in [
             "remote: Service unavailable\nerror: 503",
             "remote: Service Unavailable",
-            "fatal: unable to access 'https://x/': The requested URL returned error: 502 Bad Gateway",
+            "fatal: unable to access 'x': The requested URL returned error: 502 Bad Gateway",
             "error: 504 Gateway Time-out",
             "fatal: CONNECTION RESET by peer",
             "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502",
