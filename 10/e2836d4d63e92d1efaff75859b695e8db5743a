@@ -1,0 +1,4 @@
+intent: record the milestone merge and leave an idle STATE
+assumes: none
+rejected: none
+evidence: the default branch's tree 74e0544 equals origin/artifacts-trunk's; pull request 2 MERGED 2026-10-09T23:58:55Z
