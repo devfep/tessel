@@ -1,0 +1,4 @@
+intent: close the box with the merge sha
+assumes: none
+rejected: none
+evidence: trunk tree equals 6b61869's; mirror.sh fast-forwarded 8e9ceed..6b61869; Mac gate 1057 passed
