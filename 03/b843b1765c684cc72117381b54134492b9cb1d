@@ -1,0 +1,4 @@
+intent: close the box with the merge sha and record the gate-PATH lesson
+assumes: none
+rejected: none
+evidence: trunk tree equals c6d6c76's; mirror.sh fast-forwarded 6b61869..c6d6c76; Mac gate 1067 passed
