@@ -1,0 +1,4 @@
+intent: record the first live on numbers with their raw output and point the next session at the lane
+assumes: the tail's canceled/responseStreamDisconnected outcomes on /ws upgrades are socket ends, not mid-run resets (the harness recorded none)
+rejected: none
+evidence: run.log exit=0; jq over wrangler-tail.jsonl and ping-5s.log as quoted in the README
