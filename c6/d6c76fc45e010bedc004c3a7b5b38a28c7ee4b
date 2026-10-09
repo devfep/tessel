@@ -1,0 +1,4 @@
+intent: keep git.rs within 100 characters per line
+assumes: none
+rejected: none
+evidence: cargo test -p tessel-swarm --lib 127 passed; rustfmt clean; no line over 100
