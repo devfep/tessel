@@ -4,7 +4,8 @@
 
 #![expect(clippy::unwrap_used, reason = "test code")]
 
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Once, OnceLock};
 use std::time::Duration;
 
@@ -26,10 +27,9 @@ for arg in "$@"; do
   case "$arg" in *.git) target="$arg" ;; esac
 done
 if [ "$pushing" = 1 ] && [ -n "$target" ]; then
-  plan="$(dirname "$target")/push-plan"
+  plan="${target%/*}/push-plan"
   if [ -s "$plan" ]; then
-    left="$(sed -n 1p "$plan")"
-    message="$(sed -n 2p "$plan")"
+    { read -r left; read -r message; } < "$plan"
     if [ "$left" -gt 0 ]; then
       printf '%s\n%s\n' "$((left - 1))" "$message" > "$plan"
       echo "$message" >&2
@@ -43,22 +43,31 @@ exec REAL_GIT "$@"
 static WRAPPER_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
 static PATH_SET: Once = Once::new();
 
+/// The first `git` on `path` that is an executable file.
+fn real_git(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    for dir in std::env::split_paths(path) {
+        let candidate = dir.join("git");
+        let Ok(meta) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn put_failing_git_first_on_path() {
     PATH_SET.call_once(|| {
-        let real = std::process::Command::new("which")
-            .arg("git")
-            .output()
-            .unwrap();
-        let real = String::from_utf8(real.stdout).unwrap();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let Some(real) = real_git(&path) else {
+            unreachable!("the test needs an executable git on PATH");
+        };
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("git");
-        std::fs::write(&script, WRAPPER.replace("REAL_GIT", real.trim())).unwrap();
-        std::process::Command::new("chmod")
-            .arg("+x")
-            .arg(&script)
-            .status()
-            .unwrap();
-        let path = std::env::var_os("PATH").unwrap_or_default();
+        let text = WRAPPER.replace("REAL_GIT", &real.to_string_lossy());
+        std::fs::write(&script, text).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut paths = vec![dir.path().to_path_buf()];
         paths.extend(std::env::split_paths(&path));
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
