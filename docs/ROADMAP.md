@@ -5,15 +5,70 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 16:50 EDT. **Milestone step 1 in progress (Felix's "proceed", 16:40):
-landing this roadmap, `docs/BUILD-PROTOCOL.md`, the PLAN §6 line and `docs/evidence/` (Oct 5–9)
-on the Artifacts trunk through the steward as one commit from `lane-docs-milestone` (worktree
-`.claude/worktrees/docs-milestone`, branch `task-docs-milestone`, fork
-`tessel-dogfood--lane-docs-milestone`, identity minted 16:45). The orchestrator runs this lane
-itself: docs only, no product code, no Opus review (rule 00: the orchestrator wrote and read every
-line). Next: the milestone pull request from `artifacts-trunk` to `main` with `/code-review` and
-`/security-review`, the fresh-clone test, then the video script for Felix. Every dispatchable
-box stays closed; the rest waits on Felix (see "Open boxes left").** **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 17:55 EDT. **FRESH-CLONE TEST PASSED on `e164717` (17:41–17:49, load up to
+173): `cargo test --workspace` 1068 passed, 0 failed; `cargo deny` ok; steward 803 passed,
+typecheck ok (`docs/evidence/2026-10-09/fresh-clone/`). Landing these docs (this roadmap, the
+fresh-clone evidence, the EVIDENCE-CHECK-SH fix) on the trunk as `lane-docs-milestone-2`, then
+the orchestrator merges pull request 2 into `main` (both reviews posted, full gate: Sandbox gates
+on every commit, fresh clone clean).** After that: the video script and form rewrite for Felix
+(draft in the scratchpad `orch/submission-form-draft.md`), and the boxes below as lanes. **MERGED 17:41: SWARM-RECONNECT-FIRST-CONNECT at trunk `e164717`**
+(claim 85, no hold; the trunk fast-forwarded; tree `489eb2c` equals the lane commit's; mirrored to
+GitHub `artifacts-trunk`, so pull request 2 now carries 243 commits; lane daemon stopped, worktree,
+branch and token file reclaimed). The second fresh-clone run is the one above. History: the lane reported `e164717`
+(tests/reconnect.rs only: `after_connected` helper, a unit test of it, the one call site; the
+reviewer-refusing tests left alone with a reason in the note); orchestrator read it (rule 00,
+test-only, no Opus pass), gated it in place with `curl` off the PATH (reconnect suite 3/3 exit 0,
+20 tests, 21–24 s; clippy and rustfmt clean; the crate run had one unrelated failure, below);
+pushed to the fork and submitted 17:38 as claim 85, queue position 1, no hold expected. Watches
+armed on the trunk head and the lane inbox.** SWARM-ONLOCAL-LOAD REOPENED as SWARM-ONLOCAL-LOAD-2
+(below): `on_local.rs:624` failed in that gate at load 75 (shadow span 5605 ms + 3000 vs holder
+span 7825 ms) and in the lane's workspace gate (`work_that_already_fails_on_main...` once, passes
+alone); not this lane's scope. **MILESTONE PULL REQUEST OPEN: https://github.com/devfep/tessel/pull/2
+(`artifacts-trunk` → `main`, 242 commits).** **Fresh-clone test (PLAN §9 Oct 11, run 16:50–17:03
+on a clone of GitHub `artifacts-trunk` at `c6d6c76`, Mac load 60–113 from other sessions):**
+`cargo deny check` ok; steward `pnpm install --frozen-lockfile` ok, `pnpm test` 803 passed (42
+files), `pnpm typecheck` ok; `cargo test --workspace` FAILED twice on ONE test,
+`tessel-swarm/tests/reconnect.rs:334` `agents_that_cannot_reconnect_end_as_disconnected_after_their_tries`
+("cannot connect to the coordinator: HTTP error: 401 Unauthorized" at `reconnect.rs:116`), 1065
+other tests passed; the test passes alone (3.5 s) and passed the Sandbox gate on `c6d6c76`.
+Diagnosis: the test arms its cut on the first `ClaimGranted` and refuses both agents; under load
+the second agent's FIRST connection comes after that grant and is refused, which the harness
+treats as a fatal run error. Filed SWARM-RECONNECT-FIRST-CONNECT (below) and dispatched 17:12 as
+lane `lane-swarm-reconnect-cut` (Sonnet) in `.claude/worktrees/swarm-reconnect-cut` (branch
+`task-swarm-reconnect-cut`, fork `tessel-dogfood--lane-swarm-reconnect-cut`, brief in the session
+scratchpad `orch/brief-swarm-reconnect-cut.md`; owns `tessel-swarm/tests/reconnect.rs`; uses the
+deploy worktree's `tessel` binary). Raw logs in the scratchpad `fresh-clone/run1.log` and
+`fresh-clone/run1/run2-tests.log` (to be copied into `docs/evidence/2026-10-09/fresh-clone/`).
+**Code review of the pull request (the `code-review` skill, 17:10) DONE 17:12:** nine findings,
+each verified by a separate Sonnet agent with the official rubric: none reached 80 (one 75, four
+50, four 25); the comment is on the pull request and the real ones are boxes below
+(CLI-GITHOOK-REINSTALL, COORD-APPLY-LOADED, CLI-REPLAY-UNKNOWN-EVENT, STEWARD-ACCESS-STALE-KEYS,
+SWARM-PUSH-PHRASES, EVIDENCE-CHECK-SH). **Security review DONE 16:58:** no High or Medium finding
+at the bar; the comment lists what was checked and found sound. The findings were: (1) `runtime.rs:651` apply after
+an awaited steward call can hit a dropped core; (2) `daemon.rs:1928` log replay aborts on an
+unknown event variant; (3) `githook.rs:387` re-install bails when `.pre-tessel` exists; (4)
+`git.rs:31` push retry misses common lost-connection phrases; (5) `coordinator.rs:700` first Hello
+seeds the head from unvalidated text; (6) `runtime.rs:435` alarms persist unchanged state; (7)
+`access.ts:92` a failed certs refetch 503s despite a cached key set; (8) `wrangler.toml:22`
+`orchestrator` as a reviewer vs invariant 12 (a documented process decision, BUILD-PROTOCOL §2);
+(9) `docs/evidence/.../check.sh` sources an absolute path under `set -a`. The milestone pull request now waits only on the reconnect test fix (the lane) and a final gate. **Submission form:** a rewrite matching what shipped is drafted for Felix in the
+scratchpad `orch/submission-form-draft.md` (drops the unshipped items: separate evidence repos,
+Workers Builds previews, races in the CLI). Step 1 done 16:52: the docs commit `8c958b3` (this
+roadmap, `docs/BUILD-PROTOCOL.md`, the PLAN §6 line, `docs/evidence/` Oct 5–9) merged through the
+steward as claim 84 of `lane-docs-milestone` (orchestrator-run, docs only, rule 00) and the trunk
+fast-forwarded to `8c958b3` (tree `9192700`); mirrored to GitHub `artifacts-trunk`; lane worktree,
+branch and token file reclaimed. Lesson: turning Wi-Fi off for the push dropped the daemon's socket
+and claim 83 lease-expired 30 s after its grant; switch Wi-Fi BEFORE `tessel start`, or push over
+Wi-Fi when the pack is small. In progress: the fresh-clone test of `artifacts-trunk` (`c6d6c76`
+code tree, scratchpad `fresh-clone/run1`, 2 build jobs: cargo test, cargo deny, steward install,
+test, typecheck), and the code and security reviews of the pull request, posted as its comments.
+Neither the official `code-review` plugin nor `claude-security` is installed, so the reviews run
+as subagents following the official review procedure (area reviewers, confidence-scored,
+findings under 80 dropped); Felix can run the built-in `/code-review` and `/security-review` from
+his terminal as well. The pull request merges only after both reviews, the fresh-clone test and a
+gate on the trunk tree (`c6d6c76` passed the Sandbox gate; `8c958b3` adds docs only). Then the
+video script for Felix. Every dispatchable box stays closed; the rest waits on Felix (see "Open
+boxes left").** **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -86,13 +141,15 @@ Orchestrator ruling on the lane's flagged limit (a reset before the `Shadowed` r
 leaves the agent without its fence, so it claims again and the first claim idles out its lease):
 accepted for now, documented in the harness README; the fix is an additive
 `#[serde(default)] fence: Option<Fence>` on `EventKind::ClaimShadowed`, added to the protocol
-hand-merge list below for Felix.
+hand-merge list below for Felix. Also for that list (code review, Oct 9): the wording of invariant
+12 ("a human must approve it first") vs the build process where `orchestrator` approves after the
+Opus Yes and a gate (BUILD-PROTOCOL §2): a comment-only change, or the process is the exception.
 **Classifier refusal (08:00):** the auto-mode classifier refused a read of the steward's source
 (`rg` for where trial stdout/stderr are kept) as "data exfiltration", so GATE-OUTPUT was not
 prepared; Felix decides whether to allow that read or run that lane from his own session. Then the
 live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
 `scratchpad/orch/ab-run.sh <policy> <out-dir>`).
-**Trunk:** `c6d6c76` (SWARM-PUSH-RETRY; mirrored to GitHub `artifacts-trunk`);
+**Trunk:** `8c958b3` (docs landing on `c6d6c76`; mirrored to GitHub `artifacts-trunk`);
 `.claude/worktrees/deploy` is at `c6d6c76` (harness rebuilt). `cargo deny check` on the trunk
 (PLAN §9 Oct 11 item, run 11:30): advisories ok, bans ok, licenses ok, sources ok.
 **MERGED 11:22: SWARM-PUSH-RETRY at trunk `c6d6c76`** (claim 82 approved 11:17 after Opus "Yes"
@@ -151,9 +208,8 @@ equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker 
    post-contest list). Nothing UX is built until he answers.
 5. Smaller open: CLI-CLAIM-EXISTS, REVIEW-SENSITIVE, REVIEW-NOTE (needs Felix), COORD-UNDELIVERED-
    GRANT (needs Felix: a new ReleaseReason variant; recommendation: leave it), GATE-PATH.
-6. STARTED 16:50. Oct 10–12: milestone pull request from `artifacts-trunk` with `/code-review` and
-   `/security-review` (land the current `docs/ROADMAP.md` through the steward first: in progress),
-   the fresh-clone test, then the video.
+6. STARTED 16:50; docs landed 16:52; pull request 2 open 16:58. Oct 10–12: reviews and the
+   fresh-clone test (in progress), merge the pull request, then the video.
 **Pending from Felix:** the UX decisions (4); COORD-UNDELIVERED-GRANT and REVIEW-NOTE rulings; the
 protocol hand-merge list below (now also `Review.fork_commit`); an allow rule for lane `tessel`
 commands (offered: `Bash(cd /Users/felixpatawah/repos/tessel/.claude/worktrees/* && target/debug/
@@ -222,9 +278,10 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-docs-milestone`, run by the orchestrator in `.claude/worktrees/docs-milestone`.
-Also kept: `ax-mcp` (its `tessel` binary serves `tools/orch-review.sh`) and `deploy` (trunk
-`c6d6c76`; `tessel-cli` build started 16:45 so claims use the current CLI). Wi-Fi on. One lane at a
+**Agents:** `lane-swarm-reconnect-cut` (Sonnet) in `.claude/worktrees/swarm-reconnect-cut`;
+three read-only verifiers and one security finder (no worktree). Worktrees also: `ax-mcp` (its
+`tessel` binary serves `tools/orch-review.sh`) and `deploy` (trunk `c6d6c76`, harness and
+`tessel-cli` built). Wi-Fi on. One lane at a
 time while other sessions keep the load at 20–100 (a reviewer saw load 493 once).
 **Open boxes left:** REVIEW-SENSITIVE (recommendation above, needs Felix's yes), REVIEW-NOTE
 (needs Felix), COORD-UNDELIVERED-GRANT (needs Felix), GATE-PATH, GATE-OUTPUT (classifier call),
@@ -896,6 +953,60 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   (the classifier refused the lane's push as "Remote Repoint"); held; gate on `d9fb232`:
   workspace 898 with `curl` removed from `PATH`, clippy 0; approved claim 69; trunk tree equals
   the gated tree. A/B run 1 rerun started 16:47 from this build.
+- [ ] **CLI-GITHOOK-REINSTALL** — from the pull request 2 code review (Oct 9, verified 75):
+  `tessel-cli/src/githook.rs:372–391`: after another tool overwrites the shim, a re-run of
+  `tessel hook install` (which the install note at line 332 recommends) sees a non-shim hook,
+  calls `chain_existing`, and bails because `<hook>.pre-tessel` from the first install exists.
+  Fix: when `.pre-tessel` exists and the new non-shim hook differs, move the old `.pre-tessel`
+  aside to a dated backup, chain the new hook, report both; make the note and the bail message
+  agree. Test-first. Small; CLI only.
+- [ ] **COORD-APPLY-LOADED** — from the code review (verified 50): `src/runtime.rs:480,565,651`
+  apply a steward outcome after an awaited call without `ensure_loaded`; a client message during
+  the await can drop the core (serialize failure, `Refuse`, `OverHard`), so the alarm errors and
+  `recover_cut_off_merge` runs one more sandbox merge that ends `already_merged`. Fix: one helper
+  that loads then applies, used by the three post-await sites. Coordinator; needs a deploy.
+- [ ] **CLI-REPLAY-UNKNOWN-EVENT** — from the code review (verified 50): `daemon.rs:1923,2095`
+  abort the log replay (from seq 0) or drop the socket on one message that fails to parse, so an
+  additive enum variant without a `PROTOCOL_VERSION` bump breaks reconciliation for older
+  daemons for good. Fix: decode the event envelope tolerantly (seq plus a kind that may be
+  unknown) and mark the read unreliable instead of failing; or bump the version on every added
+  variant (Felix's call, hand-merge list).
+- [ ] **STEWARD-ACCESS-STALE-KEYS** — from the code review (verified 50): `access.ts:85–93` after
+  the 5-minute TTL a failed certs refetch throws and both callers answer 503 although a cached
+  key set exists. Fix: serve the cached keys on refetch failure (log it), 503 only with no cache;
+  rate-limit retries with `lastFetchAttemptMs`. Test the stale-cache case. Steward; needs a deploy.
+- [ ] **SWARM-PUSH-PHRASES** — from the code review (verified 25, cheap): `tessel-swarm/src/git.rs:27–45`
+  add "the remote end hung up unexpectedly", "unexpected disconnect while reading sideband
+  packet", "connection timed out", "empty reply from server" to the transient set, with tests.
+- [x] **EVIDENCE-CHECK-SH** — from the code review (verified 25): `docs/evidence/2026-10-06/coord-head-live/check.sh:9`
+  sources `/Users/felixpatawah/...` under `set -a`. Resolve the path from the script's location
+  with an override variable, read only `STEWARD_ADMIN_TOKEN`, drop `set -a`. Docs; orchestrator.
+  CLOSED 2026-10-09 on `sprint/build` (lands on the trunk with the next docs commit): the token
+  comes from the environment or, read alone in a subshell, from `.dev.vars` found relative to the
+  script (`DEV_VARS` overrides); nothing is exported; shellcheck and shfmt clean; the missing-file
+  path exits 1 with a message.
+- [ ] **SWARM-ONLOCAL-LOAD-2** — reopens SWARM-ONLOCAL-LOAD (Oct 9 17:35): `tests/on_local.rs:596`
+  `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` still fails under
+  load (75) with the relative bound: the shadow's claim-to-submit span was 5605 ms against the
+  holder's 7825 ms with `work_ms` 6000, because the two agents' git work (checkout, commit, push)
+  is not equally slow on a loaded machine. Assert order instead of a span comparison (the shadow's
+  `Submitted` precedes the holder's `Submitted`, and the shadow's result still counts `work_ms`),
+  or compare against the shadow's own measured git time. Also seen once in the same gate:
+  `local::tests::work_that_already_fails_on_main...` (passes alone). Small; next swarm lane.
+- [x] **SWARM-RECONNECT-FIRST-CONNECT** — from the fresh-clone test (Oct 9): `tests/reconnect.rs`
+  `agents_that_cannot_reconnect_end_as_disconnected_after_their_tries` arms its cut on the first
+  `ClaimGranted` and refuses both agents; on a loaded Mac the second agent's first connection
+  comes after that grant, is refused with 401, and the harness fails the whole run ("cannot
+  connect to the coordinator"). Failed 2 of 2 full-suite runs at load 60–113, passes alone. Fix in
+  the test: fire the cut only after every refused agent has connected (count `AgentConnected` in
+  the tripwire closure); same guard for any other test with a refused list. Open question for the
+  harness: an agent refused at its FIRST handshake should perhaps end `Disconnected` after its
+  tries instead of failing the run. Lane `lane-swarm-reconnect-cut` dispatched 17:12.
+  CLOSED 2026-10-09 at trunk `e164717` (test-only): `after_connected(agents, then)` wraps the
+  tripwire so it cannot fire until every listed agent has an `AgentConnected` event, with a unit
+  test of the helper (3 mutants caught); the reviewer-refusing tests keep their single trigger
+  (a let-through there would mean no cut at all). Reconnect suite 5/5 (lane) and 3/3
+  (orchestrator, `curl` off PATH). The harness question stays open (see the box text).
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
