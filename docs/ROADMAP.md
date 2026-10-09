@@ -21,18 +21,19 @@ lane `lane-swarm-reconnect-cut` (Sonnet) in `.claude/worktrees/swarm-reconnect-c
 scratchpad `orch/brief-swarm-reconnect-cut.md`; owns `tessel-swarm/tests/reconnect.rs`; uses the
 deploy worktree's `tessel` binary). Raw logs in the scratchpad `fresh-clone/run1.log` and
 `fresh-clone/run1/run2-tests.log` (to be copied into `docs/evidence/2026-10-09/fresh-clone/`).
-**Code review of the pull request (the `code-review` skill, 17:10):** nine findings returned, now
-being verified by three Sonnet agents with the official confidence rubric; those scoring 80 or
-more are posted on the pull request and filed as boxes. In short: (1) `runtime.rs:651` apply after
+**Code review of the pull request (the `code-review` skill, 17:10) DONE 17:12:** nine findings,
+each verified by a separate Sonnet agent with the official rubric: none reached 80 (one 75, four
+50, four 25); the comment is on the pull request and the real ones are boxes below
+(CLI-GITHOOK-REINSTALL, COORD-APPLY-LOADED, CLI-REPLAY-UNKNOWN-EVENT, STEWARD-ACCESS-STALE-KEYS,
+SWARM-PUSH-PHRASES, EVIDENCE-CHECK-SH). **Security review DONE 16:58:** no High or Medium finding
+at the bar; the comment lists what was checked and found sound. The findings were: (1) `runtime.rs:651` apply after
 an awaited steward call can hit a dropped core; (2) `daemon.rs:1928` log replay aborts on an
 unknown event variant; (3) `githook.rs:387` re-install bails when `.pre-tessel` exists; (4)
 `git.rs:31` push retry misses common lost-connection phrases; (5) `coordinator.rs:700` first Hello
 seeds the head from unvalidated text; (6) `runtime.rs:435` alarms persist unchanged state; (7)
 `access.ts:92` a failed certs refetch 503s despite a cached key set; (8) `wrangler.toml:22`
 `orchestrator` as a reviewer vs invariant 12 (a documented process decision, BUILD-PROTOCOL §2);
-(9) `docs/evidence/.../check.sh` sources an absolute path under `set -a`. **Security review:** an
-Opus finder is running; its findings go through false-positive filters, and only those scoring 8+
-are posted. **Submission form:** a rewrite matching what shipped is drafted for Felix in the
+(9) `docs/evidence/.../check.sh` sources an absolute path under `set -a`. The milestone pull request now waits only on the reconnect test fix (the lane) and a final gate. **Submission form:** a rewrite matching what shipped is drafted for Felix in the
 scratchpad `orch/submission-form-draft.md` (drops the unshipped items: separate evidence repos,
 Workers Builds previews, races in the CLI). Step 1 done 16:52: the docs commit `8c958b3` (this
 roadmap, `docs/BUILD-PROTOCOL.md`, the PLAN §6 line, `docs/evidence/` Oct 5–9) merged through the
@@ -122,7 +123,9 @@ Orchestrator ruling on the lane's flagged limit (a reset before the `Shadowed` r
 leaves the agent without its fence, so it claims again and the first claim idles out its lease):
 accepted for now, documented in the harness README; the fix is an additive
 `#[serde(default)] fence: Option<Fence>` on `EventKind::ClaimShadowed`, added to the protocol
-hand-merge list below for Felix.
+hand-merge list below for Felix. Also for that list (code review, Oct 9): the wording of invariant
+12 ("a human must approve it first") vs the build process where `orchestrator` approves after the
+Opus Yes and a gate (BUILD-PROTOCOL §2): a comment-only change, or the process is the exception.
 **Classifier refusal (08:00):** the auto-mode classifier refused a read of the steward's source
 (`rg` for where trial stdout/stderr are kept) as "data exfiltration", so GATE-OUTPUT was not
 prepared; Felix decides whether to allow that read or run that lane from his own session. Then the
@@ -932,6 +935,34 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   (the classifier refused the lane's push as "Remote Repoint"); held; gate on `d9fb232`:
   workspace 898 with `curl` removed from `PATH`, clippy 0; approved claim 69; trunk tree equals
   the gated tree. A/B run 1 rerun started 16:47 from this build.
+- [ ] **CLI-GITHOOK-REINSTALL** — from the pull request 2 code review (Oct 9, verified 75):
+  `tessel-cli/src/githook.rs:372–391`: after another tool overwrites the shim, a re-run of
+  `tessel hook install` (which the install note at line 332 recommends) sees a non-shim hook,
+  calls `chain_existing`, and bails because `<hook>.pre-tessel` from the first install exists.
+  Fix: when `.pre-tessel` exists and the new non-shim hook differs, move the old `.pre-tessel`
+  aside to a dated backup, chain the new hook, report both; make the note and the bail message
+  agree. Test-first. Small; CLI only.
+- [ ] **COORD-APPLY-LOADED** — from the code review (verified 50): `src/runtime.rs:480,565,651`
+  apply a steward outcome after an awaited call without `ensure_loaded`; a client message during
+  the await can drop the core (serialize failure, `Refuse`, `OverHard`), so the alarm errors and
+  `recover_cut_off_merge` runs one more sandbox merge that ends `already_merged`. Fix: one helper
+  that loads then applies, used by the three post-await sites. Coordinator; needs a deploy.
+- [ ] **CLI-REPLAY-UNKNOWN-EVENT** — from the code review (verified 50): `daemon.rs:1923,2095`
+  abort the log replay (from seq 0) or drop the socket on one message that fails to parse, so an
+  additive enum variant without a `PROTOCOL_VERSION` bump breaks reconciliation for older
+  daemons for good. Fix: decode the event envelope tolerantly (seq plus a kind that may be
+  unknown) and mark the read unreliable instead of failing; or bump the version on every added
+  variant (Felix's call, hand-merge list).
+- [ ] **STEWARD-ACCESS-STALE-KEYS** — from the code review (verified 50): `access.ts:85–93` after
+  the 5-minute TTL a failed certs refetch throws and both callers answer 503 although a cached
+  key set exists. Fix: serve the cached keys on refetch failure (log it), 503 only with no cache;
+  rate-limit retries with `lastFetchAttemptMs`. Test the stale-cache case. Steward; needs a deploy.
+- [ ] **SWARM-PUSH-PHRASES** — from the code review (verified 25, cheap): `tessel-swarm/src/git.rs:27–45`
+  add "the remote end hung up unexpectedly", "unexpected disconnect while reading sideband
+  packet", "connection timed out", "empty reply from server" to the transient set, with tests.
+- [ ] **EVIDENCE-CHECK-SH** — from the code review (verified 25): `docs/evidence/2026-10-06/coord-head-live/check.sh:9`
+  sources `/Users/felixpatawah/...` under `set -a`. Resolve the path from the script's location
+  with an override variable, read only `STEWARD_ADMIN_TOKEN`, drop `set -a`. Docs; orchestrator.
 - [ ] **SWARM-RECONNECT-FIRST-CONNECT** — from the fresh-clone test (Oct 9): `tests/reconnect.rs`
   `agents_that_cannot_reconnect_end_as_disconnected_after_their_tries` arms its cut on the first
   `ClaimGranted` and refuses both agents; on a loaded Mac the second agent's first connection
