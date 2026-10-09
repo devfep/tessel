@@ -1,0 +1,4 @@
+intent: record both review outcomes and file the verified findings as boxes
+assumes: none
+rejected: posting findings under 80 as review issues; they are listed for the record and filed instead
+evidence: nine findings verified by three agents (75, 50, 50, 50, 50, 25, 25, 25, 25); security finder found nothing at the bar
