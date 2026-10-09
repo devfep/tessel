@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 10:20 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 10:45 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -84,8 +84,11 @@ hand-merge list below for Felix.
 prepared; Felix decides whether to allow that read or run that lane from his own session. Then the
 live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
 `scratchpad/orch/ab-run.sh <policy> <out-dir>`).
-**Trunk:** `4033791` (AX-MCP; mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is
-at `4033791`.
+**Trunk:** `6b61869` (CLI-CLAIM-EXISTS; mirrored to GitHub `artifacts-trunk`);
+`.claude/worktrees/deploy` is at `8e9ceed` (harness built from it; move it before the next deploy).
+**MERGED 10:42: CLI-CLAIM-EXISTS at trunk `6b61869`** (claim 81 approved 10:38 after Opus "With
+fixes" then "Yes" and a Mac gate of 1057 with `curl` off the PATH; trunk tree equals `6b61869`'s;
+mirrored). CLI only: no Worker deploy.
 **LOCKFILE FREEZE LIFTED** (AX-MCP merged 09:16).
 **Oct 8 overnight, AX-MCP landing:** the image push failure was NOT Docker: the Wi-Fi link between
 this Mac and the Optimum Ubee gateway (192.168.1.1) corrupts long TLS uploads to Cloudflare
@@ -202,15 +205,9 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-cli-claim-exists` (Sonnet implementer, since 10:12) in
-`.claude/worktrees/cli-claim-exists` (branch `task-cli-claim-exists`, fork
-`tessel-dogfood--lane-cli-claim-exists`); brief `scratchpad/orch/brief-cli-claim-exists.md`; owns
-`tessel-cli/src/{commands,scope}.rs`, the claim and mcp tests, one line of `skills/tessel/SKILL.md`.
-One lane only while the load from other sessions stays at 40–60. Reported 10:13: commit
-`1822644` (scope.rs `Missing`/`check_exists`/`has_whitespace`; commands.rs checks before the
-daemon; 5 CLI + 1 MCP tests; SKILL.md one sentence), workspace 1052 passed, 8 mutants caught;
-not pushed. Opus review running since 10:17 on `scratchpad/orch/review-cce/`; Mac gate on an
-archive of `1822644` running; push token minted (expires ~11:15).
+**Agents:** `lane-cli-claim-exists` stopping after `merged` (worktree
+`.claude/worktrees/cli-claim-exists`, branch `task-cli-claim-exists` to reclaim). One lane at a
+time while other sessions keep the load at 40–100 (a reviewer saw load 493 once).
 **REVIEW-SENSITIVE recommendation for Felix** (design, not built): the sensitive-path list lives
 in the repo's `tessel.toml` (`[review] sensitive = ["src/protocol.rs", ...]`), read by the steward
 with the gate config and sent to the coordinator with each merge-time coverage check, so the hold
@@ -697,10 +694,19 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   classifier refused it as "Out-of-Place Publication"); held; gate on `d69edba`: workspace 908
   with `curl` removed from `PATH` at load 50, clippy 0; approved claim 71; merged patch-id equals
   the gated one (rebased over the CLI commits). Why the live sockets closed is still unknown.
-- [ ] **CLI-CLAIM-EXISTS** — three lanes on Oct 7 passed a space-joined zsh variable to
+- [x] **CLI-CLAIM-EXISTS** — three lanes on Oct 7 passed a space-joined zsh variable to
   `tessel claim`, which created one scope named "a.rs b.rs c.rs" with no warning; the submit was
   then refused as uncovered. `claim` should warn (or refuse, with an override) when a file scope
   does not exist in the worktree and is not being created (`--mode create`).
+  CLOSED 2026-10-09 at trunk `6b61869` (Opus "With fixes" at `1822644`, "Yes" at `6b61869`):
+  `tessel claim` refuses a file, directory or symbol scope absent from the worktree AND from
+  `HEAD` (so a file deleted or renamed before the claim is still claimable) unless the mode is
+  `create`; a directory scope on a regular file and a symbol scope on a directory are refused;
+  a scope argument holding whitespace warns on stderr; the check runs in `commands::claim`, so
+  the MCP tool inherits it (`isError`); the edit and git hooks bypass it by design (they cover
+  new files and staged deletions). Exit 1 like other scope errors. 11 tests, 14 mutants caught.
+  Known: a symbol scope whose path is a tree at HEAD but gone on disk is accepted; a failure to
+  spawn git reads as "missing".
 - [x] **SWARM-RECONNECT** — A/B run 3 (Oct 7 19:31–19:39, trunk `43edf24`, `wrangler tail` on):
   at 19:39:36–37 every WebSocket dropped at once with no close frame (17 queued agents withdrawn
   in one instant; the Durable Object kept running, one script version, all 376 invocations ok, CPU
