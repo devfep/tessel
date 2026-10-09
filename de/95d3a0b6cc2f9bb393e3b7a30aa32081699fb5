@@ -1,0 +1,4 @@
+intent: record the lane's commit, the orchestrator gate and the submission; reopen the on_local load flake
+assumes: none
+rejected: holding the submission for the unrelated on_local failure; it is pre-existing and filed
+evidence: reconnect suite 3/3 with curl off PATH; clippy and rustfmt clean on e164717
