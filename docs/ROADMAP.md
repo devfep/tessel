@@ -5,13 +5,20 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 17:55 EDT. **FRESH-CLONE TEST PASSED on `e164717` (17:41–17:49, load up to
+**As of:** 2026-10-09 18:05 EDT. **PULL REQUEST 2 IS READY; FELIX MERGES IT.** The trunk is at
+`db31287` (docs landed 18:00 as claim 86 of `lane-docs-milestone-2`; tree `74e0544`; mirrored to
+GitHub `artifacts-trunk`, 244 commits on the pull request; lane reclaimed). The auto-mode
+classifier refused the orchestrator's `gh pr merge` ("Merge Without Review": the reviews are the
+orchestrator's own), so Felix runs, from `repos/tessel`:
+`gh pr merge 2 --merge --subject "Merge pull request #2 from devfep/artifacts-trunk"` (a merge
+commit, NOT squash and NOT `--delete-branch`: `artifacts-trunk` is the mirror branch). Then
+`main`'s tree should equal `origin/artifacts-trunk`'s (`74e0544`). Everything the protocol asks
+for before that merge is done: Sandbox gate on every commit, both reviews posted as comments,
+fresh clone clean. **Orchestrator idle after this commit; nothing runs.** Then the video script and
+the form rewrite for Felix (draft in the scratchpad `orch/submission-form-draft.md`), and the
+boxes below as lanes when he says so. Earlier: **FRESH-CLONE TEST PASSED on `e164717` (17:41–17:49, load up to
 173): `cargo test --workspace` 1068 passed, 0 failed; `cargo deny` ok; steward 803 passed,
-typecheck ok (`docs/evidence/2026-10-09/fresh-clone/`). Landing these docs (this roadmap, the
-fresh-clone evidence, the EVIDENCE-CHECK-SH fix) on the trunk as `lane-docs-milestone-2`, then
-the orchestrator merges pull request 2 into `main` (both reviews posted, full gate: Sandbox gates
-on every commit, fresh clone clean).** After that: the video script and form rewrite for Felix
-(draft in the scratchpad `orch/submission-form-draft.md`), and the boxes below as lanes. **MERGED 17:41: SWARM-RECONNECT-FIRST-CONNECT at trunk `e164717`**
+typecheck ok (`docs/evidence/2026-10-09/fresh-clone/`). These docs landed as `db31287` (above).** **MERGED 17:41: SWARM-RECONNECT-FIRST-CONNECT at trunk `e164717`**
 (claim 85, no hold; the trunk fast-forwarded; tree `489eb2c` equals the lane commit's; mirrored to
 GitHub `artifacts-trunk`, so pull request 2 now carries 243 commits; lane daemon stopped, worktree,
 branch and token file reclaimed). The second fresh-clone run is the one above. History: the lane reported `e164717`
@@ -149,7 +156,7 @@ Opus Yes and a gate (BUILD-PROTOCOL §2): a comment-only change, or the process 
 prepared; Felix decides whether to allow that read or run that lane from his own session. Then the
 live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
 `scratchpad/orch/ab-run.sh <policy> <out-dir>`).
-**Trunk:** `8c958b3` (docs landing on `c6d6c76`; mirrored to GitHub `artifacts-trunk`);
+**Trunk:** `db31287` (docs on `e164717` on `8c958b3`; mirrored to GitHub `artifacts-trunk`);
 `.claude/worktrees/deploy` is at `c6d6c76` (harness rebuilt). `cargo deny check` on the trunk
 (PLAN §9 Oct 11 item, run 11:30): advisories ok, bans ok, licenses ok, sources ok.
 **MERGED 11:22: SWARM-PUSH-RETRY at trunk `c6d6c76`** (claim 82 approved 11:17 after Opus "Yes"
@@ -278,10 +285,10 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-swarm-reconnect-cut` (Sonnet) in `.claude/worktrees/swarm-reconnect-cut`;
-three read-only verifiers and one security finder (no worktree). Worktrees also: `ax-mcp` (its
-`tessel` binary serves `tools/orch-review.sh`) and `deploy` (trunk `c6d6c76`, harness and
-`tessel-cli` built). Wi-Fi on. One lane at a
+**Agents:** none live; every lane worktree reclaimed. Worktrees: `ax-mcp` (its `tessel` binary
+serves `tools/orch-review.sh`) and `deploy` (code of `c6d6c76`, harness and `tessel-cli` built;
+its `tessel` binary ran the docs lanes). No background jobs; Wi-Fi on. Scratchpad keeps
+`fresh-clone/run1` and `run2` clones (safe to `trash`). One lane at a
 time while other sessions keep the load at 20–100 (a reviewer saw load 493 once).
 **Open boxes left:** REVIEW-SENSITIVE (recommendation above, needs Felix's yes), REVIEW-NOTE
 (needs Felix), COORD-UNDELIVERED-GRANT (needs Felix), GATE-PATH, GATE-OUTPUT (classifier call),
