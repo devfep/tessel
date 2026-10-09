@@ -1,0 +1,4 @@
+intent: catch older curl output that prints a reason phrase after the 5xx code
+assumes: none
+rejected: none
+evidence: cargo test -p tessel-swarm 186 passed; clippy and rustfmt clean
