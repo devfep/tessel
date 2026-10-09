@@ -1,0 +1,4 @@
+intent: record the clean fresh-clone result and the merge plan
+assumes: none
+rejected: none
+evidence: run3-e164717.log: cargo test exit 0 (1068), cargo deny ok, pnpm test 803, typecheck ok
