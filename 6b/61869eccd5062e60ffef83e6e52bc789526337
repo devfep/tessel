@@ -1,0 +1,4 @@
+intent: fix pass for claim-exists: accept paths present at HEAD, refuse wrong kind, check relative to the root
+assumes: git is on PATH in the worktree; a missing git or HEAD counts as absent
+rejected: none
+evidence: cargo test -p tessel-cli 388 passed (383 + 5); clippy --workspace -D warnings clean; rustfmt clean; 6 mutants killed, one needed a stronger test
