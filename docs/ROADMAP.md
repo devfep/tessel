@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 08:05 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 08:50 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -23,7 +23,23 @@ identity minted 07:19; its daemon is stopped.
 `orch/brief-swarm-shadow-reconnect.md`; owns `tessel-swarm/src/{on,events,conn}.rs`. Reported
 07:59: commit `8ceecb6` (on.rs, events.rs, tests/reconnect.rs, README), workspace 1045 passed,
 clippy and rustfmt clean, 7 mutants caught; not pushed, not submitted; daemon up with claim 78.
-Opus review running since 08:03 on an archived snapshot (`scratchpad/orch/review-ssr/`).
+Opus review: "With fixes" 08:07 (two 103-char test lines, one surviving mutant), fix commit
+`82ed1e4`, re-check "Yes" 08:12; orchestrator gate on an archive of `82ed1e4`: 1046 passed with
+`curl` off the PATH, clippy 0. Pushed to the fork, submitted, held (signature changes), approved
+as claim 78 by `tools/orch-review.sh` (the classifier allowed it this time, 08:30). **The steward
+REFUSED the merge** ("tests failed (exit code 101) on the commit rebased onto main"; trunk
+unchanged, so the tree is `82ed1e4`'s). `POST /repos/<fork>/test-runs` on the fork reproduced it
+AND NAMED IT (the test-run result carries the test step's stdout; only the merge path's notice is
+blind, GATE-OUTPUT): `a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_sent_again`
+(reconnect.rs:115, a SWARM-RECONNECT test): 5 reconnect tries ran out while the test's local
+server still refused with 401; the reconnect suite took 76 s in the Sandbox against 17 s here
+(wall 237 s, peak 696 MB). Lane told 08:48 to make that test and its own lapse/cut tests
+independent of machine speed, commit, and STOP; then orchestrator read, resubmit (claim released
+by the lane's `tessel stop`, so a new claim), gate, approval.
+**Orchestrator tooling this session** (scratchpad `orch/`): `ab-run.sh <policy> <out>`,
+`gate.sh <wt> <sha> <copy>` (curl off PATH), `test-run.sh <repo> <out.json>` (Sandbox gate of a
+repo's main; the json names failing tests), `watch-trunk.sh <old-sha>` (ls-remote with a read
+token), `mint-identity.sh <agent> <wt>`, `create-fork.sh <lane>`, `mcp_probe.py`.
 Orchestrator ruling on the lane's flagged limit (a reset before the `Shadowed` reply is read
 leaves the agent without its fence, so it claims again and the first claim idles out its lease):
 accepted for now, documented in the harness README; the fix is an additive
