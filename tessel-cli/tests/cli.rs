@@ -438,6 +438,86 @@ async fn claims_validate_paths_before_asking_anyone() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_on_a_missing_file_is_refused_and_names_the_scope() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("missing files")?;
+    for missing in ["src/nope.rs", "src/a.rs src/b.rs"] {
+        let done = a1.tessel(&["claim", missing])?;
+        assert_eq!(done.code, 1, "{missing}: {}", done.all());
+        for needle in [
+            missing,
+            "does not exist",
+            "separate argument",
+            "--mode create",
+        ] {
+            assert!(done.stderr.contains(needle), "{needle}: {}", done.stderr);
+        }
+    }
+    assert_eq!(claim_ids(&a1)?, Vec::<u64>::new());
+    let existing = a1.tessel(&["claim", "src/a.rs", "src/b.rs"])?;
+    assert_eq!(existing.code, 0, "{}", existing.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_file_can_be_claimed_in_create_mode() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("new file")?;
+    let done = a1.tessel(&["claim", "--mode", "create", "src/fresh.rs"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(claim_ids(&a1)?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_on_a_missing_directory_is_refused() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("missing dir")?;
+    let done = a1.tessel(&["claim", "src/nodir/"])?;
+    assert_eq!(done.code, 1, "{}", done.all());
+    assert!(done.stderr.contains("src/nodir/"), "{}", done.stderr);
+    assert!(done.stderr.contains("does not exist"), "{}", done.stderr);
+    assert_eq!(claim_ids(&a1)?, Vec::<u64>::new());
+    let existing = a1.tessel(&["claim", "src/"])?;
+    assert_eq!(existing.code, 0, "{}", existing.all());
+    let created = a1.tessel(&["claim", "--mode", "create", "src/nodir/"])?;
+    assert_eq!(created.code, 0, "{}", created.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_symbol_claim_on_a_missing_file_is_refused() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("missing symbol file")?;
+    let done = a1.tessel(&["claim", "src/nope.rs::nope::helper"])?;
+    assert_eq!(done.code, 1, "{}", done.all());
+    assert!(
+        done.stderr.contains("src/nope.rs::nope::helper"),
+        "{}",
+        done.stderr
+    );
+    assert!(done.stderr.contains("does not exist"), "{}", done.stderr);
+    assert_eq!(claim_ids(&a1)?, Vec::<u64>::new());
+    let existing = a1.tessel(&["claim", "src/a.rs::a"])?;
+    assert_eq!(existing.code, 0, "{}", existing.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scope_with_whitespace_warns_on_stderr_without_refusing() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    a1.start("whitespace")?;
+    let done = a1.tessel(&["claim", "--mode", "create", "src/new file.rs"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.stderr.contains("whitespace"), "{}", done.stderr);
+    assert!(done.stderr.contains("src/new file.rs"), "{}", done.stderr);
+    assert!(!done.stdout.contains("whitespace"), "{}", done.stdout);
+    let plain = a1.tessel(&["claim", "src/a.rs"])?;
+    assert!(!plain.stderr.contains("whitespace"), "{}", plain.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn modes_directories_and_symbols_reach_the_coordinator() -> Result<()> {
     let (_fake, a1, a2) = world(30_000).await?;
     a1.start("mixed scopes")?;
@@ -1661,6 +1741,7 @@ async fn a_second_claim_amends_the_open_claim_and_tracks_the_new_fence() -> Resu
 async fn new_and_assumptions_make_a_separate_claim() -> Result<()> {
     let (_fake, a1, _a2) = world(30_000).await?;
     a1.start("two claims")?;
+    std::fs::write(a1.root().join("src/c.rs"), "pub fn c() {}\n")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
     assert_eq!(claim_ids(&a1)?.len(), 2);
@@ -1813,6 +1894,7 @@ async fn review_required_before_accepted_decides_the_reply_and_accepted_is_not_u
 async fn stop_returns_only_after_every_release_took_effect() -> Result<()> {
     let (_fake, a1, a2) = world(30_000).await?;
     a1.start("many claims")?;
+    std::fs::write(a1.root().join("src/c.rs"), "pub fn c() {}\n")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["claim", "--new", "src/c.rs"])?.code, 0);
@@ -1827,6 +1909,7 @@ async fn stop_returns_only_after_every_release_took_effect() -> Result<()> {
 
     // Right away, with no waiting: another agent gets every file.
     a2.start("takes over")?;
+    std::fs::write(a2.root().join("src/c.rs"), "pub fn c() {}\n")?;
     for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
         let done = a2.tessel(&["claim", "--new", path])?;
         assert_eq!(done.code, 0, "{path}: {}", done.all());

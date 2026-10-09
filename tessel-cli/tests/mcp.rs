@@ -298,6 +298,20 @@ async fn bad_arguments_are_error_results_and_unknown_tools_are_protocol_errors()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_on_a_missing_file_is_an_error_result_naming_the_scope() -> Result<()> {
+    let (_fake, a1, _a2) = world().await?;
+    a1.start("missing file over mcp")?;
+    let mut session = Session::open(&a1)?;
+    let refused = session.call("tessel_claim", json!({ "scopes": ["src/nope.rs"] }))?;
+    assert!(is_error(&refused), "{refused}");
+    let text = text_of(&refused);
+    assert!(text.contains("src/nope.rs"), "{text}");
+    assert!(text.contains("does not exist"), "{text}");
+    assert!(text.contains("exit code 1"), "{text}");
+    session.finish()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_review_and_a_claim_without_a_daemon_are_error_results() -> Result<()> {
     let (_fake, a1, _a2) = world().await?;
     let mut session = Session::open(&a1)?;

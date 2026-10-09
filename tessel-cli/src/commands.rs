@@ -312,11 +312,17 @@ pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow
     } = options;
     let worktree = Worktree::discover(cwd)?;
     let mut scopes = Vec::new();
+    let mut warnings = Vec::new();
     for arg in args {
-        scopes.push(ScopeClaim {
-            scope: scope::parse(arg)?,
-            mode,
-        });
+        let scope = scope::parse(arg)?;
+        scope::check_exists(&worktree.root, arg, &scope, mode)?;
+        if scope::has_whitespace(arg) {
+            warnings.push(format!(
+                "tessel: warning: scope {arg:?} contains whitespace; if it is several paths, \
+                 pass each as a separate argument\n"
+            ));
+        }
+        scopes.push(ScopeClaim { scope, mode });
     }
     let request = Request::Claim {
         scopes,
@@ -337,7 +343,9 @@ pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow
         ClaimOutcome::Queued { .. } => EXIT_QUEUED,
         ClaimOutcome::Refused { .. } => 1,
     };
-    Ok(Report::with_code(outcome_text(&outcome, &hint), code))
+    let mut report = Report::with_code(outcome_text(&outcome, &hint), code);
+    report.stderr = warnings.concat();
+    Ok(report)
 }
 
 pub async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<Report> {

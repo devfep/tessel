@@ -3,7 +3,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use tessel_coordinator::protocol::{Scope, SymbolId};
+use tessel_coordinator::protocol::{Mode, Scope, SymbolId};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -18,6 +18,12 @@ pub enum ScopeError {
     BadSymbol { scope: String },
     #[error("scope is empty")]
     Empty,
+    #[error(
+        "scope {scope:?} does not exist in this worktree. Pass each path as a separate argument \
+         (a space-joined shell variable makes one scope), or add `--mode create` to claim \
+         something you are about to create"
+    )]
+    Missing { scope: String },
 }
 
 /// Parses one scope argument. A trailing `/` makes a directory; `::` splits a file path from a
@@ -48,6 +54,31 @@ pub fn parse(arg: &str) -> Result<Scope, ScopeError> {
     Ok(Scope::File {
         path: arg.to_string(),
     })
+}
+
+/// Refuses `scope` (parsed from `arg`) when the file or directory it names is absent from the
+/// worktree `root`. A symbol scope needs its file. Claims in `create` mode skip this check
+/// because they name what the agent is about to add.
+pub fn check_exists(root: &Path, arg: &str, scope: &Scope, mode: Mode) -> Result<(), ScopeError> {
+    match mode {
+        Mode::Create => return Ok(()),
+        Mode::Depend | Mode::EditBody | Mode::EditSignature => {}
+    }
+    let path = match scope {
+        Scope::File { path } | Scope::Dir { path } => path,
+        Scope::Symbol(symbol) => &symbol.path,
+    };
+    if root.join(path).exists() {
+        return Ok(());
+    }
+    Err(ScopeError::Missing {
+        scope: arg.to_string(),
+    })
+}
+
+/// A scope argument holding whitespace is usually several paths joined into one word.
+pub fn has_whitespace(arg: &str) -> bool {
+    arg.chars().any(char::is_whitespace)
 }
 
 /// The file scope for a repo-relative path taken as it stands, so a `::` in a file name is not

@@ -81,6 +81,8 @@ is not checked. Concluding a merge (`MERGE_HEAD` present) skips the commit check
 
 A scope is `dir/`, `path/file.rs`, or `path/file.rs::qualified::name`. Paths are repo-relative:
 no leading `/`, no `.` or `..` segments.
+`tessel claim` refuses a scope whose file or directory does not exist (exit 1) unless the mode is
+`create`, so pass each path as its own argument: a quoted, space-joined list is one missing path.
 
 | `--mode` | Use for |
 |---|---|
