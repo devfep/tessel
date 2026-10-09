@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 10:15 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 10:20 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -206,7 +206,11 @@ run). A small sample: it shows the mechanism live, not a rate.
 `.claude/worktrees/cli-claim-exists` (branch `task-cli-claim-exists`, fork
 `tessel-dogfood--lane-cli-claim-exists`); brief `scratchpad/orch/brief-cli-claim-exists.md`; owns
 `tessel-cli/src/{commands,scope}.rs`, the claim and mcp tests, one line of `skills/tessel/SKILL.md`.
-One lane only while the load from other sessions stays at 40–60.
+One lane only while the load from other sessions stays at 40–60. Reported 10:13: commit
+`1822644` (scope.rs `Missing`/`check_exists`/`has_whitespace`; commands.rs checks before the
+daemon; 5 CLI + 1 MCP tests; SKILL.md one sentence), workspace 1052 passed, 8 mutants caught;
+not pushed. Opus review running since 10:17 on `scratchpad/orch/review-cce/`; Mac gate on an
+archive of `1822644` running; push token minted (expires ~11:15).
 **REVIEW-SENSITIVE recommendation for Felix** (design, not built): the sensitive-path list lives
 in the repo's `tessel.toml` (`[review] sensitive = ["src/protocol.rs", ...]`), read by the steward
 with the gate config and sent to the coordinator with each merge-time coverage check, so the hold
