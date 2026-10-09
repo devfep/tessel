@@ -1,0 +1,4 @@
+intent: put the milestone's final roadmap state and the fresh-clone evidence on the trunk before pull request 2 merges
+assumes: the steward's gate is unaffected by files under docs/
+rejected: none
+evidence: docs only; docs/ tree equals sprint/build 45ecfa3's
