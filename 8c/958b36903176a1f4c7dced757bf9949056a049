@@ -1,0 +1,4 @@
+intent: put the roadmap STATE as of 16:50, the build protocol rule 00 and 0, the PLAN section 6 agent-integrations line and the Oct 5-9 evidence on the trunk before the milestone pull request
+assumes: the steward's gate (cargo test, pnpm test) is unaffected by files under docs/
+rejected: none
+evidence: docs only; tree of docs/, PLAN.md equals sprint/build e54d31d's
