@@ -1,0 +1,4 @@
+intent: record the docs landing, the mirror and the open milestone pull request
+assumes: GitHub pull request 2 stays open until the reviews and the fresh-clone test are done
+rejected: none
+evidence: trunk tree 9192700 equals the lane commit's; mirror fast-forwarded c6d6c76..8c958b3
