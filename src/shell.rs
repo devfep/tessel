@@ -1,4 +1,4 @@
-//! Pure helpers for the Durable Object shell in `lib.rs`: everything that can be decided without
+//! Pure helpers for the Durable Object shell in `runtime.rs`: everything that can be decided without
 //! a runtime. The shell only reads storage and sockets, calls these, and does what they say.
 //!
 //! Decisions made here:
@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::coordinator::{Config, Coordinator as Core, Effect, InvalidConfig};
-use crate::protocol::{AgentId, ClientMsg, ErrorCode, Event, RequestId, RunId, ServerMsg};
+use crate::protocol::{AgentId, ClientMsg, ErrorCode, Event, RequestId, RunId, ServerMsg, Summary};
 
 /// Lease length for every claim. A fixed value: nothing needs to tune it yet.
 pub const LEASE_MS: u64 = 30_000;
@@ -43,6 +43,11 @@ pub const EVENT_PREFIX: &str = "ev:";
 /// What a socket remembers across hibernation, kept in its attachment.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
+    /// The agent the Worker verified at the upgrade, set before the first message. A `Hello` for
+    /// anyone else is refused. `None` (an attachment from before verification) refuses every
+    /// `Hello`.
+    #[serde(default)]
+    pub verified: Option<AgentId>,
     /// Set by the first `Hello` the core answered with `Welcome`.
     #[serde(default)]
     pub agent: Option<AgentId>,
@@ -50,6 +55,10 @@ pub struct Session {
     /// `None` means the socket is not watching.
     #[serde(default)]
     pub watch_from: Option<u64>,
+    /// Set when the Durable Object closed this socket itself. The runtime may still list a
+    /// closed socket as open, so a closed session shields no agent from a withdrawal.
+    #[serde(default)]
+    pub closed: bool,
 }
 
 /// What the shell does with one parsed client message.
@@ -57,6 +66,8 @@ pub struct Session {
 pub enum Action {
     /// Answer the sender directly; the core is not called.
     Reject(ServerMsg),
+    /// Answer the sender directly, then close the socket; the core is not called.
+    RejectAndClose(ServerMsg),
     /// Replay the stored log from `from_seq`, then follow live.
     Watch { from_seq: u64 },
     /// Call the core with `agent` as the identity bound to the connection.
@@ -77,6 +88,7 @@ pub enum Outbound {
 pub enum LoadError {
     MissingRun,
     InvalidShadowEnabled,
+    InvalidReviewers,
     InvalidConfig(InvalidConfig),
     /// Stored state that does not parse. Only the position is kept: the state holds intents.
     Corrupt {
@@ -97,6 +109,11 @@ impl std::fmt::Display for LoadError {
             LoadError::InvalidShadowEnabled => write!(
                 f,
                 "the SHADOW_ENABLED variable must be exactly \"true\" or \"false\""
+            ),
+            LoadError::InvalidReviewers => write!(
+                f,
+                "the REVIEWERS variable must be comma-separated agent ids \
+                 (letters, digits, '.', '_', '-'; at most {MAX_AGENT_ID_BYTES} bytes each)"
             ),
             LoadError::InvalidConfig(e) => write!(f, "{e}"),
             LoadError::Corrupt { line, column } => write!(
@@ -120,6 +137,53 @@ pub fn config_from_vars(run: Option<&str>, shadow: Option<&str>) -> Result<Confi
     })
 }
 
+/// `REVIEWERS`: comma-separated agent ids, spaces around an id ignored; unset or blank means
+/// nobody may review. An empty entry or an id that is not a valid agent id is an error.
+pub fn parse_reviewers(reviewers: Option<&str>) -> Result<Vec<AgentId>, LoadError> {
+    let Some(list) = reviewers.filter(|list| !list.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let mut parsed = Vec::new();
+    for entry in list.split(',') {
+        let entry = entry.trim();
+        if !is_agent_id(entry) {
+            return Err(LoadError::InvalidReviewers);
+        }
+        parsed.push(AgentId(entry.to_string()));
+    }
+    Ok(parsed)
+}
+
+/// The reviewers for a repo, failing closed: a bad `REVIEWERS` value is reported (the report never
+/// carries the value) and means nobody may review, so flagged work stays held (invariant 12). It
+/// must not stop the Durable Object from loading, which would stop every repo's leases and merges.
+pub fn reviewers_or_none(reviewers: Option<&str>, report: impl FnOnce(&LoadError)) -> Vec<AgentId> {
+    parse_reviewers(reviewers).unwrap_or_else(|e| {
+        report(&e);
+        Vec::new()
+    })
+}
+
+/// Whether `agent` can be a verified agent id: also safe to carry in an HTTP header.
+pub fn is_agent_id(agent: &str) -> bool {
+    let Some(first) = agent.bytes().next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
+        && agent.len() <= MAX_AGENT_ID_BYTES
+        && agent
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Whether the Worker serves `repo`. `prefix` is the `ALLOWED_REPO_PREFIX` var: unset or empty
+/// serves every repo; otherwise only repos whose name starts with it. A deployment that shares its
+/// signing key with others sets it, so a token minted for another deployment's repo opens nothing
+/// here.
+pub fn repo_allowed(prefix: Option<&str>, repo: &str) -> bool {
+    prefix.is_none_or(|p| repo.starts_with(p))
+}
+
 /// `SHADOW_ENABLED`: exactly "true" or "false"; unset means false. Anything else is an error.
 fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
     match shadow {
@@ -129,21 +193,27 @@ fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
     }
 }
 
-/// Restore the core from its stored state, or create it when nothing is stored yet. The variables
-/// are read only in the second case: a repo keeps the config it was created with.
+/// Restore the core from its stored state, or create it when nothing is stored yet. `RUN` and
+/// `SHADOW_ENABLED` are read only in the second case: a repo keeps the config it was created with.
+/// `reviewers` is applied in both: who may review is a deployment setting, not part of the run.
 pub fn load_core(
     stored: Option<&str>,
     run: Option<&str>,
     shadow: Option<&str>,
+    reviewers: Vec<AgentId>,
 ) -> Result<Core, LoadError> {
     let Some(stored) = stored else {
         let config = config_from_vars(run, shadow)?;
-        return Core::new(config).map_err(LoadError::InvalidConfig);
+        let mut core = Core::new(config).map_err(LoadError::InvalidConfig)?;
+        core.set_reviewers(reviewers);
+        return Ok(core);
     };
-    serde_json::from_str(stored).map_err(|e| LoadError::Corrupt {
+    let mut core: Core = serde_json::from_str(stored).map_err(|e| LoadError::Corrupt {
         line: e.line(),
         column: e.column(),
-    })
+    })?;
+    core.set_reviewers(reviewers);
+    Ok(core)
 }
 
 /// Why a text frame is refused.
@@ -195,9 +265,9 @@ fn error_msg(code: ErrorCode, message: &str) -> ServerMsg {
 
 /// Decide what to do with `msg` on a socket in `session`.
 ///
-/// Before the socket is bound only `Hello` and `Watch` are served. A `Hello` on an unbound
-/// socket is run as the agent it names; on a bound socket it is run as the bound agent, so the
-/// core refuses a `Hello` that names someone else.
+/// Before the socket is bound only `Hello` and `Watch` are served. A `Hello` must name the agent
+/// the Worker verified at the upgrade; any other is refused with `NotOwner` and the socket is
+/// closed. On a bound socket a `Hello` is run as the bound agent.
 pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
     match msg {
         ClientMsg::Watch { .. } if session.watch_from.is_some() => Action::Reject(error_msg(
@@ -210,6 +280,12 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
         ClientMsg::Hello { agent, .. } => {
             if let Some(rejection) = check_agent_id(agent) {
                 return Action::Reject(rejection);
+            }
+            if session.verified.as_ref() != Some(agent) {
+                return Action::RejectAndClose(error_msg(
+                    ErrorCode::NotOwner,
+                    "hello names an agent this connection's token was not issued for",
+                ));
             }
             let agent = session.agent.clone().unwrap_or_else(|| agent.clone());
             Action::Call { agent }
@@ -226,10 +302,11 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
             Some(agent) => Action::Call {
                 agent: agent.clone(),
             },
-            None => Action::Reject(error_msg(
-                ErrorCode::NoHello,
-                "send hello before any other message",
-            )),
+            None => Action::Reject(ServerMsg::Error {
+                req: req_of(msg),
+                code: ErrorCode::NoHello,
+                message: "send hello before any other message".to_string(),
+            }),
         },
     }
 }
@@ -275,7 +352,7 @@ pub fn bind_on_welcome(
         if let Outbound::Reply(ServerMsg::Welcome { .. }) = item {
             return Some(Session {
                 agent: Some(agent.clone()),
-                watch_from: session.watch_from,
+                ..session.clone()
             });
         }
     }
@@ -311,10 +388,18 @@ pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
 pub const MAX_DATE_MS: f64 = 8.64e15;
 
 /// The absolute time the alarm should fire, in milliseconds since the epoch, or `None` to clear
-/// it. Clamped to the largest valid `Date`. A time in the past fires at once.
-pub fn alarm_at_ms(next_expiry_ms: Option<u64>) -> Option<f64> {
-    let next = next_expiry_ms?;
+/// it. The core picks the earliest of a lease expiry, a merge dispatch and a verification. This is the one place
+/// the time is clamped: `setAlarm` refuses a time that is not after 0, so it is at least
+/// `now_ms + 1` (it fires at once), and at most the largest valid `Date`.
+pub fn alarm_at_ms(next_alarm_ms: Option<u64>, now_ms: u64) -> Option<f64> {
+    let next = next_alarm_ms?.max(now_ms.saturating_add(1));
     Some((next as f64).min(MAX_DATE_MS))
+}
+
+/// Whether a stored in-flight merge (or verification) was cut off by a restart. It was not if this
+/// instance is itself waiting on the steward: recovery must then do nothing.
+pub fn merge_cut_off(merging_here: bool, in_flight: bool) -> bool {
+    in_flight && !merging_here
 }
 
 /// Remember the first error of a series of attempts: record `result` in `slot` unless an earlier
@@ -351,6 +436,199 @@ pub fn after_page(page_len: usize, last_seq: Option<u64>) -> ReplayStep {
     match last_seq.checked_add(1) {
         Some(start_seq) => ReplayStep::Next { start_seq },
         None => ReplayStep::Done,
+    }
+}
+
+/// What the Worker serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route<'a> {
+    /// `/repo/<name>/ws`: the WebSocket upgrade.
+    Ws { repo: &'a str },
+    /// `/repo/<name>/summary`: the read-only evidence summary.
+    Summary { repo: &'a str },
+    /// `/repo/<name>/trunk-moved`: the steward's poke that main moved. It carries no data the
+    /// coordinator uses; it only asks for the head to be read again.
+    TrunkMoved { repo: &'a str },
+}
+
+/// The route a URL path names, given its segments, or `None` for any other path.
+pub fn parse_route<'a>(segments: &[&'a str]) -> Option<Route<'a>> {
+    match segments {
+        ["repo", repo, "ws"] if !repo.is_empty() => Some(Route::Ws { repo }),
+        ["repo", repo, "summary"] if !repo.is_empty() => Some(Route::Summary { repo }),
+        ["repo", repo, "trunk-moved"] if !repo.is_empty() => Some(Route::TrunkMoved { repo }),
+        _ => None,
+    }
+}
+
+/// The counters of `Summary::from_events` over a log read a page at a time, with no events kept.
+/// `Summary::from_events` is a per-event fold whose `precision` is derived at the end, so the
+/// counters of the pages add up and `precision` is recomputed from the totals.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SummaryTally {
+    total: Summary,
+    head_seq: Option<u64>,
+}
+
+impl SummaryTally {
+    /// The `seq` the next read starts at: just after the last event counted.
+    pub fn next_seq(&self) -> u64 {
+        self.head_seq.map_or(0, |head| head.saturating_add(1))
+    }
+
+    /// Count one page of events, which must follow those already counted.
+    pub fn add_page(&mut self, page: &[Event]) {
+        let Some(last) = page.last() else {
+            return;
+        };
+        let Summary {
+            claims_granted,
+            denials,
+            conflicts_prevented_verified,
+            false_alarms,
+            precision: _,
+            assumptions_challenged,
+            assumptions_confirmed_broken,
+            merges,
+            reviews_requested,
+            base_moved_notices,
+            races_decided,
+            replay_merges,
+            replay_conflicts,
+        } = Summary::from_events(page);
+        let total = &mut self.total;
+        total.claims_granted += claims_granted;
+        total.denials += denials;
+        total.conflicts_prevented_verified += conflicts_prevented_verified;
+        total.false_alarms += false_alarms;
+        total.assumptions_challenged += assumptions_challenged;
+        total.assumptions_confirmed_broken += assumptions_confirmed_broken;
+        total.merges += merges;
+        total.reviews_requested += reviews_requested;
+        total.base_moved_notices += base_moved_notices;
+        total.races_decided += races_decided;
+        total.replay_merges += replay_merges;
+        total.replay_conflicts += replay_conflicts;
+        self.head_seq = Some(last.seq);
+    }
+
+    /// The summary of everything counted so far.
+    pub fn summary(&self) -> Summary {
+        let mut summary = self.total.clone();
+        let judged = summary.conflicts_prevented_verified + summary.false_alarms;
+        if judged > 0 {
+            summary.precision = Some(summary.conflicts_prevented_verified as f64 / judged as f64);
+        }
+        summary
+    }
+
+    /// The body of `GET /repo/<name>/summary`: the counters and the `seq` of the last event
+    /// counted, so a reader can tell whether it is looking at newer data than before. An empty
+    /// log has no head: `head_seq` is `null`, not 0, which is a real `seq`.
+    pub fn report(&self) -> Result<String, serde_json::Error> {
+        #[derive(Serialize)]
+        struct Report {
+            summary: Summary,
+            head_seq: Option<u64>,
+        }
+        serde_json::to_string(&Report {
+            summary: self.summary(),
+            head_seq: self.head_seq,
+        })
+    }
+}
+
+/// Why the Worker refuses a request before it reaches the Durable Object.
+#[cfg(feature = "runtime")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denied {
+    NotFound,
+    /// The route takes only this method.
+    MethodNotAllowed {
+        allow: &'static str,
+    },
+    /// The deployment does not serve this repo (`ALLOWED_REPO_PREFIX`).
+    Forbidden,
+    /// A valid token, but not the steward's: only the steward may poke a trunk move.
+    NotSteward,
+    /// No valid identity token for this repo. The reason is for logs only; the answer is the
+    /// same 401 for every reason.
+    Unauthorized(crate::identity::IdentityError),
+}
+
+/// Everything the Worker knows about a request when it decides whether to serve it.
+#[cfg(feature = "runtime")]
+pub struct Inbound<'a> {
+    pub method: &'a str,
+    pub segments: &'a [&'a str],
+    pub allowed_prefix: Option<&'a str>,
+    pub signing_key: Option<&'a str>,
+    pub authorization: Option<&'a str>,
+    pub now_ms: u64,
+}
+
+/// Decide whether the Worker serves a request, and for which agent. The refusals come in a fixed
+/// order: path, method, repo prefix, token. A summary read takes `GET` only and a trunk poke
+/// `POST` only; the `ws` route leaves the method to the upgrade check in the Durable Object.
+#[cfg(feature = "runtime")]
+pub fn authorize<'a>(inbound: &Inbound<'a>) -> Result<(Route<'a>, AgentId), Denied> {
+    let route = parse_route(inbound.segments).ok_or(Denied::NotFound)?;
+    let repo = match route {
+        Route::Ws { repo } => repo,
+        Route::Summary { repo } => only_method(inbound, "GET", repo)?,
+        Route::TrunkMoved { repo } => only_method(inbound, "POST", repo)?,
+    };
+    if !repo_allowed(inbound.allowed_prefix, repo) {
+        return Err(Denied::Forbidden);
+    }
+    let agent = crate::identity::verify_bearer(
+        inbound.signing_key,
+        inbound.authorization,
+        repo,
+        inbound.now_ms,
+    )
+    .map_err(Denied::Unauthorized)?;
+    if let Route::TrunkMoved { .. } = route {
+        if agent.0 != TRUNK_POKE_AGENT {
+            return Err(Denied::NotSteward);
+        }
+    }
+    Ok((route, agent))
+}
+
+/// The only agent that may poke a trunk move: the steward signs its own token for it.
+#[cfg(feature = "runtime")]
+const TRUNK_POKE_AGENT: &str = "steward";
+
+/// What a trunk poke is answered with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PokeReply {
+    /// The repo has no stored state: nothing is loaded, stored or scheduled (204). Only repos this
+    /// coordinator already serves are kept in step, so a push to any other repo creates nothing.
+    UnknownRepo,
+    /// The poke was counted (202).
+    Recorded,
+}
+
+/// The reply to a trunk poke, given the repo's stored state (`STATE_KEY`), if any.
+pub fn poke_reply(stored_state: Option<&str>) -> PokeReply {
+    match stored_state {
+        Some(_) => PokeReply::Recorded,
+        None => PokeReply::UnknownRepo,
+    }
+}
+
+/// `repo`, if the request uses `allow` (compared exactly); else `MethodNotAllowed`.
+#[cfg(feature = "runtime")]
+fn only_method<'a>(
+    inbound: &Inbound<'_>,
+    allow: &'static str,
+    repo: &'a str,
+) -> Result<&'a str, Denied> {
+    if inbound.method == allow {
+        Ok(repo)
+    } else {
+        Err(Denied::MethodNotAllowed { allow })
     }
 }
 
@@ -412,7 +690,7 @@ pub fn state_limit_reply(req: Option<RequestId>) -> ServerMsg {
     }
 }
 
-/// The `req` a client message carries, if any.
+/// The `req` a client message carries, if any. `Release` carries an optional one.
 pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
     match msg {
         ClientMsg::Claim { req, .. }
@@ -422,18 +700,16 @@ pub fn req_of(msg: &ClientMsg) -> Option<RequestId> {
         | ClientMsg::JoinRace { req, .. }
         | ClientMsg::PickWinner { req, .. }
         | ClientMsg::Review { req, .. } => Some(*req),
-        ClientMsg::Hello { .. }
-        | ClientMsg::Heartbeat
-        | ClientMsg::Release { .. }
-        | ClientMsg::Watch { .. } => None,
+        ClientMsg::Release { req, .. } => *req,
+        ClientMsg::Hello { .. } | ClientMsg::Heartbeat | ClientMsg::Watch { .. } => None,
     }
 }
 
 /// What kind of work produced the result that is about to be stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Work {
-    /// A message that adds content (`Claim`, `Amend`, `Submit`): the only work that may be
-    /// refused for growing the state past `SOFT_ENTRY_BYTES`.
+    /// A message that adds content (`Claim`, `Amend`, `Submit`, `OpenRace`, `JoinRace`): the only
+    /// work that may be refused for growing the state past `SOFT_ENTRY_BYTES`.
     Content,
     /// Everything else: the other client messages, the alarm's expiry, a withdrawal on close and
     /// the expiry that follows a refusal. Never refused for size below `HARD_ENTRY_BYTES`, so a
@@ -445,14 +721,14 @@ pub enum Work {
 /// The kind of work a client message does.
 pub fn work_of(msg: &ClientMsg) -> Work {
     match msg {
-        ClientMsg::Claim { .. } | ClientMsg::Amend { .. } | ClientMsg::Submit { .. } => {
-            Work::Content
-        }
+        ClientMsg::Claim { .. }
+        | ClientMsg::Amend { .. }
+        | ClientMsg::Submit { .. }
+        | ClientMsg::OpenRace { .. }
+        | ClientMsg::JoinRace { .. } => Work::Content,
         ClientMsg::Hello { .. }
         | ClientMsg::Heartbeat
         | ClientMsg::Release { .. }
-        | ClientMsg::OpenRace { .. }
-        | ClientMsg::JoinRace { .. }
         | ClientMsg::PickWinner { .. }
         | ClientMsg::Review { .. }
         | ClientMsg::Watch { .. } => Work::Plain,
@@ -577,47 +853,103 @@ pub fn agent_to_withdraw(
     has_queued: impl Fn(&AgentId) -> bool,
 ) -> Option<AgentId> {
     let agent = closing.agent.as_ref()?;
-    if bound_indexes(agent, others).is_empty() && has_queued(agent) {
+    let shielded = others
+        .iter()
+        .any(|other| !other.closed && other.agent.as_ref() == Some(agent));
+    if !shielded && has_queued(agent) {
         return Some(agent.clone());
     }
     None
 }
 
-const BEARER_PREFIX: &str = "Bearer ";
-
-/// Whether an `Authorization` header carries the coordinator token. Fails closed: a missing or
-/// empty `expected`, a missing header, another scheme or an empty token never match.
-pub fn is_authorized(expected: Option<&str>, authorization: Option<&str>) -> bool {
-    let Some(expected) = expected.filter(|token| !token.is_empty()) else {
-        return false;
-    };
-    let Some(presented) = authorization.and_then(|header| header.strip_prefix(BEARER_PREFIX))
-    else {
-        return false;
-    };
-    if presented.is_empty() {
-        return false;
+/// The agents whose queued request to withdraw when every socket in `closing` has gone away
+/// (the sockets the Durable Object closed itself, which may still be listed as open). `others`
+/// must exclude all of `closing`, so two dead sockets of one agent do not shield each other.
+/// Each agent appears once, in the order of `closing`.
+pub fn agents_to_withdraw(
+    closing: &[Session],
+    others: &[Session],
+    has_queued: impl Fn(&AgentId) -> bool,
+) -> Vec<AgentId> {
+    let mut agents = Vec::new();
+    for session in closing {
+        let Some(agent) = agent_to_withdraw(session, others, &has_queued) else {
+            continue;
+        };
+        if !agents.contains(&agent) {
+            agents.push(agent);
+        }
     }
-    constant_time_eq(expected.as_bytes(), presented.as_bytes())
+    agents
 }
 
-/// Equality without an early exit on the first differing byte. The lengths are compared first,
-/// so the length of the secret is not hidden.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+/// The agent a socket speaks for in logs: the one it said hello as, else the one the Worker
+/// verified at the upgrade.
+pub fn session_agent(session: &Session) -> Option<&AgentId> {
+    session.agent.as_ref().or(session.verified.as_ref())
+}
+
+const LOG_TEXT_MAX_CHARS: usize = 120;
+
+/// Text from a client or an error, made safe for one log line: cut to 120 characters, with
+/// control characters (newlines among them) written as escapes.
+fn log_text(raw: &str) -> String {
+    let mut clean = String::new();
+    for c in raw.chars().take(LOG_TEXT_MAX_CHARS) {
+        if c.is_control() {
+            clean.extend(c.escape_default());
+        } else {
+            clean.push(c);
+        }
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    clean
+}
+
+pub fn log_agent(agent: Option<&AgentId>) -> String {
+    agent.map_or_else(|| "-".to_string(), |agent| log_text(&agent.0))
+}
+
+/// The log line for a closed socket: what the peer or the runtime said, and who it was.
+pub fn close_log_line(
+    code: usize,
+    was_clean: bool,
+    reason: &str,
+    agent: Option<&AgentId>,
+) -> String {
+    let (reason, agent) = (log_text(reason), log_agent(agent));
+    format!("socket closed: code={code} clean={was_clean} reason=\"{reason}\" agent={agent}")
+}
+
+/// The log line for a failed socket.
+pub fn error_log_line(error: &str, agent: Option<&AgentId>) -> String {
+    format!(
+        "socket error: \"{}\" agent={}",
+        log_text(error),
+        log_agent(agent)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ClaimId, EventKind, Fence, Intent, Mode, OnConflict, Scope, ScopeClaim};
+    use crate::protocol::{
+        ClaimId, CommitId, EventKind, Fence, Intent, Mode, OnConflict, Outcome, Scope, ScopeClaim,
+        Summary,
+    };
+
+    #[test]
+    fn repo_prefix_limits_which_repos_a_deployment_serves() {
+        for repo in ["swarm-x", "tessel-dogfood", "demo"] {
+            assert!(repo_allowed(None, repo), "unset serves everything");
+            assert!(repo_allowed(Some(""), repo), "empty serves everything");
+        }
+        assert!(repo_allowed(Some("swarm-"), "swarm-x"));
+        assert!(repo_allowed(Some("swarm-"), "swarm-"));
+        assert!(!repo_allowed(Some("swarm-"), "tessel-dogfood"));
+        assert!(!repo_allowed(Some("swarm-"), "demo"));
+        assert!(!repo_allowed(Some("swarm-"), "my-swarm-x"));
+        assert!(!repo_allowed(Some("swarm-"), "swarm"));
+    }
 
     const NOW: u64 = 1_000;
 
@@ -627,8 +959,17 @@ mod tests {
 
     fn bound(name: &str) -> Session {
         Session {
+            verified: Some(agent(name)),
             agent: Some(agent(name)),
             watch_from: None,
+            closed: false,
+        }
+    }
+
+    fn verified(name: &str) -> Session {
+        Session {
+            verified: Some(agent(name)),
+            ..Session::default()
         }
     }
 
@@ -659,7 +1000,7 @@ mod tests {
     }
 
     fn new_core() -> Core {
-        load_core(None, Some("test"), None).unwrap()
+        load_core(None, Some("test"), None, Vec::new()).unwrap()
     }
 
     fn reject_code(action: Action) -> ErrorCode {
@@ -672,8 +1013,10 @@ mod tests {
     #[test]
     fn session_survives_the_attachment_round_trip() {
         let session = Session {
+            verified: Some(agent("a1")),
             agent: Some(agent("a1")),
             watch_from: Some(0),
+            closed: false,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert_eq!(serde_json::from_str::<Session>(&json).unwrap(), session);
@@ -698,22 +1041,68 @@ mod tests {
     }
 
     #[test]
-    fn unbound_hello_runs_as_the_agent_it_names() {
-        let Action::Call { agent: who } = decide(&Session::default(), &hello("a1")) else {
+    fn no_hello_rejection_echoes_the_req_of_every_request_carrying_message() {
+        let session = Session::default();
+        let release = msg(r#"{"type":"release","claim":1,"fence":1,"req":8}"#);
+        let old_release = msg(r#"{"type":"release","claim":1,"fence":1}"#);
+        let claim_msg = claim("fail", "depend");
+        for (message, expected) in [
+            (release, Some(RequestId(8))),
+            (old_release, None),
+            (claim_msg.clone(), req_of(&claim_msg)),
+        ] {
+            let Action::Reject(ServerMsg::Error { req, code, .. }) = decide(&session, &message)
+            else {
+                panic!("expected a rejection");
+            };
+            assert_eq!((req, code), (expected, ErrorCode::NoHello));
+        }
+        assert!(req_of(&claim_msg).is_some(), "the claim carries a req");
+    }
+
+    #[test]
+    fn unbound_hello_runs_as_the_verified_agent() {
+        let Action::Call { agent: who } = decide(&verified("a1"), &hello("a1")) else {
             panic!("expected a core call");
         };
         assert_eq!(who, agent("a1"));
     }
 
-    #[test]
-    fn bound_hello_naming_someone_else_runs_as_the_bound_agent_and_core_refuses_it() {
-        let mut core = new_core();
-        let (who, effects) = run(&mut core, &bound("a1"), hello("a2"));
-        assert_eq!(who, agent("a1"));
-        let [Effect::Reply(ServerMsg::Error { code, .. })] = effects.as_slice() else {
-            panic!("expected one error reply, got {effects:?}");
+    fn close_code(action: Action) -> ErrorCode {
+        let Action::RejectAndClose(ServerMsg::Error { code, .. }) = action else {
+            panic!("expected a rejection that closes the socket, got {action:?}");
         };
-        assert_eq!(*code, ErrorCode::Malformed);
+        code
+    }
+
+    #[test]
+    fn hello_naming_another_agent_is_not_owner_and_closes_the_socket() {
+        for session in [verified("a1"), bound("a1")] {
+            let action = decide(&session, &hello("a2"));
+            assert_eq!(close_code(action), ErrorCode::NotOwner);
+        }
+    }
+
+    #[test]
+    fn hello_on_a_socket_without_a_verified_identity_is_not_owner() {
+        let action = decide(&Session::default(), &hello("a1"));
+        assert_eq!(close_code(action), ErrorCode::NotOwner);
+    }
+
+    #[test]
+    fn after_welcome_a_repeated_hello_is_served_and_another_agent_is_refused() {
+        let mut core = new_core();
+        let (who, effects) = run(&mut core, &verified("a1"), hello("a1"));
+        let (_, outbound) = split_effects(effects);
+        let session = bind_on_welcome(&verified("a1"), &who, &outbound).unwrap();
+        let Action::Call { agent: again } = decide(&session, &hello("a1")) else {
+            panic!("expected a core call");
+        };
+        assert_eq!(again, agent("a1"));
+        assert_eq!(
+            close_code(decide(&session, &hello("a2"))),
+            ErrorCode::NotOwner
+        );
     }
 
     #[test]
@@ -738,16 +1127,19 @@ mod tests {
     #[test]
     fn hello_with_an_overlong_agent_id_is_malformed() {
         let at_limit = "a".repeat(MAX_AGENT_ID_BYTES);
-        assert!(matches_call(decide(&Session::default(), &hello(&at_limit))));
+        assert!(matches_call(decide(
+            &verified(&at_limit),
+            &hello(&at_limit)
+        )));
         let over = "a".repeat(MAX_AGENT_ID_BYTES + 1);
-        let action = decide(&Session::default(), &hello(&over));
+        let action = decide(&verified(&over), &hello(&over));
         assert_eq!(reject_code(action), ErrorCode::Malformed);
     }
 
     fn matches_call(action: Action) -> bool {
         match action {
             Action::Call { .. } => true,
-            Action::Reject(_) | Action::Watch { .. } => false,
+            Action::Reject(_) | Action::RejectAndClose(_) | Action::Watch { .. } => false,
         }
     }
 
@@ -778,7 +1170,7 @@ mod tests {
     #[test]
     fn effects_split_into_events_and_messages_in_order() {
         let mut core = new_core();
-        let (_, mut all) = run(&mut core, &Session::default(), hello("a1"));
+        let (_, mut all) = run(&mut core, &verified("a1"), hello("a1"));
         let (_, effects) = run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
         let (_, effects2) = run(&mut core, &bound("a2"), claim("wait", "depend"));
         let count = all.len() + effects.len() + effects2.len();
@@ -813,7 +1205,7 @@ mod tests {
     #[test]
     fn welcome_binds_the_socket_to_the_calling_agent() {
         let mut core = new_core();
-        let (who, effects) = run(&mut core, &Session::default(), hello("a1"));
+        let (who, effects) = run(&mut core, &verified("a1"), hello("a1"));
         let (_, outbound) = split_effects(effects);
         let bound = bind_on_welcome(&Session::default(), &who, &outbound).unwrap();
         assert_eq!(bound.agent, Some(agent("a1")));
@@ -823,7 +1215,7 @@ mod tests {
     fn a_refused_hello_does_not_bind() {
         let mut core = new_core();
         let message = msg(r#"{"type":"hello","agent":"a1","base":"abc","protocol":999}"#);
-        let (who, effects) = run(&mut core, &Session::default(), message);
+        let (who, effects) = run(&mut core, &verified("a1"), message);
         let (_, outbound) = split_effects(effects);
         assert!(bind_on_welcome(&Session::default(), &who, &outbound).is_none());
     }
@@ -844,8 +1236,10 @@ mod tests {
     #[test]
     fn rebinding_keeps_the_watcher_flag_and_from_seq() {
         let session = Session {
+            verified: Some(agent("a1")),
             agent: None,
             watch_from: Some(7),
+            closed: false,
         };
         let mut core = new_core();
         let (who, effects) = run(&mut core, &session, hello("a1"));
@@ -873,7 +1267,11 @@ mod tests {
             panic!("a1 was not granted: {granted:?}");
         };
         run(&mut core, &a2, claim_msg_wait());
-        let release = ClientMsg::Release { claim, fence };
+        let release = ClientMsg::Release {
+            claim,
+            fence,
+            req: None,
+        };
         let (_, effects) = run(&mut core, &a1, release);
         let (_, outbound) = split_effects(effects);
         let sessions = [a1, a2];
@@ -915,8 +1313,10 @@ mod tests {
     #[test]
     fn watchers_are_found_by_their_flag() {
         let watcher = Session {
+            verified: None,
             agent: None,
             watch_from: Some(0),
+            closed: false,
         };
         let sessions = [Session::default(), watcher.clone(), bound("a1"), watcher];
         assert_eq!(watcher_indexes(&sessions, 0), vec![1, 3]);
@@ -924,24 +1324,47 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_merge_is_cut_off_only_when_this_instance_is_not_running_it() {
+        assert!(merge_cut_off(false, true));
+        assert!(
+            !merge_cut_off(true, true),
+            "recovery is a no-op while merging"
+        );
+        assert!(!merge_cut_off(false, false));
+        assert!(!merge_cut_off(true, false));
+    }
+
+    #[test]
     fn alarm_is_cleared_without_an_expiry() {
-        assert_eq!(alarm_at_ms(None), None);
+        assert_eq!(alarm_at_ms(None, 5), None);
     }
 
     #[test]
     fn alarm_time_is_the_absolute_expiry() {
         assert_eq!(
-            alarm_at_ms(Some(1_791_180_000_000)),
+            alarm_at_ms(Some(1_791_180_000_000), 1_791_000_000_000),
             Some(1_791_180_000_000.0)
         );
-        assert_eq!(alarm_at_ms(Some(0)), Some(0.0));
+    }
+
+    #[test]
+    fn a_due_or_past_alarm_is_set_just_after_now_never_at_or_before_zero() {
+        let now = 1_791_000_000_000;
+        assert_eq!(alarm_at_ms(Some(0), now), Some(now as f64 + 1.0));
+        assert_eq!(alarm_at_ms(Some(now), now), Some(now as f64 + 1.0));
+        assert_eq!(alarm_at_ms(Some(now - 5), now), Some(now as f64 + 1.0));
+        assert_eq!(alarm_at_ms(Some(0), 0), Some(1.0));
     }
 
     #[test]
     fn an_absurdly_distant_expiry_is_clamped_to_a_valid_date() {
-        assert_eq!(alarm_at_ms(Some(u64::MAX)), Some(MAX_DATE_MS));
-        assert_eq!(alarm_at_ms(Some(MAX_DATE_MS as u64 + 1)), Some(MAX_DATE_MS));
-        assert_eq!(alarm_at_ms(Some(MAX_DATE_MS as u64)), Some(MAX_DATE_MS));
+        assert_eq!(alarm_at_ms(Some(u64::MAX), 5), Some(MAX_DATE_MS));
+        assert_eq!(
+            alarm_at_ms(Some(MAX_DATE_MS as u64 + 1), 5),
+            Some(MAX_DATE_MS)
+        );
+        assert_eq!(alarm_at_ms(Some(MAX_DATE_MS as u64), 5), Some(MAX_DATE_MS));
+        assert_eq!(alarm_at_ms(Some(10), u64::MAX), Some(MAX_DATE_MS));
     }
 
     #[test]
@@ -959,7 +1382,7 @@ mod tests {
     #[test]
     fn persist_entries_put_state_first_then_events_in_order() {
         let mut core = new_core();
-        run(&mut core, &Session::default(), hello("a1"));
+        run(&mut core, &verified("a1"), hello("a1"));
         let (_, effects) = run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
         let (events, _) = split_effects(effects);
         assert!(!events.is_empty());
@@ -976,12 +1399,13 @@ mod tests {
     #[test]
     fn stored_state_restores_the_core_and_continues_the_seq() {
         let mut core = new_core();
-        run(&mut core, &Session::default(), hello("a1"));
+        run(&mut core, &verified("a1"), hello("a1"));
         let (_, first) = run(&mut core, &bound("a1"), claim("fail", "edit_signature"));
         let last = split_effects(first).0.last().map(|e| e.seq).unwrap();
         let stored = serde_json::to_string(&core).unwrap();
 
-        let mut restored = load_core(Some(&stored), Some("ignored"), Some("junk")).unwrap();
+        let mut restored =
+            load_core(Some(&stored), Some("ignored"), Some("junk"), Vec::new()).unwrap();
         let (_, denied) = run(&mut restored, &bound("a2"), claim("fail", "depend"));
         assert!(
             was_denied(&denied),
@@ -994,7 +1418,7 @@ mod tests {
 
     #[test]
     fn no_stored_state_creates_a_core_for_the_run() {
-        let core = load_core(None, Some("dogfood"), None).unwrap();
+        let core = load_core(None, Some("dogfood"), None, Vec::new()).unwrap();
         let json = serde_json::to_string(&core).unwrap();
         assert!(json.contains(r#""run":"dogfood""#), "{json}");
         assert!(
@@ -1006,11 +1430,11 @@ mod tests {
     #[test]
     fn missing_or_empty_run_fails_loudly() {
         assert_eq!(
-            load_core(None, None, None).unwrap_err(),
+            load_core(None, None, None, Vec::new()).unwrap_err(),
             LoadError::MissingRun
         );
         assert_eq!(
-            load_core(None, Some(""), None).unwrap_err(),
+            load_core(None, Some(""), None, Vec::new()).unwrap_err(),
             LoadError::MissingRun
         );
         assert!(config_from_vars(None, None).is_err());
@@ -1018,21 +1442,26 @@ mod tests {
 
     #[test]
     fn corrupt_stored_state_fails_without_starting_empty_or_echoing_it() {
-        let err =
-            load_core(Some(r#"{"claims":"secret-intent-text""#), Some("r"), None).unwrap_err();
+        let err = load_core(
+            Some(r#"{"claims":"secret-intent-text""#),
+            Some("r"),
+            None,
+            Vec::new(),
+        )
+        .unwrap_err();
         let LoadError::Corrupt { .. } = err else {
             panic!("expected Corrupt, got {err:?}");
         };
         assert!(!err.to_string().contains("secret"));
         assert!(err.to_string().contains("refusing to start empty"));
-        assert!(load_core(Some(""), Some("r"), None).is_err());
-        assert!(load_core(Some("{}"), Some("r"), None).is_err());
+        assert!(load_core(Some(""), Some("r"), None, Vec::new()).is_err());
+        assert!(load_core(Some("{}"), Some("r"), None, Vec::new()).is_err());
     }
 
     #[test]
     fn a_log_event_carries_the_configured_run() {
         let mut core = new_core();
-        let (_, effects) = run(&mut core, &Session::default(), hello("a1"));
+        let (_, effects) = run(&mut core, &verified("a1"), hello("a1"));
         let (events, _) = split_effects(effects);
         let [Event {
             kind: EventKind::AgentConnected { .. },
@@ -1051,7 +1480,7 @@ mod tests {
     }
 
     fn core_with_shadow(shadow: Option<&str>) -> Result<Core, LoadError> {
-        load_core(None, Some("r"), shadow)
+        load_core(None, Some("r"), shadow, Vec::new())
     }
 
     #[test]
@@ -1078,6 +1507,80 @@ mod tests {
         }
     }
 
+    fn ids(names: &[&str]) -> Vec<AgentId> {
+        names.iter().map(|name| AgentId((*name).into())).collect()
+    }
+
+    #[test]
+    fn no_reviewers_when_the_variable_is_unset_or_blank() {
+        for blank in [None, Some(""), Some("   ")] {
+            assert_eq!(parse_reviewers(blank), Ok(Vec::new()), "{blank:?}");
+        }
+    }
+
+    #[test]
+    fn reviewers_are_split_on_commas_and_trimmed() {
+        assert_eq!(parse_reviewers(Some("felix")), Ok(ids(&["felix"])));
+        assert_eq!(
+            parse_reviewers(Some(" felix , a.b_c-1,x ")),
+            Ok(ids(&["felix", "a.b_c-1", "x"]))
+        );
+    }
+
+    #[test]
+    fn an_invalid_reviewer_list_fails_loudly_without_echoing_it() {
+        let long = "a".repeat(MAX_AGENT_ID_BYTES + 1);
+        for bad in [
+            "a,,b",
+            "a,",
+            ",a",
+            "bad id",
+            "-a",
+            "a\nb",
+            "fe/lix",
+            "ünï",
+            long.as_str(),
+        ] {
+            let err = parse_reviewers(Some(bad)).unwrap_err();
+            assert_eq!(err, LoadError::InvalidReviewers, "{bad:?}");
+            assert!(err.to_string().contains("REVIEWERS"));
+            assert!(!err.to_string().contains(bad));
+        }
+    }
+
+    #[test]
+    fn reviewers_are_taken_from_the_variable_on_every_load() {
+        let created = load_core(None, Some("r"), None, ids(&["felix"])).unwrap();
+        let stored = serde_json::to_string(&created).unwrap();
+        let reviewers_of = |core: &Core| serde_json::to_value(core).unwrap()["reviewers"].clone();
+        assert_eq!(reviewers_of(&created), serde_json::json!(["felix"]));
+
+        let renamed = load_core(Some(&stored), None, None, ids(&["ana", "bo"])).unwrap();
+        assert_eq!(reviewers_of(&renamed), serde_json::json!(["ana", "bo"]));
+        let cleared = load_core(Some(&stored), None, None, Vec::new()).unwrap();
+        assert_eq!(reviewers_of(&cleared), serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_bad_reviewers_variable_is_reported_and_leaves_nobody_able_to_review() {
+        let mut reports = Vec::new();
+        let bad = reviewers_or_none(Some("felix, bad id"), |e| reports.push(e.to_string()));
+        assert!(bad.is_empty(), "fails closed, not with the valid half");
+        let [report] = &reports[..] else {
+            panic!("expected one report, got {reports:?}");
+        };
+        assert!(
+            report.contains("REVIEWERS") && !report.contains("bad id"),
+            "{report}"
+        );
+
+        let mut quiet = 0;
+        let good = reviewers_or_none(Some("felix"), |_| quiet += 1);
+        assert_eq!((good, quiet), (ids(&["felix"]), 0));
+        assert!(reviewers_or_none(None, |_| quiet += 1).is_empty());
+        assert_eq!(quiet, 0, "an unset variable is not an error");
+    }
+
     #[test]
     fn an_empty_agent_id_is_malformed_and_never_called() {
         let action = decide(&Session::default(), &hello(""));
@@ -1087,8 +1590,10 @@ mod tests {
     #[test]
     fn a_second_watch_on_a_watcher_is_refused_but_the_first_is_served() {
         let watcher = Session {
+            verified: None,
             agent: None,
             watch_from: Some(0),
+            closed: false,
         };
         let again = decide(&watcher, &msg(r#"{"type":"watch","from_seq":0}"#));
         assert_eq!(reject_code(again), ErrorCode::Malformed);
@@ -1102,7 +1607,7 @@ mod tests {
     fn matches_watch(action: Action) -> bool {
         match action {
             Action::Watch { .. } => true,
-            Action::Reject(_) | Action::Call { .. } => false,
+            Action::Reject(_) | Action::RejectAndClose(_) | Action::Call { .. } => false,
         }
     }
 
@@ -1150,8 +1655,10 @@ mod tests {
 
     fn watcher() -> Session {
         Session {
+            verified: None,
             agent: None,
             watch_from: Some(0),
+            closed: false,
         }
     }
 
@@ -1219,8 +1726,10 @@ mod tests {
     #[test]
     fn a_sender_that_is_also_a_watcher_gets_its_reply_then_the_events() {
         let sender = Session {
+            verified: None,
             agent: Some(agent("a1")),
             watch_from: Some(0),
+            closed: false,
         };
         let outbound = [Outbound::Reply(binary_rejection())];
         let plan = plan_delivery(&outbound, &[event_at(0), event_at(1)], &[sender]);
@@ -1235,8 +1744,10 @@ mod tests {
 
     fn watcher_from(watch_from: u64) -> Session {
         Session {
+            verified: None,
             agent: None,
             watch_from: Some(watch_from),
+            closed: false,
         }
     }
 
@@ -1305,79 +1816,6 @@ mod tests {
         keep_first(&mut slot, Ok(()));
         keep_first(&mut slot, Err("second".to_string()));
         assert_eq!(slot.as_deref(), Some("first"));
-    }
-
-    const TOKEN: &str = "s3cret-token-value";
-
-    fn bearer(token: &str) -> String {
-        format!("Bearer {token}")
-    }
-
-    #[test]
-    fn the_right_bearer_token_is_authorized() {
-        assert!(is_authorized(Some(TOKEN), Some(&bearer(TOKEN))));
-    }
-
-    #[test]
-    fn a_different_token_of_the_same_length_is_refused() {
-        let last = format!("{}X", &TOKEN[..TOKEN.len() - 1]);
-        let first = format!("X{}", &TOKEN[1..]);
-        for wrong in [last, first] {
-            assert_eq!(wrong.len(), TOKEN.len());
-            assert!(
-                !is_authorized(Some(TOKEN), Some(&bearer(&wrong))),
-                "{wrong}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_token_of_another_length_is_refused() {
-        let shorter = &TOKEN[..TOKEN.len() - 1];
-        let longer = format!("{TOKEN}x");
-        assert!(!is_authorized(Some(TOKEN), Some(&bearer(shorter))));
-        assert!(!is_authorized(Some(TOKEN), Some(&bearer(&longer))));
-    }
-
-    #[test]
-    fn a_missing_or_empty_secret_refuses_every_request() {
-        for expected in [None, Some("")] {
-            for header in [None, Some("Bearer "), Some("Bearer x"), Some("")] {
-                assert!(!is_authorized(expected, header), "{expected:?} {header:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn an_empty_presented_token_is_refused() {
-        assert!(!is_authorized(Some(TOKEN), Some("Bearer ")));
-    }
-
-    #[test]
-    fn a_missing_authorization_header_is_refused() {
-        assert!(!is_authorized(Some(TOKEN), None));
-    }
-
-    #[test]
-    fn another_scheme_or_spelling_is_refused() {
-        let basic = format!("Basic {TOKEN}");
-        let lower = format!("bearer {TOKEN}");
-        let joined = format!("Bearer{TOKEN}");
-        let padded = format!(" Bearer {TOKEN}");
-        for header in [TOKEN, basic.as_str(), &lower, &joined, &padded, "Bearer"] {
-            assert!(!is_authorized(Some(TOKEN), Some(header)), "{header}");
-        }
-    }
-
-    #[test]
-    fn constant_time_eq_compares_every_byte_and_the_length() {
-        assert!(constant_time_eq(b"", b""));
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"xbc"));
-        assert!(!constant_time_eq(b"abc", b"ab"));
-        assert!(!constant_time_eq(b"ab", b"abc"));
-        assert!(!constant_time_eq(b"", b"a"));
     }
 
     fn padded_hello(total: usize) -> String {
@@ -1620,6 +2058,7 @@ mod tests {
         let release = ClientMsg::Release {
             claim: ClaimId(1),
             fence: Fence(1),
+            req: None,
         };
         assert_eq!(work_of(&release), Work::Plain);
         let effects = core.handle(&agent("a"), release, NOW);
@@ -1647,7 +2086,7 @@ mod tests {
         assert!(refused.state > SOFT_ENTRY_BYTES, "{refused:?}");
         assert_eq!(decide_store(Work::Content, refused), StoreDecision::Refuse);
 
-        let mut recovered = load_core(Some(&stored), None, None).unwrap();
+        let mut recovered = load_core(Some(&stored), None, None, Vec::new()).unwrap();
         let effects = recovered.expire(late);
         let freed = measured(&recovered, effects, stored.len());
         assert_eq!(decide_store(Work::Plain, freed), StoreDecision::Store);
@@ -1657,6 +2096,7 @@ mod tests {
         let release = ClientMsg::Release {
             claim: ClaimId(2),
             fence: Fence(2),
+            req: None,
         };
         let effects = recovered.handle(&agent("w0"), release, late);
         let after_release = measured(&recovered, effects, after_expiry.len());
@@ -1736,6 +2176,11 @@ mod tests {
             msg(r#"{"type":"amend","req":3,"claim":1,"fence":1,"add":[]}"#),
             msg(r#"{"type":"submit","req":4,"claim":1,"fence":1,
                 "fork_commit":"c","touched":[]}"#),
+            msg(
+                r#"{"type":"open_race","req":5,"intent":{"summary":"s","task_ref":null},
+                "scopes":[],"max_entrants":1,"deadline_ms":1,"criteria":[]}"#,
+            ),
+            msg(r#"{"type":"join_race","req":6,"race":1}"#),
         ];
         for message in &content {
             assert_eq!(work_of(message), Work::Content, "{message:?}");
@@ -1744,11 +2189,6 @@ mod tests {
             hello("a1"),
             msg(r#"{"type":"heartbeat"}"#),
             msg(r#"{"type":"release","claim":1,"fence":1}"#),
-            msg(
-                r#"{"type":"open_race","req":5,"intent":{"summary":"s","task_ref":null},
-                "scopes":[],"max_entrants":1,"deadline_ms":1,"criteria":[]}"#,
-            ),
-            msg(r#"{"type":"join_race","req":6,"race":1}"#),
             msg(r#"{"type":"pick_winner","req":7,"race":1,"claim":1}"#),
             msg(r#"{"type":"review","req":8,"claim":1,"approve":true,"note":null}"#),
             msg(r#"{"type":"watch","from_seq":0}"#),
@@ -1922,5 +2362,677 @@ mod tests {
         assert_eq!(agent_to_withdraw(&bound("a1"), &[], queued_only_a2), None);
         let to_withdraw = agent_to_withdraw(&bound("a2"), &[], queued_only_a2);
         assert_eq!(to_withdraw, Some(agent("a2")));
+    }
+
+    fn claim_files(req: u64, paths: &[&str], on_conflict: OnConflict) -> ClientMsg {
+        let scopes = paths
+            .iter()
+            .map(|path| ScopeClaim {
+                scope: Scope::File {
+                    path: (*path).into(),
+                },
+                mode: Mode::EditBody,
+            })
+            .collect();
+        ClientMsg::Claim {
+            req: RequestId(req),
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: vec![],
+            },
+            scopes,
+            on_conflict,
+        }
+    }
+
+    /// `a` holds x.rs (claim 1) and `e` holds y.rs; `b` waits on both, `c` waits behind `b`.
+    fn queue_b_then_c() -> Core {
+        let mut core = new_core();
+        core.handle(
+            &agent("a"),
+            claim_files(1, &["x.rs"], OnConflict::Fail),
+            NOW,
+        );
+        core.handle(
+            &agent("e"),
+            claim_files(1, &["y.rs"], OnConflict::Fail),
+            NOW,
+        );
+        core.handle(
+            &agent("b"),
+            claim_files(7, &["y.rs", "x.rs"], OnConflict::Wait),
+            NOW,
+        );
+        core.handle(
+            &agent("c"),
+            claim_files(8, &["x.rs"], OnConflict::Wait),
+            NOW,
+        );
+        let release = ClientMsg::Release {
+            claim: ClaimId(1),
+            fence: Fence(1),
+            req: None,
+        };
+        core.handle(&agent("a"), release, NOW);
+        core
+    }
+
+    #[test]
+    fn a_server_closed_only_socket_withdraws_its_request_and_grants_the_next_waiter() {
+        let mut core = queue_b_then_c();
+        let others = [bound("c"), bound("e"), watcher()];
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let doomed = agents_to_withdraw(&[bound("b")], &others, queued);
+        assert_eq!(doomed, vec![agent("b")]);
+
+        let (events, outbound) = split_effects(core.disconnect(&doomed[0], NOW));
+        let kinds: Vec<&EventKind> = events.iter().map(|event| &event.kind).collect();
+        let [EventKind::WaitWithdrawn {
+            agent: withdrawn,
+            req,
+        }, EventKind::ClaimGranted {
+            agent: granted,
+            fence: stored_fence,
+            ..
+        }] = kinds[..]
+        else {
+            panic!("expected WaitWithdrawn then ClaimGranted, got {kinds:?}");
+        };
+        assert_eq!((withdrawn, *req), (&agent("b"), RequestId(7)));
+        assert_eq!(granted, &agent("c"));
+        let [Outbound::Notify {
+            agent: to,
+            msg: ServerMsg::Granted { fence, .. },
+        }] = &outbound[..]
+        else {
+            panic!("expected one Granted notice, got {outbound:?}");
+        };
+        assert_eq!(to, &agent("c"));
+        assert_eq!(
+            fence, stored_fence,
+            "the notice carries the fence that is stored"
+        );
+        assert!(!core.has_queued_request(&agent("b")));
+    }
+
+    #[test]
+    fn a_server_closed_socket_withdraws_nothing_while_another_socket_of_the_agent_is_open() {
+        let core = queue_b_then_c();
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let twin = [bound("b"), bound("c")];
+        assert!(agents_to_withdraw(&[bound("b")], &twin, queued).is_empty());
+    }
+
+    fn closed(mut session: Session) -> Session {
+        session.closed = true;
+        session
+    }
+
+    #[test]
+    fn a_closed_but_listed_socket_shields_nobody_and_a_live_one_does() {
+        let core = queue_b_then_c();
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let dead_twin = [closed(bound("b"))];
+        assert_eq!(
+            agent_to_withdraw(&bound("b"), &dead_twin, queued),
+            Some(agent("b"))
+        );
+        let doomed = agents_to_withdraw(&[bound("b")], &dead_twin, queued);
+        assert_eq!(doomed, vec![agent("b")]);
+        let live_twin = [closed(bound("b")), bound("b")];
+        assert_eq!(agent_to_withdraw(&bound("b"), &live_twin, queued), None);
+    }
+
+    #[test]
+    fn the_session_flag_for_a_closed_socket_survives_the_attachment_round_trip() {
+        let stored = serde_json::to_string(&closed(bound("b"))).unwrap();
+        let back: Session = serde_json::from_str(&stored).unwrap();
+        assert!(back.closed);
+        let old: Session = serde_json::from_str(r#"{"agent":"b"}"#).unwrap();
+        assert!(!old.closed, "an attachment from before the flag is open");
+    }
+
+    #[test]
+    fn a_hello_for_another_agent_on_a_bound_socket_withdraws_the_bound_agents_request() {
+        let core = queue_b_then_c();
+        let session = bound("b");
+        let action = decide(&session, &hello("c"));
+        let Action::RejectAndClose(_) = action else {
+            panic!("expected a rejection that closes, got {action:?}");
+        };
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let doomed = agents_to_withdraw(&[closed(session)], &[bound("c")], queued);
+        assert_eq!(doomed, vec![agent("b")]);
+    }
+
+    #[test]
+    fn a_log_names_the_verified_agent_of_a_socket_that_never_said_hello() {
+        assert_eq!(session_agent(&verified("a1")), Some(&agent("a1")));
+        assert_eq!(session_agent(&bound("a2")), Some(&agent("a2")));
+        assert_eq!(session_agent(&Session::default()), None);
+        let relabelled = Session {
+            agent: Some(agent("a2")),
+            ..verified("a1")
+        };
+        assert_eq!(session_agent(&relabelled), Some(&agent("a2")));
+    }
+
+    #[test]
+    fn a_second_close_of_a_withdrawn_agent_is_a_no_op() {
+        let mut core = queue_b_then_c();
+        core.disconnect(&agent("b"), NOW);
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        assert!(agents_to_withdraw(&[bound("b")], &[bound("c")], queued).is_empty());
+        assert!(core.disconnect(&agent("b"), NOW).is_empty());
+    }
+
+    #[test]
+    fn two_server_closed_sockets_of_one_agent_withdraw_it_once() {
+        let core = queue_b_then_c();
+        let queued = |who: &AgentId| core.has_queued_request(who);
+        let closing = [bound("b"), bound("c"), bound("b"), watcher()];
+        let doomed = agents_to_withdraw(&closing, &[bound("e")], queued);
+        assert_eq!(doomed, vec![agent("b"), agent("c")]);
+        let shielded = agents_to_withdraw(&closing, &[bound("b")], queued);
+        assert_eq!(shielded, vec![agent("c")]);
+    }
+
+    #[test]
+    fn a_close_line_names_the_code_the_cleanliness_the_reason_and_the_agent() {
+        let line = close_log_line(1006, false, "gone", Some(&agent("a1")));
+        assert_eq!(
+            line,
+            r#"socket closed: code=1006 clean=false reason="gone" agent=a1"#
+        );
+        let unbound = close_log_line(1000, true, "", None);
+        assert_eq!(
+            unbound,
+            r#"socket closed: code=1000 clean=true reason="" agent=-"#
+        );
+        assert_eq!(
+            error_log_line("boom", Some(&agent("a1"))),
+            r#"socket error: "boom" agent=a1"#
+        );
+    }
+
+    #[test]
+    fn a_log_line_cuts_a_long_reason_and_escapes_control_characters() {
+        let long = close_log_line(1011, true, &"x".repeat(500), None);
+        assert_eq!(long.matches('x').count(), 120);
+        let forged = close_log_line(1011, true, "ok\ncoordinator: forged\r\u{1b}[0m", None);
+        assert!(!forged.contains('\n') && !forged.contains('\r') && !forged.contains('\u{1b}'));
+        assert!(
+            forged.contains(r"ok\ncoordinator: forged\r\u{1b}[0m"),
+            "{forged}"
+        );
+        let error = error_log_line("a\tb", None);
+        assert_eq!(error, r#"socket error: "a\tb" agent=-"#);
+    }
+
+    fn log_event(seq: u64, kind: EventKind) -> Event {
+        Event {
+            seq,
+            at_ms: 5,
+            run: RunId("test".to_string()),
+            kind,
+        }
+    }
+
+    fn shadow_denial() -> EventKind {
+        EventKind::ClaimShadowed {
+            agent: agent("a1"),
+            claim: ClaimId(2),
+            scopes: vec![],
+            conflicts: vec![],
+        }
+    }
+
+    fn verified_denial(outcome: Outcome) -> EventKind {
+        EventKind::DenialVerified {
+            shadow_claim: ClaimId(2),
+            blocking_claim: ClaimId(1),
+            outcome,
+        }
+    }
+
+    fn replay_merged(outcome: Outcome) -> EventKind {
+        EventKind::ReplayMerged {
+            agent: agent("a1"),
+            fork_commit: CommitId("c".to_string()),
+            outcome,
+        }
+    }
+
+    fn merged() -> EventKind {
+        EventKind::Merged {
+            claim: ClaimId(1),
+            head: CommitId("abc".to_string()),
+        }
+    }
+
+    fn evidence_log() -> Vec<Event> {
+        let kinds = [
+            shadow_denial(),
+            shadow_denial(),
+            shadow_denial(),
+            verified_denial(Outcome::TextualConflict),
+            verified_denial(Outcome::Clean),
+            verified_denial(Outcome::Inconclusive),
+            EventKind::Merged {
+                claim: ClaimId(1),
+                head: CommitId("abc".to_string()),
+            },
+        ];
+        let mut log = Vec::new();
+        for (seq, kind) in kinds.into_iter().enumerate() {
+            log.push(log_event(seq as u64, kind));
+        }
+        log
+    }
+
+    fn tally_of(events: &[Event], page: usize) -> SummaryTally {
+        let mut tally = SummaryTally::default();
+        for chunk in events.chunks(page) {
+            tally.add_page(chunk);
+        }
+        tally
+    }
+
+    fn report_json(events: &[Event]) -> serde_json::Value {
+        serde_json::from_str(&tally_of(events, REPLAY_PAGE).report().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_summary_report_carries_the_numbers_from_events_and_the_head_seq() {
+        let log = evidence_log();
+        let report = report_json(&log);
+        assert_eq!(
+            report["summary"],
+            serde_json::to_value(Summary::from_events(&log)).unwrap()
+        );
+        assert_eq!(report["head_seq"], 6);
+        assert_eq!(report["summary"]["denials"], 3);
+        assert_eq!(report["summary"]["conflicts_prevented_verified"], 1);
+        assert_eq!(report["summary"]["false_alarms"], 1);
+        assert_eq!(report["summary"]["precision"], 0.5);
+        assert_eq!(report["summary"]["merges"], 1);
+    }
+
+    #[test]
+    fn the_summary_of_an_empty_log_is_all_zero_with_no_head() {
+        let report = report_json(&[]);
+        assert_eq!(
+            report["summary"],
+            serde_json::to_value(Summary::default()).unwrap()
+        );
+        assert_eq!(report["summary"]["precision"], serde_json::Value::Null);
+        assert_eq!(report["head_seq"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_head_seq_is_the_last_event_not_the_count() {
+        let log = [
+            log_event(41, shadow_denial()),
+            log_event(42, shadow_denial()),
+        ];
+        assert_eq!(report_json(&log)["head_seq"], 42);
+    }
+
+    #[test]
+    fn a_log_counted_in_pages_of_any_size_gives_the_summary_of_the_whole_log() {
+        let log = evidence_log();
+        for page in 1..=log.len() + 1 {
+            let tally = tally_of(&log, page);
+            assert_eq!(tally.summary(), Summary::from_events(&log), "page {page}");
+            assert_eq!(
+                tally.report().unwrap(),
+                tally_of(&log, 1).report().unwrap(),
+                "page {page}"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_counters_add_up_across_pages() {
+        let log = [
+            log_event(0, replay_merged(Outcome::Clean)),
+            log_event(1, replay_merged(Outcome::BuildFailed)),
+            log_event(2, replay_merged(Outcome::TextualConflict)),
+        ];
+        let summary = tally_of(&log, 1).summary();
+        assert_eq!((summary.replay_merges, summary.replay_conflicts), (3, 2));
+    }
+
+    #[test]
+    fn precision_comes_from_the_totals_not_from_the_pages() {
+        let log = [
+            log_event(0, verified_denial(Outcome::TextualConflict)),
+            log_event(1, verified_denial(Outcome::Clean)),
+            log_event(2, verified_denial(Outcome::Clean)),
+            log_event(3, verified_denial(Outcome::TestsFailed)),
+        ];
+        let tally = tally_of(&log, 1);
+        assert_eq!(tally.summary().precision, Some(0.5));
+        assert_eq!(tally_of(&log[..0], 1).summary().precision, None);
+    }
+
+    #[test]
+    fn a_tally_resumes_after_the_events_it_counted_and_counts_new_ones() {
+        let log = evidence_log();
+        let mut tally = SummaryTally::default();
+        assert_eq!(tally.next_seq(), 0);
+        tally.add_page(&log[..3]);
+        assert_eq!(tally.next_seq(), 3);
+        let before = tally.summary();
+        assert_eq!(before.denials, 3);
+        tally.add_page(&[]);
+        assert_eq!(tally.summary(), before, "an empty read changes nothing");
+        assert_eq!(tally.next_seq(), 3);
+        tally.add_page(&log[3..]);
+        assert_eq!(tally.next_seq(), 7);
+        assert_ne!(tally.summary(), before);
+        assert_eq!(tally.summary(), Summary::from_events(&log));
+        assert_eq!(report_json(&log)["head_seq"], 6);
+    }
+
+    mod paging {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn kind(choice: u8) -> EventKind {
+            match choice % 7 {
+                0 => shadow_denial(),
+                1 => verified_denial(Outcome::TextualConflict),
+                2 => verified_denial(Outcome::Clean),
+                3 => verified_denial(Outcome::Inconclusive),
+                4 => replay_merged(Outcome::Clean),
+                5 => replay_merged(Outcome::BuildFailed),
+                _ => merged(),
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn paged_counting_equals_one_fold(
+                choices in proptest::collection::vec(any::<u8>(), 0..60),
+                page in 1usize..70,
+            ) {
+                let mut log = Vec::new();
+                for (seq, choice) in choices.into_iter().enumerate() {
+                    log.push(log_event(seq as u64, kind(choice)));
+                }
+                let tally = tally_of(&log, page);
+                prop_assert_eq!(tally.summary(), Summary::from_events(&log));
+                prop_assert_eq!(tally.next_seq(), log.len() as u64);
+            }
+        }
+    }
+
+    fn path(url_path: &str) -> Vec<&str> {
+        url_path.split('/').skip(1).collect()
+    }
+
+    #[test]
+    fn the_worker_serves_ws_and_summary_paths_only() {
+        assert_eq!(
+            parse_route(&path("/repo/demo/ws")),
+            Some(Route::Ws { repo: "demo" })
+        );
+        assert_eq!(
+            parse_route(&path("/repo/demo/summary")),
+            Some(Route::Summary { repo: "demo" })
+        );
+        for other in [
+            "/",
+            "/repo",
+            "/repo/demo",
+            "/repo//summary",
+            "/repo//ws",
+            "/repo/demo/summary/",
+            "/repo/demo/summary/x",
+            "/repo/demo/events",
+            "/summary",
+        ] {
+            assert_eq!(parse_route(&path(other)), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_poke_for_a_repo_with_no_stored_state_is_dropped() {
+        assert_eq!(poke_reply(None), PokeReply::UnknownRepo);
+    }
+
+    #[test]
+    fn a_poke_for_a_repo_with_stored_state_is_recorded() {
+        assert_eq!(poke_reply(Some("{}")), PokeReply::Recorded);
+    }
+
+    #[test]
+    fn the_worker_serves_the_trunk_poke_path() {
+        assert_eq!(
+            parse_route(&path("/repo/demo/trunk-moved")),
+            Some(Route::TrunkMoved { repo: "demo" })
+        );
+        for other in [
+            "/repo//trunk-moved",
+            "/repo/demo/trunk-moved/",
+            "/trunk-moved",
+        ] {
+            assert_eq!(parse_route(&path(other)), None, "{other}");
+        }
+    }
+
+    #[cfg(feature = "runtime")]
+    mod routes {
+        use super::*;
+        use crate::identity::IdentityError;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        use hmac::{Hmac, KeyInit, Mac};
+        use sha2::Sha256;
+
+        const KEY: &str = "test-signing-key-not-a-secret";
+        const SIGNED_AT: u64 = 1_000_000;
+
+        fn token(key: &str, repo: &str, agent: &str, exp_ms: u64) -> String {
+            let payload =
+                serde_json::json!({"v": 1, "repo": repo, "agent": agent, "exp_ms": exp_ms});
+            let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
+            let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
+            mac.update(payload.as_bytes());
+            let mac = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+            format!("{payload}.{mac}")
+        }
+
+        fn bearer(repo: &str, agent: &str) -> String {
+            format!("Bearer {}", token(KEY, repo, agent, SIGNED_AT + 1))
+        }
+
+        fn ask(
+            method: &str,
+            url_path: &str,
+            prefix: Option<&str>,
+            authorization: Option<&str>,
+        ) -> Result<(String, AgentId), Denied> {
+            let segments = path(url_path);
+            let inbound = Inbound {
+                method,
+                segments: &segments,
+                allowed_prefix: prefix,
+                signing_key: Some(KEY),
+                authorization,
+                now_ms: SIGNED_AT,
+            };
+            authorize(&inbound).map(|(route, who)| (format!("{route:?}"), who))
+        }
+
+        #[test]
+        fn any_agent_of_the_repo_may_read_the_summary() {
+            let auth = bearer("demo", "dashboard");
+            let got = ask("GET", "/repo/demo/summary", None, Some(&auth));
+            assert_eq!(
+                got,
+                Ok((
+                    format!("{:?}", Route::Summary { repo: "demo" }),
+                    agent("dashboard")
+                ))
+            );
+            let other = bearer("demo", "a7");
+            assert!(ask("GET", "/repo/demo/summary", None, Some(&other)).is_ok());
+        }
+
+        #[test]
+        fn a_summary_read_without_a_valid_token_is_unauthorized() {
+            let get = |auth: Option<&str>| ask("GET", "/repo/demo/summary", None, auth);
+            let unauthorized = |got: Result<_, Denied>| matches!(got, Err(Denied::Unauthorized(_)));
+            assert!(unauthorized(get(None)));
+            assert!(unauthorized(get(Some("Bearer nonsense"))));
+            assert!(unauthorized(get(Some(&bearer("elsewhere", "dashboard")))));
+            let expired = format!("Bearer {}", token(KEY, "demo", "dashboard", SIGNED_AT));
+            assert!(unauthorized(get(Some(&expired))));
+            let forged = format!(
+                "Bearer {}",
+                token("another-key", "demo", "dashboard", SIGNED_AT + 1)
+            );
+            assert!(unauthorized(get(Some(&forged))));
+            let no_key = Inbound {
+                method: "GET",
+                segments: &path("/repo/demo/summary"),
+                allowed_prefix: None,
+                signing_key: None,
+                authorization: Some(&bearer("demo", "dashboard")),
+                now_ms: SIGNED_AT,
+            };
+            assert_eq!(
+                authorize(&no_key).unwrap_err(),
+                Denied::Unauthorized(IdentityError::NoSigningKey)
+            );
+        }
+
+        #[test]
+        fn a_prefixed_worker_refuses_other_repos_before_it_looks_at_the_token() {
+            let auth = bearer("demo", "dashboard");
+            let refused = ask("GET", "/repo/demo/summary", Some("swarm-"), Some(&auth));
+            assert_eq!(refused, Err(Denied::Forbidden));
+            let refused = ask("GET", "/repo/demo/summary", Some("swarm-"), None);
+            assert_eq!(refused, Err(Denied::Forbidden));
+            let auth = bearer("swarm-x", "dashboard");
+            assert!(ask("GET", "/repo/swarm-x/summary", Some("swarm-"), Some(&auth)).is_ok());
+        }
+
+        #[test]
+        fn the_summary_answers_get_only() {
+            let auth = bearer("demo", "dashboard");
+            for method in ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "get"] {
+                let got = ask(method, "/repo/demo/summary", None, Some(&auth));
+                assert_eq!(
+                    got,
+                    Err(Denied::MethodNotAllowed { allow: "GET" }),
+                    "{method}"
+                );
+            }
+            assert_eq!(
+                ask("POST", "/repo/demo/summary", None, None),
+                Err(Denied::MethodNotAllowed { allow: "GET" }),
+                "the method is judged before the token"
+            );
+        }
+
+        #[test]
+        fn a_trunk_poke_with_a_token_for_its_repo_is_admitted() {
+            let auth = bearer("demo", "steward");
+            let got = ask("POST", "/repo/demo/trunk-moved", None, Some(&auth));
+            assert_eq!(
+                got,
+                Ok((
+                    format!("{:?}", Route::TrunkMoved { repo: "demo" }),
+                    agent("steward")
+                ))
+            );
+        }
+
+        #[test]
+        fn a_trunk_poke_without_a_valid_token_or_for_another_repo_is_refused() {
+            let post = |auth: Option<&str>| ask("POST", "/repo/demo/trunk-moved", None, auth);
+            let unauthorized = |got: Result<_, Denied>| matches!(got, Err(Denied::Unauthorized(_)));
+            assert!(unauthorized(post(None)));
+            assert!(unauthorized(post(Some("Bearer nonsense"))));
+            assert!(unauthorized(post(Some(&bearer("elsewhere", "steward")))));
+            let expired = format!("Bearer {}", token(KEY, "demo", "steward", SIGNED_AT));
+            assert!(unauthorized(post(Some(&expired))));
+            let auth = bearer("demo", "steward");
+            let refused = ask(
+                "POST",
+                "/repo/demo/trunk-moved",
+                Some("swarm-"),
+                Some(&auth),
+            );
+            assert_eq!(refused, Err(Denied::Forbidden));
+        }
+
+        #[test]
+        fn a_trunk_poke_from_any_agent_but_the_steward_is_refused() {
+            for who in ["a1", "dashboard", "Steward", "steward2"] {
+                let auth = bearer("demo", who);
+                let got = ask("POST", "/repo/demo/trunk-moved", None, Some(&auth));
+                assert_eq!(got, Err(Denied::NotSteward), "{who}");
+            }
+        }
+
+        #[test]
+        fn a_trunk_poke_takes_post_only() {
+            let auth = bearer("demo", "steward");
+            for method in ["GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "post"] {
+                let got = ask(method, "/repo/demo/trunk-moved", None, Some(&auth));
+                assert_eq!(
+                    got,
+                    Err(Denied::MethodNotAllowed { allow: "POST" }),
+                    "{method}"
+                );
+            }
+        }
+
+        #[test]
+        fn the_ws_route_keeps_its_order_of_refusals() {
+            let auth = bearer("demo", "a1");
+            assert!(ask("GET", "/repo/demo/ws", None, Some(&auth)).is_ok());
+            assert!(
+                ask("POST", "/repo/demo/ws", None, Some(&auth)).is_ok(),
+                "the upgrade check, not the Worker, judges the method of a ws request"
+            );
+            assert_eq!(
+                ask("GET", "/repo/demo/ws", Some("swarm-"), Some(&auth)),
+                Err(Denied::Forbidden)
+            );
+            assert!(matches!(
+                ask("GET", "/repo/demo/ws", None, None),
+                Err(Denied::Unauthorized(_))
+            ));
+            assert_eq!(
+                ask("GET", "/nope", None, Some(&auth)),
+                Err(Denied::NotFound)
+            );
+        }
+
+        #[test]
+        fn the_ws_route_binds_the_agent_of_a_token_for_its_repo_only() {
+            let auth = bearer("demo", "a7");
+            let (route, who) = ask("GET", "/repo/demo/ws", None, Some(&auth)).unwrap();
+            assert_eq!(route, format!("{:?}", Route::Ws { repo: "demo" }));
+            assert_eq!(who, agent("a7"));
+            let elsewhere = bearer("elsewhere", "a7");
+            assert!(matches!(
+                ask("GET", "/repo/demo/ws", None, Some(&elsewhere)),
+                Err(Denied::Unauthorized(_))
+            ));
+            let other = bearer("other", "a8");
+            let (_, who) = ask("GET", "/repo/other/ws", None, Some(&other)).unwrap();
+            assert_eq!(who, agent("a8"));
+            assert!(matches!(
+                ask("GET", "/repo/other/ws", None, Some(&auth)),
+                Err(Denied::Unauthorized(_))
+            ));
+        }
     }
 }

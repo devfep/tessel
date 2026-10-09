@@ -8,38 +8,64 @@ protocol used in the pantry-app repo, at Felix's instruction on 5 October 2026.
 
 | Role | Who | Job |
 |---|---|---|
-| Orchestrator | the session Felix talks to | Dispatches, reviews reports, merges, gates, writes the roadmap and STATE. Never writes product code. |
+| Orchestrator | the session Felix talks to | Dispatches, reviews reports, decides held submissions, gates, writes the roadmap and STATE. Never writes product code. The steward merges; the orchestrator merges only under the `tools/merge-one.sh` fallback (section 2). |
 | Implementer | fresh `general-purpose` subagent, `model: "sonnet"` | Implements exactly one task in its own worktree, runs the gate, commits, reports. |
 | Reviewer | fresh `superpowers:code-reviewer` subagent, `model: "opus"` | Reviews `BASE..HEAD` against the task text. Trusts nothing in the report. Never merges. |
 | Advisor | `model: "opus"`, read-only | Only when a lane has looped for about 45 minutes: explains the way forward to the lane. No edits, no builds. |
 
 Order is fixed: implementer report → reviewer → fix passes back to the SAME implementer → re-check by
 the SAME reviewer → merge on "Yes" only → orchestrator's gate on the merged tree → close the roadmap
-box with the merge sha → reclaim worktree and branch → rewrite STATE.
+box with the merge sha → reclaim worktree and branch → rewrite STATE. (The steward merges; see
+section 2.)
 
 The reviewer's first line is exactly `Ready to merge? Yes`, `No` or `With fixes`. The brief asks for
 an adversarial review, the reviewer's own mutants, spec compliance against the task text, and a flag
 on speculative or over-engineered code.
 
-## 2. Branches, worktrees, merges
+## 2. Branches, forks, merges
 
-- Integration branch: `sprint/build`. Each task: worktree `.claude/worktrees/<task>` on branch
-  `task-<task>`, cut from the local `sprint/build` tip.
-- Lanes commit only to their task branch. They never push, never commit to `sprint/build`, never
-  `git stash`, and edit only files under their own worktree.
-- Before its final gate and report, a lane merges the local `sprint/build` tip into its branch, as
-  its own commit: the merge is committed first and any change follows in a separate commit, so a fix
-  never hides inside a merge commit.
+Work lands through the steward into the Artifacts repo `tessel-dogfood` (the trunk). Tessel's own
+coordinator and CLI do the claiming; `skills/tessel/SKILL.md` has the full command reference.
+
+- Each lane works in a fork of the trunk named `tessel-dogfood--<agent>` and in a worktree
+  `.claude/worktrees/<task>` on branch `task-<task>`. It never edits files in another worktree and
+  never `git stash`es.
+- Before editing a file the lane claims it through `tessel` (`tessel start "<intent>"`, then
+  `tessel claim <scope>...`, or the edit hook). A denied claim is not worked around.
+- The lane commits to its task branch, pushes the commit to its fork, and runs `tessel submit
+  --evidence "<tests run and result>"`. Then it keeps its daemon running until `tessel inbox`
+  shows `merged` or `submit_rejected`, and runs `tessel stop` before reporting. The other inbox
+  outcomes and what to do about them are in `skills/tessel/SKILL.md` ("Submitting").
+- A submission the coordinator holds for review (a signature change, a deletion or a rename) is
+  decided by the orchestrator, acting as the agent `orchestrator`, which is listed in the
+  coordinator's `REVIEWERS`. It runs `tessel review <claim-id> --approve --note "orchestrator:
+  Opus Yes, gate <sha>"` only after the Opus reviewer's `Yes` and a passing gate run by the
+  orchestrator. The decision is in the event log, but `ReviewDecided` does not name the reviewer,
+  so the note is what records who decided and why.
+- The steward rebases the commit onto the trunk, runs `tessel.toml`'s gate in a Sandbox and merges
+  only when it passes. Only the steward writes the trunk.
+- Before its final gate and report, a lane brings its fork up to the trunk (`main` of
+  `tessel-dogfood`), as its own commit: the merge is committed first and any change follows in a
+  separate commit, so a fix never hides inside a merge commit. The steward rebases anyway.
 - The worktree has one user at a time. The orchestrator hands it from reviewer to implementer only
   after the reviewer's idle notice, not on its verdict message alone.
-- The orchestrator merges every task branch with `tools/merge-one.sh <branch>`: merge-tree guard,
-  `git merge --no-ff`, merged tree equals the predicted tree, no deletions, `src/protocol.rs`
-  unchanged. A clean merge is not a correct merge: when both sides touched a file, diff the merged
-  file against both parents.
-- After each merge and gate the orchestrator pushes `sprint/build` and the notes ref to `origin`.
-- `main` only moves by pull request from `sprint/build` at a milestone, opened and merged by the
+- After each merge the orchestrator runs `tools/mirror.sh`, which pushes the trunk to the GitHub
+  branch `artifacts-trunk`, fast-forward only: the first run creates the branch, later runs abort
+  unless the push is a fast-forward. Nothing else writes that branch.
+- `sprint/build` keeps the history from before the steward and its git-notes evidence. No history
+  is rewritten.
+- `main` only moves by pull request from `artifacts-trunk` at a milestone, opened and merged by the
   orchestrator after a full gate plus `/code-review` and `/security-review` on the milestone diff.
   Nothing is pushed to `main` directly.
+- Fallback when the steward is unavailable: the orchestrator merges the task branch onto
+  `sprint/build` with `tools/merge-one.sh <branch>` (merge-tree guard, `git merge --no-ff`, merged
+  tree equals the predicted tree, no deletions, `src/protocol.rs` unchanged). In this mode a lane
+  merges the local `sprint/build` tip into its branch, as its own commit, before its final gate.
+  The orchestrator then pushes
+  `sprint/build` and the notes ref to `origin`. When both sides touched a file, diff the merged
+  file against both parents.
+- `src/protocol.rs` is frozen. A change to it is merged by hand by Felix, never through the
+  steward.
 
 ## 3. Gates
 
@@ -56,6 +82,15 @@ a new check can fail (mutant or deliberate break, then restore); exit codes deci
 "should" or "seems"; evidence comes from the committed tree only.
 
 ## 4. What every brief carries
+
+00. A lane submits exactly the commit the Opus reviewer passed, or one the orchestrator has read.
+   When the orchestrator asks for changes after the Yes, the lane commits, reports the sha, and
+   waits for the orchestrator's go before `tessel submit`: an unflagged submission merges with no
+   review hold, so "fix then land" in one message lets unread code reach the trunk (DASH-1b,
+   5 October 2026: `715d8dd` merged before the orchestrator read it; read afterwards, sound).
+0. First line of every implementer brief, in these words: "Before your first edit: mint your
+   identity, `tessel start`, and claim the file. No edit before its claim." Two lanes on 5 October
+   2026 (SWARM-OBSERVER, SHADOW-GC) edited before claiming; the merge note records each late claim.
 
 1. "Never end your turn waiting for a notification. You will not be woken." Poll your own long runs
    in bounded foreground loops.
@@ -88,7 +123,8 @@ Docker Desktop is quit when no image build needs it. Use `trash`, never `rm -rf`
 
 ## 6. Autonomy
 
-The orchestrator decides without asking: dispatch order, fix-pass rulings, merges on "Yes", gates,
+The orchestrator decides without asking: dispatch order, fix-pass rulings, approvals on "Yes" (and
+merges on "Yes" under the `tools/merge-one.sh` fallback), gates,
 closing boxes, filing new tasks from reviews, reclaiming resources. It reports each closed task in at
 most six lines and continues.
 

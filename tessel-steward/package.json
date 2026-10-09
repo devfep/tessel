@@ -13,6 +13,9 @@
     "format": "oxfmt",
     "test": "vitest run"
   },
+  "dependencies": {
+    "smol-toml": "1.9.0"
+  },
   "devDependencies": {
     "@types/node": "22.20.5",
     "oxfmt": "0.71.0",

@@ -1,0 +1,35 @@
+# A/B run: seed 3, 40 tasks, overlap 0.5, 30 agents
+
+Same seed, same tasks, same starting repository, same 300 ms of work per task.
+
+| Metric | off: no coordination, plain git, red merges rolled back, local replay | on: Tessel (live coordinator, policy shadow) |
+|---|---|---|
+| Tasks | 40 | 40 |
+| Landed on the trunk | 14 | 11 |
+| Rejected after the work was done | 26 | 0 |
+| of which textual conflict | 22 | n/a |
+| of which broke the build | 1 | n/a |
+| of which broke the tests | 3 | n/a |
+| Not finished (starved, timed out, failed, lapsed, disconnected, not run) | 0 | 1 |
+| of which the claim lapsed (lease expired) | n/a | 0 |
+| of which the agent's connection closed | n/a | 0 |
+| Connection resets agents reopened | n/a | 0 |
+| Run as shadow work (submitted for verification, never to merge) | n/a | 28 |
+| Claims denied outright (a denial is not a prevented conflict) | n/a | 28 |
+| Claims queued behind a holder (wait policy) | n/a | 0 |
+| Conflicts prevented, verified by shadow runs | n/a | verified preventions 20, false alarms 9 (shadow claims 28: inconclusive 3, never verified 0) |
+| Held for review (not approved) | n/a | 0 |
+| Review approvals (the only reviewer is the script) | n/a | 6 |
+| Review rejections | n/a | 0 |
+| Wall time (ms) | 15629 | 628237 |
+| Landed per minute | 53.7 | 1.0 |
+| Agent-minutes of work later rejected | 1.848 | 0.000 |
+| Agent-minutes of work in total | 2.921 | 3.269 |
+| Agent-minutes on shadow work (never merged) | n/a | 2.201 |
+
+- `off` is a local replay. Its numbers are computed here from plain-git merges onto a trunk in task order with the tests run after each merge, and are not sent to any coordinator. A merge that breaks the build or the tests is rolled back, so each merge is judged on a green trunk. `Summary::from_events` over the replay's own events gives 40 merges and 26 conflicts.
+- Every `on` count of the coordinator's behaviour comes from `Summary::from_events` over the coordinator's event log (207 events). "Rejected" and "queued" are counts of `SubmitRejected` and `WaitQueued` events in that log, which `Summary` has no field for.
+- `off` models `--agents` agents working at once: task i branches from the trunk after tasks 1 to i minus agents were merged, as an agent that pulls before its next task would, and does not see work still in flight. Red merges are rolled back, so this harness does not measure how long main stayed green.
+- Agent-minutes are the same quantity on both sides: the configured work time plus the measured time to edit, run the tests and commit, per task. In `on` the clock starts when the claim is granted.
+- A cell reading `n/a` is a number this run cannot produce, not a zero. The log records why a steward rejected a submission only as text, which the harness does not parse, so `on` has no split of its rejections.
+- Under the `shadow` policy a denied task is run as shadow work and never lands, so "Landed on the trunk" and "Landed per minute" are not comparable with the `wait` or `skip` policies, which land every task they can. Shadow work counts in the agent-minutes of work in total.

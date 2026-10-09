@@ -9,3 +9,4 @@ node_modules/
 .claude/settings.local.json
 worker-configuration.d.ts
 .claude/worktrees/
+.tessel/

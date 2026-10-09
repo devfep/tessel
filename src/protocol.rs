@@ -45,23 +45,24 @@
 //!    instructions. Otherwise one agent's transcript is a prompt-injection
 //!    channel into every other agent.
 //! 10. Evidence. Every state change is appended to an event log (`Event`),
-//!    numbered by `seq` with no gaps, and tagged with the run it belongs to.
-//!    A denial is *not* a prevented conflict. Prevention is only counted when
-//!    verified: in experiment runs, `OnConflict::Shadow` lets a denied agent
-//!    keep working in a quarantined fork that can never merge; when the
-//!    blocking work lands, the steward test-merges the shadow fork against it
-//!    and records the `Outcome`. Clean means the denial was a false alarm.
+//!     numbered by `seq` with no gaps, and tagged with the run it belongs to. That includes a
+//!     `Wait` request entering the queue (`WaitQueued`) and leaving it ungranted (`WaitWithdrawn`).
+//!     A denial is *not* a prevented conflict. Prevention is only counted when
+//!     verified: in experiment runs, `OnConflict::Shadow` lets a denied agent
+//!     keep working in a quarantined fork that can never merge; when the
+//!     blocking work lands, the steward test-merges the shadow fork against it
+//!     and records the `Outcome`. Clean means the denial was a false alarm.
 //! 11. Coverage. Every scope a submission touched must be covered by the
-//!    claim: some claimed scope covers it, in a mode that `permits` the touched
-//!    mode. Otherwise the submission is rejected, listing what was uncovered
-//!    (`uncovered`). Skills teach agents to claim first; this enforces it.
+//!     claim: some claimed scope covers it, in a mode that `permits` the touched
+//!     mode. Otherwise the submission is rejected, listing what was uncovered
+//!     (`uncovered`). Skills teach agents to claim first; this enforces it.
 //! 12. Review by exception. A fenced, covered, tested submission merges
-//!    automatically unless `review_reasons` returns anything, in which case a
-//!    human must approve it first. The rule is deliberately simple and
-//!    explainable: every flagged change says why it was flagged.
+//!     automatically unless `review_reasons` returns anything, in which case a
+//!     human must approve it first. The rule is deliberately simple and
+//!     explainable: every flagged change says why it was flagged.
 //! 13. Versioning. `Hello` carries the client's protocol version; the
-//!    coordinator refuses versions it does not speak. Additive changes keep
-//!    the version; breaking ones bump it.
+//!     coordinator refuses versions it does not speak. Additive changes keep
+//!     the version; breaking ones bump it.
 
 /// Bump only for breaking changes. Additive fields use `#[serde(default)]`.
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -126,16 +127,14 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub fn root() -> Scope {
-        Scope::Dir { path: String::new() }
-    }
-
     /// Strict ancestors, nearest first, ending at the repo root.
     pub fn ancestors(&self) -> Vec<Scope> {
         let mut out = Vec::new();
         let mut dir = match self {
             Scope::Symbol(s) => {
-                out.push(Scope::File { path: s.path.clone() });
+                out.push(Scope::File {
+                    path: s.path.clone(),
+                });
                 Some(parent_dir(&s.path))
             }
             Scope::File { path } => Some(parent_dir(path)),
@@ -143,8 +142,14 @@ impl Scope {
             Scope::Dir { path } => Some(parent_dir(path)),
         };
         while let Some(d) = dir {
-            out.push(Scope::Dir { path: d.to_string() });
-            dir = if d.is_empty() { None } else { Some(parent_dir(d)) };
+            out.push(Scope::Dir {
+                path: d.to_string(),
+            });
+            dir = if d.is_empty() {
+                None
+            } else {
+                Some(parent_dir(d))
+            };
         }
         out
     }
@@ -178,25 +183,31 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub const ALL: [Mode; 4] = [Mode::Depend, Mode::EditBody, Mode::EditSignature, Mode::Create];
-
-    /// Whether two claims on overlapping scopes conflict.
-    /// Deliberately exhaustive with no wildcard: adding a variant forces
-    /// a decision for every pairing.
     /// Does holding a claim in `self` authorise work done in `needed`?
     /// Invariant: if `self` permits `needed`, everything that conflicts with
     /// `needed` also conflicts with `self`, so the claim really protected the
     /// work (checked in tests).
+    /// Deliberately exhaustive with no wildcard: adding a variant forces
+    /// a decision for every pairing.
     pub fn permits(self, needed: Mode) -> bool {
         use Mode::*;
         match (self, needed) {
-            (a, b) if a == b => true,
+            (Depend, Depend)
+            | (EditBody, EditBody)
+            | (EditSignature, EditSignature)
+            | (Create, Create) => true,
             (EditSignature, EditBody) => true,
             (EditSignature | EditBody | Create, Depend) => true,
-            _ => false,
+            (Depend, EditBody | EditSignature | Create) => false,
+            (EditBody, EditSignature | Create) => false,
+            (EditSignature, Create) => false,
+            (Create, EditBody | EditSignature) => false,
         }
     }
 
+    /// Whether two claims on overlapping scopes conflict.
+    /// Deliberately exhaustive with no wildcard: adding a variant forces
+    /// a decision for every pairing.
     pub fn conflicts_with(self, other: Mode) -> bool {
         use Mode::*;
         match (self, other) {
@@ -457,9 +468,20 @@ pub enum ClientMsg {
     },
     /// Add scopes discovered mid-task. Atomic; never waits. On success the
     /// coordinator issues a new fence and retires `fence`.
-    Amend { req: RequestId, claim: ClaimId, fence: Fence, add: Vec<ScopeClaim> },
+    Amend {
+        req: RequestId,
+        claim: ClaimId,
+        fence: Fence,
+        add: Vec<ScopeClaim>,
+    },
     Heartbeat,
-    Release { claim: ClaimId, fence: Fence },
+    Release {
+        claim: ClaimId,
+        fence: Fence,
+        /// Echoed in any `Error` reply, so the client can match it. Old clients omit it.
+        #[serde(default)]
+        req: Option<RequestId>,
+    },
     /// Work is pushed to the agent's fork and ready to merge. `touched` is what
     /// actually changed, which may differ from what was claimed.
     Submit {
@@ -481,21 +503,39 @@ pub enum ClientMsg {
         criteria: Vec<Criterion>,
     },
     /// Agent: enter an open race. Answered with `Granted` (with `race` set).
-    JoinRace { req: RequestId, race: RaceId },
+    JoinRace {
+        req: RequestId,
+        race: RaceId,
+    },
     /// Human or orchestrator: choose the winner of a `HumanPick` race.
-    PickWinner { req: RequestId, race: RaceId, claim: ClaimId },
+    PickWinner {
+        req: RequestId,
+        race: RaceId,
+        claim: ClaimId,
+    },
     /// Human reviewer: approve or reject a flagged submission.
-    Review { req: RequestId, claim: ClaimId, approve: bool, note: Option<String> },
+    Review {
+        req: RequestId,
+        claim: ClaimId,
+        approve: bool,
+        note: Option<String>,
+    },
     /// Dashboard or harness: stream events with `seq >= from_seq`
     /// (0 replays the whole log), then follow live.
-    Watch { from_seq: u64 },
+    Watch {
+        from_seq: u64,
+    },
 }
 
 /// Coordinator -> CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    Welcome { head: CommitId, lease_ms: u64, protocol: u16 },
+    Welcome {
+        head: CommitId,
+        lease_ms: u64,
+        protocol: u16,
+    },
     Granted {
         req: RequestId,
         claim: ClaimId,
@@ -507,7 +547,10 @@ pub enum ServerMsg {
         #[serde(default)]
         at_risk: Vec<HeldAssumption>,
     },
-    Denied { req: RequestId, conflicts: Vec<Conflict> },
+    Denied {
+        req: RequestId,
+        conflicts: Vec<Conflict>,
+    },
     /// `OnConflict::Shadow`: denied for real, but you may continue in a
     /// quarantined fork. Your submission is used only for verification.
     Shadowed {
@@ -517,17 +560,43 @@ pub enum ServerMsg {
         expires_at_ms: u64,
         conflicts: Vec<Conflict>,
     },
-    Queued { req: RequestId, position: u32 },
+    Queued {
+        req: RequestId,
+        position: u32,
+    },
     /// Submission passed the fence check and is in the merge queue.
-    Accepted { req: RequestId, claim: ClaimId, queue_position: u32 },
-    Merged { claim: ClaimId, head: CommitId },
-    SubmitRejected { claim: ClaimId, reason: String },
+    Accepted {
+        req: RequestId,
+        claim: ClaimId,
+        queue_position: u32,
+    },
+    Merged {
+        claim: ClaimId,
+        head: CommitId,
+    },
+    SubmitRejected {
+        claim: ClaimId,
+        reason: String,
+    },
     /// Invariant 11: these touched scopes were not covered by your claim.
-    Uncovered { claim: ClaimId, scopes: Vec<ScopeClaim> },
+    Uncovered {
+        /// The `Submit`'s `req`. Old coordinators omit it.
+        #[serde(default)]
+        req: Option<RequestId>,
+        claim: ClaimId,
+        scopes: Vec<ScopeClaim>,
+    },
     /// Invariant 12: waiting for a human. Sent to the submitter and watchers.
-    ReviewRequired { claim: ClaimId, reasons: Vec<ReviewReason> },
+    ReviewRequired {
+        claim: ClaimId,
+        reasons: Vec<ReviewReason>,
+    },
     /// Main moved under you, touching scopes you have claimed.
-    BaseMoved { head: CommitId, by: AgentId, affected: Vec<Scope> },
+    BaseMoved {
+        head: CommitId,
+        by: AgentId,
+        affected: Vec<Scope>,
+    },
     /// Submitted work touches something your claim assumes. Re-check it.
     AssumptionChallenged {
         claim: ClaimId,
@@ -536,8 +605,15 @@ pub enum ServerMsg {
         their_commit: CommitId,
     },
     /// Your lease lapsed; `fence` is now retired.
-    LeaseExpired { claim: ClaimId, fence: Fence },
-    RaceOpened { req: RequestId, race: RaceId, deadline_ms: u64 },
+    LeaseExpired {
+        claim: ClaimId,
+        fence: Fence,
+    },
+    RaceOpened {
+        req: RequestId,
+        race: RaceId,
+        deadline_ms: u64,
+    },
     /// Sent to every entrant. `winner` is `None` while awaiting `PickWinner`,
     /// or if no entry survived the filters. `ranking` is best first.
     RaceResult {
@@ -547,8 +623,14 @@ pub enum ServerMsg {
         entries: Vec<RaceEntry>,
     },
     /// One entry of the event log, for `Watch` subscribers.
-    Event { event: Event },
-    Error { req: Option<RequestId>, code: ErrorCode, message: String },
+    Event {
+        event: Event,
+    },
+    Error {
+        req: Option<RequestId>,
+        code: ErrorCode,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -605,18 +687,25 @@ pub fn review_reasons(
     let mut out = Vec::new();
     for t in touched {
         if t.mode == Mode::EditSignature {
-            out.push(ReviewReason::SignatureChange { scope: t.scope.clone() });
+            out.push(ReviewReason::SignatureChange {
+                scope: t.scope.clone(),
+            });
         }
         let path = match &t.scope {
             Scope::Dir { path } | Scope::File { path } => path,
             Scope::Symbol(s) => &s.path,
         };
         if let Some(p) = sensitive.iter().find(|p| path.starts_with(p.as_str())) {
-            out.push(ReviewReason::SensitivePath { scope: t.scope.clone(), pattern: p.clone() });
+            out.push(ReviewReason::SensitivePath {
+                scope: t.scope.clone(),
+                pattern: p.clone(),
+            });
         }
     }
     if threatened_assumptions > 0 {
-        out.push(ReviewReason::ThreatensAssumptions { count: threatened_assumptions });
+        out.push(ReviewReason::ThreatensAssumptions {
+            count: threatened_assumptions,
+        });
     }
     if !has_test_evidence {
         out.push(ReviewReason::NoTestEvidence);
@@ -662,6 +751,9 @@ pub enum ReleaseReason {
     LeaseExpired,
     LostRace,
     Merged,
+    /// A submitted shadow claim that nothing is owed through: every blocker ended and every trial
+    /// is logged (invariant 10).
+    Settled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -677,7 +769,9 @@ pub struct Event {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
-    AgentConnected { agent: AgentId },
+    AgentConnected {
+        agent: AgentId,
+    },
     ClaimGranted {
         agent: AgentId,
         claim: ClaimId,
@@ -687,25 +781,106 @@ pub enum EventKind {
         race: Option<RaceId>,
         at_risk: Vec<HeldAssumption>,
     },
-    ClaimDenied { agent: AgentId, scopes: Vec<ScopeClaim>, intent: Intent, conflicts: Vec<Conflict> },
-    ClaimShadowed { agent: AgentId, claim: ClaimId, scopes: Vec<ScopeClaim>, conflicts: Vec<Conflict> },
-    ClaimAmended { claim: ClaimId, fence: Fence, added: Vec<ScopeClaim> },
-    ClaimReleased { claim: ClaimId, reason: ReleaseReason },
-    Submitted { claim: ClaimId, fork_commit: CommitId, touched: Vec<ScopeClaim>, decisions: DecisionRecord },
-    Merged { claim: ClaimId, head: CommitId },
-    SubmitRejected { claim: ClaimId, reason: String },
-    ReviewRequested { claim: ClaimId, reasons: Vec<ReviewReason> },
-    ReviewDecided { claim: ClaimId, approve: bool, note: Option<String> },
-    BaseMoved { head: CommitId, by: AgentId, notified: Vec<AgentId> },
-    AssumptionChallenged { claim: ClaimId, assumption: Assumption, by: AgentId, their_commit: CommitId },
-    RaceOpened { race: RaceId, scopes: Vec<ScopeClaim>, criteria: Vec<Criterion> },
-    RaceDecided { race: RaceId, winner: Option<ClaimId>, ranking: Vec<ClaimId> },
+    ClaimDenied {
+        agent: AgentId,
+        scopes: Vec<ScopeClaim>,
+        intent: Intent,
+        conflicts: Vec<Conflict>,
+    },
+    ClaimShadowed {
+        agent: AgentId,
+        claim: ClaimId,
+        scopes: Vec<ScopeClaim>,
+        conflicts: Vec<Conflict>,
+    },
+    ClaimAmended {
+        claim: ClaimId,
+        fence: Fence,
+        added: Vec<ScopeClaim>,
+    },
+    ClaimReleased {
+        claim: ClaimId,
+        reason: ReleaseReason,
+    },
+    /// A `Claim` with `OnConflict::Wait` entered the queue (when `Queued` is sent).
+    WaitQueued {
+        agent: AgentId,
+        req: RequestId,
+        scopes: Vec<ScopeClaim>,
+        intent: Intent,
+        position: u32,
+    },
+    /// A queued request left the queue without a grant: its agent's last socket closed. A queued
+    /// request that is granted is logged by `ClaimGranted`.
+    WaitWithdrawn {
+        agent: AgentId,
+        req: RequestId,
+    },
+    Submitted {
+        claim: ClaimId,
+        fork_commit: CommitId,
+        touched: Vec<ScopeClaim>,
+        decisions: DecisionRecord,
+    },
+    Merged {
+        claim: ClaimId,
+        head: CommitId,
+    },
+    SubmitRejected {
+        claim: ClaimId,
+        reason: String,
+    },
+    ReviewRequested {
+        claim: ClaimId,
+        reasons: Vec<ReviewReason>,
+    },
+    ReviewDecided {
+        claim: ClaimId,
+        approve: bool,
+        note: Option<String>,
+        /// The reviewing agent. `None` in a log written before this field existed.
+        #[serde(default)]
+        reviewer: Option<AgentId>,
+    },
+    BaseMoved {
+        head: CommitId,
+        by: AgentId,
+        notified: Vec<AgentId>,
+    },
+    AssumptionChallenged {
+        claim: ClaimId,
+        assumption: Assumption,
+        by: AgentId,
+        their_commit: CommitId,
+    },
+    RaceOpened {
+        race: RaceId,
+        scopes: Vec<ScopeClaim>,
+        criteria: Vec<Criterion>,
+    },
+    RaceDecided {
+        race: RaceId,
+        winner: Option<ClaimId>,
+        ranking: Vec<ClaimId>,
+    },
     /// Shadow verification: the denied work, test-merged against what blocked it.
-    DenialVerified { shadow_claim: ClaimId, blocking_claim: ClaimId, outcome: Outcome },
+    DenialVerified {
+        shadow_claim: ClaimId,
+        blocking_claim: ClaimId,
+        outcome: Outcome,
+    },
     /// After a challenged change merged, the assuming agent's tests were re-run.
-    AssumptionVerified { claim: ClaimId, assumption: Assumption, outcome: Outcome },
+    AssumptionVerified {
+        claim: ClaimId,
+        assumption: Assumption,
+        outcome: Outcome,
+    },
     /// Uncoordinated A/B runs: plain-git merge of one agent's work, in order.
-    ReplayMerged { agent: AgentId, fork_commit: CommitId, outcome: Outcome },
+    ReplayMerged {
+        agent: AgentId,
+        fork_commit: CommitId,
+        outcome: Outcome,
+    },
 }
 
 /// Counters for the dashboard and the A/B table, computed one way everywhere.
@@ -722,7 +897,8 @@ pub struct Summary {
     pub assumptions_challenged: u64,
     pub assumptions_confirmed_broken: u64,
     pub merges: u64,
-    /// Merges that needed a human. merges - this = merged without review.
+    /// Submissions held for a human (`ReviewRequested` events). Some are rejected or still
+    /// waiting, so `merges` minus this is not the count merged without review.
     pub reviews_requested: u64,
     pub base_moved_notices: u64,
     pub races_decided: u64,
@@ -751,7 +927,9 @@ impl Summary {
                 }
                 EventKind::Merged { .. } => s.merges += 1,
                 EventKind::ReviewRequested { .. } => s.reviews_requested += 1,
-                EventKind::BaseMoved { notified, .. } => s.base_moved_notices += notified.len() as u64,
+                EventKind::BaseMoved { notified, .. } => {
+                    s.base_moved_notices += notified.len() as u64
+                }
                 EventKind::RaceDecided { .. } => s.races_decided += 1,
                 EventKind::ReplayMerged { outcome, .. } => {
                     s.replay_merges += 1;
@@ -762,6 +940,8 @@ impl Summary {
                 EventKind::AgentConnected { .. }
                 | EventKind::ClaimAmended { .. }
                 | EventKind::ClaimReleased { .. }
+                | EventKind::WaitQueued { .. }
+                | EventKind::WaitWithdrawn { .. }
                 | EventKind::Submitted { .. }
                 | EventKind::SubmitRejected { .. }
                 | EventKind::ReviewDecided { .. }
@@ -780,8 +960,24 @@ impl Summary {
 mod tests {
     use super::*;
 
+    const ALL_MODES: [Mode; 4] = [
+        Mode::Depend,
+        Mode::EditBody,
+        Mode::EditSignature,
+        Mode::Create,
+    ];
+
+    fn root() -> Scope {
+        Scope::Dir {
+            path: String::new(),
+        }
+    }
+
     fn sym(path: &str, name: &str) -> Scope {
-        Scope::Symbol(SymbolId { path: path.into(), qualified_name: name.into() })
+        Scope::Symbol(SymbolId {
+            path: path.into(),
+            qualified_name: name.into(),
+        })
     }
     fn file(path: &str) -> Scope {
         Scope::File { path: path.into() }
@@ -792,8 +988,8 @@ mod tests {
 
     #[test]
     fn conflict_matrix_is_symmetric() {
-        for a in Mode::ALL {
-            for b in Mode::ALL {
+        for a in ALL_MODES {
+            for b in ALL_MODES {
                 assert_eq!(a.conflicts_with(b), b.conflicts_with(a), "{a:?} vs {b:?}");
             }
         }
@@ -809,10 +1005,15 @@ mod tests {
     fn ancestors_walk_to_root() {
         assert_eq!(
             sym("src/auth/session.rs", "refresh").ancestors(),
-            vec![file("src/auth/session.rs"), dir("src/auth"), dir("src"), dir("")]
+            vec![
+                file("src/auth/session.rs"),
+                dir("src/auth"),
+                dir("src"),
+                dir("")
+            ]
         );
         assert_eq!(file("main.rs").ancestors(), vec![dir("")]);
-        assert!(Scope::root().ancestors().is_empty());
+        assert!(root().ancestors().is_empty());
     }
 
     /// With S = Depend and X = EditSignature, the generalised rule must
@@ -843,7 +1044,7 @@ mod tests {
     #[test]
     fn lock_table_matches_definition() {
         let scopes = [
-            Scope::root(),
+            root(),
             dir("src"),
             dir("src/auth"),
             dir("src/billing"),
@@ -855,14 +1056,22 @@ mod tests {
         ];
         for a_scope in &scopes {
             for b_scope in &scopes {
-                for a_mode in Mode::ALL {
-                    for b_mode in Mode::ALL {
-                        let a = ScopeClaim { scope: a_scope.clone(), mode: a_mode };
-                        let b = ScopeClaim { scope: b_scope.clone(), mode: b_mode };
+                for a_mode in ALL_MODES {
+                    for b_mode in ALL_MODES {
+                        let a = ScopeClaim {
+                            scope: a_scope.clone(),
+                            mode: a_mode,
+                        };
+                        let b = ScopeClaim {
+                            scope: b_scope.clone(),
+                            mode: b_mode,
+                        };
                         let expected = (a_scope.covers(b_scope) || b_scope.covers(a_scope))
                             && a_mode.conflicts_with(b_mode);
                         let by_table = a.locks().iter().any(|(na, la)| {
-                            b.locks().iter().any(|(nb, lb)| na == nb && la.conflicts_with(*lb))
+                            b.locks()
+                                .iter()
+                                .any(|(nb, lb)| na == nb && la.conflicts_with(*lb))
                         });
                         assert_eq!(by_table, expected, "{a:?} vs {b:?}");
                     }
@@ -891,7 +1100,11 @@ mod tests {
             entry(3, Some(true), Some(300), 50, 3),
             entry(4, None, Some(200), 10, 4), // tests not run yet
         ];
-        let crit = [Criterion::TestsPass, Criterion::LowestRisk, Criterion::SmallestDiff];
+        let crit = [
+            Criterion::TestsPass,
+            Criterion::LowestRisk,
+            Criterion::SmallestDiff,
+        ];
         assert_eq!(rank_entries(&crit, &entries), vec![ClaimId(3), ClaimId(2)]);
     }
 
@@ -902,12 +1115,22 @@ mod tests {
             entry(5, Some(true), Some(400), 20, 9),
             entry(6, Some(true), Some(400), 20, 9),
         ];
-        let crit = [Criterion::LowestRisk, Criterion::SmallestDiff, Criterion::FirstSubmitted];
-        assert_eq!(rank_entries(&crit, &entries), vec![ClaimId(5), ClaimId(6), ClaimId(7)]);
+        let crit = [
+            Criterion::LowestRisk,
+            Criterion::SmallestDiff,
+            Criterion::FirstSubmitted,
+        ];
+        assert_eq!(
+            rank_entries(&crit, &entries),
+            vec![ClaimId(5), ClaimId(6), ClaimId(7)]
+        );
         // Input order must not change the result.
         let mut reversed = entries.clone();
         reversed.reverse();
-        assert_eq!(rank_entries(&crit, &reversed), rank_entries(&crit, &entries));
+        assert_eq!(
+            rank_entries(&crit, &reversed),
+            rank_entries(&crit, &entries)
+        );
     }
 
     #[test]
@@ -918,7 +1141,10 @@ mod tests {
         };
         let claim = |scope, mode| ScopeClaim { scope, mode };
         // Same symbol, body edit: the gap the conflict matrix cannot see.
-        assert!(a.threatened_by(&claim(sym("src/auth/session.rs", "refresh"), Mode::EditBody)));
+        assert!(a.threatened_by(&claim(
+            sym("src/auth/session.rs", "refresh"),
+            Mode::EditBody
+        )));
         // Whole-file or whole-dir edits cover it.
         assert!(a.threatened_by(&claim(file("src/auth/session.rs"), Mode::EditSignature)));
         assert!(a.threatened_by(&claim(dir("src/auth"), Mode::EditBody)));
@@ -929,14 +1155,23 @@ mod tests {
 
     #[test]
     fn old_clients_without_new_fields_still_parse() {
-        let json = r#"{"type":"submit","req":1,"claim":2,"fence":3,"fork_commit":"abc","touched":[]}"#;
-        assert!(matches!(serde_json::from_str::<ClientMsg>(json).unwrap(), ClientMsg::Submit { .. }));
+        let json =
+            r#"{"type":"submit","req":1,"claim":2,"fence":3,"fork_commit":"abc","touched":[]}"#;
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(json).unwrap(),
+            ClientMsg::Submit { .. }
+        ));
         let intent: Intent = serde_json::from_str(r#"{"summary":"x","task_ref":null}"#).unwrap();
         assert!(intent.assumptions.is_empty());
     }
 
     fn ev(seq: u64, kind: EventKind) -> Event {
-        Event { seq, at_ms: seq * 10, run: RunId("test".into()), kind }
+        Event {
+            seq,
+            at_ms: seq * 10,
+            run: RunId("test".into()),
+            kind,
+        }
     }
 
     #[test]
@@ -944,7 +1179,11 @@ mod tests {
         let denied = || EventKind::ClaimDenied {
             agent: AgentId("a".into()),
             scopes: vec![],
-            intent: Intent { summary: "x".into(), task_ref: None, assumptions: vec![] },
+            intent: Intent {
+                summary: "x".into(),
+                task_ref: None,
+                assumptions: vec![],
+            },
             conflicts: vec![],
         };
         let verified = |o| EventKind::DenialVerified {
@@ -975,7 +1214,10 @@ mod tests {
             fork_commit: CommitId("c".into()),
             outcome: o,
         };
-        let log = vec![ev(0, replay(Outcome::Clean)), ev(1, replay(Outcome::BuildFailed))];
+        let log = vec![
+            ev(0, replay(Outcome::Clean)),
+            ev(1, replay(Outcome::BuildFailed)),
+        ];
         let s = Summary::from_events(&log);
         assert_eq!((s.replay_merges, s.replay_conflicts), (2, 1));
         assert_eq!(s.precision, None);
@@ -983,22 +1225,64 @@ mod tests {
 
     #[test]
     fn events_round_trip_through_json() {
-        let e = ev(42, EventKind::Merged { claim: ClaimId(3), head: CommitId("abc".into()) });
+        let e = ev(
+            42,
+            EventKind::Merged {
+                claim: ClaimId(3),
+                head: CommitId("abc".into()),
+            },
+        );
         let json = serde_json::to_string(&e).unwrap();
-        assert!(json.contains(r#""event":"merged""#) && json.contains(r#""seq":42"#), "{json}");
+        assert!(
+            json.contains(r#""event":"merged""#) && json.contains(r#""seq":42"#),
+            "{json}"
+        );
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back.seq, 42);
         assert!(matches!(back.kind, EventKind::Merged { .. }));
     }
 
     #[test]
+    fn a_review_decision_logged_before_reviewers_were_named_still_parses() {
+        let old = r#"{"seq":7,"at_ms":1,"run":"r","event":"review_decided","claim":3,
+            "approve":true,"note":null}"#;
+        let EventKind::ReviewDecided { reviewer, .. } =
+            serde_json::from_str::<Event>(old).unwrap().kind
+        else {
+            panic!("expected ReviewDecided");
+        };
+        assert_eq!(reviewer, None);
+    }
+
+    #[test]
+    fn a_settled_release_round_trips_as_snake_case() {
+        let kind = EventKind::ClaimReleased {
+            claim: ClaimId(4),
+            reason: ReleaseReason::Settled,
+        };
+        let json = serde_json::to_string(&ev(1, kind)).unwrap();
+        assert!(json.contains(r#""reason":"settled""#), "{json}");
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back.kind,
+            EventKind::ClaimReleased {
+                reason: ReleaseReason::Settled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn permits_never_weakens_protection() {
-        for held in Mode::ALL {
-            for needed in Mode::ALL {
+        for held in ALL_MODES {
+            for needed in ALL_MODES {
                 if held.permits(needed) {
-                    for other in Mode::ALL {
+                    for other in ALL_MODES {
                         if needed.conflicts_with(other) {
-                            assert!(held.conflicts_with(other), "{held:?} permits {needed:?} but misses {other:?}");
+                            assert!(
+                                held.conflicts_with(other),
+                                "{held:?} permits {needed:?} but misses {other:?}"
+                            );
                         }
                     }
                 }
@@ -1013,7 +1297,7 @@ mod tests {
         let touched = [
             c(sym("src/auth/session.rs", "refresh"), Mode::EditBody), // covered
             c(sym("src/auth/session.rs", "login"), Mode::EditSignature), // mode too strong
-            c(sym("src/auth/token.rs", "sign"), Mode::EditBody), // outside scope
+            c(sym("src/auth/token.rs", "sign"), Mode::EditBody),      // outside scope
         ];
         let missing = uncovered(&claimed, &touched);
         assert_eq!(missing, touched[1..].to_vec());
@@ -1027,14 +1311,18 @@ mod tests {
         let routine = [c(sym("src/ui/menu.rs", "render"), Mode::EditBody)];
         assert!(review_reasons(&routine, 0, true, &sensitive).is_empty());
         // Risky: signature change in a sensitive path, threatens 2, untested.
-        let risky = [c(sym("src/auth/session.rs", "refresh"), Mode::EditSignature)];
+        let risky = [c(
+            sym("src/auth/session.rs", "refresh"),
+            Mode::EditSignature,
+        )];
         let reasons = review_reasons(&risky, 2, false, &sensitive);
         assert_eq!(reasons.len(), 4, "{reasons:?}");
     }
 
     #[test]
     fn hello_without_version_means_v1() {
-        let m: ClientMsg = serde_json::from_str(r#"{"type":"hello","agent":"a","base":"b"}"#).unwrap();
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"type":"hello","agent":"a","base":"b"}"#).unwrap();
         assert!(matches!(m, ClientMsg::Hello { protocol: 1, .. }));
     }
 
@@ -1042,13 +1330,113 @@ mod tests {
     fn json_shape_is_stable() {
         let msg = ClientMsg::Claim {
             req: RequestId(1),
-            intent: Intent { summary: "fix refresh".into(), task_ref: None, assumptions: vec![] },
-            scopes: vec![ScopeClaim { scope: sym("src/a.rs", "f"), mode: Mode::EditBody }],
+            intent: Intent {
+                summary: "fix refresh".into(),
+                task_ref: None,
+                assumptions: vec![],
+            },
+            scopes: vec![ScopeClaim {
+                scope: sym("src/a.rs", "f"),
+                mode: Mode::EditBody,
+            }],
             on_conflict: OnConflict::Fail,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ClientMsg = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, ClientMsg::Claim { .. }));
         assert!(json.contains(r#""kind":"symbol""#), "{json}");
+    }
+
+    #[test]
+    fn release_parses_with_and_without_req() {
+        let old: ClientMsg =
+            serde_json::from_str(r#"{"type":"release","claim":3,"fence":4}"#).unwrap();
+        let ClientMsg::Release { req, .. } = old else {
+            panic!("expected Release, got {old:?}");
+        };
+        assert_eq!(req, None);
+        let new: ClientMsg =
+            serde_json::from_str(r#"{"type":"release","claim":3,"fence":4,"req":8}"#).unwrap();
+        let ClientMsg::Release { req, .. } = new else {
+            panic!("expected Release, got {new:?}");
+        };
+        assert_eq!(req, Some(RequestId(8)));
+    }
+
+    #[test]
+    fn uncovered_parses_with_and_without_req() {
+        let old: ServerMsg =
+            serde_json::from_str(r#"{"type":"uncovered","claim":3,"scopes":[]}"#).unwrap();
+        let ServerMsg::Uncovered { req, .. } = old else {
+            panic!("expected Uncovered, got {old:?}");
+        };
+        assert_eq!(req, None);
+        let new: ServerMsg =
+            serde_json::from_str(r#"{"type":"uncovered","req":5,"claim":3,"scopes":[]}"#).unwrap();
+        let ServerMsg::Uncovered { req, .. } = new else {
+            panic!("expected Uncovered, got {new:?}");
+        };
+        assert_eq!(req, Some(RequestId(5)));
+    }
+
+    #[test]
+    fn wait_events_have_stable_tags_and_count_toward_no_summary_counter() {
+        let queued = EventKind::WaitQueued {
+            agent: AgentId("a".into()),
+            req: RequestId(1),
+            scopes: vec![],
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: vec![],
+            },
+            position: 1,
+        };
+        let withdrawn = EventKind::WaitWithdrawn {
+            agent: AgentId("a".into()),
+            req: RequestId(1),
+        };
+        let json = serde_json::to_string(&withdrawn).unwrap();
+        assert_eq!(json, r#"{"event":"wait_withdrawn","agent":"a","req":1}"#);
+        let json = serde_json::to_string(&queued).unwrap();
+        assert!(
+            json.starts_with(r#"{"event":"wait_queued","agent":"a","req":1,"#),
+            "{json}"
+        );
+        let mut events = Vec::new();
+        for (seq, kind) in [queued, withdrawn].into_iter().enumerate() {
+            events.push(Event {
+                seq: seq as u64,
+                at_ms: 0,
+                run: RunId("r".into()),
+                kind,
+            });
+        }
+        assert_eq!(Summary::from_events(&events), Summary::default());
+    }
+
+    #[test]
+    fn permits_matches_the_documented_truth_table() {
+        use Mode::*;
+        let permitted = [
+            (Depend, Depend),
+            (EditBody, EditBody),
+            (EditSignature, EditSignature),
+            (Create, Create),
+            (EditSignature, EditBody),
+            (EditSignature, Depend),
+            (EditBody, Depend),
+            (Create, Depend),
+        ];
+        for held in ALL_MODES {
+            for needed in ALL_MODES {
+                let expected = permitted.contains(&(held, needed));
+                assert_eq!(
+                    held.permits(needed),
+                    expected,
+                    "{held:?} permits {needed:?}"
+                );
+            }
+        }
     }
 }

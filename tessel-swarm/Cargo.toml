@@ -1,0 +1,61 @@
+[package]
+name = "tessel-swarm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Reproducible scripted-agent workloads for the Tessel A/B evidence runs"
+
+[[bin]]
+name = "tessel-swarm"
+path = "src/main.rs"
+
+[dependencies]
+# Shared wire types, `Summary::from_events` and (for the local target) the real coordinator core;
+# without the `runtime` feature there is no `worker`.
+tessel-coordinator = { path = "..", default-features = false }
+anyhow = "=1.0.104"
+clap = { version = "=4.6.7", features = ["derive"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
+# TLS provider for wss://, installed the same way the CLI does.
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+tempfile = "=3.27.0"
+tokio = { version = "=1.53.2", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "sync",
+    "time",
+    "io-util",
+] }
+tokio-tungstenite = { version = "=0.30.0", features = ["rustls-tls-native-roots"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+panic_in_result_fn = "deny"
+unimplemented = "deny"
+allow_attributes = "deny"
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+wildcard_enum_match_arm = "deny"
+module_name_repetitions = "allow"
+similar_names = "allow"
+# An internal harness library: its callers are this crate's binary and tests, so per-function
+# `# Errors` sections and `#[must_use]` on every getter would only restate the signatures.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Run statistics and a probability threshold: counts and durations here stay far below 2^52.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"

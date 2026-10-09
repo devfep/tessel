@@ -9,23 +9,35 @@ change and events are stored before any reply is sent.
     npm i -g wrangler
 
 ## Authentication
-The Worker serves `/repo/<name>/ws` only to a request with `Authorization: Bearer
-<COORDINATOR_TOKEN>`. Any other request gets `401 unauthorized` before a WebSocket is accepted.
-`COORDINATOR_TOKEN` is a Worker secret; a missing or empty secret refuses every request.
+The Worker serves `/repo/<name>/ws` only to a request with `Authorization: Bearer <token>`, where
+the token is an identity token the steward signed for that repo and one agent (24 hours). Any
+other request gets `401 unauthorized` before a WebSocket is accepted. A `hello` for any other
+agent gets `not_owner` and the socket is closed. The token format is documented in
+`src/identity.rs`.
 
-    npx wrangler secret put COORDINATOR_TOKEN
+`GET /repo/<name>/summary` takes the same token (any agent of the repo may read it) and answers
+`{"summary": {...}, "head_seq": n}`: the evidence counters over the repo's whole event log and the
+`seq` of its last event (`null` for an empty log). It is a read: no socket, no event appended.
+Refusals are the same as for `ws`; any method but `GET` gets `405`.
+
+`IDENTITY_SIGNING_KEY` is a secret on both the coordinator and the steward, and the two must hold
+the same value. A missing or empty key refuses every request.
+
+    npx wrangler secret put IDENTITY_SIGNING_KEY
 
 For local runs put it in `.dev.vars` (gitignored):
 
-    COORDINATOR_TOKEN=<a long random value>
+    IDENTITY_SIGNING_KEY=<a long random value>
 
-The `agent` in `hello` is the agent's name, not a credential: every holder of the token can act
-as any agent.
+Mint a token with the steward's admin route (the response has `token`):
+
+    curl -X POST -H "Authorization: Bearer $STEWARD_ADMIN_TOKEN" \
+      https://<steward>/repos/demo/agents/a1/identity
 
 ## Run locally
     npx wrangler dev
     # in another terminal (install websocat, e.g. `brew install websocat`):
-    websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $COORDINATOR_TOKEN"
+    websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $AGENT_TOKEN"
 
 Put the `-H` option after the URL, or write it with `=` as here: a bare `-H` takes the arguments
 that follow it, including the URL.
@@ -83,10 +95,59 @@ The coordinator refuses to start on a missing `RUN` or any other `SHADOW_ENABLED
 read only when a repo has no stored state yet; an existing repo keeps the values it was created
 with, and changing them later has no effect on it.
 
+## MCP server
+
+`tessel mcp --root <worktree>` serves the CLI commands as tools of a local stdio MCP server
+(`tessel_start`, `tessel_claim`, `tessel_status`, `tessel_inbox`, `tessel_submit`,
+`tessel_release`, `tessel_review`). It must run on the machine with the worktree, because symbol
+extraction and diffs read it. Register it with Claude Code:
+
+    claude mcp add --scope local tessel -- /abs/path/to/tessel mcp --root /abs/path/to/worktree
+
 ## Deploy
     npx wrangler deploy
     websocat wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws \
-      -H="Authorization: Bearer $COORDINATOR_TOKEN"
+      -H="Authorization: Bearer $AGENT_TOKEN"
+
+## Dogfooding gate
+
+The steward judges a repo by the `tessel.toml` on the trunk commit a run is based on (read through
+the Artifacts binding, never from a fork). Tessel's own is at the repository root.
+
+- **Who may change the gate.** A submission over the coordinator's service binding whose rebased
+  diff touches `tessel.toml` is rejected as `gate_changed` ("changes the gate (tessel.toml); only
+  an admin merge may change it"). The admin route `POST /repos/<repo>/merges` may merge such a
+  change: the head's file must pass the validation below (else `gate_invalid`), and a diff that
+  touches only `tessel.toml` is judged by the head's file alone, with no install or tests, so a
+  broken trunk gate can be repaired. A diff that also changes code runs the trunk's gate. The
+  claim's scopes still have to cover `tessel.toml`.
+- **Recovery from a broken trunk gate.** A gate-only admin merge pushes **without running any
+  tests**; that is the point, and the admin takes responsibility for the file. Steps, with
+  `STEWARD_ADMIN_TOKEN` as the bearer token:
+  1. `POST /repos/tessel/forks/tessel--admin` creates a fork.
+  2. `POST /repos/tessel--admin/tokens` mints a write token for it.
+  3. Push one commit that changes only `tessel.toml` to the fork's default branch.
+  4. `POST /repos/tessel/merges` with `{"fork":"tessel--admin","commit":"<sha>","scopes":
+     [{"scope":{"kind":"file","path":"tessel.toml"},"mode":"edit_body"}]}`. The answer is
+     `merged`, or `gate_invalid` if the new file does not pass the validation above.
+  5. `POST /repos/tessel/test-runs` should answer `step: "test"` again.
+- **Allowed commands:** `pnpm test`, `npm test`, or `cargo test` with only `--workspace --locked
+  --offline --no-fail-fast --all-targets --all-features --release --lib --bins --tests`. Nothing
+  that can pick another toolchain, config or compiler (`+nightly`, `--config`, `-Z`,
+  `--manifest-path`, `--target`, `--`) and no shell. A `tessel.toml` that is present but invalid
+  fails every other run at `install` (reason `config`); only a missing file falls back to `npm test`.
+- **Lockfile changes need the new image first.** Containers have no Internet, so dependencies are
+  baked into `tessel-steward/toolchain.Dockerfile` from the committed lockfiles. A change to
+  `Cargo.lock` or `tessel-steward/pnpm-lock.yaml` fails at `install` (reason `install_failed`)
+  until the image holds it, and the admin route runs the same install step. To land one:
+  1. From a checkout that has the new lockfiles, start Docker and run `npx wrangler deploy` in
+     `tessel-steward/`: it rebuilds the `toolchain` image from them (build context: the repository
+     root) and deploys.
+  2. Merge the change through the steward as usual; its install step now finds the dependencies.
+  3. `POST /repos/tessel/test-runs` should answer `step: "test"`, `passed: true`.
+- **Mirror:** `tools/mirror.sh` pushes the Artifacts trunk (`tessel-dogfood`) to the GitHub branch
+  `artifacts-trunk`, fast-forward only. The first run creates the branch; later runs abort unless
+  the push is a fast-forward. Milestone pull requests go from `artifacts-trunk`.
 
 ## Tests
     cargo test

@@ -1,0 +1,62 @@
+[package]
+name = "tessel-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native CLI and per-worktree daemon that hold claims on the Tessel coordinator"
+
+[[bin]]
+name = "tessel"
+path = "src/main.rs"
+
+[dependencies]
+# Shared wire types and the coverage rule; without the `runtime` feature there is no `worker`.
+tessel-coordinator = { path = "..", default-features = false }
+anyhow = "=1.0.104"
+clap = { version = "=4.6.7", features = ["derive"] }
+libc = "=0.2.190"
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
+# TLS provider for wss://: rustls has none by default, and ring needs no C toolchain beyond cc.
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "=2.0.21"
+tokio = { version = "=1.53.2", features = [
+  "rt", "macros", "net", "sync", "time", "io-util", "io-std",
+] }
+tokio-tungstenite = { version = "=0.30.0", features = ["rustls-tls-native-roots"] }
+# Symbol extraction for symbol-level claims. The grammars compile C, so they live in the CLI only.
+tree-sitter = "=0.27.0"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
+# The official MCP SDK (Apache-2.0) for `tessel mcp`; `schemars` comes from its re-export.
+rmcp = { version = "=3.5.1", default-features = false, features = [
+  "server", "macros", "transport-io",
+] }
+toml = { version = "=1.1.6", default-features = false, features = ["parse", "serde"] }
+
+[dev-dependencies]
+# Only its demo repository generator, so the symbol test reads the files agents will get.
+tessel-swarm = { path = "../tessel-swarm" }
+tempfile = "=3.27.0"
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+panic_in_result_fn = "deny"
+unimplemented = "deny"
+allow_attributes = "deny"
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+wildcard_enum_match_arm = "deny"
+module_name_repetitions = "allow"
+similar_names = "allow"

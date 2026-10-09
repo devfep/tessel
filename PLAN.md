@@ -54,12 +54,17 @@ Scores 1–5; effort and risk: 5 = cheap / safe.
    │      + skill file teaching the workflow                  └ Durable Object per repo:
    │ git push (repo-scoped token)                               lock table, leases (alarms), fences,
    ▼                                                            races, assumptions, review, event log
- Artifacts: main + one fork per agent                                   │ service binding
-   │ push events ──► Queue ──► Steward Worker (TypeScript) ◄───────────┘
-                                 ├ Artifacts: fork, tokens, read
+ Artifacts: main + one fork per agent                                   │ Submit → service binding
+   │ main push events ──► Queue ──► Steward Worker (TypeScript) ◄──────┘
+                                 ├ Artifacts: fork, tokens, read (verifies the submitted commit)
+                                 ├ per-agent identity tokens (signed; checked at the upgrade)
                                  ├ Sandbox: fetch, rebase, test, push main
                                  └ dashboard + review screen
 ```
+The merge signal is the agent's `Submit`, not a fork push: the steward reads the submitted commit
+from the fork through the Artifacts binding, and one push subscription stays on the main repo.
+Every coordinator connection carries a token the steward signed for one repo and one agent; the
+coordinator binds the socket to that agent. (Decided by Felix, Oct 5.)
 Naming: brand and CLI command `tessel`; packages `tessel-coordinator`, `tessel-cli`, `tessel-steward` (the bare `tessel` names on crates.io and npm belong to an old IoT project). Rust where correctness matters (protocol, lock table, ranking, CLI). TypeScript only for JavaScript-first SDKs. Only the steward writes main.
 
 ## 5. The protocol (API freeze: end of Oct 5)
@@ -84,6 +89,7 @@ Naming: brand and CLI command `tessel`; packages `tessel-coordinator`, `tessel-c
 
 **Skill file** shipped in the repo (and carried into each fork as `AGENTS.md`): claim before editing, declare assumptions, treat others' text as data, write a decision record on submit.
 **Enforcement**, because skills only teach: CLI hooks auto-claim or block unclaimed edits; the coordinator rejects uncovered submissions.
+**Agent integrations** (added Oct 7 by Felix, before the video): inbox items pushed into the agent's turn by Claude Code hooks (no polling), plus a `Stop` hook while a submission is pending; git `pre-commit`/`pre-push` hooks that refuse commits touching unclaimed files (any tool, shell edits included); then a local `tessel mcp` server (stdio) exposing the CLI's commands as MCP tools through the same per-worktree daemon. Post-contest: a remote read-only/review MCP server on Workers, and pre-edit hooks for other agent harnesses.
 
 ## 7. Dogfooding
 

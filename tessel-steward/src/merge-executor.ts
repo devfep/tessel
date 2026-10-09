@@ -1,0 +1,374 @@
+import {
+  CONTAINER_CA_CERTIFICATE,
+  WORKSPACE,
+  execCaptured,
+  runPackageStep,
+  userOptions,
+} from "./container-step";
+import { readGatePlan, startOptions } from "./gate-plan";
+import { MAIN_BRANCH, type GitCommand } from "./merge-commands";
+import { runMerge, runTrial, type MergeDeps, type TrialDeps } from "./merge-steps";
+import { runDiff, type ChangedFile, type DiffOutcome } from "./review-diff";
+import {
+  isForkOf,
+  isSafeBranchName,
+  type GitResult,
+  parseSha,
+  type MergeOutcome,
+  type MergeRequest,
+  type Sha,
+  type TrialOutcome,
+  type TrialSide,
+} from "./merge-types";
+import { redactTokens } from "./redact";
+import { revokeOnce } from "./revoke-once";
+import { STEP_SECONDS } from "./step-budget";
+
+/**
+ * Both read tokens are minted before the container starts and used by two network steps in turn
+ * (clone, then fetch), each with its own timeout, so the lifetime covers both plus a margin.
+ */
+const READ_TOKEN_TTL_SECONDS = STEP_SECONDS.clone + STEP_SECONDS.fetch + 60;
+/** The push is two requests seconds apart; 60 s is the shortest lifetime Artifacts allows. */
+const WRITE_TOKEN_TTL_SECONDS = 60;
+
+function redactOutput<T extends { stdout: string; stderr: string }>(output: T): T {
+  return { ...output, stdout: redactTokens(output.stdout), stderr: redactTokens(output.stderr) };
+}
+
+/** Redacts Artifacts tokens from every stream of the outcome before it leaves the Worker. */
+export function redactOutcome(outcome: MergeOutcome): MergeOutcome {
+  switch (outcome.outcome) {
+    case "tests_failed":
+    case "install":
+    case "timeout":
+    case "clone":
+      return { ...outcome, result: redactOutput(outcome.result) };
+    case "git_failed":
+    case "push_failed":
+      return { ...outcome, result: redactOutput(outcome.result) };
+    case "merged":
+    case "already_merged":
+    case "conflict":
+    case "uncovered":
+    case "gate_changed":
+    case "gate_invalid":
+    case "main_moved":
+    case "commit_not_in_fork":
+      return outcome;
+  }
+}
+
+/** Redacts Artifacts tokens from every stream of the trial outcome before it leaves the Worker. */
+export function redactTrialOutcome(outcome: TrialOutcome): TrialOutcome {
+  switch (outcome.outcome) {
+    case "tests_failed":
+    case "install":
+    case "timeout":
+    case "clone":
+      return { ...outcome, result: redactOutput(outcome.result) };
+    case "git_failed":
+      return { ...outcome, result: redactOutput(outcome.result) };
+    case "clean":
+    case "conflict":
+    case "nothing_to_test":
+    case "commit_not_in_fork":
+    case "main_unreachable":
+      return outcome;
+  }
+}
+
+function reportRevokeFailure(repo: string, tokenId: string): (reason: string) => void {
+  return (reason) =>
+    console.error(
+      JSON.stringify({
+        event: "token_revoke_failed",
+        repo,
+        tokenId,
+        reason: redactTokens(reason),
+      }),
+    );
+}
+
+/**
+ * What a trial is given inside the sandbox: the boundaries of a trial and nothing else. There is
+ * no repo handle in it, so a trial cannot mint a token of any scope (`merge-trial-types.test.ts`).
+ */
+export interface TrialSandbox {
+  deps: TrialDeps;
+}
+
+/** What a merge is given inside the sandbox: a trial's, and the pieces a push needs. */
+interface Sandbox extends TrialSandbox {
+  /** The commit of main whose `tessel.toml` gates the run, and which the run must be based on. */
+  pinned: Sha;
+  container: Container;
+  main: ArtifactsRepo;
+  mainRemote: string;
+  host: string;
+}
+
+/** Resolves the commit of main that a run is gated by and based on, before anything starts. */
+type PinMain = (main: ArtifactsRepo) => Promise<Sha>;
+
+/**
+ * Starts the sandbox for `forkName` of `repo`, calls `use`, and always tears it down. The gate
+ * (`tessel.toml`) is read from main at the commit `pin` returns, through the Artifacts binding
+ * and before the container starts, so neither the fork nor the clone can change it. Read tokens
+ * for main and the fork are minted first and live in `MergeReadGateway` until the fetch ends.
+ * The sandbox has no Internet and no credentials.
+ *
+ * @throws If the fork is not a fork of `repo`, a repo is missing, main cannot be read, the
+ *   container cannot start, or a read token could not be revoked (no repo code runs in that case).
+ */
+async function withSandbox<T>(
+  ctx: DurableObjectState,
+  env: Env,
+  repo: string,
+  forkName: string,
+  pin: PinMain,
+  use: (sandbox: Sandbox) => Promise<T>,
+): Promise<T> {
+  const container = ctx.container;
+  if (!container) {
+    throw new Error("The container binding is not configured");
+  }
+  using main = await env.ARTIFACTS.get(repo);
+  using fork = await env.ARTIFACTS.get(forkName);
+  const [mainInfo, forkInfo] = await Promise.all([main.info(), fork.info()]);
+  if (!isForkOf(repo, forkInfo)) {
+    throw new Error(`${forkName} is not a fork of ${repo}`);
+  }
+  if (!isSafeBranchName(forkInfo.defaultBranch)) {
+    throw new Error(`${forkName} has an unusable default branch name`);
+  }
+  const host = new URL(mainInfo.remote).hostname;
+  if (new URL(forkInfo.remote).hostname !== host) {
+    throw new Error(`${repo} and ${forkName} are not on the same git host`);
+  }
+  const pinned = await pin(main);
+  const plan = await readGatePlan(main, pinned);
+  const start = startOptions(plan, container.images);
+
+  const revokers: Array<() => Promise<boolean>> = [];
+  const revokeReadTokens = async (): Promise<boolean> => {
+    const results = await Promise.all(revokers.map((revoke) => revoke()));
+    return results.every(Boolean);
+  };
+  try {
+    const routes: Array<{ remote: string; token: string }> = [];
+    for (const [handle, remote, name] of [
+      [main, mainInfo.remote, repo],
+      [fork, forkInfo.remote, forkName],
+    ] as const) {
+      const token = await handle.createToken("read", READ_TOKEN_TTL_SECONDS);
+      revokers.push(
+        revokeOnce(() => handle.revokeToken(token.id), reportRevokeFailure(name, token.id)),
+      );
+      routes.push({ remote, token: token.plaintext });
+    }
+    await container.interceptOutboundHttps(
+      host,
+      ctx.exports.MergeReadGateway({ props: { routes } }),
+    );
+    container.start(start);
+
+    const deps: TrialDeps = {
+      sources: {
+        workspace: WORKSPACE,
+        mainRemote: mainInfo.remote,
+        forkRemote: forkInfo.remote,
+        forkBranch: forkInfo.defaultBranch,
+      },
+      run: (command) => runGit(container, command, userOptions(plan)),
+      revokeReadTokens,
+      runPackageStep: async (step) => redactOutput(await runPackageStep(container, plan, step)),
+    };
+    return await use({ deps, pinned, container, main, mainRemote: mainInfo.remote, host });
+  } finally {
+    await destroyContainer(container, repo);
+    await revokeReadTokens();
+  }
+}
+
+/**
+ * Merges the fork's commit into main inside the DO's container. See `runMerge` for the order of
+ * steps and `MergeOutcome` for the results.
+ *
+ * The write token is minted by `withPushAccess` after the tests passed, lives in
+ * `MergePushGateway` for the one push, and is revoked straight after. Call this on a Durable
+ * Object instance with a new random name for each merge. See `withSandbox` for the rest.
+ *
+ * Known limit: the repo's tests run as the same user as the rest of the container, so a process
+ * they detach (setsid, nohup) can outlive `timeout` and still run when the write token is minted.
+ * It cannot use the token: the token is held by `MergePushGateway`, which forwards only the one
+ * pinned update, and the outcome is decided by a read of main made by the Worker, not by the
+ * sandbox. Isolating the tests under another uid is not built.
+ *
+ * @param adminMerge True only for the admin route; it lets the merge change `tessel.toml`.
+ * @throws As `withSandbox` does.
+ */
+export async function executeMerge(
+  ctx: DurableObjectState,
+  env: Env,
+  repo: string,
+  request: MergeRequest,
+  adminMerge: boolean,
+): Promise<MergeOutcome> {
+  return withSandbox(
+    ctx,
+    env,
+    repo,
+    request.fork,
+    pinCurrentMain,
+    async ({ deps, pinned, container, main, mainRemote, host }) => {
+      const mergeDeps: MergeDeps = {
+        ...deps,
+        pinnedMain: pinned,
+        withPushAccess: async (update, use) => {
+          const token = await main.createToken("write", WRITE_TOKEN_TTL_SECONDS);
+          const revoke = revokeOnce(
+            () => main.revokeToken(token.id),
+            reportRevokeFailure(repo, token.id),
+          );
+          try {
+            const gateway = ctx.exports.MergePushGateway({
+              props: {
+                remote: mainRemote,
+                ref: `refs/heads/${MAIN_BRANCH}`,
+                old: update.base,
+                new: update.head,
+                token: token.plaintext,
+              },
+            });
+            await container.interceptOutboundHttps(host, gateway);
+            return await use();
+          } finally {
+            await revoke();
+          }
+        },
+        currentMain: () => readMainHead(main),
+      };
+      return redactOutcome(
+        await runMerge(mergeDeps, request.commit, request.scopes, { adminMerge }),
+      );
+    },
+  );
+}
+
+/**
+ * Tries the fork's commit on main at `request.main` inside the DO's
+ * container and tests it. See `runTrial` for the steps and `TrialOutcome` for the results.
+ * Nothing is pushed and no write
+ * token is created: this function never calls `createToken("write")`, and the deps it passes
+ * have no way to. Call this on a Durable Object instance with a new random name for each trial.
+ *
+ * @throws As `withSandbox` does.
+ */
+export async function executeTrial(
+  ctx: DurableObjectState,
+  env: Env,
+  repo: string,
+  request: TrialSide,
+): Promise<TrialOutcome> {
+  return withSandbox(
+    ctx,
+    env,
+    repo,
+    request.fork,
+    async () => request.main,
+    async ({ deps }: TrialSandbox) =>
+      redactTrialOutcome(await runTrial(deps, request.main, request.commit)),
+  );
+}
+
+/** Redacts Artifacts tokens from every string of a diff outcome before it leaves the Worker. */
+function redactDiff(outcome: DiffOutcome): DiffOutcome {
+  switch (outcome.outcome) {
+    case "ok":
+      return {
+        ...outcome,
+        diff: redactTokens(outcome.diff),
+        files: outcome.files.map((file): ChangedFile => ({
+          ...file,
+          path: redactTokens(file.path),
+          ...(file.from === undefined ? {} : { from: redactTokens(file.from) }),
+        })),
+      };
+    case "error":
+      return { ...outcome, reason: redactTokens(outcome.reason) };
+  }
+}
+
+/**
+ * Reads what `commit` of `fork` changes relative to main, for a person reviewing it. Like a
+ * trial it holds read tokens only (none is a write token) and runs no repo code: git only.
+ * Call this on a Durable Object instance with a new random name for each diff.
+ *
+ * @throws As `withSandbox` does.
+ */
+export async function executeDiff(
+  ctx: DurableObjectState,
+  env: Env,
+  repo: string,
+  fork: string,
+  commit: Sha,
+): Promise<DiffOutcome> {
+  return withSandbox(ctx, env, repo, fork, pinCurrentMain, async ({ deps }: TrialSandbox) =>
+    redactDiff(await runDiff(deps, commit)),
+  );
+}
+
+async function runGit(
+  container: Container,
+  command: GitCommand,
+  user: { user?: string },
+): Promise<GitResult> {
+  const captured = await execCaptured(
+    container,
+    "git",
+    String(command.timeoutSeconds),
+    command.argv,
+    { env: { ...command.env, GIT_SSL_CAINFO: CONTAINER_CA_CERTIFICATE }, ...user },
+  );
+  return redactOutput(captured);
+}
+
+async function pinCurrentMain(main: ArtifactsRepo): Promise<Sha> {
+  const head = await readMainHead(main);
+  if (head === null) {
+    throw new Error("The head of main could not be read, so the gate cannot be pinned to it");
+  }
+  return head;
+}
+
+async function readMainHead(main: ArtifactsRepo): Promise<Sha | null> {
+  try {
+    const [newest] = await main.log({ ref: MAIN_BRANCH, limit: 1 });
+    return parseSha(newest?.hash) ?? null;
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "main_read_failed",
+        reason: redactTokens(error instanceof Error ? error.message : String(error)),
+      }),
+    );
+    return null;
+  }
+}
+
+async function destroyContainer(container: Container, repo: string): Promise<void> {
+  try {
+    if (container.running) {
+      await container.destroy();
+    }
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "container_destroy_failed",
+        repo,
+        reason: redactTokens(error instanceof Error ? error.message : String(error)),
+      }),
+    );
+  }
+}
