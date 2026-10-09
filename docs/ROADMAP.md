@@ -5,7 +5,8 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 11:25 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 11:35 EDT. **Orchestrator idle: every dispatchable box is closed; the rest
+waits on Felix (see "Open boxes left") or on the Oct 10–12 milestone steps.** **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -85,7 +86,8 @@ prepared; Felix decides whether to allow that read or run that lane from his own
 live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
 `scratchpad/orch/ab-run.sh <policy> <out-dir>`).
 **Trunk:** `c6d6c76` (SWARM-PUSH-RETRY; mirrored to GitHub `artifacts-trunk`);
-`.claude/worktrees/deploy` moving to `c6d6c76` (harness rebuild started 11:25).
+`.claude/worktrees/deploy` is at `c6d6c76` (harness rebuilt). `cargo deny check` on the trunk
+(PLAN §9 Oct 11 item, run 11:30): advisories ok, bans ok, licenses ok, sources ok.
 **MERGED 11:22: SWARM-PUSH-RETRY at trunk `c6d6c76`** (claim 82 approved 11:17 after Opus "Yes"
 at `6df0809` and a re-check "With fixes" (one long line) through `f4fc4e6`; four small commits
 after the Yes read by the orchestrator; Mac gate of `f4fc4e6` 1067 passed with `curl` off the
@@ -212,8 +214,8 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-swarm-push-retry` stopping after `merged` (worktree
-`.claude/worktrees/swarm-push-retry`, branch `task-swarm-push-retry` to reclaim). One lane at a
+**Agents:** none live; every lane worktree is reclaimed (only `ax-mcp`, kept for its `tessel`
+binary that `tools/orch-review.sh` uses, and `deploy` remain). No background jobs; Wi-Fi on. One lane at a
 time while other sessions keep the load at 20–100 (a reviewer saw load 493 once).
 **Open boxes left:** REVIEW-SENSITIVE (recommendation above, needs Felix's yes), REVIEW-NOTE
 (needs Felix), COORD-UNDELIVERED-GRANT (needs Felix), GATE-PATH, GATE-OUTPUT (classifier call),
