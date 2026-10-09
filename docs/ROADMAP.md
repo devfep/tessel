@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 07:45 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 08:05 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -20,7 +20,18 @@ identity minted 07:19; its daemon is stopped.
 **Now:** action 3. Lane `lane-swarm-shadow-reconnect` (Sonnet) dispatched 07:43 in
 `.claude/worktrees/swarm-shadow-reconnect` (branch `task-swarm-shadow-reconnect`, fork
 `tessel-dogfood--lane-swarm-shadow-reconnect` created); brief in the session scratchpad
-`orch/brief-swarm-shadow-reconnect.md`; owns `tessel-swarm/src/{on,events,conn}.rs`. Then the
+`orch/brief-swarm-shadow-reconnect.md`; owns `tessel-swarm/src/{on,events,conn}.rs`. Reported
+07:59: commit `8ceecb6` (on.rs, events.rs, tests/reconnect.rs, README), workspace 1045 passed,
+clippy and rustfmt clean, 7 mutants caught; not pushed, not submitted; daemon up with claim 78.
+Opus review running since 08:03 on an archived snapshot (`scratchpad/orch/review-ssr/`).
+Orchestrator ruling on the lane's flagged limit (a reset before the `Shadowed` reply is read
+leaves the agent without its fence, so it claims again and the first claim idles out its lease):
+accepted for now, documented in the harness README; the fix is an additive
+`#[serde(default)] fence: Option<Fence>` on `EventKind::ClaimShadowed`, added to the protocol
+hand-merge list below for Felix.
+**Classifier refusal (08:00):** the auto-mode classifier refused a read of the steward's source
+(`rg` for where trial stdout/stderr are kept) as "data exfiltration", so GATE-OUTPUT was not
+prepared; Felix decides whether to allow that read or run that lane from his own session. Then the
 live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
 `scratchpad/orch/ab-run.sh <policy> <out-dir>`).
 **Trunk:** `4033791` (AX-MCP; mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is
@@ -222,6 +233,9 @@ right after each run.
    with `felix` and `orchestrator` both listed the log cannot show who approved. Proposed: add
    `#[serde(default)] reviewer: Option<AgentId>` to it. Until then the orchestrator puts
    "orchestrator: Opus Yes, gate <sha>" in every approval's note.
+   New (SWARM-SHADOW-RECONNECT, Oct 9): add `#[serde(default)] fence: Option<Fence>` (and the
+   task reference, if cheap) to `EventKind::ClaimShadowed`, so a shadow agent that reconnects
+   before reading its `Shadowed` reply can find its claim in the log instead of claiming again.
    New (REVIEW-UI review, Oct 6 22:31): add `#[serde(default)] fork_commit: Option<CommitId>` to
    `ClientMsg::Review`, and have the coordinator refuse a Review whose commit differs from the held
    submission. Closes a ~1 s race in the review screen (a stale page re-reads the log, then the
