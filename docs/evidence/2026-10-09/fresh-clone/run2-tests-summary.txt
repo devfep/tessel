@@ -1,0 +1,53 @@
+5:     Running unittests src/main.rs (target/debug/deps/tessel-822ecfdb07d56633)
+197:test result: ok. 188 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.28s
+199:     Running tests/cli.rs (target/debug/deps/cli-40c155017e4d4174)
+291:test result: ok. 88 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.74s
+293:     Running tests/githook.rs (target/debug/deps/githook-2f83b7f839a19f68)
+322:test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.28s
+324:     Running tests/inbox_hook.rs (target/debug/deps/inbox_hook-9760cfa050e8aafe)
+350:test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.30s
+352:     Running tests/liveness.rs (target/debug/deps/liveness-d1de3769157a3e95)
+361:test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.44s
+363:     Running tests/mcp.rs (target/debug/deps/mcp-e968d5ae9428d08c)
+373:test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+375:     Running tests/review.rs (target/debug/deps/review-4c75e94a9b3690f7)
+392:test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.17s
+394:     Running tests/submit.rs (target/debug/deps/submit-dd39798b11b9d35c)
+423:test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.29s
+425:     Running tests/symbols.rs (target/debug/deps/symbols-80c59389a47bce21)
+445:test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.50s
+447:     Running unittests src/lib.rs (target/debug/deps/tessel_coordinator-c4a27b6bdf734ba4)
+944:test result: ok. 493 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.78s
+946:     Running unittests src/lib.rs (target/debug/deps/tessel_swarm-6648dcde192ce4d8)
+1077:test result: ok. 127 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.35s
+1079:     Running unittests src/main.rs (target/debug/deps/tessel_swarm-a34e79e6770fb8ed)
+1083:test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+1085:     Running tests/cli.rs (target/debug/deps/cli-08fbaa9b7e91e4fa)
+1094:test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.36s
+1096:     Running tests/keep_alive_sync.rs (target/debug/deps/keep_alive_sync-5820db560006593b)
+1101:test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.41s
+1103:     Running tests/on_local.rs (target/debug/deps/on_local-042cc5d0aa5f72aa)
+1130:test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.25s
+1132:     Running tests/push_retry.rs (target/debug/deps/push_retry-fa4956fe2114f658)
+1138:test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.29s
+1140:     Running tests/reconnect.rs (target/debug/deps/reconnect-21e05c0f78f3efee)
+1152:test agents_that_cannot_reconnect_end_as_disconnected_after_their_tries ... FAILED
+1167:thread 'agents_that_cannot_reconnect_end_as_disconnected_after_their_tries' (92320233) panicked at tessel-swarm/tests/reconnect.rs:116:37:
+1168:called `Result::unwrap()` on an `Err` value: cannot connect to the coordinator: HTTP error: 401 Unauthorized
+1175:test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.02s
+1178:     Running tests/report.rs (target/debug/deps/report-ae32ae487aed49b0)
+1191:test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.08s
+1197:test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+1203:test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+---- failure detail
+1165----- agents_that_cannot_reconnect_end_as_disconnected_after_their_tries stdout ----
+1166-
+1167:thread 'agents_that_cannot_reconnect_end_as_disconnected_after_their_tries' (92320233) panicked at tessel-swarm/tests/reconnect.rs:116:37:
+1168-called `Result::unwrap()` on an `Err` value: cannot connect to the coordinator: HTTP error: 401 Unauthorized
+1169-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+1170-
+1171-
+1172-failures:
+1173-    agents_that_cannot_reconnect_end_as_disconnected_after_their_tries
+1174-
+1175-test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.02s
