@@ -1,0 +1,4 @@
+intent: remove the ETXTBSY race in the githook tests (Linux only)
+assumes: cp is on PATH in the test environment
+rejected: retrying the exec (hides the race)
+evidence: githook 25 passed x3; both copy sites use the helper, no other fs::copy in the tests; replacing cp with false fails the tests; workspace run recorded in report
