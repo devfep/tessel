@@ -5,12 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-08 09:19 EDT. **HANDOVER: Felix is switching Claude subscriptions; this session ends.**
-**Orchestrator:** none. Take the role on resume (Felix's "proceed"): read this
-block, `docs/BUILD-PROTOCOL.md` (§2; §4 rules 00 and 0), `PLAN.md` §6 and §9, then the open boxes
-below. No lanes, reviews or background jobs are running.
+**As of:** 2026-10-09 07:25 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+"resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
+**Done this session:** AX-MCP closed (live check passed 07:20; evidence in
+`docs/evidence/2026-10-09/ax-mcp-live-check/`). The `tessel` MCP server stays registered in Claude
+Code's local scope for `.claude/worktrees/ax-mcp` (`claude mcp remove tessel -s local` there
+removes it); that worktree's `.tessel/config.toml` (gitignored, 0600) holds a `lane-ax-mcp`
+identity minted 07:19; its daemon is stopped.
+**Now:** action 2, the live A/B `wait` run (building `tessel-swarm` from the trunk in
+`.claude/worktrees/deploy`, now at `4033791`).
 **Trunk:** `4033791` (AX-MCP; mirrored to GitHub `artifacts-trunk`); `.claude/worktrees/deploy` is
-at `9c086e9` (move it with `git -C .claude/worktrees/deploy checkout --detach origin/artifacts-trunk`).
+at `4033791`.
 **LOCKFILE FREEZE LIFTED** (AX-MCP merged 09:16).
 **Oct 8 overnight, AX-MCP landing:** the image push failure was NOT Docker: the Wi-Fi link between
 this Mac and the Optimum Ubee gateway (192.168.1.1) corrupts long TLS uploads to Cloudflare
@@ -44,11 +49,9 @@ CLI-CONNECT-TIMEOUT, REVIEW-UI (closed signed in), `swarm-demo` repo created liv
 **Deployed:** coordinators from `9c086e9` by Felix (production `7fc954ea`, swarm `dffde46a`:
 COORD-CLOSE-WITHDRAW live); steward `02db259b` (Oct 8 04:1x, from the ax-mcp worktree: steward code
 equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker deploy.
-**NEXT ACTIONS on resume (in order):**
-1. **AX-MCP live check** (the box stays open until it passes): register `tessel mcp` with
-   `claude mcp add --scope local` in a lane worktree; `claude --debug` must show the negotiated
-   protocol 2026-07-28, 7 tools in `/mcp`, and `tessel_start` must leave stdout parseable. Felix asked
-   to turn Little Snitch filtering back on (it was not the cause). GATE-OUTPUT (new, below).
+**NEXT ACTIONS (in order):**
+1. DONE 07:20: AX-MCP live check. Still pending from Felix: Little Snitch filtering back on (it
+   was not the cause). GATE-OUTPUT (new, below).
 2. **Live A/B `wait` run** on the reconnecting harness (build `tessel-swarm` from the trunk in the
    deploy worktree; same args as `docs/evidence/2026-10-07/README.md`), with `wrangler tail` on
    `tessel-coordinator-swarm` (record `cf.colo`) and a 5 s ping from the Mac; keep raw output in
@@ -727,7 +730,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `PATH`, clippy 0; approved claim 72; trunk tree equals the gated tree; the real repo's
   `.git/hooks` was untouched throughout. The lane printed the first 80 characters of its minted
   identity JSON once (header only; 24 h token). No deploy (CLI only).
-- [ ] **AX-MCP** — Felix approved Oct 7, after AX-INBOX and AX-GITHOOKS: `tessel mcp`, a local
+- [x] **AX-MCP** — Felix approved Oct 7, after AX-INBOX and AX-GITHOOKS: `tessel mcp`, a local
   stdio MCP server exposing start/claim/status/inbox/submit/release/review as tools through the
   same per-worktree daemon; inbox as a resource with change notifications if the spec allows.
   Must be local (symbol extraction and diffs need the worktree). Design pass first.
@@ -743,7 +746,14 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   steward; re-check `test-runs`; lift the freeze. No admin merge. Risk: rmcp/Claude Code protocol
   version agreement unverified until the live check. After AX-GITHOOKS. About 8 h.
   MERGED 2026-10-08 09:16 EDT at trunk `4033791` (claim 77, approved by Felix; tree equals the
-  gated `fc09fed`); lockfile freeze lifted. Open until the live check passes (STATE action 1).
+  gated `fc09fed`); lockfile freeze lifted.
+  CLOSED 2026-10-09 07:20 EDT, live check passed (`docs/evidence/2026-10-09/ax-mcp-live-check/`):
+  registered with `claude mcp add --scope local` in the ax-mcp worktree; Claude Code's `--debug`
+  log shows `negotiatedProtocolVersion: 2026-07-28` (`protocolEra: modern`); a headless `claude -p`
+  listed all 7 `mcp__tessel__*` tools; `tessel_start` through Claude Code started the daemon
+  (online, lease 30 s) and `tessel_status` read it back, stdout parseable, connection closed
+  cleanly. Note: over a raw stdio `initialize` handshake the server answers `2025-11-25`, the
+  newest revision that still has `initialize` in `rmcp` 3.5.1; Claude Code uses discovery.
 - [x] **SWARM-LEASE** — found by A/B run 1 (Oct 7 15:11): at 30 agents with `--policy wait`, two
   scripted agents never heartbeated a granted claim (expired exactly one lease after the grant),
   and the next request on a lapsed claim (`StaleFence`) aborted the whole run with no `on`
