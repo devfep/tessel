@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 09:50 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 10:05 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -21,7 +21,18 @@ identity minted 07:19; its daemon is stopped.
 steward fast-forwarded the lane's four commits; trunk tree equals `8e9ceed`'s; mirrored to GitHub
 `artifacts-trunk`). The Sandbox `test-runs` on `8e9ceed` passed (194 s). SWARM-ONLOCAL-LOAD and
 CLI-GITHOOK-ETXTBSY closed in the same merge. No Worker deploy (harness and tests only).
-**Now:** the live `shadow` A/B run (deploy worktree moving to `8e9ceed`, harness rebuilding).
+**FIRST COMPLETED LIVE `shadow` A/B RUN** (seed 3, 40 tasks, 30 agents, 09:41–09:54, harness
+`8e9ceed`, Ethernet): 11 merged, 28 shadow claims, 1 failed (an Artifacts fork push answered
+503; SWARM-PUSH-RETRY filed); trials: **20 verified preventions, 9 false alarms, 3 inconclusive,
+0 never verified** (precision 20/29); 0 lapsed, 0 closed, 0 reconnects; 628 s; shadow agents
+waited 206–552 s for their trials. Evidence and README in `docs/evidence/2026-10-09/ab-shadow/`.
+Both PLAN §9 Oct 10 A/B runs (`wait`, `shadow`) now have live numbers a day early.
+**Now / next:** (a) Felix's three UX decisions (action 4 below) gate all UX work; (b) smaller
+open boxes (CLI-CLAIM-EXISTS, REVIEW-SENSITIVE, GATE-PATH, SWARM-PUSH-RETRY; GATE-OUTPUT needs
+Felix's permission call, see the classifier note) when the Mac has headroom (load 45–100 from
+other sessions all morning); (c) Oct 10–12: land `docs/ROADMAP.md` through the steward, the
+milestone pull request from `artifacts-trunk` with `/code-review` and `/security-review`, the
+video. The deploy worktree is at `8e9ceed`; no Worker deploy is pending.
 History of the landing: lane `lane-swarm-shadow-reconnect` (Sonnet) dispatched 07:43 in
 `.claude/worktrees/swarm-shadow-reconnect` (branch `task-swarm-shadow-reconnect`, fork
 `tessel-dogfood--lane-swarm-shadow-reconnect` created); brief in the session scratchpad
@@ -115,7 +126,7 @@ equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker 
    deploy worktree; same args as `docs/evidence/2026-10-07/README.md`), with `wrangler tail` on
    `tessel-coordinator-swarm` (record `cf.colo`) and a 5 s ping from the Mac; keep raw output in
    `docs/evidence/<date>/`; stop the tail by PID after. No live `on` numbers exist yet.
-3. SWARM-SHADOW-RECONNECT (before the live `shadow` run), then the `shadow` A/B run.
+3. DONE 09:45 / 09:54: SWARM-SHADOW-RECONNECT merged, then the `shadow` A/B run (see above).
 4. Felix's three UX decisions: https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd (build order:
    the Floor, the review decision card, the CLI decision-card envelope; `tessel init` in or out;
    post-contest list). Nothing UX is built until he answers.
@@ -191,8 +202,7 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-swarm-shadow-reconnect` stopping after `merged` (worktree
-`.claude/worktrees/swarm-shadow-reconnect` and branch `task-swarm-shadow-reconnect` to reclaim). `.claude/worktrees/deploy` is a detached checkout of the trunk `7d00ad6`
+**Agents:** none live (the shadow-reconnect lane's worktree and branch are reclaimed). `.claude/worktrees/deploy` is a detached checkout of the trunk `7d00ad6`
 used for deploys (holds `tessel-steward/node_modules`); move it with `git -C .claude/worktrees/deploy
 checkout --detach origin/artifacts-trunk` before each deploy.
 **Coordinator head is stale** (`e894fbe`, the last merge it dispatched): the SHADOW-GC admin merge
@@ -866,6 +876,10 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Never reproduces on macOS. Fixed in the SWARM-SHADOW-RECONNECT lane's pass.
   CLOSED 2026-10-09 at trunk `8e9ceed` (commit `8e9ceed`): `copy_the_binary` copies through a
   `cp` child; `rg fs::copy` over tessel-cli and tessel-swarm finds nothing; githook 25 x3.
+- [ ] **SWARM-PUSH-RETRY** — from the live `shadow` run (Oct 9): one agent's `git push --force`
+  to its fork got `503 Service unavailable` from the Artifacts git endpoint and the task ended
+  `failed` with no retry (`tessel-swarm/src/git.rs` / `on.rs`). Retry a push a few times with
+  backoff on 5xx; count retries in the task record. Harness only; small.
 - [ ] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
   "tests failed (exit code 101)", then the same tree passed a Sandbox test-run and the next merge.
   The trial result keeps only the last step's stdout/stderr (the pnpm step), so the failing cargo

@@ -1,0 +1,454 @@
+{
+  "connection_resets_survived_by_agents": 0,
+  "event_count": 207,
+  "held_for_review_not_approved": 0,
+  "measured_agent_ms": {
+    "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, summed over attempts",
+    "on_work_later_rejected": 0,
+    "waiting": 11192894,
+    "work_total": 196156
+  },
+  "mode": "on",
+  "policy": "shadow",
+  "queued_waits_in_event_log": 0,
+  "rejected_in_event_log": 0,
+  "review_approvals_in_event_log": 6,
+  "review_rejections_in_event_log": 0,
+  "run": {
+    "agents": 30,
+    "overlap": 0.5,
+    "seed": 3,
+    "tasks": 40,
+    "work_ms": 300
+  },
+  "schema": "tessel-swarm/1",
+  "scripted_reviewer": true,
+  "shadow_verification": {
+    "conflicts_prevented_verified": 20,
+    "false_alarms": 9,
+    "inconclusive": 3,
+    "never_verified": 0,
+    "note": "from DenialVerified events in the coordinator's log; a denial is not a prevention",
+    "precision": 0.6896551724137931,
+    "shadow_claims": 28
+  },
+  "summary_from_event_log": {
+    "assumptions_challenged": 0,
+    "assumptions_confirmed_broken": 0,
+    "base_moved_notices": 0,
+    "claims_granted": 12,
+    "conflicts_prevented_verified": 20,
+    "denials": 28,
+    "false_alarms": 9,
+    "merges": 11,
+    "precision": 0.6896551724137931,
+    "races_decided": 0,
+    "replay_conflicts": 0,
+    "replay_merges": 0,
+    "reviews_requested": 6
+  },
+  "target": "live",
+  "tasks": [
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 1,
+      "waited_ms": 206215,
+      "work_ms": 6351
+    },
+    {
+      "agent": "a17",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 2,
+      "waited_ms": 221324,
+      "work_ms": 4949
+    },
+    {
+      "agent": "a04",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 3,
+      "waited_ms": 51,
+      "work_ms": 5045
+    },
+    {
+      "agent": "a05",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 4,
+      "waited_ms": 51,
+      "work_ms": 5694
+    },
+    {
+      "agent": "a24",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 5,
+      "waited_ms": 510834,
+      "work_ms": 5300
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 6,
+      "waited_ms": 361850,
+      "work_ms": 4398
+    },
+    {
+      "agent": "a12",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 7,
+      "waited_ms": 496533,
+      "work_ms": 5839
+    },
+    {
+      "agent": "a28",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 8,
+      "waited_ms": 482667,
+      "work_ms": 5338
+    },
+    {
+      "agent": "a09",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 9,
+      "waited_ms": 387529,
+      "work_ms": 6178
+    },
+    {
+      "agent": "a14",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 10,
+      "waited_ms": 45,
+      "work_ms": 5973
+    },
+    {
+      "agent": "a19",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 11,
+      "waited_ms": 249214,
+      "work_ms": 5703
+    },
+    {
+      "agent": "a23",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 12,
+      "waited_ms": 552422,
+      "work_ms": 5840
+    },
+    {
+      "agent": "a06",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 13,
+      "waited_ms": 303385,
+      "work_ms": 6047
+    },
+    {
+      "agent": "a07",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 14,
+      "waited_ms": 374183,
+      "work_ms": 5898
+    },
+    {
+      "agent": "a20",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 15,
+      "waited_ms": 50,
+      "work_ms": 6060
+    },
+    {
+      "agent": "a08",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 16,
+      "waited_ms": 45,
+      "work_ms": 5311
+    },
+    {
+      "agent": "a26",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 17,
+      "waited_ms": 394206,
+      "work_ms": 5599
+    },
+    {
+      "agent": "a10",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 18,
+      "waited_ms": 390882,
+      "work_ms": 5699
+    },
+    {
+      "agent": "a13",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 19,
+      "waited_ms": 262506,
+      "work_ms": 5725
+    },
+    {
+      "agent": "a22",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 20,
+      "waited_ms": 235145,
+      "work_ms": 5565
+    },
+    {
+      "agent": "a15",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 21,
+      "waited_ms": 49,
+      "work_ms": 3047
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 22,
+      "waited_ms": 464288,
+      "work_ms": 5588
+    },
+    {
+      "agent": "a25",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 23,
+      "waited_ms": 45,
+      "work_ms": 5324
+    },
+    {
+      "agent": "a30",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 24,
+      "waited_ms": 450522,
+      "work_ms": 5301
+    },
+    {
+      "agent": "a11",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 25,
+      "waited_ms": 407205,
+      "work_ms": 5723
+    },
+    {
+      "agent": "a21",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 26,
+      "waited_ms": 421940,
+      "work_ms": 5233
+    },
+    {
+      "agent": "a27",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 27,
+      "waited_ms": 317230,
+      "work_ms": 5024
+    },
+    {
+      "agent": "a29",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 28,
+      "waited_ms": 48,
+      "work_ms": 4676
+    },
+    {
+      "agent": "a18",
+      "denials": 0,
+      "note": "git push -q --force https://1e40d7b5aed4b7049e5b83bc07a5264c.artifacts.cloudflare.net/git/tessel/swarm-s3-tmn7dv--a18.git HEAD:refs/heads/main failed: remote: Service unavailable\nfatal: unable to access 'https://1e40d7b5aed4b7049e5b83bc07a5264c.artifacts.cloudflare.net/git/tessel/swarm-s3-tmn7dv--a18.git/': The requested URL returned error: 503",
+      "reconnects": 0,
+      "result": "failed",
+      "task": 29,
+      "waited_ms": 44,
+      "work_ms": 14273
+    },
+    {
+      "agent": "a16",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 30,
+      "waited_ms": 477933,
+      "work_ms": 4911
+    },
+    {
+      "agent": "a18",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 31,
+      "waited_ms": 320286,
+      "work_ms": 2256
+    },
+    {
+      "agent": "a04",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 32,
+      "waited_ms": 505304,
+      "work_ms": 1974
+    },
+    {
+      "agent": "a08",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 33,
+      "waited_ms": 46,
+      "work_ms": 1822
+    },
+    {
+      "agent": "a25",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 34,
+      "waited_ms": 479422,
+      "work_ms": 1713
+    },
+    {
+      "agent": "a05",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 35,
+      "waited_ms": 489586,
+      "work_ms": 2015
+    },
+    {
+      "agent": "a29",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 36,
+      "waited_ms": 46,
+      "work_ms": 2278
+    },
+    {
+      "agent": "a15",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 37,
+      "waited_ms": 492460,
+      "work_ms": 3644
+    },
+    {
+      "agent": "a14",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 38,
+      "waited_ms": 491022,
+      "work_ms": 2100
+    },
+    {
+      "agent": "a20",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "reconnects": 0,
+      "result": "shadowed",
+      "task": 39,
+      "waited_ms": 446239,
+      "work_ms": 2193
+    },
+    {
+      "agent": "a08",
+      "denials": 0,
+      "note": null,
+      "reconnects": 0,
+      "result": "merged",
+      "task": 40,
+      "waited_ms": 42,
+      "work_ms": 4549
+    }
+  ],
+  "wall_ms": 628237
+}
