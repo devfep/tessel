@@ -5,15 +5,23 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 16:50 EDT. **Milestone step 1 in progress (Felix's "proceed", 16:40):
-landing this roadmap, `docs/BUILD-PROTOCOL.md`, the PLAN §6 line and `docs/evidence/` (Oct 5–9)
-on the Artifacts trunk through the steward as one commit from `lane-docs-milestone` (worktree
-`.claude/worktrees/docs-milestone`, branch `task-docs-milestone`, fork
-`tessel-dogfood--lane-docs-milestone`, identity minted 16:45). The orchestrator runs this lane
-itself: docs only, no product code, no Opus review (rule 00: the orchestrator wrote and read every
-line). Next: the milestone pull request from `artifacts-trunk` to `main` with `/code-review` and
-`/security-review`, the fresh-clone test, then the video script for Felix. Every dispatchable
-box stays closed; the rest waits on Felix (see "Open boxes left").** **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 17:00 EDT. **MILESTONE PULL REQUEST OPEN: https://github.com/devfep/tessel/pull/2
+(`artifacts-trunk` → `main`, 242 commits).** Step 1 done 16:52: the docs commit `8c958b3` (this
+roadmap, `docs/BUILD-PROTOCOL.md`, the PLAN §6 line, `docs/evidence/` Oct 5–9) merged through the
+steward as claim 84 of `lane-docs-milestone` (orchestrator-run, docs only, rule 00) and the trunk
+fast-forwarded to `8c958b3` (tree `9192700`); mirrored to GitHub `artifacts-trunk`; lane worktree,
+branch and token file reclaimed. Lesson: turning Wi-Fi off for the push dropped the daemon's socket
+and claim 83 lease-expired 30 s after its grant; switch Wi-Fi BEFORE `tessel start`, or push over
+Wi-Fi when the pack is small. In progress: the fresh-clone test of `artifacts-trunk` (`c6d6c76`
+code tree, scratchpad `fresh-clone/run1`, 2 build jobs: cargo test, cargo deny, steward install,
+test, typecheck), and the code and security reviews of the pull request, posted as its comments.
+Neither the official `code-review` plugin nor `claude-security` is installed, so the reviews run
+as subagents following the official review procedure (area reviewers, confidence-scored,
+findings under 80 dropped); Felix can run the built-in `/code-review` and `/security-review` from
+his terminal as well. The pull request merges only after both reviews, the fresh-clone test and a
+gate on the trunk tree (`c6d6c76` passed the Sandbox gate; `8c958b3` adds docs only). Then the
+video script for Felix. Every dispatchable box stays closed; the rest waits on Felix (see "Open
+boxes left").** **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -92,7 +100,7 @@ hand-merge list below for Felix.
 prepared; Felix decides whether to allow that read or run that lane from his own session. Then the
 live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
 `scratchpad/orch/ab-run.sh <policy> <out-dir>`).
-**Trunk:** `c6d6c76` (SWARM-PUSH-RETRY; mirrored to GitHub `artifacts-trunk`);
+**Trunk:** `8c958b3` (docs landing on `c6d6c76`; mirrored to GitHub `artifacts-trunk`);
 `.claude/worktrees/deploy` is at `c6d6c76` (harness rebuilt). `cargo deny check` on the trunk
 (PLAN §9 Oct 11 item, run 11:30): advisories ok, bans ok, licenses ok, sources ok.
 **MERGED 11:22: SWARM-PUSH-RETRY at trunk `c6d6c76`** (claim 82 approved 11:17 after Opus "Yes"
@@ -151,9 +159,8 @@ equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker 
    post-contest list). Nothing UX is built until he answers.
 5. Smaller open: CLI-CLAIM-EXISTS, REVIEW-SENSITIVE, REVIEW-NOTE (needs Felix), COORD-UNDELIVERED-
    GRANT (needs Felix: a new ReleaseReason variant; recommendation: leave it), GATE-PATH.
-6. STARTED 16:50. Oct 10–12: milestone pull request from `artifacts-trunk` with `/code-review` and
-   `/security-review` (land the current `docs/ROADMAP.md` through the steward first: in progress),
-   the fresh-clone test, then the video.
+6. STARTED 16:50; docs landed 16:52; pull request 2 open 16:58. Oct 10–12: reviews and the
+   fresh-clone test (in progress), merge the pull request, then the video.
 **Pending from Felix:** the UX decisions (4); COORD-UNDELIVERED-GRANT and REVIEW-NOTE rulings; the
 protocol hand-merge list below (now also `Review.fork_commit`); an allow rule for lane `tessel`
 commands (offered: `Bash(cd /Users/felixpatawah/repos/tessel/.claude/worktrees/* && target/debug/
@@ -222,9 +229,9 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-docs-milestone`, run by the orchestrator in `.claude/worktrees/docs-milestone`.
-Also kept: `ax-mcp` (its `tessel` binary serves `tools/orch-review.sh`) and `deploy` (trunk
-`c6d6c76`; `tessel-cli` build started 16:45 so claims use the current CLI). Wi-Fi on. One lane at a
+**Agents:** none live. Worktrees: `ax-mcp` (its `tessel` binary serves `tools/orch-review.sh`)
+and `deploy` (trunk `c6d6c76`, harness and `tessel-cli` built). Background: the fresh-clone test.
+Wi-Fi on. One lane at a
 time while other sessions keep the load at 20–100 (a reviewer saw load 493 once).
 **Open boxes left:** REVIEW-SENSITIVE (recommendation above, needs Felix's yes), REVIEW-NOTE
 (needs Felix), COORD-UNDELIVERED-GRANT (needs Felix), GATE-PATH, GATE-OUTPUT (classifier call),
