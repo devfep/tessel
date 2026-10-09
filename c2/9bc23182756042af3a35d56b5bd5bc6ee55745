@@ -1,0 +1,4 @@
+intent: make the committed evidence script reproducible and stop exporting every .dev.vars value (EVIDENCE-CHECK-SH)
+assumes: the steward's .dev.vars sits at <repo>/tessel-steward/.dev.vars when DEV_VARS is unset
+rejected: keeping set -a with a relative path; it still exported the signing key to every child
+evidence: shellcheck clean, shfmt clean, bash -n ok, DEV_VARS=/nonexistent exits 1 with the message; not run live (needs the admin token)
