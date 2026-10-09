@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 17:15 EDT. **MILESTONE PULL REQUEST OPEN: https://github.com/devfep/tessel/pull/2
+**As of:** 2026-10-09 17:40 EDT. **SWARM-RECONNECT-FIRST-CONNECT lane reported `e164717`
+(tests/reconnect.rs only: `after_connected` helper, a unit test of it, the one call site; the
+reviewer-refusing tests left alone with a reason in the note); orchestrator read it (rule 00,
+test-only, no Opus pass), gated it in place with `curl` off the PATH (reconnect suite 3/3 exit 0,
+20 tests, 21–24 s; clippy and rustfmt clean; the crate run had one unrelated failure, below);
+pushed to the fork and submitted 17:38 as claim 85, queue position 1, no hold expected. Watches
+armed on the trunk head and the lane inbox.** SWARM-ONLOCAL-LOAD REOPENED as SWARM-ONLOCAL-LOAD-2
+(below): `on_local.rs:624` failed in that gate at load 75 (shadow span 5605 ms + 3000 vs holder
+span 7825 ms) and in the lane's workspace gate (`work_that_already_fails_on_main...` once, passes
+alone); not this lane's scope. **MILESTONE PULL REQUEST OPEN: https://github.com/devfep/tessel/pull/2
 (`artifacts-trunk` → `main`, 242 commits).** **Fresh-clone test (PLAN §9 Oct 11, run 16:50–17:03
 on a clone of GitHub `artifacts-trunk` at `c6d6c76`, Mac load 60–113 from other sessions):**
 `cargo deny check` ok; steward `pnpm install --frozen-lockfile` ok, `pnpm test` 803 passed (42
@@ -967,6 +976,14 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   comes from the environment or, read alone in a subshell, from `.dev.vars` found relative to the
   script (`DEV_VARS` overrides); nothing is exported; shellcheck and shfmt clean; the missing-file
   path exits 1 with a message.
+- [ ] **SWARM-ONLOCAL-LOAD-2** — reopens SWARM-ONLOCAL-LOAD (Oct 9 17:35): `tests/on_local.rs:596`
+  `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` still fails under
+  load (75) with the relative bound: the shadow's claim-to-submit span was 5605 ms against the
+  holder's 7825 ms with `work_ms` 6000, because the two agents' git work (checkout, commit, push)
+  is not equally slow on a loaded machine. Assert order instead of a span comparison (the shadow's
+  `Submitted` precedes the holder's `Submitted`, and the shadow's result still counts `work_ms`),
+  or compare against the shadow's own measured git time. Also seen once in the same gate:
+  `local::tests::work_that_already_fails_on_main...` (passes alone). Small; next swarm lane.
 - [ ] **SWARM-RECONNECT-FIRST-CONNECT** — from the fresh-clone test (Oct 9): `tests/reconnect.rs`
   `agents_that_cannot_reconnect_end_as_disconnected_after_their_tries` arms its cut on the first
   `ClaimGranted` and refuses both agents; on a loaded Mac the second agent's first connection
