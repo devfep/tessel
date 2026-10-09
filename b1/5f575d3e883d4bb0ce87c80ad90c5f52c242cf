@@ -1,0 +1,4 @@
+intent: push_retry tests must run on a PATH without /usr/bin (no which, chmod, dirname, sed)
+assumes: git is on PATH as an executable file
+rejected: none
+evidence: push_retry binary passes with PATH=/bin:/opt/homebrew/bin:~/.local/bin (git=/opt/homebrew/bin/git) and normal PATH; cargo test -p tessel-swarm 186 passed; clippy and rustfmt clean
