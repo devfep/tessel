@@ -1,0 +1,4 @@
+intent: leave a resumable STATE with nothing running
+assumes: none
+rejected: none
+evidence: cargo deny check: advisories, bans, licenses, sources ok; pgrep shows no lane or run process
