@@ -1,0 +1,4 @@
+intent: retry harness pushes to Artifacts on 5xx and connection errors, count them per task
+assumes: git's stderr for a transient failure contains Service unavailable, Connection reset, Could not resolve host, Failed to connect or error: 5xx
+rejected: matching bare 'error: 5' (also matches 'error: 5 files'); needing two digits after it. Counting retries in the returned Result (lost on failure), so an AtomicU32 is passed in.
+evidence: cargo test -p tessel-swarm 186 passed; cargo test --workspace --no-fail-fast 1067 passed exit 0 (first run: tessel-cli heartbeats test flaked at load 112, passed on rerun); clippy -D warnings and rustfmt --check clean; 7 mutants caught
