@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 09:40 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 09:50 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -17,7 +17,12 @@ README in `docs/evidence/2026-10-09/ab-wait/`. The `tessel` MCP server stays reg
 Code's local scope for `.claude/worktrees/ax-mcp` (`claude mcp remove tessel -s local` there
 removes it); that worktree's `.tessel/config.toml` (gitignored, 0600) holds a `lane-ax-mcp`
 identity minted 07:19; its daemon is stopped.
-**Now:** action 3. Lane `lane-swarm-shadow-reconnect` (Sonnet) dispatched 07:43 in
+**MERGED 09:45: SWARM-SHADOW-RECONNECT at trunk `8e9ceed`** (claim 80 approved 09:37; the
+steward fast-forwarded the lane's four commits; trunk tree equals `8e9ceed`'s; mirrored to GitHub
+`artifacts-trunk`). The Sandbox `test-runs` on `8e9ceed` passed (194 s). SWARM-ONLOCAL-LOAD and
+CLI-GITHOOK-ETXTBSY closed in the same merge. No Worker deploy (harness and tests only).
+**Now:** the live `shadow` A/B run (deploy worktree moving to `8e9ceed`, harness rebuilding).
+History of the landing: lane `lane-swarm-shadow-reconnect` (Sonnet) dispatched 07:43 in
 `.claude/worktrees/swarm-shadow-reconnect` (branch `task-swarm-shadow-reconnect`, fork
 `tessel-dogfood--lane-swarm-shadow-reconnect` created); brief in the session scratchpad
 `orch/brief-swarm-shadow-reconnect.md`; owns `tessel-swarm/src/{on,events,conn}.rs`. Reported
@@ -186,7 +191,8 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-swarm-shadow-reconnect` (implementer, since 07:43). `.claude/worktrees/deploy` is a detached checkout of the trunk `7d00ad6`
+**Agents:** `lane-swarm-shadow-reconnect` stopping after `merged` (worktree
+`.claude/worktrees/swarm-shadow-reconnect` and branch `task-swarm-shadow-reconnect` to reclaim). `.claude/worktrees/deploy` is a detached checkout of the trunk `7d00ad6`
 used for deploys (holds `tessel-steward/node_modules`); move it with `git -C .claude/worktrees/deploy
 checkout --detach origin/artifacts-trunk` before each deploy.
 **Coordinator head is stale** (`e894fbe`, the last merge it dispatched): the SHADOW-GC admin merge
@@ -692,9 +698,20 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   sensitive tests made relative (shadow submission, held-for-review work time, cut-off tasks).
   Held; gate on `4023b80`: 1014 with `curl` removed from `PATH`, `--no-fail-fast`, clippy 0;
   approved claim 75; merged patch-id equals the gated one.
-- [ ] **SWARM-SHADOW-RECONNECT** — from the SWARM-RECONNECT review (Oct 7): the shadow policy does
+- [x] **SWARM-SHADOW-RECONNECT** — from the SWARM-RECONNECT review (Oct 7): the shadow policy does
   not reconnect, so a mass reset during the planned live shadow A/B run marks every agent
   disconnected. Do before that run (shadow trials are tied to the claim they were sent on).
+  CLOSED 2026-10-09 at trunk `8e9ceed` (Opus "With fixes" then "Yes" at `82ed1e4`; three
+  test-only commits after it read by the orchestrator). Shadow agents use the run's reconnect
+  policy; after a reconnect the agent keeps its in-process claim and asks the log what became of
+  it (`events::standing_of`; `ClaimShadowed` carries no fence): unsubmitted → push and submit
+  once; submitted or settled → `Stage::Trial`, waiting on the shared log watch; lease expired →
+  `lapsed`. `Standing::Settled` is its own standing (shadow-only by protocol invariant 10).
+  Known limit: a reset before the `Shadowed` reply is read leaves the agent without its fence,
+  so it claims again and the first claim idles out (documented in the harness README; the fix is
+  an additive `fence` on `ClaimShadowed`, on the protocol hand-merge list). Landing cost two
+  steward refusals from pre-existing Sandbox flakes, fixed in the same lane (SWARM-ONLOCAL-LOAD,
+  CLI-GITHOOK-ETXTBSY); `PATIENT` is 40 tries and `BOUND` 180 s in tests/reconnect.rs.
 - [ ] **COORD-UNDELIVERED-GRANT** — from the COORD-CLOSE-WITHDRAW review (Oct 7): when a
   `Granted` fails to send (`deliver`, `src/runtime.rs` ~880), the socket is closed but the granted
   agent is no longer queued, so nothing is withdrawn and it holds the claim until its lease lapses
@@ -830,19 +847,25 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
-- [ ] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
+- [x] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
   submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
   push alone takes 6.5–7.6 s. Make the bound relative to a measured baseline in the test (as
   SWARM-RECONNECT did for its load-sensitive tests) or assert order instead of a wall-clock bound.
   Small; same lane; before the live `shadow` run.
-- [ ] **CLI-GITHOOK-ETXTBSY** — from the SWARM-SHADOW-RECONNECT landing (Oct 9): in the Sandbox
+  CLOSED 2026-10-09 at trunk `8e9ceed` (commit `9f6831e`): the bound is now a comparison inside
+  the run (the shadow's claim-to-submit span plus half `work_ms` is under the blocker's
+  grant-to-submit span); the held-for-review work bound is relative to grant→`ReviewRequested`;
+  the fork-overwrite test's limit is 60 s. Three mutants caught; 3/3 runs under concurrent load.
+- [x] **CLI-GITHOOK-ETXTBSY** — from the SWARM-SHADOW-RECONNECT landing (Oct 9): in the Sandbox
   (Linux), `tessel-cli/tests/githook.rs` `without_the_recorded_binary_the_one_on_path_is_used_whatever_it_says`
   fails intermittently with `Text file busy (os error 26)`: `install_then_delete_the_binary` and
   `installing_from_a_build_directory_warns` copy the tessel binary with `std::fs::copy` and exec
   it, while other test threads fork children that inherit the open write descriptor until their
   exec. Copy binaries through a child process (`cp`) so no test thread holds the descriptor.
   Never reproduces on macOS. Fixed in the SWARM-SHADOW-RECONNECT lane's pass.
+  CLOSED 2026-10-09 at trunk `8e9ceed` (commit `8e9ceed`): `copy_the_binary` copies through a
+  `cp` child; `rg fs::copy` over tessel-cli and tessel-swarm finds nothing; githook 25 x3.
 - [ ] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
   "tests failed (exit code 101)", then the same tree passed a Sandbox test-run and the next merge.
   The trial result keeps only the last step's stdout/stderr (the pnpm step), so the failing cargo
