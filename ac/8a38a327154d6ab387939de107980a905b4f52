@@ -1,0 +1,4 @@
+intent: make the reconnect integration tests pass on a loaded machine
+assumes: none
+rejected: a longer holder work time (a loaded run still had the shadow submit after the merge); 14 tries (a loaded run still ran them out)
+evidence: tessel-swarm --test reconnect 5 of 5 runs passed, 2 with a parallel cargo test; package 176 passed
