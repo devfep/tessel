@@ -441,12 +441,24 @@ fn path_without_tessel() -> Result<std::ffi::OsString> {
     Ok(std::env::join_paths(dirs)?)
 }
 
+/// Copies the binary under test to `dest`. The copy is made by a child process, so that no thread
+/// of this test binary holds a write descriptor on a file it is about to run: a descriptor that a
+/// parallel thread's fork leaves open in its child makes the exec fail with ETXTBSY on Linux.
+fn copy_the_binary(dest: &Path) -> Result<()> {
+    let done = Command::new("cp")
+        .arg(env!("CARGO_BIN_EXE_tessel"))
+        .arg(dest)
+        .output()?;
+    assert!(done.status.success(), "{done:?}");
+    Ok(())
+}
+
 /// Installs the hooks from a copy of the binary, then deletes the copy, as removing a lane's
 /// `target/` would.
 fn install_then_delete_the_binary(agent: &Agent) -> Result<()> {
     let bin = tempfile::tempdir()?;
     let copy = bin.path().join("tessel");
-    std::fs::copy(env!("CARGO_BIN_EXE_tessel"), &copy)?;
+    copy_the_binary(&copy)?;
     let done = Command::new(&copy)
         .args(["hook", "install", "--git"])
         .current_dir(agent.root())
@@ -637,7 +649,7 @@ async fn installing_from_a_build_directory_warns() -> Result<()> {
     for dir in ["target", "bin"] {
         let copy = root.path().join(dir).join("tessel");
         std::fs::create_dir_all(copy.parent().context("no parent")?)?;
-        std::fs::copy(env!("CARGO_BIN_EXE_tessel"), &copy)?;
+        copy_the_binary(&copy)?;
         let done = Command::new(&copy)
             .args(["hook", "install", "--git"])
             .current_dir(a1.root())
