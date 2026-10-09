@@ -1,0 +1,4 @@
+intent: record the fresh-clone result, the reconnect test flake and its lane, the code-review findings under verification
+assumes: none
+rejected: merging the milestone pull request with a known full-suite failure on a loaded Mac; the test is fixed first
+evidence: fresh clone: cargo deny ok, pnpm test 803 passed, typecheck ok, cargo test --workspace 1 failure in 2 runs (same test), test passes alone
