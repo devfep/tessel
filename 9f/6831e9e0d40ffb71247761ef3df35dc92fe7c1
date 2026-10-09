@@ -1,0 +1,4 @@
+intent: remove fixed wall-clock bounds on git push and merge paths (SWARM-ONLOCAL-LOAD)
+assumes: both agents in one run take about the same checkout/commit/push path
+rejected: asserting only event order (the shadow can legitimately submit after the blocker on a loaded machine)
+evidence: 3 mutants fail their tests; on_local and reconnect 3 runs each, one with parallel cargo test; package 176 passed
