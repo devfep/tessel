@@ -1,0 +1,4 @@
+intent: close the three boxes with the merge sha and point at the shadow A/B run
+assumes: none
+rejected: none
+evidence: trunk tree equals 8e9ceed's; mirror.sh fast-forwarded 4033791..8e9ceed; Sandbox test-run exit 0
