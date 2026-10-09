@@ -1,0 +1,4 @@
+intent: close AX-MCP with its live-check evidence and point the next session at the A/B run
+assumes: Claude Code's --debug log is the authority on the negotiated MCP protocol version
+rejected: none
+evidence: claude -p runs kept in docs/evidence/2026-10-09/ax-mcp-live-check/; cargo not run (docs only)
