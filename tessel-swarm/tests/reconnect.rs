@@ -5,10 +5,10 @@
 #![expect(clippy::unwrap_used, reason = "test code")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tessel_coordinator::protocol::{ClaimId, Event, EventKind, ReleaseReason};
+use tessel_coordinator::protocol::{AgentId, ClaimId, Event, EventKind, ReleaseReason, RunId};
 use tessel_swarm::conn::{Reconnect, MAX_RESETS_PER_TASK};
 use tessel_swarm::demo;
 use tessel_swarm::guard::ScratchRepo;
@@ -132,6 +132,27 @@ fn connections_of(events: &[Event], who: &str) -> usize {
     )
 }
 
+/// Wraps a tripwire condition so that it cannot be true until every agent in `agents` has
+/// connected at least once; events that satisfy `then` before that are let through.
+///
+/// A cut that refuses agents also turns away their first connection, and `run_on` treats a failed
+/// first connection as an error of the whole run, not as a reconnect case. On 2026-10-09 a fresh
+/// clone of the trunk under load failed the test of two agents that cannot reconnect, twice, with
+/// `401 Unauthorized`: a01's grant cut the sockets before a02 had connected for the first time.
+fn after_connected(
+    agents: &[&str],
+    then: impl Fn(&Event) -> bool + Send + 'static,
+) -> impl Fn(&Event) -> bool + Send + 'static {
+    let waiting = Mutex::new(agents.iter().map(|a| (*a).to_string()).collect::<Vec<_>>());
+    move |event| {
+        let mut waiting = waiting.lock().unwrap();
+        if let EventKind::AgentConnected { agent } = &event.kind {
+            waiting.retain(|name| *name != agent.0);
+        }
+        waiting.is_empty() && then(event)
+    }
+}
+
 /// Every task is accounted for exactly once, and each outcome is one of the four.
 fn assert_accounted(result: &OnResult, tasks: usize) {
     assert_eq!(result.results.len(), tasks, "{:?}", result.results);
@@ -156,6 +177,33 @@ fn the_longest_pause_before_each_try_doubles_from_half_a_second_and_stops_at_eig
         .collect();
     assert_eq!(ceilings, [500, 1000, 2000, 4000, 8000, 8000, 8000]);
     assert_eq!(Reconnect::STANDARD.tries, 5);
+}
+
+#[test]
+fn a_cut_waits_for_every_listed_agent_to_have_connected() {
+    let connected = |seq: u64, who: &str| Event {
+        seq,
+        at_ms: 0,
+        run: RunId("test".to_string()),
+        kind: EventKind::AgentConnected {
+            agent: AgentId(who.to_string()),
+        },
+    };
+    let odd = |e: &Event| e.seq % 2 == 1;
+    let cut = after_connected(&["a01", "a02"], odd);
+    assert!(!cut(&connected(0, "a01")), "a02 has not connected");
+    assert!(
+        !cut(&connected(1, "a01")),
+        "the trigger came before a02 connected"
+    );
+    assert!(
+        !cut(&connected(2, "a02")),
+        "both connected, but this event is no trigger"
+    );
+    assert!(
+        cut(&connected(3, "a01")),
+        "the first trigger after both connected fires"
+    );
 }
 
 #[test]
@@ -345,7 +393,9 @@ async fn agents_that_cannot_reconnect_end_as_disconnected_after_their_tries() {
     let run = run_with(&tasks, &cfg, local::LEASE_MS, |server| {
         let granted = |e: &Event| matches!(e.kind, EventKind::ClaimGranted { .. });
         let gone = vec!["a01".to_string(), "a02".to_string()];
-        server.cutter().reset_on(granted, gone);
+        server
+            .cutter()
+            .reset_on(after_connected(&["a01", "a02"], granted), gone);
     })
     .await;
     assert_accounted(&run.result, 2);
