@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 10:55 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 11:25 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -84,8 +84,15 @@ hand-merge list below for Felix.
 prepared; Felix decides whether to allow that read or run that lane from his own session. Then the
 live `shadow` A/B run with the same recording (tail, ping, Wi-Fi off; launcher
 `scratchpad/orch/ab-run.sh <policy> <out-dir>`).
-**Trunk:** `6b61869` (CLI-CLAIM-EXISTS; mirrored to GitHub `artifacts-trunk`);
-`.claude/worktrees/deploy` is at `8e9ceed` (harness built from it; move it before the next deploy).
+**Trunk:** `c6d6c76` (SWARM-PUSH-RETRY; mirrored to GitHub `artifacts-trunk`);
+`.claude/worktrees/deploy` moving to `c6d6c76` (harness rebuild started 11:25).
+**MERGED 11:22: SWARM-PUSH-RETRY at trunk `c6d6c76`** (claim 82 approved 11:17 after Opus "Yes"
+at `6df0809` and a re-check "With fixes" (one long line) through `f4fc4e6`; four small commits
+after the Yes read by the orchestrator; Mac gate of `f4fc4e6` 1067 passed with `curl` off the
+PATH; trunk tree equals `c6d6c76`'s; mirrored). Harness only: no Worker deploy. Lesson kept: the
+orchestrator's gate strips every PATH directory holding `curl`, which on this Mac removes
+`/usr/bin` (so `which`, `chmod`, `sed`, `dirname` vanish); a test that shells out to those fails
+the gate before it can fail the Sandbox. Tests spawn nothing but git and the binaries under test.
 **MERGED 10:42: CLI-CLAIM-EXISTS at trunk `6b61869`** (claim 81 approved 10:38 after Opus "With
 fixes" then "Yes" and a Mac gate of 1057 with `curl` off the PATH; trunk tree equals `6b61869`'s;
 mirrored). CLI only: no Worker deploy.
@@ -205,12 +212,14 @@ run). A small sample: it shows the mechanism live, not a rate.
 - 07:19 EDT: `tools/merge-one.sh` refuses changes to `src/protocol.rs`; Felix merges those by hand
   from a command the orchestrator hands him.
 
-**Agents:** `lane-swarm-push-retry` (Sonnet implementer, since 10:52) in
-`.claude/worktrees/swarm-push-retry` (branch `task-swarm-push-retry`, fork
-`tessel-dogfood--lane-swarm-push-retry`); brief `scratchpad/orch/brief-swarm-push-retry.md`; owns
-`tessel-swarm/src/{git,live,on,report}.rs` and their tests. The cli-claim-exists worktree and
-branch are reclaimed. One lane at a time while other sessions keep the load at 20–100 (a
-reviewer saw load 493 once).
+**Agents:** `lane-swarm-push-retry` stopping after `merged` (worktree
+`.claude/worktrees/swarm-push-retry`, branch `task-swarm-push-retry` to reclaim). One lane at a
+time while other sessions keep the load at 20–100 (a reviewer saw load 493 once).
+**Open boxes left:** REVIEW-SENSITIVE (recommendation above, needs Felix's yes), REVIEW-NOTE
+(needs Felix), COORD-UNDELIVERED-GRANT (needs Felix), GATE-PATH, GATE-OUTPUT (classifier call),
+the UX work behind Felix's three decisions, and the Oct 10–12 milestone work (land ROADMAP through
+the steward, pull request from `artifacts-trunk` with `/code-review` and `/security-review`,
+video). Nothing else is dispatchable without Felix.
 **REVIEW-SENSITIVE recommendation for Felix** (design, not built): the sensitive-path list lives
 in the repo's `tessel.toml` (`[review] sensitive = ["src/protocol.rs", ...]`), read by the steward
 with the gate config and sent to the coordinator with each merge-time coverage check, so the hold
@@ -898,10 +907,19 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Never reproduces on macOS. Fixed in the SWARM-SHADOW-RECONNECT lane's pass.
   CLOSED 2026-10-09 at trunk `8e9ceed` (commit `8e9ceed`): `copy_the_binary` copies through a
   `cp` child; `rg fs::copy` over tessel-cli and tessel-swarm finds nothing; githook 25 x3.
-- [ ] **SWARM-PUSH-RETRY** — from the live `shadow` run (Oct 9): one agent's `git push --force`
+- [x] **SWARM-PUSH-RETRY** — from the live `shadow` run (Oct 9): one agent's `git push --force`
   to its fork got `503 Service unavailable` from the Artifacts git endpoint and the task ended
   `failed` with no retry (`tessel-swarm/src/git.rs` / `on.rs`). Retry a push a few times with
   backoff on 5xx; count retries in the task record. Harness only; small.
+  CLOSED 2026-10-09 at trunk `c6d6c76`: `Git::push` retries a push whose git output shows an
+  HTTP 5xx (a `error: 5xx` ending its line, or a 5xx reason phrase) or a connection-level error
+  (connection reset, could not resolve host, failed to connect), case-insensitively, up to 4 more
+  times with the reconnect backoff (0.5 s doubling, full jitter; worst case 7.5 s of pauses);
+  4xx, credential refusals and non-fast-forwards fail at once; retries counted in each task's
+  `push_retries` (in the run JSON; no A/B row); the seed push retries too (count not reported).
+  Pushes sleep on the blocking thread under `conn.keep_alive`, so heartbeats continue. 12 mutants
+  caught. End-to-end tests use a `git` wrapper on PATH that scripts failures and spawns nothing
+  but the real git. Not verified: a real 503 from Artifacts; the live push branch has no test.
 - [ ] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
   "tests failed (exit code 101)", then the same tree passed a Sandbox test-run and the next merge.
   The trial result keeps only the last step's stdout/stderr (the pnpm step), so the failing cargo
