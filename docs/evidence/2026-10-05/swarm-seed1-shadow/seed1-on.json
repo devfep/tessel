@@ -1,0 +1,107 @@
+{
+  "event_count": 33,
+  "held_for_review_not_approved": 0,
+  "measured_agent_ms": {
+    "note": "work: claim grant to commit pushed; waiting: claim sent to its answer, summed over attempts",
+    "on_work_later_rejected": 0,
+    "waiting": 136551,
+    "work_total": 9324
+  },
+  "mode": "on",
+  "policy": "shadow",
+  "queued_waits_in_event_log": 0,
+  "rejected_in_event_log": 0,
+  "review_approvals_in_event_log": 2,
+  "review_rejections_in_event_log": 0,
+  "run": {
+    "agents": 3,
+    "overlap": 0.5,
+    "seed": 1,
+    "tasks": 6,
+    "work_ms": 300
+  },
+  "schema": "tessel-swarm/1",
+  "scripted_reviewer": true,
+  "shadow_verification": {
+    "conflicts_prevented_verified": 2,
+    "false_alarms": 0,
+    "inconclusive": 0,
+    "never_verified": 0,
+    "note": "from DenialVerified events in the coordinator's log; a denial is not a prevention",
+    "precision": 1.0,
+    "shadow_claims": 2
+  },
+  "summary_from_event_log": {
+    "assumptions_challenged": 1,
+    "assumptions_confirmed_broken": 0,
+    "base_moved_notices": 0,
+    "claims_granted": 4,
+    "conflicts_prevented_verified": 2,
+    "denials": 2,
+    "false_alarms": 0,
+    "merges": 4,
+    "precision": 1.0,
+    "races_decided": 0,
+    "replay_conflicts": 0,
+    "replay_merges": 0,
+    "reviews_requested": 2
+  },
+  "target": "live",
+  "tasks": [
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 1,
+      "waited_ms": 85,
+      "work_ms": 1585
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 2,
+      "waited_ms": 62,
+      "work_ms": 1562
+    },
+    {
+      "agent": "a03",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "result": "shadowed",
+      "task": 3,
+      "waited_ms": 89203,
+      "work_ms": 1824
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 4,
+      "waited_ms": 108,
+      "work_ms": 1355
+    },
+    {
+      "agent": "a02",
+      "denials": 0,
+      "note": null,
+      "result": "merged",
+      "task": 5,
+      "waited_ms": 49,
+      "work_ms": 1630
+    },
+    {
+      "agent": "a01",
+      "denials": 0,
+      "note": "shadow: submitted for verification, never queued to merge",
+      "result": "shadowed",
+      "task": 6,
+      "waited_ms": 47044,
+      "work_ms": 1368
+    }
+  ],
+  "wall_ms": 107194
+}

@@ -1,0 +1,4 @@
+start 19:31:15
+live target: creating scratch repo swarm-s3-tmk9c4
+Error: the coordinator closed the connection (WebSocket protocol error: Connection reset without closing handshake)
+exit=1 end 19:39:39

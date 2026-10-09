@@ -1,0 +1,6 @@
+{"type":"event","event":{"seq":0,"at_ms":1791229457966,"run":"dogfood","event":"agent_connected","agent":"probe-a1"}}
+{"type":"event","event":{"seq":1,"at_ms":1791230656401,"run":"dogfood","event":"agent_connected","agent":"orchestrator"}}
+{"type":"event","event":{"seq":2,"at_ms":1791230671405,"run":"dogfood","event":"agent_connected","agent":"probe-a1"}}
+{"type":"event","event":{"seq":3,"at_ms":1791338312652,"run":"dogfood","event":"agent_connected","agent":"orch-check"}}
+{"type":"event","event":{"seq":4,"at_ms":1791338314987,"run":"dogfood","event":"base_moved","head":"58119c247ed0e3a47bfd797d2b4228377805ff43","by":"steward","notified":[]}}
+{"type":"event","event":{"seq":5,"at_ms":1791338319895,"run":"dogfood","event":"agent_connected","agent":"orch-check"}}

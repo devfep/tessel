@@ -1,0 +1,368 @@
+{
+  "counts": {
+    "build_failed": 1,
+    "clean": 14,
+    "tests_failed": 3,
+    "textual_conflicts": 22
+  },
+  "measured_agent_ms": {
+    "note": "per task: the configured work_ms plus the measured time to edit, test and commit, from when the agent could start",
+    "on_work_later_rejected": 128173,
+    "work_total": 200006
+  },
+  "merges": [
+    {
+      "agent": "a01",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 1
+    },
+    {
+      "agent": "a02",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/invoice.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 2
+    },
+    {
+      "agent": "a03",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/invoice.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 3
+    },
+    {
+      "agent": "a04",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 4
+    },
+    {
+      "agent": "a05",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/cart.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 5
+    },
+    {
+      "agent": "a06",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 6
+    },
+    {
+      "agent": "a07",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "tests_failed",
+      "task": 7
+    },
+    {
+      "agent": "a08",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/pricing.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 8
+    },
+    {
+      "agent": "a09",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/pricing.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 9
+    },
+    {
+      "agent": "a10",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 10
+    },
+    {
+      "agent": "a11",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/invoice.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 11
+    },
+    {
+      "agent": "a12",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 12
+    },
+    {
+      "agent": "a13",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/invoice.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 13
+    },
+    {
+      "agent": "a14",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 14
+    },
+    {
+      "agent": "a15",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 15
+    },
+    {
+      "agent": "a16",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/cart.ts",
+        "src/pricing.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 16
+    },
+    {
+      "agent": "a17",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/cart.ts",
+        "src/invoice.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 17
+    },
+    {
+      "agent": "a18",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/cart.ts",
+        "src/invoice.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 18
+    },
+    {
+      "agent": "a19",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/checkout.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 19
+    },
+    {
+      "agent": "a20",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/checkout.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 20
+    },
+    {
+      "agent": "a21",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 21
+    },
+    {
+      "agent": "a22",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 22
+    },
+    {
+      "agent": "a23",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 23
+    },
+    {
+      "agent": "a24",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "build_failed",
+      "task": 24
+    },
+    {
+      "agent": "a25",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/cart.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 25
+    },
+    {
+      "agent": "a26",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/pricing.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 26
+    },
+    {
+      "agent": "a27",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/invoice.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 27
+    },
+    {
+      "agent": "a28",
+      "branched_after_merge": 0,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 28
+    },
+    {
+      "agent": "a29",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/pricing.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 29
+    },
+    {
+      "agent": "a00",
+      "branched_after_merge": 0,
+      "conflicted_files": [
+        "src/inventory.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 30
+    },
+    {
+      "agent": "a01",
+      "branched_after_merge": 1,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 31
+    },
+    {
+      "agent": "a02",
+      "branched_after_merge": 2,
+      "conflicted_files": [],
+      "outcome": "tests_failed",
+      "task": 32
+    },
+    {
+      "agent": "a03",
+      "branched_after_merge": 3,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 33
+    },
+    {
+      "agent": "a04",
+      "branched_after_merge": 4,
+      "conflicted_files": [],
+      "outcome": "clean",
+      "task": 34
+    },
+    {
+      "agent": "a05",
+      "branched_after_merge": 5,
+      "conflicted_files": [
+        "src/checkout.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 35
+    },
+    {
+      "agent": "a06",
+      "branched_after_merge": 6,
+      "conflicted_files": [],
+      "outcome": "tests_failed",
+      "task": 36
+    },
+    {
+      "agent": "a07",
+      "branched_after_merge": 7,
+      "conflicted_files": [
+        "src/cart.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 37
+    },
+    {
+      "agent": "a08",
+      "branched_after_merge": 8,
+      "conflicted_files": [
+        "src/pricing.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 38
+    },
+    {
+      "agent": "a09",
+      "branched_after_merge": 9,
+      "conflicted_files": [
+        "src/checkout.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 39
+    },
+    {
+      "agent": "a10",
+      "branched_after_merge": 10,
+      "conflicted_files": [
+        "src/pricing.ts"
+      ],
+      "outcome": "textual_conflict",
+      "task": 40
+    }
+  ],
+  "mode": "off",
+  "run": {
+    "agents": 30,
+    "overlap": 0.5,
+    "seed": 3,
+    "tasks": 40,
+    "work_ms": 300
+  },
+  "schema": "tessel-swarm/1",
+  "scope": "local replay with plain git; never sent to a coordinator",
+  "summary_from_local_replay_events": {
+    "assumptions_challenged": 0,
+    "assumptions_confirmed_broken": 0,
+    "base_moved_notices": 0,
+    "claims_granted": 0,
+    "conflicts_prevented_verified": 0,
+    "denials": 0,
+    "false_alarms": 0,
+    "merges": 0,
+    "precision": null,
+    "races_decided": 0,
+    "replay_conflicts": 26,
+    "replay_merges": 40,
+    "reviews_requested": 0
+  },
+  "wall_ms": 19222
+}

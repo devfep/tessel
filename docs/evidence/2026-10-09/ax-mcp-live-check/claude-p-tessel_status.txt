@@ -1,0 +1,8 @@
+daemon: not running (last known state), pid 50370
+connection: stopped (repo tessel-dogfood, agent lane-ax-mcp)
+base: fc09fed9bc5c8124765a246aae883af8cd1a6630 (sent in the last hello)
+start: fc09fed9bc5c8124765a246aae883af8cd1a6630
+coordinator head: 4033791f2279f121b32ec8ab3a748d91ae3e9c89
+intent: AX-MCP: tessel mcp stdio server
+claims: none
+unread inbox items: 0
