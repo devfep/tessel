@@ -1,0 +1,4 @@
+intent: review fixes for 8ceecb6: 100-char lines; test that the resume path pushes accepted_shadows
+assumes: none
+rejected: cutting on the ClaimShadowed event with no delay (the Shadowed reply could be lost, which tests another path)
+evidence: cargo test -p tessel-swarm 176 passed (predicted 176); clippy --all-targets -D warnings clean; rustfmt --check clean; mutant without the push fails the new test
