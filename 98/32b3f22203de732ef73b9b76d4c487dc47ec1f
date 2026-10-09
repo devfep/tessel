@@ -1,0 +1,4 @@
+intent: the Oct 7 evidence README cites run.log files that the gitignore had excluded
+assumes: none
+rejected: none
+evidence: git ls-files shows them tracked
