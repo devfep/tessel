@@ -1,0 +1,4 @@
+intent: record that the Oct 10-12 milestone work started on Felix's proceed, with the docs landing lane
+assumes: the steward merges a docs-only commit without a review hold (no signature change, deletion or rename)
+rejected: dispatching a Sonnet lane for the docs copy; the orchestrator owns the roadmap and the copy is mechanical
+evidence: none (roadmap text only)
