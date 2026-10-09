@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 18:05 EDT. **PULL REQUEST 2 IS READY; FELIX MERGES IT.** The trunk is at
+**As of:** 2026-10-09 20:00 EDT. **MILESTONE MERGED: pull request 2 merged into `main` at
+`1aa3684` (19:58, merge commit, on Felix's command; `main`'s tree `74e0544` equals the trunk's;
+`artifacts-trunk` kept). GitHub `main` now holds everything through `db31287`. Orchestrator idle;
+nothing runs.** Next on Felix's word: the video script and the form rewrite (draft in the
+scratchpad `orch/submission-form-draft.md`), the boxes below as lanes, his pending decisions.
+Earlier: **PULL REQUEST 2 WAS READY; FELIX MERGED IT.** The trunk is at
 `db31287` (docs landed 18:00 as claim 86 of `lane-docs-milestone-2`; tree `74e0544`; mirrored to
 GitHub `artifacts-trunk`, 244 commits on the pull request; lane reclaimed). The auto-mode
 classifier refused the orchestrator's `gh pr merge` ("Merge Without Review": the reviews are the
@@ -259,7 +264,7 @@ live steward latency, and report this run's timeout as it happened.
 **Tip:** the Artifacts trunk `tessel-dogfood` is at `7d00ad6` (SHADOW-GC by Felix's admin merge;
 tree checked equal to the gated `b143194`), mirrored to GitHub
 `artifacts-trunk`; new work starts there. `sprint/build` (`4793bca` plus STATE commits) keeps the
-pre-steward history and notes. The GitHub `main` is at `29aa8fe` (pull request 1). `8432f8c` was a
+pre-steward history and notes. The GitHub `main` is at `1aa3684` (pull request 2, the milestone merge of the trunk `db31287`). `8432f8c` was a
 one-commit catch-up of the trunk to `sprint/build` `aadba8b` (replaying `sprint/build` commits
 conflicts with their rebased copies on the trunk, so catch-ups are one commit on the trunk head).
 **Milestone:** PLAN §9 Oct 6–8 delivered and checked live; dogfood v1 is in use (lanes land
