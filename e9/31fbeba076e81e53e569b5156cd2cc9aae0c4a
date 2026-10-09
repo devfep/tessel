@@ -1,0 +1,4 @@
+intent: record the second refusal and the two Sandbox flakes with their causes
+assumes: ETXTBSY comes from the fork/exec window of parallel test threads (not reproducible on macOS)
+rejected: retrying the submission unchanged (two flakes make each attempt a coin toss)
+evidence: two test-run jsons in the scratchpad (orch/test-run-ssr-ac8a38a*.json)
