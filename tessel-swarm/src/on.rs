@@ -6,6 +6,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -129,6 +130,9 @@ pub struct TaskResult {
     /// Times the agent's connection ended without its asking and it opened a new one while on
     /// this task.
     pub reconnects: u32,
+    /// Times a push to the fork was repeated because the remote answered with a server error or
+    /// the connection was lost. Zero when every push went through at once.
+    pub push_retries: u32,
     pub note: Option<String>,
 }
 
@@ -171,6 +175,7 @@ struct Item {
     denials: u32,
     waited_ms: u64,
     reconnects: u32,
+    push_retries: u32,
 }
 
 struct Ctx {
@@ -210,6 +215,7 @@ pub async fn run_on(
             denials: 0,
             waited_ms: 0,
             reconnects: 0,
+            push_retries: 0,
         })
         .collect();
     let (log, watcher) = if config.policy == Policy::Shadow {
@@ -599,6 +605,7 @@ async fn agent_main(ctx: Arc<Ctx>, name: String) -> Result<()> {
         let mut clock = Clock::starting_at(conn.reconnects());
         let ended = run_task(&ctx, &job, &mut conn, &mut clock).await;
         item.reconnects += conn.reconnects() - clock.reconnects_before;
+        item.push_retries += clock.push_retries.load(Ordering::Relaxed);
         let step = match ended {
             Ok(step) => step,
             Err(error) => {
@@ -650,6 +657,7 @@ fn record(
         work_ms,
         waited_ms: item.waited_ms,
         reconnects: item.reconnects,
+        push_retries: item.push_retries,
         note,
     });
 }
@@ -747,6 +755,8 @@ struct Clock {
     lost_wait_ms: u64,
     /// The connection's reconnect count when the task began.
     reconnects_before: u32,
+    /// Pushes to the fork repeated while the task ran, across its attempts.
+    push_retries: Arc<AtomicU32>,
     /// The shadow claim the agent was given for this task, as it was given. The log's
     /// `ClaimShadowed` holds neither the fence nor the task, so after a reset this is how the
     /// agent knows which claim is its own.
@@ -1047,7 +1057,7 @@ async fn work_and_submit(
         conn.keep_alive(work).await?;
     }
     // A shadow agent submits first and spends its work time afterwards (`finish_shadow`).
-    let push = commit_and_push(ctx, job.work, job.agent, &after, job.task);
+    let push = commit_and_push(ctx, job, &after, &clock.push_retries);
     let pushed = conn.keep_alive(push).await?;
     let sha = match pushed {
         Ok(sha) => sha,
@@ -1279,17 +1289,17 @@ async fn release(conn: &mut Conn, held: &Held) -> Result<()> {
 /// Writes the edit, checks it the way a careful agent would, commits and pushes it to the fork.
 async fn commit_and_push(
     ctx: &Ctx,
-    work: &Git,
-    agent: &str,
+    job: &Job<'_>,
     after: &crate::demo::Tree,
-    task: &Task,
+    retries: &Arc<AtomicU32>,
 ) -> Result<String> {
-    let (remote, repo, tree, name, intent) = (
+    let (remote, repo, tree, name, intent, retries) = (
         ctx.endpoint.remote.clone(),
-        work.clone(),
+        job.work.clone(),
         after.clone(),
-        agent.to_string(),
-        task.intent(),
+        job.agent.to_string(),
+        job.task.intent(),
+        Arc::clone(retries),
     );
     blocking(move || {
         git::write_tree(&repo.dir, &tree)?;
@@ -1300,7 +1310,7 @@ async fn commit_and_push(
             }
         }
         let sha = repo.commit_all(&intent)?;
-        remote.push(&repo, &name)?;
+        remote.push(&repo, &name, &retries)?;
         Ok(sha)
     })
     .await
@@ -1433,6 +1443,7 @@ mod tests {
             work_ms: 0,
             waited_ms: 0,
             reconnects: 0,
+            push_retries: 0,
             note: None,
         }
     }

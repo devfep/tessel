@@ -65,6 +65,7 @@ fn on_result() -> OnResult {
             work_ms: 300,
             waited_ms: 0,
             reconnects: 0,
+            push_retries: 0,
             note: None,
         }],
         work_ms_total: 600,
@@ -176,6 +177,7 @@ fn result(task: usize, result: Resolution) -> TaskResult {
         work_ms: 0,
         waited_ms: 0,
         reconnects: 0,
+        push_retries: 0,
         note: None,
     }
 }
@@ -382,4 +384,16 @@ fn connection_resets_survived_is_the_sum_of_the_tasks_reconnects_in_the_table_an
     let json = on_json(&header, "local", Policy::Wait, &on);
     assert_eq!(json["connection_resets_survived_by_agents"], 5);
     assert_eq!(json["tasks"][2]["reconnects"], 3);
+}
+
+#[test]
+fn each_task_in_the_json_carries_its_push_retries() {
+    let mut on = on_result();
+    let mut retried = result(1, Resolution::Merged);
+    retried.push_retries = 2;
+    on.results = vec![retried, result(2, Resolution::Merged)];
+    let header = header_of(&config(), 9, 2, 0.5);
+    let json = on_json(&header, "local", Policy::Wait, &on);
+    assert_eq!(json["tasks"][0]["push_retries"], 2);
+    assert_eq!(json["tasks"][1]["push_retries"], 0);
 }

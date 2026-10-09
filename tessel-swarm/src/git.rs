@@ -3,14 +3,71 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
+use crate::conn::Reconnect;
 use crate::demo::Tree;
 
 /// Every commit the harness makes carries this date, so the same tree gives the same commit id
 /// on any machine.
 const COMMIT_DATE: &str = "2026-10-01T00:00:00Z";
+
+/// How a push that the remote answered with a server error or a dropped connection is repeated:
+/// four more tries, the first within 0.5 s and each later one within twice the one before, each
+/// pause a random share of that ("full jitter"), as a reconnect is paced.
+pub const PUSH_BACKOFF: Reconnect = Reconnect {
+    tries: 4,
+    first_delay: Duration::from_millis(500),
+};
+
+/// Whether git's output for a failed push shows a failure that may pass on its own: an HTTP 5xx
+/// from the remote or a connection that could not be made or was cut. A 4xx, a refused
+/// credential or a non-fast-forward is the same on the next try, so it is not one.
+#[must_use]
+pub fn push_failure_is_transient(output: &str) -> bool {
+    const CONNECTION: [&str; 4] = [
+        "Service unavailable",
+        "Connection reset",
+        "Could not resolve host",
+        "Failed to connect",
+    ];
+    CONNECTION.iter().any(|needle| output.contains(needle)) || mentions_server_error(output)
+}
+
+/// `error: 5xx`, as in `error: 503` and `The requested URL returned error: 502`.
+fn mentions_server_error(output: &str) -> bool {
+    output.match_indices("error: 5").any(|(at, marker)| {
+        let digits = &output.as_bytes()[at + marker.len()..];
+        digits.len() >= 2 && digits[..2].iter().all(u8::is_ascii_digit)
+    })
+}
+
+/// Runs `attempt` until it succeeds, fails in a way that cannot pass, or has been repeated
+/// `backoff.tries` times, pausing between tries. Adds each repeat to `retries`. The final failure
+/// is returned with git's own message.
+fn retry_transient(
+    backoff: Reconnect,
+    retries: &AtomicU32,
+    what: &str,
+    mut attempt: impl FnMut() -> Result<(bool, String)>,
+) -> Result<()> {
+    let mut repeats = 0;
+    loop {
+        let (ok, out) = attempt()?;
+        if ok {
+            return Ok(());
+        }
+        if repeats >= backoff.tries || !push_failure_is_transient(&out) {
+            bail!("git {what} failed: {}", out.trim());
+        }
+        retries.fetch_add(1, Ordering::Relaxed);
+        std::thread::sleep(backoff.delay(repeats));
+        repeats += 1;
+    }
+}
 
 /// A git working directory plus the environment its commands run with. Secrets are replaced with
 /// `[redacted]` in any text this type returns.
@@ -97,6 +154,20 @@ impl Git {
         let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
         text.push_str(&String::from_utf8_lossy(&output.stderr));
         Ok((output.status.success(), self.scrub(&text)))
+    }
+
+    /// Runs `git push` with `args` (after the word `push`). A server error or a lost connection
+    /// is repeated as `PUSH_BACKOFF` says; anything else fails at once. Adds the repeats to
+    /// `retries`, also when the push fails in the end.
+    pub fn push(&self, args: &[&str], retries: &AtomicU32) -> Result<()> {
+        self.push_paced(PUSH_BACKOFF, args, retries)
+    }
+
+    fn push_paced(&self, backoff: Reconnect, args: &[&str], retries: &AtomicU32) -> Result<()> {
+        let argv: Vec<&str> = std::iter::once("push")
+            .chain(args.iter().copied())
+            .collect();
+        retry_transient(backoff, retries, &argv.join(" "), || self.attempt(&argv))
     }
 
     /// Stages everything, commits, and returns the commit id.
@@ -247,6 +318,98 @@ mod tests {
         tree.remove("test/taxFor.test.ts");
         write_tree(dir.path(), &tree).unwrap();
         assert_eq!(read_tree(dir.path()).unwrap(), tree);
+    }
+
+    fn no_pause() -> Reconnect {
+        Reconnect {
+            tries: 4,
+            first_delay: Duration::ZERO,
+        }
+    }
+
+    /// Answers each attempt with the next of `outputs` (the last one repeats), as a success when
+    /// `last_ok` and it is the last. Returns the result, the attempts made and the retries counted.
+    fn scripted(outputs: &[&str], last_ok: bool) -> (Result<()>, usize, u32) {
+        let (retries, mut made) = (AtomicU32::new(0), 0);
+        let result = retry_transient(no_pause(), &retries, "push", || {
+            made += 1;
+            let ok = last_ok && made == outputs.len();
+            Ok((ok, outputs[made.min(outputs.len()) - 1].to_string()))
+        });
+        (result, made, retries.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn server_errors_and_lost_connections_are_transient() {
+        for text in [
+            "remote: Service unavailable\nerror: 503",
+            "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502",
+            "fatal: unable to access 'https://x/': The requested URL returned error: 500",
+            "fatal: unable to access 'https://x/': Connection reset by peer",
+            "fatal: unable to access 'https://x/': Could not resolve host: x",
+            "fatal: unable to access 'https://x/': Failed to connect to x port 443",
+        ] {
+            assert!(push_failure_is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn client_errors_refusals_and_a_bare_5_are_not_transient() {
+        for text in [
+            "fatal: unable to access 'https://x/': The requested URL returned error: 401",
+            "remote: Permission denied\nerror: 403",
+            "fatal: Authentication failed for 'https://x/'",
+            " ! [rejected] HEAD -> main (non-fast-forward)\nerror: failed to push some refs",
+            "error: 5 files changed",
+            "error: 5",
+            "",
+        ] {
+            assert!(!push_failure_is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_push_that_fails_twice_and_then_succeeds_counts_two_retries() {
+        let (result, made, retries) = scripted(&["error: 503", "error: 503", ""], true);
+        result.unwrap();
+        assert_eq!((made, retries), (3, 2));
+    }
+
+    #[test]
+    fn a_push_that_never_succeeds_is_tried_five_times_and_counts_four_retries() {
+        let (result, made, retries) = scripted(&["remote: Service unavailable"], false);
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("Service unavailable"), "{message}");
+        assert_eq!((made, retries), (5, 4));
+    }
+
+    #[test]
+    fn a_failure_that_cannot_pass_is_not_repeated() {
+        let (result, made, retries) = scripted(&["error: 403 Permission denied"], false);
+        result.unwrap_err();
+        assert_eq!((made, retries), (1, 0));
+    }
+
+    #[test]
+    fn push_pauses_have_ceilings_of_half_a_second_doubling() {
+        let ceilings: Vec<Duration> = (0..4).map(|n| PUSH_BACKOFF.ceiling(n)).collect();
+        let want = [500, 1000, 2000, 4000].map(Duration::from_millis);
+        assert_eq!(ceilings, want);
+    }
+
+    #[test]
+    fn a_push_to_a_missing_repository_fails_at_once_without_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = Git::new(dir.path());
+        init_repo(&git, &base_tree()).unwrap();
+        let retries = AtomicU32::new(0);
+        let missing = dir.path().join("nowhere.git");
+        let target = missing.to_string_lossy();
+        let error = git
+            .push_paced(no_pause(), &["-q", &target, "HEAD:main"], &retries)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("push"), "{error:#}");
+        assert_eq!(retries.load(Ordering::Relaxed), 0);
     }
 
     #[test]

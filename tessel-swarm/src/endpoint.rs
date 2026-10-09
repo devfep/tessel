@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU32;
 
 use anyhow::{anyhow, Result};
 
@@ -88,25 +89,29 @@ impl Remote {
         work.run(&["rev-parse", "HEAD"])
     }
 
-    /// Pushes the working directory's `HEAD` to `agent`'s fork as its `main`.
-    pub fn push(&self, work: &Git, agent: &str) -> Result<()> {
+    /// Pushes the working directory's `HEAD` to `agent`'s fork as its `main`, repeating a push
+    /// the remote answered with a server error or a lost connection (`Git::push`). Adds the
+    /// repeats to `retries`.
+    pub fn push(&self, work: &Git, agent: &str, retries: &AtomicU32) -> Result<()> {
         match self {
             Remote::Local { forks, .. } => {
                 let fork = forks.join(format!("{agent}.git"));
-                work.run(&[
-                    "push",
-                    "-q",
-                    "--force",
-                    &fork.to_string_lossy(),
-                    "HEAD:refs/heads/main",
-                ])?;
+                work.push(
+                    &[
+                        "-q",
+                        "--force",
+                        &fork.to_string_lossy(),
+                        "HEAD:refs/heads/main",
+                    ],
+                    retries,
+                )?;
             }
             Remote::Live { forks, .. } => {
                 let (url, token) = forks
                     .get(agent)
                     .ok_or_else(|| anyhow!("no fork for agent {agent}"))?;
                 let authed = Git::new(&work.dir).with_bearer(token.expose());
-                authed.run(&["push", "-q", "--force", url, "HEAD:refs/heads/main"])?;
+                authed.push(&["-q", "--force", url, "HEAD:refs/heads/main"], retries)?;
             }
         }
         Ok(())

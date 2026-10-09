@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicU32;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
@@ -234,9 +235,10 @@ fn seed_trunk(
     let seed_dir = scratch.join("seed");
     std::fs::create_dir_all(&seed_dir)?;
     let commit = git::init_repo(&Git::new(&seed_dir), base)?;
-    Git::new(&seed_dir)
-        .with_bearer(trunk_token.expose())
-        .run(&["push", "-q", "--force", &trunk_url, "HEAD:refs/heads/main"])?;
+    Git::new(&seed_dir).with_bearer(trunk_token.expose()).push(
+        &["-q", "--force", &trunk_url, "HEAD:refs/heads/main"],
+        &AtomicU32::new(0),
+    )?;
     Ok((trunk_url, trunk_token, commit))
 }
 
