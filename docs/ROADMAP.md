@@ -5,13 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 17:45 EDT. **MERGED 17:41: SWARM-RECONNECT-FIRST-CONNECT at trunk `e164717`**
+**As of:** 2026-10-09 17:55 EDT. **FRESH-CLONE TEST PASSED on `e164717` (17:41–17:49, load up to
+173): `cargo test --workspace` 1068 passed, 0 failed; `cargo deny` ok; steward 803 passed,
+typecheck ok (`docs/evidence/2026-10-09/fresh-clone/`). Landing these docs (this roadmap, the
+fresh-clone evidence, the EVIDENCE-CHECK-SH fix) on the trunk as `lane-docs-milestone-2`, then
+the orchestrator merges pull request 2 into `main` (both reviews posted, full gate: Sandbox gates
+on every commit, fresh clone clean).** After that: the video script and form rewrite for Felix
+(draft in the scratchpad `orch/submission-form-draft.md`), and the boxes below as lanes. **MERGED 17:41: SWARM-RECONNECT-FIRST-CONNECT at trunk `e164717`**
 (claim 85, no hold; the trunk fast-forwarded; tree `489eb2c` equals the lane commit's; mirrored to
 GitHub `artifacts-trunk`, so pull request 2 now carries 243 commits; lane daemon stopped, worktree,
-branch and token file reclaimed). **Running: the fresh-clone test again on `e164717`** (scratchpad
-`fresh-clone/run2`, same script); when it passes, or fails only on the filed load flakes with each
-passing alone, the pull request body gets the result and the orchestrator merges it into `main`
-(BUILD-PROTOCOL §2). History: the lane reported `e164717`
+branch and token file reclaimed). The second fresh-clone run is the one above. History: the lane reported `e164717`
 (tests/reconnect.rs only: `after_connected` helper, a unit test of it, the one call site; the
 reviewer-refusing tests left alone with a reason in the note); orchestrator read it (rule 00,
 test-only, no Opus pass), gated it in place with `curl` off the PATH (reconnect suite 3/3 exit 0,

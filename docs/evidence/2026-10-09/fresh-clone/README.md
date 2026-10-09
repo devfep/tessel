@@ -24,3 +24,14 @@ test arms its connection cut on the first `ClaimGranted` and refuses both agents
 on a loaded machine the second agent's first connection arrives after that grant, is refused,
 and the harness fails the run. The same tree passed the steward's Sandbox gate. Filed as
 SWARM-RECONNECT-FIRST-CONNECT in `docs/ROADMAP.md`; a test-only fix is in progress.
+
+## Second clone, after the fix (17:41–17:49, load 29–173)
+
+Clone of `artifacts-trunk` at `e164717` (SWARM-RECONNECT-FIRST-CONNECT merged); raw output in
+`run3-e164717.log`.
+
+| Step | Result |
+|---|---|
+| `cargo test --workspace` | exit 0: 1068 passed, 0 failed (17 test binaries) |
+| `cargo deny check` | advisories, bans, licenses, sources ok |
+| `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck` | ok; 803 passed, 42 files; ok |
