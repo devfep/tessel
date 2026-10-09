@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 08:50 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
+**As of:** 2026-10-09 09:20 EDT. **Orchestrator:** this session (resumed 07:16 on Felix's
 "resume"; read this block, `docs/BUILD-PROTOCOL.md`, `PLAN.md` §6 and §9).
 **Done this session:** AX-MCP closed (live check passed 07:20; evidence in
 `docs/evidence/2026-10-09/ax-mcp-live-check/`). **FIRST COMPLETED LIVE A/B RUN** (`wait`, seed 3,
@@ -33,9 +33,18 @@ AND NAMED IT (the test-run result carries the test step's stdout; only the merge
 blind, GATE-OUTPUT): `a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_sent_again`
 (reconnect.rs:115, a SWARM-RECONNECT test): 5 reconnect tries ran out while the test's local
 server still refused with 401; the reconnect suite took 76 s in the Sandbox against 17 s here
-(wall 237 s, peak 696 MB). Lane told 08:48 to make that test and its own lapse/cut tests
-independent of machine speed, commit, and STOP; then orchestrator read, resubmit (claim released
-by the lane's `tessel stop`, so a new claim), gate, approval.
+(wall 237 s, peak 696 MB). Lane hardened the tests: `ac8a38a` on top of `82ed1e4` (tests/reconnect.rs only: that test on
+`PATIENT`, `PATIENT` 40 tries from 200 ms capped at 8 s, cut delay 250 ms, the lapse test with a
+100 ms heartbeat, two trial assertions dropped because under load the shadow can submit after
+the holder merged and then no trial runs). Orchestrator read it (rule 00; no second Opus pass:
+test-only). Pushed 09:11; Sandbox `test-runs` on the fork at `ac8a38a` PASSED (exit 0, 214 s).
+Mac gate on an archive of `ac8a38a` at load 90–105 (other sessions): 1 failure,
+`a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` (tests/on_local.rs:612,
+a pre-existing test with a fixed 6 s bound on the shadow's submit; the lane saw 6.5–7.6 s pushes
+under load, 3 failures in 9 runs), everything else passed. Ruling: the lane did not touch that
+test and the Sandbox passed the same tree, so the submission is approved on the Sandbox pass plus
+the Mac pass at `82ed1e4`; the test is filed as SWARM-ONLOCAL-LOAD (below) for the same lane right
+after the merge, before the live `shadow` run.
 **Orchestrator tooling this session** (scratchpad `orch/`): `ab-run.sh <policy> <out>`,
 `gate.sh <wt> <sha> <copy>` (curl off PATH), `test-run.sh <repo> <out.json>` (Sandbox gate of a
 repo's main; the json names failing tests), `watch-trunk.sh <old-sha>` (ls-remote with a read
@@ -812,11 +821,20 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
+- [ ] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
+  `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
+  submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
+  push alone takes 6.5–7.6 s. Make the bound relative to a measured baseline in the test (as
+  SWARM-RECONNECT did for its load-sensitive tests) or assert order instead of a wall-clock bound.
+  Small; same lane; before the live `shadow` run.
 - [ ] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
   "tests failed (exit code 101)", then the same tree passed a Sandbox test-run and the next merge.
   The trial result keeps only the last step's stdout/stderr (the pnpm step), so the failing cargo
   test is unknown. Keep each step's output (or the failing step's tail) in the trial result and
   the `submit_rejected` notice, so an intermittent failure names its test. Steward only.
+  Workaround found Oct 9: `POST /repos/<fork>/test-runs` runs the same gate on the fork's main
+  and its json keeps the failing step's stdout, so the orchestrator can name the test
+  (`scratchpad/orch/test-run.sh`).
 - [x] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
