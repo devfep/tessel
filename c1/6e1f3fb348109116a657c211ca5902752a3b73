@@ -1,0 +1,4 @@
+intent: record the hardening commit, both gate results and the approval ruling
+assumes: the Sandbox gate is the same gate the merge path runs
+rejected: a second Opus pass on test-only changes (rule 00 read instead)
+evidence: test-run json exit 0 in the scratchpad; Mac gate output in the session task log
