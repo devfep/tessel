@@ -1,0 +1,4 @@
+intent: shadow-policy agents reconnect and resume like wait/skip agents (SWARM-SHADOW-RECONNECT)
+assumes: the agent's in-process Held (claim, fence) survives the reset; a reset before the Shadowed reply is read is not recoverable without protocol change (ClaimShadowed has no fence or task), so that agent claims again
+rejected: inferring the fence from gaps in the log (depends on coordinator internals); adding fence/intent to ClaimShadowed (protocol frozen)
+evidence: cargo test --workspace 1045 passed 0 failed (predicted 1045); clippy --workspace --all-targets -D warnings clean; rustfmt --check clean; 7 mutants all caught
