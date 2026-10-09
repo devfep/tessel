@@ -1,0 +1,4 @@
+intent: record the dispatch and bring one recommendation for REVIEW-SENSITIVE
+assumes: none
+rejected: a coordinator var for the sensitive list (second place to configure per repo)
+evidence: docs only
