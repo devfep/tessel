@@ -960,9 +960,13 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **SWARM-PUSH-PHRASES** — from the code review (verified 25, cheap): `tessel-swarm/src/git.rs:27–45`
   add "the remote end hung up unexpectedly", "unexpected disconnect while reading sideband
   packet", "connection timed out", "empty reply from server" to the transient set, with tests.
-- [ ] **EVIDENCE-CHECK-SH** — from the code review (verified 25): `docs/evidence/2026-10-06/coord-head-live/check.sh:9`
+- [x] **EVIDENCE-CHECK-SH** — from the code review (verified 25): `docs/evidence/2026-10-06/coord-head-live/check.sh:9`
   sources `/Users/felixpatawah/...` under `set -a`. Resolve the path from the script's location
   with an override variable, read only `STEWARD_ADMIN_TOKEN`, drop `set -a`. Docs; orchestrator.
+  CLOSED 2026-10-09 on `sprint/build` (lands on the trunk with the next docs commit): the token
+  comes from the environment or, read alone in a subshell, from `.dev.vars` found relative to the
+  script (`DEV_VARS` overrides); nothing is exported; shellcheck and shfmt clean; the missing-file
+  path exits 1 with a message.
 - [ ] **SWARM-RECONNECT-FIRST-CONNECT** — from the fresh-clone test (Oct 9): `tests/reconnect.rs`
   `agents_that_cannot_reconnect_end_as_disconnected_after_their_tries` arms its cut on the first
   `ClaimGranted` and refuses both agents; on a loaded Mac the second agent's first connection

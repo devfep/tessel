@@ -4,10 +4,21 @@ set -euo pipefail
 
 steward=https://tessel-steward.devfep.workers.dev
 coord=tessel-coordinator.devfep.workers.dev
-set -a
-# shellcheck source=/dev/null
-. /Users/felixpatawah/repos/tessel/tessel-steward/.dev.vars
-set +a
+# The admin token comes from the environment, or from the steward's .dev.vars found relative to
+# this script (override with DEV_VARS). Only that one variable is read; nothing is exported.
+if [ -z "${STEWARD_ADMIN_TOKEN:-}" ]; then
+  dev_vars="${DEV_VARS:-$(cd "$(dirname "$0")/../../../.." && pwd)/tessel-steward/.dev.vars}"
+  [ -r "$dev_vars" ] || {
+    echo "set STEWARD_ADMIN_TOKEN or DEV_VARS (no $dev_vars)" >&2
+    exit 1
+  }
+  # shellcheck source=/dev/null
+  STEWARD_ADMIN_TOKEN="$(. "$dev_vars" && printf '%s' "${STEWARD_ADMIN_TOKEN:-}")"
+  [ -n "$STEWARD_ADMIN_TOKEN" ] || {
+    echo "no STEWARD_ADMIN_TOKEN in $dev_vars" >&2
+    exit 1
+  }
+fi
 
 admin_post() {
   printf 'header = "Authorization: Bearer %s"\n' "$STEWARD_ADMIN_TOKEN" |
