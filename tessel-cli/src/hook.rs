@@ -190,8 +190,7 @@ impl Outcome {
                         },
                     ),
                     None => format!(
-                        "{}moves not shown: the daemon did not answer with its state, so they could not \
-                         be computed\n",
+                        "{}moves not shown: the daemon did not answer with its state\n",
                         conflicts_text(&conflicts)
                     ),
                 };
