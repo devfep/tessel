@@ -12,10 +12,22 @@ and `NotebookEdit`, whether or not you follow this file.
 
 ## Setup
 
-Set `TESSEL_COORDINATOR` (the `ws://` or `wss://` base URL), `TESSEL_REPO`, `TESSEL_AGENT` (letters,
-digits, `.`, `_`, `-`; start with a letter or digit) and `TESSEL_TOKEN`, or the keys `coordinator`,
-`repo`, `agent`, `token` in `.tessel/config.toml` (the file wins). The token is secret: never print,
-log, commit or paste it.
+Once per worktree, `tessel init` does everything below in one rerunnable step:
+
+```
+tessel init --coordinator <wss://…> --repo <name> --agent <name> [--steward <https://…>]
+```
+
+A flag wins over `.tessel/config.toml`, which wins over the `TESSEL_*` variables. The token is kept
+from the file, else taken from `TESSEL_TOKEN`, else minted at `--steward` with
+`STEWARD_ADMIN_TOKEN`. It writes `.tessel/config.toml` (mode 0600), keeps `.tessel/` out of git
+through `.git/info/exclude`, and installs the Claude Code and git hooks. It never prints the token.
+Then `tessel start "<one line: what this work is for>"`.
+
+Or by hand. Set `TESSEL_COORDINATOR` (the `ws://` or `wss://` base URL), `TESSEL_REPO`,
+`TESSEL_AGENT` (letters, digits, `.`, `_`, `-`; start with a letter or digit) and `TESSEL_TOKEN`,
+or the keys `coordinator`, `repo`, `agent`, `token` in `.tessel/config.toml` (the file wins). The
+token is secret: never print, log, commit or paste it.
 
 Then, once per worktree:
 

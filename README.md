@@ -34,6 +34,9 @@ Mint a token with the steward's admin route (the response has `token`):
     curl -X POST -H "Authorization: Bearer $STEWARD_ADMIN_TOKEN" \
       https://<steward>/repos/demo/agents/a1/identity
 
+`tessel init --steward <url>` makes this call for you and writes the token to
+`.tessel/config.toml` when `STEWARD_ADMIN_TOKEN` is set in the environment.
+
 ## Run locally
     npx wrangler dev
     # in another terminal (install websocat, e.g. `brew install websocat`):

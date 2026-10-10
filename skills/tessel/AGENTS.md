@@ -5,9 +5,12 @@ you edit it. A pre-edit hook enforces this; these rules keep you out of its way.
 
 ## Setup
 
-Set `TESSEL_COORDINATOR`, `TESSEL_REPO`, `TESSEL_AGENT` and `TESSEL_TOKEN` (or the same keys in
-`.tessel/config.toml`). The token is secret: never print, log or commit it. Then, once per
-worktree:
+`tessel init --coordinator <wss://…> --repo <name> --agent <name> [--steward <https://…>]` does
+the steps below in one rerunnable command (token: kept from `.tessel/config.toml`, else
+`TESSEL_TOKEN`, else minted at `--steward` with `STEWARD_ADMIN_TOKEN`); then `tessel start`.
+Or by hand: set `TESSEL_COORDINATOR`, `TESSEL_REPO`, `TESSEL_AGENT` and `TESSEL_TOKEN` (or the
+same keys in `.tessel/config.toml`). The token is secret: never print, log or commit it. Then, once
+per worktree:
 
     tessel hook install
     tessel start "<one line: what this work is for>"

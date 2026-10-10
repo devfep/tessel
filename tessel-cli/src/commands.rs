@@ -16,6 +16,7 @@ use crate::daemon;
 use crate::githook;
 use crate::hook::{self, Installed};
 use crate::inbox_hook;
+use crate::init;
 use crate::moves::{holding_now, Holding, Situation};
 use crate::plan;
 use crate::render::{
@@ -87,6 +88,7 @@ impl Report {
 pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     match command {
+        Command::Init(flags) => init_command(&cwd, &flags),
         Command::Start { summary, task } => Ok(start(&cwd, summary, task).await?.emit()),
         Command::Claim {
             scopes,
@@ -684,6 +686,12 @@ async fn pre_edit(root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
         complain(&verdict.message);
     }
     Ok(ExitCode::from(verdict.exit))
+}
+
+fn init_command(cwd: &Path, flags: &init::Flags) -> anyhow::Result<ExitCode> {
+    let card = init::run(cwd, flags, &|name| std::env::var(name).ok(), &init::Curl)?;
+    say(&card);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn install(cwd: &Path) -> anyhow::Result<ExitCode> {
