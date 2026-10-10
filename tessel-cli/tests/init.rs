@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use support::{Agent, Done, Fake};
+use support::{git, Agent, Done, Fake};
 
 const TOKEN: &str = "tok-init-S3CRETvalue";
 const OTHER_TOKEN: &str = "tok-other-S3CRETvalue";
@@ -40,10 +40,14 @@ async fn world() -> Result<(Fake, Agent)> {
 /// `tessel init <args>` in the agent's repository with exactly the `TESSEL_*` and steward
 /// variables in `env`.
 fn init(agent: &Agent, args: &[&str], env: &[(&str, &str)]) -> Result<Done> {
+    init_in(&agent.root(), args, env)
+}
+
+fn init_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Done> {
     let output = Command::new(env!("CARGO_BIN_EXE_tessel"))
         .arg("init")
         .args(args)
-        .current_dir(agent.root())
+        .current_dir(dir)
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("TESSEL_COORDINATOR")
         .env_remove("TESSEL_REPO")
@@ -268,10 +272,10 @@ async fn the_file_token_is_kept_when_the_environment_differs() -> Result<()> {
 }
 
 #[tokio::test]
-async fn a_flag_changes_the_file_and_the_token_stays() -> Result<()> {
+async fn a_flag_that_keeps_the_identity_changes_the_file_and_the_token_stays() -> Result<()> {
     let (_fake, agent) = world().await?;
     assert_eq!(init(&agent, &FLAGS, &[("TESSEL_TOKEN", TOKEN)])?.code, 0);
-    let done = init(&agent, &["--agent", "a2"], &[])?;
+    let done = init(&agent, &["--coordinator", "wss://moved.example.test"], &[])?;
     assert_eq!(done.code, 0, "{}", done.all());
     assert!(
         done.stdout
@@ -281,7 +285,27 @@ async fn a_flag_changes_the_file_and_the_token_stays() -> Result<()> {
     );
     let file = std::fs::read_to_string(config_path(&agent))?;
     assert!(
-        file.contains("agent = \"a2\"") && file.contains(TOKEN),
+        file.contains("wss://moved.example.test") && file.contains(TOKEN),
+        "{file}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn another_agent_never_inherits_the_kept_token() -> Result<()> {
+    let (_fake, agent) = world().await?;
+    assert_eq!(init(&agent, &FLAGS, &[("TESSEL_TOKEN", TOKEN)])?.code, 0);
+    let before = std::fs::read_to_string(config_path(&agent))?;
+    let done = init(&agent, &["--agent", "a2"], &[])?;
+    assert_ne!(done.code, 0, "{}", done.all());
+    assert!(done.stderr.contains("TESSEL_TOKEN"), "{}", done.stderr);
+    assert!(!done.all().contains(TOKEN), "{}", done.all());
+    assert_eq!(std::fs::read_to_string(config_path(&agent))?, before);
+    let done = init(&agent, &["--agent", "a2"], &[("TESSEL_TOKEN", OTHER_TOKEN)])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let file = std::fs::read_to_string(config_path(&agent))?;
+    assert!(
+        file.contains(OTHER_TOKEN) && !file.contains(TOKEN),
         "{file}"
     );
     Ok(())
@@ -327,5 +351,88 @@ async fn init_outside_a_git_worktree_fails_with_advice() -> Result<()> {
         done.stderr
     );
     assert!(!done.all().contains(TOKEN));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_exclude_file_that_is_not_utf8_keeps_its_rules() -> Result<()> {
+    let (_fake, agent) = world().await?;
+    let exclude = agent.root().join(".git/info/exclude");
+    let mut original = b"keep-me\n\xff\xfe-rule".to_vec();
+    std::fs::write(&exclude, &original)?;
+    let done = init(&agent, &FLAGS, &[("TESSEL_TOKEN", TOKEN)])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    original.extend_from_slice(b"\n.tessel/\n");
+    assert_eq!(std::fs::read(&exclude)?, original);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_linked_worktree_adds_the_rule_to_the_shared_exclude_file() -> Result<()> {
+    let (_fake, agent) = world().await?;
+    let holder = tempfile::tempdir()?;
+    let linked = holder.path().join("wt");
+    git(
+        &agent.root(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    )?;
+    assert!(linked.join(".git").is_file());
+    let done = init_in(&linked.canonicalize()?, &FLAGS, &[("TESSEL_TOKEN", TOKEN)])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(
+        done.stdout.contains("added .tessel/ to .git/info/exclude"),
+        "{}",
+        done.stdout
+    );
+    assert!(exclude_text(&agent)?.lines().any(|line| line == ".tessel/"));
+    git(&linked, &["check-ignore", "-q", ".tessel"])?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_malformed_config_file_is_reported_without_its_token() -> Result<()> {
+    let (_fake, agent) = world().await?;
+    std::fs::create_dir(agent.root().join(".tessel"))?;
+    std::fs::write(
+        config_path(&agent),
+        format!("repo = \"demo\"\ntoken = {TOKEN}\n"),
+    )?;
+    let done = init(&agent, &FLAGS, &[("TESSEL_TOKEN", OTHER_TOKEN)])?;
+    assert_ne!(done.code, 0, "{}", done.all());
+    assert!(
+        done.stderr.contains("invalid") && done.stderr.contains("line 2"),
+        "{}",
+        done.stderr
+    );
+    assert!(
+        !done.all().contains(TOKEN) && !done.all().contains(OTHER_TOKEN),
+        "{}",
+        done.all()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_loose_tessel_directory_is_tightened_and_reported() -> Result<()> {
+    let (_fake, agent) = world().await?;
+    assert_eq!(init(&agent, &FLAGS, &[("TESSEL_TOKEN", TOKEN)])?.code, 0);
+    let dir = agent.root().join(".tessel");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))?;
+    let done = init(&agent, &FLAGS, &[])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(
+        done.stdout
+            .contains("kept .tessel/config.toml (token kept; .tessel/ set to 0700)"),
+        "{}",
+        done.stdout
+    );
+    assert_eq!(mode(&dir)?, 0o700);
     Ok(())
 }

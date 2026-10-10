@@ -6,7 +6,7 @@
 //! The token never reaches the output: every error text passes through `Secrets::scrub`.
 
 use std::fmt::Write as _;
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -179,8 +179,8 @@ pub fn run(
         secrets.add(secret);
     }
     let names = resolve_names(flags, &existing.values, env)?;
-    let source = token_source(flags, &existing.values, env, &names)?;
     validate(&names)?;
+    let source = token_source(flags, &existing.values, env, &names)?;
     let obtained = obtain(source, &names, transport, &mut secrets)?;
     let config_line = write_config(&path, &existing, &names, &obtained)
         .map_err(|e| anyhow!("{}", secrets.scrub(&format!("{e:#}"))))?;
@@ -282,7 +282,12 @@ fn token_source(
     env: Env<'_>,
     names: &Names,
 ) -> anyhow::Result<TokenSource> {
-    if let (Some(token), None) = (non_empty(file.token.clone()), &flags.steward) {
+    // A token is bound to one repo and one agent, so it is kept only for the same identity.
+    let same_identity = file.repo.as_deref() == Some(names.repo.as_str())
+        && file.agent.as_deref() == Some(names.agent.as_str());
+    if let (Some(token), None, true) =
+        (non_empty(file.token.clone()), &flags.steward, same_identity)
+    {
         return Ok(TokenSource::Kept(token));
     }
     if let Some(token) = non_empty(env(ENV_TOKEN)) {
@@ -473,6 +478,48 @@ fn config_text(names: &Names, token: &str) -> String {
     )
 }
 
+/// Creates `.tessel/` with mode 0700, or tightens an existing one; says what it changed.
+fn private_dir(dir: &Path) -> anyhow::Result<Option<&'static str>> {
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => bail!("cannot create {}: {e}", dir.display()),
+    }
+    let meta = std::fs::metadata(dir).with_context(|| format!("cannot read {}", dir.display()))?;
+    if meta.permissions().mode() & 0o777 == 0o700 {
+        return Ok(None);
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("cannot set the mode of {}", dir.display()))?;
+    Ok(Some(".tessel/ set to 0700"))
+}
+
+/// Writes `text` to a private temp file and renames it over `path`; the temp file is removed on
+/// failure.
+fn replace_private(path: &Path, text: &str) -> anyhow::Result<()> {
+    let temp = path.with_extension("toml.tmp");
+    let write = || -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp)
+            .with_context(|| format!("cannot write {}", temp.display()))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+            .with_context(|| format!("cannot replace {}", path.display()))?;
+        Ok(())
+    };
+    let result = write();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 /// Writes the file when its text or mode differs, and returns the card line.
 fn write_config(
     path: &Path,
@@ -481,31 +528,19 @@ fn write_config(
     obtained: &Obtained,
 ) -> anyhow::Result<String> {
     let text = config_text(names, &obtained.token);
+    let mut note = obtained.note.clone();
+    if let Some(dir) = path.parent() {
+        if let Some(tightened) = private_dir(dir)? {
+            note = format!("{note}; {tightened}");
+        }
+    }
     let mode_ok =
         std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o777 == 0o600);
     if existing.text.as_deref() == Some(text.as_str()) && mode_ok {
-        return Ok(format!("kept .tessel/config.toml ({})", obtained.note));
+        return Ok(format!("kept .tessel/config.toml ({note})"));
     }
-    if let Some(dir) = path.parent() {
-        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => bail!("cannot create {}: {e}", dir.display()),
-        }
-    }
-    let temp = path.with_extension("toml.tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)
-        .with_context(|| format!("cannot write {}", temp.display()))?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    std::fs::rename(&temp, path).with_context(|| format!("cannot replace {}", path.display()))?;
-    Ok(format!("wrote .tessel/config.toml ({})", obtained.note))
+    replace_private(path, &text)?;
+    Ok(format!("wrote .tessel/config.toml ({note})"))
 }
 
 fn git_output(root: &Path, args: &[&str]) -> anyhow::Result<std::process::Output> {
@@ -545,14 +580,7 @@ fn ensure_ignored(root: &Path) -> anyhow::Result<String> {
     if let Some(dir) = exclude.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    let mut text = std::fs::read_to_string(&exclude).unwrap_or_default();
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(EXCLUDE_LINE);
-    text.push('\n');
-    std::fs::write(&exclude, text)
-        .with_context(|| format!("cannot write {}", exclude.display()))?;
+    append_exclude(&exclude).with_context(|| format!("cannot update {}", exclude.display()))?;
     if check(root)? != Some(true) {
         bail!(
             "added {EXCLUDE_LINE} to {} but git still does not ignore .tessel; add it to your \
@@ -561,6 +589,28 @@ fn ensure_ignored(root: &Path) -> anyhow::Result<String> {
         );
     }
     Ok("added .tessel/ to .git/info/exclude".into())
+}
+
+/// Appends the rule without rewriting the file: its other bytes need not be valid UTF-8.
+fn append_exclude(exclude: &Path) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(exclude)?;
+    let len = file.metadata()?.len();
+    let mut line = Vec::new();
+    if len > 0 {
+        file.seek(SeekFrom::Start(len - 1))?;
+        let mut last = [0_u8; 1];
+        file.read_exact(&mut last)?;
+        if last != *b"\n" {
+            line.push(b'\n');
+        }
+    }
+    line.extend_from_slice(EXCLUDE_LINE.as_bytes());
+    line.push(b'\n');
+    file.write_all(&line)
 }
 
 fn install_hooks(worktree: &Worktree) -> anyhow::Result<String> {
@@ -788,6 +838,8 @@ mod tests {
 
     fn file_with_token(token: &str) -> FileValues {
         FileValues {
+            repo: Some("demo".into()),
+            agent: Some("a1".into()),
             token: Some(token.into()),
             ..FileValues::default()
         }
@@ -817,6 +869,33 @@ mod tests {
         assert!(matches!(kept, TokenSource::Kept(ref t) if t == "from-file"));
         let steward = token_source(&steward_flags(), &file, &env, &names()).unwrap();
         assert!(matches!(steward, TokenSource::FromEnv(ref t) if t == "from-env"));
+    }
+
+    #[test]
+    fn the_file_token_is_not_kept_for_another_agent_or_repo() {
+        let env = env_of(&[]);
+        let file = file_with_token("from-file");
+        for (repo, agent) in [("demo", "a2"), ("other", "a1")] {
+            let names = Names {
+                repo: repo.into(),
+                agent: agent.into(),
+                ..names()
+            };
+            let kept = matches!(
+                token_source(&Flags::default(), &file, &env, &names),
+                Ok(TokenSource::Kept(_))
+            );
+            assert!(!kept, "{repo}/{agent}");
+        }
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::create_dir_all(path.join("inside")).unwrap();
+        assert!(replace_private(&path, "x = 1\n").is_err());
+        assert!(!dir.path().join("config.toml.tmp").exists());
     }
 
     #[test]
