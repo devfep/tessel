@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 22:20 EDT. **REVIEW-CARD REPORTED `608a7e9` (22:16; 12 steward files, +1480/-177; approve token issued with the diff, receipt route, wait and assumption folds; steward 885 tests with a 60 s timeout, 7 integration timeouts at load 127 on the plain run); Opus reviewer `review-rc` dispatched 22:20 (brief `orch/review-brief-review-card.md`; asked to require the held claim's own assumptions back under INTENT). CLI-CARD still running.** **UX DECIDED by Felix (21:50, from the rendered mockups
+**As of:** 2026-10-09 22:25 EDT. **REVIEW-CARD REVIEW 1: "With fixes" (22:22) on `608a7e9`; fix pass sent to the same lane 22:25: (1) a rejected claim stays live in the fold (the coordinator reopens it with its locks, `merging.rs:401`; the brief's "not rejected" was the orchestrator's error), (2) the receipt completes at `submit_rejected` with no grants, (3) "unblocks K" counts a waiter only when its mode conflicts with the touched mode (`Mode::conflicts_with`), (4) the held claim's own assumptions back under INTENT, (5) eight lines over 100 characters, (6) a non-integer queue position is skipped. Reviewer's own five mutants all killed; its gate 885 passed at load 30. Reviewer `review-rc` idle.** Earlier: REVIEW-CARD REPORTED `608a7e9` (22:16; 12 steward files, +1480/-177; approve token issued with the diff, receipt route, wait and assumption folds; steward 885 tests with a 60 s timeout, 7 integration timeouts at load 127 on the plain run); Opus reviewer `review-rc` dispatched 22:20 (brief `orch/review-brief-review-card.md`; asked to require the held claim's own assumptions back under INTENT). CLI-CARD still running.** **UX DECIDED by Felix (21:50, from the rendered mockups
 https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6, three boards): build the CLI card, then the review
 decision card; `tessel init` is in, with the manual steps kept as the fallback; the Floor and the
 rest of the proposal are recorded under "Post-contest" at the end of this file and not built.
@@ -1090,7 +1090,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **REVIEW-CARD** — Felix's UX decision (Oct 9; board 2): the steward's review page becomes a
   decision card per held submission, sorted by how many agents a decision unblocks: why you (the
   hold reasons), waiting and exposed (agents queued on the touched scopes with their position;
-  other live claims' declared assumptions on those scopes, quoted as data), the intent and evidence
+  other live claims' declared assumptions on those scopes, quoted as data; a claim whose submission was rejected is still live, with its locks), the intent and evidence
   quoted as data, what changed (touched scopes, the hold's scope first) with the diff on demand, and
   a receipt of logged events after the decision (`review_decided`, then `merged` or
   `submit_rejected`, then the waiting agents' grants; a line not yet logged says what it waits
