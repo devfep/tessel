@@ -315,8 +315,9 @@ fn token_source(
              existing token in {ENV_TOKEN}"
         ),
         (None, _) => bail!(
-            "{dropped}no token: set {ENV_TOKEN}, or export {ENV_ADMIN} and pass --steward <https://…> so \
-             init mints one. By hand: curl -X POST -H \"Authorization: Bearer ${ENV_ADMIN}\" \
+            "{dropped}no token: set {ENV_TOKEN}, or export {ENV_ADMIN} and pass --steward \
+             <https://…> so init mints one. By hand: \
+             curl -X POST -H \"Authorization: Bearer ${ENV_ADMIN}\" \
              https://<steward>/repos/{}/agents/{}/identity, then put the `token` of the reply in \
              {ENV_TOKEN}",
             names.repo,
