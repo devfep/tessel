@@ -282,13 +282,24 @@ fn token_source(
     env: Env<'_>,
     names: &Names,
 ) -> anyhow::Result<TokenSource> {
-    // A token is bound to one repo and one agent, so it is kept only for the same identity.
-    let same_identity = file.repo.as_deref() == Some(names.repo.as_str())
-        && file.agent.as_deref() == Some(names.agent.as_str());
-    if let (Some(token), None, true) =
-        (non_empty(file.token.clone()), &flags.steward, same_identity)
-    {
-        return Ok(TokenSource::Kept(token));
+    // A token is bound to one repo and one agent, so it is kept only for the identity the file
+    // implies: each key from the file, else the environment, as `Config::load` reads it.
+    let file_repo = non_empty(file.repo.clone()).or_else(|| non_empty(env(ENV_REPO)));
+    let file_agent = non_empty(file.agent.clone()).or_else(|| non_empty(env(ENV_AGENT)));
+    let same_identity = file_repo.as_deref() == Some(names.repo.as_str())
+        && file_agent.as_deref() == Some(names.agent.as_str());
+    let mut dropped = String::new();
+    if let (Some(token), None) = (non_empty(file.token.clone()), &flags.steward) {
+        if same_identity {
+            return Ok(TokenSource::Kept(token));
+        }
+        dropped = format!(
+            "the token in .tessel/config.toml is for {}/{}, not {}/{}; ",
+            escape(file_repo.as_deref().unwrap_or("?")),
+            escape(file_agent.as_deref().unwrap_or("?")),
+            names.repo,
+            names.agent
+        );
     }
     if let Some(token) = non_empty(env(ENV_TOKEN)) {
         return Ok(TokenSource::FromEnv(token));
@@ -304,7 +315,7 @@ fn token_source(
              existing token in {ENV_TOKEN}"
         ),
         (None, _) => bail!(
-            "no token: set {ENV_TOKEN}, or export {ENV_ADMIN} and pass --steward <https://…> so \
+            "{dropped}no token: set {ENV_TOKEN}, or export {ENV_ADMIN} and pass --steward <https://…> so \
              init mints one. By hand: curl -X POST -H \"Authorization: Bearer ${ENV_ADMIN}\" \
              https://<steward>/repos/{}/agents/{}/identity, then put the `token` of the reply in \
              {ENV_TOKEN}",

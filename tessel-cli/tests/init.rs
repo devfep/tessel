@@ -298,6 +298,12 @@ async fn another_agent_never_inherits_the_kept_token() -> Result<()> {
     let before = std::fs::read_to_string(config_path(&agent))?;
     let done = init(&agent, &["--agent", "a2"], &[])?;
     assert_ne!(done.code, 0, "{}", done.all());
+    assert!(
+        done.stderr
+            .contains("the token in .tessel/config.toml is for demo/a1, not demo/a2; "),
+        "{}",
+        done.stderr
+    );
     assert!(done.stderr.contains("TESSEL_TOKEN"), "{}", done.stderr);
     assert!(!done.all().contains(TOKEN), "{}", done.all());
     assert_eq!(std::fs::read_to_string(config_path(&agent))?, before);
@@ -434,5 +440,23 @@ async fn a_loose_tessel_directory_is_tightened_and_reported() -> Result<()> {
         done.stdout
     );
     assert_eq!(mode(&dir)?, 0o700);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_token_only_file_is_kept_for_the_identity_in_the_environment() -> Result<()> {
+    let (_fake, agent) = world().await?;
+    std::fs::create_dir(agent.root().join(".tessel"))?;
+    std::fs::write(config_path(&agent), format!("token = \"{TOKEN}\"\n"))?;
+    let env = [
+        ("TESSEL_COORDINATOR", "wss://c.example.test"),
+        ("TESSEL_REPO", "demo"),
+        ("TESSEL_AGENT", "a1"),
+    ];
+    let done = init(&agent, &[], &env)?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(done.stdout.contains("(token kept"), "{}", done.stdout);
+    assert!(std::fs::read_to_string(config_path(&agent))?.contains(TOKEN));
+    assert!(!done.all().contains(TOKEN), "{}", done.all());
     Ok(())
 }
