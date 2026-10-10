@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 22:05 EDT. **UX DECIDED by Felix (21:50, from the rendered mockups
+**As of:** 2026-10-09 22:20 EDT. **REVIEW-CARD REPORTED `608a7e9` (22:16; 12 steward files, +1480/-177; approve token issued with the diff, receipt route, wait and assumption folds; steward 885 tests with a 60 s timeout, 7 integration timeouts at load 127 on the plain run); Opus reviewer `review-rc` dispatched 22:20 (brief `orch/review-brief-review-card.md`; asked to require the held claim's own assumptions back under INTENT). CLI-CARD still running.** **UX DECIDED by Felix (21:50, from the rendered mockups
 https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6, three boards): build the CLI card, then the review
 decision card; `tessel init` is in, with the manual steps kept as the fallback; the Floor and the
 rest of the proposal are recorded under "Post-contest" at the end of this file and not built.
