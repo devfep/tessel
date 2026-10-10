@@ -263,6 +263,11 @@ describe("foldExposure waiters", () => {
     },
   );
 
+  it("skips a touched entry that has no scope instead of throwing", () => {
+    const touched = [{ mode: "edit_body" }, ...TOUCHED] as unknown as typeof TOUCHED;
+    expect(exposed([waitQueued("w1", 1, FILE.scope)], touched).waiters).toHaveLength(1);
+  });
+
   it("sees the log as it stood at a prefix", () => {
     const events = [
       waitQueued("w1", 1, FILE.scope),

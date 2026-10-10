@@ -165,7 +165,7 @@ export interface Waiter {
   agent: string;
   /** The queue position logged when the request was queued. */
   position: number;
-  /** The first of the request's scopes that overlaps a touched scope. */
+  /** The first of the request's scopes that overlaps and conflicts in mode with a touched scope. */
   scope: ScopeView;
 }
 
@@ -309,7 +309,10 @@ export function foldExposure(
   for (const [agent, wait] of pending) {
     const blocked = wait.scopes.find((claimed) =>
       touched.some(
-        (t) => scopesOverlap(t.scope, claimed.scope) && modesConflict(claimed.mode, t.mode),
+        (t) =>
+          isScope(t.scope) &&
+          scopesOverlap(t.scope, claimed.scope) &&
+          modesConflict(claimed.mode, t.mode),
       ),
     );
     if (blocked !== undefined && Number.isInteger(wait.position)) {
