@@ -7,6 +7,7 @@ mod githook;
 mod hook;
 mod inbox_hook;
 mod mcp;
+mod moves;
 mod plan;
 mod reconcile;
 mod render;
@@ -61,6 +62,9 @@ enum Command {
         /// Make a separate claim instead of adding the scopes to your one open claim.
         #[arg(long)]
         new: bool,
+        /// Print one JSON envelope with the outcome and the moves open to you.
+        #[arg(long)]
+        json: bool,
     },
     /// Daemon state, connection, held claims and unread inbox items.
     Status {

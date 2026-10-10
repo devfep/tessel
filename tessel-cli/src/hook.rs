@@ -10,8 +10,9 @@ use serde_json::{json, Value};
 use tessel_coordinator::protocol::{Conflict, Mode, Scope, ScopeClaim};
 use thiserror::Error;
 
+use crate::moves::{Holding, Situation};
 use crate::plan::{file_claims, plan_create, plan_edit, plan_rewrite, Replace};
-use crate::render::{denial_text, escape, mode_text, one_line, quote_untrusted};
+use crate::render::{denial_text, escape, one_line, quote_untrusted};
 use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request};
 use crate::scope::{locate, Located};
 use crate::state::write_atomic;
@@ -104,7 +105,7 @@ enum Outcome {
     DaemonUnreachable(ClientError),
     Denied {
         rel: String,
-        hint: String,
+        situation: Situation,
         conflicts: Vec<Conflict>,
     },
     Queued {
@@ -174,12 +175,12 @@ impl Outcome {
             Self::DaemonUnreachable(e) => block(format!("tessel: cannot reach the daemon: {e}\n")),
             Self::Denied {
                 rel,
-                hint,
+                situation,
                 conflicts,
             } => block(format!(
                 "tessel: cannot edit {}; another agent holds it.\n{}",
                 escape(&rel),
-                denial_text(&conflicts, &escape(&hint))
+                denial_text(&conflicts, &situation)
             )),
             Self::Queued { rel } => block(format!(
                 "tessel: {} is queued behind another agent; wait for the grant in `tessel inbox`\n",
@@ -319,42 +320,15 @@ pub fn claim_arg(scope: &Scope) -> String {
     }
 }
 
-/// The `tessel claim` command that waits for these scopes, one per mode.
-fn wait_hint(wanted: &[ScopeClaim]) -> String {
-    let mut modes: Vec<Mode> = Vec::new();
-    for claim in wanted {
-        if !modes.contains(&claim.mode) {
-            modes.push(claim.mode);
-        }
-    }
-    let commands: Vec<String> = modes
-        .iter()
-        .map(|mode| {
-            let scopes: Vec<String> = wanted
-                .iter()
-                .filter(|claim| claim.mode == *mode)
-                .map(|claim| shell_quote(&claim_arg(&claim.scope)))
-                .collect();
-            let flag = match mode {
-                Mode::EditBody => String::new(),
-                Mode::Depend | Mode::EditSignature | Mode::Create => {
-                    format!(" --mode {}", mode_text(*mode))
-                }
-            };
-            format!("tessel claim {}{flag} --wait", scopes.join(" "))
-        })
-        .collect();
-    commands.join("; ")
-}
-
 async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
     let rel = wanted
         .iter()
         .map(|claim| claim_arg(&claim.scope))
         .collect::<Vec<_>>()
         .join(", ");
-    let hint = wait_hint(&wanted);
-    let request = Request::Ensure { wanted };
+    let request = Request::Ensure {
+        wanted: wanted.clone(),
+    };
     let reply = match rpc::call(&worktree.sock(), &request, HOOK_TIMEOUT).await {
         Ok(reply) => reply,
         Err(ClientError::NotRunning) => return Outcome::NoDaemon(worktree.sock()),
@@ -371,7 +345,10 @@ async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
             outcome: ClaimOutcome::Denied { conflicts },
         } => Outcome::Denied {
             rel,
-            hint,
+            situation: Situation {
+                asked: wanted,
+                holding: held_claims(worktree).await,
+            },
             conflicts,
         },
         Reply::Claim {
@@ -385,6 +362,14 @@ async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
         | Reply::Released { .. }
         | Reply::Submit { .. }
         | Reply::Stopping { .. } => Outcome::UnexpectedReply,
+    }
+}
+
+/// The claims the daemon holds now, which decide whether a `--wait` can be queued.
+async fn held_claims(worktree: &Worktree) -> Holding {
+    match rpc::call(&worktree.sock(), &Request::Status, HOOK_TIMEOUT).await {
+        Ok(Reply::Status { state }) => Holding::from_held(&state.claims),
+        Ok(_) | Err(_) => Holding::Unknown,
     }
 }
 
