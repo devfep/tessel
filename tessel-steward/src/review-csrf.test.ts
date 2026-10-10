@@ -5,7 +5,13 @@ import { CSRF_TTL_MS, mintCsrfToken, parseReviewerEmails, verifyCsrfToken } from
 const SECRET = "test-signing-key-not-a-secret";
 const NOW = 1_790_000_000_000;
 const COMMIT = "a".repeat(40);
-const SUBJECT = { email: "Felix@Example.com", repo: "demo", claim: 7, commit: COMMIT };
+const SUBJECT = {
+  email: "Felix@Example.com",
+  repo: "demo",
+  claim: 7,
+  commit: COMMIT,
+  action: "reject",
+} as const;
 
 describe("parseReviewerEmails", () => {
   it("maps lowercased emails to agents", () => {
@@ -42,7 +48,8 @@ describe("csrf token", () => {
     ["another repo", { repo: "other" }],
     ["another claim", { claim: 8 }],
     ["another commit", { commit: "b".repeat(40) }],
-  ])("is refused for %s", async (_name, change) => {
+    ["the other action", { action: "approve" }],
+  ] as const)("is refused for %s", async (_name, change) => {
     const token = await mintCsrfToken(SECRET, SUBJECT, NOW);
     expect(await verifyCsrfToken(SECRET, token, { ...SUBJECT, ...change }, NOW)).toBe(false);
   });

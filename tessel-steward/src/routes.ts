@@ -58,11 +58,11 @@ export function matchDashboardRoute(pathname: string): DashboardRoute | undefine
 
 export type ReviewRoute =
   | { kind: "page"; repo: string }
-  | { kind: "diff" | "decision"; repo: string; claim: number };
+  | { kind: "diff" | "decision" | "receipt"; repo: string; claim: number };
 
 /**
- * Matches `/review/<repo>`, `/review/<repo>/<claim>/diff` and `/review/<repo>/<claim>/decision`.
- * A claim is a plain decimal id.
+ * Matches `/review/<repo>`, and `/review/<repo>/<claim>/` followed by `diff`, `receipt` or
+ * `decision`. A claim is a plain decimal id.
  */
 export function matchReviewRoute(pathname: string): ReviewRoute | undefined {
   const [root, repo, claim, leaf, ...rest] = pathname.split("/").filter(Boolean);
@@ -73,7 +73,7 @@ export function matchReviewRoute(pathname: string): ReviewRoute | undefined {
     return { kind: "page", repo };
   }
   const id = /^\d+$/.test(claim) ? Number(claim) : Number.NaN;
-  if (!Number.isSafeInteger(id) || (leaf !== "diff" && leaf !== "decision")) {
+  if (!Number.isSafeInteger(id) || (leaf !== "diff" && leaf !== "decision" && leaf !== "receipt")) {
     return undefined;
   }
   return { kind: leaf, repo, claim: id };

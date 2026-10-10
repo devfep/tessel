@@ -3,10 +3,16 @@ import { INVALID_NAME_MESSAGE, isValidName } from "./identity";
 import { redactTokens } from "./redact";
 import { parseSha } from "./merge-types";
 import { sendReview, type DecisionOutcome } from "./review-decide";
-import { mintCsrfToken, parseReviewerEmails, verifyCsrfToken } from "./review-csrf";
+import {
+  mintCsrfToken,
+  parseReviewerEmails,
+  verifyCsrfToken,
+  type DecisionAction,
+} from "./review-csrf";
 import { readEvents } from "./review-log";
 import { reviewPage } from "./review-page";
-import { foldHeld } from "./review-state";
+import { foldReceipt } from "./review-receipt";
+import { buildCards, foldHeld, forkName } from "./review-state";
 import { matchReviewRoute, type ReviewRoute } from "./routes";
 
 const VIEWER_AGENT = "dashboard";
@@ -50,11 +56,6 @@ function json(status: number, body: unknown): Response {
   return reply(status, JSON.stringify(body), "application/json");
 }
 
-/** An agent's Artifacts fork of `repo`: the coordinator's `fork_name` in `src/merge.rs`. */
-function forkName(repo: string, agent: string): string {
-  return `${repo}--${agent}`;
-}
-
 /**
  * Why a state-changing request is refused as possibly forged, or `undefined` when it came from
  * this site. A browser always sends `Sec-Fetch-Site`; one that does not must send a matching
@@ -75,24 +76,32 @@ async function loadHeld(env: ReviewEnv, repo: string, deps: ReviewDeps) {
   return foldHeld(await readEvents(env, repo, VIEWER_AGENT, deps.logWaitMs));
 }
 
+/** The page carries only reject tokens: an approve token is issued with the diff (`diff`). */
 async function page(env: ReviewEnv, repo: string, session: Session, deps: ReviewDeps) {
-  const held = await loadHeld(env, repo, deps);
-  const csrfByClaim = new Map<number, string>();
+  const cards = buildCards(await readEvents(env, repo, VIEWER_AGENT, deps.logWaitMs));
+  const rejectTokens = new Map<number, string>();
   if (session.reviewer !== undefined) {
-    for (const item of held) {
+    for (const item of cards) {
       const subject = {
         email: session.email,
         repo,
         claim: item.claim,
         commit: item.forkCommit,
-      };
-      csrfByClaim.set(
+        action: "reject",
+      } as const;
+      rejectTokens.set(
         item.claim,
         await mintCsrfToken(env.IDENTITY_SIGNING_KEY, subject, Date.now()),
       );
     }
   }
-  return reviewPage({ repo, nonce: crypto.randomUUID(), held, csrfByClaim });
+  return reviewPage({ repo, nonce: crypto.randomUUID(), cards, rejectTokens });
+}
+
+/** What the log shows so far of what followed the decision on `claim`. Viewers may read it. */
+async function receipt(env: ReviewEnv, route: { repo: string; claim: number }, deps: ReviewDeps) {
+  const events = await readEvents(env, route.repo, VIEWER_AGENT, deps.logWaitMs);
+  return json(200, foldReceipt(events, route.claim));
 }
 
 async function diff(
@@ -114,7 +123,18 @@ async function diff(
   }
   const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
   const outcome = await runner.diff(repo, forkName(repo, item.agent), commit);
-  return json(outcome.outcome === "ok" ? 200 : 502, outcome);
+  if (outcome.outcome !== "ok") {
+    return json(502, outcome);
+  }
+  const subject = {
+    email: session.email,
+    repo,
+    claim,
+    commit: item.forkCommit,
+    action: "approve",
+  } as const;
+  const approveToken = await mintCsrfToken(env.IDENTITY_SIGNING_KEY, subject, Date.now());
+  return json(200, { ...outcome, approveToken });
 }
 
 interface Decision {
@@ -191,8 +211,9 @@ function decisionResponse(outcome: DecisionOutcome): Response {
 }
 
 /**
- * Checks that the person was shown what is held now: the token must be for this person, claim
- * and commit, and the claim must still be held at that commit. A page left open while the claim
+ * Checks that the person was shown what is held now: the token must be for this person, claim,
+ * commit and this very decision (an approve token exists only once the diff was served), and the
+ * claim must still be held at that commit. A page left open while the claim
  * was rejected and submitted again must not approve the new commit unseen.
  */
 async function checkShown(
@@ -203,7 +224,8 @@ async function checkShown(
   deps: ReviewDeps,
 ): Promise<Response | undefined> {
   const { commit, csrf } = decision;
-  const subject = { email, ...route, commit: typeof commit === "string" ? commit : "" };
+  const action: DecisionAction = decision.approve ? "approve" : "reject";
+  const subject = { email, ...route, commit: typeof commit === "string" ? commit : "", action };
   if (
     typeof commit !== "string" ||
     !(await verifyCsrfToken(env.IDENTITY_SIGNING_KEY, csrf, subject, Date.now()))
@@ -268,18 +290,23 @@ function dispatch(
       return page(env, route.repo, session, deps);
     case "diff":
       return diff(env, route, session, deps);
+    case "receipt":
+      return receipt(env, route, deps);
     case "decision":
       return decide(env, request, route, session, deps);
   }
 }
 
 /**
- * Serves `/review/<repo>` (the held submissions), `/review/<repo>/<claim>/diff` (the diff, started
- * on demand) and `POST /review/<repo>/<claim>/decision` (approve or reject). Every path first
+ * Serves `/review/<repo>` (the held submissions as decision cards), `/review/<repo>/<claim>/diff`
+ * (the diff, started on demand, with the token that unlocks approving it),
+ * `/review/<repo>/<claim>/receipt` (what the log shows after a decision) and
+ * `POST /review/<repo>/<claim>/decision` (approve or reject). Every path first
  * passes the Cloudflare Access check: 503 when sign-in is not configured, 401 without a valid
  * token, 403 for an email that is not a listed viewer. The diff, which starts a sandbox, and
  * deciding also need a `REVIEWER_EMAILS` entry for the email; deciding also needs a same-origin
- * request and the page's decision token for the commit shown.
+ * request and a token for the commit shown and the decision taken: the page's for a rejection,
+ * the diff's for an approval.
  *
  * Known limit: the page replays the whole log from seq 0 on every load under a 10 s timeout, so a
  * very large log will time out (502); a later change should fold from a summary instead.
@@ -303,7 +330,10 @@ export async function handleReview(
   }
   const route = matchReviewRoute(new URL(request.url).pathname);
   if (route === undefined) {
-    return reply(404, "expected /review/<repo>, /review/<repo>/<claim>/diff or .../decision");
+    return reply(
+      404,
+      "expected /review/<repo>, /review/<repo>/<claim>/diff, .../receipt or .../decision",
+    );
   }
   if (!isValidName(route.repo)) {
     return reply(400, INVALID_NAME_MESSAGE);

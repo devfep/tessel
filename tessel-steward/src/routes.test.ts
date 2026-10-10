@@ -66,6 +66,7 @@ describe("matchReviewRoute", () => {
     ["/review/demo/", { kind: "page", repo: "demo" }],
     ["/review/demo/12/diff", { kind: "diff", repo: "demo", claim: 12 }],
     ["/review/demo/0/decision", { kind: "decision", repo: "demo", claim: 0 }],
+    ["/review/demo/3/receipt", { kind: "receipt", repo: "demo", claim: 3 }],
   ])("matches %s", (pathname, route) => {
     expect(matchReviewRoute(pathname)).toEqual(route);
   });

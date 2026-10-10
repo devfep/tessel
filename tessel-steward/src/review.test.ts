@@ -190,7 +190,13 @@ async function decision(
 ) {
   const csrf = await mintCsrfToken(
     KEY,
-    { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+    {
+      email: VIEWER,
+      repo: "demo",
+      claim: 7,
+      commit: COMMIT,
+      action: approve ? "approve" : "reject",
+    },
     Date.now(),
   );
   return call("/review/demo/7/decision", {
@@ -206,7 +212,12 @@ function reviews(): Frame[] {
 }
 
 describe("sign-in", () => {
-  const paths = ["/review/demo", "/review/demo/7/diff", "/review/demo/7/decision"];
+  const paths = [
+    "/review/demo",
+    "/review/demo/7/diff",
+    "/review/demo/7/receipt",
+    "/review/demo/7/decision",
+  ];
 
   it.each(paths)(
     "answers 503 on %s until Access is configured, and reaches nothing",
@@ -240,7 +251,7 @@ describe("sign-in", () => {
 });
 
 describe("the page", () => {
-  it("shows a held claim with escaped agent text and a token for a reviewer", async () => {
+  it("shows a held claim with escaped agent text and a reject token for a reviewer", async () => {
     const response = await call("/review/demo");
     const html = await response.text();
     expect(response.status).toBe(200);
@@ -248,19 +259,20 @@ describe("the page", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>alert(1)");
     expect(html.match(/<script/g)).toHaveLength(1);
-    expect(html).toContain("data-csrf=");
+    expect(html).toContain("data-reject-csrf=");
+    expect(html).not.toContain("data-approve");
     expect(sockets.flatMap((s) => s.sent).every((f) => f["type"] === "watch")).toBe(true);
   });
 
   it("shows a viewer who is not a reviewer the same submission without a token", async () => {
     const html = await (await call("/review/demo", { email: "viewer@example.com" })).text();
     expect(html).toContain("Claim 7");
-    expect(html).not.toContain("data-csrf");
+    expect(html).not.toContain("data-reject-csrf");
   });
 
   it("gives nobody a token when REVIEWER_EMAILS is empty", async () => {
     const html = await (await call("/review/demo", {}, env({ REVIEWER_EMAILS: "" }))).text();
-    expect(html).not.toContain("data-csrf");
+    expect(html).not.toContain("data-reject-csrf");
   });
 
   it("never starts a sandbox", async () => {
@@ -374,7 +386,7 @@ describe("deciding", () => {
     const down = env({ COORDINATOR: { fetch: () => Promise.reject(new Error("unreachable")) } });
     const csrf = await mintCsrfToken(
       KEY,
-      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT, action: "approve" },
       Date.now(),
     );
     const response = await call(
@@ -399,7 +411,7 @@ async function refused(
 ) {
   const csrf = await mintCsrfToken(
     KEY,
-    { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+    { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT, action: "approve" },
     Date.now(),
   );
   const response = await call(
@@ -433,7 +445,7 @@ describe("forged and malformed decisions send nothing", () => {
     });
     const csrf = await mintCsrfToken(
       KEY,
-      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT, action: "approve" },
       Date.now(),
     );
     const ok = await call("/review/demo/7/decision", {
@@ -452,13 +464,13 @@ describe("forged and malformed decisions send nothing", () => {
     await refused(403, {}, { csrf: "1.abc" });
     const other = await mintCsrfToken(
       KEY,
-      { email: VIEWER, repo: "demo", claim: 8, commit: COMMIT },
+      { email: VIEWER, repo: "demo", claim: 8, commit: COMMIT, action: "approve" },
       Date.now(),
     );
     await refused(403, {}, { csrf: other });
     const old = await mintCsrfToken(
       KEY,
-      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT, action: "approve" },
       1000,
     );
     await refused(403, {}, { csrf: old });
@@ -467,7 +479,7 @@ describe("forged and malformed decisions send nothing", () => {
   it("refuses a viewer who is not a reviewer, even with a token minted for them", async () => {
     const csrf = await mintCsrfToken(
       KEY,
-      { email: "viewer@example.com", repo: "demo", claim: 7, commit: COMMIT },
+      { email: "viewer@example.com", repo: "demo", claim: 7, commit: COMMIT, action: "approve" },
       Date.now(),
     );
     await refused(403, { email: "viewer@example.com" }, { csrf });
@@ -488,7 +500,7 @@ describe("forged and malformed decisions send nothing", () => {
   it("refuses a valid body over the byte cap that is under it in characters", async () => {
     const csrf = await mintCsrfToken(
       KEY,
-      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT },
+      { email: VIEWER, repo: "demo", claim: 7, commit: COMMIT, action: "approve" },
       Date.now(),
     );
     const body = JSON.stringify({
@@ -566,6 +578,173 @@ describe("a viewer who is not a reviewer", () => {
     expect((await call("/review/demo/7/diff", viewer)).status).toBe(403);
     expect(diffCalls).toEqual([]);
     const html = await (await call("/review/demo", viewer)).text();
-    expect(html).not.toContain('data-action="diff"');
+    expect(html).not.toContain('<button data-action="diff">');
+  });
+});
+
+const OTHER_COMMIT = "d".repeat(40);
+const OTHER_FILE = { kind: "file", path: "src/b.rs" };
+
+function waitQueued(agent: string, seq: number, scope: unknown) {
+  return {
+    seq,
+    event: "wait_queued",
+    agent,
+    req: seq,
+    scopes: [{ scope, mode: "edit_body" }],
+    intent: { summary: "w", task_ref: null, assumptions: [] },
+    position: 1,
+  };
+}
+
+async function pageToken(): Promise<string> {
+  const html = await (await call("/review/demo")).text();
+  return /data-reject-csrf="([^"]+)"/.exec(html)?.[1] ?? "";
+}
+
+async function diffToken(options: Options = {}): Promise<string | undefined> {
+  const body = (await (await call("/review/demo/7/diff", options)).json()) as {
+    approveToken?: string;
+  };
+  return body.approveToken;
+}
+
+describe("the approve token comes with the diff", () => {
+  it("carries a token only in the diff response, and approving with it works", async () => {
+    const token = await diffToken();
+    expect(token).toEqual(expect.any(String));
+    const response = await decision(true, { csrf: token });
+    expect(response.status).toBe(200);
+    expect(reviews()).toMatchObject([{ approve: true, claim: 7 }]);
+  });
+
+  it("refuses an approval made with the page's token", async () => {
+    const response = await decision(true, { csrf: await pageToken() });
+    expect(response.status).toBe(403);
+    expect(reviews()).toEqual([]);
+  });
+
+  it("accepts a rejection made with the page's token", async () => {
+    reply = (claim, push) =>
+      push({
+        type: "event",
+        event: {
+          seq: 3,
+          event: "review_decided",
+          claim,
+          approve: false,
+          note: "",
+          reviewer: "felix",
+        },
+      });
+    const response = await decision(false, { csrf: await pageToken() });
+    expect(response.status).toBe(200);
+    expect(reviews()).toMatchObject([{ approve: false }]);
+  });
+
+  it("refuses a rejection made with the diff's token", async () => {
+    const response = await decision(false, { csrf: await diffToken() });
+    expect(response.status).toBe(403);
+    expect(reviews()).toEqual([]);
+  });
+
+  it("refuses the diff's token for another commit, even if that commit is held now", async () => {
+    const token = await diffToken();
+    log = [
+      ...LOG,
+      { seq: 3, event: "submit_rejected", claim: 7, reason: "x" },
+      { ...LOG[1], seq: 4, fork_commit: OTHER_COMMIT },
+      { ...LOG[2], seq: 5 },
+    ];
+    const response = await decision(true, { csrf: token, commit: OTHER_COMMIT });
+    expect(response.status).toBe(403);
+    expect(reviews()).toEqual([]);
+  });
+
+  it("gives a viewer who is not a reviewer no token", async () => {
+    const response = await call("/review/demo/7/diff", { email: "viewer@example.com" });
+    expect(response.status).toBe(403);
+    expect(await response.text()).not.toContain("approveToken");
+  });
+
+  it("gives no token when the diff failed, so a failed diff cannot unlock approval", async () => {
+    diffImpl = () => Promise.resolve({ outcome: "error", reason: "boom" });
+    const response = await call("/review/demo/7/diff");
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain("approveToken");
+  });
+});
+
+describe("the receipt", () => {
+  const decided = { seq: 4, event: "review_decided", claim: 7, approve: true, note: null };
+
+  it("shows a viewer nothing before the decision is logged", async () => {
+    const response = await call("/review/demo/7/receipt", { email: "viewer@example.com" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      decided: null,
+      closed: null,
+      waiting: [],
+      granted: [],
+      complete: false,
+    });
+  });
+
+  it("shows the decision, the merge and the grant to a waiting agent, each with its seq", async () => {
+    log = [
+      ...LOG,
+      waitQueued("w1", 3, FILE),
+      decided,
+      { seq: 5, event: "merged", claim: 7, head: COMMIT },
+      { seq: 6, event: "claim_granted", agent: "w1", claim: 9, fence: 1, scopes: [], intent: {} },
+    ];
+    const response = await call("/review/demo/7/receipt", { email: "viewer@example.com" });
+    expect(await response.json()).toEqual({
+      decided: { seq: 4, event: "review_decided", approve: true },
+      closed: { seq: 5, event: "merged" },
+      waiting: ["w1"],
+      granted: [{ agent: "w1", seq: 6 }],
+      complete: true,
+    });
+  });
+
+  it("is GET only and starts no sandbox", async () => {
+    expect((await call("/review/demo/7/receipt", { method: "POST" })).status).toBe(405);
+    await call("/review/demo/7/receipt");
+    expect(diffCalls).toEqual([]);
+    expect(reviews()).toEqual([]);
+  });
+});
+
+describe("the page orders the cards by who they unblock", () => {
+  it("puts the claim with a waiting agent first, whatever its id", async () => {
+    log = [
+      ...LOG,
+      {
+        seq: 3,
+        event: "claim_granted",
+        agent: "a2",
+        claim: 3,
+        fence: 13,
+        scopes: [],
+        intent: { summary: "other", task_ref: null, assumptions: [] },
+      },
+      {
+        seq: 4,
+        event: "submitted",
+        claim: 3,
+        fork_commit: OTHER_COMMIT,
+        touched: [{ scope: OTHER_FILE, mode: "edit_body" }],
+        decisions: { evidence: [] },
+      },
+      { seq: 5, event: "review_requested", claim: 3, reasons: [{ reason: "no_test_evidence" }] },
+      waitQueued("w1", 6, OTHER_FILE),
+    ];
+    const html = await (await call("/review/demo")).text();
+    expect(html).toContain("2 waiting on you");
+    expect(html).toContain("Claim 3 · a2 · unblocks 1 agent");
+    expect(html).toContain("Claim 7 · a1 · unblocks nobody");
+    expect(html.indexOf("Claim 3 ·")).toBeLessThan(html.indexOf("Claim 7 ·"));
+    expect(html).toContain("1 of 2 in the queue, sorted by who it unblocks.");
   });
 });
