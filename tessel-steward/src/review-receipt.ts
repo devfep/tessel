@@ -90,9 +90,10 @@ function grantsAfter(
 /**
  * What the log shows so far of what followed the human's decision on `claim`: its current hold's
  * `review_decided`, then `merged` or `submit_rejected`, then `claim_granted` for the agents that
- * were queued behind its scopes at the decision. Only logged events appear, each with its `seq`;
- * a line stays `null` until its event is in `events`. A claim held again after a rejection starts
- * over from its newest `review_requested`.
+ * were queued behind its scopes at the decision. A rejection grants nobody: the claim is active
+ * again with its locks, so the receipt is complete at `submit_rejected`. Only logged events
+ * appear, each with its `seq`; a line stays `null` until its event is in `events`. A claim held
+ * again after a rejection starts over from its newest `review_requested`.
  */
 export function foldReceipt(events: readonly unknown[], claim: number): Receipt {
   const hold = findHold(events, claim);
@@ -107,6 +108,9 @@ export function foldReceipt(events: readonly unknown[], claim: number): Receipt 
     return { decided, closed: null, waiting, granted: [], complete: false };
   }
   const { index: closedIndex, ...closed } = hold.closed;
+  if (closed.event === "submit_rejected") {
+    return { decided, closed, waiting, granted: [], complete: true };
+  }
   const granted = grantsAfter(events, closedIndex, new Set(waiting));
   return { decided, closed, waiting, granted, complete: granted.length === waiting.length };
 }

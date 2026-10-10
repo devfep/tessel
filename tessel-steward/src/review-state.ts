@@ -216,10 +216,28 @@ export function scopesOverlap(a: ScopeView, b: ScopeView): boolean {
   return scopeCovers(a, b) || scopeCovers(b, a);
 }
 
+/** Mode pairs that do not conflict, written `a|b` in both orders. */
+const COMPATIBLE_MODES = new Set([
+  "depend|depend",
+  "depend|edit_body",
+  "edit_body|depend",
+  "depend|create",
+  "create|depend",
+]);
+
+/**
+ * Whether claims in modes `a` and `b` on overlapping scopes conflict: `Mode::conflicts_with` in
+ * `src/protocol.rs`. `depend` conflicts only with `edit_signature`; every other pair conflicts.
+ * An unknown mode counts as conflicting, so a new mode is never silently hidden.
+ */
+function modesConflict(a: string, b: string): boolean {
+  return !COMPATIBLE_MODES.has(`${a}|${b}`);
+}
+
 interface PendingWait {
   req: unknown;
   position: number;
-  scopes: ScopeView[];
+  scopes: ScopeClaimView[];
 }
 
 interface LiveClaim {
@@ -241,8 +259,8 @@ function foldWaitState(events: readonly unknown[]) {
         pending.set(agent, {
           req: event["req"],
           position: Number(event["position"]),
-          scopes: list<{ scope?: unknown }>(event["scopes"]).flatMap((c) =>
-            isScope(c?.scope) ? [c.scope] : [],
+          scopes: list<ScopeClaimView | null>(event["scopes"]).filter((c): c is ScopeClaimView =>
+            isScope(c?.scope),
           ),
         });
         break;
@@ -259,7 +277,6 @@ function foldWaitState(events: readonly unknown[]) {
         break;
       case "claim_released":
       case "merged":
-      case "submit_rejected":
         if (typeof claim === "number") {
           live.delete(claim);
         }
@@ -290,9 +307,13 @@ export function foldExposure(
   const { pending, live } = foldWaitState(events);
   const waiters: Waiter[] = [];
   for (const [agent, wait] of pending) {
-    const scope = wait.scopes.find(overlapsTouched);
-    if (scope !== undefined) {
-      waiters.push({ agent, position: wait.position, scope });
+    const blocked = wait.scopes.find((claimed) =>
+      touched.some(
+        (t) => scopesOverlap(t.scope, claimed.scope) && modesConflict(claimed.mode, t.mode),
+      ),
+    );
+    if (blocked !== undefined && Number.isInteger(wait.position)) {
+      waiters.push({ agent, position: wait.position, scope: blocked.scope });
     }
   }
   waiters.sort((a, b) => a.position - b.position);

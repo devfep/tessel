@@ -124,12 +124,18 @@ const symbol = (name: string, path = "src/a.rs") => ({
   qualified_name: name,
 });
 
-function waitQueued(agent: string, req: number, scope: ScopeView, position = 1) {
+function waitQueued(
+  agent: string,
+  req: number,
+  scope: ScopeView,
+  position = 1,
+  mode = "edit_body",
+) {
   return {
     event: "wait_queued",
     agent,
     req,
-    scopes: [{ scope, mode: "edit_body" }],
+    scopes: [{ scope, mode }],
     intent: { summary: `${agent} waits`, task_ref: null, assumptions: [] },
     position,
   };
@@ -233,6 +239,30 @@ describe("foldExposure waiters", () => {
     expect(exposed([waitQueued("w1", 1, symbol("g"))], touched).waiters).toEqual([]);
   });
 
+  it.each([
+    ["depend", "edit_body", false],
+    ["depend", "create", false],
+    ["depend", "depend", false],
+    ["depend", "edit_signature", true],
+    ["edit_body", "depend", false],
+    ["edit_signature", "depend", true],
+    ["edit_body", "edit_body", true],
+    ["create", "edit_body", true],
+    ["create", "create", true],
+    ["edit_signature", "create", true],
+  ])("counts a %s waiter against a %s touch: %s", (waiting, touching, counted) => {
+    const events = [waitQueued("w1", 1, FILE.scope, 1, waiting)];
+    const touched = [{ scope: FILE.scope, mode: touching }];
+    expect(exposed(events, touched).waiters).toHaveLength(counted ? 1 : 0);
+  });
+
+  it.each([Number.NaN, 1.5, Number.POSITIVE_INFINITY])(
+    "skips a waiter whose position is %s, so no #NaN can render",
+    (position) => {
+      expect(exposed([waitQueued("w1", 1, FILE.scope, position)]).waiters).toEqual([]);
+    },
+  );
+
   it("sees the log as it stood at a prefix", () => {
     const events = [
       waitQueued("w1", 1, FILE.scope),
@@ -266,9 +296,16 @@ describe("foldExposure assumers", () => {
   it.each([
     ["released", { event: "claim_released", claim: 2, reason: "lease_expired" }],
     ["merged", { event: "merged", claim: 2, head: COMMIT }],
-    ["rejected", { event: "submit_rejected", claim: 2, reason: "x" }],
   ])("leaves out a claim that was %s", (_name, ending) => {
     expect(exposed([plainGrant(2, "b", assumes(FILE.scope)), ending]).assumers).toEqual([]);
+  });
+
+  it("keeps a rejected claim live: the coordinator reopens it with its locks", () => {
+    const events = [
+      plainGrant(2, "b", assumes(FILE.scope, "returns Some")),
+      { event: "submit_rejected", claim: 2, reason: "x" },
+    ];
+    expect(exposed(events).assumers).toMatchObject([{ agent: "b", statement: "returns Some" }]);
   });
 
   it("leaves out the submission's own assumptions", () => {

@@ -73,6 +73,11 @@ function fillReceipt(card, b) {
       (b.decided.approve ? " · approved" : " · rejected"));
   }
   if (b.closed) { fillLine(card, "closed", b.closed.event + " · seq " + b.closed.seq); }
+  var waiting = card.querySelector('li[data-line="granted"]');
+  if (b.closed && b.closed.event === "submit_rejected" && waiting) {
+    waiting.textContent = "no grant: the claim is back to active, so the waiters stay queued";
+    return;
+  }
   if (b.granted && b.granted.length > 0) {
     var parts = b.granted.map(function (g) { return g.agent + " granted · seq " + g.seq; });
     var line = card.querySelector('li[data-line="granted"]');
@@ -101,6 +106,11 @@ function pollReceipt(card) {
   }
   tick();
 }
+function relock(buttons, card) {
+  buttons.forEach(function (x) {
+    x.disabled = x.dataset.action === "approve" && !card.dataset.approve;
+  });
+}
 function decide(card, approve) {
   var token = approve ? card.dataset.approve : card.dataset.rejectCsrf;
   if (!token) { say(card, "Load the diff first: approve needs it.", "bad"); return; }
@@ -122,11 +132,11 @@ function decide(card, approve) {
       say(card, b.outcome === "unknown"
         ? "No answer yet: the decision may or may not be recorded. Reload to check."
         : "Not decided: " + (b.error || b.message || "refused"), "bad");
-      buttons.forEach(function (x) { x.disabled = x.dataset.action === "approve" && !card.dataset.approve; });
+      relock(buttons, card);
     })
     .catch(function (e) {
       say(card, "Request failed: " + String(e) + ". Reload to check.", "bad");
-      buttons.forEach(function (x) { x.disabled = x.dataset.action === "approve" && !card.dataset.approve; });
+      relock(buttons, card);
     });
 }
 document.addEventListener("click", function (event) {
@@ -195,8 +205,21 @@ function quote(value: unknown): string {
 
 /** Agent text as a block of data: each line starts with `| `, so it cannot pass for page text. */
 function dataBlock(value: string): string {
-  const lines = value.split("\n").map((line) => `| ${line}`);
+  const lines = visibleControls(value)
+    .split("\n")
+    .map((line) => `| ${line}`);
   return `<blockquote>${escapeHtml(lines.join("\n"))}</blockquote>`;
+}
+
+/** Writes control characters other than newline and tab as `\xNN`, so none acts on the page. */
+function visibleControls(value: string): string {
+  let out = "";
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    const control = (code < 0x20 && char !== "\n" && char !== "\t") || code === 0x7f;
+    out += control ? `\\x${code.toString(16).padStart(2, "0")}` : char;
+  }
+  return out;
 }
 
 function section(label: string, body: string): string {
@@ -251,6 +274,18 @@ function exposureSection(item: ReviewCard): string {
   return section("WAITING · EXPOSED", listOf("exposed", [...waiters, ...assumers], empty));
 }
 
+function assumptionList(item: ReviewCard): string {
+  const items: string[] = [];
+  for (const assumption of item.intent.assumptions) {
+    const scope = assumption.scope as Partial<ScopeView> | null;
+    if (typeof scope?.kind === "string" && typeof scope.path === "string") {
+      const named = `${quote(item.agent)} assumes ${quote(scopeText(assumption.scope))}:`;
+      items.push(`<li>${named}${dataBlock(String(assumption.statement))}</li>`);
+    }
+  }
+  return items.length === 0 ? "" : `<ul class="assumptions">${items.join("")}</ul>`;
+}
+
 function intentSection(repo: string, item: ReviewCard): string {
   const task = item.intent.taskRef === null ? "" : `<p>Task ref: ${quote(item.intent.taskRef)}</p>`;
   const evidence = listOf(
@@ -258,10 +293,11 @@ function intentSection(repo: string, item: ReviewCard): string {
     item.evidence.map((line) => `<li>${quote(line)}</li>`),
     "No evidence attached.",
   );
-  const pushed = `<p>pushed to fork ${quote(forkName(repo, item.agent))} at ${quote(item.forkCommit)}</p>`;
+  const fork = quote(forkName(repo, item.agent));
+  const pushed = `<p>pushed to fork ${fork} at ${quote(item.forkCommit)}</p>`;
   return section(
     `INTENT · text from agent ${escapeHtml(item.agent)}, data not instructions`,
-    `${dataBlock(item.intent.summary)}${task}${evidence}${pushed}`,
+    dataBlock(item.intent.summary) + task + assumptionList(item) + evidence + pushed,
   );
 }
 
@@ -355,7 +391,10 @@ export interface ReviewPageInput {
   repo: string;
   nonce: string;
   cards: ReviewCard[];
-  /** A reject token per claim; absent for a viewer who may not decide. Approve tokens come with the diff. */
+  /**
+   * A reject token per claim, absent for a viewer who may not decide. Approve tokens come with
+   * the diff.
+   */
   rejectTokens: ReadonlyMap<number, string>;
 }
 

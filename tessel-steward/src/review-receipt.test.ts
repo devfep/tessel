@@ -112,13 +112,15 @@ describe("foldReceipt", () => {
     expect(foldReceipt(events, 1)).toMatchObject({ waiting: [], granted: [], complete: true });
   });
 
-  it("names a rejection as logged and leaves the grants hollow", () => {
+  it("completes at a rejection and expects no grant: the claim is active again", () => {
     seq = 0;
     const events = [submitted(1), requested(1), waits("w1", 1), decided(1, false), rejected(1)];
     const receipt = foldReceipt(events, 1);
     expect(receipt.decided).toMatchObject({ approve: false });
     expect(receipt.closed).toEqual({ seq: 5, event: "submit_rejected" });
-    expect(receipt.complete).toBe(false);
+    expect(receipt.waiting).toEqual(["w1"]);
+    expect(receipt.granted).toEqual([]);
+    expect(receipt.complete).toBe(true);
   });
 
   it("ignores a merge that no decision preceded", () => {

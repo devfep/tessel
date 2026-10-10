@@ -690,7 +690,7 @@ describe("the receipt", () => {
     });
   });
 
-  it("shows the decision, the merge and the grant to a waiting agent, each with its seq", async () => {
+  it("shows the decision, the merge and a waiting agent's grant, each with its seq", async () => {
     log = [
       ...LOG,
       waitQueued("w1", 3, FILE),

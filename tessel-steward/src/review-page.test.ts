@@ -210,6 +210,24 @@ describe("reviewPage content", () => {
     expect(html).toContain("The log shows no agent queued on these scopes");
   });
 
+  it("shows the claim's own assumptions, attributed, markup and controls escaped", async () => {
+    const { html } = await render([
+      cardOf({
+        intent: {
+          summary: "s",
+          taskRef: null,
+          assumptions: [{ scope: FILE, statement: "<b>x</b>\u0007y\nline two" }],
+        },
+      }),
+    ]);
+    expect(html).toContain(
+      "<q>a1</q> assumes <q>src/a.rs</q>:" +
+        "<blockquote>| &lt;b&gt;x&lt;/b&gt;\\x07y\n| line two</blockquote>",
+    );
+    expect(html).not.toContain("\u0007");
+    expect(html).not.toContain("<b>");
+  });
+
   it("shows the task ref, the evidence and the fork the work was pushed to", async () => {
     const { html } = await render([
       cardOf({
@@ -280,7 +298,7 @@ describe("reviewPage content", () => {
     expect(html).toContain("nobody was waiting on this claim");
   });
 
-  it("gives a reviewer a disabled Approve, an enabled Reject and the reject token only", async () => {
+  it("gives a reviewer a disabled Approve, an enabled Reject and a reject token", async () => {
     const { html } = await render([cardOf()], reviewer);
     for (const text of [
       "Approve unlocks after the diff is loaded. No swipe, no batch.",
@@ -324,7 +342,7 @@ describe("reviewPage content", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("fits a phone: no fixed widths, a 16px gutter, 44px targets, a sticky bar, both colour schemes", async () => {
+  it("fits a phone: 16px gutter, 44px targets, a sticky bar, both colour schemes", async () => {
     const { html } = await render([cardOf()], reviewer);
     expect(html).toContain('name="viewport" content="width=device-width, initial-scale=1"');
     expect(html).toMatch(/body \{[^}]*padding: 16px/);
@@ -351,9 +369,14 @@ describe("REVIEW_SCRIPT", () => {
     expect(REVIEW_SCRIPT.match(/addEventListener/g)).toHaveLength(1);
   });
 
-  it("unlocks Approve from the token the diff response carries, and approves with nothing else", () => {
+  it("unlocks Approve from the token the diff response carries, and uses no other", () => {
     expect(REVIEW_SCRIPT).toContain("body.approveToken");
     expect(REVIEW_SCRIPT).toContain("card.dataset.approve : card.dataset.rejectCsrf");
+  });
+
+  it("says the waiters stay queued when the receipt ends in a rejection", () => {
+    expect(REVIEW_SCRIPT).toContain('b.closed.event === "submit_rejected"');
+    expect(REVIEW_SCRIPT).toContain("the waiters stay queued");
   });
 
   it("polls the receipt every 5 s for at most 2 min, then says to reload", () => {
