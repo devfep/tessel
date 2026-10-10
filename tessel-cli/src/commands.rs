@@ -16,7 +16,7 @@ use crate::daemon;
 use crate::githook;
 use crate::hook::{self, Installed};
 use crate::inbox_hook;
-use crate::moves::{Holding, Situation};
+use crate::moves::{holding_now, Holding, Situation};
 use crate::plan;
 use crate::render::{
     escape, needs_attention, notice_text, outcome_text, quote_untrusted, status_text, submit_text,
@@ -360,11 +360,14 @@ async fn ask_for_claim(
         ClaimOutcome::Refused { .. } => 1,
     };
     let holding = match outcome {
-        ClaimOutcome::Denied { .. } => held_claims(&worktree).await,
-        ClaimOutcome::Granted { .. }
-        | ClaimOutcome::Covered
-        | ClaimOutcome::Queued { .. }
-        | ClaimOutcome::Refused { .. } => Holding::Unknown,
+        ClaimOutcome::Denied { .. } | ClaimOutcome::Refused { .. } => {
+            holding_now(&worktree.sock(), CALL_TIMEOUT)
+                .await
+                .unwrap_or(Holding::Unknown)
+        }
+        ClaimOutcome::Granted { .. } | ClaimOutcome::Covered | ClaimOutcome::Queued { .. } => {
+            Holding::Unknown
+        }
     };
     Ok(Answer {
         outcome,
@@ -375,14 +378,6 @@ async fn ask_for_claim(
         code,
         warnings: warnings.concat(),
     })
-}
-
-/// The claims the daemon holds now, which decide whether a `--wait` can be queued.
-async fn held_claims(worktree: &Worktree) -> Holding {
-    match call_daemon(worktree, &Request::Status).await {
-        Ok(Reply::Status { state }) => Holding::from_held(&state.claims),
-        Ok(_) | Err(_) => Holding::Unknown,
-    }
 }
 
 pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<Report> {

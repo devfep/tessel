@@ -4,13 +4,15 @@
 //! never add, remove or reorder a move (CLAUDE.md rule 4).
 
 use std::fmt::Write as _;
+use std::path::Path;
+use std::time::Duration;
 
 use tessel_coordinator::protocol::{ClaimId, Conflict, ErrorCode, Mode, RaceId, ScopeClaim};
 
 use crate::hook::{claim_arg, shell_quote};
 use crate::render::{escape, mode_text};
-use crate::rpc::ClaimOutcome;
-use crate::state::HeldClaim;
+use crate::rpc::{self, ClaimOutcome, Reply, Request};
+use crate::state::State;
 
 /// What the agent holds, which decides whether a `--wait` can be queued.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,17 +20,31 @@ pub enum Holding {
     Nothing,
     /// Claims the coordinator counts as held, submitted ones included.
     Claims(Vec<ClaimId>),
+    /// A `--wait` request sits in the coordinator's queue. It holds nothing, and the coordinator
+    /// refuses every other claim until it is granted.
+    Queued,
     /// Not known where the card is built (an old inbox notice).
     Unknown,
 }
 
 impl Holding {
-    pub fn from_held(held: &[HeldClaim]) -> Self {
-        if held.is_empty() {
-            Self::Nothing
+    pub fn from_state(state: &State) -> Self {
+        if !state.claims.is_empty() {
+            Self::Claims(state.claims.iter().map(|claim| claim.claim).collect())
+        } else if state.queued.is_some() {
+            Self::Queued
         } else {
-            Self::Claims(held.iter().map(|claim| claim.claim).collect())
+            Self::Nothing
         }
+    }
+}
+
+/// What the daemon at `sock` holds for the agent now, or `None` when it did not answer with its
+/// state.
+pub async fn holding_now(sock: &Path, timeout: Duration) -> Option<Holding> {
+    match rpc::call(sock, &Request::Status, timeout).await {
+        Ok(Reply::Status { state }) => Some(Holding::from_state(&state)),
+        Ok(_) | Err(_) => None,
     }
 }
 
@@ -160,6 +176,15 @@ fn wait_move(conflicts: &[Conflict], situation: &Situation) -> Move {
             valid: false,
         };
     }
+    if situation.holding == Holding::Queued {
+        return Move {
+            command,
+            why: "you already have a queued request; the coordinator refuses every other claim \
+                  until it is granted"
+                .to_string(),
+            valid: false,
+        };
+    }
     let mut why = format!(
         "queue behind {}; the grant arrives in `tessel inbox` and `tessel status`",
         holders(conflicts)
@@ -167,7 +192,8 @@ fn wait_move(conflicts: &[Conflict], situation: &Situation) -> Move {
     for race in races(conflicts) {
         let _ = write!(
             why,
-            "; that claim is in race {}, so you are queued until the race ends",
+            "; that claim is in race {}: its scopes stay locked until the race is decided, then by \
+             the winner's claim until it merges",
             race.0
         );
     }
@@ -182,7 +208,7 @@ fn wait_move(conflicts: &[Conflict], situation: &Situation) -> Move {
 
 /// Depend on what is blocked instead of editing it. A `depend` claim conflicts only with
 /// `edit-signature`, so it helps against every other holder.
-fn depend_move(conflicts: &[Conflict], situation: &Situation) -> Move {
+fn depend_move(conflicts: &[Conflict]) -> Move {
     let blocked = distinct_requested(conflicts);
     let mut seen: Vec<&ScopeClaim> = Vec::new();
     for claim in &blocked {
@@ -199,18 +225,10 @@ fn depend_move(conflicts: &[Conflict], situation: &Situation) -> Move {
         why: why.to_string(),
         valid: false,
     };
-    if situation
-        .asked
-        .iter()
-        .all(|claim| claim.mode == Mode::Depend)
-    {
+    if blocked.iter().all(|claim| claim.mode == Mode::Depend) {
         return invalid("you already asked for depend, and depend conflicts with edit-signature");
     }
-    if situation
-        .asked
-        .iter()
-        .any(|claim| claim.mode == Mode::Create)
-    {
+    if blocked.iter().any(|claim| claim.mode == Mode::Create) {
         return invalid(
             "create names what does not exist yet, so there is nothing to depend on and the \
              scope check would refuse it",
@@ -229,8 +247,8 @@ fn depend_move(conflicts: &[Conflict], situation: &Situation) -> Move {
     }
     Move::valid(
         command,
-        "no holder conflicts with depend: you can build on their signatures but not edit the scope; \
-         `--assume` records what you rely on"
+        "no holder conflicts with depend: you can build on their signatures but not edit the \
+         scope; `--assume` records what you rely on"
             .to_string(),
     )
 }
@@ -247,7 +265,7 @@ fn other_work_move() -> Move {
 pub fn denial_moves(conflicts: &[Conflict], situation: &Situation) -> Vec<Move> {
     let all = [
         wait_move(conflicts, situation),
-        depend_move(conflicts, situation),
+        depend_move(conflicts),
         other_work_move(),
     ];
     let (mut ordered, ruled_out): (Vec<Move>, Vec<Move>) =
@@ -258,6 +276,31 @@ pub fn denial_moves(conflicts: &[Conflict], situation: &Situation) -> Vec<Move> 
 
 fn plain(command: &str, why: &str) -> Move {
     Move::valid(command.to_string(), why.to_string())
+}
+
+/// The coordinator sends `WaitWhileHolding` both for a wait while holding a claim and for any
+/// claim while a wait is queued; what the daemon holds tells the two apart.
+fn wait_refusal_moves(holding: &Holding) -> Vec<Move> {
+    match holding {
+        Holding::Claims(ids) => {
+            let ids: Vec<String> = ids.iter().map(|id| id.0.to_string()).collect();
+            vec![plain(
+                "tessel release",
+                &format!(
+                    "you hold claim {}, and a wait needs you to hold none",
+                    ids.join(", ")
+                ),
+            )]
+        }
+        Holding::Queued => vec![
+            plain("tessel inbox", "your queued request is granted here"),
+            plain(
+                "tessel stop",
+                "leave the queue; until it is granted you cannot claim or edit",
+            ),
+        ],
+        Holding::Nothing | Holding::Unknown => Vec::new(),
+    }
 }
 
 /// What the agent can do after any claim outcome.
@@ -286,7 +329,7 @@ pub fn next_moves(outcome: &ClaimOutcome, situation: &Situation) -> Vec<Move> {
                 "shows the connection and the claims you hold",
             )];
             if *code == Some(ErrorCode::WaitWhileHolding) {
-                moves.push(plain("tessel release", "a wait needs you to hold no claim"));
+                moves.extend(wait_refusal_moves(&situation.holding));
             }
             moves
         }
@@ -328,6 +371,7 @@ mod tests {
     }
 
     struct Case {
+        extra_create: bool,
         name: &'static str,
         asked: Mode,
         held: Vec<Mode>,
@@ -344,6 +388,7 @@ mod tests {
         (wait_ok, depend_ok): (bool, bool),
     ) -> Case {
         Case {
+            extra_create: false,
             name,
             asked,
             held: held.to_vec(),
@@ -438,6 +483,15 @@ mod tests {
                 holding(4),
                 (false, false),
             ),
+            Case {
+                extra_create: true,
+                ..case(
+                    "create on b.rs, edit-body conflict on a.rs",
+                    (EditBody, &[EditBody]),
+                    free(),
+                    (true, true),
+                )
+            },
             case(
                 "holding unknown",
                 (EditBody, &[EditBody]),
@@ -451,6 +505,7 @@ mod tests {
     fn the_rule_table_decides_which_moves_are_valid() {
         for case in cases() {
             let Case {
+                extra_create,
                 name,
                 asked,
                 held,
@@ -463,7 +518,11 @@ mod tests {
                 .iter()
                 .map(|mode| conflict(asked, *mode, race))
                 .collect();
-            let moves = denial_moves(&conflicts, &situation(&[asked], holding));
+            let mut asked_here = situation(&[asked], holding);
+            if extra_create {
+                asked_here.asked.push(file("src/b.rs", Mode::Create));
+            }
+            let moves = denial_moves(&conflicts, &asked_here);
             let find = |needle: &str| moves.iter().find(|m| m.command.contains(needle));
             let wait = find("--wait").map(|m| m.valid);
             let depend = find("--assume").map(|m| m.valid);
@@ -472,6 +531,64 @@ mod tests {
             let other = find("tessel inbox").map(|m| m.valid);
             assert_eq!(other, Some(true), "{name}: other work\n{moves:#?}");
         }
+    }
+
+    #[test]
+    fn a_conflicting_create_scope_rules_depend_out_but_an_unblocked_one_does_not() {
+        let mut blocked_create = conflict(Mode::Create, Mode::Create, None);
+        blocked_create.requested = file("src/b.rs", Mode::Create);
+        blocked_create.held = file("src/b.rs", Mode::Create);
+        let mixed = Situation {
+            asked: vec![
+                file("src/a.rs", Mode::EditBody),
+                file("src/b.rs", Mode::Create),
+            ],
+            holding: Holding::Nothing,
+        };
+        let moves = denial_moves(&[blocked_create], &mixed);
+        let depend = moves.iter().find(|m| m.command.contains("--assume"));
+        assert_eq!(depend.map(|m| m.valid), Some(false), "{moves:#?}");
+        let mut blocked_body = conflict(Mode::EditBody, Mode::EditBody, None);
+        blocked_body.requested = file("src/a.rs", Mode::EditBody);
+        let moves = denial_moves(&[blocked_body], &mixed);
+        let depend = moves.iter().find(|m| m.command.contains("--assume"));
+        assert_eq!(depend.map(|m| m.valid), Some(true), "{moves:#?}");
+        assert!(
+            depend.is_some_and(|m| m.command.starts_with("tessel claim src/a.rs --mode depend")),
+            "{moves:#?}"
+        );
+    }
+
+    #[test]
+    fn a_wait_refusal_names_release_only_for_an_agent_that_holds_a_claim() {
+        let refused = ClaimOutcome::Refused {
+            code: Some(ErrorCode::WaitWhileHolding),
+            message: "x".into(),
+        };
+        let commands = |holding| -> Vec<String> {
+            next_moves(&refused, &situation(&[Mode::EditBody], holding))
+                .into_iter()
+                .map(|m| m.command)
+                .collect()
+        };
+        let holds = commands(Holding::Claims(vec![ClaimId(4)]));
+        assert!(holds.contains(&"tessel release".to_string()), "{holds:?}");
+        let queued = commands(Holding::Queued);
+        assert!(
+            !queued.contains(&"tessel release".to_string()),
+            "{queued:?}"
+        );
+        assert!(queued.contains(&"tessel stop".to_string()), "{queued:?}");
+        let unknown = commands(Holding::Unknown);
+        assert_eq!(unknown, ["tessel status"]);
+    }
+
+    #[test]
+    fn a_queued_agent_is_told_it_cannot_queue_again() {
+        let conflicts = [conflict(Mode::EditBody, Mode::EditBody, None)];
+        let moves = denial_moves(&conflicts, &situation(&[Mode::EditBody], Holding::Queued));
+        let wait = moves.iter().find(|m| m.command.contains("--wait"));
+        assert_eq!(wait.map(|m| m.valid), Some(false), "{moves:#?}");
     }
 
     #[test]
@@ -543,7 +660,7 @@ mod tests {
             code: Some(ErrorCode::WaitWhileHolding),
             message: "x".into(),
         };
-        let situation = situation(&[Mode::EditBody], Holding::Nothing);
+        let situation = situation(&[Mode::EditBody], Holding::Claims(vec![ClaimId(4)]));
         let moves = next_moves(&refused, &situation);
         assert!(moves.iter().any(|m| m.command == "tessel release"));
         for outcome in [

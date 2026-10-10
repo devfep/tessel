@@ -268,6 +268,14 @@ async fn claim_json_has_an_envelope_and_next_moves_for_every_outcome() -> Result
     let refused = envelope(&refused_run)?;
     assert_eq!(refused["outcome"], "refused");
     assert_eq!(refused["message"]["author"], "the coordinator");
+    let commands: Vec<&str> = refused["next"]
+        .as_array()
+        .context("no next")?
+        .iter()
+        .filter_map(|step| step["command"].as_str())
+        .collect();
+    assert!(commands.contains(&"tessel stop"), "{commands:?}");
+    assert!(!commands.contains(&"tessel release"), "{commands:?}");
     assert!(refused["message"]["text"].is_string());
     assert!(refused["next"].as_array().is_some_and(|n| !n.is_empty()));
     Ok(())
@@ -1236,6 +1244,25 @@ async fn the_hook_blocks_a_path_whose_name_cannot_be_claimed() -> Result<()> {
     let done = a1.hook("Edit", "file_path", "link.rs")?;
     assert_eq!(done.code, 2, "{}", done.all());
     assert!(done.stderr.contains("not valid UTF-8"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_card_rules_wait_out_for_an_agent_that_holds_a_claim() -> Result<()> {
+    let (_fake, a1, a2) = world(30_000).await?;
+    a1.start("holder")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("holds b")?;
+    assert_eq!(a2.tessel(&["claim", "src/b.rs"])?.code, 0);
+    let done = a2.hook("Edit", "file_path", "src/a.rs")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    let (moves, ruled_out) = done
+        .stderr
+        .split_once("not available now:\n")
+        .context("no ruled-out section")?;
+    assert!(!moves.contains("--wait"), "{moves}");
+    assert!(ruled_out.contains("--wait"), "{ruled_out}");
+    assert!(ruled_out.contains("you hold claim"), "{ruled_out}");
     Ok(())
 }
 

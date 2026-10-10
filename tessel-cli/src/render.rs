@@ -251,12 +251,14 @@ fn moves_text(moves: &[Move]) -> String {
 /// The decision card for a denial: what happened and who holds it for each conflict, then the
 /// moves open to the agent. `situation` says what it asked for and what it holds.
 pub fn denial_text(conflicts: &[Conflict], situation: &Situation) -> String {
-    let mut out = String::new();
-    for conflict in conflicts {
-        out.push_str(&conflict_card(conflict));
-    }
+    let mut out = conflicts_text(conflicts);
     out.push_str(&moves_text(&denial_moves(conflicts, situation)));
     out
+}
+
+/// The first two parts of the card, for a caller that cannot compute the moves.
+pub fn conflicts_text(conflicts: &[Conflict]) -> String {
+    conflicts.iter().map(conflict_card).collect()
 }
 
 pub fn outcome_text(outcome: &ClaimOutcome, situation: &Situation) -> String {

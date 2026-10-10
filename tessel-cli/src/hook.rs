@@ -10,9 +10,9 @@ use serde_json::{json, Value};
 use tessel_coordinator::protocol::{Conflict, Mode, Scope, ScopeClaim};
 use thiserror::Error;
 
-use crate::moves::{Holding, Situation};
+use crate::moves::{holding_now, Holding, Situation};
 use crate::plan::{file_claims, plan_create, plan_edit, plan_rewrite, Replace};
-use crate::render::{denial_text, escape, one_line, quote_untrusted};
+use crate::render::{conflicts_text, denial_text, escape, one_line, quote_untrusted};
 use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request};
 use crate::scope::{locate, Located};
 use crate::state::write_atomic;
@@ -105,7 +105,9 @@ enum Outcome {
     DaemonUnreachable(ClientError),
     Denied {
         rel: String,
-        situation: Situation,
+        wanted: Vec<ScopeClaim>,
+        /// What the daemon holds, or `None` when it did not answer with its state.
+        holding: Option<Holding>,
         conflicts: Vec<Conflict>,
     },
     Queued {
@@ -175,13 +177,29 @@ impl Outcome {
             Self::DaemonUnreachable(e) => block(format!("tessel: cannot reach the daemon: {e}\n")),
             Self::Denied {
                 rel,
-                situation,
+                wanted,
+                holding,
                 conflicts,
-            } => block(format!(
-                "tessel: cannot edit {}; another agent holds it.\n{}",
-                escape(&rel),
-                denial_text(&conflicts, &situation)
-            )),
+            } => {
+                let card = match holding {
+                    Some(holding) => denial_text(
+                        &conflicts,
+                        &Situation {
+                            asked: wanted,
+                            holding,
+                        },
+                    ),
+                    None => format!(
+                        "{}moves not shown: the daemon did not answer with its state, so they could not \
+                         be computed\n",
+                        conflicts_text(&conflicts)
+                    ),
+                };
+                block(format!(
+                    "tessel: cannot edit {}; another agent holds it.\n{card}",
+                    escape(&rel)
+                ))
+            }
             Self::Queued { rel } => block(format!(
                 "tessel: {} is queued behind another agent; wait for the grant in `tessel inbox`\n",
                 escape(&rel)
@@ -321,6 +339,10 @@ pub fn claim_arg(scope: &Scope) -> String {
 }
 
 async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
+    claim_at(&worktree.sock(), wanted).await
+}
+
+async fn claim_at(sock: &Path, wanted: Vec<ScopeClaim>) -> Outcome {
     let rel = wanted
         .iter()
         .map(|claim| claim_arg(&claim.scope))
@@ -329,9 +351,9 @@ async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
     let request = Request::Ensure {
         wanted: wanted.clone(),
     };
-    let reply = match rpc::call(&worktree.sock(), &request, HOOK_TIMEOUT).await {
+    let reply = match rpc::call(sock, &request, HOOK_TIMEOUT).await {
         Ok(reply) => reply,
-        Err(ClientError::NotRunning) => return Outcome::NoDaemon(worktree.sock()),
+        Err(ClientError::NotRunning) => return Outcome::NoDaemon(sock.to_path_buf()),
         Err(e) => return Outcome::DaemonUnreachable(e),
     };
     match reply {
@@ -345,10 +367,8 @@ async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
             outcome: ClaimOutcome::Denied { conflicts },
         } => Outcome::Denied {
             rel,
-            situation: Situation {
-                asked: wanted,
-                holding: held_claims(worktree).await,
-            },
+            holding: holding_now(sock, HOOK_TIMEOUT).await,
+            wanted,
             conflicts,
         },
         Reply::Claim {
@@ -362,14 +382,6 @@ async fn claim_scopes(worktree: &Worktree, wanted: Vec<ScopeClaim>) -> Outcome {
         | Reply::Released { .. }
         | Reply::Submit { .. }
         | Reply::Stopping { .. } => Outcome::UnexpectedReply,
-    }
-}
-
-/// The claims the daemon holds now, which decide whether a `--wait` can be queued.
-async fn held_claims(worktree: &Worktree) -> Holding {
-    match rpc::call(&worktree.sock(), &Request::Status, HOOK_TIMEOUT).await {
-        Ok(Reply::Status { state }) => Holding::from_held(&state.claims),
-        Ok(_) | Err(_) => Holding::Unknown,
     }
 }
 
@@ -685,5 +697,72 @@ mod tests {
     fn quoting_protects_spaces_and_quotes() {
         assert_eq!(shell_quote("/a/b-c_d.e"), "/a/b-c_d.e");
         assert_eq!(shell_quote("/a b/it's"), "'/a b/it'\\''s'");
+    }
+
+    fn denial_by_a1() -> Conflict {
+        use tessel_coordinator::protocol::{AgentId, Intent};
+        let claim = ScopeClaim {
+            scope: Scope::File {
+                path: "src/a.rs".into(),
+            },
+            mode: Mode::EditBody,
+        };
+        Conflict {
+            requested: claim.clone(),
+            held: claim,
+            held_by: AgentId("a1".into()),
+            their_intent: Intent {
+                summary: "fix refresh".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            race: None,
+        }
+    }
+
+    /// A daemon that answers one connection per reply, in order, on a fresh socket.
+    fn fake_daemon(dir: &Path, replies: Vec<Reply>) -> PathBuf {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let sock = dir.join("d.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).expect("bind the fake daemon");
+        tokio::spawn(async move {
+            for reply in replies {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let (read, mut write) = stream.into_split();
+                let mut request = String::new();
+                let _ = BufReader::new(read).read_line(&mut request).await;
+                let mut line = serde_json::to_vec(&reply).unwrap_or_default();
+                line.push(b'\n');
+                let _ = write.write_all(&line).await;
+            }
+        });
+        sock
+    }
+
+    #[tokio::test]
+    async fn a_denial_without_the_daemons_state_blocks_with_the_card_but_no_moves() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let denied = Reply::Claim {
+            outcome: ClaimOutcome::Denied {
+                conflicts: vec![denial_by_a1()],
+            },
+        };
+        let wrong = Reply::Failed {
+            message: "not a status".into(),
+        };
+        let sock = fake_daemon(dir.path(), vec![denied, wrong]);
+        let wanted = vec![denial_by_a1().requested];
+        let verdict = claim_at(&sock, wanted).await.verdict();
+        assert_eq!(verdict.exit, EXIT_BLOCK);
+        let text = verdict.message;
+        assert!(text.contains("✗ blocked src/a.rs"), "{text}");
+        assert!(text.contains("  | fix refresh"), "{text}");
+        assert!(!text.contains("your moves:"), "{text}");
+        assert!(
+            text.contains("moves not shown: the daemon did not answer"),
+            "{text}"
+        );
     }
 }
