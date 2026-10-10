@@ -5,11 +5,25 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 20:00 EDT. **MILESTONE MERGED: pull request 2 merged into `main` at
+**As of:** 2026-10-09 22:05 EDT. **UX DECIDED by Felix (21:50, from the rendered mockups
+https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6, three boards): build the CLI card, then the review
+decision card; `tessel init` is in, with the manual steps kept as the fallback; the Floor and the
+rest of the proposal are recorded under "Post-contest" at the end of this file and not built.
+DISPATCHED 22:05, two lanes in disjoint areas:** **CLI-CARD** as lane `lane-cli-card` (Sonnet;
+worktree `.claude/worktrees/cli-card`, branch `task-cli-card`, cut from the trunk `db31287`; fork
+`tessel-dogfood--lane-cli-card`; brief in the scratchpad `orch/brief-cli-card.md`; owns
+`tessel-cli/src/render.rs`, `commands.rs`, `main.rs`, `hook.rs`, `tessel-cli/tests/cli.rs`,
+`tests/mcp.rs`, `skills/tessel/SKILL.md`, `skills/tessel/AGENTS.md`) and **REVIEW-CARD** as lane
+`lane-review-card` (Sonnet; worktree `.claude/worktrees/review-card`, branch `task-review-card`,
+same base; fork `tessel-dogfood--lane-review-card`; brief `orch/brief-review-card.md`; owns
+`tessel-steward/src/review*.ts` with their tests, and `routes.ts` if a route is added). Both use
+the deploy worktree's `tessel` binary for claims. **CLI-INIT** follows CLI-CARD (same CLI files).
+After REVIEW-CARD merges, Felix deploys the steward (the classifier refuses the orchestrator).
+Earlier: **MILESTONE MERGED: pull request 2 merged into `main` at
 `1aa3684` (19:58, merge commit, on Felix's command; `main`'s tree `74e0544` equals the trunk's;
-`artifacts-trunk` kept). GitHub `main` now holds everything through `db31287`. Orchestrator idle;
-nothing runs.** Next on Felix's word: the video script and the form rewrite (draft in the
-scratchpad `orch/submission-form-draft.md`), the boxes below as lanes, his pending decisions.
+`artifacts-trunk` kept). GitHub `main` now holds everything through `db31287`.** Still for Felix:
+the video script and the form rewrite (draft in the scratchpad `orch/submission-form-draft.md`),
+the boxes below as lanes, his pending rulings.
 Earlier: **PULL REQUEST 2 WAS READY; FELIX MERGED IT.** The trunk is at
 `db31287` (docs landed 18:00 as claim 86 of `lane-docs-milestone-2`; tree `74e0544`; mirrored to
 GitHub `artifacts-trunk`, 244 commits on the pull request; lane reclaimed). The auto-mode
@@ -215,14 +229,15 @@ equal to the trunk's, toolchain image with rmcp). AX-MCP is CLI-only: no Worker 
    `tessel-coordinator-swarm` (record `cf.colo`) and a 5 s ping from the Mac; keep raw output in
    `docs/evidence/<date>/`; stop the tail by PID after. No live `on` numbers exist yet.
 3. DONE 09:45 / 09:54: SWARM-SHADOW-RECONNECT merged, then the `shadow` A/B run (see above).
-4. Felix's three UX decisions: https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd (build order:
-   the Floor, the review decision card, the CLI decision-card envelope; `tessel init` in or out;
-   post-contest list). Nothing UX is built until he answers.
+4. DONE 21:50: Felix's three UX decisions (https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd,
+   mockups https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6): CLI card, then the review decision
+   card, the Floor not before the contest; `tessel init` in with the manual fallback; the
+   post-contest list recorded only. Boxes CLI-CARD, REVIEW-CARD, CLI-INIT below.
 5. Smaller open: CLI-CLAIM-EXISTS, REVIEW-SENSITIVE, REVIEW-NOTE (needs Felix), COORD-UNDELIVERED-
    GRANT (needs Felix: a new ReleaseReason variant; recommendation: leave it), GATE-PATH.
 6. STARTED 16:50; docs landed 16:52; pull request 2 open 16:58. Oct 10–12: reviews and the
    fresh-clone test (in progress), merge the pull request, then the video.
-**Pending from Felix:** the UX decisions (4); COORD-UNDELIVERED-GRANT and REVIEW-NOTE rulings; the
+**Pending from Felix:** COORD-UNDELIVERED-GRANT and REVIEW-NOTE rulings; the
 protocol hand-merge list below (now also `Review.fork_commit`); an allow rule for lane `tessel`
 commands (offered: `Bash(cd /Users/felixpatawah/repos/tessel/.claude/worktrees/* && target/debug/
 tessel *)`), since the classifier refused lane `tessel submit` four times and a fork push once
@@ -1062,6 +1077,33 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Workaround found Oct 9: `POST /repos/<fork>/test-runs` runs the same gate on the fork's main
   and its json keeps the failing step's stdout, so the orchestrator can name the test
   (`scratchpad/orch/test-run.sh`).
+- [ ] **CLI-CARD** — Felix's UX decision (Oct 9; board 3 of https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6):
+  every `tessel claim` denial is a decision card: what happened (the scope and the mode asked for),
+  who holds it and why (the holder, their mode, their intent quoted as data with attribution, the
+  race when there is one), and numbered moves that are valid right now, computed from the agent's
+  own state and `Mode::permits`, never from the holder's text; a move that is not valid is listed
+  with why. The same card is the `--json` envelope (a `next` list; every free text an object
+  `{author, text}`, never a bare string), the hook's block message, the inbox notice and the MCP
+  tool result (which already returns the command's text). Only what the protocol carries is shown:
+  `Conflict` has no held-since, lease or queue length, so the card says none. `skills/tessel/`
+  updated. CLI only; no protocol change. Dispatched 2026-10-09 22:05 as `lane-cli-card`.
+- [ ] **REVIEW-CARD** — Felix's UX decision (Oct 9; board 2): the steward's review page becomes a
+  decision card per held submission, sorted by how many agents a decision unblocks: why you (the
+  hold reasons), waiting and exposed (agents queued on the touched scopes with their position;
+  other live claims' declared assumptions on those scopes, quoted as data), the intent and evidence
+  quoted as data, what changed (touched scopes, the hold's scope first) with the diff on demand, and
+  a receipt of logged events after the decision (`review_decided`, then `merged` or
+  `submit_rejected`, then the waiting agents' grants; a line not yet logged says what it waits
+  for). Approve is only possible after the diff was served to this person for this commit: the
+  approve token comes with the diff, not with the page. Reject with a note stays possible without
+  it. Phone layout, sticky decision bar, 44 px targets, no batch, no swipe. Steward only; Felix
+  deploys after the merge. Dispatched 2026-10-09 22:05 as `lane-review-card`.
+- [ ] **CLI-INIT** — Felix's UX decision (Oct 9): `tessel init`, one command from nothing to a
+  worktree ready for `tessel start`, safe to rerun: writes `.tessel/config.toml` (0600; the token
+  minted from the steward's identity route with `STEWARD_ADMIN_TOKEN` from the environment, or
+  taken from `TESSEL_TOKEN`; never printed), installs the Claude Code hooks and the git hooks, and
+  ends with a card of what it did, what it kept and the next move. The manual steps in
+  `skills/tessel/SKILL.md` stay as the fallback. After CLI-CARD (same files).
 - [x] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
@@ -1203,3 +1245,22 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   CLOSED 2026-10-05 at `a5a5f96` (review "Yes" after one fix pass, which added the Unicode
   Bidi_Control characters and U+2028/9). `cargo test` 244. Live on `ff1dd858`: newline, ESC, U+202E
   and a padded name are refused as malformed; a clean scope is granted.
+
+## Post-contest (recorded 2026-10-09 on Felix's decision; nothing here is scheduled)
+
+From the UX proposal (https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd) and the mockups
+(https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6). Recorded so the ideas are not lost; none is a box.
+
+- The Floor: the dashboard as a live map (directory districts, file tiles, symbol rows, a texture
+  per mode so colour is never the only signal, denial arcs with both intents quoted, wait chips at
+  a tile's edge, shadow ghosts that become seals or fade to false alarm, a trunk rail of merges, a
+  scrubbable event tape). Board 1 of the mockups. Counters keep rule 7: a denial is "not tested",
+  precision shows its denominator.
+- `tessel await granted|merged|decided` (one bounded call instead of polling) and `tessel watch`
+  (who holds what, live, in the terminal).
+- `tessel init --from-demo`, reusing the swarm's setup code.
+- Conversational review (needs a protocol version bump); phone push notifications; a full-screen
+  TUI; steward stage events in the log, so a pending submission can say more than "steward
+  working".
+- Four additive protocol fields: `held_since_ms`, `queue_len`, `reviewers`,
+  `ReviewDecided.reviewer` (the last is already on the hand-merge list).
