@@ -2012,17 +2012,20 @@ async fn an_unknown_event_on_the_live_socket_is_ignored_and_the_connection_stays
     assert_eq!(a1.status()?["state"]["connection"], "online");
     assert_eq!(daemon_log(&a1)?.matches("unknown event seq 99").count(), 1);
 
-    // The next reconciliation distrusts the log although this replay holds no unknown event.
+    // Every reconnect replays the whole log, which holds no unknown event here: it reads complete.
+    let reads = daemon_log(&a1)?.matches("(complete)").count();
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
     eventually(SHORT, || {
-        Ok(a1
-            .tessel(&["inbox", "--all"])?
-            .stdout
-            .contains("not read to its end")
-            .then_some(()))
+        Ok((daemon_log(&a1)?.matches("(complete)").count() > reads).then_some(()))
     })
     .await?;
+    let inbox = a1.tessel(&["inbox", "--all"])?;
+    assert!(
+        !inbox.stdout.contains("not read to its end"),
+        "{}",
+        inbox.stdout
+    );
     Ok(())
 }
 

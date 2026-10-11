@@ -210,9 +210,6 @@ struct Daemon {
     lost_requests: Vec<PendingClaim>,
     /// Claims released just before the socket dropped; the release may not have arrived.
     lost_releases: HashSet<ClaimId>,
-    /// An event of an unknown kind was ignored on the live socket, so this daemon's view of the
-    /// log has a hole. The next log read is treated as incomplete, then the flag is cleared.
-    live_view_has_a_hole: bool,
     /// Claims granted since the current connection was welcomed.
     fresh: HashSet<ClaimId>,
     /// The task reading the event log. Aborted when the working socket drops: a bound read
@@ -367,7 +364,6 @@ impl Daemon {
             deferred: VecDeque::new(),
             lost_requests: Vec::new(),
             lost_releases: HashSet::new(),
-            live_view_has_a_hole: false,
             fresh: HashSet::new(),
             snapshot: None,
             in_tx,
@@ -636,10 +632,8 @@ impl Daemon {
                 envelope,
             } if generation == self.generation => {
                 self.log(&format!(
-                    "unknown event {envelope} on the live socket: ignored; the next event log \
-                     read is not trusted"
+                    "unknown event {envelope} on the live socket: ignored"
                 ));
-                self.live_view_has_a_hole = true;
             }
             Incoming::HeartbeatAnswered {
                 generation,
@@ -947,8 +941,6 @@ impl Daemon {
                 "unknown event {envelope} in the event log: not applied; the read is incomplete"
             ));
         }
-        let hole = std::mem::take(&mut self.live_view_has_a_hole);
-        let complete = complete && !hole;
         let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
         self.advance_base_from_log(&events).await;
         self.log(&format!(
