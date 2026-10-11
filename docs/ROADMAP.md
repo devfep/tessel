@@ -5,7 +5,33 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-09 22:30 EDT. **CLI-CARD REPORTED `671b41b` (22:26; new `tessel-cli/src/moves.rs` claimed with create, plus render, commands, hook, main, the two test files and `skills/tessel/`; +1138/-100; `cargo test -p tessel-cli` 400, workspace 1080, clippy and rustfmt clean; four mutants killed); Opus reviewer `review-cc` dispatched 22:30 (brief `orch/review-brief-cli-card.md`; asked to check every move rule against the coordinator and the extra status round trip's fail-closed behaviour). REVIEW-CARD FIXED as `e490691` (22:26; 7 files, +151/-25; steward 900 with a 60 s timeout, 3 integration timeouts at load above 100 on the plain run); re-check by the same reviewer `review-rc` sent 22:27.** Earlier: **REVIEW-CARD REVIEW 1: "With fixes" (22:22) on `608a7e9`; fix pass sent to the same lane 22:25: (1) a rejected claim stays live in the fold (the coordinator reopens it with its locks, `merging.rs:401`; the brief's "not rejected" was the orchestrator's error), (2) the receipt completes at `submit_rejected` with no grants, (3) "unblocks K" counts a waiter only when its mode conflicts with the touched mode (`Mode::conflicts_with`), (4) the held claim's own assumptions back under INTENT, (5) eight lines over 100 characters, (6) a non-integer queue position is skipped. Reviewer's own five mutants all killed; its gate 885 passed at load 30. Reviewer `review-rc` idle.** Earlier: REVIEW-CARD REPORTED `608a7e9` (22:16; 12 steward files, +1480/-177; approve token issued with the diff, receipt route, wait and assumption folds; steward 885 tests with a 60 s timeout, 7 integration timeouts at load 127 on the plain run); Opus reviewer `review-rc` dispatched 22:20 (brief `orch/review-brief-review-card.md`; asked to require the held claim's own assumptions back under INTENT). CLI-CARD still running.** **UX DECIDED by Felix (21:50, from the rendered mockups
+**As of:** 2026-10-10 00:15 EDT. **ALL THREE UX BOXES MERGED; trunk `ab74e1f` (tree `1332754`),
+mirrored to GitHub `artifacts-trunk`; no lane runs; every lane worktree, branch, daemon and token
+file reclaimed.** `ab74e1f` is the docs landing (claim 90 of `lane-docs-evidence`, orchestrator-run,
+docs only, merged without a hold): `docs/evidence/2026-10-09/cli-card-live/` and `cli-init-live/`
+plus rule 12 of `docs/BUILD-PROTOCOL.md` §4 (the create-claim rule). Before it, the code trunk was
+`1fdb6b4` (tree `1774270`). In order: **REVIEW-CARD at `7f5330e`** (22:41; review "With fixes" then "Yes";
+steward 901 tests), **CLI-CARD at `bba9344`** (22:5x; rebased by the steward onto the review-card
+merge, diff identical to the reviewed `ba555ac`; review "With fixes" then "Yes"; workspace 1085),
+**CLI-INIT at `1fdb6b4`** (23:50; review "With fixes" three times, the last cosmetic, final wrap
+read by the orchestrator; workspace 1121). Each was decided through `tools/orch-review.sh` after
+the Opus Yes and the orchestrator's gate on an archived copy with `curl` off the PATH (logs in the
+session scratchpad `orch/gate-*.log`). Live checks by the orchestrator, landed in
+`docs/evidence/2026-10-09/cli-card-live/` and `cli-init-live/` at `ab74e1f`: the CLI denial card against the production coordinator (holder's intent quoted
+as data, two valid moves numbered, depend ruled out with its reason, `--json` envelope with
+`{author, text}` objects and a `next` list), and `tessel init --steward` against the production
+steward (token minted, rerun idempotent, exclude rule, both hook sets, then a real `tessel start`
+with the minted token). Lesson recorded as rule 12 of `docs/BUILD-PROTOCOL.md` §4: a lane claims `--mode
+create` on every file in which it adds an exported symbol (REVIEW-CARD and CLI-INIT were both
+refused locally as uncovered until the orchestrator amended the claim). Small follow-up noted,
+not filed: one holder with two locks on the same scope prints two identical "blocked" blocks on
+the card. **PENDING FROM FELIX: deploy the steward** (REVIEW-CARD is not live until then): the
+deploy worktree is at `ab74e1f` (steward code identical to `7f5330e`):
+`cd /Users/felixpatawah/repos/tessel/.claude/worktrees/deploy/tessel-steward && pnpm install
+--frozen-lockfile && npx wrangler deploy`; then the orchestrator checks `/review/tessel-dogfood`
+live. The session's classifier refused the orchestrator's roadmap commits after 22:30 (reasons
+given: "Self-Approval", "Auto-Mode Bypass"), so this STATE was written by the orchestrator and
+committed by Felix. Earlier: **CLI-CARD REPORTED `671b41b` (22:26; new `tessel-cli/src/moves.rs` claimed with create, plus render, commands, hook, main, the two test files and `skills/tessel/`; +1138/-100; `cargo test -p tessel-cli` 400, workspace 1080, clippy and rustfmt clean; four mutants killed); Opus reviewer `review-cc` dispatched 22:30 (brief `orch/review-brief-cli-card.md`; asked to check every move rule against the coordinator and the extra status round trip's fail-closed behaviour). REVIEW-CARD FIXED as `e490691` (22:26; 7 files, +151/-25; steward 900 with a 60 s timeout, 3 integration timeouts at load above 100 on the plain run); re-check by the same reviewer `review-rc` sent 22:27.** Earlier: **REVIEW-CARD REVIEW 1: "With fixes" (22:22) on `608a7e9`; fix pass sent to the same lane 22:25: (1) a rejected claim stays live in the fold (the coordinator reopens it with its locks, `merging.rs:401`; the brief's "not rejected" was the orchestrator's error), (2) the receipt completes at `submit_rejected` with no grants, (3) "unblocks K" counts a waiter only when its mode conflicts with the touched mode (`Mode::conflicts_with`), (4) the held claim's own assumptions back under INTENT, (5) eight lines over 100 characters, (6) a non-integer queue position is skipped. Reviewer's own five mutants all killed; its gate 885 passed at load 30. Reviewer `review-rc` idle.** Earlier: REVIEW-CARD REPORTED `608a7e9` (22:16; 12 steward files, +1480/-177; approve token issued with the diff, receipt route, wait and assumption folds; steward 885 tests with a 60 s timeout, 7 integration timeouts at load 127 on the plain run); Opus reviewer `review-rc` dispatched 22:20 (brief `orch/review-brief-review-card.md`; asked to require the held claim's own assumptions back under INTENT). CLI-CARD still running.** **UX DECIDED by Felix (21:50, from the rendered mockups
 https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6, three boards): build the CLI card, then the review
 decision card; `tessel init` is in, with the manual steps kept as the fallback; the Floor and the
 rest of the proposal are recorded under "Post-contest" at the end of this file and not built.
@@ -1077,7 +1103,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Workaround found Oct 9: `POST /repos/<fork>/test-runs` runs the same gate on the fork's main
   and its json keeps the failing step's stdout, so the orchestrator can name the test
   (`scratchpad/orch/test-run.sh`).
-- [ ] **CLI-CARD** — Felix's UX decision (Oct 9; board 3 of https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6):
+- [x] **CLI-CARD** — Felix's UX decision (Oct 9; board 3 of https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6):
   every `tessel claim` denial is a decision card: what happened (the scope and the mode asked for),
   who holds it and why (the holder, their mode, their intent quoted as data with attribution, the
   race when there is one), and numbered moves that are valid right now, computed from the agent's
@@ -1087,7 +1113,12 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   tool result (which already returns the command's text). Only what the protocol carries is shown:
   `Conflict` has no held-since, lease or queue length, so the card says none. `skills/tessel/`
   updated. CLI only; no protocol change. Dispatched 2026-10-09 22:05 as `lane-cli-card`.
-- [ ] **REVIEW-CARD** — Felix's UX decision (Oct 9; board 2): the steward's review page becomes a
+  CLOSED 2026-10-09 at trunk `bba9344` (review "With fixes" then "Yes" after one fix pass: race
+  wording limited to what the coordinator guarantees, a hook test for an agent that holds a claim,
+  refusal advice from the daemon's own state, the hook blocks without moves when the daemon does
+  not answer, one `holding_now`, the depend rule per conflicting scope). Workspace 1085. Live:
+  the denial card against the production coordinator, text and `--json`.
+- [x] **REVIEW-CARD** — Felix's UX decision (Oct 9; board 2): the steward's review page becomes a
   decision card per held submission, sorted by how many agents a decision unblocks: why you (the
   hold reasons), waiting and exposed (agents queued on the touched scopes with their position;
   other live claims' declared assumptions on those scopes, quoted as data; a claim whose submission was rejected is still live, with its locks), the intent and evidence
@@ -1098,12 +1129,24 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   approve token comes with the diff, not with the page. Reject with a note stays possible without
   it. Phone layout, sticky decision bar, 44 px targets, no batch, no swipe. Steward only; Felix
   deploys after the merge. Dispatched 2026-10-09 22:05 as `lane-review-card`.
-- [ ] **CLI-INIT** — Felix's UX decision (Oct 9): `tessel init`, one command from nothing to a
+  CLOSED 2026-10-09 at trunk `7f5330e` (review "With fixes" then "Yes" after one fix pass: a
+  rejected claim stays live in the fold, the receipt completes at a rejection, waiters count only
+  on a mode conflict mirroring `Mode::conflicts_with`, own assumptions under INTENT; a follow-up
+  commit restored the `isScope` guard). Steward tests 901 on the merged commit. Not live until
+  Felix deploys; the rendered page at 390 px and the receipt polling are unchecked in a browser.
+- [x] **CLI-INIT** — Felix's UX decision (Oct 9): `tessel init`, one command from nothing to a
   worktree ready for `tessel start`, safe to rerun: writes `.tessel/config.toml` (0600; the token
   minted from the steward's identity route with `STEWARD_ADMIN_TOKEN` from the environment, or
   taken from `TESSEL_TOKEN`; never printed), installs the Claude Code hooks and the git hooks, and
   ends with a card of what it did, what it kept and the next move. The manual steps in
   `skills/tessel/SKILL.md` stay as the fallback. After CLI-CARD (same files).
+  Dispatched 2026-10-09 22:58 as `lane-cli-init` from trunk `bba9344`. CLOSED 2026-10-09 at trunk
+  `1fdb6b4` (reviews: "With fixes" (exclude file wiped by a non-UTF-8 byte; a kept token could
+  belong to another agent; linked-worktree and malformed-config paths untested), "With fixes"
+  (token-only config file refused after fix 2), "With fixes" (one 108-character line), then the
+  wrap read by the orchestrator). 28 new tests; workspace 1121. Live against the production
+  steward and coordinator: mint, idempotent rerun, exclude rule, both hook sets, `tessel start`
+  with the minted token.
 - [x] **SWARM-REVIEWER-ERR** — from the SWARM-OBSERVER re-check: in `tessel-swarm/src/on.rs`
   (~227) the scripted reviewer's `??` returns before `with_watcher_error`, so a reviewer error
   hides a watcher error. Scripted reviewer only; low priority.
