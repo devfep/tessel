@@ -453,6 +453,12 @@ mod tests {
     }
 
     #[test]
+    fn a_5xx_rpc_failure_alone_is_transient() {
+        let text = "error: RPC failed; HTTP 503 curl 92 HTTP/2 stream 0 was not closed cleanly";
+        assert!(push_failure_is_transient(text), "{text}");
+    }
+
+    #[test]
     fn text_that_only_looks_like_a_client_error_does_not_hide_a_hang_up() {
         for text in [
             "error: 404 lines\nfatal: the remote end hung up unexpectedly",
@@ -474,7 +480,8 @@ mod tests {
         let text = "fatal: unable to access 'https://x/': Operation timed out after 30001 \
                     milliseconds with 0 bytes received";
         assert!(push_failure_is_transient(text), "{text}");
-        let text = "fatal: unable to access 'https://x/': Timed out after 30001 ms";
+        let text =
+            "fatal: unable to access 'https://x/': Resolving timed out after 5000 milliseconds";
         assert!(push_failure_is_transient(text), "{text}");
     }
 
