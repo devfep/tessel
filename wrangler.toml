@@ -20,6 +20,9 @@ new_sqlite_classes = ["Coordinator"]
 RUN = "dogfood"
 SHADOW_ENABLED = "false"
 REVIEWERS = "felix,orchestrator"
+# Path prefixes whose edits are held for review. One list for every repo this Worker serves. A
+# directory entry must end in "/" (plain prefix match: "src/auth" would also hold "src/authz.rs").
+SENSITIVE = "src/protocol.rs,src/identity.rs,tessel.toml,wrangler.toml,tessel-steward/wrangler.jsonc,tessel-steward/src/access.ts"
 
 [[services]]
 binding = "STEWARD"
@@ -48,6 +51,7 @@ new_sqlite_classes = ["Coordinator"]
 RUN = "swarm"
 SHADOW_ENABLED = "true"
 REVIEWERS = "swarm-reviewer"
+SENSITIVE = ""
 ALLOWED_REPO_PREFIX = "swarm-"
 
 [[env.swarm.services]]

@@ -89,6 +89,7 @@ pub enum LoadError {
     MissingRun,
     InvalidShadowEnabled,
     InvalidReviewers,
+    InvalidSensitive,
     InvalidConfig(InvalidConfig),
     /// Stored state that does not parse. Only the position is kept: the state holds intents.
     Corrupt {
@@ -114,6 +115,11 @@ impl std::fmt::Display for LoadError {
                 f,
                 "the REVIEWERS variable must be comma-separated agent ids \
                  (letters, digits, '.', '_', '-'; at most {MAX_AGENT_ID_BYTES} bytes each)"
+            ),
+            LoadError::InvalidSensitive => write!(
+                f,
+                "the SENSITIVE variable must be comma-separated path prefixes (no empty entry, \
+                 no leading '/', no '..' segment, no '*'; end a directory with '/')"
             ),
             LoadError::InvalidConfig(e) => write!(f, "{e}"),
             LoadError::Corrupt { line, column } => write!(
@@ -164,6 +170,39 @@ pub fn reviewers_or_none(reviewers: Option<&str>, report: impl FnOnce(&LoadError
     })
 }
 
+/// `SENSITIVE`: comma-separated path prefixes, spaces around an entry ignored; unset or blank means
+/// no sensitive paths. Entries are matched as plain prefixes (no globs), so a directory entry must
+/// end in `/`: `src/auth` would also match `src/authz.rs`. An empty entry, a leading `/`, a `..`
+/// segment or a `*` is an error.
+pub fn parse_sensitive(sensitive: Option<&str>) -> Result<Vec<String>, LoadError> {
+    let Some(list) = sensitive.filter(|list| !list.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let mut parsed = Vec::new();
+    for entry in list.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty()
+            || entry.starts_with('/')
+            || entry.contains('*')
+            || entry.split('/').any(|segment| segment == "..")
+        {
+            return Err(LoadError::InvalidSensitive);
+        }
+        parsed.push(entry.to_string());
+    }
+    Ok(parsed)
+}
+
+/// The sensitive prefixes for a deployment, failing closed: a bad `SENSITIVE` value is reported
+/// (the report never carries the value) and holds every real submission, by using the empty prefix,
+/// which matches every path. It must not stop the Durable Object from loading.
+pub fn sensitive_or_all(sensitive: Option<&str>, report: impl FnOnce(&LoadError)) -> Vec<String> {
+    parse_sensitive(sensitive).unwrap_or_else(|e| {
+        report(&e);
+        vec![String::new()]
+    })
+}
+
 /// Whether `agent` can be a verified agent id: also safe to carry in an HTTP header.
 pub fn is_agent_id(agent: &str) -> bool {
     let Some(first) = agent.bytes().next() else {
@@ -195,17 +234,20 @@ fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
 
 /// Restore the core from its stored state, or create it when nothing is stored yet. `RUN` and
 /// `SHADOW_ENABLED` are read only in the second case: a repo keeps the config it was created with.
-/// `reviewers` is applied in both: who may review is a deployment setting, not part of the run.
+/// `reviewers` and `sensitive` are applied in both: who may review and which paths need review are
+/// deployment settings, not part of the run.
 pub fn load_core(
     stored: Option<&str>,
     run: Option<&str>,
     shadow: Option<&str>,
     reviewers: Vec<AgentId>,
+    sensitive: Vec<String>,
 ) -> Result<Core, LoadError> {
     let Some(stored) = stored else {
         let config = config_from_vars(run, shadow)?;
         let mut core = Core::new(config).map_err(LoadError::InvalidConfig)?;
         core.set_reviewers(reviewers);
+        core.set_sensitive(sensitive);
         return Ok(core);
     };
     let mut core: Core = serde_json::from_str(stored).map_err(|e| LoadError::Corrupt {
@@ -213,6 +255,7 @@ pub fn load_core(
         column: e.column(),
     })?;
     core.set_reviewers(reviewers);
+    core.set_sensitive(sensitive);
     Ok(core)
 }
 
@@ -1000,7 +1043,7 @@ mod tests {
     }
 
     fn new_core() -> Core {
-        load_core(None, Some("test"), None, Vec::new()).unwrap()
+        load_core(None, Some("test"), None, Vec::new(), Vec::new()).unwrap()
     }
 
     fn reject_code(action: Action) -> ErrorCode {
@@ -1404,8 +1447,14 @@ mod tests {
         let last = split_effects(first).0.last().map(|e| e.seq).unwrap();
         let stored = serde_json::to_string(&core).unwrap();
 
-        let mut restored =
-            load_core(Some(&stored), Some("ignored"), Some("junk"), Vec::new()).unwrap();
+        let mut restored = load_core(
+            Some(&stored),
+            Some("ignored"),
+            Some("junk"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
         let (_, denied) = run(&mut restored, &bound("a2"), claim("fail", "depend"));
         assert!(
             was_denied(&denied),
@@ -1418,7 +1467,7 @@ mod tests {
 
     #[test]
     fn no_stored_state_creates_a_core_for_the_run() {
-        let core = load_core(None, Some("dogfood"), None, Vec::new()).unwrap();
+        let core = load_core(None, Some("dogfood"), None, Vec::new(), Vec::new()).unwrap();
         let json = serde_json::to_string(&core).unwrap();
         assert!(json.contains(r#""run":"dogfood""#), "{json}");
         assert!(
@@ -1430,11 +1479,11 @@ mod tests {
     #[test]
     fn missing_or_empty_run_fails_loudly() {
         assert_eq!(
-            load_core(None, None, None, Vec::new()).unwrap_err(),
+            load_core(None, None, None, Vec::new(), Vec::new()).unwrap_err(),
             LoadError::MissingRun
         );
         assert_eq!(
-            load_core(None, Some(""), None, Vec::new()).unwrap_err(),
+            load_core(None, Some(""), None, Vec::new(), Vec::new()).unwrap_err(),
             LoadError::MissingRun
         );
         assert!(config_from_vars(None, None).is_err());
@@ -1447,6 +1496,7 @@ mod tests {
             Some("r"),
             None,
             Vec::new(),
+            Vec::new(),
         )
         .unwrap_err();
         let LoadError::Corrupt { .. } = err else {
@@ -1454,8 +1504,8 @@ mod tests {
         };
         assert!(!err.to_string().contains("secret"));
         assert!(err.to_string().contains("refusing to start empty"));
-        assert!(load_core(Some(""), Some("r"), None, Vec::new()).is_err());
-        assert!(load_core(Some("{}"), Some("r"), None, Vec::new()).is_err());
+        assert!(load_core(Some(""), Some("r"), None, Vec::new(), Vec::new()).is_err());
+        assert!(load_core(Some("{}"), Some("r"), None, Vec::new(), Vec::new()).is_err());
     }
 
     #[test]
@@ -1480,7 +1530,7 @@ mod tests {
     }
 
     fn core_with_shadow(shadow: Option<&str>) -> Result<Core, LoadError> {
-        load_core(None, Some("r"), shadow, Vec::new())
+        load_core(None, Some("r"), shadow, Vec::new(), Vec::new())
     }
 
     #[test]
@@ -1550,14 +1600,15 @@ mod tests {
 
     #[test]
     fn reviewers_are_taken_from_the_variable_on_every_load() {
-        let created = load_core(None, Some("r"), None, ids(&["felix"])).unwrap();
+        let created = load_core(None, Some("r"), None, ids(&["felix"]), Vec::new()).unwrap();
         let stored = serde_json::to_string(&created).unwrap();
         let reviewers_of = |core: &Core| serde_json::to_value(core).unwrap()["reviewers"].clone();
         assert_eq!(reviewers_of(&created), serde_json::json!(["felix"]));
 
-        let renamed = load_core(Some(&stored), None, None, ids(&["ana", "bo"])).unwrap();
+        let renamed =
+            load_core(Some(&stored), None, None, ids(&["ana", "bo"]), Vec::new()).unwrap();
         assert_eq!(reviewers_of(&renamed), serde_json::json!(["ana", "bo"]));
-        let cleared = load_core(Some(&stored), None, None, Vec::new()).unwrap();
+        let cleared = load_core(Some(&stored), None, None, Vec::new(), Vec::new()).unwrap();
         assert_eq!(reviewers_of(&cleared), serde_json::json!([]));
     }
 
@@ -1578,6 +1629,115 @@ mod tests {
         let good = reviewers_or_none(Some("felix"), |_| quiet += 1);
         assert_eq!((good, quiet), (ids(&["felix"]), 0));
         assert!(reviewers_or_none(None, |_| quiet += 1).is_empty());
+        assert_eq!(quiet, 0, "an unset variable is not an error");
+    }
+
+    fn paths(entries: &[&str]) -> Vec<String> {
+        entries.iter().map(|entry| (*entry).to_string()).collect()
+    }
+
+    #[test]
+    fn no_sensitive_paths_when_the_variable_is_unset_or_blank() {
+        for blank in [None, Some(""), Some("   ")] {
+            assert_eq!(parse_sensitive(blank), Ok(Vec::new()), "{blank:?}");
+        }
+    }
+
+    #[test]
+    fn sensitive_paths_are_split_on_commas_and_trimmed() {
+        assert_eq!(
+            parse_sensitive(Some("wrangler.toml")),
+            Ok(paths(&["wrangler.toml"]))
+        );
+        assert_eq!(
+            parse_sensitive(Some(" src/protocol.rs , src/auth/,tessel.toml ")),
+            Ok(paths(&["src/protocol.rs", "src/auth/", "tessel.toml"]))
+        );
+    }
+
+    #[test]
+    fn a_bad_sensitive_list_fails_loudly() {
+        for bad in [
+            "a,,b",
+            "a,",
+            ",a",
+            "a, ,b",
+            "/etc/passwd",
+            "src/../secret",
+            "..",
+            "../x",
+            "src/..",
+            "src/*.rs",
+            "*",
+        ] {
+            let err = parse_sensitive(Some(bad)).unwrap_err();
+            assert_eq!(err, LoadError::InvalidSensitive, "{bad:?}");
+            assert!(err.to_string().contains("SENSITIVE"));
+        }
+    }
+
+    #[test]
+    fn a_dotted_name_is_not_a_parent_segment() {
+        assert_eq!(
+            parse_sensitive(Some("..env,a..b/c")),
+            Ok(paths(&["..env", "a..b/c"]))
+        );
+    }
+
+    #[test]
+    fn sensitive_paths_are_taken_from_the_variable_on_every_load() {
+        let created = load_core(None, Some("r"), None, Vec::new(), paths(&["a.rs"])).unwrap();
+        let stored = serde_json::to_string(&created).unwrap();
+        let sensitive_of = |core: &Core| serde_json::to_value(core).unwrap()["sensitive"].clone();
+        assert_eq!(sensitive_of(&created), serde_json::json!(["a.rs"]));
+
+        let renamed = load_core(
+            Some(&stored),
+            None,
+            None,
+            Vec::new(),
+            paths(&["b/", "c.rs"]),
+        )
+        .unwrap();
+        assert_eq!(sensitive_of(&renamed), serde_json::json!(["b/", "c.rs"]));
+        let cleared = load_core(Some(&stored), None, None, Vec::new(), Vec::new()).unwrap();
+        assert_eq!(sensitive_of(&cleared), serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_stored_state_without_the_sensitive_field_still_loads() {
+        let created = load_core(None, Some("r"), None, Vec::new(), Vec::new()).unwrap();
+        let mut stored: serde_json::Value = serde_json::to_value(&created).unwrap();
+        assert!(stored
+            .as_object_mut()
+            .unwrap()
+            .remove("sensitive")
+            .is_some());
+        let stored = stored.to_string();
+        let core = load_core(Some(&stored), None, None, Vec::new(), paths(&["a.rs"])).unwrap();
+        assert_eq!(
+            serde_json::to_value(&core).unwrap()["sensitive"],
+            serde_json::json!(["a.rs"])
+        );
+    }
+
+    #[test]
+    fn a_bad_sensitive_variable_is_reported_and_holds_everything() {
+        let mut reports = Vec::new();
+        let bad = sensitive_or_all(Some("a.rs,/etc"), |e| reports.push(e.to_string()));
+        assert_eq!(bad, paths(&[""]), "fails closed, not with the valid half");
+        let [report] = &reports[..] else {
+            panic!("expected one report, got {reports:?}");
+        };
+        assert!(
+            report.contains("SENSITIVE") && !report.contains("/etc"),
+            "{report}"
+        );
+
+        let mut quiet = 0;
+        let good = sensitive_or_all(Some("a.rs"), |_| quiet += 1);
+        assert_eq!((good, quiet), (paths(&["a.rs"]), 0));
+        assert!(sensitive_or_all(None, |_| quiet += 1).is_empty());
         assert_eq!(quiet, 0, "an unset variable is not an error");
     }
 
@@ -2086,7 +2246,7 @@ mod tests {
         assert!(refused.state > SOFT_ENTRY_BYTES, "{refused:?}");
         assert_eq!(decide_store(Work::Content, refused), StoreDecision::Refuse);
 
-        let mut recovered = load_core(Some(&stored), None, None, Vec::new()).unwrap();
+        let mut recovered = load_core(Some(&stored), None, None, Vec::new(), Vec::new()).unwrap();
         let effects = recovered.expire(late);
         let freed = measured(&recovered, effects, stored.len());
         assert_eq!(decide_store(Work::Plain, freed), StoreDecision::Store);

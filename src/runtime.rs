@@ -340,8 +340,8 @@ impl Coordinator {
 
     /// Load the core from storage, or create it for the configured run. Fails loudly on corrupt
     /// state or a bad config; never starts empty over stored data. `RUN` and `SHADOW_ENABLED`
-    /// matter only when nothing is stored yet; `REVIEWERS` is applied on every load, and a bad
-    /// one leaves nobody able to review.
+    /// matter only when nothing is stored yet; `REVIEWERS` and `SENSITIVE` are applied on every
+    /// load. A bad `REVIEWERS` leaves nobody able to review; a bad `SENSITIVE` holds every submission.
     async fn ensure_loaded(&self) -> Result<()> {
         if self.core.borrow().is_some() {
             return Ok(());
@@ -362,11 +362,16 @@ impl Coordinator {
         let reviewers = shell::reviewers_or_none(reviewers.as_deref(), |e| {
             console_error!("coordinator {}: {e}; nobody can review", self.repo());
         });
+        let sensitive = self.env.var("SENSITIVE").ok().map(|var| var.to_string());
+        let sensitive = shell::sensitive_or_all(sensitive.as_deref(), |e| {
+            console_error!("coordinator {}: {e}; every submission is held", self.repo());
+        });
         let core = shell::load_core(
             stored.as_deref(),
             run.as_deref(),
             shadow.as_deref(),
             reviewers,
+            sensitive,
         )
         .map_err(|e| self.fail("load state", e))?;
         let mut slot = self.core.borrow_mut();
