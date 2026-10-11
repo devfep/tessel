@@ -28,7 +28,7 @@ pub const PUSH_BACKOFF: Reconnect = Reconnect {
 /// credential or a non-fast-forward is the same on the next try, so it is not one.
 #[must_use]
 pub fn push_failure_is_transient(output: &str) -> bool {
-    const CONNECTION: [&str; 12] = [
+    const CONNECTION: [&str; 14] = [
         "service unavailable",
         "internal server error",
         "bad gateway",
@@ -40,20 +40,33 @@ pub fn push_failure_is_transient(output: &str) -> bool {
         "the remote end hung up unexpectedly",
         "unexpected disconnect while reading sideband packet",
         "connection timed out",
+        "operation timed out",
+        "timed out after",
         "empty reply from server",
     ];
     let lower = output.to_lowercase();
-    CONNECTION.iter().any(|needle| lower.contains(needle)) || mentions_server_error(&lower)
+    if mentions_status(&lower, '4') {
+        return false;
+    }
+    CONNECTION.iter().any(|needle| lower.contains(needle)) || mentions_status(&lower, '5')
 }
 
-/// A line ending in `error: 5xx`, as in `error: 503` and `The requested URL returned error: 502`.
-/// Text after the code (`error: 500 lines`) means it was not a status.
-fn mentions_server_error(output: &str) -> bool {
+/// Whether a line carries an HTTP status of class `class` (`'4'` or `'5'`): it ends in
+/// `error: 4xx` (`The requested URL returned error: 404`) or reads `RPC failed; HTTP 4xx ...`.
+/// Text after the code of the first form (`error: 500 lines`) means it was not a status.
+fn mentions_status(output: &str, class: char) -> bool {
+    let is_code = |code: &str| {
+        code.len() == 3 && code.starts_with(class) && code.bytes().all(|b| b.is_ascii_digit())
+    };
     output.lines().any(|line| {
-        let Some((_, code)) = line.trim_end().rsplit_once("error: ") else {
-            return false;
-        };
-        code.len() == 3 && code.starts_with('5') && code.bytes().all(|b| b.is_ascii_digit())
+        let trailing = line
+            .trim_end()
+            .rsplit_once("error: ")
+            .is_some_and(|(_, code)| is_code(code));
+        let rpc = line
+            .split_once("rpc failed; http ")
+            .is_some_and(|(_, rest)| is_code(rest.split_whitespace().next().unwrap_or_default()));
+        trailing || rpc
     })
 }
 
@@ -413,6 +426,56 @@ mod tests {
         ] {
             assert!(!push_failure_is_transient(text), "{text}");
         }
+    }
+
+    #[test]
+    fn a_client_error_with_a_dropped_connection_is_not_transient() {
+        for text in [
+            "error: RPC failed; HTTP 413 curl 22 The requested URL returned error: 413\n\
+             fatal: the remote end hung up unexpectedly",
+            "error: RPC failed; HTTP 400 curl 22 The requested URL returned error: 400",
+            "fatal: the remote end hung up unexpectedly\nerror: 413",
+            "error: RPC failed; HTTP 413 curl 22\nfatal: the remote end hung up unexpectedly",
+        ] {
+            assert!(!push_failure_is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_server_error_with_a_dropped_connection_is_still_transient() {
+        for text in [
+            "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\n\
+             fatal: the remote end hung up unexpectedly",
+            "error: RPC failed; HTTP 503 curl 22\nfatal: the remote end hung up unexpectedly",
+        ] {
+            assert!(push_failure_is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn text_that_only_looks_like_a_client_error_does_not_hide_a_hang_up() {
+        for text in [
+            "error: 404 lines\nfatal: the remote end hung up unexpectedly",
+            "error: 4040\nfatal: the remote end hung up unexpectedly",
+            "error: RPC failed; curl 56 Recv failure\nfatal: the remote end hung up unexpectedly",
+        ] {
+            assert!(push_failure_is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_macos_ssh_operation_timeout_is_transient() {
+        let text = "ssh: connect to host x port 22: Operation timed out";
+        assert!(push_failure_is_transient(text), "{text}");
+    }
+
+    #[test]
+    fn a_curl_28_timeout_after_a_wait_is_transient() {
+        let text = "fatal: unable to access 'https://x/': Operation timed out after 30001 \
+                    milliseconds with 0 bytes received";
+        assert!(push_failure_is_transient(text), "{text}");
+        let text = "fatal: unable to access 'https://x/': Timed out after 30001 ms";
+        assert!(push_failure_is_transient(text), "{text}");
     }
 
     #[test]
