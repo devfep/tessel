@@ -426,9 +426,9 @@ impl Coordinator {
 
     /// `apply` after an await: load the core first. A client message handled while this task
     /// waited on the steward can drop the core (serialize failure, `Refuse`, `OverHard`), and
-    /// `apply` then fails with "core is not loaded". The other `apply` calls run under an
-    /// `ensure_loaded` made in the same task with no await in between, so nothing can drop the
-    /// slot before them; only the three steward outcomes apply after an await.
+    /// `apply` then fails with "core is not loaded". The other `apply` calls follow an
+    /// `ensure_loaded` in the same task with only storage awaits in between. Storage awaits hold
+    /// the input gate, so no client message can drop the core; only steward calls release it.
     async fn apply_loaded(
         &self,
         work: Work,
