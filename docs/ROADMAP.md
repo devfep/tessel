@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 09:40 EDT. **STEWARD-ACCESS-STALE-KEYS MERGED at `4814caf`** (tree
+**As of:** 2026-10-11 10:00 EDT. **SWARM-PUSH-PHRASES + SWARM-ONLOCAL-LOAD-2 MERGED at `46e42ce`**
+(rebased by the steward onto `4814caf`, diff identical to the reviewed `b0694c6`; workspace gate
+1123 with `curl` off the PATH; mirrored; lane reclaimed; three follow-up boxes filed from the
+review). `lane-cli-githook` reported `4b575b0`; its Opus review is running. `lane-coord-apply`
+dispatched 10:00 from `ab74e1f` (worktree `coord-apply`). Two heavy jobs at a time.
+Earlier: **As of:** 2026-10-11 09:40 EDT. **STEWARD-ACCESS-STALE-KEYS MERGED at `4814caf`** (tree
 `234c3f7`; mirrored; lane reclaimed; needs Felix's deploy, see the box). `lane-swarm-2` reported
 `b0694c6` (two different load flakes in its two full runs, each passing in the other:
 `a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive`, `off::tests::
@@ -1056,9 +1061,21 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   keys with one `access_certs_stale` log line, one retry a minute, 503 only with no cache. NOT
   DEPLOYED: Felix deploys from the deploy worktree (moved to `4814caf`). The merge itself ran the
   sandbox container from the 00:20 deploy, so the image uploaded over Wi-Fi is intact.
-- [ ] **SWARM-PUSH-PHRASES** — from the code review (verified 25, cheap): `tessel-swarm/src/git.rs:27–45`
+- [x] **SWARM-PUSH-PHRASES** — from the code review (verified 25, cheap): `tessel-swarm/src/git.rs:27–45`
   add "the remote end hung up unexpectedly", "unexpected disconnect while reading sideband
   packet", "connection timed out", "empty reply from server" to the transient set, with tests.
+  CLOSED 2026-10-11 at trunk `46e42ce` (with SWARM-ONLOCAL-LOAD-2, lane `lane-swarm-2`, commit
+  `b0694c6` rebased by the steward, diff identical; review "Yes"; workspace gate 1123). The
+  reviewer confirmed the phrases in git 2.56 and Homebrew libcurl. Two follow-ups filed below:
+  SWARM-4XX-HANGUP, SWARM-MACOS-TIMEOUT.
+- [ ] **SWARM-4XX-HANGUP** — from the SWARM-PUSH-PHRASES review (Oct 11): git output with a 4xx
+  AND a dropped connection ("error: RPC failed; HTTP 413 ... returned error: 413" then "fatal: the
+  remote end hung up unexpectedly") is now classed transient and retried four times, against the
+  doc comment at `tessel-swarm/src/git.rs:26-28`. Fix: a 4xx check before the phrase match, with
+  that line as a control test. Cheap; next swarm lane.
+- [ ] **SWARM-MACOS-TIMEOUT** — from the same review: macOS ssh prints "Operation timed out" and
+  curl 28 prints "Operation timed out after N milliseconds"; neither matches "connection timed
+  out". Add "operation timed out" and "timed out after" to the set, with tests. Cheap; same lane.
 - [x] **EVIDENCE-CHECK-SH** — from the code review (verified 25): `docs/evidence/2026-10-06/coord-head-live/check.sh:9`
   sources `/Users/felixpatawah/...` under `set -a`. Resolve the path from the script's location
   with an override variable, read only `STEWARD_ADMIN_TOKEN`, drop `set -a`. Docs; orchestrator.
@@ -1066,7 +1083,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   comes from the environment or, read alone in a subshell, from `.dev.vars` found relative to the
   script (`DEV_VARS` overrides); nothing is exported; shellcheck and shfmt clean; the missing-file
   path exits 1 with a message.
-- [ ] **SWARM-ONLOCAL-LOAD-2** — reopens SWARM-ONLOCAL-LOAD (Oct 9 17:35): `tests/on_local.rs:596`
+- [x] **SWARM-ONLOCAL-LOAD-2** — reopens SWARM-ONLOCAL-LOAD (Oct 9 17:35): `tests/on_local.rs:596`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` still fails under
   load (75) with the relative bound: the shadow's claim-to-submit span was 5605 ms against the
   holder's 7825 ms with `work_ms` 6000, because the two agents' git work (checkout, commit, push)
@@ -1074,6 +1091,20 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `Submitted` precedes the holder's `Submitted`, and the shadow's result still counts `work_ms`),
   or compare against the shadow's own measured git time. Also seen once in the same gate:
   `local::tests::work_that_already_fails_on_main...` (passes alone). Small; next swarm lane.
+  CLOSED 2026-10-11 at trunk `46e42ce` (see SWARM-PUSH-PHRASES): the test asserts that the
+  shadow's `Submitted` precedes the holder's by log position (events can share a millisecond);
+  the two `work_ms` assertions unchanged; `on_local` 23/23 in the lane, the review and the gate.
+  Follow-up SWARM-ORDER-CHECK-WEAK below. Two other load flakes seen once each by the lane, each
+  passing in the other full run and alone: `a_claim_granted_after_a_queue_wait_of_many_leases_
+  is_kept_alive` (ended `[Merged, Lapsed]`) and `off::tests::agents_work_at_the_same_time`.
+- [ ] **SWARM-ORDER-CHECK-WEAK** — from the SWARM-ONLOCAL-LOAD-2 review (Oct 11): the order
+  assertion rarely catches a shadow that waits. The reviewer made the shadow spend its work time
+  before pushing (`on.rs:1055`, `if !held.shadow` to `if true`): the test passed 3 of 4 runs, grant
+  and shadowing fell in the same millisecond, and the `work_ms` assertions pass too. Options: assert
+  the shadow's `Submitted` time is before the holder's grant time plus `work_ms` (always kills the
+  mutant, but a git-speed bound returns: the failing run measured 5,605 ms against 6,000), or
+  compare against the shadow's own measured git time (the box's other alternative). Needs a
+  decision on which bound is honest under load; not before the contest.
 - [x] **SWARM-RECONNECT-FIRST-CONNECT** — from the fresh-clone test (Oct 9): `tests/reconnect.rs`
   `agents_that_cannot_reconnect_end_as_disconnected_after_their_tries` arms its cut on the first
   `ClaimGranted` and refuses both agents; on a loaded Mac the second agent's first connection
