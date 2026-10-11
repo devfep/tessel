@@ -424,6 +424,20 @@ impl Coordinator {
         }
     }
 
+    /// `apply` after an await: load the core first. A client message handled while this task
+    /// waited on the steward can drop the core (serialize failure, `Refuse`, `OverHard`), and
+    /// `apply` then fails with "core is not loaded". The other `apply` calls run under an
+    /// `ensure_loaded` made in the same task with no await in between, so nothing can drop the
+    /// slot before them; only the three steward outcomes apply after an await.
+    async fn apply_loaded(
+        &self,
+        work: Work,
+        step: impl FnOnce(&mut Core) -> Vec<Effect>,
+    ) -> Result<Prepared> {
+        self.ensure_loaded().await?;
+        self.apply(work, step)
+    }
+
     /// The alarm: expire leases, recover a merge or verification a restart cut off, run at most
     /// one merge, then at most one verification (the core offers none while a merge is due). One
     /// of each per alarm keeps each invocation short and lets lease expiry run first every time.
@@ -477,7 +491,9 @@ impl Coordinator {
             return Ok(());
         };
         let answer = self.ask_steward_for_head().await;
-        let prepared = self.apply(Work::Plain, |core| core.trunk_read(&read, answer, now_ms()))?;
+        let prepared = self
+            .apply_loaded(Work::Plain, |core| core.trunk_read(&read, answer, now_ms()))
+            .await?;
         let applied = self.ready(prepared, "apply trunk head")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
@@ -561,9 +577,11 @@ impl Coordinator {
         let outcome = self.ask_steward_to_try(dispatch).await;
         self.verifying.set(None);
         let id = dispatch.id;
-        let prepared = self.apply(Work::Plain, |core| {
-            core.verification_outcome(id, &outcome, now_ms())
-        })?;
+        let prepared = self
+            .apply_loaded(Work::Plain, |core| {
+                core.verification_outcome(id, &outcome, now_ms())
+            })
+            .await?;
         let applied = self.ready(prepared, "apply verification outcome")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
@@ -647,9 +665,11 @@ impl Coordinator {
         let outcome = self.ask_steward(dispatch).await;
         self.merging.set(None);
         let claim = dispatch.claim;
-        let prepared = self.apply(Work::Plain, |core| {
-            core.merge_outcome(claim, &outcome, now_ms())
-        })?;
+        let prepared = self
+            .apply_loaded(Work::Plain, |core| {
+                core.merge_outcome(claim, &outcome, now_ms())
+            })
+            .await?;
         let applied = self.ready(prepared, "apply merge outcome")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
