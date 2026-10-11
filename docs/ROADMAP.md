@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 18:50 EDT. **VERSION RULE AMENDED by Felix (18:48), on the design pass's
+**As of:** 2026-10-11 19:05 EDT. **SWARM-4XX-HANGUP + SWARM-MACOS-TIMEOUT MERGED at `6ee08b7`**
+(claim 98, held as a signature change on `git::mentions_server_error`, approved through
+`tools/orch-review.sh` after the Opus re-check's Yes and the orchestrator's gate on an archived
+`6ee08b7`: workspace 1146 passed with `curl` off the PATH, clippy 0; the trunk fast-forwarded, so
+the merged tree is the reviewed one; mirrored; lane reclaimed). No deploy needed (harness only).
+`lane-gate-output` committed `df51eaf`; its Opus review is running. `lane-review-sensitive`
+dispatched 19:00 from `d5ef265` (worktree `review-sensitive`; owns `src/coordinator.rs`,
+`src/shell.rs`, `src/runtime.rs`, `wrangler.toml`). Video script v1 in the scratchpad
+`orch/video-script-v1.md`; form v3 now names Containers (the steward runs a container Durable
+Object, not the Sandbox SDK).
+Earlier: **As of:** 2026-10-11 18:50 EDT. **VERSION RULE AMENDED by Felix (18:48), on the design pass's
 finding:** an old daemon does skip an unknown event, but it then marks every log read incomplete
 for good (each reconnect replays from seq 0; `tessel-cli/src/daemon.rs` ~2002-2019), and an
 incomplete read returns early from reconciliation (`reconcile.rs` ~270), so it loses its
@@ -1173,14 +1183,20 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `b0694c6` rebased by the steward, diff identical; review "Yes"; workspace gate 1123). The
   reviewer confirmed the phrases in git 2.56 and Homebrew libcurl. Two follow-ups filed below:
   SWARM-4XX-HANGUP, SWARM-MACOS-TIMEOUT.
-- [ ] **SWARM-4XX-HANGUP** — from the SWARM-PUSH-PHRASES review (Oct 11): git output with a 4xx
+- [x] **SWARM-4XX-HANGUP** — from the SWARM-PUSH-PHRASES review (Oct 11): git output with a 4xx
   AND a dropped connection ("error: RPC failed; HTTP 413 ... returned error: 413" then "fatal: the
   remote end hung up unexpectedly") is now classed transient and retried four times, against the
   doc comment at `tessel-swarm/src/git.rs:26-28`. Fix: a 4xx check before the phrase match, with
   that line as a control test. Cheap; next swarm lane.
-- [ ] **SWARM-MACOS-TIMEOUT** — from the same review: macOS ssh prints "Operation timed out" and
+- [x] **SWARM-MACOS-TIMEOUT** — from the same review: macOS ssh prints "Operation timed out" and
   curl 28 prints "Operation timed out after N milliseconds"; neither matches "connection timed
   out". Add "operation timed out" and "timed out after" to the set, with tests. Cheap; same lane.
+  CLOSED 2026-10-11 with SWARM-4XX-HANGUP at trunk `6ee08b7` (`b9f616e` + fix `6ee08b7`; review
+  "With fixes" then "Yes"): `mentions_status(output, class)` reads a line ending `error: <c>xx` or
+  `RPC failed; HTTP <c>xx`; any 4xx makes a push failure permanent before the phrase match (the
+  box's 413-then-hang-up control is a test); a lone `RPC failed; HTTP 503` is transient; `operation
+  timed out` and `timed out after` added, tested with ssh's and curl's real lines. Not verified:
+  the real messages on macOS. Noted by the review, not filed: 429 and 408 stay permanent.
 - [x] **EVIDENCE-CHECK-SH** — from the code review (verified 25): `docs/evidence/2026-10-06/coord-head-live/check.sh:9`
   sources `/Users/felixpatawah/...` under `set -a`. Resolve the path from the script's location
   with an override variable, read only `STEWARD_ADMIN_TOKEN`, drop `set -a`. Docs; orchestrator.
