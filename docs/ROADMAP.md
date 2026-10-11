@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 10:00 EDT. **SWARM-PUSH-PHRASES + SWARM-ONLOCAL-LOAD-2 MERGED at `46e42ce`**
+**As of:** 2026-10-11 10:25 EDT. **CLI-GITHOOK-REINSTALL MERGED at `4e58f49`, COORD-APPLY-LOADED at
+`cbef948`** (tree `dcfc86c`; both mirrored; both lanes reclaimed; deploy worktree at `cbef948`, its
+`tessel` binary still from `1fdb6b4`, rebuilt with the next CLI merge). `lane-cli-replay`
+dispatched 10:22 from `46e42ce` (worktree `cli-replay`), the last dispatchable box. **PENDING FROM
+FELIX, two deploys from the deploy worktree:** the steward (`4814caf`: stale Access keys) with
+`cd /Users/felixpatawah/repos/tessel/.claude/worktrees/deploy/tessel-steward && pnpm install
+--frozen-lockfile && npx wrangler deploy`, and the coordinator (`cbef948`: apply after an await)
+with `cd /Users/felixpatawah/repos/tessel/.claude/worktrees/deploy && npx wrangler deploy`
+(the swarm coordinator too if it is kept: `--config` as before). Then the orchestrator runs one
+merge through both. Also still Felix's: the rulings (REVIEW-SENSITIVE, REVIEW-NOTE,
+COORD-UNDELIVERED-GRANT, GATE-OUTPUT), the version-bump half of CLI-REPLAY-UNKNOWN-EVENT, the
+form and the video.
+Earlier: **As of:** 2026-10-11 10:00 EDT. **SWARM-PUSH-PHRASES + SWARM-ONLOCAL-LOAD-2 MERGED at `46e42ce`**
 (rebased by the steward onto `4814caf`, diff identical to the reviewed `b0694c6`; workspace gate
 1123 with `curl` off the PATH; mirrored; lane reclaimed; three follow-up boxes filed from the
 review). `lane-cli-githook` reported `4b575b0`; its Opus review is running. `lane-coord-apply`
@@ -1032,18 +1044,36 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   (the classifier refused the lane's push as "Remote Repoint"); held; gate on `d9fb232`:
   workspace 898 with `curl` removed from `PATH`, clippy 0; approved claim 69; trunk tree equals
   the gated tree. A/B run 1 rerun started 16:47 from this build.
-- [ ] **CLI-GITHOOK-REINSTALL** — from the pull request 2 code review (Oct 9, verified 75):
+- [x] **CLI-GITHOOK-REINSTALL** — from the pull request 2 code review (Oct 9, verified 75):
   `tessel-cli/src/githook.rs:372–391`: after another tool overwrites the shim, a re-run of
   `tessel hook install` (which the install note at line 332 recommends) sees a non-shim hook,
   calls `chain_existing`, and bails because `<hook>.pre-tessel` from the first install exists.
   Fix: when `.pre-tessel` exists and the new non-shim hook differs, move the old `.pre-tessel`
   aside to a dated backup, chain the new hook, report both; make the note and the bail message
   agree. Test-first. Small; CLI only.
-- [ ] **COORD-APPLY-LOADED** — from the code review (verified 50): `src/runtime.rs:480,565,651`
+  Dispatched 2026-10-11 09:36 as `lane-cli-githook`. CLOSED 2026-10-11 at trunk `4e58f49` (two
+  commits `4b575b0` + fix `24c3d89`, rebased by the steward as `cdb445c` + `4e58f49`, diff
+  identical; review "With fixes": the bound test depended on the wall clock and could flake under
+  load, and the bail message said "Nothing was changed" although the earlier hook of the run had
+  been rewritten; now `chain_existing` takes the time, the bound is a fixed-time unit test, the
+  message says this hook was not changed; held as a signature change and approved by the
+  orchestrator through `tools/orch-review.sh` after one TLS-handshake retry; workspace gate 1128).
+  Same chained text on a reinstall makes no backup; a different one is kept as
+  `<hook>.pre-tessel.<UTC stamp>` (then `-1` … `-9`, then a bail naming the file to remove).
+- [x] **COORD-APPLY-LOADED** — from the code review (verified 50): `src/runtime.rs:480,565,651`
   apply a steward outcome after an awaited call without `ensure_loaded`; a client message during
   the await can drop the core (serialize failure, `Refuse`, `OverHard`), so the alarm errors and
   `recover_cut_off_merge` runs one more sandbox merge that ends `already_merged`. Fix: one helper
   that loads then applies, used by the three post-await sites. Coordinator; needs a deploy.
+  Dispatched 2026-10-11 10:00 as `lane-coord-apply`. CLOSED 2026-10-11 at trunk `cbef948`
+  (`454baec` + comment fix `98727d8`, rebased, diff identical; review "With fixes": the helper's
+  comment claimed "no await in between" for the other `apply` calls, which do have storage awaits;
+  what keeps them safe is the input gate, which storage awaits hold and steward calls release;
+  workspace gate 1121, no new test: the three paths need the Worker). The reviewer also noted an
+  older gap, not fixed here: a settle that withdraws a dead socket can drop the core with the
+  error swallowed (`runtime.rs:754,801`), and the next alarm `apply` fails once. NOT DEPLOYED:
+  Felix deploys the coordinator; the live proof is then a merge with no "core is not loaded" in
+  the tail and no extra `already_merged` sandbox merge.
 - [ ] **CLI-REPLAY-UNKNOWN-EVENT** — from the code review (verified 50): `daemon.rs:1923,2095`
   abort the log replay (from seq 0) or drop the socket on one message that fails to parse, so an
   additive enum variant without a `PROTOCOL_VERSION` bump breaks reconciliation for older
