@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 00:55 EDT. **STEWARD DEPLOYED (version `5a37c8e6`, Felix, 00:20, from the
+**As of:** 2026-10-11 09:40 EDT. **STEWARD-ACCESS-STALE-KEYS MERGED at `4814caf`** (tree
+`234c3f7`; mirrored; lane reclaimed; needs Felix's deploy, see the box). `lane-swarm-2` reported
+`b0694c6` (two different load flakes in its two full runs, each passing in the other:
+`a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive`, `off::tests::
+agents_work_at_the_same_time`); its Opus review is running. `lane-cli-githook` dispatched 09:36
+from `ab74e1f` (worktree `cli-githook`); `coord-apply` worktree, fork and identity prepared, not
+dispatched (two heavy jobs at a time).
+Earlier: **As of:** 2026-10-11 00:55 EDT. **STEWARD DEPLOYED (version `5a37c8e6`, Felix, 00:20, from the
 deploy worktree at `ab74e1f`; the sandbox image went up over Wi-Fi, so the first merge that runs
 the container shows whether it arrived intact). REVIEW-CARD render-checked** by the orchestrator:
 the Chrome extension was not connected and the live page needs an Access session, so the deployed
@@ -1038,10 +1045,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   daemons for good. Fix: decode the event envelope tolerantly (seq plus a kind that may be
   unknown) and mark the read unreliable instead of failing; or bump the version on every added
   variant (Felix's call, hand-merge list).
-- [ ] **STEWARD-ACCESS-STALE-KEYS** — from the code review (verified 50): `access.ts:85–93` after
+- [x] **STEWARD-ACCESS-STALE-KEYS** — from the code review (verified 50): `access.ts:85–93` after
   the 5-minute TTL a failed certs refetch throws and both callers answer 503 although a cached
   key set exists. Fix: serve the cached keys on refetch failure (log it), 503 only with no cache;
   rate-limit retries with `lastFetchAttemptMs`. Test the stale-cache case. Steward; needs a deploy.
+  Dispatched 2026-10-11 00:50 as `lane-steward-keys`. CLOSED 2026-10-11 at trunk `4814caf` (review
+  "With fixes" on `d1dfacc`: one 101-character test title, and the lane's mutant table had run a
+  different mutant than its label; fix `4814caf` read by the orchestrator; gate on an archived
+  copy 908 steward tests; merged without a hold; mirrored). A failed refetch serves the cached
+  keys with one `access_certs_stale` log line, one retry a minute, 503 only with no cache. NOT
+  DEPLOYED: Felix deploys from the deploy worktree (moved to `4814caf`). The merge itself ran the
+  sandbox container from the 00:20 deploy, so the image uploaded over Wi-Fi is intact.
 - [ ] **SWARM-PUSH-PHRASES** — from the code review (verified 25, cheap): `tessel-swarm/src/git.rs:27–45`
   add "the remote end hung up unexpectedly", "unexpected disconnect while reading sideband
   packet", "connection timed out", "empty reply from server" to the transient set, with tests.
