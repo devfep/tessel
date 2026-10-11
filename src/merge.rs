@@ -1217,7 +1217,8 @@ running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 "####;
-    const CARGO_STDERR: &str = r####"    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+    const CARGO_STDERR: &str = r####"
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
      Running unittests src/lib.rs (target/debug/deps/probe-01722566149dca2c)
 error: test failed, to rerun pass `--lib`
      Running tests/it.rs (target/debug/deps/it-dcf44d9862114e0c)
@@ -1334,6 +1335,16 @@ Error: nope
                 "FAIL  a.test.ts > suite one > adds up",
                 "FAIL  b.test.ts > top level fails"
             ]
+        );
+    }
+
+    #[test]
+    fn a_failure_line_printed_twice_is_quoted_once() {
+        let line = " FAIL  a.test.ts > suite one > adds up\n";
+        let reason = tests_failed_reason(line, &format!("{line}{line}"));
+        assert_eq!(
+            quoted_lines(&reason),
+            ["FAIL  a.test.ts > suite one > adds up"]
         );
     }
 
