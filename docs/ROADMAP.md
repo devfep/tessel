@@ -5,7 +5,24 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 18:30 EDT. **VIDEO CHECKPOINT TAGGED: `video-freeze-2026-10-11` at trunk
+**As of:** 2026-10-11 18:50 EDT. **VERSION RULE AMENDED by Felix (18:48), on the design pass's
+finding:** an old daemon does skip an unknown event, but it then marks every log read incomplete
+for good (each reconnect replays from seq 0; `tessel-cli/src/daemon.rs` ~2002-2019), and an
+incomplete read returns early from reconciliation (`reconcile.rs` ~270), so it loses its
+reconnect repairs for that repo. The rule is now: a new `EventKind` variant, or a new value of an
+enum inside a logged event, bumps `PROTOCOL_VERSION`; a new optional field (`#[serde(default)]`)
+stays additive (no message type denies unknown fields); a new top-level message type bumps it.
+**COORD-UNDELIVERED-GRANT CLOSED without code** (Felix, 18:48). **Designs settled** (Opus design
+pass, read-only): REVIEW-SENSITIVE as a coordinator variable `SENSITIVE` (path prefixes, beside
+`REVIEWERS`, fail closed on a bad value), not `tessel.toml`: the hold is decided at submit inside
+the core, before the steward sees the work, so a list sent with the merge arrives too late; no
+protocol change; next lane after `lane-swarm-3`. REVIEW-NOTE as two optional fields (`reviewer`,
+`note`) on `ServerMsg::SubmitRejected`, sent to the submitter only, quoted by the CLI; a
+`src/protocol.rs` change Felix merges by hand, then a coordinator and CLI lane. `lane-swarm-3`:
+review "With fixes" (one missing test, one invented test string), fix pass sent 18:31.
+`lane-gate-output` running. Form draft v3 (fact-checked, nine corrections) in the scratchpad
+`orch/submission-form-v3.md`; video script being drafted.
+Earlier: **As of:** 2026-10-11 18:30 EDT. **VIDEO CHECKPOINT TAGGED: `video-freeze-2026-10-11` at trunk
 `d5ef265`** (local annotated tag; live coordinator `92a52a2a` with code `1e04dcf`, steward
 deployed 10:45 from `cbef948`). The video shows this checkpoint; work after it lands as usual and
 is used in the video only if finished and deployed before Oct 13. **Felix's rulings (18:20):**
@@ -950,12 +967,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   an additive `fence` on `ClaimShadowed`, on the protocol hand-merge list). Landing cost two
   steward refusals from pre-existing Sandbox flakes, fixed in the same lane (SWARM-ONLOCAL-LOAD,
   CLI-GITHOOK-ETXTBSY); `PATIENT` is 40 tries and `BOUND` 180 s in tests/reconnect.rs.
-- [ ] **COORD-UNDELIVERED-GRANT** — from the COORD-CLOSE-WITHDRAW review (Oct 7): when a
+- [x] **COORD-UNDELIVERED-GRANT** — from the COORD-CLOSE-WITHDRAW review (Oct 7): when a
   `Granted` fails to send (`deliver`, `src/runtime.rs` ~880), the socket is closed but the granted
   agent is no longer queued, so nothing is withdrawn and it holds the claim until its lease lapses
   (one lease lost for waiters behind it). Releasing it early needs a release reason the protocol
   does not have (`ReleaseReason` is frozen; a new variant needs Felix's ruling). A reconnecting
   agent can adopt the claim from the log (SWARM-RECONNECT). Pending Felix.
+  CLOSED 2026-10-11 without code, on Felix's ruling: the claim sits idle for at most one lease
+  (30 s, `src/shell.rs` ~16); the daemon reconnects within 0.1-5 s and adopts the grant from
+  `ClaimGranted` (`reconcile.rs` ~283), which an early release would race; a new `ReleaseReason`
+  would cost old daemons their reconnect repairs (amended version rule) and an existing reason
+  would be a false log entry (rule 7). Known limit.
 - [x] **COORD-CLOSE-WITHDRAW** — found by SWARM-WAIT (Oct 7), checked by the orchestrator in the
   trunk: when the Durable Object closes a socket itself (`close_socket`, `src/runtime.rs` ~285,
   code 1011, after a failed dispatch or send), it does not withdraw that agent's queued request;
