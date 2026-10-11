@@ -526,7 +526,11 @@ fn try_land(trunk: &Git, forks: &Path, dispatch: &MergeDispatch) -> Result<Merge
         Checks::BuildFailed | Checks::TestsFailed => {
             trunk.run(&["reset", "-q", "--hard", &base])?;
             Ok(MergeOutcome::TestsFailed {
-                result: StepExit { exit_code: 1 },
+                result: StepExit {
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                },
             })
         }
     }

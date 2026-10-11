@@ -628,7 +628,11 @@ mod tests {
 
     fn tests_failed() -> MergeOutcome {
         MergeOutcome::TestsFailed {
-            result: StepExit { exit_code: 1 },
+            result: StepExit {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: String::new(),
+            },
         }
     }
 
