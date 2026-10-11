@@ -5,7 +5,28 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 10:25 EDT. **CLI-GITHOOK-REINSTALL MERGED at `4e58f49`, COORD-APPLY-LOADED at
+**As of:** 2026-10-11 13:15 EDT. **ALL DISPATCHABLE BOXES CLOSED; BOTH WORKERS DEPLOYED; LIVE PROOF
+DONE. Trunk `d5ef265`** (tree `09e32a6`; mirrored; every lane reclaimed; deploy worktree at
+`d5ef265` with its `tessel` rebuilt at `1e04dcf`). **Steward** deployed by the orchestrator at
+10:45 from `cbef948` (bare `npx wrangler deploy` in the steward directory, allowed by the standing
+Oct 5 approval; exit 0; the CLI-REPLAY merge at 11:15 and the docs merge at 13:05 ran through it).
+**Coordinator** deployed three times at midday, the first two wrong: Felix's bare `npx wrangler
+deploy` ran in the session's working directory, the main checkout on `sprint/build`, whose `src/`
+is ~3,000 lines behind the trunk (version `33d427d9`, old code); the orchestrator's `--config`
+deploy from the main checkout uploaded the deploy worktree's stale Oct 7 bundle (`f4d4c68c`,
+the previously live build); then `worker-build --release` inside the deploy worktree at `1e04dcf`
+and a bare `npx wrangler deploy --env ""` there gave **version `92a52a2a`, code `1e04dcf`**, the
+one that is live. Lesson: a deploy command for Felix always carries its `cd`, and the custom
+build runs in the shell's working directory, not the config's. **Live proof** (13:05): docs claim
+97 (`d5ef265`, the render-check evidence) merged through both new Workers with `wrangler tail` on
+the coordinator: 38 events, 36 ok and 2 canceled (the lane's own socket open and close), no
+exception, no error log, no "core is not loaded", no `already_merged` (scratchpad
+`live-proof/coordinator-tail.jsonl`). The dropped-core case itself was not provoked; the proof is
+that the new code loads the stored state and merges. Open boxes left: REVIEW-SENSITIVE,
+REVIEW-NOTE, COORD-UNDELIVERED-GRANT, GATE-OUTPUT (Felix's rulings), GATE-PATH (process), the
+three swarm follow-ups (SWARM-ORDER-CHECK-WEAK needs a decision; SWARM-4XX-HANGUP and
+SWARM-MACOS-TIMEOUT are cheap, one lane, on Felix's go), and the version-bump half of CLI-REPLAY.
+Earlier: **As of:** 2026-10-11 10:25 EDT. **CLI-GITHOOK-REINSTALL MERGED at `4e58f49`, COORD-APPLY-LOADED at
 `cbef948`** (tree `dcfc86c`; both mirrored; both lanes reclaimed; deploy worktree at `cbef948`, its
 `tessel` binary still from `1fdb6b4`, rebuilt with the next CLI merge). `lane-cli-replay`
 dispatched 10:22 from `46e42ce` (worktree `cli-replay`), the last dispatchable box. **PENDING FROM
@@ -1080,6 +1101,20 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   daemons for good. Fix: decode the event envelope tolerantly (seq plus a kind that may be
   unknown) and mark the read unreliable instead of failing; or bump the version on every added
   variant (Felix's call, hand-merge list).
+  Dispatched 2026-10-11 10:22 as `lane-cli-replay`. TOLERANT HALF CLOSED 2026-10-11 at trunk
+  `1e04dcf` (`b0ac969` + fix `292306a`, rebased by the steward, diff identical; review "With
+  fixes": a new live-path flag `live_view_has_a_hole` guarded nothing, since the working socket
+  never sends `Watch` and every reconciliation replays from seq 0, and it could show a false "not
+  read to its end"; dropped; held as a signature change (`Incoming`, `LogRead`) and approved by
+  the orchestrator; workspace gate 1133, ten new tests). Now: an event envelope of an unknown kind
+  in the replay is counted in the gap check, not applied, logged by seq and a 64-character kind,
+  and the read ends `complete: false` instead of `Err`; on the live socket it is logged and
+  ignored and the socket stays up; non-JSON and non-envelope frames behave as before. Lesson next
+  to rule 12: the submit was first refused as uncovered for `edit-signature` on
+  `tests/support/mod.rs` (the fake coordinator's helpers changed shape); a lane claims
+  `edit-signature` on test support files it reshapes too. STILL OPEN, Felix's half: whether every
+  added `EventKind` variant bumps `PROTOCOL_VERSION`; a future non-event `type` on the live socket
+  still drops it and redials for as long as the coordinator sends it.
 - [x] **STEWARD-ACCESS-STALE-KEYS** — from the code review (verified 50): `access.ts:85–93` after
   the 5-minute TTL a failed certs refetch throws and both callers answer 503 although a cached
   key set exists. Fix: serve the cached keys on refetch failure (log it), 503 only with no cache;
