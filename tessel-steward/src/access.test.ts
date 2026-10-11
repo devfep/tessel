@@ -250,7 +250,7 @@ describe("verifyAccessToken with a stale key cache", () => {
     expect(staleLines()).toHaveLength(1);
   });
 
-  it("fetches again after the minute and replaces the cache when the endpoint is back", async () => {
+  it("fetches again after a minute and replaces the cache once the endpoint is back", async () => {
     const rotated = await TestSigner.create("kid-2");
     const primed = await primedFetch(failures["a 500 answer"]);
     await verifyAccessToken(primed.token, CONFIG, primed.at(AFTER_TTL_MS));
