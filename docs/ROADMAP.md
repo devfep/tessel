@@ -5,7 +5,21 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-10 00:15 EDT. **ALL THREE UX BOXES MERGED; trunk `ab74e1f` (tree `1332754`),
+**As of:** 2026-10-11 00:55 EDT. **STEWARD DEPLOYED (version `5a37c8e6`, Felix, 00:20, from the
+deploy worktree at `ab74e1f`; the sandbox image went up over Wi-Fi, so the first merge that runs
+the container shows whether it arrived intact). REVIEW-CARD render-checked** by the orchestrator:
+the Chrome extension was not connected and the live page needs an Access session, so the deployed
+`reviewPage` code was rendered locally with a realistic card and screenshotted in a 390 px frame
+(scratchpad `evidence/2026-10-10/review-card-render/`, to land with the next docs lane): no
+horizontal overflow, sticky decision bar, 48 px buttons, approve disabled after the script ran
+with no diff reachable. Not checked live: the diff load, a decision round trip, the receipt poll.
+**Wave 1 dispatched 00:50** on Felix's "resume": `lane-swarm-2` (SWARM-PUSH-PHRASES +
+SWARM-ONLOCAL-LOAD-2, worktree `swarm-2`) and `lane-steward-keys` (STEWARD-ACCESS-STALE-KEYS,
+worktree `steward-keys`), both cut from trunk `ab74e1f`; briefs in the scratchpad `orch/`. Next
+waves, briefs written: CLI-GITHOOK-REINSTALL + COORD-APPLY-LOADED, then CLI-REPLAY-UNKNOWN-EVENT
+(tolerant decode in the daemon; the version bump stays Felix's call). Load average 300+ from other
+sessions: two lanes at a time, disjoint crates.
+Earlier: **As of:** 2026-10-10 00:15 EDT. **ALL THREE UX BOXES MERGED; trunk `ab74e1f` (tree `1332754`),
 mirrored to GitHub `artifacts-trunk`; no lane runs; every lane worktree, branch, daemon and token
 file reclaimed.** `ab74e1f` is the docs landing (claim 90 of `lane-docs-evidence`, orchestrator-run,
 docs only, merged without a hold): `docs/evidence/2026-10-09/cli-card-live/` and `cli-init-live/`
