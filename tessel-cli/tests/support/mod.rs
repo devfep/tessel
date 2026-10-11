@@ -35,7 +35,13 @@ struct SocketEntry {
     id: u64,
     bound: Option<AgentId>,
     watching: bool,
-    tx: mpsc::UnboundedSender<ServerMsg>,
+    tx: mpsc::UnboundedSender<Wire>,
+}
+
+/// What a socket task writes: a message the protocol knows, or a text frame as given.
+enum Wire {
+    Msg(ServerMsg),
+    Raw(String),
 }
 
 struct Inner {
@@ -48,6 +54,7 @@ struct Inner {
     accepting: AtomicBool,
     cut_replay: AtomicUsize,
     skip_seq: AtomicU64,
+    raw_in_replay: Mutex<Option<(u64, String)>>,
     stall_live: AtomicBool,
     review_first: AtomicBool,
     hold_claim_reply: AtomicBool,
@@ -80,9 +87,9 @@ impl Inner {
         for event in events {
             let live = !self.stall_live.load(Ordering::SeqCst);
             for entry in sockets.iter().filter(|s| s.watching && live) {
-                let _ = entry.tx.send(ServerMsg::Event {
+                let _ = entry.tx.send(Wire::Msg(ServerMsg::Event {
                     event: event.clone(),
-                });
+                }));
             }
             log.push(event);
         }
@@ -105,12 +112,12 @@ impl Inner {
             match item {
                 Outbound::Reply(msg) => {
                     if let Some(entry) = sockets.iter().find(|s| Some(s.id) == origin) {
-                        let _ = entry.tx.send(msg);
+                        let _ = entry.tx.send(Wire::Msg(msg));
                     }
                 }
                 Outbound::Notify { agent, msg } => {
                     for entry in sockets.iter().filter(|s| s.bound.as_ref() == Some(&agent)) {
-                        let _ = entry.tx.send(msg.clone());
+                        let _ = entry.tx.send(Wire::Msg(msg.clone()));
                     }
                 }
             }
@@ -147,6 +154,7 @@ impl Fake {
             accepting: AtomicBool::new(true),
             cut_replay: AtomicUsize::new(0),
             skip_seq: AtomicU64::new(u64::MAX),
+            raw_in_replay: Mutex::new(None),
             stall_live: AtomicBool::new(false),
             review_first: AtomicBool::new(false),
             hold_claim_reply: AtomicBool::new(false),
@@ -255,6 +263,22 @@ impl Fake {
     /// Leaves the event with this `seq` out of every replay, so a reader sees a gap.
     pub fn skip_in_replay(&self, seq: u64) {
         self.inner.skip_seq.store(seq, Ordering::SeqCst);
+    }
+
+    /// Sends this text frame, as given, in place of the event with this `seq` in every replay.
+    pub fn replace_in_replay(&self, seq: u64, frame: &str) {
+        *lock(&self.inner.raw_in_replay) = Some((seq, frame.to_string()));
+    }
+
+    /// Sends this text frame, as given, to every open socket bound to `agent`.
+    pub fn send_raw(&self, agent: &str, frame: &str) {
+        let agent = AgentId(agent.into());
+        for entry in lock(&self.inner.sockets)
+            .iter()
+            .filter(|s| s.bound.as_ref() == Some(&agent))
+        {
+            let _ = entry.tx.send(Wire::Raw(frame.to_string()));
+        }
     }
 
     /// Makes every event-log replay stop `n` events short and close, as a dropped connection
@@ -380,7 +404,7 @@ async fn serve(
     let Some(agent) = verified.lock().ok().and_then(|v| v.clone()) else {
         return;
     };
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Wire>();
     let id = {
         let mut next = inner
             .next_socket
@@ -415,7 +439,7 @@ async fn serve(
             }
             outgoing = rx.recv(), if !mute_writes => {
                 let Some(msg) = outgoing else { break };
-                if write_server_msg(&mut socket, &msg, deaf).await.is_err() {
+                if write_wire(&mut socket, &msg, deaf).await.is_err() {
                     break;
                 }
             }
@@ -435,13 +459,16 @@ async fn serve(
     close_socket(&inner, id, &session);
 }
 
-/// Writes `msg`, followed by stray pongs when the link is one-way.
-async fn write_server_msg(
+/// Writes `wire`, followed by stray pongs when the link is one-way.
+async fn write_wire(
     socket: &mut WebSocketStream<TcpStream>,
-    msg: &ServerMsg,
+    wire: &Wire,
     deaf: bool,
 ) -> Result<(), WsError> {
-    let text = serde_json::to_string(msg).map_err(|e| WsError::Io(e.into()))?;
+    let text = match wire {
+        Wire::Msg(msg) => serde_json::to_string(msg).map_err(|e| WsError::Io(e.into()))?,
+        Wire::Raw(text) => text.clone(),
+    };
     socket.send(Message::text(text)).await?;
     if deaf {
         stray_pongs(socket).await?;
@@ -493,13 +520,18 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
             if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
                 let shown = log.len().saturating_sub(cut);
                 let skip = inner.skip_seq.load(Ordering::SeqCst);
+                let raw = lock(&inner.raw_in_replay).clone();
                 for event in log[..shown]
                     .iter()
                     .filter(|e| e.seq >= from_seq && e.seq != skip)
                 {
-                    let _ = entry.tx.send(ServerMsg::Event {
-                        event: event.clone(),
-                    });
+                    let wire = match &raw {
+                        Some((seq, text)) if *seq == event.seq => Wire::Raw(text.clone()),
+                        Some(_) | None => Wire::Msg(ServerMsg::Event {
+                            event: event.clone(),
+                        }),
+                    };
+                    let _ = entry.tx.send(wire);
                 }
                 entry.watching = true;
             }

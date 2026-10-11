@@ -1916,6 +1916,132 @@ async fn a_log_with_a_missing_seq_is_not_trusted() -> Result<()> {
     Ok(())
 }
 
+fn unknown_event(seq: u64) -> String {
+    let event = serde_json::json!({
+        "seq": seq, "at_ms": 1, "run": "test", "event": "from_the_future", "n": 1,
+    });
+    serde_json::json!({ "type": "event", "event": event }).to_string()
+}
+
+fn daemon_log(agent: &Agent) -> Result<String> {
+    Ok(std::fs::read_to_string(
+        agent.root().join(".tessel/daemon.log"),
+    )?)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_event_of_an_unknown_kind_in_the_replay_marks_the_read_incomplete_not_failed(
+) -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("future event in the log")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    // The log is: connected (0), granted (1). Seq 1 reaches the daemon as a kind it does not know.
+    fake.replace_in_replay(1, &unknown_event(1));
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || {
+        Ok(a1
+            .tessel(&["inbox", "--all"])?
+            .stdout
+            .contains("not read to its end")
+            .then_some(()))
+    })
+    .await?;
+    let log = daemon_log(&a1)?;
+    assert!(!log.contains("cannot read the event log"), "{log}");
+    assert!(
+        log.contains("unknown event seq 1 kind \"from_the_future\""),
+        "{log}"
+    );
+    assert!(
+        !log.contains("\"n\":1"),
+        "the whole frame was logged: {log}"
+    );
+    assert_eq!(
+        a1.held_claims()?,
+        1,
+        "an incomplete read dropped a live claim"
+    );
+    assert_eq!(a1.status()?["state"]["connection"], "online");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replay_frame_that_is_not_an_event_envelope_still_fails_the_read() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("garbage in the log")?;
+    for frame in ["this is not json", r#"{"type":"from_the_future","n":1}"#] {
+        fake.replace_in_replay(0, frame);
+        let before = hellos(&fake, "a1");
+        fake.drop_connections();
+        back_online(&fake, &a1, before).await?;
+        eventually(SHORT, || {
+            Ok(a1
+                .tessel(&["inbox", "--all"])?
+                .stdout
+                .contains("could not read the coordinator's event log")
+                .then_some(()))
+        })
+        .await
+        .with_context(|| frame.to_string())?;
+        let log = daemon_log(&a1)?;
+        assert!(log.contains("unreadable message"), "{frame}: {log}");
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_event_on_the_live_socket_is_ignored_and_the_connection_stays() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("future event live")?;
+    let before = hellos(&fake, "a1");
+    fake.send_raw("a1", &unknown_event(99));
+    eventually(SHORT, || {
+        Ok(daemon_log(&a1)?
+            .contains("unknown event seq 99 kind \"from_the_future\"")
+            .then_some(()))
+    })
+    .await?;
+    forget_the_coordinator_head(&fake, &a1).await?;
+    assert_eq!(
+        hellos(&fake, "a1"),
+        before,
+        "the socket was dropped and redialled"
+    );
+    assert_eq!(a1.status()?["state"]["connection"], "online");
+    assert_eq!(daemon_log(&a1)?.matches("unknown event seq 99").count(), 1);
+
+    // The next reconciliation distrusts the log although this replay holds no unknown event.
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || {
+        Ok(a1
+            .tessel(&["inbox", "--all"])?
+            .stdout
+            .contains("not read to its end")
+            .then_some(()))
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_frame_that_is_not_json_still_drops_the_socket() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("garbage live")?;
+    let before = hellos(&fake, "a1");
+    fake.send_raw("a1", "this is not json");
+    back_online(&fake, &a1, before).await?;
+    let log = daemon_log(&a1)?;
+    assert!(
+        log.contains("unreadable message from the coordinator"),
+        "{log}"
+    );
+    assert!(!log.contains("unknown event"), "{log}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_the_working_socket_closes_the_log_read() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
