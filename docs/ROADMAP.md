@@ -5,7 +5,24 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 13:15 EDT. **ALL DISPATCHABLE BOXES CLOSED; BOTH WORKERS DEPLOYED; LIVE PROOF
+**As of:** 2026-10-11 18:30 EDT. **VIDEO CHECKPOINT TAGGED: `video-freeze-2026-10-11` at trunk
+`d5ef265`** (local annotated tag; live coordinator `92a52a2a` with code `1e04dcf`, steward
+deployed 10:45 from `cbef948`). The video shows this checkpoint; work after it lands as usual and
+is used in the video only if finished and deployed before Oct 13. **Felix's rulings (18:20):**
+(1) build all four open boxes (REVIEW-SENSITIVE, REVIEW-NOTE, COORD-UNDELIVERED-GRANT,
+GATE-OUTPUT) after the high-priority items, the checkpoint as fallback; (2) go for one swarm lane
+(SWARM-4XX-HANGUP + SWARM-MACOS-TIMEOUT); (3) version rule: a new `EventKind` variant or a new
+optional field is additive and needs no `PROTOCOL_VERSION` bump (daemons since `1e04dcf` skip
+unknown event kinds in replay); a new top-level message type bumps it. CLI-REPLAY-UNKNOWN-EVENT
+closed on that ruling (the rule goes into the `src/protocol.rs` invariants with the next protocol
+change, which Felix merges by hand); (4) next: the form draft. **Running:** `lane-swarm-3`
+(dispatched 18:22 from `d5ef265`, worktree `swarm-3`, owns `tessel-swarm/src/git.rs`);
+`lane-gate-output` (dispatched 18:29 from `d5ef265`, worktree `gate-output`, owns `src/merge.rs`:
+the box said steward-only, but the steward already returns the failing command's output and the
+coordinator's `tests_reason` drops it, so the fix is the coordinator's and needs its deploy); an
+Opus read-only design pass on REVIEW-SENSITIVE, REVIEW-NOTE and COORD-UNDELIVERED-GRANT; an Opus
+fact check of the form draft v2 (scratchpad `orch/submission-form-v2.md`) against `d5ef265`.
+Earlier: **As of:** 2026-10-11 13:15 EDT. **ALL DISPATCHABLE BOXES CLOSED; BOTH WORKERS DEPLOYED; LIVE PROOF
 DONE. Trunk `d5ef265`** (tree `09e32a6`; mirrored; every lane reclaimed; deploy worktree at
 `d5ef265` with its `tessel` rebuilt at `1e04dcf`). **Steward** deployed by the orchestrator at
 10:45 from `cbef948` (bare `npx wrangler deploy` in the steward directory, allowed by the standing
@@ -1095,7 +1112,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   error swallowed (`runtime.rs:754,801`), and the next alarm `apply` fails once. NOT DEPLOYED:
   Felix deploys the coordinator; the live proof is then a merge with no "core is not loaded" in
   the tail and no extra `already_merged` sandbox merge.
-- [ ] **CLI-REPLAY-UNKNOWN-EVENT** — from the code review (verified 50): `daemon.rs:1923,2095`
+- [x] **CLI-REPLAY-UNKNOWN-EVENT** — from the code review (verified 50): `daemon.rs:1923,2095`
   abort the log replay (from seq 0) or drop the socket on one message that fails to parse, so an
   additive enum variant without a `PROTOCOL_VERSION` bump breaks reconciliation for older
   daemons for good. Fix: decode the event envelope tolerantly (seq plus a kind that may be
@@ -1112,8 +1129,9 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   ignored and the socket stays up; non-JSON and non-envelope frames behave as before. Lesson next
   to rule 12: the submit was first refused as uncovered for `edit-signature` on
   `tests/support/mod.rs` (the fake coordinator's helpers changed shape); a lane claims
-  `edit-signature` on test support files it reshapes too. STILL OPEN, Felix's half: whether every
-  added `EventKind` variant bumps `PROTOCOL_VERSION`; a future non-event `type` on the live socket
+  `edit-signature` on test support files it reshapes too. VERSION HALF RULED by Felix 2026-10-11 18:20: a new
+  `EventKind` variant or optional field needs no bump; a new top-level message type bumps
+  `PROTOCOL_VERSION`. Formerly open: whether every added `EventKind` variant bumps it; a future non-event `type` on the live socket
   still drops it and redials for as long as the coordinator sends it.
 - [x] **STEWARD-ACCESS-STALE-KEYS** — from the code review (verified 50): `access.ts:85–93` after
   the 5-minute TTL a failed certs refetch throws and both callers answer 503 although a cached
