@@ -28,7 +28,7 @@ pub const PUSH_BACKOFF: Reconnect = Reconnect {
 /// credential or a non-fast-forward is the same on the next try, so it is not one.
 #[must_use]
 pub fn push_failure_is_transient(output: &str) -> bool {
-    const CONNECTION: [&str; 8] = [
+    const CONNECTION: [&str; 12] = [
         "service unavailable",
         "internal server error",
         "bad gateway",
@@ -37,6 +37,10 @@ pub fn push_failure_is_transient(output: &str) -> bool {
         "connection reset",
         "could not resolve host",
         "failed to connect",
+        "the remote end hung up unexpectedly",
+        "unexpected disconnect while reading sideband packet",
+        "connection timed out",
+        "empty reply from server",
     ];
     let lower = output.to_lowercase();
     CONNECTION.iter().any(|needle| lower.contains(needle)) || mentions_server_error(&lower)
@@ -378,6 +382,34 @@ mod tests {
             "error: 5034",
             "error: 5",
             "",
+        ] {
+            assert!(!push_failure_is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_hung_up_timed_out_or_empty_reply_connection_is_transient() {
+        for text in [
+            "fatal: The remote end hung up unexpectedly",
+            "error: RPC failed; curl 56 Recv failure\nfatal: the remote end hung up unexpectedly",
+            "fatal: Unexpected disconnect while reading sideband packet",
+            "fatal: unable to access 'https://x/': Connection timed out after 300001 ms",
+            "ssh: connect to host x port 22: Connection timed out",
+            "fatal: unable to access 'https://x/': Empty reply from server",
+        ] {
+            assert!(push_failure_is_transient(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn refusals_and_rejections_beside_the_new_phrases_are_not_transient() {
+        for text in [
+            " ! [rejected] HEAD -> main (non-fast-forward)\nerror: failed to push some refs",
+            "fatal: Authentication failed for 'https://x/'",
+            "fatal: unable to access 'https://x/': The requested URL returned error: 404",
+            "fatal: unable to access 'https://x/': The requested URL returned error: 429",
+            "ssh: connect to host x port 22: Connection refused",
+            "fatal: the remote end said no",
         ] {
             assert!(!push_failure_is_transient(text), "{text}");
         }

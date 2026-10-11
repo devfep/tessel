@@ -594,22 +594,18 @@ async fn a_shadow_agent_does_not_overwrite_its_fork_before_its_trial_has_run() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted() {
-    // The shadow agent submits before it spends its work time; the blocker spends it first. Both
-    // take the same checkout, commit, push and submit, so the shadow's claim-to-submit time must be
-    // shorter than the blocker's by about `work_ms`. The comparison is made inside the run, so a
-    // slow machine slows both sides alike.
+    // The shadow agent submits before it spends its work time; the blocker spends it first. What
+    // is asserted is the order in the event log: the shadow's `Submitted` comes before the
+    // blocker's. A claim-to-submit span is not compared, because the two agents' checkout, commit
+    // and push are not equally slow on a loaded machine, so a bound on the difference of the spans
+    // fails without the shadow having waited. Events can share a millisecond, so the log position
+    // decides, not `at_ms`. The shadow's result still counts its work time, and so does the total.
     let work_ms = 6000;
     let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
     let run = run(&tasks, config(2, Policy::Shadow, work_ms)).await;
     let events = &run.result.events;
     let shadows = shadow_claims(&run);
     assert_eq!(shadows.len(), 1, "{:?}", run.result.results);
-    let at_ms =
-        |pick: &dyn Fn(&EventKind) -> bool| events.iter().find(|e| pick(&e.kind)).unwrap().at_ms;
-    let answered =
-        at_ms(&|k| matches!(k, EventKind::ClaimShadowed { claim, .. } if *claim == shadows[0]));
-    let submitted =
-        at_ms(&|k| matches!(k, EventKind::Submitted { claim, .. } if *claim == shadows[0]));
     let Some(EventKind::ClaimGranted { claim: holder, .. }) = events
         .iter()
         .map(|e| &e.kind)
@@ -617,14 +613,16 @@ async fn a_shadow_submission_is_on_record_early_and_its_work_time_is_still_count
     else {
         unreachable!("the holder was granted its claim");
     };
-    let granted = at_ms(&|k| matches!(k, EventKind::ClaimGranted { claim, .. } if claim == holder));
-    let holder_submitted =
-        at_ms(&|k| matches!(k, EventKind::Submitted { claim, .. } if claim == holder));
-    let (shadow_span, holder_span) = (submitted - answered, holder_submitted - granted);
+    let submitted_at = |wanted: &ClaimId| {
+        events
+            .iter()
+            .position(|e| matches!(&e.kind, EventKind::Submitted { claim, .. } if claim == wanted))
+    };
+    let (shadow_submitted, holder_submitted) = (submitted_at(&shadows[0]), submitted_at(holder));
     assert!(
-        shadow_span + work_ms / 2 < holder_span,
-        "the shadow submitted {shadow_span} ms after its claim was answered, the blocker \
-         {holder_span} ms after its grant: the shadow did not skip its work time"
+        shadow_submitted.is_some() && shadow_submitted < holder_submitted,
+        "the shadow's Submitted is at log position {shadow_submitted:?}, the blocker's at \
+         {holder_submitted:?}: the shadow did not submit first"
     );
     let shadowed = run
         .result
