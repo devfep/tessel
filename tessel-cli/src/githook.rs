@@ -5,14 +5,16 @@
 //!
 //! The hooks live in the directory every worktree of the repository shares, so each run gates
 //! itself: a worktree with no `.tessel/state.json` passes. An existing hook of another tool is
-//! kept as `<name>.pre-tessel` and run first, with the same arguments and stdin.
+//! kept as `<name>.pre-tessel` and run first, with the same arguments and stdin. When a tool
+//! overwrites the shim later, the next install chains its hook and keeps the earlier chained
+//! one under a dated name.
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context};
 use tessel_coordinator::protocol::{uncovered, Mode, ScopeClaim};
@@ -29,6 +31,7 @@ use crate::GitHook;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 const CHAINED_SUFFIX: &str = ".pre-tessel";
 const EXIT_REFUSED: u8 = 1;
+const MAX_BACKUP_NUMBER: u32 = 10;
 const SHIM_MARKER: &str = "# tessel git hook";
 const MERGE_NOTE: &str = "tessel: concluding a merge, so the pre-commit coverage check is \
 skipped; pre-push and the coordinator still check the merge commit\n";
@@ -330,7 +333,7 @@ pub fn install(cwd: &Path) -> anyhow::Result<String> {
     report.push_str(
         "The hooks apply to every worktree of this repository and pass in any worktree without \
          .tessel/ (no `tessel start` there). `prek install` and similar tools overwrite them: run \
-         this again afterwards.\n",
+         this again afterwards, and the hook they left runs first.\n",
     );
     Ok(report)
 }
@@ -379,26 +382,98 @@ fn install_one(dir: &Path, hook: GitHook, exe: &str) -> anyhow::Result<String> {
     Ok(note)
 }
 
-/// Moves the other tool's hook to `<name>.pre-tessel`, where the shim's `tessel hook git` runs it.
-/// Refuses to overwrite an earlier one.
+/// Makes the other tool's hook the one that runs first, as `<name>.pre-tessel`.
+///
+/// When `<name>.pre-tessel` already exists, an earlier install chained a hook and another tool
+/// then overwrote the shim. The same text means the tool wrote the chained hook back, so nothing
+/// moves. A different text replaces it, and the old one is kept under a dated name.
 fn chain_existing(dir: &Path, hook: GitHook) -> anyhow::Result<String> {
     let from = dir.join(hook.name());
     let to = dir.join(format!("{}{CHAINED_SUFFIX}", hook.name()));
-    if to.exists() {
-        bail!(
-            "{} is a hook of another tool and {} already exists, so it cannot be kept; merge \
-             them by hand and run this again",
-            from.display(),
+    if !to.exists() {
+        move_file(&from, &to)?;
+        return Ok(format!(
+            "{}: installed; your existing hook is now {} and runs first\n",
+            hook.name(),
             to.display()
-        );
+        ));
     }
-    std::fs::rename(&from, &to)
-        .with_context(|| format!("cannot move {} to {}", from.display(), to.display()))?;
+    let new = std::fs::read(&from)
+        .with_context(|| format!("cannot read the existing hook {}", from.display()))?;
+    let old = std::fs::read(&to)
+        .with_context(|| format!("cannot read the chained hook {}", to.display()))?;
+    if new == old {
+        return Ok(format!(
+            "{}: installed; your existing hook is still {} and runs first\n",
+            hook.name(),
+            to.display()
+        ));
+    }
+    let backup = backup_path(&to, &utc_stamp(SystemTime::now()))?;
+    move_file(&to, &backup)?;
+    move_file(&from, &to)?;
     Ok(format!(
-        "{}: installed; your existing hook is now {} and runs first\n",
+        "{}: installed; your existing hook is now {} and runs first; the earlier chained hook \
+         was kept as {} (merge it by hand if you still need it)\n",
         hook.name(),
-        to.display()
+        to.display(),
+        backup.display()
     ))
+}
+
+fn move_file(from: &Path, to: &Path) -> anyhow::Result<()> {
+    std::fs::rename(from, to)
+        .with_context(|| format!("cannot move {} to {}", from.display(), to.display()))
+}
+
+/// `<chained>.<stamp>`, or `<chained>.<stamp>-1`, `-2`, ... when that name is taken. Never an
+/// existing file, so an earlier backup survives.
+fn backup_path(chained: &Path, stamp: &str) -> anyhow::Result<PathBuf> {
+    let first = PathBuf::from(format!("{}.{stamp}", chained.display()));
+    if !first.exists() {
+        return Ok(first);
+    }
+    for n in 1..MAX_BACKUP_NUMBER {
+        let numbered = PathBuf::from(format!("{}-{n}", first.display()));
+        if !numbered.exists() {
+            return Ok(numbered);
+        }
+    }
+    bail!(
+        "{} is a hook of another tool and {} already exists with different text, but its backup \
+         names {}, -1 ... -{} are all taken. Nothing was changed; remove {} (merge it by hand \
+         first if you need it) and run this again",
+        chained.with_extension("").display(),
+        chained.display(),
+        first.display(),
+        MAX_BACKUP_NUMBER - 1,
+        first.display()
+    );
+}
+
+/// `20261011T123456Z` for `time`, in UTC.
+fn utc_stamp(time: SystemTime) -> String {
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let shifted = days + 719_468;
+    let era = shifted / 146_097;
+    let day_of_era = shifted % 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 /// The hook file. It runs the binary that installed it, else one found on `PATH`. When neither
@@ -543,5 +618,40 @@ mod tests {
                 "tessel claim src/a.rs::a::a",
             ]
         );
+    }
+
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn the_backup_stamp_prints_as_a_compact_utc_time() {
+        assert_eq!(utc_stamp(at(0)), "19700101T000000Z");
+        assert_eq!(utc_stamp(at(1_791_601_312)), "20261010T030152Z");
+        assert_eq!(utc_stamp(at(951_782_400 + 3661)), "20000229T010101Z");
+        assert_eq!(utc_stamp(at(951_868_799)), "20000229T235959Z");
+    }
+
+    #[test]
+    fn a_backup_never_takes_a_name_that_exists_and_stops_at_a_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let chained = dir.path().join("pre-commit.pre-tessel");
+        let stamp = "20261011T010203Z";
+        let first = dir.path().join(format!("pre-commit.pre-tessel.{stamp}"));
+        assert_eq!(backup_path(&chained, stamp).unwrap(), first);
+
+        std::fs::write(&first, "").unwrap();
+        let second = dir.path().join(format!("pre-commit.pre-tessel.{stamp}-1"));
+        assert_eq!(backup_path(&chained, stamp).unwrap(), second);
+
+        for n in 1..MAX_BACKUP_NUMBER {
+            std::fs::write(format!("{}-{n}", first.display()), "").unwrap();
+        }
+        let refused = backup_path(&chained, stamp).unwrap_err().to_string();
+        assert!(
+            refused.contains(&format!("remove {}", first.display())),
+            "{refused}"
+        );
+        assert!(refused.contains("Nothing was changed"), "{refused}");
     }
 }
