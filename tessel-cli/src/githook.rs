@@ -374,7 +374,7 @@ fn install_one(dir: &Path, hook: GitHook, exe: &str) -> anyhow::Result<String> {
         Ok(existing) if is_tessel_shim(&existing, hook) => {
             note = format!("{}: updated\n", hook.name());
         }
-        Ok(_) => note = chain_existing(dir, hook)?,
+        Ok(_) => note = chain_existing(dir, hook, SystemTime::now())?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => bail!("cannot read the existing hook {}: {e}", path.display()),
     }
@@ -387,7 +387,7 @@ fn install_one(dir: &Path, hook: GitHook, exe: &str) -> anyhow::Result<String> {
 /// When `<name>.pre-tessel` already exists, an earlier install chained a hook and another tool
 /// then overwrote the shim. The same text means the tool wrote the chained hook back, so nothing
 /// moves. A different text replaces it, and the old one is kept under a dated name.
-fn chain_existing(dir: &Path, hook: GitHook) -> anyhow::Result<String> {
+fn chain_existing(dir: &Path, hook: GitHook, now: SystemTime) -> anyhow::Result<String> {
     let from = dir.join(hook.name());
     let to = dir.join(format!("{}{CHAINED_SUFFIX}", hook.name()));
     if !to.exists() {
@@ -409,7 +409,7 @@ fn chain_existing(dir: &Path, hook: GitHook) -> anyhow::Result<String> {
             to.display()
         ));
     }
-    let backup = backup_path(&to, &utc_stamp(SystemTime::now()))?;
+    let backup = backup_path(&to, &utc_stamp(now))?;
     move_file(&to, &backup)?;
     move_file(&from, &to)?;
     Ok(format!(
@@ -441,8 +441,8 @@ fn backup_path(chained: &Path, stamp: &str) -> anyhow::Result<PathBuf> {
     }
     bail!(
         "{} is a hook of another tool and {} already exists with different text, but its backup \
-         names {}, -1 ... -{} are all taken. Nothing was changed; remove {} (merge it by hand \
-         first if you need it) and run this again",
+         names {}, -1 ... -{} are all taken. This hook was not changed; remove {} (merge it by \
+         hand first if you need it) and run this again",
         chained.with_extension("").display(),
         chained.display(),
         first.display(),
@@ -652,6 +652,33 @@ mod tests {
             refused.contains(&format!("remove {}", first.display())),
             "{refused}"
         );
-        assert!(refused.contains("Nothing was changed"), "{refused}");
+        assert!(refused.contains("This hook was not changed"), "{refused}");
+    }
+
+    #[test]
+    fn a_reinstall_with_every_backup_name_taken_changes_neither_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let (hook, chained) = (
+            dir.path().join("pre-commit"),
+            dir.path().join("pre-commit.pre-tessel"),
+        );
+        std::fs::write(&hook, "#!/bin/sh\necho new\n").unwrap();
+        std::fs::write(&chained, "#!/bin/sh\necho old\n").unwrap();
+        let first = dir.path().join("pre-commit.pre-tessel.20261011T010203Z");
+        std::fs::write(&first, "taken").unwrap();
+        for n in 1..MAX_BACKUP_NUMBER {
+            std::fs::write(format!("{}-{n}", first.display()), "taken").unwrap();
+        }
+
+        let refused = chain_existing(dir.path(), GitHook::PreCommit, at(1_791_680_523))
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            refused.contains(&format!("remove {}", first.display())),
+            "{refused}"
+        );
+        assert_eq!(std::fs::read(&hook).unwrap(), b"#!/bin/sh\necho new\n");
+        assert_eq!(std::fs::read(&chained).unwrap(), b"#!/bin/sh\necho old\n");
     }
 }
