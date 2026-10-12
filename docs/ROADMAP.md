@@ -15,7 +15,9 @@ three copies; assertions unchanged; the `reconnect` binary and the rejection tes
 under 24 CPU hogs at load 100-330; late-poison mutant fails at 150 s with the new message; lane
 gate 195 passed, clippy and rustfmt clean). Orchestrator read the diff: sound; the reviewer is
 asked to verify the hub-lock claim and the blocking git call inside the tripwire. Opus review
-dispatched; workspace gate running (reusing the previous gate's build directory).
+dispatched. Workspace gate on archived `ac35420` (curl off the PATH, reusing the previous gate's
+build directory): tests exit 0 across all 19 binaries (reconnect 20, swarm on_local 23 in 42 s),
+clippy `--workspace` 0, done 16:42.
 Earlier: **As of:** 2026-10-12 16:18 EDT. **SWARM-RECONNECT-FLAKE reproduced and dispatched** as
 `lane-swarm-flake` (Sonnet, worktree `swarm-flake` from trunk `9b6af03`, fork and identity
 made): under 24 CPU hogs 1 of 8 runs of the refused test hung with no output; the fix orders
