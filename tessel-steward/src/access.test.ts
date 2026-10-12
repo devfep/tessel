@@ -1,6 +1,16 @@
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from "vitest";
 
 import {
+  CERTS_REFETCH_MIN_MS,
   CERTS_TTL_MS,
   clearAccessKeyCache,
   readAccessConfig,
@@ -11,6 +21,7 @@ import {
   AUD,
   CONFIG,
   NOW_MS,
+  NOW_S,
   TEAM,
   TestSigner,
   VIEWER,
@@ -129,29 +140,24 @@ describe("verifyAccessToken", () => {
 
     await verifyAccessToken(await signer.sign(validClaims()), CONFIG, at(0));
     healthy = false;
-    expect(await verifyAccessToken(unknown, CONFIG, at(61_000))).toMatchObject({ status: 503 });
+    expect(await verifyAccessToken(unknown, CONFIG, at(61_000))).toMatchObject({ status: 401 });
     expect(fetches).toBe(2);
     expect(await verifyAccessToken(unknown, CONFIG, at(62_000))).toMatchObject({ status: 401 });
     expect(await verifyAccessToken(unknown, CONFIG, at(100_000))).toMatchObject({ status: 401 });
     expect(fetches).toBe(2);
-    expect(await verifyAccessToken(unknown, CONFIG, at(122_000))).toMatchObject({ status: 503 });
+    expect(await verifyAccessToken(unknown, CONFIG, at(122_000))).toMatchObject({ status: 401 });
     expect(fetches).toBe(3);
   });
 
-  it("answers 503 when the refetch for an unknown kid fails", async () => {
-    const urls: string[] = [];
-    const good = signer.certsFetch(urls);
-    await verifyAccessToken(await signer.sign(validClaims()), CONFIG, {
-      fetchImpl: good,
-      now: () => NOW_MS,
-    });
+  it("answers 401, not 503, when the refetch for an unknown kid fails with a cache", async () => {
+    await verify(await signer.sign(validClaims()));
     const failing = (() => Promise.resolve(new Response("x", { status: 500 }))) as typeof fetch;
     const unknown = await signer.sign(validClaims(), { kid: "nope" });
     const verdict = await verifyAccessToken(unknown, CONFIG, {
       fetchImpl: failing,
-      now: () => NOW_MS + 61_000,
+      now: () => NOW_MS + CERTS_REFETCH_MIN_MS + 1_000,
     });
-    expect(verdict).toMatchObject({ ok: false, status: 503 });
+    expect(verdict).toMatchObject({ ok: false, status: 401, reason: "unknown signing key" });
   });
 
   it.each([null, "", "abc", "a.b", "a.b.c.d", "!!!.???.***"])("rejects %j", async (token) => {
@@ -174,6 +180,111 @@ describe("verifyAccessToken", () => {
 
     await verifyAccessToken(token, CONFIG, { fetchImpl, now: () => NOW_MS + CERTS_TTL_MS + 1 });
     expect(urls).toHaveLength(2);
+  });
+});
+
+/** Fills the cache at `NOW_MS`, then serves `next` for every later fetch and counts them. */
+async function primedFetch(next: () => Promise<Response>) {
+  const good = signer.certsFetch();
+  let fetches = 0;
+  let serveGood = true;
+  const fetchImpl = ((input: RequestInfo | URL) => {
+    if (serveGood) {
+      return good(input);
+    }
+    fetches += 1;
+    return next();
+  }) as typeof fetch;
+  const token = await signer.sign(validClaims({ exp: NOW_S + 3_600 }));
+  await verifyAccessToken(token, CONFIG, { fetchImpl, now: () => NOW_MS });
+  serveGood = false;
+  return {
+    token,
+    fetchImpl,
+    fetches: () => fetches,
+    at: (ms: number) => ({ fetchImpl, now: () => ms }),
+  };
+}
+
+describe("verifyAccessToken with a stale key cache", () => {
+  const AFTER_TTL_MS = NOW_MS + CERTS_TTL_MS + 1;
+  const failures = {
+    "a 500 answer": () => Promise.resolve(new Response("x", { status: 500 })),
+    "a rejected fetch": () => Promise.reject(new Error("network down")),
+    "a body that is not JSON": () => Promise.resolve(new Response("<html>", { status: 200 })),
+  };
+  let errorSpy: MockInstance<typeof console.error>;
+
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  const staleLines = () =>
+    errorSpy.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes("access_certs_stale"));
+
+  it.each(Object.entries(failures))("serves the cached keys after %s", async (_label, next) => {
+    const primed = await primedFetch(next);
+    const verdict = await verifyAccessToken(primed.token, CONFIG, primed.at(AFTER_TTL_MS));
+    expect(verdict).toEqual({ ok: true, email: VIEWER });
+    expect(primed.fetches()).toBe(1);
+    expect(staleLines()).toHaveLength(1);
+    const logged = JSON.parse(staleLines()[0] ?? "{}") as Record<string, unknown>;
+    expect(logged).toMatchObject({ event: "access_certs_stale", team: TEAM });
+    expect(typeof logged["message"]).toBe("string");
+    expect(staleLines()[0]).not.toContain(primed.token);
+  });
+
+  it("does not fetch again within the minute after a failed refetch", async () => {
+    const primed = await primedFetch(failures["a 500 answer"]);
+    await verifyAccessToken(primed.token, CONFIG, primed.at(AFTER_TTL_MS));
+    const later = AFTER_TTL_MS + CERTS_REFETCH_MIN_MS - 1;
+    const verdict = await verifyAccessToken(primed.token, CONFIG, primed.at(later));
+    expect(verdict).toMatchObject({ ok: true });
+    expect(primed.fetches()).toBe(1);
+    expect(staleLines()).toHaveLength(1);
+  });
+
+  it("fetches again after a minute and replaces the cache once the endpoint is back", async () => {
+    const rotated = await TestSigner.create("kid-2");
+    const primed = await primedFetch(failures["a 500 answer"]);
+    await verifyAccessToken(primed.token, CONFIG, primed.at(AFTER_TTL_MS));
+
+    const retryAt = AFTER_TTL_MS + CERTS_REFETCH_MIN_MS;
+    const recovered = rotated.certsFetch();
+    const first = await verifyAccessToken(await rotated.sign(validClaims()), CONFIG, {
+      fetchImpl: recovered,
+      now: () => retryAt,
+    });
+    expect(first).toMatchObject({ ok: true });
+
+    const old = await verifyAccessToken(primed.token, CONFIG, {
+      fetchImpl: recovered,
+      now: () => retryAt + 1_000,
+    });
+    expect(old).toMatchObject({ ok: false, status: 401 });
+  });
+
+  it("retries on the next request after the minute when the endpoint is still down", async () => {
+    const primed = await primedFetch(failures["a rejected fetch"]);
+    await verifyAccessToken(primed.token, CONFIG, primed.at(AFTER_TTL_MS));
+    const retryAt = AFTER_TTL_MS + CERTS_REFETCH_MIN_MS;
+    const verdict = await verifyAccessToken(primed.token, CONFIG, primed.at(retryAt));
+    expect(verdict).toMatchObject({ ok: true });
+    expect(primed.fetches()).toBe(2);
+    expect(staleLines()).toHaveLength(2);
+  });
+
+  it("answers 503 when there is no cache and the endpoint fails", async () => {
+    const failing = (() => Promise.resolve(new Response("x", { status: 500 }))) as typeof fetch;
+    const verdict = await verify(await signer.sign(validClaims()), failing);
+    expect(verdict).toMatchObject({ ok: false, status: 503 });
+    expect(staleLines()).toHaveLength(0);
   });
 });
 

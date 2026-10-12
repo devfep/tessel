@@ -76,17 +76,7 @@ function decodeJson(text: string): Record<string, unknown> | undefined {
   return undefined;
 }
 
-async function loadKeys(
-  teamDomain: string,
-  fetchImpl: typeof fetch,
-  nowMs: number,
-  refresh = false,
-): Promise<Map<string, CryptoKey>> {
-  const cached = keysByTeam.get(teamDomain);
-  if (!refresh && cached !== undefined && nowMs - cached.fetchedAtMs < CERTS_TTL_MS) {
-    return cached.keys;
-  }
-  lastFetchAttemptMs.set(teamDomain, nowMs);
+async function fetchKeys(teamDomain: string, fetchImpl: typeof fetch) {
   const response = await fetchImpl(`https://${teamDomain}/cdn-cgi/access/certs`);
   if (!response.ok) {
     throw new Error(`certs endpoint answered ${response.status}`);
@@ -106,8 +96,42 @@ async function loadKeys(
     );
     keys.set(jwk.kid, key);
   }
-  keysByTeam.set(teamDomain, { fetchedAtMs: nowMs, keys });
   return keys;
+}
+
+/**
+ * Returns the team's signing keys. A cached set is reused within `CERTS_TTL_MS`. After that, or
+ * when `refresh` is set, the certs are fetched again, but not more than once per
+ * `CERTS_REFETCH_MIN_MS`. A failed refetch serves the cached set; only a failed first fetch throws.
+ */
+async function loadKeys(
+  teamDomain: string,
+  fetchImpl: typeof fetch,
+  nowMs: number,
+  refresh = false,
+): Promise<Map<string, CryptoKey>> {
+  const cached = keysByTeam.get(teamDomain);
+  if (cached !== undefined && !refresh) {
+    const lastAttemptMs = lastFetchAttemptMs.get(teamDomain) ?? 0;
+    const fresh = nowMs - cached.fetchedAtMs < CERTS_TTL_MS;
+    if (fresh || nowMs - lastAttemptMs < CERTS_REFETCH_MIN_MS) {
+      return cached.keys;
+    }
+  }
+  lastFetchAttemptMs.set(teamDomain, nowMs);
+  try {
+    const keys = await fetchKeys(teamDomain, fetchImpl);
+    keysByTeam.set(teamDomain, { fetchedAtMs: nowMs, keys });
+    return keys;
+  } catch (error) {
+    if (cached === undefined) {
+      throw error;
+    }
+    console.error(
+      JSON.stringify({ event: "access_certs_stale", team: teamDomain, message: String(error) }),
+    );
+    return cached.keys;
+  }
 }
 
 function denied(status: 401 | 403 | 503, reason: string): AccessVerdict {
@@ -157,7 +181,7 @@ function checkClaims(
  *
  * @param token The header value; `null` when the header is absent.
  * @returns The viewer's email, or a 401 (no usable token), 403 (valid token, email not listed)
- *   or 503 (the team's keys could not be fetched; fails closed).
+ *   or 503 (no keys cached and the team's keys could not be fetched; fails closed).
  */
 export async function verifyAccessToken(
   token: string | null,

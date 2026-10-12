@@ -294,6 +294,11 @@ struct CoordinatorState {
     /// flagged work is held. A deployment setting: the shell sets it on every load.
     #[serde(default)]
     reviewers: Vec<AgentId>,
+    /// Path prefixes whose edits are held for review (`review_reasons`). Per deployment, not per
+    /// repo: every repo this Worker serves shares one list. A deployment setting: the shell sets it
+    /// on every load, so a stored state follows the variable.
+    #[serde(default)]
+    sensitive: Vec<String>,
     /// Main's head as the coordinator knows it. The steward will own this later.
     head: Option<CommitId>,
     /// How many times the steward has said main moved (see `trunk`).
@@ -385,6 +390,13 @@ impl Coordinator {
         self.state.reviewers = reviewers;
     }
 
+    /// Replace the path prefixes that hold a submission for review. They come from the Worker's
+    /// `SENSITIVE` variable and are applied on every load. A directory entry ends in `/`, so
+    /// `src/auth/` does not also match `src/authz.rs`.
+    pub fn set_sensitive(&mut self, sensitive: Vec<String>) {
+        self.state.sensitive = sensitive;
+    }
+
     /// Fails if `config.lease_ms` is zero: every grant would already be due, so the shell's
     /// expiry alarm would fire forever.
     pub fn new(config: Config) -> Result<Self, InvalidConfig> {
@@ -396,6 +408,7 @@ impl Coordinator {
         Ok(Self::from(CoordinatorState {
             config,
             reviewers: Vec::new(),
+            sensitive: Vec::new(),
             head: None,
             head_pokes: 0,
             head_synced: 0,
@@ -1283,7 +1296,8 @@ impl Coordinator {
                     self.challenge_assumptions(agent, &fork_commit, &touched, now_ms);
                 effects.extend(challenges);
                 let threatened = u32::try_from(challenged.len()).unwrap_or(u32::MAX);
-                let reasons = review_reasons(&touched, threatened, has_evidence, &[]);
+                let reasons =
+                    review_reasons(&touched, threatened, has_evidence, &self.state.sensitive);
                 review = (!reasons.is_empty()).then_some(reasons);
                 let awaiting_review = review.is_some();
                 self.queue_for_merge(
@@ -1732,8 +1746,8 @@ mod tests {
 
     use super::*;
     use crate::protocol::{
-        Assumption, CommitId, DecisionRecord, Mode, RaceId, RejectedApproach, SymbolId,
-        TranscriptRef,
+        Assumption, CommitId, DecisionRecord, Mode, RaceId, RejectedApproach, ReviewReason,
+        SymbolId, TranscriptRef,
     };
 
     const NOW: u64 = 1_000;
@@ -3881,6 +3895,113 @@ mod tests {
             grant(&mut c, "e", vec![sc(file("src/q.rs"), Mode::Depend)]).0,
             ClaimId(3)
         );
+    }
+
+    fn sensitive_prefixes(c: &mut Coordinator, prefixes: &[&str]) {
+        c.set_sensitive(prefixes.iter().map(|p| (*p).to_string()).collect());
+    }
+
+    /// The reasons of the one `ReviewRequired` reply, which must also be logged as requested.
+    fn review_reasons_of(effects: &[Effect], claim: ClaimId) -> Vec<ReviewReason> {
+        let [ServerMsg::ReviewRequired {
+            claim: held,
+            reasons,
+        }] = replies(effects)[..]
+        else {
+            panic!("expected one ReviewRequired, got {effects:?}");
+        };
+        assert_eq!(*held, claim);
+        let mut logged_reasons = None;
+        for event in logged(effects) {
+            if let EventKind::ReviewRequested { reasons, .. } = &event.kind {
+                logged_reasons = Some(reasons);
+            }
+        }
+        assert_eq!(logged_reasons, Some(reasons));
+        reasons.clone()
+    }
+
+    #[test]
+    fn a_tested_submission_touching_a_sensitive_path_is_held_naming_the_prefix() {
+        let mut c = coordinator();
+        sensitive_prefixes(&mut c, &["lib/", "src/x"]);
+        let (a, fence) = grant(&mut c, "a", vec![x_edit()]);
+        let effects = submit(&mut c, "a", a, fence, vec![x_edit()]);
+        assert_eq!(
+            review_reasons_of(&effects, a),
+            vec![ReviewReason::SensitivePath {
+                scope: file("src/x.rs"),
+                pattern: "src/x".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_tested_submission_elsewhere_is_not_held() {
+        let mut c = coordinator();
+        sensitive_prefixes(&mut c, &["lib/", "src/x"]);
+        let (b, fence) = grant(&mut c, "b", vec![y_edit()]);
+        let effects = submit(&mut c, "b", b, fence, vec![y_edit()]);
+        assert_eq!(accepted_position(&effects, b), 1);
+        assert!(logged(&effects)
+            .iter()
+            .all(|event| !matches!(event.kind, EventKind::ReviewRequested { .. })));
+    }
+
+    #[test]
+    fn an_entry_matches_only_the_start_of_a_path() {
+        let mut c = coordinator();
+        sensitive_prefixes(&mut c, &["y.rs", "rc/"]);
+        let (b, fence) = grant(&mut c, "b", vec![y_edit()]);
+        let effects = submit(&mut c, "b", b, fence, vec![y_edit()]);
+        assert_eq!(
+            accepted_position(&effects, b),
+            1,
+            "src/y.rs only contains them"
+        );
+    }
+
+    #[test]
+    fn a_directory_entry_ending_in_a_slash_does_not_match_a_longer_sibling() {
+        let mut c = coordinator();
+        sensitive_prefixes(&mut c, &["src/x/"]);
+        let (a, fence) = grant(&mut c, "a", vec![x_edit()]);
+        let effects = submit(&mut c, "a", a, fence, vec![x_edit()]);
+        assert_eq!(
+            accepted_position(&effects, a),
+            1,
+            "src/x.rs is not under src/x/"
+        );
+    }
+
+    #[test]
+    fn the_empty_prefix_holds_every_real_submission() {
+        let mut c = coordinator();
+        sensitive_prefixes(&mut c, &[""]);
+        let (a, a_fence) = grant(&mut c, "a", vec![x_edit()]);
+        let (b, b_fence) = grant(&mut c, "b", vec![y_edit()]);
+        for (who, claim, fence, scope) in [("a", a, a_fence, x_edit()), ("b", b, b_fence, y_edit())]
+        {
+            let effects = submit(&mut c, who, claim, fence, vec![scope.clone()]);
+            assert_eq!(
+                review_reasons_of(&effects, claim),
+                vec![ReviewReason::SensitivePath {
+                    scope: scope.scope,
+                    pattern: String::new()
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn a_shadow_submission_on_a_sensitive_path_is_still_recorded_not_held() {
+        let mut c = shadow_coordinator();
+        sensitive_prefixes(&mut c, &["src/"]);
+        grant(&mut c, "a", vec![x_edit()]);
+        let (s, fence) = shadow_as(&mut c, "b", vec![x_edit()]);
+        let effects = submit(&mut c, "b", s, fence, vec![x_edit()]);
+        assert_eq!(accepted_position(&effects, s), 0);
+        assert_eq!(kinds(&effects), ["log", "reply"]);
     }
 
     #[test]

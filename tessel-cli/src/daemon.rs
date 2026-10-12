@@ -89,6 +89,11 @@ enum Incoming {
         generation: u64,
         log: Result<LogRead, String>,
     },
+    /// An event of a kind this daemon does not know arrived on the live socket.
+    UnknownEvent {
+        generation: u64,
+        envelope: UnknownEnvelope,
+    },
     /// A pong echoed the heartbeat written at `sent_ms`.
     HeartbeatAnswered {
         generation: u64,
@@ -99,8 +104,51 @@ enum Incoming {
 /// What the event-log read returned.
 pub(crate) struct LogRead {
     pub(crate) events: Vec<Event>,
-    /// The read reached its end marker, with no gap in `seq`.
+    /// The read reached its end marker, with no gap in `seq`, and met no event it could not
+    /// decode.
     pub(crate) complete: bool,
+    /// Events of a kind this daemon does not know. They are not in `events`.
+    pub(crate) unknown: Vec<UnknownEnvelope>,
+}
+
+/// How much of an unknown event's kind is kept for the log; the kind is the coordinator's text.
+const KIND_LOG_CHARS: usize = 64;
+
+/// An event frame that is not a `ServerMsg` this daemon can decode but whose `seq` is readable:
+/// an event of a kind added after this daemon was built.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UnknownEnvelope {
+    pub(crate) seq: u64,
+    pub(crate) kind: Option<String>,
+}
+
+impl std::fmt::Display for UnknownEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            Some(kind) => write!(f, "seq {} kind {kind:?}", self.seq),
+            None => write!(f, "seq {} without a kind string", self.seq),
+        }
+    }
+}
+
+/// Reads `text` as the envelope of an event of an unknown kind: a frame that is not a known
+/// `ServerMsg`, but is `{"type":"event","event":{"seq":<number>,...}}`. Anything else, including
+/// a known message, an unknown message type and text that is not JSON, is `None`.
+fn unknown_envelope(text: &str) -> Option<UnknownEnvelope> {
+    if serde_json::from_str::<ServerMsg>(text).is_ok() {
+        return None;
+    }
+    let frame: serde_json::Value = serde_json::from_str(text).ok()?;
+    if frame.get("type")?.as_str()? != "event" {
+        return None;
+    }
+    let event = frame.get("event")?;
+    let seq = event.get("seq")?.as_u64()?;
+    let kind = event
+        .get("event")
+        .and_then(serde_json::Value::as_str)
+        .map(|kind| kind.chars().take(KIND_LOG_CHARS).collect());
+    Some(UnknownEnvelope { seq, kind })
 }
 
 /// What the daemon asks the socket task to write.
@@ -579,6 +627,14 @@ impl Daemon {
             Incoming::Snapshot { generation, log } if generation == self.generation => {
                 self.on_snapshot(log).await;
             }
+            Incoming::UnknownEvent {
+                generation,
+                envelope,
+            } if generation == self.generation => {
+                self.log(&format!(
+                    "unknown event {envelope} on the live socket: ignored"
+                ));
+            }
             Incoming::HeartbeatAnswered {
                 generation,
                 sent_ms,
@@ -588,6 +644,7 @@ impl Daemon {
             Incoming::Msg { .. }
             | Incoming::Closed { .. }
             | Incoming::Snapshot { .. }
+            | Incoming::UnknownEvent { .. }
             | Incoming::HeartbeatAnswered { .. } => {}
         }
     }
@@ -856,7 +913,11 @@ impl Daemon {
     async fn on_snapshot(&mut self, log: Result<LogRead, String>) {
         let lost = std::mem::take(&mut self.lost_requests);
         let lost_releases = std::mem::take(&mut self.lost_releases);
-        let LogRead { events, complete } = match log {
+        let LogRead {
+            events,
+            complete,
+            unknown,
+        } = match log {
             Ok(log) => log,
             Err(why) => {
                 self.log(&format!("cannot read the event log: {why}"));
@@ -875,6 +936,11 @@ impl Daemon {
                 return;
             }
         };
+        for envelope in &unknown {
+            self.log(&format!(
+                "unknown event {envelope} in the event log: not applied; the read is incomplete"
+            ));
+        }
         let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
         self.advance_base_from_log(&events).await;
         self.log(&format!(
@@ -1728,6 +1794,7 @@ impl Daemon {
             Ok(LogRead {
                 events,
                 complete: true,
+                ..
             }) => Some(reconcile::live_claims(
                 &AgentId(self.config.agent.clone()),
                 &events,
@@ -1902,6 +1969,8 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
             .map_err(|e| e.to_string())?;
     }
     let mut events = Vec::new();
+    let mut unknown = Vec::new();
+    let mut seqs = Vec::new();
     let mut welcomed = false;
     let mut marker = false;
     let deadline = Instant::now() + SNAPSHOT_LIMIT;
@@ -1916,28 +1985,40 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
                 Ok(ServerMsg::Event { event }) if welcomed => {
                     // The first event after the Welcome is the marker or the read is not whole.
                     marker = is_connection_of(&event, &me);
+                    seqs.push(event.seq);
                     events.push(event);
                     if !marker {
                         break;
                     }
                 }
-                Ok(ServerMsg::Event { event }) => events.push(event),
+                Ok(ServerMsg::Event { event }) => {
+                    seqs.push(event.seq);
+                    events.push(event);
+                }
                 Ok(ServerMsg::Welcome { .. }) => welcomed = true,
                 Ok(ServerMsg::Error { code, .. }) => return Err(format!("refused: {code:?}")),
                 Ok(_) => {}
-                Err(e) => return Err(format!("unreadable message: {e}")),
+                Err(e) => {
+                    let Some(envelope) = unknown_envelope(&text) else {
+                        return Err(format!("unreadable message: {e}"));
+                    };
+                    seqs.push(envelope.seq);
+                    unknown.push(envelope);
+                    // Not the marker, so after the Welcome the read is not whole.
+                    if welcomed {
+                        break;
+                    }
+                }
             },
             Ok(Some(Ok(_))) => {}
         }
     }
     let _ = socket.close(None).await;
-    let gapless = events
-        .iter()
-        .zip(0u64..)
-        .all(|(event, seq)| event.seq == seq);
+    let gapless = seqs.iter().zip(0u64..).all(|(seen, seq)| *seen == seq);
     Ok(LogRead {
-        complete: marker && gapless,
+        complete: marker && gapless && unknown.is_empty(),
         events,
+        unknown,
     })
 }
 
@@ -2092,7 +2173,16 @@ fn forward_frame(
                 let _ = in_tx.send(Incoming::Msg { generation, msg });
                 None
             }
-            Err(e) => Some(format!("unreadable message from the coordinator: {e}")),
+            Err(e) => {
+                let Some(envelope) = unknown_envelope(&text) else {
+                    return Some(format!("unreadable message from the coordinator: {e}"));
+                };
+                let _ = in_tx.send(Incoming::UnknownEvent {
+                    generation,
+                    envelope,
+                });
+                None
+            }
         },
         Some(Ok(Message::Close(_))) | None => Some("closed by the coordinator".to_string()),
         Some(Ok(Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {
@@ -2166,6 +2256,70 @@ async fn dispatch(request: Request, cmd_tx: &mpsc::Sender<Command>) -> Reply {
 mod tests {
     use super::*;
     use tessel_coordinator::protocol::Fence;
+
+    fn envelope(kind: &str) -> String {
+        format!(
+            r#"{{"type":"event","event":{{"seq":7,"at_ms":1,"run":"r","event":"{kind}","x":1}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_known_server_message_is_not_an_unknown_envelope() {
+        let known = r#"{"type":"event","event":{"seq":7,"at_ms":1,"run":"r",
+            "event":"agent_connected","agent":"a1"}}"#;
+        assert!(serde_json::from_str::<ServerMsg>(known).is_ok());
+        assert!(unknown_envelope(known).is_none());
+    }
+
+    #[test]
+    fn an_event_of_an_unknown_kind_is_an_envelope_with_its_seq_and_kind() {
+        let found = unknown_envelope(&envelope("claim_teleported"));
+        assert_eq!(
+            found,
+            Some(UnknownEnvelope {
+                seq: 7,
+                kind: Some("claim_teleported".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn an_unknown_event_without_a_kind_string_still_has_its_seq() {
+        let found = unknown_envelope(r#"{"type":"event","event":{"seq":3,"event":9}}"#);
+        assert_eq!(found, Some(UnknownEnvelope { seq: 3, kind: None }));
+    }
+
+    #[test]
+    fn the_kind_is_cut_short_so_a_hostile_one_cannot_flood_the_log() {
+        let found = unknown_envelope(&envelope(&"k".repeat(500)));
+        assert_eq!(found.and_then(|e| e.kind).map(|k| k.len()), Some(64));
+    }
+
+    #[test]
+    fn objects_without_a_numeric_seq_are_not_envelopes() {
+        for text in [
+            r#"{"type":"event","event":{"event":"x"}}"#,
+            r#"{"type":"event","event":{"seq":"7","event":"x"}}"#,
+            r#"{"type":"event","event":{"seq":-1,"event":"x"}}"#,
+            r#"{"type":"event","event":{"seq":1.5,"event":"x"}}"#,
+            r#"{"type":"event","event":7}"#,
+            r#"{"type":"event"}"#,
+            r#"{"type":"from_the_future","seq":4}"#,
+            r#"{"type":"from_the_future","event":{"seq":4,"event":"x"}}"#,
+            r#"{"seq":4}"#,
+            "[]",
+            "7",
+        ] {
+            assert_eq!(unknown_envelope(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn text_that_is_not_json_is_not_an_envelope() {
+        for text in ["", "not json", r#"{"type":"event","event":{"seq":1"#] {
+            assert_eq!(unknown_envelope(text), None, "{text:?}");
+        }
+    }
 
     fn held(claim: u64) -> HeldClaim {
         HeldClaim {

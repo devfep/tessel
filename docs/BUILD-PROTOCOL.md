@@ -112,6 +112,13 @@ a new check can fail (mutant or deliberate break, then restore); exit codes deci
     5 October 2026 a lane ran a reviewer's mutant script from the shared root four times, mutating
     and restoring another lane's worktree while it was under review.
 11. Reports and verdicts stay under about 3,000 characters; longer ones are cut off in delivery.
+12. Claims cover symbols, not files. A lane claims `--mode create` on every new file before
+    creating it and on every existing file in which it adds an exported symbol (function, type,
+    const or test helper): `edit-body` and `edit-signature` do not cover a new symbol, and
+    `tessel submit` refuses the commit locally as uncovered. On 9 October 2026 REVIEW-CARD (54
+    new symbols in seven steward files) and CLI-INIT (one function in `commands.rs`) were both
+    refused until the orchestrator amended the claim. When in doubt, add `create` on every owned
+    source and test file up front; the amend is cheap.
 
 ## 5. Resources
 

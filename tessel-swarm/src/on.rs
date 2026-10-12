@@ -1408,7 +1408,7 @@ async fn await_outcome(
             Some(ServerMsg::Merged { claim, .. }) if claim == held.claim => {
                 return Ok((Resolution::Merged, None));
             }
-            Some(ServerMsg::SubmitRejected { claim, reason }) if claim == held.claim => {
+            Some(ServerMsg::SubmitRejected { claim, reason, .. }) if claim == held.claim => {
                 // A rejected claim stays open with its fence; free its scopes for the others.
                 release(conn, held).await?;
                 return Ok((Resolution::Rejected, Some(reason)));

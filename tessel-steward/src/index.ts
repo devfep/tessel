@@ -142,15 +142,17 @@ function failure(route: Route, error: unknown): Response {
   }
   const code = (error as Partial<ArtifactsError>).code;
   const status = code === undefined ? 500 : (STATUS_BY_ARTIFACTS_CODE[code] ?? 500);
-  console.error(JSON.stringify({ event: "route_failed", route, code, message: error.message }));
-  return json({ error: `${route.kind} failed for ${route.repo}: ${error.message}`, code }, status);
+  const message = redactTokens(error.message);
+  console.error(JSON.stringify({ event: "route_failed", route, code, message }));
+  return json({ error: `${route.kind} failed for ${route.repo}: ${message}`, code }, status);
 }
 
 async function handleDashboardSafely(request: Request, env: Env): Promise<Response> {
   try {
     return await handleDashboard(request, env);
   } catch (error) {
-    console.error(JSON.stringify({ event: "dashboard_failed", message: String(error) }));
+    const message = redactTokens(String(error));
+    console.error(JSON.stringify({ event: "dashboard_failed", message }));
     return new Response("the dashboard could not reach the coordinator", { status: 502 });
   }
 }

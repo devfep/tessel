@@ -6,7 +6,9 @@ mod daemon;
 mod githook;
 mod hook;
 mod inbox_hook;
+mod init;
 mod mcp;
+mod moves;
 mod plan;
 mod reconcile;
 mod render;
@@ -38,6 +40,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Set up this worktree for `tessel start`: config, ignore rule, Claude Code and git hooks.
+    /// Safe to rerun; a value or token already in place is kept.
+    Init(init::Flags),
     /// Start this worktree's daemon, connect, and record what you are about to do.
     Start {
         /// One line on what this work is for; other agents see it when they are denied.
@@ -61,6 +66,9 @@ enum Command {
         /// Make a separate claim instead of adding the scopes to your one open claim.
         #[arg(long)]
         new: bool,
+        /// Print one JSON envelope with the outcome and the moves open to you.
+        #[arg(long)]
+        json: bool,
     },
     /// Daemon state, connection, held claims and unread inbox items.
     Status {
@@ -209,7 +217,8 @@ fn main() -> ExitCode {
         Command::Hook {
             action: HookAction::Inbox { .. } | HookAction::Stop { .. },
         } => 0,
-        Command::Start { .. }
+        Command::Init(_)
+        | Command::Start { .. }
         | Command::Claim { .. }
         | Command::Status { .. }
         | Command::Inbox { .. }

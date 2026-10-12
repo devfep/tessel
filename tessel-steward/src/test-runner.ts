@@ -2,6 +2,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 
 import { isValidName } from "./identity";
 import { isAllowedGitRequest } from "./git-gateway-policy";
+import { redactTokens } from "./redact";
 import { revokeOnce } from "./revoke-once";
 import {
   CONTAINER_CA_CERTIFICATE,
@@ -172,7 +173,12 @@ export class TestRunner extends DurableObject<Env> {
       () => handle.revokeToken(token.id),
       (reason) =>
         console.error(
-          JSON.stringify({ event: "token_revoke_failed", repo, tokenId: token.id, reason }),
+          JSON.stringify({
+            event: "token_revoke_failed",
+            repo,
+            tokenId: token.id,
+            reason: redactTokens(reason),
+          }),
         ),
     );
     try {
@@ -197,7 +203,7 @@ export class TestRunner extends DurableObject<Env> {
             event: "container_destroy_failed",
             repo,
             tokenId: token.id,
-            reason: error instanceof Error ? error.message : String(error),
+            reason: redactTokens(error instanceof Error ? error.message : String(error)),
           }),
         );
       }

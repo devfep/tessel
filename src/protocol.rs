@@ -61,10 +61,14 @@
 //!     human must approve it first. The rule is deliberately simple and
 //!     explainable: every flagged change says why it was flagged.
 //! 13. Versioning. `Hello` carries the client's protocol version; the
-//!     coordinator refuses versions it does not speak. Additive changes keep
-//!     the version; breaking ones bump it.
+//!     coordinator refuses versions it does not speak. A new optional field
+//!     (`#[serde(default)]`) is additive and keeps the version. A new `EventKind`
+//!     variant, a new value of an enum inside a logged event, or a new top-level
+//!     message type bumps it: an older daemon skips an unknown logged event but
+//!     then treats every log read as incomplete and loses its reconnect repairs.
 
-/// Bump only for breaking changes. Additive fields use `#[serde(default)]`.
+/// Bump for a new `EventKind` variant, a new value of an enum inside a logged event, or a new
+/// top-level message type (invariant 13). A new optional field (`#[serde(default)]`) keeps it.
 pub const PROTOCOL_VERSION: u16 = 1;
 
 fn v1() -> u16 {
@@ -577,6 +581,15 @@ pub enum ServerMsg {
     SubmitRejected {
         claim: ClaimId,
         reason: String,
+        /// The reviewer who rejected it. Old coordinators omit it. Set only for a rejection in
+        /// review.
+        #[serde(default)]
+        reviewer: Option<AgentId>,
+        /// The reviewer's note: untrusted text (invariant 9), at most 1024 bytes. Old
+        /// coordinators omit it. Sent to the submitter only. A daemon that was offline at the
+        /// rejection learns of it from the log on reconnect, which does not carry the note.
+        #[serde(default)]
+        note: Option<String>,
     },
     /// Invariant 11: these touched scopes were not covered by your claim.
     Uncovered {
@@ -1438,5 +1451,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_submit_rejected_from_an_old_coordinator_has_no_reviewer_or_note() {
+        let old = r#"{"type":"submit_rejected","claim":4,"reason":"rejected in review"}"#;
+        let ServerMsg::SubmitRejected {
+            claim,
+            reason,
+            reviewer,
+            note,
+        } = serde_json::from_str(old).unwrap()
+        else {
+            panic!("expected SubmitRejected");
+        };
+        assert_eq!((claim, reason.as_str()), (ClaimId(4), "rejected in review"));
+        assert_eq!((reviewer, note), (None, None));
+    }
+
+    #[test]
+    fn a_submit_rejected_carries_the_reviewer_and_note_through_json() {
+        let sent = ServerMsg::SubmitRejected {
+            claim: ClaimId(4),
+            reason: "rejected in review".to_string(),
+            reviewer: Some(AgentId("felix".to_string())),
+            note: Some("not this way".to_string()),
+        };
+        let json = serde_json::to_string(&sent).unwrap();
+        assert!(json.contains(r#""reviewer":"felix""#), "{json}");
+        let back: ServerMsg = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        let ServerMsg::SubmitRejected { reviewer, note, .. } = back else {
+            panic!("expected SubmitRejected");
+        };
+        assert_eq!(reviewer, Some(AgentId("felix".to_string())));
+        assert_eq!(note.as_deref(), Some("not this way"));
     }
 }

@@ -3,7 +3,7 @@ import { isValidName } from "./identity";
 /** How long a page's decision tokens stay valid. */
 export const CSRF_TTL_MS = 60 * 60 * 1000;
 
-const DOMAIN = "tessel-review-csrf:v1";
+const DOMAIN = "tessel-review-csrf:v2";
 const encoder = new TextEncoder();
 
 /**
@@ -51,23 +51,29 @@ function key(secret: string): Promise<CryptoKey> {
   );
 }
 
-interface Subject {
+/** What a token lets its holder do. An approve token is issued only with the diff. */
+export type DecisionAction = "approve" | "reject";
+
+export interface Subject {
   email: string;
   repo: string;
   claim: number;
   /** The fork commit the person was shown; a token for one commit is no use for another. */
   commit: string;
+  action: DecisionAction;
 }
 
 function message(subject: Subject, expMs: number): Uint8Array {
-  const { email, repo, claim, commit } = subject;
-  return encoder.encode(`${DOMAIN}|${email.toLowerCase()}|${repo}|${claim}|${commit}|${expMs}`);
+  const { email, repo, claim, commit, action } = subject;
+  return encoder.encode(
+    `${DOMAIN}|${email.toLowerCase()}|${repo}|${claim}|${commit}|${action}|${expMs}`,
+  );
 }
 
 /**
- * A token that lets the signed-in `email` decide `claim` of `repo` at `commit` until it
+ * A token that lets the signed-in `email` take `action` on `claim` of `repo` at `commit` until it
  * expires, as `<expMs>.<mac>`. The MAC is HMAC-SHA256 under `secret` over a domain-separated
- * message, so a token cannot be used for another person, repo, claim or commit, and an
+ * message, so a token cannot be used for another person, repo, claim, commit or action, and an
  * identity token cannot be used as one.
  */
 export async function mintCsrfToken(
@@ -80,7 +86,7 @@ export async function mintCsrfToken(
   return `${expMs}.${toBase64Url(new Uint8Array(mac))}`;
 }
 
-/** Whether `token` was minted for exactly this person, repo and claim and has not expired. */
+/** Whether `token` was minted for exactly this subject and has not expired. */
 export async function verifyCsrfToken(
   secret: string,
   token: unknown,

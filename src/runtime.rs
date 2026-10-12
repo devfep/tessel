@@ -340,8 +340,9 @@ impl Coordinator {
 
     /// Load the core from storage, or create it for the configured run. Fails loudly on corrupt
     /// state or a bad config; never starts empty over stored data. `RUN` and `SHADOW_ENABLED`
-    /// matter only when nothing is stored yet; `REVIEWERS` is applied on every load, and a bad
-    /// one leaves nobody able to review.
+    /// matter only when nothing is stored yet; `REVIEWERS` and `SENSITIVE` are applied on every
+    /// load. A bad `REVIEWERS` leaves nobody able to review; a bad `SENSITIVE` holds every
+    /// submission.
     async fn ensure_loaded(&self) -> Result<()> {
         if self.core.borrow().is_some() {
             return Ok(());
@@ -362,11 +363,16 @@ impl Coordinator {
         let reviewers = shell::reviewers_or_none(reviewers.as_deref(), |e| {
             console_error!("coordinator {}: {e}; nobody can review", self.repo());
         });
+        let sensitive = self.env.var("SENSITIVE").ok().map(|var| var.to_string());
+        let sensitive = shell::sensitive_or_all(sensitive.as_deref(), |e| {
+            console_error!("coordinator {}: {e}; every submission is held", self.repo());
+        });
         let core = shell::load_core(
             stored.as_deref(),
             run.as_deref(),
             shadow.as_deref(),
             reviewers,
+            sensitive,
         )
         .map_err(|e| self.fail("load state", e))?;
         let mut slot = self.core.borrow_mut();
@@ -424,6 +430,20 @@ impl Coordinator {
         }
     }
 
+    /// `apply` after an await: load the core first. A client message handled while this task
+    /// waited on the steward can drop the core (serialize failure, `Refuse`, `OverHard`), and
+    /// `apply` then fails with "core is not loaded". The other `apply` calls follow an
+    /// `ensure_loaded` in the same task with only storage awaits in between. Storage awaits hold
+    /// the input gate, so no client message can drop the core; only steward calls release it.
+    async fn apply_loaded(
+        &self,
+        work: Work,
+        step: impl FnOnce(&mut Core) -> Vec<Effect>,
+    ) -> Result<Prepared> {
+        self.ensure_loaded().await?;
+        self.apply(work, step)
+    }
+
     /// The alarm: expire leases, recover a merge or verification a restart cut off, run at most
     /// one merge, then at most one verification (the core offers none while a merge is due). One
     /// of each per alarm keeps each invocation short and lets lease expiry run first every time.
@@ -477,7 +497,9 @@ impl Coordinator {
             return Ok(());
         };
         let answer = self.ask_steward_for_head().await;
-        let prepared = self.apply(Work::Plain, |core| core.trunk_read(&read, answer, now_ms()))?;
+        let prepared = self
+            .apply_loaded(Work::Plain, |core| core.trunk_read(&read, answer, now_ms()))
+            .await?;
         let applied = self.ready(prepared, "apply trunk head")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
@@ -561,9 +583,11 @@ impl Coordinator {
         let outcome = self.ask_steward_to_try(dispatch).await;
         self.verifying.set(None);
         let id = dispatch.id;
-        let prepared = self.apply(Work::Plain, |core| {
-            core.verification_outcome(id, &outcome, now_ms())
-        })?;
+        let prepared = self
+            .apply_loaded(Work::Plain, |core| {
+                core.verification_outcome(id, &outcome, now_ms())
+            })
+            .await?;
         let applied = self.ready(prepared, "apply verification outcome")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await
@@ -647,9 +671,11 @@ impl Coordinator {
         let outcome = self.ask_steward(dispatch).await;
         self.merging.set(None);
         let claim = dispatch.claim;
-        let prepared = self.apply(Work::Plain, |core| {
-            core.merge_outcome(claim, &outcome, now_ms())
-        })?;
+        let prepared = self
+            .apply_loaded(Work::Plain, |core| {
+                core.merge_outcome(claim, &outcome, now_ms())
+            })
+            .await?;
         let applied = self.ready(prepared, "apply merge outcome")?;
         let persisted = self.persist(applied).await?;
         self.settle(&persisted, None).await

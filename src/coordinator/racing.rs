@@ -751,7 +751,12 @@ impl Coordinator {
             self.event(now_ms, released),
             Effect::Notify {
                 agent,
-                msg: ServerMsg::SubmitRejected { claim, reason },
+                msg: ServerMsg::SubmitRejected {
+                    claim,
+                    reason,
+                    reviewer: None,
+                    note: None,
+                },
             },
         ]
     }
@@ -1645,7 +1650,7 @@ mod tests {
         let to_loser = notices(&effects, "a2");
         assert!(
             to_loser.iter().any(|msg| matches!(msg,
-                ServerMsg::SubmitRejected { claim, reason }
+                ServerMsg::SubmitRejected { claim, reason, .. }
                     if *claim == two.0 && reason == "lost the race")),
             "{to_loser:?}"
         );
@@ -1938,7 +1943,7 @@ mod tests {
         for (who, entry) in [("a1", one), ("a2", two)] {
             assert!(
                 notices(&effects, who).iter().any(|msg| matches!(msg,
-                    ServerMsg::SubmitRejected { claim, reason }
+                    ServerMsg::SubmitRejected { claim, reason, .. }
                         if *claim == entry.0 && reason == "lost the race")),
                 "{who}"
             );
@@ -2219,7 +2224,7 @@ mod tests {
         for (who, entry) in [("a1", one), ("a2", two), ("a3", three)] {
             assert!(
                 notices(&effects, who).iter().any(|msg| matches!(msg,
-                    ServerMsg::SubmitRejected { claim, reason }
+                    ServerMsg::SubmitRejected { claim, reason, .. }
                         if *claim == entry.0 && reason == "the race was not picked in time")),
                 "{who}"
             );

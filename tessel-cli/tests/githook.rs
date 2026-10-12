@@ -661,3 +661,139 @@ async fn installing_from_a_build_directory_warns() -> Result<()> {
     assert!(!outputs[1].contains("warning:"), "{}", outputs[1]);
     Ok(())
 }
+
+const FIRST_HOOK: &str = "#!/bin/sh\necho first-ran >&2\nexit 0\n";
+const SECOND_HOOK: &str = "#!/bin/sh\necho second-ran >&2\nexit 7\n";
+
+/// Files of the hooks directory named `<prefix>...`, sorted.
+fn hook_files(agent: &Agent, prefix: &str) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(hooks_dir(agent))? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(prefix) {
+            found.push(entry.path());
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Installs over `FIRST_HOOK`, then lets another tool overwrite the shim with `replacement`.
+async fn overwritten_after_install(replacement: &str) -> Result<(Fake, Agent)> {
+    let (fake, a1) = world().await?;
+    let pre_commit = hooks_dir(&a1).join("pre-commit");
+    executable_script(&pre_commit, FIRST_HOOK)?;
+    install(&a1)?;
+    executable_script(&pre_commit, replacement)?;
+    Ok((fake, a1))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reinstall_after_another_tool_overwrote_the_shim_chains_the_new_hook() -> Result<()> {
+    let (_fake, a1) = overwritten_after_install(SECOND_HOOK).await?;
+    let done = a1.tessel(&["hook", "install", "--git"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+
+    let dir = hooks_dir(&a1);
+    let chained = dir.join("pre-commit.pre-tessel");
+    assert_eq!(std::fs::read_to_string(&chained)?, SECOND_HOOK);
+    assert_ne!(std::fs::metadata(&chained)?.permissions().mode() & 0o111, 0);
+    let shim = std::fs::read_to_string(dir.join("pre-commit"))?;
+    assert_eq!(shim.lines().nth(1), Some("# tessel git hook"), "{shim}");
+
+    let backups = hook_files(&a1, "pre-commit.pre-tessel.")?;
+    let [backup] = backups.as_slice() else {
+        anyhow::bail!("expected one dated backup, found {backups:?}");
+    };
+    assert_eq!(std::fs::read_to_string(backup)?, FIRST_HOOK);
+    let stamp = backup
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("pre-commit.pre-tessel."))
+        .context("backup name")?;
+    assert_eq!(stamp.len(), "20261011T123456Z".len(), "{stamp}");
+    assert!(
+        stamp.ends_with('Z') && stamp.as_bytes()[8] == b'T',
+        "{stamp}"
+    );
+
+    let line = done
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("pre-commit: installed"))
+        .context("no pre-commit line")?;
+    assert!(
+        line.contains(&format!("your existing hook is now {}", chained.display())),
+        "{line}"
+    );
+    assert!(
+        line.contains(&format!(
+            "the earlier chained hook was kept as {} (merge it by hand if you still need it)",
+            backup.display()
+        )),
+        "{line}"
+    );
+    assert!(!done.all().contains("cannot be kept"), "{}", done.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reinstalled_shim_runs_the_new_chained_hook_first_and_not_the_old_one() -> Result<()> {
+    let (_fake, a1) = overwritten_after_install(SECOND_HOOK).await?;
+    install(&a1)?;
+
+    let done = commit_file(&a1, "src/c.rs", "pub fn c() {}\n")?;
+    assert_ne!(done.code, 0, "{}", done.all());
+    assert!(done.stderr.contains("second-ran"), "{}", done.stderr);
+    assert!(!done.stderr.contains("first-ran"), "{}", done.stderr);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shim_overwritten_by_the_same_hook_keeps_it_without_a_backup() -> Result<()> {
+    let (_fake, a1) = overwritten_after_install(FIRST_HOOK).await?;
+    let done = a1.tessel(&["hook", "install", "--git"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+
+    let chained = hooks_dir(&a1).join("pre-commit.pre-tessel");
+    assert!(
+        done.stdout.contains(&format!(
+            "pre-commit: installed; your existing hook is still {} and runs first",
+            chained.display()
+        )),
+        "{}",
+        done.stdout
+    );
+    assert_eq!(std::fs::read_to_string(&chained)?, FIRST_HOOK);
+    assert_eq!(
+        hook_files(&a1, "pre-commit.pre-tessel.")?,
+        Vec::<PathBuf>::new()
+    );
+    let shim = std::fs::read_to_string(hooks_dir(&a1).join("pre-commit"))?;
+    assert_eq!(shim.lines().nth(1), Some("# tessel git hook"), "{shim}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_third_install_with_the_shim_in_place_changes_nothing() -> Result<()> {
+    let (_fake, a1) = overwritten_after_install(SECOND_HOOK).await?;
+    install(&a1)?;
+    let before = (
+        hook_files(&a1, "pre-commit")?,
+        std::fs::read_to_string(hooks_dir(&a1).join("pre-commit"))?,
+    );
+
+    let again = a1.tessel(&["hook", "install", "--git"])?;
+    assert_eq!(again.code, 0, "{}", again.all());
+    assert!(
+        again.stdout.contains("pre-commit: already installed"),
+        "{}",
+        again.stdout
+    );
+    let after = (
+        hook_files(&a1, "pre-commit")?,
+        std::fs::read_to_string(hooks_dir(&a1).join("pre-commit"))?,
+    );
+    assert_eq!(before, after);
+    Ok(())
+}

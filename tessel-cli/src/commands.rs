@@ -16,6 +16,8 @@ use crate::daemon;
 use crate::githook;
 use crate::hook::{self, Installed};
 use crate::inbox_hook;
+use crate::init;
+use crate::moves::{holding_now, Holding, Situation};
 use crate::plan;
 use crate::render::{
     escape, needs_attention, notice_text, outcome_text, quote_untrusted, status_text, submit_text,
@@ -86,6 +88,7 @@ impl Report {
 pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     match command {
+        Command::Init(flags) => init_command(&cwd, &flags),
         Command::Start { summary, task } => Ok(start(&cwd, summary, task).await?.emit()),
         Command::Claim {
             scopes,
@@ -93,6 +96,7 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             wait,
             assume,
             new,
+            json,
         } => {
             let options = ClaimOptions {
                 mode: mode.into(),
@@ -100,7 +104,12 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
                 assume,
                 new,
             };
-            Ok(claim(&cwd, &scopes, options).await?.emit())
+            let report = if json {
+                claim_json(&cwd, &scopes, options).await?
+            } else {
+                claim(&cwd, &scopes, options).await?
+            };
+            Ok(report.emit())
         }
         Command::Status { json } => Ok(status(&cwd, json).await?.emit()),
         Command::Inbox { all } => Ok(inbox(&cwd, all)?.emit()),
@@ -303,7 +312,20 @@ pub struct ClaimOptions {
     pub new: bool,
 }
 
-pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<Report> {
+/// What a claim command learned: the daemon's answer, what the agent asked and held, and the
+/// exit code.
+struct Answer {
+    outcome: ClaimOutcome,
+    situation: Situation,
+    code: u8,
+    warnings: String,
+}
+
+async fn ask_for_claim(
+    cwd: &Path,
+    args: &[String],
+    options: ClaimOptions,
+) -> anyhow::Result<Answer> {
     let ClaimOptions {
         mode,
         wait,
@@ -325,7 +347,7 @@ pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow
         scopes.push(ScopeClaim { scope, mode });
     }
     let request = Request::Claim {
-        scopes,
+        scopes: scopes.clone(),
         wait,
         assumptions: assume,
         new,
@@ -333,18 +355,55 @@ pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow
     let Reply::Claim { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
     };
-    let hint = format!(
-        "tessel claim {} --wait",
-        crate::render::escape(&args.join(" "))
-    );
     let code = match outcome {
         ClaimOutcome::Granted { .. } | ClaimOutcome::Covered => 0,
         ClaimOutcome::Denied { .. } => EXIT_DENIED,
         ClaimOutcome::Queued { .. } => EXIT_QUEUED,
         ClaimOutcome::Refused { .. } => 1,
     };
-    let mut report = Report::with_code(outcome_text(&outcome, &hint), code);
-    report.stderr = warnings.concat();
+    let holding = match outcome {
+        ClaimOutcome::Denied { .. } | ClaimOutcome::Refused { .. } => {
+            holding_now(&worktree.sock(), CALL_TIMEOUT)
+                .await
+                .unwrap_or(Holding::Unknown)
+        }
+        ClaimOutcome::Granted { .. } | ClaimOutcome::Covered | ClaimOutcome::Queued { .. } => {
+            Holding::Unknown
+        }
+    };
+    Ok(Answer {
+        outcome,
+        situation: Situation {
+            asked: scopes,
+            holding,
+        },
+        code,
+        warnings: warnings.concat(),
+    })
+}
+
+pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<Report> {
+    let answer = ask_for_claim(cwd, args, options).await?;
+    let mut report = Report::with_code(
+        outcome_text(&answer.outcome, &answer.situation),
+        answer.code,
+    );
+    report.stderr = answer.warnings;
+    Ok(report)
+}
+
+/// `claim --json`: one envelope on stdout; the exit code is the text form's.
+pub async fn claim_json(
+    cwd: &Path,
+    args: &[String],
+    options: ClaimOptions,
+) -> anyhow::Result<Report> {
+    let answer = ask_for_claim(cwd, args, options).await?;
+    let mut report = Report::with_code(
+        crate::render::claim_json(&answer.outcome, &answer.situation, answer.code),
+        answer.code,
+    );
+    report.stderr = answer.warnings;
     Ok(report)
 }
 
@@ -627,6 +686,12 @@ async fn pre_edit(root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
         complain(&verdict.message);
     }
     Ok(ExitCode::from(verdict.exit))
+}
+
+fn init_command(cwd: &Path, flags: &init::Flags) -> anyhow::Result<ExitCode> {
+    let card = init::run(cwd, flags, &|name| std::env::var(name).ok(), &init::Curl)?;
+    say(&card);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn install(cwd: &Path) -> anyhow::Result<ExitCode> {

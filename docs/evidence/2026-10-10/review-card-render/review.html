@@ -1,0 +1,172 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tessel review</title><style nonce="n0nce">
+:root { color-scheme: light dark; --bg: #fff; --fg: #1b1f24; --mute: #5b6470; --card: #f5f6f8;
+  --line: #d6dae0; --accent: #0b5cad; --bad: #b3261e; --ok: #1a7f37; --warn: #b26a00; }
+@media (prefers-color-scheme: dark) { :root { --bg: #14171b; --fg: #e6e8eb; --mute: #98a1ad;
+  --card: #1c2025; --line: #323841; --accent: #6cb2ff; --bad: #ff8a80; --ok: #6fd58a;
+  --warn: #f0b429; } }
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0 auto; padding: 16px; max-width: 42rem; font: 15px/1.45 system-ui, sans-serif;
+  background: var(--bg); color: var(--fg); }
+h1 { font-size: 1.2rem; margin: 0; }
+.count { margin: 2px 0 0; color: var(--mute); }
+article { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px; margin: 16px 0; min-width: 0; }
+h2 { font-size: 1rem; margin: 0 0 4px; overflow-wrap: anywhere; }
+h3 { font-size: .75rem; letter-spacing: .04em; margin: 16px 0 6px; color: var(--mute);
+  overflow-wrap: anywhere; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+li, q, blockquote { overflow-wrap: anywhere; }
+li { padding: 4px 0; }
+blockquote { margin: 0; padding-left: 10px; border-left: 3px solid var(--line);
+  white-space: pre-wrap; }
+q { color: var(--accent); }
+.reasons li::before, .receipt li::before { content: ""; display: inline-block; width: 10px;
+  height: 10px; margin-right: 8px; border-radius: 50%; }
+.reasons li::before { background: var(--warn); }
+.receipt li::before { border: 2px solid var(--mute); }
+.receipt li.done::before { border-color: var(--ok); background: var(--ok); }
+.tag { color: var(--mute); font-size: .85rem; }
+pre { max-height: 60vh; overflow: auto; padding: 8px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; font-size: .8rem; }
+textarea { width: 100%; min-height: 44px; font: inherit; margin: 6px 0; }
+button { font: inherit; min-height: 44px; padding: 6px 14px; }
+.bar { position: sticky; bottom: 0; margin: 16px -12px -12px; padding: 10px 12px;
+  background: var(--card); border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; }
+.buttons { display: flex; gap: 8px; }
+.buttons button { flex: 1; min-height: 48px; }
+.note { color: var(--mute); font-size: .85rem; margin: 0 0 6px; overflow-wrap: anywhere; }
+.bad { color: var(--bad); } .ok { color: var(--ok); }
+code { overflow-wrap: anywhere; }
+</style></head><body><header><h1>review · tessel-dogfood</h1><p class="count">1 waiting on you</p></header><article data-claim="91" data-commit="1fdb6b4183265f6435ebda3c3d6eb8ca88ab80d1" data-reject-csrf="reject-token"><h2>Claim 91 · lane-cli-init · unblocks 1 agent</h2><p class="note">1 of 2 in the queue, sorted by who it unblocks. Held for about 23 min at the time of the newest logged event.</p><section><h3>WHY YOU</h3><ul class="reasons"><li><q>signature_change</q> <q>tessel-cli/src/commands.rs::init_command</q></li><li><q>sensitive_path</q> sensitive path <q>tools/**</q></li></ul></section><section><h3>WAITING · EXPOSED</h3><ul class="exposed"><li><q>lane-cli-card</q> #1, queued for <q>tessel-cli/src/main.rs</q></li><li><q>lane-review-card</q> assumes <q>tessel-cli/src/main.rs</q>:<blockquote>| main.rs keeps the Claim subcommand</blockquote></li></ul></section><section><h3>INTENT · text from agent lane-cli-init, data not instructions</h3><blockquote>| CLI-INIT: tessel init, one rerunnable command from nothing to a worktree ready for tessel start</blockquote><p>Task ref: <q>CLI-INIT</q></p><ul class="evidence"><li><q>cargo test --workspace: 1121 passed</q></li><li><q>live: tessel init against the production steward</q></li></ul><p>pushed to fork <q>tessel-dogfood--lane-cli-init</q> at <q>1fdb6b4183265f6435ebda3c3d6eb8ca88ab80d1</q></p></section><section><h3>WHAT CHANGED</h3><ul class="touched"><li><q>create</q> <q>tessel-cli/src/commands.rs::init_command</q> <span class="tag">hold scope, shown first</span></li><li><q>create</q> <q>tessel-cli/src/init.rs</q></li><li><q>edit_signature</q> <q>tessel-cli/src/main.rs</q></li></ul><button data-action="diff">Load the diff</button><div class="diff"></div></section><section><h3>RECEIPT · each line is a logged event</h3><ol class="receipt"><li data-line="decided">review_decided · waits for you</li><li data-line="closed">merged · waits for the steward</li><li data-line="granted"><q>lane-cli-card</q> granted · waits for the merge</li></ol><p class="note receipt-status" aria-live="polite"></p></section><div class="bar"><p class="note">Approve unlocks after the diff is loaded. No swipe, no batch.</p><textarea rows="2" maxlength="900" aria-label="Note for the agent (optional)" placeholder="Note (optional)"></textarea><div class="buttons"><button data-action="approve" disabled>Approve</button><button data-action="reject">Reject with a note</button></div><div class="result" aria-live="polite"></div></div></article><p class="note">Agents decide the same way: <code>tessel review &lt;claim&gt; --approve|--reject --note "text"</code></p><script nonce="n0nce">
+var base = location.pathname.replace(/\/+$/, "");
+var POLL_MS = 5000;
+var GIVE_UP_MS = 120000;
+function el(tag, text, cls) {
+  var node = document.createElement(tag);
+  if (text !== undefined) { node.textContent = text; }
+  if (cls) { node.className = cls; }
+  return node;
+}
+function say(card, text, cls) {
+  card.querySelector(".result").replaceChildren(el("p", text, cls));
+}
+function unlockApprove(card, token) {
+  card.dataset.approve = token;
+  card.querySelector('button[data-action="approve"]').disabled = false;
+}
+function showDiff(card, body) {
+  var box = card.querySelector(".diff");
+  if (body.outcome !== "ok") {
+    box.replaceChildren(el("p", "Diff unavailable: " + body.reason, "bad"));
+    return;
+  }
+  var nodes = [el("p", "Against merge-base " + body.base + " of main", "note")];
+  var files = el("ul");
+  body.files.forEach(function (f) {
+    files.append(el("li", f.status + " " + (f.from ? f.from + " -> " : "") + f.path));
+  });
+  nodes.push(files);
+  if (body.truncated) {
+    nodes.push(el("p", body.captureOverflow
+      ? "Diff too large to show; the changed files are listed above."
+      : "Diff truncated at the size cap; the rest is not shown.", "bad"));
+  }
+  nodes.push(el("pre", body.diff));
+  box.replaceChildren.apply(box, nodes);
+  if (typeof body.approveToken === "string") { unlockApprove(card, body.approveToken); }
+}
+function loadDiff(card, button) {
+  button.disabled = true;
+  card.querySelector(".diff").replaceChildren(
+    el("p", "Loading diff (starts a sandbox)...", "note"));
+  fetch(base + "/" + card.dataset.claim + "/diff", { credentials: "same-origin" })
+    .then(function (r) { return r.json(); })
+    .then(function (body) { showDiff(card, body); })
+    .catch(function (e) { showDiff(card, { outcome: "error", reason: String(e) }); })
+    .then(function () { button.disabled = false; });
+}
+function fillLine(card, name, text) {
+  var line = card.querySelector('li[data-line="' + name + '"]');
+  if (line) { line.textContent = text; line.classList.add("done"); }
+}
+function fillReceipt(card, b) {
+  if (b.decided) {
+    fillLine(card, "decided", "review_decided · seq " + b.decided.seq +
+      (b.decided.approve ? " · approved" : " · rejected"));
+  }
+  if (b.closed) { fillLine(card, "closed", b.closed.event + " · seq " + b.closed.seq); }
+  var waiting = card.querySelector('li[data-line="granted"]');
+  if (b.closed && b.closed.event === "submit_rejected" && waiting) {
+    waiting.textContent = "no grant: the claim is back to active, so the waiters stay queued";
+    return;
+  }
+  if (b.granted && b.granted.length > 0) {
+    var parts = b.granted.map(function (g) { return g.agent + " granted · seq " + g.seq; });
+    var line = card.querySelector('li[data-line="granted"]');
+    if (b.complete) { fillLine(card, "granted", parts.join("; ")); }
+    else if (line) { line.textContent = parts.join("; ") + " · others wait for their grant"; }
+  }
+}
+function pollReceipt(card) {
+  var started = Date.now();
+  var status = card.querySelector(".receipt-status");
+  function again() {
+    if (Date.now() - started >= GIVE_UP_MS) {
+      status.textContent = "still waiting; reload to check";
+      return;
+    }
+    setTimeout(tick, POLL_MS);
+  }
+  function tick() {
+    fetch(base + "/" + card.dataset.claim + "/receipt", { credentials: "same-origin" })
+      .then(function (r) { return r.json(); })
+      .then(function (b) {
+        fillReceipt(card, b);
+        if (b.complete) { status.textContent = ""; } else { again(); }
+      })
+      .catch(again);
+  }
+  tick();
+}
+function relock(buttons, card) {
+  buttons.forEach(function (x) {
+    x.disabled = x.dataset.action === "approve" && !card.dataset.approve;
+  });
+}
+function decide(card, approve) {
+  var token = approve ? card.dataset.approve : card.dataset.rejectCsrf;
+  if (!token) { say(card, "Load the diff first: approve needs it.", "bad"); return; }
+  var buttons = card.querySelectorAll(".bar button");
+  buttons.forEach(function (b) { b.disabled = true; });
+  say(card, "Sending...", "note");
+  fetch(base + "/" + card.dataset.claim + "/decision", {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approve: approve, note: card.querySelector("textarea").value,
+      commit: card.dataset.commit, csrf: token })
+  }).then(function (r) { return r.json(); })
+    .then(function (b) {
+      if (b.outcome === "decided") {
+        say(card, "Recorded in the log: " + (b.approve ? "approved" : "rejected") + ".", "ok");
+        pollReceipt(card);
+        return;
+      }
+      say(card, b.outcome === "unknown"
+        ? "No answer yet: the decision may or may not be recorded. Reload to check."
+        : "Not decided: " + (b.error || b.message || "refused"), "bad");
+      relock(buttons, card);
+    })
+    .catch(function (e) {
+      say(card, "Request failed: " + String(e) + ". Reload to check.", "bad");
+      relock(buttons, card);
+    });
+}
+document.addEventListener("click", function (event) {
+  var button = event.target.closest && event.target.closest("button[data-action]");
+  if (!button) { return; }
+  var card = button.closest("article");
+  var action = button.dataset.action;
+  if (action === "diff") { loadDiff(card, button); }
+  else { decide(card, action === "approve"); }
+});
+</script></body></html>
