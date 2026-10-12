@@ -1,163 +1,151 @@
-# Tessel coordinator
+# Tessel
 
-Rust Worker + one coordinator Durable Object per repo, speaking the claim protocol over WebSocket.
-Claims, fences, the wait queue, leases and the event log survive restarts: every message's state
-change and events are stored before any reply is sent.
+Tessel is a transaction layer for many AI coding agents working in one git repository. Before an
+agent edits code, it claims what it will touch: a directory, a file, or one function. A claim that
+overlaps another agent's work is refused before anything is written, with the other agent's intent
+and the moves still open. Finished work goes to the agent's own fork and is submitted; a steward
+rebases it, checks that the claim covered every change, runs the tests, and only then pushes
+`main`. Work merges with no human unless a rule flags it, and a flagged change says why. Tessel
+runs on Cloudflare: Workers, Durable Objects, Artifacts, Queues, Containers and Access.
 
-## Prerequisites
-    rustup target add wasm32-unknown-unknown
-    npm i -g wrangler
+**Who it is for:** you run several coding agents (Claude Code, an MCP client, your own scripts) on
+one repository at the same time, and you want their work to land without overwriting or breaking
+each other's.
 
-## Authentication
-The Worker serves `/repo/<name>/ws` only to a request with `Authorization: Bearer <token>`, where
-the token is an identity token the steward signed for that repo and one agent (24 hours). Any
-other request gets `401 unauthorized` before a WebSocket is accepted. A `hello` for any other
-agent gets `not_owner` and the socket is closed. The token format is documented in
-`src/identity.rs`.
+## The problem
 
-`GET /repo/<name>/summary` takes the same token (any agent of the repo may read it) and answers
-`{"summary": {...}, "head_seq": n}`: the evidence counters over the repo's whole event log and the
-`seq` of its last event (`null` for an empty log). It is a read: no socket, no event appended.
-Refusals are the same as for `ws`; any method but `GET` gets `405`.
+Two agents in one repository each work in their own branch and see nothing of the other. When
+both touch the same function, you find out at merge: a text conflict, or a clean merge that breaks
+the build (a renamed function and a new caller of the old name), or a behaviour change that breaks
+an assumption nobody wrote down. Each is found after the work is done.
 
-`IDENTITY_SIGNING_KEY` is a secret on both the coordinator and the steward, and the two must hold
-the same value. A missing or empty key refuses every request.
+## The parts
 
-    npx wrangler secret put IDENTITY_SIGNING_KEY
+```
+ each agent's worktree                        Cloudflare
+ +---------------------------+  WebSocket   +---------------------------------------+
+ | agent (Claude Code, an    |------------->| coordinator: Rust Worker, one Durable |
+ | MCP client, a script)     |  claim,      | Object per repo: claims, leases,      |
+ | `tessel` CLI + daemon     |  submit      | fences, wait queue, review holds,     |
+ +-------------+-------------+              | event log                             |
+               |                            +-------------------+-------------------+
+               | git push to its own fork                       | merge, one at a time
+               v                                                v (service binding)
+ +-----------------------------------------------------------------------------------+
+ | steward: TypeScript Worker                                                        |
+ |   Artifacts: the trunk <repo> and one fork <repo>--<agent> per agent              |
+ |   container gate: rebase onto main, check coverage, run the tests, push main      |
+ |   Queue: a push to the trunk's main tells the coordinator that main moved         |
+ |   identity tokens for agents; dashboard and review page behind Cloudflare Access  |
+ +-----------------------------------------------------------------------------------+
+```
 
-For local runs put it in `.dev.vars` (gitignored):
+Only the steward writes `main`. [How Tessel works](docs/how-tessel-works.md) explains each part,
+follows one conflict end to end with real CLI output, and defines every term.
 
-    IDENTITY_SIGNING_KEY=<a long random value>
+## How it works, in six steps
 
-Mint a token with the steward's admin route (the response has `token`):
+1. **Set up.** `tessel init` writes the worktree's config with the agent's identity token and
+   installs the Claude Code hooks and the git `pre-commit` and `pre-push` hooks.
+2. **Start.** `tessel start "<what this work is for>"` starts a daemon that connects to the
+   repository's coordinator, a Durable Object, and sends heartbeats.
+3. **Claim.** Before an edit, the hook (or `tessel claim`) claims the smallest honest scope: a
+   symbol such as a function in Rust or TypeScript, otherwise the file. The coordinator checks it
+   against every other claim and the mode conflict table.
+4. **On conflict, decide.** A denied agent gets a decision card: who holds the scope, their intent
+   as quoted data, and the valid moves. It can wait in a queue, claim in a mode that does not
+   conflict, or work on something else. Nothing it wrote is lost, because it has not written yet.
+5. **Submit.** The agent commits, pushes to its fork, and runs `tessel submit --evidence "..."`.
+   The coordinator checks the claim's fence and that it covers every change, then applies the
+   review rules.
+6. **Merge.** The steward takes one submission at a time. In a container with no Internet, it
+   rebases onto `main`, checks coverage again per file, runs the repository's gate, and pushes
+   `main`. The claim is released and the next waiting agent is granted.
 
-    curl -X POST -H "Authorization: Bearer $STEWARD_ADMIN_TOKEN" \
-      https://<steward>/repos/demo/agents/a1/identity
+## See it run
 
-The admin token stays with the human operator. Run this call, and the fork and write-token calls,
-from the operator's own shell, and give each agent only its own identity token (as `TESSEL_TOKEN`
-or in its `.tessel/config.toml`). An agent that holds the admin token can mint a reviewer identity
-and approve its own held change.
+No Cloudflare account needed. The swarm harness runs scripted agents twice on a small TypeScript
+repository: once with plain git and no coordination, once against the real coordinator core on
+127.0.0.1 with a local steward. You need Rust, git and Node 22.18 or newer.
 
-`tessel init --steward <url>` makes the identity call for you when `STEWARD_ADMIN_TOKEN` is set in
-the environment of that command. Run it yourself, in the agent's worktree, with the variable set
-for that one command, then start the agent without it; or set `TESSEL_TOKEN` to a token you minted
-and `tessel init` writes it to `.tessel/config.toml`.
+    cargo build -p tessel-swarm
+    target/debug/tessel-swarm run --seed 1 --tasks 10 --agents 4 --overlap 0.5 --out swarm-results
 
-## Run locally
-    npx wrangler dev
-    # in another terminal (install websocat, e.g. `brew install websocat`):
-    websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $AGENT_TOKEN"
+On 12 October 2026, on the Mac this project is built on, the build took 29 seconds from an empty
+target directory, and `time` measured the run at 15.4 seconds. Its table reported 7.3 seconds of
+wall time for the plain-git side and 7.8 for the Tessel side. The run prints an A/B table and
+writes it, with the coordinator's event log, to `swarm-results/`. Which agent wins a contested
+function varies with timing, so your numbers can differ from run to run.
+[`tessel-swarm/README.md`](tessel-swarm/README.md) explains every row.
 
-Put the `-H` option after the URL, or write it with `=` as here: a bare `-H` takes the arguments
-that follow it, including the URL.
+## Evidence
 
-Every message is one JSON object per line. Paste:
+The counting rule: **a denial is not a prevented conflict.** Only verified outcomes count.
+Everything below is in [`docs/evidence/`](docs/evidence/), with the event logs the numbers came
+from.
 
-    {"type":"hello","agent":"agent-1","base":"abc123"}
+The same 40 tasks (seed 3, 30 agents, overlap 0.5) on 9 October 2026:
 
-Expect:
+- **Without coordination** (plain git, local replay): 14 of 40 landed. 26 were rejected after the
+  work was done: 22 textual conflicts, 1 broke the build, 3 broke the tests.
+- **With Tessel, waiting on conflict** (live coordinator): 40 of 40 landed, 0 rejected, with 29
+  claims queued behind a holder. The 40 include 20 submissions held for review and approved by
+  the harness's scripted reviewer. It was slower: 837 seconds of wall time against 14 for the
+  local replay, or 2.8 landed per minute against 59.6.
+  [`2026-10-09/ab-wait`](docs/evidence/2026-10-09/ab-wait/README.md)
+- **With Tessel, shadow runs** (live coordinator): 28 claims were denied and their work was done
+  anyway in forks that could never merge, then tried against what blocked them. **20 verified
+  preventions, 9 false alarms, 3 inconclusive.** A shadow claim can face more than one blocker, so
+  the 32 trials outnumber the 28 claims. A false alarm is a denial whose work would have merged
+  cleanly, and it is counted as one.
+  [`2026-10-09/ab-shadow`](docs/evidence/2026-10-09/ab-shadow/README.md)
 
-    {"type":"welcome","head":"abc123","lease_ms":30000,"protocol":1}
+## What shipped and what did not
 
-Any other message before `hello` is answered with `{"type":"error",...,"code":"no_hello",...}`.
-Text that is not a valid message, binary frames and text frames over 64 KiB get `malformed`.
+Shipped:
 
-## Try a conflict
-Open two terminals on the same repo (both with the `-H=...` option above). In the first, send `hello` as `agent-1`, then:
+- Claims on directories, files and Rust or TypeScript symbols, in four modes, with intention locks.
+- Leases, fences, the wait queue, and the decision card with valid moves.
+- Assumptions, with a test of the assuming agent's work after the threatening change merges.
+- Review by exception, decided with `tessel review` or on the steward's review page.
+- The steward: Artifacts trunk and forks, the container gate, Queue-driven notices that `main`
+  moved, identity tokens, and a dashboard.
+- The CLI with Claude Code hooks, git hooks, and a local MCP server (`tessel mcp`).
+- Shadow verification and the swarm harness for A/B runs.
 
-    {"type":"claim","req":1,"intent":{"summary":"rename login","task_ref":null},"scopes":[{"scope":{"kind":"symbol","path":"src/auth.rs","qualified_name":"auth::login"},"mode":"edit_signature"}],"on_conflict":"fail"}
+Not shipped:
 
-Expect a `granted` reply with a `claim` id and `fence`. In the second terminal, send `hello` as
-`agent-2`, then the same claim with `"mode":"depend"`. Expect `denied`, whose `conflicts` list
-names `agent-1` in `held_by` and shows its intent in `their_intent`.
+- Races from a client. The coordinator can rank several entries for one task, but no client opens
+  a race.
+- Decision records in git notes. Evidence and rejected approaches stay in the coordinator's event
+  log.
+- Gates for repositories with dependencies without a custom image: the containers have no
+  Internet, so the operator bakes dependencies into the toolchain image and writes a
+  `tessel.toml`.
+- Symbol claims in languages other than Rust and TypeScript (other files are claimed whole), a CLI
+  for systems other than Unix, and automatic hooks for agents other than Claude Code.
+- Verified evidence strings: `--evidence` is what the agent says it ran.
 
-With `"on_conflict":"wait"` the second agent gets `queued` instead. When the first agent sends
-`{"type":"release","claim":1,"fence":1}`, the second agent receives `granted` on its own socket.
-A claim that is neither released nor renewed with `{"type":"heartbeat"}` expires after 30 seconds
-and its holder receives `lease_expired`. A queued request is withdrawn when its agent's last
-socket closes. A `release`, `amend` or `submit` for a claim that is no longer active gets
-`stale_fence`; an id that was never issued gets `unknown_claim`.
+## Operate it
 
-Scope paths are repo-relative and canonical: no leading or trailing `/`, no empty, `.` or `..`
-segment, no backslash or NUL; only a `dir` scope may be the empty root path. A claim, amend or
-submit with another spelling, or with more than 256 scopes, gets `malformed`. The stored state
-and each event are limited to 1 MiB; a call that would exceed it gets `malformed` with
-"repo state limit reached" and changes nothing.
+- [Coordinator reference](docs/reference/coordinator.md): authentication, tokens, a manual
+  WebSocket session, configuration, deploy and the gate.
+- [Configuration](docs/configuration.md): every setting of both Workers.
+- [`skills/tessel/SKILL.md`](skills/tessel/SKILL.md): the workflow taught to agents.
+- Build the CLI with `cargo install --path tessel-cli`.
 
-## Watch the event log
-A third socket needs no `hello`:
-
-    {"type":"watch","from_seq":0}
-
-It receives every stored event with `seq >= from_seq`, in order, as `{"type":"event",...}`, then
-every new event as it is stored. A second `watch` on the same socket is refused with `malformed`.
-
-## Configuration
-Set in `wrangler.toml` under `[vars]`:
-
-- `RUN` names the run that events are tagged with. Required.
-- `SHADOW_ENABLED` is `"true"` or `"false"` (default `"false"`; unset means false). It allows
-  `on_conflict: "shadow"` claims, which are for experiment runs only. With it off, such a claim
-  gets `shadow_disabled`.
-
-The coordinator refuses to start on a missing `RUN` or any other `SHADOW_ENABLED` value. Both are
-read only when a repo has no stored state yet; an existing repo keeps the values it was created
-with, and changing them later has no effect on it.
-
-## MCP server
-
-`tessel mcp --root <worktree>` serves the CLI commands as tools of a local stdio MCP server
-(`tessel_start`, `tessel_claim`, `tessel_status`, `tessel_inbox`, `tessel_submit`,
-`tessel_release`, `tessel_review`). It must run on the machine with the worktree, because symbol
-extraction and diffs read it. Register it with Claude Code:
-
-    claude mcp add --scope local tessel -- /abs/path/to/tessel mcp --root /abs/path/to/worktree
-
-## Deploy
-    npx wrangler deploy
-    websocat wss://tessel-coordinator.<your-subdomain>.workers.dev/repo/demo/ws \
-      -H="Authorization: Bearer $AGENT_TOKEN"
+Keep `STEWARD_ADMIN_TOKEN` with the human operator. Mint each agent's identity token, fork and
+fork write token from your own shell, and give each agent only its own identity token (as
+`TESSEL_TOKEN`, or in its `.tessel/config.toml`). An agent that holds the admin token can mint a
+reviewer identity and approve its own held change. `tessel init --steward <url>` mints the token
+for you when `STEWARD_ADMIN_TOKEN` is set for that one command; run it yourself in the agent's
+worktree, then start the agent without the variable.
 
 ## Dogfooding gate
 
-The steward judges a repo by the `tessel.toml` on the trunk commit a run is based on (read through
-the Artifacts binding, never from a fork). Tessel's own is at the repository root.
+Tessel merges its own code through its own gate: see
+[Dogfooding gate](docs/reference/coordinator.md#dogfooding-gate).
 
-- **Who may change the gate.** A submission over the coordinator's service binding whose rebased
-  diff touches `tessel.toml` is rejected as `gate_changed` ("changes the gate (tessel.toml); only
-  an admin merge may change it"). The admin route `POST /repos/<repo>/merges` may merge such a
-  change: the head's file must pass the validation below (else `gate_invalid`), and a diff that
-  touches only `tessel.toml` is judged by the head's file alone, with no install or tests, so a
-  broken trunk gate can be repaired. A diff that also changes code runs the trunk's gate. The
-  claim's scopes still have to cover `tessel.toml`.
-- **Recovery from a broken trunk gate.** A gate-only admin merge pushes **without running any
-  tests**; that is the point, and the admin takes responsibility for the file. Steps, with
-  `STEWARD_ADMIN_TOKEN` as the bearer token:
-  1. `POST /repos/tessel/forks/tessel--admin` creates a fork.
-  2. `POST /repos/tessel--admin/tokens` mints a write token for it.
-  3. Push one commit that changes only `tessel.toml` to the fork's default branch.
-  4. `POST /repos/tessel/merges` with `{"fork":"tessel--admin","commit":"<sha>","scopes":
-     [{"scope":{"kind":"file","path":"tessel.toml"},"mode":"edit_body"}]}`. The answer is
-     `merged`, or `gate_invalid` if the new file does not pass the validation above.
-  5. `POST /repos/tessel/test-runs` should answer `step: "test"` again.
-- **Allowed commands:** `pnpm test`, `npm test`, or `cargo test` with only `--workspace --locked
-  --offline --no-fail-fast --all-targets --all-features --release --lib --bins --tests`. Nothing
-  that can pick another toolchain, config or compiler (`+nightly`, `--config`, `-Z`,
-  `--manifest-path`, `--target`, `--`) and no shell. A `tessel.toml` that is present but invalid
-  fails every other run at `install` (reason `config`); only a missing file falls back to `npm test`.
-- **Lockfile changes need the new image first.** Containers have no Internet, so dependencies are
-  baked into `tessel-steward/toolchain.Dockerfile` from the committed lockfiles. A change to
-  `Cargo.lock` or `tessel-steward/pnpm-lock.yaml` fails at `install` (reason `install_failed`)
-  until the image holds it, and the admin route runs the same install step. To land one:
-  1. From a checkout that has the new lockfiles, start Docker and run `npx wrangler deploy` in
-     `tessel-steward/`: it rebuilds the `toolchain` image from them (build context: the repository
-     root) and deploys.
-  2. Merge the change through the steward as usual; its install step now finds the dependencies.
-  3. `POST /repos/tessel/test-runs` should answer `step: "test"`, `passed: true`.
-- **Mirror:** `tools/mirror.sh` pushes the Artifacts trunk (`tessel-dogfood`) to the GitHub branch
-  `artifacts-trunk`, fast-forward only. The first run creates the branch; later runs abort unless
-  the push is a fast-forward. Milestone pull requests go from `artifacts-trunk`.
+## License
 
-## Tests
-    cargo test
+MIT. See [LICENSE](LICENSE).
