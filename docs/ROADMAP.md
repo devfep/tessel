@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 16:18 EDT. **SWARM-RECONNECT-FLAKE reproduced and dispatched** as
+**As of:** 2026-10-12 16:40 EDT. **SWARM-RECONNECT-FLAKE implemented at `ac35420`**
+(`tessel-swarm/tests/reconnect.rs` only: the rejection test's tripwire now poisons main in the
+step that logs `Submitted`, under the hub lock, then cuts the agent, so the order no longer
+depends on `work_ms` (now 0); the recommended cut-at-grant order was rejected because the agent
+syncs main again on reconnect (`on.rs:1048,1165`); `wait_for`/`wait_until` with a 150 s bound and
+a message naming the wait and the log tail replace 13 polling loops; `lease_expired` replaces
+three copies; assertions unchanged; the `reconnect` binary and the rejection test 10 of 10 each
+under 24 CPU hogs at load 100-330; late-poison mutant fails at 150 s with the new message; lane
+gate 195 passed, clippy and rustfmt clean). Orchestrator read the diff: sound; the reviewer is
+asked to verify the hub-lock claim and the blocking git call inside the tripwire. Opus review
+dispatched; workspace gate running (reusing the previous gate's build directory).
+Earlier: **As of:** 2026-10-12 16:18 EDT. **SWARM-RECONNECT-FLAKE reproduced and dispatched** as
 `lane-swarm-flake` (Sonnet, worktree `swarm-flake` from trunk `9b6af03`, fork and identity
 made): under 24 CPU hogs 1 of 8 runs of the refused test hung with no output; the fix orders
 the test by log events and bounds every wait in `tessel-swarm/tests/reconnect.rs`. Review, gate
