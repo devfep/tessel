@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 14:20 EDT. **New follow-up box, found by `lane-docs-core` while
+**As of:** 2026-10-12 14:22 EDT. **COORD-WAITER-BASE root cause found (read-only):** on a
+merge, `src/coordinator/merging.rs:351` sends `base_moved` to agents whose claims overlap the
+touched scopes, and only then does `:352` call `grant_unblocked_waiters`; a waiter granted in that
+step was not a holder when the notices were built, and `ServerMsg::Granted` (`src/protocol.rs:543`)
+carries no head. Smallest fix: swap the two lines (grant waiters first, then notify), so the new
+holder gets the existing `BaseMoved` message; no protocol change, one coordinator test, then a
+coordinator deploy. Proposed to Felix; not dispatched (live coordinator, eve of submission).
+SEC-HARDEN's two timed-out integration files rerun on the archived `3442343`: 23 of 23 passed.
+Earlier: **As of:** 2026-10-12 14:20 EDT. **New follow-up box, found by `lane-docs-core` while
 capturing the worked example (not yet investigated):** COORD-WAITER-BASE: an agent granted from
 the wait queue right after a merge still showed the pre-merge head (`71a4e8a`) in `tessel status`,
 and no `base_moved` reached it; `base_moved` goes to overlapping holders at merge time, and a
