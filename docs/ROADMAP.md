@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 19:05 EDT. **SWARM-4XX-HANGUP + SWARM-MACOS-TIMEOUT MERGED at `6ee08b7`**
+**As of:** 2026-10-11 20:55 EDT. **GATE-OUTPUT MERGED at `42bcdd9`, REVIEW-SENSITIVE at `d1ef2f1`**
+(trunk `d1ef2f1`, mirrored; both rebased by the steward with diffs identical to the reviewed
+`0a7e30c` and `e2e364a`; both held as signature changes and approved through
+`tools/orch-review.sh` after the Opus re-checks' Yes; orchestrator gate on the merged trunk: 1167
+passed with `curl` off the PATH, clippy 0; wasm 0 warnings on each lane commit; both lanes
+reclaimed). The lanes' pushes to their own forks were refused by the classifier ("Modify Shared
+Resources"); Felix pushed and submitted with the scratchpad `orch/land-two.sh` and
+`land-sensitive.sh`. Tessel denied the REVIEW-SENSITIVE lane a claim on
+`src/coordinator/merging.rs` while GATE-OUTPUT held it; the lane did not edit it. **PENDING FROM
+FELIX: deploy the coordinator** (the classifier refused the orchestrator, "Production Deploy"):
+the deploy worktree is at `d1ef2f1` with `build/worker` built there. Neither change is live until
+then. Next: REVIEW-NOTE (protocol change by Felix's hand-merge, then coordinator and CLI).
+Earlier: **As of:** 2026-10-11 19:05 EDT. **SWARM-4XX-HANGUP + SWARM-MACOS-TIMEOUT MERGED at `6ee08b7`**
 (claim 98, held as a signature change on `git::mentions_server_error`, approved through
 `tools/orch-review.sh` after the Opus re-check's Yes and the orchestrator's gate on an archived
 `6ee08b7`: workspace 1146 passed with `curl` off the PATH, clippy 0; the trunk fast-forwarded, so
@@ -1010,10 +1022,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   trunk tree equals the gated tree. NOT YET LIVE: needs both coordinators deployed. Compat date
   is 2026-09-01, so the
   explicit `ws.close()` requirement before 2026-04-07 does not apply.
-- [ ] **REVIEW-SENSITIVE** — from the UX review research (Oct 7): the coordinator calls
+- [x] **REVIEW-SENSITIVE** — from the UX review research (Oct 7): the coordinator calls
   `review_reasons(&touched, threatened, has_evidence, &[])` (`src/coordinator.rs` ~1286), so the
   sensitive-path hold reason can never fire; no list of sensitive paths is configured anywhere.
   Decide where the list lives (repo config read by the steward, or coordinator var) and wire it.
+  CLOSED 2026-10-11 at trunk `d1ef2f1` (`08baf13` + fix `e2e364a`; review "With fixes" then
+  "Yes"): a coordinator variable `SENSITIVE` (path prefixes; a directory ends in `/`), set in
+  `wrangler.toml` to `src/protocol.rs`, `src/identity.rs`, `tessel.toml`, `wrangler.toml`,
+  `tessel-steward/wrangler.jsonc`, `tessel-steward/src/access.ts`, empty for the swarm env; read
+  and applied on every load like `REVIEWERS`; a bad value fails closed (every real submission is
+  held). Per deployment, not per repo. Noted, not filed: race entries are not checked against the
+  list (true before). Needs the coordinator deploy.
 - [ ] **REVIEW-NOTE** — from the UX review research: a reviewer's note never reaches the agent (a
   test pins it: `the_review_note_never_reaches_a_reason_or_a_message`, merging.rs ~1249); a
   rejected agent sees only "rejected in review". Delivering the note is a protocol question
@@ -1275,7 +1294,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Pushes sleep on the blocking thread under `conn.keep_alive`, so heartbeats continue. 12 mutants
   caught. End-to-end tests use a `git` wrapper on PATH that scripts failures and spawns nothing
   but the real git. Not verified: a real 503 from Artifacts; the live push branch has no test.
-- [ ] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
+- [x] **GATE-OUTPUT** — from AX-MCP (Oct 8): a steward merge of `fc09fed`'s tree was refused with
   "tests failed (exit code 101)", then the same tree passed a Sandbox test-run and the next merge.
   The trial result keeps only the last step's stdout/stderr (the pnpm step), so the failing cargo
   test is unknown. Keep each step's output (or the failing step's tail) in the trial result and
@@ -1283,6 +1302,15 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Workaround found Oct 9: `POST /repos/<fork>/test-runs` runs the same gate on the fork's main
   and its json keeps the failing step's stdout, so the orchestrator can name the test
   (`scratchpad/orch/test-run.sh`).
+  CLOSED 2026-10-11 at trunk `42bcdd9` (`df51eaf` + fix `0a7e30c`; review "With fixes" then
+  "Yes"). The box was the coordinator's, not the steward's: the steward already returned the
+  failing command's output and `src/merge.rs` kept only the exit code. Now `StepExit` reads
+  `stdout`/`stderr` (serde default) and a tests-failed reason keeps its first sentence and adds
+  the failing tests (cargo `... FAILED`, `failures:`, `targets failed`; vitest `FAIL`), else the
+  last lines, at most 10 lines of 160 characters and 1,200 in all, controls stripped, as a JSON
+  array after the label "failing output (from the repo's tests, quoted)". Noted, not filed: a
+  budget timeout quotes the previous passing step's stdout under that label; U+2028 and bidi
+  characters are not stripped at the source (the CLI escapes them). Needs the coordinator deploy.
 - [x] **CLI-CARD** — Felix's UX decision (Oct 9; board 3 of https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6):
   every `tessel claim` denial is a decision card: what happened (the scope and the mode asked for),
   who holds it and why (the holder, their mode, their intent quoted as data with attribution, the
