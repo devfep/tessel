@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 16:40 EDT. **SWARM-RECONNECT-FLAKE implemented at `ac35420`**
+**As of:** 2026-10-12 16:56 EDT. **SWARM-RECONNECT-FLAKE READY TO LAND at `ac35420`: Opus
+"Yes"** (the hub-lock claim verified at `local.rs:127,392,502,641`: `Submitted` is logged under
+the hub mutex, `begin_merge` needs it, so the merge starts after the poison; no await under the
+mutex; four mutants each failed within the bound, the lost-race mutant at 152 s with the new
+message; reconnect binary 5 of 5 under 24 hogs at load up to 144). Orchestrator gate passed
+16:42. **Landing order for Felix:** 1. `bash .../orch/land-lane.sh swarm-flake ac35420 "..."`,
+which will be held (`edit-signature`: `first_waiter` changed, `connected_count` removed) and the
+orchestrator approves through `tools/orch-review.sh`; 2. DOCS-CORE `7c7131e` resubmit;
+3. COORD-WAITER-BASE `76786e2`. Each later one is rebased by the steward onto the one before.
+Earlier: **As of:** 2026-10-12 16:40 EDT. **SWARM-RECONNECT-FLAKE implemented at `ac35420`**
 (`tessel-swarm/tests/reconnect.rs` only: the rejection test's tripwire now poisons main in the
 step that logs `Submitted`, under the hub lock, then cuts the agent, so the order no longer
 depends on `work_ms` (now 0); the recommended cut-at-grant order was rejected because the agent
