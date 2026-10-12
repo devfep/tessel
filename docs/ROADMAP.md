@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 16:56 EDT. **SWARM-RECONNECT-FLAKE READY TO LAND at `ac35420`: Opus
+**As of:** 2026-10-12 17:04 EDT. **DOCS-CORE CLOSED at trunk `126b944`** (Felix resubmitted
+`7c7131e` at 16:58 before the test fix; the sandbox gate passed this time; rebased by the steward,
+the three files identical; mirrored; daemon stopped). Docs tier 1 is on the trunk: README front
+door, how-it-works, configuration reference, coordinator reference, SKILL fixes. **Still to
+land:** SWARM-RECONNECT-FLAKE `ac35420` (held on submit for the signature change; the
+orchestrator approves), then COORD-WAITER-BASE `76786e2`. Then the GitHub `main` PR from
+`artifacts-trunk`, and Felix's coordinator deploy after the recordings.
+Earlier: **As of:** 2026-10-12 16:56 EDT. **SWARM-RECONNECT-FLAKE READY TO LAND at `ac35420`: Opus
 "Yes"** (the hub-lock claim verified at `local.rs:127,392,502,641`: `Submitted` is logged under
 the hub mutex, `begin_merge` needs it, so the merge starts after the poison; no await under the
 mutex; four mutants each failed within the bound, the lost-race mutant at 152 s with the new
@@ -1568,6 +1575,8 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   test `a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_claim_released`
   failed on the rebased commit (docs-only change: a flake, see SWARM-RECONNECT-FLAKE). Claim
   106 is active again with the same fence; resubmit of the same `7c7131e`.
+  Resubmitted by Felix 16:58; CLOSED 2026-10-12 17:02 at trunk `126b944` (rebased by the
+  steward, the three files identical; mirrored to GitHub `artifacts-trunk`; daemon stopped).
 - [ ] **SWARM-RECONNECT-FLAKE** — seen twice on 2026-10-12: the sandbox gate (standard-4) failed
   the docs-only DOCS-CORE merge on `tessel-swarm/tests/reconnect.rs`
   `a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_claim_released`; and
