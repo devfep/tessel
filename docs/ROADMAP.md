@@ -5,7 +5,20 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 20:55 EDT. **GATE-OUTPUT MERGED at `42bcdd9`, REVIEW-SENSITIVE at `d1ef2f1`**
+**As of:** 2026-10-11 21:35 EDT. **REVIEW-NOTE READY FOR FELIX'S ADMIN MERGE at `f9a2f0b`**
+(`4673a19` + `0cdf85c` + `f9a2f0b` on `task-review-note` from `d1ef2f1`; 8 files incl.
+`src/protocol.rs`: two `#[serde(default)]` optional fields `reviewer`, `note` on
+`ServerMsg::SubmitRejected`, invariant 13 and the `PROTOCOL_VERSION` doc rewritten to the
+amended rule, no bump. Opus review "Yes" on `4673a19`, re-check "Yes" on `f9a2f0b` (7 + 1
+mutants killed; an old CLI's exhaustive pattern decodes the new message, probed). The
+orchestrator's gate found what both the lane and the review missed: workspace clippy failed on
+`notice_text` at 108 lines; fixed by `0cdf85c`. Gate on archived `f9a2f0b`: 1175 passed with
+`curl` off the PATH, clippy 0, wasm 0 warnings.) **PENDING FROM FELIX, in this order:** (1) the
+admin merge, scratchpad `orch/admin-merge-review-note.sh f9a2f0b` (scopes from `git diff
+--name-status`: each modified file edit_signature + create); (2) the orchestrator moves the
+deploy worktree to the new trunk and rebuilds the bundle; (3) one coordinator deploy covering
+GATE-OUTPUT, REVIEW-SENSITIVE and REVIEW-NOTE.
+Earlier: **As of:** 2026-10-11 20:55 EDT. **GATE-OUTPUT MERGED at `42bcdd9`, REVIEW-SENSITIVE at `d1ef2f1`**
 (trunk `d1ef2f1`, mirrored; both rebased by the steward with diffs identical to the reviewed
 `0a7e30c` and `e2e364a`; both held as signature changes and approved through
 `tools/orch-review.sh` after the Opus re-checks' Yes; orchestrator gate on the merged trunk: 1167
