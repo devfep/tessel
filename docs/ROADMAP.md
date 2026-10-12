@@ -5,7 +5,20 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 11:37 EDT. **HF-DRAFT DONE, checked by the orchestrator:** HyperFrames
+**As of:** 2026-10-12 12:41 EDT. **E1-E6 ACCEPTED** (`lane-hf-evidence`, Opus): six
+renders in the scratchpad `video-build/out/`, page text generated from `git show d5ef265:` and a
+build that stops on any label/source mismatch; the orchestrator read the contact sheet against
+the `ab-wait` table (14, 40, 26, 29, 14083 ms, 837059 ms, 20, 0) and the `ab-shadow` README
+sentence (20 verified, 9 false alarms, 3 inconclusive, 20 of 29): all match; E4 dims "Landed 11"
+and never labels it. E1 gate passed 11:57. **Font finding, confirmed in the source**
+(`deterministicFonts.ts` 811-815): the HyperFrames compiler asks Google Fonts first for every
+named family, with the page text in the URL, and only then embeds the system font. The draft
+and the first eight cards made that request (public card text only). Rule now: only families
+declared by our own `@font-face src: local(...)`; check = no compiler font lines in the log.
+`lane-hf-cards` re-rendering the eight cards under that rule (and centring the not-shipped
+list); `lane-hf-figures` told before its renders. Anatomy ruling: drop the hint corner and the
+granted/waiting/denied readout; keep fence digits, log lines, lever badges, legend, caption.
+Earlier: **As of:** 2026-10-12 11:37 EDT. **HF-DRAFT DONE, checked by the orchestrator:** HyperFrames
 `0.8.145` renders on this Mac (300 frames in 20.5 s with 2 workers; ffprobe 1920x1080, 30 fps,
 10.000 s, no audio; repeat renders byte-identical; no process left). Two findings for every
 composition: the compiler swaps Georgia/Palatino for a Google Fonts fetch (stack is now "New
