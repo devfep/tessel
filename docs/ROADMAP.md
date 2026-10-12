@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 12:41 EDT. **E1-E6 ACCEPTED** (`lane-hf-evidence`, Opus): six
+**As of:** 2026-10-12 13:05 EDT. **ALL 16 GRAPHICS DONE, checked by the orchestrator,
+well before the 18:00 gate.** 8 cards (re-rendered with New York embedded from the system font
+files; zero compiler font lines), E1-E6, `fig-arch` and `fig-anatomy` (Anatomy ruling applied;
+the lever 1/2 overlap at release matches the source page's own tour frames 10-13). All
+1920×1080, 30 fps, no audio stream (checked on all 16), each rendered twice with identical
+frames where checked. Copied out of `/tmp` to `.claude/handoff-2026-10-12/video/build/` (`out/`
+renders, `src/` generators, `ASSEMBLY.md` = file-to-timecode sheet for the editor). Lanes
+`lane-hf-draft`, `-cards`, `-evidence`, `-figures` closed. **Waiting on Felix:** figure and form
+v3 changes, the video tag call, the live recordings.
+Earlier: **As of:** 2026-10-12 12:41 EDT. **E1-E6 ACCEPTED** (`lane-hf-evidence`, Opus): six
 renders in the scratchpad `video-build/out/`, page text generated from `git show d5ef265:` and a
 build that stops on any label/source mismatch; the orchestrator read the contact sheet against
 the `ab-wait` table (14, 40, 26, 29, 14083 ms, 837059 ms, 20, 0) and the `ab-shadow` README
