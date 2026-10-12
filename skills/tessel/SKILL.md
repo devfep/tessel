@@ -18,11 +18,14 @@ Once per worktree, `tessel init` does everything below in one rerunnable step:
 tessel init --coordinator <wss://…> --repo <name> --agent <name> [--steward <https://…>]
 ```
 
-A flag wins over `.tessel/config.toml`, which wins over the `TESSEL_*` variables. The token is kept
-from the file, else taken from `TESSEL_TOKEN`, else minted at `--steward` with
-`STEWARD_ADMIN_TOKEN`. It writes `.tessel/config.toml` (mode 0600), keeps `.tessel/` out of git
-through `.git/info/exclude`, and installs the Claude Code and git hooks. It never prints the token.
-Then `tessel start "<one line: what this work is for>"`.
+For `init`, a flag wins over `.tessel/config.toml`, which wins over the `TESSEL_*` variables; every
+other command reads the file, then the variables. Your token is minted by the operator, who gives
+you `TESSEL_TOKEN` and nothing else: `init` keeps the token already in the file, else takes
+`TESSEL_TOKEN`. Do not hold `STEWARD_ADMIN_TOKEN`. It mints identities for any agent, reviewers
+included, so only the operator uses it, for example by running `tessel init --steward <https://…>`
+in your worktree with the variable set for that one command. `init` writes `.tessel/config.toml`
+(mode 0600), keeps `.tessel/` out of git through `.git/info/exclude`, and installs the Claude Code
+and git hooks. It never prints the token. Then `tessel start "<one line: what this work is for>"`.
 
 Or by hand. Set `TESSEL_COORDINATOR` (the `ws://` or `wss://` base URL), `TESSEL_REPO`,
 `TESSEL_AGENT` (letters, digits, `.`, `_`, `-`; start with a letter or digit) and `TESSEL_TOKEN`,
@@ -103,9 +106,17 @@ no leading `/`, no `.` or `..` segments.
 | `edit-signature` | you change signatures, rename or delete; this breaks dependents |
 | `create` | you add new symbols |
 
-`depend` coexists with `edit-body` and `create` but conflicts with `edit-signature`; two
-`edit-body` claims on one scope conflict. `edit-signature` covers `edit-body`; only `create`
-covers `create`.
+Two claims on overlapping scopes conflict where this table says so (it is symmetric):
+
+| | `depend` | `edit-body` | `edit-signature` | `create` |
+|---|---|---|---|---|
+| `depend` | ok | ok | conflict | ok |
+| `edit-body` | ok | conflict | conflict | conflict |
+| `edit-signature` | conflict | conflict | conflict | conflict |
+| `create` | ok | conflict | conflict | conflict |
+
+So `create` conflicts with `create`, `edit-body` and `edit-signature`: two agents adding to the same
+scope are refused. `edit-signature` covers `edit-body`; only `create` covers `create`.
 
 ## What the hook claims
 
@@ -138,13 +149,16 @@ unsupported file. If you claim by hand, add `create` when you add a symbol.
 ## Submitting
 
 ```
-git push <your fork> HEAD       # first: the commit must be on your fork <repo>--<agent>
+git push <your fork> HEAD:main  # first: the commit must be on your fork <repo>--<agent>'s main
 tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
               [--rejected "<approach>::<reason>"] [--claim <id>] [--commit <sha>]
 ```
 
-- **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. At least
-  one `--evidence` is required (repeatable): without it the work would be held for review.
+- **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. The steward
+  fetches only the fork's default branch (`main`), so push to `main` whatever your local branch is
+  called. At least one `--evidence` is required (repeatable): without it the work would be held for
+  review. Evidence is self-reported: any non-empty text satisfies the rule and nothing checks that
+  the tests ran, so write only what you ran and saw.
 - **One claim must cover everything the commit changed.** The default is your only unsubmitted
   claim; else `--claim <id>`. `--commit` defaults to `HEAD`. The diff is `git diff
   <base>...<commit>`, `<base>` being the coordinator's head if it is `<commit>` or in its history
@@ -164,17 +178,17 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
 
 ## For reviewers
 
-Only agents the coordinator lists as reviewers can decide a held submission:
+Only agents the coordinator lists as reviewers can decide a held submission, and never their own:
 
 ```
 tessel review <claim-id> --approve|--reject [--note "<reason>"]     # note: at most 1024 bytes
 ```
 
 No daemon or claim is needed. Exit 0 only when the coordinator's event log holds the decision.
-Exit 8: the coordinator refused (not a reviewer, claim not awaiting review). Exit 9: no refusal,
-but the decision is not in the log; run the review again: if it landed, the retry is refused with
-`not_awaiting_review`. A confirmation can also be another reviewer's decision on the same claim, because
-`ReviewDecided` names no reviewer.
+Exit 8: the coordinator refused (not a reviewer, your own submission, claim not awaiting review).
+Exit 9: no refusal, but the decision is not in the log; run the review again: if it landed, the
+retry is refused with `not_awaiting_review`. A confirmation can also be another reviewer's decision
+on the same claim, because the CLI matches the claim and the verdict, not who decided.
 
 ## Reading a denial
 
