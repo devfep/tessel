@@ -183,6 +183,12 @@ async function call(path: string, options: Options = {}, environment: Env = env(
   });
 }
 
+/** A diff request as the review page sends it: a same-origin browser fetch. */
+function getDiff(path: string, options: Options = {}) {
+  const headers = { "Sec-Fetch-Site": "same-origin", ...options.headers };
+  return call(path, { ...options, headers });
+}
+
 async function decision(
   approve: boolean,
   overrides: Record<string, unknown> = {},
@@ -292,19 +298,19 @@ describe("the page", () => {
 
 describe("the diff", () => {
   it("runs the diff of the held claim's commit in the agent's fork, only when asked", async () => {
-    const response = await call("/review/demo/7/diff");
+    const response = await getDiff("/review/demo/7/diff");
     expect(response.status).toBe(200);
     expect(diffCalls).toEqual([["demo", "demo--a1", COMMIT]]);
   });
 
   it("refuses a claim that is not held, and starts no sandbox", async () => {
-    expect((await call("/review/demo/8/diff")).status).toBe(404);
+    expect((await getDiff("/review/demo/8/diff")).status).toBe(404);
     expect(diffCalls).toEqual([]);
   });
 
   it("answers an error, never an empty diff, when the sandbox fails", async () => {
     diffImpl = () => Promise.reject(new Error("container did not start art_vSECRET123"));
-    const response = await call("/review/demo/7/diff");
+    const response = await getDiff("/review/demo/7/diff");
     const text = await response.text();
     expect(response.status).toBe(502);
     expect(text).toContain("container did not start");
@@ -320,8 +326,49 @@ describe("the diff", () => {
         truncated: true,
         captureOverflow: true,
       });
-    const body = (await (await call("/review/demo/7/diff")).json()) as Record<string, unknown>;
+    const body = (await (await getDiff("/review/demo/7/diff")).json()) as Record<string, unknown>;
     expect(body).toMatchObject({ truncated: true, captureOverflow: true });
+  });
+
+  it.each(["cross-site", "same-site", "none"])(
+    "refuses Sec-Fetch-Site %s and starts no sandbox",
+    async (site) => {
+      const response = await call("/review/demo/7/diff", {
+        headers: { "Sec-Fetch-Site": site },
+      });
+      expect(response.status).toBe(403);
+      expect(await response.text()).toContain(site);
+      expect(diffCalls).toEqual([]);
+      expect(coordinatorCalls).toBe(0);
+    },
+  );
+
+  it("refuses a request that proves nothing about where it came from", async () => {
+    const response = await call("/review/demo/7/diff");
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("no same-origin proof");
+    expect(diffCalls).toEqual([]);
+    expect(coordinatorCalls).toBe(0);
+  });
+
+  it("refuses another Origin when Sec-Fetch-Site is absent, and accepts the same one", async () => {
+    const forged = await call("/review/demo/7/diff", {
+      headers: { Origin: "https://evil.example" },
+    });
+    expect(forged.status).toBe(403);
+    expect(diffCalls).toEqual([]);
+    const ok = await call("/review/demo/7/diff", { headers: { Origin: ORIGIN } });
+    expect(ok.status).toBe(200);
+    expect(diffCalls).toEqual([["demo", "demo--a1", COMMIT]]);
+  });
+
+  it("checks where the request came from before who is asking", async () => {
+    const response = await call("/review/demo/7/diff", {
+      email: "viewer@example.com",
+      headers: { "Sec-Fetch-Site": "cross-site" },
+    });
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("cross-site request refused");
   });
 
   it("is GET only", async () => {
@@ -575,7 +622,7 @@ describe("a page left open", () => {
 describe("a viewer who is not a reviewer", () => {
   it("cannot start a diff, and sees no diff button", async () => {
     const viewer = { email: "viewer@example.com" };
-    expect((await call("/review/demo/7/diff", viewer)).status).toBe(403);
+    expect((await getDiff("/review/demo/7/diff", viewer)).status).toBe(403);
     expect(diffCalls).toEqual([]);
     const html = await (await call("/review/demo", viewer)).text();
     expect(html).not.toContain('<button data-action="diff">');
@@ -603,7 +650,7 @@ async function pageToken(): Promise<string> {
 }
 
 async function diffToken(options: Options = {}): Promise<string | undefined> {
-  const body = (await (await call("/review/demo/7/diff", options)).json()) as {
+  const body = (await (await getDiff("/review/demo/7/diff", options)).json()) as {
     approveToken?: string;
   };
   return body.approveToken;
@@ -662,14 +709,14 @@ describe("the approve token comes with the diff", () => {
   });
 
   it("gives a viewer who is not a reviewer no token", async () => {
-    const response = await call("/review/demo/7/diff", { email: "viewer@example.com" });
+    const response = await getDiff("/review/demo/7/diff", { email: "viewer@example.com" });
     expect(response.status).toBe(403);
     expect(await response.text()).not.toContain("approveToken");
   });
 
   it("gives no token when the diff failed, so a failed diff cannot unlock approval", async () => {
     diffImpl = () => Promise.resolve({ outcome: "error", reason: "boom" });
-    const response = await call("/review/demo/7/diff");
+    const response = await getDiff("/review/demo/7/diff");
     expect(response.status).toBe(502);
     expect(await response.text()).not.toContain("approveToken");
   });

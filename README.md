@@ -34,8 +34,15 @@ Mint a token with the steward's admin route (the response has `token`):
     curl -X POST -H "Authorization: Bearer $STEWARD_ADMIN_TOKEN" \
       https://<steward>/repos/demo/agents/a1/identity
 
-`tessel init --steward <url>` makes this call for you and writes the token to
-`.tessel/config.toml` when `STEWARD_ADMIN_TOKEN` is set in the environment.
+The admin token stays with the human operator. Run this call, and the fork and write-token calls,
+from the operator's own shell, and give each agent only its own identity token (as `TESSEL_TOKEN`
+or in its `.tessel/config.toml`). An agent that holds the admin token can mint a reviewer identity
+and approve its own held change.
+
+`tessel init --steward <url>` makes the identity call for you when `STEWARD_ADMIN_TOKEN` is set in
+the environment of that command. Run it yourself, in the agent's worktree, with the variable set
+for that one command, then start the agent without it; or set `TESSEL_TOKEN` to a token you minted
+and `tessel init` writes it to `.tessel/config.toml`.
 
 ## Run locally
     npx wrangler dev

@@ -57,7 +57,7 @@ function json(status: number, body: unknown): Response {
 }
 
 /**
- * Why a state-changing request is refused as possibly forged, or `undefined` when it came from
+ * Why a request that changes state or starts a sandbox is refused as possibly forged, or `undefined` when it came from
  * this site. A browser always sends `Sec-Fetch-Site`; one that does not must send a matching
  * `Origin`. A request with neither is refused.
  */
@@ -106,10 +106,15 @@ async function receipt(env: ReviewEnv, route: { repo: string; claim: number }, d
 
 async function diff(
   env: ReviewEnv,
+  request: Request,
   route: { repo: string; claim: number },
   session: Session,
   deps: ReviewDeps,
 ) {
+  const forged = forgeryReason(request);
+  if (forged !== undefined) {
+    return json(403, { error: forged });
+  }
   const { repo, claim } = route;
   if (session.reviewer === undefined) {
     return json(403, {
@@ -289,7 +294,7 @@ function dispatch(
     case "page":
       return page(env, route.repo, session, deps);
     case "diff":
-      return diff(env, route, session, deps);
+      return diff(env, request, route, session, deps);
     case "receipt":
       return receipt(env, route, deps);
     case "decision":
@@ -304,9 +309,9 @@ function dispatch(
  * `POST /review/<repo>/<claim>/decision` (approve or reject). Every path first
  * passes the Cloudflare Access check: 503 when sign-in is not configured, 401 without a valid
  * token, 403 for an email that is not a listed viewer. The diff, which starts a sandbox, and
- * deciding also need a `REVIEWER_EMAILS` entry for the email; deciding also needs a same-origin
- * request and a token for the commit shown and the decision taken: the page's for a rejection,
- * the diff's for an approval.
+ * deciding also need a same-origin request and a `REVIEWER_EMAILS` entry for the email; deciding
+ * also needs a token for the commit shown and the decision taken: the page's for a rejection, the
+ * diff's for an approval.
  *
  * Known limit: the page replays the whole log from seq 0 on every load under a 10 s timeout, so a
  * very large log will time out (502); a later change should fold from a summary instead.

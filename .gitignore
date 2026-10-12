@@ -3,10 +3,14 @@
 node_modules/
 .wrangler/
 .dev.vars
+.dev.vars.*
 .env
+.env.*
 *.log
+*.pem
+*.key
 .DS_Store
-.claude/settings.local.json
 worker-configuration.d.ts
-.claude/worktrees/
+.claude/
+/AGENTS.md
 .tessel/
