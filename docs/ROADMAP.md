@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 18:45 EDT. **SWARM-RECONNECT-FLAKE CLOSED at trunk `3cedad8`** (Felix
+**As of:** 2026-10-12 18:50 EDT. **GITHUB `main` IS CURRENT: Felix merged pull request #3** (merge
+commit `662e25d` at 18:43; `main`'s tree `26f7797` equals the trunk's at `3cedad8`;
+`artifacts-trunk` kept as the mirror branch). Everything landed today is on both trunks. **Left
+with Felix:** the steward deploy for SEC-HARDEN after the recordings; figure/form v3, video tag,
+recordings; Oct 13 form final, repo public, 2FA, submission by hand. Orchestrator idle; nothing runs.
+Earlier: **As of:** 2026-10-12 18:45 EDT. **SWARM-RECONNECT-FLAKE CLOSED at trunk `3cedad8`** (Felix
 landed `ac35420` 18:34; held for the signature change; orchestrator approved claim 108 at 18:36;
 steward merged 18:38, rebased onto `9ab793a`, the file identical; mirrored to GitHub
 `artifacts-trunk`; both daemons stopped). **COORD-WAITER-BASE PROVED LIVE** on the deployed
