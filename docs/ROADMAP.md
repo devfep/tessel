@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 15:30 EDT. **DOCS-REF CLOSED at trunk `9b6af03`** (merged 15:29, no hold,
+**As of:** 2026-10-12 15:58 EDT. **COORD-WAITER-BASE workspace gate on archived `76786e2`
+(curl off the PATH): clippy `--workspace` 0, every test binary passed except two runs under
+load average 100+: `on_local` had one failure
+(`a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive`, the filed load flake file)
+and the swarm `reconnect` binary sat idle for 25 minutes and was killed by the orchestrator.
+Rerun alone (full logs in the session scratchpad `gate-coord-waiter/rerun/`): the queue-wait
+test passed (1 of 1, 7 s); `reconnect` passed 20 of 20 in 23 s, including
+`a_shadow_agent_cut_before_it_submitted_goes_on_with_the_same_claim`, which the killed run had
+listed as failed. Both results recorded, as the flake rule asks. Wasm build running; then the
+local a1/a2 replay; then Felix lands. DOCS-CORE `7c7131e` submitted by Felix 15:52, in the
+sandbox (watcher running).
+Earlier: **As of:** 2026-10-12 15:30 EDT. **DOCS-REF CLOSED at trunk `9b6af03`** (merged 15:29, no hold,
 mirrored; its daemon stopped). Trunk: `9b6af03`. **Pending from Felix:** the DOCS-CORE landing
 (`7c7131e`, worktree `docs-core`, based on `3442343`: the steward rebases) after he reads
 `docs/how-tessel-works.md` (opened for him 15:27). The waiter fix's workspace gate is running
