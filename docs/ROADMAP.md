@@ -5,9 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 16:06 EDT. **DOCS-CORE `7c7131e` REFUSED by the sandbox gate** (swarm
-`reconnect` test failed on a docs-only commit: a flake, box SWARM-RECONNECT-FLAKE filed); claim
-106 active again; Felix resubmits the same commit with the landing script (the push is a no-op).
+**As of:** 2026-10-12 16:10 EDT. **DOCS-CORE `7c7131e` REFUSED by the sandbox gate** (swarm
+`reconnect` test failed on a commit that touches only `README.md`, `docs/how-tessel-works.md`
+and `docs/reference/coordinator.md`, with the swarm, core and CLI code identical to the trunk).
+Investigated: the test races an 800 ms work time against a 300 ms-delayed git commit; it
+passed 5 of 5 on the trunk code locally; box SWARM-RECONNECT-FLAKE holds the mechanism and the
+fix. Claim 106 is active again; Felix resubmits the same commit with the landing script (the
+push is a no-op).
 COORD-WAITER-BASE ready to land, below; its sandbox run may hit the same flake: resubmit then.
 Earlier: **As of:** 2026-10-12 16:03 EDT. **COORD-WAITER-BASE READY TO LAND at `76786e2`.** Wasm build
 of the gated tree: exit 0, no warnings. Local replay of the a1/a2 wait scenario against the fixed
@@ -1540,8 +1544,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   `a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_claim_released`; and
   on the Mac under load average 100+ the `reconnect` binary sat idle for 25 minutes inside the
   workspace gate (killed), then passed 20 of 20 in 23 s alone. The tests cut sockets and poll the
-  log in unbounded `loop { sleep(5ms) }` waits; a bound and a load-relative timing rule as in
-  SWARM-ONLOCAL-LOAD. Post-contest unless it refuses a landing a third time.
+  log in unbounded `loop { sleep(5ms) }` waits. The refused test's race (read 16:08): the agent
+  works 800 ms after its grant; the test poisons main 300 ms after the grant with a git commit
+  (`poison`, reconnect.rs:880) and expects the submission to be rejected; when that commit takes
+  over 500 ms (a cold standard-4 container running the whole workspace's test binaries at once)
+  the submission merges first and `Resolution::Merged` fails the `Rejected` assertion. Evidence
+  it is timing, not the change: DOCS-CORE touches only `README.md` and `docs/`; `tessel-swarm`,
+  `src` and `tessel-cli` are identical between `f9a2f0b` and the trunk `9b6af03`; the test passed
+  5 of 5 on the trunk code locally at 16:03 (1.6-1.9 s each, logs in the handoff
+  `coord-waiter/rerun/trunk-rejection-*.log`). Fix: make the work time relative to the poison
+  (gate the agent's submit on the poison having landed in the log, as the test already does for
+  the cut), as SWARM-ONLOCAL-LOAD did. Post-contest unless it refuses a landing a third time.
 - [x] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
   submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
