@@ -5,7 +5,21 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 19:21 EDT. **FOURTH LANE: EVIDENCE-REPO dispatched** (`lane-evidence-repo`,
+**As of:** 2026-10-12 19:50 EDT. **COORD-GRANT-HEAD READY TO LAND at `780cd2f`** (lane
+`lane-grant-head`; `head: Option<CommitId>` with `#[serde(default)]` on `Granted`, set in
+`place_grant`, the amend reply and the race entry; the daemon adopts and persists it before
+answering; four real-binary tests in the new `tests/grant_head.rs` because race-cli holds
+`tests/cli.rs`; coordinator 525, CLI 235 unit + 10 binaries; five implementer mutants and four
+reviewer mutants killed). Opus review "Yes" (one low note: the daemon's `Granted` arm now uses
+`..`, so a future field no longer forces a daemon decision; left as is). Orchestrator workspace
+gate on the archived copy with curl off the PATH: 20 binaries green, clippy 0, wasm build exit 0,
+done 19:43. **Landing (Felix):** `land-lane.sh grant-head 780cd2f "..."`, held for review because
+`src/protocol.rs` is sensitive; the orchestrator approves through `tools/orch-review.sh`. Needs
+a coordinator deploy after the merge. The other lanes: race-cli still holds its wide claim 110
+(`commands.rs` create, the skill, `tests/cli.rs`) and has not answered two requests to narrow it;
+cli-notes finishes everything else and takes `commands.rs::submit` after race-cli lands;
+evidence-repo has 17 files in progress.
+Earlier: **As of:** 2026-10-12 19:21 EDT. **FOURTH LANE: EVIDENCE-REPO dispatched** (`lane-evidence-repo`,
 Opus, from `3cedad8`) on Felix's call to take up PLAN item 8's archive for the contest's "how
 do you track why" question; CLI-TRANSCRIPT filed to follow CLI-NOTES. The three earlier lanes:
 grant-head has its code done (protocol field, four grant paths, daemon, fixture, reference) and
@@ -1637,6 +1651,8 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   review). Tests on both sides; three mutants; `docs/reference/coordinator.md` updated.
   Dispatched 2026-10-12 18:56 as `lane-grant-head` (Sonnet, worktree `grant-head` from
   `3cedad8`; brief in the handoff `orch/brief-grant-head.md`). Needs a coordinator deploy.
+  Committed `780cd2f` 19:30 (lane gate green; five mutants); Opus review "Yes" 19:46; workspace
+  gate and wasm build green 19:43. READY TO LAND.
 - [ ] **CLI-RACE** — from the video script's "not shipped" list (decision 2): the coordinator decides
   races end to end (`src/coordinator/racing.rs`: entries tried by the verification queue, the
   winner promoted and merged, losers rejected) but the CLI has no race command. Ship `tessel
