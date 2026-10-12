@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 15:58 EDT. **COORD-WAITER-BASE workspace gate on archived `76786e2`
+**As of:** 2026-10-12 16:03 EDT. **COORD-WAITER-BASE READY TO LAND at `76786e2`.** Wasm build
+of the gated tree: exit 0, no warnings. Local replay of the a1/a2 wait scenario against the fixed
+core (the docs-demo-server rebuilt from the lane worktree, the trunk CLI): after a1's merge, a2's
+inbox shows `granted_after_wait` (claim 2) then `base_moved` to `f65e9ff` affecting
+`src/pricing.ts::applyDiscount`, and a2's `tessel status` head is `f65e9ff` (before the fix it
+stayed at `71a4e8a`). Transcript in the handoff `coord-waiter/scenario-transcript-fixed.txt`,
+with the report, verdict, gate log and reruns. **Pending from Felix:** `bash
+/Users/felixpatawah/repos/tessel/.claude/handoff-2026-10-12/orch/land-lane.sh coord-waiter
+76786e2 "<evidence>"` (no sensitive path: merges without a hold), then the coordinator deploy
+after the recordings (the deploy worktree moved to the new trunk, `worker-build --release`, then
+`npx wrangler deploy`). DOCS-CORE `7c7131e` still in the sandbox.
+Earlier: **As of:** 2026-10-12 15:58 EDT. **COORD-WAITER-BASE workspace gate on archived `76786e2`
 (curl off the PATH): clippy `--workspace` 0, every test binary passed except two runs under
 load average 100+: `on_local` had one failure
 (`a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive`, the filed load flake file)
