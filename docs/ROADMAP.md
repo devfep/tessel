@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 13:19 EDT. **Felix: "yes" to SEC-HARDEN, ignoring `AGENTS.md`,
+**As of:** 2026-10-12 13:47 EDT. **SEC-HARDEN READY TO LAND at `3442343`** (`3fb426f` +
+`3442343` from `f9a2f0b`): Opus review "Yes" (own mutants 3 of 4 killed, the survivor is the
+untested test-runner redaction the lane reported), orchestrator steward gate on the archived
+commit: install, typecheck, oxlint, oxfmt 0, vitest 916 passed. `max_instances` dropped: the
+`durable_object` scheduling policy rejects it (wrangler dry-run fails); the `/diff` forgery
+check closes the cross-site container start. `COORDINATOR_TOKEN` deleted by Felix (no Worker
+holds it now). **Pending from Felix:** `bash <scratchpad>/orch/land-sec-harden.sh` (copy in the
+handoff `orch/`), then a steward deploy after the live recordings. **Docs:** three research
+lanes done; plan in `.claude/handoff-2026-10-12/DOCS-PLAN.md` (tier 1 before submission: README
+front door, how-it-works, configuration reference, SKILL fixes, form, GitHub `main` brought up
+to the trunk: it is 30 commits behind `artifacts-trunk`). Awaiting Felix's go on tier 1.
+Earlier: **As of:** 2026-10-12 13:19 EDT. **Felix: "yes" to SEC-HARDEN, ignoring `AGENTS.md`,
 `max_instances = 2`, and deleting `COORDINATOR_TOKEN` himself.** Dispatched `lane-sec-harden`
 (Sonnet) in worktree `sec-harden` from trunk `f9a2f0b`, fork `tessel-dogfood--lane-sec-harden`
 created, identity minted: `.gitignore` (M1, L4), README admin-token instructions (M2),
