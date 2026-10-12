@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 11:35 EDT. **RESUMED; orchestrator on (Felix: "resume").** Code state
+**As of:** 2026-10-12 11:37 EDT. **HF-DRAFT DONE, checked by the orchestrator:** HyperFrames
+`0.8.145` renders on this Mac (300 frames in 20.5 s with 2 workers; ffprobe 1920x1080, 30 fps,
+10.000 s, no audio; repeat renders byte-identical; no process left). Two findings for every
+composition: the compiler swaps Georgia/Palatino for a Google Fonts fetch (stack is now "New
+York", "Iowan Old Style", serif; compile logs are checked for "Fetched"), and a timeline-free
+composition needs `data-no-timeline` or it waits 45 s. Dispatched `lane-hf-cards` (Sonnet: the
+eight T1/T4 cards) and `lane-hf-evidence` (Opus: E1-E6 from the evidence files at `d5ef265`,
+every label checked against its source cell; E1 gate 17:30). Still to dispatch: the two figures
+as `hf-seek` compositions. Captions (scene 4) and flash cuts stay in the editor.
+Earlier: **As of:** 2026-10-12 11:35 EDT. **RESUMED; orchestrator on (Felix: "resume").** Code state
 unchanged: trunk `f9a2f0b`, coordinator `c49a44ca` live. Dispatched `lane-hf-draft` (Sonnet,
 video only, no repo change): install HyperFrames `0.8.145` engine-only in the session scratchpad
 under the vetting conditions, render a 10 s hook-card draft at 1920×1080/30 fps, report the wall
