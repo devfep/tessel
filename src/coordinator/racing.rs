@@ -414,6 +414,7 @@ impl Coordinator {
             expires_at_ms,
             race: Some(race_id),
             at_risk,
+            head: self.state.head.clone(),
         };
         vec![granted, Effect::Reply(reply)]
     }
@@ -1228,10 +1229,12 @@ mod tests {
             expires_at_ms,
             race: granted,
             at_risk,
+            head,
         }] = replies(&effects)[..]
         else {
             panic!("expected Granted, got {effects:?}");
         };
+        assert_eq!(head.as_ref().map(|head| head.0.as_str()), Some(MAIN));
         assert_eq!(*req, RequestId(2));
         assert_eq!(*granted, Some(race));
         assert_eq!(*expires_at_ms, NOW + 5 + LEASE);

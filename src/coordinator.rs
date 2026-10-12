@@ -967,6 +967,7 @@ impl Coordinator {
             expires_at_ms,
             race: None,
             at_risk,
+            head: self.state.head.clone(),
         };
         vec![amended, Effect::Reply(reply)]
     }
@@ -1183,6 +1184,7 @@ impl Coordinator {
             expires_at_ms,
             race: None,
             at_risk,
+            head: self.state.head.clone(),
         };
         (granted, msg)
     }
@@ -3081,6 +3083,132 @@ mod tests {
         assert_eq!(c.next_expiry_ms(), Some(NOW + 50 + LEASE));
     }
 
+    fn head_of(msg: &ServerMsg) -> Option<&str> {
+        let ServerMsg::Granted { head, .. } = msg else {
+            panic!("expected Granted, got {msg:?}");
+        };
+        head.as_ref().map(|head| head.0.as_str())
+    }
+
+    fn notices_to<'a>(effects: &'a [Effect], who: &str) -> Vec<&'a ServerMsg> {
+        let mut out = Vec::new();
+        for effect in effects {
+            if let Effect::Notify { agent: to, msg } = effect {
+                if *to == agent(who) {
+                    out.push(msg);
+                }
+            }
+        }
+        out
+    }
+
+    /// `holder` claims `held`, submits `touched` and has it dispatched; `waiter` queues for
+    /// `wanted`. The steward then reports a merge to `MERGED_HEAD`.
+    fn merge_under_a_waiter(
+        held: ScopeClaim,
+        touched: ScopeClaim,
+        wanted: ScopeClaim,
+    ) -> (Coordinator, Vec<Effect>) {
+        let mut c = coordinator();
+        hello(&mut c, "holder", "abc", PROTOCOL_VERSION);
+        let (claim, fence) = grant(&mut c, "holder", vec![held]);
+        let submitted = submit(&mut c, "holder", claim, fence, vec![touched]);
+        accepted_position(&submitted, claim);
+        assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(claim));
+        assert_queued(&wait_for(&mut c, "waiter", 4, vec![wanted]), 4, 1);
+        let outcome = crate::merge::MergeOutcome::Merged {
+            base: CommitId("abc".into()),
+            head: CommitId(MERGED_HEAD.into()),
+        };
+        let effects = c.merge_outcome(claim, &outcome, NOW + 1);
+        (c, effects)
+    }
+
+    const MERGED_HEAD: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    #[test]
+    fn a_direct_grant_carries_the_head_the_coordinator_holds() {
+        let mut c = coordinator();
+        hello(&mut c, "a1", "abc", PROTOCOL_VERSION);
+
+        let effects = claim_as(&mut c, "a1", vec![x_edit()]);
+
+        assert_eq!(head_of(only_reply(&effects)), Some("abc"));
+    }
+
+    #[test]
+    fn a_grant_made_while_no_head_is_known_carries_none() {
+        let mut c = coordinator();
+
+        let effects = claim_as(&mut c, "a1", vec![x_edit()]);
+
+        assert_eq!(head_of(only_reply(&effects)), None);
+    }
+
+    #[test]
+    fn a_waiter_granted_by_a_release_carries_the_head() {
+        let mut c = coordinator();
+        hello(&mut c, "a1", "abc", PROTOCOL_VERSION);
+        let (claim, fence) = grant(&mut c, "a1", vec![x_edit()]);
+        assert_queued(&wait_for(&mut c, "b1", 4, vec![x_edit()]), 4, 1);
+
+        let effects = release(&mut c, "a1", claim, fence);
+
+        let notices = notices_to(&effects, "b1");
+        let [granted] = notices[..] else {
+            panic!("expected one notice, got {effects:?}");
+        };
+        assert_eq!(head_of(granted), Some("abc"));
+    }
+
+    #[test]
+    fn a_waiter_granted_by_a_merge_carries_the_merged_head_and_then_hears_main_moved() {
+        let (_, effects) = merge_under_a_waiter(
+            sc(file("src/a.rs"), Mode::EditBody),
+            sc(file("src/a.rs"), Mode::EditBody),
+            sc(file("src/a.rs"), Mode::EditBody),
+        );
+
+        let notices = notices_to(&effects, "waiter");
+        let [granted, ServerMsg::BaseMoved { head, .. }] = notices[..] else {
+            panic!("expected Granted then BaseMoved, got {effects:?}");
+        };
+        assert_eq!(head_of(granted), Some(MERGED_HEAD));
+        assert_eq!(head.0, MERGED_HEAD);
+    }
+
+    #[test]
+    fn a_waiter_granted_on_a_scope_the_merge_did_not_touch_still_carries_the_merged_head() {
+        let (_, effects) = merge_under_a_waiter(
+            sc(dir("src"), Mode::EditBody),
+            sc(file("src/a.rs"), Mode::EditBody),
+            sc(file("src/b.rs"), Mode::EditBody),
+        );
+
+        let notices = notices_to(&effects, "waiter");
+        let [granted] = notices[..] else {
+            panic!("expected a lone Granted, got {effects:?}");
+        };
+        assert_eq!(head_of(granted), Some(MERGED_HEAD));
+    }
+
+    #[test]
+    fn an_amend_reply_carries_the_head() {
+        let mut c = coordinator();
+        hello(&mut c, "a1", "abc", PROTOCOL_VERSION);
+        let (claim, fence) = grant(&mut c, "a1", vec![x_edit()]);
+        let amend = ClientMsg::Amend {
+            req: RequestId(5),
+            claim,
+            fence,
+            add: vec![y_edit()],
+        };
+
+        let effects = handle_at(&mut c, "a1", amend, NOW + 1);
+
+        assert_eq!(head_of(only_reply(&effects)), Some("abc"));
+    }
+
     #[test]
     fn amend_issues_a_newer_fence_keeps_the_lease_and_reports_at_risk() {
         let mut c = coordinator();
@@ -3109,10 +3237,12 @@ mod tests {
             expires_at_ms,
             race,
             at_risk,
+            head,
         } = only_reply(&effects)
         else {
             panic!("expected Granted, got {effects:?}");
         };
+        assert_eq!(*head, None, "no head was known");
         assert_eq!((*req, *same), (RequestId(5), claim));
         assert!(*fence > old && *fence > other_fence, "{fence:?}");
         assert_eq!(*expires_at_ms, NOW + LEASE, "amend is not a heartbeat");

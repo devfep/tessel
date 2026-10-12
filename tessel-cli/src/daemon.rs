@@ -700,23 +700,22 @@ impl Daemon {
                 req,
                 claim,
                 fence,
-                expires_at_ms,
                 race,
-                at_risk,
-            } => match self.pending.remove(&req.0) {
-                Some(pending) => self.on_granted(pending, claim, fence, race, at_risk),
-                None => self.unexpected(
-                    "grant for an unknown request",
-                    &ServerMsg::Granted {
-                        req,
-                        claim,
-                        fence,
-                        expires_at_ms,
-                        race,
-                        at_risk,
-                    },
-                ),
-            },
+                ref at_risk,
+                ref head,
+                ..
+            } => {
+                if let Some(head) = head {
+                    self.state.coordinator_head = Some(head.0.clone());
+                    self.persist();
+                }
+                match self.pending.remove(&req.0) {
+                    Some(pending) => {
+                        self.on_granted(pending, claim, fence, race, at_risk.clone());
+                    }
+                    None => self.unexpected("grant for an unknown request", &msg),
+                }
+            }
             ServerMsg::Denied { req, conflicts } => {
                 let msg = ServerMsg::Denied {
                     req,
@@ -867,6 +866,7 @@ impl Daemon {
                 expires_at_ms: held.expires_at_ms,
                 race,
                 at_risk: at_risk.clone(),
+                head: None,
             };
             self.notify(
                 NoticeKind::AtRisk,
@@ -2837,5 +2837,83 @@ mod tests {
         daemon.welcome_deadline = Some(Instant::now() + PROBE_LIMIT);
         daemon.on_welcome("a".repeat(40), 30_000);
         assert!(daemon.welcome_deadline.is_none());
+    }
+
+    const HEAD_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HEAD_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// A `granted` as it arrives on the wire; `head` is absent from the object when `None`.
+    fn granted_json(head: Option<serde_json::Value>) -> ServerMsg {
+        let mut msg = serde_json::json!({
+            "type": "granted", "req": 5, "claim": 9, "fence": 9,
+            "expires_at_ms": 0, "race": null,
+        });
+        if let Some(head) = head {
+            msg["head"] = head;
+        }
+        serde_json::from_value(msg).unwrap()
+    }
+
+    fn pending_claim() -> PendingClaim {
+        PendingClaim {
+            scopes: Vec::new(),
+            queued: false,
+            amend: None,
+            replies: Vec::new(),
+        }
+    }
+
+    fn persisted_head(daemon: &Daemon) -> Option<String> {
+        State::read(&daemon.worktree)
+            .unwrap()
+            .and_then(|state| state.coordinator_head)
+    }
+
+    fn daemon_knowing_head_a(dir: &std::path::Path) -> Daemon {
+        let mut daemon = daemon_in(dir);
+        daemon.state.coordinator_head = Some(HEAD_A.to_string());
+        daemon
+    }
+
+    #[test]
+    fn a_grant_for_a_pending_claim_adopts_the_head_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_knowing_head_a(dir.path());
+        daemon.pending.insert(5, pending_claim());
+
+        daemon.on_server_msg(granted_json(Some(HEAD_B.into())));
+
+        assert_eq!(daemon.state.coordinator_head.as_deref(), Some(HEAD_B));
+        assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_B));
+    }
+
+    #[test]
+    fn a_grant_for_an_unknown_request_still_adopts_and_writes_the_head_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_knowing_head_a(dir.path());
+        assert_eq!(persisted_head(&daemon), None, "nothing was written yet");
+
+        daemon.on_server_msg(granted_json(Some(HEAD_B.into())));
+
+        assert_eq!(daemon.state.coordinator_head.as_deref(), Some(HEAD_B));
+        assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_B));
+    }
+
+    #[test]
+    fn a_grant_without_a_head_leaves_the_head_alone() {
+        for head in [None, Some(serde_json::Value::Null)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut daemon = daemon_knowing_head_a(dir.path());
+            daemon.pending.insert(5, pending_claim());
+
+            daemon.on_server_msg(granted_json(head.clone()));
+
+            assert_eq!(
+                daemon.state.coordinator_head.as_deref(),
+                Some(HEAD_A),
+                "{head:?}"
+            );
+            assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_A), "{head:?}");
+        }
     }
 }

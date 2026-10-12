@@ -2052,6 +2052,7 @@ mod tests {
             expires_at_ms: 0,
             race: None,
             at_risk: Vec::new(),
+            head: None,
         }
     }
 
