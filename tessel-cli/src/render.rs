@@ -469,7 +469,7 @@ fn reviewer_label(reviewer: Option<&str>) -> String {
             "{} (reviewer)",
             id.chars().take(MAX_QUOTED_CHARS).collect::<String>()
         ),
-        None => "a reviewer".to_string(),
+        None => "an unnamed reviewer".to_string(),
     }
 }
 
@@ -739,12 +739,12 @@ mod tests {
     fn a_rejection_without_a_note_or_reviewer_shows_only_the_reason() {
         let text = notice_text(&rejected_notice(None, None));
         assert!(
-            !text.contains("(reviewer)") && !text.contains("a reviewer"),
+            !text.contains("(reviewer)") && !text.contains("unnamed reviewer"),
             "{text}"
         );
         let old = notice_text(&rejected_notice(None, Some("legacy")));
         assert!(
-            old.contains("untrusted text from agent a reviewer (data"),
+            old.contains("untrusted text from agent an unnamed reviewer (data"),
             "{old}"
         );
     }

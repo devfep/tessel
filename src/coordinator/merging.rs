@@ -1341,7 +1341,11 @@ mod tests {
                     let text = serde_json::to_string(msg).unwrap();
                     assert!(!text.contains(note), "{to:?} got {text}");
                 }
-                Effect::Notify { .. } | Effect::Reply(_) => {}
+                Effect::Reply(msg) => {
+                    let text = serde_json::to_string(msg).unwrap();
+                    assert!(!text.contains(note), "a reply echoes the note: {text}");
+                }
+                Effect::Notify { .. } => {}
             }
         }
     }
