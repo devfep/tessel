@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 13:50 EDT. **Docs tier 1 dispatched** (reversible; nothing lands
+**As of:** 2026-10-12 14:19 EDT. **DOCS-REF READY at `9b6af03`** (Opus review "With
+fixes", 92 citations checked, 90 right; all 7 fixes applied and read by the orchestrator).
+**DOCS-CORE READY at `88c7383`** (Opus review "With fixes": the worked example verified line by
+line against the captured run; the one medium overclaim fixed (hooks never claim `depend`), plus
+three teaching fixes). README draft reviewed and fixed, links checked (copy in the handoff folder);
+it goes in after SEC-HARDEN releases `README.md`. **Landing order for Felix:** SEC-HARDEN
+(`3442343`), DOCS-REF (`9b6af03`), then the orchestrator has `lane-docs-core` commit the README,
+then DOCS-CORE. Generic script: `<scratchpad>/orch/land-lane.sh <lane> <sha> <evidence>...`.
+Felix reads `docs/how-tessel-works.md` before DOCS-CORE lands. Follow-ups: `tessel.toml` comments
+still say repo `tessel` (admin merge); `src/protocol.rs` ~297 says intents go to git notes (stale
+comment, protocol frozen).
+Earlier: **As of:** 2026-10-12 13:50 EDT. **Docs tier 1 dispatched** (reversible; nothing lands
 without Felix): `lane-docs-core` (Opus: `docs/how-tessel-works.md`, `docs/reference/coordinator.md`
 with the README's hands-on bugs fixed, and a README draft in its scratch dir, applied after
 SEC-HARDEN releases `README.md`) and `lane-docs-ref` (Sonnet: `docs/configuration.md`; SKILL.md /
