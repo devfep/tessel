@@ -5,7 +5,21 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 22:05 EDT. **COORDINATOR DEPLOYED by Felix: version `c49a44ca`, code
+**As of:** 2026-10-12 09:30 EDT. **HANDOVER before a context clear Felix asked for. Nothing
+runs.** Resume from `.claude/handoff-2026-10-12/CHECKPOINT.md` (untracked; never `git add` it):
+it holds the next actions, the video plan and copies of the drafts and figures (the session
+scratchpad in `/tmp` may not survive). Code state unchanged since 22:05: trunk `f9a2f0b`,
+coordinator `c49a44ca` live. Overnight, video work only (no repo change): two figures built and
+checked (Anatomy "Claims, interlocked", a signal-box lever frame driven by the real conflict
+table; iso-glow "Tessel on Cloudflare", requests as orange pulses), Cloudflare palette with
+meaning, no Cloudflare marks; shot list v1 (8:57); four third-party tools vetted read-only;
+renderer chosen: HyperFrames `0.8.145`, engine only, never its skills (its `usage` command reads
+agent credentials), telemetry off; no music or SFX. **Next (Oct 12, recording day):** Felix checks
+the figures and form v3, captures the shot-list screenshots; the orchestrator times a 10 s
+HyperFrames draft, then builds the graphics with an 18:00 gate to plain cards; Felix records the
+live scenes after rehearsing the assumption scene. Oct 13: read-only security pass, form final,
+submit by hand.
+Earlier: **As of:** 2026-10-11 22:05 EDT. **COORDINATOR DEPLOYED by Felix: version `c49a44ca`, code
 `f9a2f0b`** (from the deploy worktree; bindings show `SENSITIVE`). Live check by the
 orchestrator: identity `orch-live-check` started, claimed `src/protocol.rs` (granted, claim 103,
 fence 283), status, stopped; `wrangler tail` for the run: 14 events, all on `c49a44ca`, 9 ok and
