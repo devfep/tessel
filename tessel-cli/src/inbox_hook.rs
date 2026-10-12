@@ -394,6 +394,8 @@ mod tests {
         ServerMsg::SubmitRejected {
             claim: ClaimId(claim),
             reason: "no".into(),
+            reviewer: None,
+            note: None,
         }
     }
 
