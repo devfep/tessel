@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use serde_json::{json, Value};
 use tessel_coordinator::protocol::{
-    ClaimId, Conflict, HeldAssumption, Mode, ReviewReason, Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, Conflict, HeldAssumption, Mode, ReviewReason, Scope, ScopeClaim, ServerMsg,
 };
 
 use crate::moves::{denial_moves, next_moves, Move, Situation};
@@ -473,6 +473,28 @@ fn reviewer_label(reviewer: Option<&str>) -> String {
     }
 }
 
+/// The card for a rejected submission: the fixed reason, then the reviewer's note if any, quoted.
+fn rejected_text(
+    claim: ClaimId,
+    reason: &str,
+    reviewer: Option<&AgentId>,
+    note: Option<&str>,
+) -> String {
+    let mut out = format!(
+        "  claim {} is active again with the same fence; fix the cause, push, and \
+         `tessel submit` again\n",
+        claim.0
+    );
+    out.push_str(&quote_untrusted("the coordinator", reason));
+    if let Some(note) = note {
+        out.push_str(&quote_untrusted(
+            &reviewer_label(reviewer.map(|r| r.0.as_str())),
+            note,
+        ));
+    }
+    out
+}
+
 pub fn notice_text(notice: &Notice) -> String {
     let kind = serde_json::to_value(notice.kind)
         .ok()
@@ -540,31 +562,20 @@ pub fn notice_text(notice: &Notice) -> String {
             out.push_str(&quote_untrusted("the coordinator", message));
         }
         ServerMsg::Merged { claim, head } => {
-            let _ = writeln!(
-                out,
-                "  claim {} is merged; main is now at {}",
-                claim.0,
-                escape(&head.0)
-            );
+            let head = escape(&head.0);
+            let _ = writeln!(out, "  claim {} is merged; main is now at {head}", claim.0);
         }
         ServerMsg::SubmitRejected {
             claim,
             reason,
             reviewer,
             note,
-        } => {
-            let _ = writeln!(
-                out,
-                "  claim {} is active again with the same fence; fix the cause, push, and \
-                 `tessel submit` again",
-                claim.0
-            );
-            out.push_str(&quote_untrusted("the coordinator", reason));
-            if let Some(note) = note {
-                let author = reviewer_label(reviewer.as_ref().map(|r| r.0.as_str()));
-                out.push_str(&quote_untrusted(&author, note));
-            }
-        }
+        } => out.push_str(&rejected_text(
+            *claim,
+            reason,
+            reviewer.as_ref(),
+            note.as_deref(),
+        )),
         ServerMsg::Uncovered { claim, scopes, .. } => {
             out.push_str(&uncovered_text(*claim, scopes, false));
         }
@@ -653,8 +664,6 @@ pub fn status_text(state: &State, running: bool, unread: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use tessel_coordinator::protocol::AgentId;
-
     use super::*;
 
     #[test]
