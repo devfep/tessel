@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 15:06 EDT. **RESUMED; orchestrator on (Felix: "resume"). COORD-WAITER-BASE
+**As of:** 2026-10-12 15:17 EDT. **SEC-HARDEN `3442343` pushed and submitted by Felix (15:10),
+held for the signature change `tessel-steward/src/review.ts::diff`, approved by the orchestrator
+through `tools/orch-review.sh` (claim 104); the sandbox merge is running, a trunk watcher polls.
+COORD-WAITER-BASE implemented at `76786e2`** (`src/coordinator/merging.rs` only: the swap in
+`land`, module and function docs updated, two new tests, helper `wait_for`, and the existing
+`a_merge_grants_the_waiter_it_unblocked` now expects `Granted` then `BaseMoved`; lane gate 519
+passed, clippy and rustfmt clean; three mutants killed; `AlreadyMerged` goes through `land` so the
+swap covers it; `trunk_read`, the rejection paths and the release paths move no main or release
+nothing, so no notice is due there). Orchestrator read the diff: sound. Opus review dispatched;
+orchestrator workspace gate running on an archived copy (curl off the PATH). Still to do before
+Felix lands: the wasm build and a local replay of the a1/a2 wait scenario against the fixed core.
+DOCS-REF landing command handed to Felix (absolute path).
+Earlier: **As of:** 2026-10-12 15:06 EDT. **RESUMED; orchestrator on (Felix: "resume"). COORD-WAITER-BASE
 dispatched** as `lane-coord-waiter` (Sonnet) in worktree `coord-waiter` from trunk `f9a2f0b`
 (nothing has landed since the handover: `sec-harden`, `docs-ref`, `docs-core` are still waiting
 on Felix's landing commands, daemons alive), fork `tessel-dogfood--lane-coord-waiter` created,
