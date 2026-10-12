@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 15:24 EDT. **COORD-WAITER-BASE review: Opus "Yes" on `76786e2`** (every
+**As of:** 2026-10-12 15:30 EDT. **DOCS-REF CLOSED at trunk `9b6af03`** (merged 15:29, no hold,
+mirrored; its daemon stopped). Trunk: `9b6af03`. **Pending from Felix:** the DOCS-CORE landing
+(`7c7131e`, worktree `docs-core`, based on `3442343`: the steward rebases) after he reads
+`docs/how-tessel-works.md` (opened for him 15:27). The waiter fix's workspace gate is running
+the tests; wasm build and local replay follow.
+Earlier: **As of:** 2026-10-12 15:24 EDT. **COORD-WAITER-BASE review: Opus "Yes" on `76786e2`** (every
 requirement met; its four mutants each failed at least one test; package gate 519, clippy and
 rustfmt clean; two low findings, not blocking: `Granted` still carries no head, so a holder
 granted on an untouched scope or by a release can start from an old base, a possible follow-up
@@ -1491,7 +1496,8 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   reference) plus accuracy fixes to `skills/tessel/SKILL.md` and `skills/tessel/AGENTS.md`.
   Dispatched 2026-10-12 13:50 as `lane-docs-ref` (Sonnet, worktree `docs-ref` from `3442343`).
   READY at `9b6af03` (Opus review "With fixes", 92 citations checked; all 7 fixes applied and
-  read by the orchestrator). Waiting on Felix's landing command.
+  read by the orchestrator). CLOSED 2026-10-12 15:29 at trunk `9b6af03` (fast-forward; pushed
+  and submitted by Felix, merged with no hold; mirrored to GitHub `artifacts-trunk`).
 - [ ] **DOCS-CORE** — docs tier 1 (Oct 12): `docs/how-tessel-works.md`,
   `docs/reference/coordinator.md`, and the README rewritten as the front door. Dispatched
   2026-10-12 13:50 as `lane-docs-core` (Opus, worktree `docs-core` from `3442343`). READY at
