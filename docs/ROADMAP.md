@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 18:35 EDT. **Coordinator DEPLOYED by Felix from `9ab793a`** (deploy worktree,
+**As of:** 2026-10-12 18:45 EDT. **SWARM-RECONNECT-FLAKE CLOSED at trunk `3cedad8`** (Felix
+landed `ac35420` 18:34; held for the signature change; orchestrator approved claim 108 at 18:36;
+steward merged 18:38, rebased onto `9ab793a`, the file identical; mirrored to GitHub
+`artifacts-trunk`; both daemons stopped). **COORD-WAITER-BASE PROVED LIVE** on the deployed
+coordinator: the waiter `lane-docs-ref` queued behind claim 108 got `granted_after_wait` (claim
+109) then `base_moved` to `3cedad8` one millisecond later, and `tessel status` shows head
+`3cedad8` (handoff `swarm-flake/live-waiter-proof.txt`). All five boxes of the day are closed.
+**Next:** the GitHub pull request `artifacts-trunk` → `main` (39 commits) for Felix to merge
+before the repo goes public; the steward deploy for SEC-HARDEN (Felix, after the recordings).
+Felix's own list: figure/form v3, video tag, recordings, Oct 13 form and submission.
+Earlier: **As of:** 2026-10-12 18:35 EDT. **Coordinator DEPLOYED by Felix from `9ab793a`** (deploy worktree,
 `npx wrangler deploy`, version `f6977a41`, 0 wasm warnings; COORD-WAITER-BASE is live). Steward
 still from `cbef948` (SEC-HARDEN `3442343` waits for its deploy). **Live proof armed:** agent
 `lane-docs-ref` (daemon up in worktree `docs-ref`) is queued at position 1 with `--wait` on
@@ -1571,9 +1581,12 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   identical; Opus review "Yes", four reviewer mutants killed; workspace gate with curl off the
   PATH: all binaries green with the two load reruns recorded, clippy 0; wasm build 0 warnings;
   local a1/a2 replay: `granted_after_wait` then `base_moved`, status head at the merged commit;
-  pushed and submitted by Felix, merged with no hold; mirrored). NOT DEPLOYED: Felix deploys the
-  coordinator after the recordings; the live proof is then a `--wait` claim granted by a merge
-  whose `tessel status` shows the new head.
+  pushed and submitted by Felix, merged with no hold; mirrored). DEPLOYED by Felix 2026-10-12
+  before 18:29 (coordinator version `f6977a41` from the deploy worktree at `9ab793a`). LIVE PROOF
+  18:38: agent `lane-docs-ref`, queued with `--wait` on `tessel-swarm/tests/reconnect.rs` behind
+  claim 108, was granted claim 109 by the SWARM-RECONNECT-FLAKE merge and got `base_moved` to
+  `3cedad8` one millisecond later; `tessel status` shows head `3cedad8` (handoff
+  `swarm-flake/live-waiter-proof.txt`).
 - [x] **SEC-HARDEN** — from the pre-submission security pass (Oct 12): `.gitignore` gaps
   (`.claude/`, `/AGENTS.md`, `.env.*`, `.dev.vars.*`, `*.pem`, `*.key`), README admin-token
   guidance (the admin token stays with the operator), the `/diff` forgery check, `redactTokens`
@@ -1603,7 +1616,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   106 is active again with the same fence; resubmit of the same `7c7131e`.
   Resubmitted by Felix 16:58; CLOSED 2026-10-12 17:02 at trunk `126b944` (rebased by the
   steward, the three files identical; mirrored to GitHub `artifacts-trunk`; daemon stopped).
-- [ ] **SWARM-RECONNECT-FLAKE** — seen twice on 2026-10-12: the sandbox gate (standard-4) failed
+- [x] **SWARM-RECONNECT-FLAKE** — seen twice on 2026-10-12: the sandbox gate (standard-4) failed
   the docs-only DOCS-CORE merge on `tessel-swarm/tests/reconnect.rs`
   `a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_claim_released`; and
   on the Mac under load average 100+ the `reconnect` binary sat idle for 25 minutes inside the
@@ -1625,7 +1638,16 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   test by log events (cut at the grant, poison while the agent is out, lift, submit, cut at
   the submit) and bound every polling loop in the file by `BOUND` with a message. Test-only.
   Dispatched 2026-10-12 16:18 as `lane-swarm-flake` (Sonnet, worktree `swarm-flake` from
-  `9b6af03`; brief in the handoff `orch/brief-swarm-flake.md`).
+  `9b6af03`; brief in the handoff `orch/brief-swarm-flake.md`). Implemented `ac35420`: the
+  tripwire poisons main in the step that logs `Submitted`, under the hub lock, then cuts the
+  agent (the cut-at-grant order was rejected: the agent syncs main again on reconnect,
+  `on.rs:1048,1165`); `work_ms` 0; `wait_for`/`wait_until` with a 150 s bound replace 13 loops;
+  assertions unchanged. CLOSED 2026-10-12 18:38 at trunk `3cedad8` (landed by Felix 18:34, held
+  for the `edit-signature` on `first_waiter` and `connected_count`, approved by the orchestrator
+  through `tools/orch-review.sh`; rebased by the steward onto `9ab793a`, the file identical;
+  Opus review "Yes", four mutants failed within the bound; reconnect binary 10 of 10 and the
+  rejection test 10 of 10 under 24 CPU hogs; workspace gate with curl off the PATH: 19 binaries
+  green, clippy 0; mirrored; daemon stopped).
 - [x] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
   submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
