@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 15:17 EDT. **SEC-HARDEN `3442343` pushed and submitted by Felix (15:10),
+**As of:** 2026-10-12 15:22 EDT. **SEC-HARDEN CLOSED at trunk `3442343`** (held for
+`review.ts::diff`, approved by the orchestrator through `tools/orch-review.sh`, merged 15:18,
+mirrored to GitHub `artifacts-trunk`; its daemon stopped; steward deploy still Felix's, after the
+recordings). **README swap done:** `7c7131e` in worktree `docs-core` on top of `88c7383`, under
+the lane's claim 106 (README.md edit-body added); DOCS-CORE now lands as `7c7131e`.
+**Pending from Felix:** the DOCS-REF landing (`bash /Users/felixpatawah/repos/tessel/.claude/
+handoff-2026-10-12/orch/land-lane.sh docs-ref 9b6af03 "<evidence>"`), then DOCS-CORE the same way
+with `7c7131e` after he reads `docs/how-tessel-works.md`. Boxes for SEC-HARDEN, DOCS-REF and
+DOCS-CORE added to the task list (they had been tracked in STATE only). Follow-up to file after
+the waiter fix: the lane daemons' hello at 13:50 got head `d1ef2f1`, so Felix's admin merge
+`f9a2f0b` (Oct 11) never advanced the coordinator's head; the SEC-HARDEN merge did (`3442343`
+reported to the submitter).
+Earlier: **As of:** 2026-10-12 15:17 EDT. **SEC-HARDEN `3442343` pushed and submitted by Felix (15:10),
 held for the signature change `tessel-steward/src/review.ts::diff`, approved by the orchestrator
 through `tools/orch-review.sh` (claim 104); the sandbox merge is running, a trunk watcher polls.
 COORD-WAITER-BASE implemented at `76786e2`** (`src/coordinator/merging.rs` only: the swap in
@@ -1456,7 +1468,30 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   event order becomes `ClaimGranted` before `BaseMoved`. Tests: overlapping waiter gets `Granted`
   then `BaseMoved`; non-overlapping waiter gets none; three mutants. Coordinator; needs a deploy.
   Dispatched 2026-10-12 15:06 as `lane-coord-waiter` (Sonnet, worktree `coord-waiter` from
-  `f9a2f0b`; brief in the handoff `orch/brief-coord-waiter.md`).
+  `f9a2f0b`; brief in the handoff `orch/brief-coord-waiter.md`). Committed `76786e2` 15:15 (lane
+  gate 519, three mutants killed); Opus review and the orchestrator's workspace gate running.
+- [x] **SEC-HARDEN** — from the pre-submission security pass (Oct 12): `.gitignore` gaps
+  (`.claude/`, `/AGENTS.md`, `.env.*`, `.dev.vars.*`, `*.pem`, `*.key`), README admin-token
+  guidance (the admin token stays with the operator), the `/diff` forgery check, `redactTokens`
+  on four error paths, CLAUDE.md "Sandbox" → Containers. `max_instances` dropped: the
+  `durable_object` scheduling policy rejects it. Dispatched 2026-10-12 13:19 as
+  `lane-sec-harden` (Sonnet). CLOSED 2026-10-12 15:18 at trunk `3442343` (fast-forward from
+  `f9a2f0b`; Opus review "Yes"; orchestrator steward gate 916 passed; held for the signature
+  change `review.ts::diff`, approved by the orchestrator through `tools/orch-review.sh`; pushed and
+  submitted by Felix). Mirrored to GitHub `artifacts-trunk`. NOT DEPLOYED: the steward deploy is
+  Felix's, after the live recordings.
+- [ ] **DOCS-REF** — docs tier 1 (Oct 12): `docs/configuration.md` (the configuration
+  reference) plus accuracy fixes to `skills/tessel/SKILL.md` and `skills/tessel/AGENTS.md`.
+  Dispatched 2026-10-12 13:50 as `lane-docs-ref` (Sonnet, worktree `docs-ref` from `3442343`).
+  READY at `9b6af03` (Opus review "With fixes", 92 citations checked; all 7 fixes applied and
+  read by the orchestrator). Waiting on Felix's landing command.
+- [ ] **DOCS-CORE** — docs tier 1 (Oct 12): `docs/how-tessel-works.md`,
+  `docs/reference/coordinator.md`, and the README rewritten as the front door. Dispatched
+  2026-10-12 13:50 as `lane-docs-core` (Opus, worktree `docs-core` from `3442343`). READY at
+  `7c7131e` (`88c7383`: Opus review "With fixes", the worked example verified line by line, fixes
+  applied; `7c7131e`: the reviewed README draft committed by the orchestrator under the lane's
+  claim after SEC-HARDEN released `README.md`; local links checked: `docs/configuration.md` comes
+  from DOCS-REF, which lands first). Felix reads `docs/how-tessel-works.md` before it lands.
 - [x] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
   submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
