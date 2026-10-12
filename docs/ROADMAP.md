@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 14:19 EDT. **DOCS-REF READY at `9b6af03`** (Opus review "With
+**As of:** 2026-10-12 14:20 EDT. **New follow-up box, found by `lane-docs-core` while
+capturing the worked example (not yet investigated):** COORD-WAITER-BASE: an agent granted from
+the wait queue right after a merge still showed the pre-merge head (`71a4e8a`) in `tessel status`,
+and no `base_moved` reached it; `base_moved` goes to overlapping holders at merge time, and a
+queued waiter is not a holder yet. Effect: the granted agent may edit on a stale base unless it
+pulls; the steward's rebase still guards `main`. Transcript in the session scratchpad
+`lane-docs-core/scenario-transcript.txt`. Also noted: SEC-HARDEN's own vitest run had 2 git
+integration timeouts under load average 300-570; the Opus review and the orchestrator gate both
+ran 916 of 916 afterwards.
+Earlier: **As of:** 2026-10-12 14:19 EDT. **DOCS-REF READY at `9b6af03`** (Opus review "With
 fixes", 92 citations checked, 90 right; all 7 fixes applied and read by the orchestrator).
 **DOCS-CORE READY at `88c7383`** (Opus review "With fixes": the worked example verified line by
 line against the captured run; the one medium overclaim fixed (hooks never claim `depend`), plus
