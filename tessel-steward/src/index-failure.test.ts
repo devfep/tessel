@@ -33,6 +33,32 @@ async function readTokenRequest(env: Env): Promise<Response> {
   return handler(request as never, env);
 }
 
+describe("a dashboard request that fails", () => {
+  it("logs the error with any token redacted and answers 502", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const env = {
+      get ACCESS_TEAM_DOMAIN(): string {
+        throw new Error(LEAKY_MESSAGE);
+      },
+    } as unknown as Env;
+    const handler = steward.fetch;
+    if (handler === undefined) {
+      throw new Error("steward has no fetch handler");
+    }
+    const response = await handler(
+      new Request("https://steward.example/dashboard/demo") as never,
+      env,
+    );
+    expect(response.status).toBe(502);
+    expect(logged).toHaveBeenCalledTimes(1);
+    const line = String(logged.mock.calls[0]?.[0]);
+    expect(line).toContain("dashboard_failed");
+    expect(line).toContain("refused");
+    expect(line).not.toContain("SECRET123");
+    logged.mockRestore();
+  });
+});
+
 describe("a route that fails", () => {
   beforeEach(() => {
     // Node's SubtleCrypto lacks the Workers-only timingSafeEqual that the admin check uses.

@@ -57,9 +57,9 @@ function json(status: number, body: unknown): Response {
 }
 
 /**
- * Why a request that changes state or starts a sandbox is refused as possibly forged, or `undefined` when it came from
- * this site. A browser always sends `Sec-Fetch-Site`; one that does not must send a matching
- * `Origin`. A request with neither is refused.
+ * Why a request that changes state or starts a sandbox is refused as possibly forged, or
+ * `undefined` when it came from this site. A browser always sends `Sec-Fetch-Site`; one that does
+ * not must send a matching `Origin`. A request with neither is refused.
  */
 function forgeryReason(request: Request): string | undefined {
   const site = request.headers.get("Sec-Fetch-Site");

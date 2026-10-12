@@ -151,7 +151,8 @@ async function handleDashboardSafely(request: Request, env: Env): Promise<Respon
   try {
     return await handleDashboard(request, env);
   } catch (error) {
-    console.error(JSON.stringify({ event: "dashboard_failed", message: String(error) }));
+    const message = redactTokens(String(error));
+    console.error(JSON.stringify({ event: "dashboard_failed", message }));
     return new Response("the dashboard could not reach the coordinator", { status: 502 });
   }
 }
