@@ -94,6 +94,53 @@ async fn bounded<T>(run: impl std::future::Future<Output = T>) -> T {
     done
 }
 
+/// How often a wait looks at the log again.
+const POLL: Duration = Duration::from_millis(5);
+
+/// The longest any wait on the log may last. It is shorter than `BOUND`, so that a wait that never
+/// ends names itself before the run's own bound does.
+const WAIT: Duration = Duration::from_secs(150);
+
+/// The last few events of a log, as `seq:kind`, for the message of a wait that gave up.
+fn log_tail(events: &[Event]) -> String {
+    let start = events.len().saturating_sub(10);
+    let mut tail = Vec::new();
+    for event in &events[start..] {
+        let text = format!("{:?}", event.kind);
+        let name = text.split([' ', '(', '{']).next().unwrap_or_default();
+        tail.push(format!("{}:{name}", event.seq));
+    }
+    tail.join(", ")
+}
+
+/// Waits until `find` returns something for the log, and returns it. Panics after `WAIT`, naming
+/// what was waited for and the last events the log held.
+async fn wait_for<T>(
+    what: &str,
+    log: &local::LogReader,
+    find: impl Fn(&[Event]) -> Option<T>,
+) -> T {
+    let started = tokio::time::Instant::now();
+    loop {
+        let events = log.events();
+        if let Some(found) = find(&events) {
+            return found;
+        }
+        assert!(
+            started.elapsed() < WAIT,
+            "gave up after {WAIT:?} waiting for {what}; the log held {} events, the last ones: {}",
+            events.len(),
+            log_tail(&events)
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Waits until `ready` is true of the log, within `WAIT`.
+async fn wait_until(what: &str, log: &local::LogReader, ready: impl Fn(&[Event]) -> bool) {
+    wait_for(what, log, |events| ready(events).then_some(())).await;
+}
+
 /// What a run on a server left behind.
 struct Outcome {
     server: LocalServer,
@@ -123,6 +170,16 @@ async fn run_with(
 
 fn count(events: &[Event], wanted: impl Fn(&EventKind) -> bool) -> usize {
     events.iter().filter(|e| wanted(&e.kind)).count()
+}
+
+fn lease_expired(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::ClaimReleased {
+            reason: ReleaseReason::LeaseExpired,
+            ..
+        }
+    )
 }
 
 fn connections_of(events: &[Event], who: &str) -> usize {
@@ -323,9 +380,9 @@ async fn a_merge_that_lands_while_the_submitter_is_gone_is_found_in_the_log() {
         cutter.reset_on(submitted, vec!["a01".to_string()]);
         let log = server.reader();
         lifted = Some(tokio::spawn(async move {
-            while count(&log.events(), |k| matches!(k, EventKind::Merged { .. })) == 0 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            let merged =
+                |events: &[Event]| count(events, |k| matches!(k, EventKind::Merged { .. }));
+            wait_until("the merge", &log, |events| merged(events) > 0).await;
             cutter.refuse_new(Vec::new());
         }));
     })
@@ -355,17 +412,8 @@ async fn a_claim_that_lapsed_while_the_agent_was_gone_is_that_tasks_lapsed_outco
         cutter.reset_on(granted, vec!["a01".to_string()]);
         let log = server.reader();
         lifted = Some(tokio::spawn(async move {
-            while !log.events().iter().any(|e| {
-                matches!(
-                    e.kind,
-                    EventKind::ClaimReleased {
-                        reason: ReleaseReason::LeaseExpired,
-                        ..
-                    }
-                )
-            }) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            let lapsed = |events: &[Event]| count(events, lease_expired) > 0;
+            wait_until("the lease to run out", &log, lapsed).await;
             cutter.refuse_new(Vec::new());
         }));
     })
@@ -447,18 +495,13 @@ fn queued_agent(kind: &EventKind) -> Option<&str> {
 }
 
 /// The agent of the first `WaitQueued` in the log, once there is one.
-fn first_waiter(log: &local::LogReader) -> Option<String> {
-    log.events().into_iter().find_map(|e| {
-        let EventKind::WaitQueued { agent, .. } = e.kind else {
+fn first_waiter(events: &[Event]) -> Option<String> {
+    events.iter().find_map(|e| {
+        let EventKind::WaitQueued { agent, .. } = &e.kind else {
             return None;
         };
-        Some(agent.0)
+        Some(agent.0.clone())
     })
-}
-
-/// The log's `AgentConnected` count for `who`.
-fn connected_count(log: &local::LogReader, who: &str) -> usize {
-    connections_of(&log.events(), who)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -475,17 +518,20 @@ async fn a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_s
         cutter.reset_on(submitted, gone);
         let log = server.reader();
         lifted = Some(tokio::spawn(async move {
-            while connected_count(&log, "a01") < 1
-                || count(&log.events(), |k| {
-                    matches!(k, EventKind::ReviewRequested { .. })
-                }) == 0
-            {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            let requested = |events: &[Event]| {
+                count(events, |k| matches!(k, EventKind::ReviewRequested { .. }))
+            };
+            let both =
+                |events: &[Event]| connections_of(events, "a01") >= 1 && requested(events) > 0;
+            wait_until(
+                "a01 connected and the submission held for review",
+                &log,
+                both,
+            )
+            .await;
             cutter.refuse_new(vec![REVIEWER.to_string()]);
-            while connected_count(&log, "a01") < 3 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            let back = |events: &[Event]| connections_of(events, "a01") >= 3;
+            wait_until("a01 connected a third time", &log, back).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
             cutter.refuse_new(Vec::new());
         }));
@@ -517,22 +563,15 @@ async fn a_grant_made_while_the_agent_was_gone_is_found_in_the_log_and_the_work_
     let server = start(&cfg, scratch.path(), local::LEASE_MS).await;
     let (log, cutter) = (server.reader(), server.cutter());
     let cut = tokio::spawn(async move {
-        let waiter = loop {
-            if let Some(agent) = first_waiter(&log) {
-                break agent;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        };
+        let waiter = wait_for("a queued request", &log, first_waiter).await;
         cutter.refuse_new(vec![waiter.clone()]);
         assert!(cutter.cut(&waiter), "{waiter} had an open socket");
-        let granted_to_waiter = |log: &local::LogReader| {
-            log.events().iter().any(
+        let granted_to_waiter = |events: &[Event]| {
+            events.iter().any(
                 |e| matches!(&e.kind, EventKind::ClaimGranted { agent, .. } if agent.0 == waiter),
             )
         };
-        while !granted_to_waiter(&log) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        wait_until("the grant made to the waiter", &log, granted_to_waiter).await;
         cutter.refuse_new(Vec::new());
         waiter
     });
@@ -561,12 +600,7 @@ async fn a_request_the_coordinator_kept_queued_is_waited_for_on_the_new_connecti
     let server = start(&cfg, scratch.path(), local::LEASE_MS).await;
     let (log, cutter) = (server.reader(), server.cutter());
     let cut = tokio::spawn(async move {
-        let waiter = loop {
-            if let Some(agent) = first_waiter(&log) {
-                break agent;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        };
+        let waiter = wait_for("a queued request", &log, first_waiter).await;
         assert!(cutter.cut(&waiter), "{waiter} had an open socket");
         waiter
     });
@@ -676,41 +710,25 @@ fn shadow_claims(events: &[Event]) -> Vec<(String, ClaimId)> {
     found
 }
 
-/// Closes the shadow agent's sockets `CUT_DELAY` after the log shows its claim shadowed: the answer was
-/// read, the work is under way and nothing is submitted. With `until_lapse` the agent is also
-/// turned away until the lease of its claim has run out. Returns the agent's name.
+/// Closes the shadow agent's sockets `CUT_DELAY` after the log shows its claim shadowed: the
+/// answer was read, the work is under way and nothing is submitted. With `until_lapse` the agent
+/// is also turned away until the lease of its claim has run out. Returns the agent's name.
 fn cut_the_shadow_agent(
     server: &LocalServer,
     until_lapse: bool,
 ) -> tokio::task::JoinHandle<String> {
     let (log, cutter) = (server.reader(), server.cutter());
     tokio::spawn(async move {
-        let agent = loop {
-            if let Some((agent, _)) = shadow_claims(&log.events()).into_iter().next() {
-                break agent;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        };
+        let first_shadow = |events: &[Event]| shadow_claims(events).into_iter().next();
+        let (agent, _) = wait_for("a shadowed claim", &log, first_shadow).await;
         tokio::time::sleep(CUT_DELAY).await;
         if until_lapse {
             cutter.refuse_new(vec![agent.clone()]);
         }
         assert!(cutter.cut(&agent), "{agent} had an open socket");
         if until_lapse {
-            let lapsed = |log: &local::LogReader| {
-                count(&log.events(), |k| {
-                    matches!(
-                        k,
-                        EventKind::ClaimReleased {
-                            reason: ReleaseReason::LeaseExpired,
-                            ..
-                        }
-                    )
-                }) > 0
-            };
-            while !lapsed(&log) {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            let lapsed = |events: &[Event]| count(events, lease_expired) > 0;
+            wait_until("the shadow claim's lease to run out", &log, lapsed).await;
             cutter.refuse_new(Vec::new());
         }
         agent
@@ -824,37 +842,34 @@ async fn a_shadow_claim_that_lapsed_while_its_agent_was_gone_is_that_tasks_lapse
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_claim_released() {
-    // Main changes the claimed line behind the agent, so the steward rejects the submission; the
-    // agent cannot return until that is in the log.
+    // The agent edits main as it stands when it is granted, works, pushes and submits. Main
+    // changes in the step that logs the submission: after the agent's edit and push, and before
+    // the steward can start the merge, which then conflicts at the claimed line. The same step
+    // cuts the agent, which cannot return until the rejection is in the log. Nothing here
+    // depends on how long the agent works.
     let tasks = [body(1, "unitPrice")];
-    let cfg = config(1, 800, PATIENT);
+    let cfg = config(1, 0, PATIENT);
     let mut lifted = None;
     let run = run_with(&tasks, &cfg, local::LEASE_MS, |server| {
-        let submitted = |e: &Event| matches!(e.kind, EventKind::Submitted { .. });
-        let cutter = server.cutter();
-        cutter.reset_on(submitted, vec!["a01".to_string()]);
-        let log = server.reader();
         let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone()
         else {
             unreachable!("the local target has a local remote");
         };
+        let change_main_then_cut = move |e: &Event| {
+            let submitted = matches!(e.kind, EventKind::Submitted { .. });
+            if submitted {
+                poison(&trunk);
+            }
+            submitted
+        };
+        let cutter = server.cutter();
+        cutter.reset_on(change_main_then_cut, vec!["a01".to_string()]);
+        let log = server.reader();
         lifted = Some(tokio::spawn(async move {
-            while count(&log.events(), |k| {
-                matches!(k, EventKind::ClaimGranted { .. })
-            }) == 0
-            {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            tokio::task::spawn_blocking(move || poison(&trunk))
-                .await
-                .unwrap();
-            while count(&log.events(), |k| {
-                matches!(k, EventKind::SubmitRejected { .. })
-            }) == 0
-            {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            let rejected = |events: &[Event]| {
+                count(events, |k| matches!(k, EventKind::SubmitRejected { .. })) > 0
+            };
+            wait_until("the rejection", &log, rejected).await;
             cutter.refuse_new(Vec::new());
         }));
     })
@@ -900,26 +915,11 @@ async fn a_claim_granted_to_nobody_that_lapsed_before_the_agent_returned_is_laps
     let server = start(&cfg, scratch.path(), 600).await;
     let (log, cutter) = (server.reader(), server.cutter());
     let cut = tokio::spawn(async move {
-        let waiter = loop {
-            if let Some(agent) = first_waiter(&log) {
-                break agent;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        };
+        let waiter = wait_for("a queued request", &log, first_waiter).await;
         cutter.refuse_new(vec![waiter.clone()]);
         assert!(cutter.cut(&waiter), "{waiter} had an open socket");
-        while count(&log.events(), |k| {
-            matches!(
-                k,
-                EventKind::ClaimReleased {
-                    reason: ReleaseReason::LeaseExpired,
-                    ..
-                }
-            )
-        }) == 0
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let lapsed = |events: &[Event]| count(events, lease_expired) > 0;
+        wait_until("the unheard grant's lease to run out", &log, lapsed).await;
         cutter.refuse_new(Vec::new());
         waiter
     });
