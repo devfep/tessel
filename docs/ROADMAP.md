@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 13:47 EDT. **SEC-HARDEN READY TO LAND at `3442343`** (`3fb426f` +
+**As of:** 2026-10-12 13:50 EDT. **Docs tier 1 dispatched** (reversible; nothing lands
+without Felix): `lane-docs-core` (Opus: `docs/how-tessel-works.md`, `docs/reference/coordinator.md`
+with the README's hands-on bugs fixed, and a README draft in its scratch dir, applied after
+SEC-HARDEN releases `README.md`) and `lane-docs-ref` (Sonnet: `docs/configuration.md`; SKILL.md /
+AGENTS.md accuracy fixes). Both from `3442343` with forks and identities. The SEC-HARDEN landing
+script was refused for the orchestrator ("Auto-Mode Bypass"); it stays Felix's one command.
+Earlier: **As of:** 2026-10-12 13:47 EDT. **SEC-HARDEN READY TO LAND at `3442343`** (`3fb426f` +
 `3442343` from `f9a2f0b`): Opus review "Yes" (own mutants 3 of 4 killed, the survivor is the
 untested test-runner redaction the lane reported), orchestrator steward gate on the archived
 commit: install, typecheck, oxlint, oxfmt 0, vitest 916 passed. `max_instances` dropped: the
