@@ -5,7 +5,11 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 16:03 EDT. **COORD-WAITER-BASE READY TO LAND at `76786e2`.** Wasm build
+**As of:** 2026-10-12 16:06 EDT. **DOCS-CORE `7c7131e` REFUSED by the sandbox gate** (swarm
+`reconnect` test failed on a docs-only commit: a flake, box SWARM-RECONNECT-FLAKE filed); claim
+106 active again; Felix resubmits the same commit with the landing script (the push is a no-op).
+COORD-WAITER-BASE ready to land, below; its sandbox run may hit the same flake: resubmit then.
+Earlier: **As of:** 2026-10-12 16:03 EDT. **COORD-WAITER-BASE READY TO LAND at `76786e2`.** Wasm build
 of the gated tree: exit 0, no warnings. Local replay of the a1/a2 wait scenario against the fixed
 core (the docs-demo-server rebuilt from the lane worktree, the trunk CLI): after a1's merge, a2's
 inbox shows `granted_after_wait` (claim 2) then `base_moved` to `f65e9ff` affecting
@@ -1527,6 +1531,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   applied; `7c7131e`: the reviewed README draft committed by the orchestrator under the lane's
   claim after SEC-HARDEN released `README.md`; local links checked: `docs/configuration.md` comes
   from DOCS-REF, which lands first). Felix reads `docs/how-tessel-works.md` before it lands.
+  Submitted by Felix 15:52; REFUSED 15:56 by the sandbox gate: `tessel-swarm` `reconnect`
+  test `a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_claim_released`
+  failed on the rebased commit (docs-only change: a flake, see SWARM-RECONNECT-FLAKE). Claim
+  106 is active again with the same fence; resubmit of the same `7c7131e`.
+- [ ] **SWARM-RECONNECT-FLAKE** — seen twice on 2026-10-12: the sandbox gate (standard-4) failed
+  the docs-only DOCS-CORE merge on `tessel-swarm/tests/reconnect.rs`
+  `a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_claim_released`; and
+  on the Mac under load average 100+ the `reconnect` binary sat idle for 25 minutes inside the
+  workspace gate (killed), then passed 20 of 20 in 23 s alone. The tests cut sockets and poll the
+  log in unbounded `loop { sleep(5ms) }` waits; a bound and a load-relative timing rule as in
+  SWARM-ONLOCAL-LOAD. Post-contest unless it refuses a landing a third time.
 - [x] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
   submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
