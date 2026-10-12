@@ -7,7 +7,10 @@
 //!
 //! Decisions made here:
 //! - Merged work leaves the claim released and its fence retired. `Merged` goes to the submitter,
-//!   `BaseMoved` to every other agent with a claim that overlaps what was touched.
+//!   `BaseMoved` to every other agent with a claim that overlaps what was touched. The waiters the
+//!   freed scopes unblock are granted first, so a waiter granted by this merge holds a claim when
+//!   the notices go out and learns main moved: `Granted` carries no head. The log reads
+//!   `ClaimGranted` before `BaseMoved`.
 //! - Assumptions are challenged once, at submit time (invariant 8). A merge does not challenge them
 //!   again: the evidence counters count every `AssumptionChallenged` event. A merge does record
 //!   what the submission challenged for verification (see `verifying`).
@@ -308,8 +311,9 @@ impl Coordinator {
         next.map(|(_, claim)| claim)
     }
 
-    /// Main holds the claim's work at `head`: release the claim, tell the submitter and everyone
-    /// whose claim overlaps, and grant the waiters the freed scopes unblock.
+    /// Main holds the claim's work at `head`: release the claim, grant the waiters the freed
+    /// scopes unblock, then tell the submitter and everyone whose claim overlaps, those new holders
+    /// included.
     fn land(
         &mut self,
         claim: ClaimId,
@@ -348,8 +352,8 @@ impl Coordinator {
                 },
             ),
         ];
-        effects.extend(self.notify_base_moved(&held.agent, &head, &touched, now_ms));
         effects.extend(self.grant_unblocked_waiters(now_ms));
+        effects.extend(self.notify_base_moved(&held.agent, &head, &touched, now_ms));
         let challenged = held
             .work
             .as_ref()
@@ -784,10 +788,13 @@ mod tests {
         let effects = c.merge_outcome(claim, &merged_outcome(), NOW + 1);
         assert!(matches!(
             notices(&effects, "b")[..],
-            [ServerMsg::Granted {
-                req: RequestId(4),
-                ..
-            }]
+            [
+                ServerMsg::Granted {
+                    req: RequestId(4),
+                    ..
+                },
+                ServerMsg::BaseMoved { .. }
+            ]
         ));
     }
 
@@ -805,6 +812,88 @@ mod tests {
         let effects = c.merge_outcome(claim, &conflict(), NOW + 1);
         assert!(notices(&effects, "b").is_empty(), "{effects:?}");
         assert!(c.has_queued_request(&agent("b")));
+    }
+
+    fn wait_for(c: &mut Coordinator, who: &str, path: &str, req: u64) {
+        let wait = ClientMsg::Claim {
+            req: RequestId(req),
+            intent: intent(Vec::new()),
+            scopes: vec![edit(path)],
+            on_conflict: OnConflict::Wait,
+        };
+        let queued = c.handle(&agent(who), wait, NOW);
+        assert!(
+            matches!(replies(&queued)[..], [ServerMsg::Queued { .. }]),
+            "{queued:?}"
+        );
+    }
+
+    #[test]
+    fn a_waiter_granted_by_a_merge_is_told_main_moved_after_its_grant() {
+        let mut c = core();
+        let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
+        wait_for(&mut c, "b", "src/a.rs", 4);
+
+        let effects = c.merge_outcome(claim, &merged_outcome(), NOW + 1);
+
+        match notices(&effects, "b")[..] {
+            [ServerMsg::Granted {
+                req: RequestId(4), ..
+            }, ServerMsg::BaseMoved { head, by, affected }] => {
+                assert_eq!((head.0.as_str(), by), (MAIN, &agent("a")));
+                assert_eq!(affected, &[file("src/a.rs")]);
+            }
+            ref other => panic!("expected Granted then BaseMoved, got {other:?}"),
+        }
+        let kinds = logged(&effects);
+        let granted_at = kinds
+            .iter()
+            .position(
+                |k| matches!(k, EventKind::ClaimGranted { agent: who, .. } if *who == agent("b")),
+            )
+            .expect("the waiter's grant is logged");
+        let moved_at = kinds
+            .iter()
+            .position(|k| matches!(k, EventKind::BaseMoved { .. }))
+            .expect("the move is logged");
+        assert!(granted_at < moved_at, "{kinds:?}");
+        let EventKind::BaseMoved { notified, .. } = kinds[moved_at] else {
+            unreachable!("position found a BaseMoved");
+        };
+        assert_eq!(notified, &vec![agent("b")]);
+    }
+
+    #[test]
+    fn a_waiter_granted_on_a_scope_the_merge_did_not_touch_gets_no_base_moved() {
+        let mut c = core();
+        let wide = grant(
+            &mut c,
+            "a",
+            vec![sc(Scope::Dir { path: "src".into() }, Mode::EditBody)],
+        );
+        let effects = submit_with(&mut c, "a", wide, vec![edit("src/a.rs")], true);
+        assert!(
+            matches!(replies(&effects)[..], [ServerMsg::Accepted { .. }]),
+            "{effects:?}"
+        );
+        assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(wide.0));
+        wait_for(&mut c, "b", "src/b.rs", 4);
+
+        let effects = c.merge_outcome(wide.0, &merged_outcome(), NOW + 1);
+
+        assert!(
+            matches!(
+                notices(&effects, "b")[..],
+                [ServerMsg::Granted {
+                    req: RequestId(4),
+                    ..
+                }]
+            ),
+            "{effects:?}"
+        );
+        assert!(logged(&effects)
+            .iter()
+            .all(|k| !matches!(k, EventKind::BaseMoved { .. })));
     }
 
     #[test]
