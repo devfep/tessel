@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 17:10 EDT. **COORD-WAITER-BASE CLOSED at trunk `9ab793a`** (Felix landed
+**As of:** 2026-10-12 18:35 EDT. **Coordinator DEPLOYED by Felix from `9ab793a`** (deploy worktree,
+`npx wrangler deploy`, version `f6977a41`, 0 wasm warnings; COORD-WAITER-BASE is live). Steward
+still from `cbef948` (SEC-HARDEN `3442343` waits for its deploy). **Live proof armed:** agent
+`lane-docs-ref` (daemon up in worktree `docs-ref`) is queued at position 1 with `--wait` on
+`tessel-swarm/tests/reconnect.rs` behind claim 108 (lane-swarm-flake); its status shows head
+`9ab793a`. The SWARM-RECONNECT-FLAKE landing is the merge that grants it: after the merge, its
+`tessel status` must show the new trunk head and its inbox `granted_after_wait` then
+`base_moved` (before the fix it kept the old head). **Pending from Felix:** `bash
+.../orch/land-lane.sh swarm-flake ac35420 "..."` (held on submit; the orchestrator approves
+through `tools/orch-review.sh`), then the orchestrator records the proof, stops both daemons,
+closes the box, mirrors, and opens the GitHub `main` PR from `artifacts-trunk` (38 commits ahead).
+Earlier: **As of:** 2026-10-12 17:10 EDT. **COORD-WAITER-BASE CLOSED at trunk `9ab793a`** (Felix landed
 it 17:03 before the test fix; the sandbox gate passed; rebased, `merging.rs` identical; mirrored;
 daemon stopped). Deploy worktree moved to `9ab793a`; `build/worker` and the CLI binary
 rebuilding there. **Pending from Felix:** the SWARM-RECONNECT-FLAKE landing (`ac35420`, held on
