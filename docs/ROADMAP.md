@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 13:16 EDT. **SECURITY PASS DONE (read-only, Opus, a day early) on
+**As of:** 2026-10-12 13:19 EDT. **Felix: "yes" to SEC-HARDEN, ignoring `AGENTS.md`,
+`max_instances = 2`, and deleting `COORDINATOR_TOKEN` himself.** Dispatched `lane-sec-harden`
+(Sonnet) in worktree `sec-harden` from trunk `f9a2f0b`, fork `tessel-dogfood--lane-sec-harden`
+created, identity minted: `.gitignore` (M1, L4), README admin-token instructions (M2),
+`max_instances` and the at-cap behaviour reported (M3a), `forgeryReason` on `/diff` (M3b),
+`redactTokens` on the three raw error paths (L2), CLAUDE.md "Sandbox" → Containers. L8 (repo
+`SUBMISSION_FORM.md`) waits for Felix's final form. The steward deploy should follow the live
+recordings, not precede them.
+Earlier: **As of:** 2026-10-12 13:16 EDT. **SECURITY PASS DONE (read-only, Opus, a day early) on
 trunk `f9a2f0b`:** no high findings; gitleaks over 853 commits incl. `refs/notes/commits`: one
 false positive (`ACCESS_AUD`); cargo deny passes on trunk and `sprint/build`; endpoint auth,
 Access JWT checks, untrusted-text escaping and logging pass. Medium: M1 untracked `.claude/`
