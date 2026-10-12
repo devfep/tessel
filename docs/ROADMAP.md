@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 09:30 EDT. **HANDOVER before a context clear Felix asked for. Nothing
+**As of:** 2026-10-12 11:35 EDT. **RESUMED; orchestrator on (Felix: "resume").** Code state
+unchanged: trunk `f9a2f0b`, coordinator `c49a44ca` live. Dispatched `lane-hf-draft` (Sonnet,
+video only, no repo change): install HyperFrames `0.8.145` engine-only in the session scratchpad
+under the vetting conditions, render a 10 s hook-card draft at 1920×1080/30 fps, report the wall
+time. Change to the shot list: the evidence graphics (E1–E6) render the evidence files at
+`d5ef265` as HTML inside the composition, so screenshots S1–S4 are no longer needed from Felix.
+**Pending from Felix:** open the two figures and form v3 and send changes; rehearse the
+assumption scene; record the live scenes. The 18:00 gate to plain cards stands.
+Earlier: **As of:** 2026-10-12 09:30 EDT. **HANDOVER before a context clear Felix asked for. Nothing
 runs.** Resume from `.claude/handoff-2026-10-12/CHECKPOINT.md` (untracked; never `git add` it):
 it holds the next actions, the video plan and copies of the drafts and figures (the session
 scratchpad in `/tmp` may not survive). Code state unchanged since 22:05: trunk `f9a2f0b`,
