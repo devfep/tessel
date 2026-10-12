@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 14:54 EDT. **HANDOVER before a context clear Felix asked for.
+**As of:** 2026-10-12 15:06 EDT. **RESUMED; orchestrator on (Felix: "resume"). COORD-WAITER-BASE
+dispatched** as `lane-coord-waiter` (Sonnet) in worktree `coord-waiter` from trunk `f9a2f0b`
+(nothing has landed since the handover: `sec-harden`, `docs-ref`, `docs-core` are still waiting
+on Felix's landing commands, daemons alive), fork `tessel-dogfood--lane-coord-waiter` created,
+identity minted. The fix is the swap (grant waiters, then notify), two tests, three mutants, and
+a per-path answer for `AlreadyMerged`, `trunk_read`, the rejection paths and the release paths.
+Then an Opus review, the workspace gate with curl off the PATH, the wasm build, and Felix lands
+and deploys the coordinator after his recordings. Load average 118 at resume: one cargo job at a
+time.
+Earlier: **As of:** 2026-10-12 14:54 EDT. **HANDOVER before a context clear Felix asked for.
 Next (Felix): implement COORD-WAITER-BASE.** Resume from `.claude/handoff-2026-10-12/CHECKPOINT.md`
 (untracked; rewritten 14:55): the fix plan, the three reviewed landings in order (SEC-HARDEN
 `3442343`, DOCS-REF `9b6af03`, README swap, DOCS-CORE `88c7383`), the GitHub `main` sync, and
@@ -1425,6 +1434,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
+- [ ] **COORD-WAITER-BASE** — found by `lane-docs-core` capturing the worked example (Oct 12): on a
+  merge, `src/coordinator/merging.rs:322` builds the `BaseMoved` notices for the holders whose
+  claims overlap the touched scopes, and only then `:323` grants the unblocked waiters; a waiter
+  granted there was not a holder when the notices were built, and `Granted` carries no head, so
+  the new holder keeps the pre-merge head (`tessel status` showed `71a4e8a` after a1's merge) and
+  may edit on a stale base until it pulls; the steward's rebase still guards `main`. Fix: grant the
+  waiters first, then notify, so the new holder gets the existing `BaseMoved`; no protocol change;
+  event order becomes `ClaimGranted` before `BaseMoved`. Tests: overlapping waiter gets `Granted`
+  then `BaseMoved`; non-overlapping waiter gets none; three mutants. Coordinator; needs a deploy.
+  Dispatched 2026-10-12 15:06 as `lane-coord-waiter` (Sonnet, worktree `coord-waiter` from
+  `f9a2f0b`; brief in the handoff `orch/brief-coord-waiter.md`).
 - [x] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
   submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
