@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 21:35 EDT. **REVIEW-NOTE READY FOR FELIX'S ADMIN MERGE at `f9a2f0b`**
+**As of:** 2026-10-11 21:56 EDT. **ALL FOUR OPEN BOXES DONE; REVIEW-NOTE MERGED at `f9a2f0b`** by
+Felix's admin merge (steward answer `merged`, base `d1ef2f1`, head `f9a2f0b`: a fast-forward,
+so the trunk tree is the gated one); mirrored; lane reclaimed. Deploy worktree at `f9a2f0b` with
+`build/worker` and `target/debug/tessel` rebuilt there (lanes claim with this CLI from now on).
+**PENDING FROM FELIX: one coordinator deploy** covering GATE-OUTPUT, REVIEW-SENSITIVE and
+REVIEW-NOTE: `cd /Users/felixpatawah/repos/tessel/.claude/worktrees/deploy && npx wrangler deploy
+--env ""`; then the orchestrator checks it live. The coordinator's stored head is stale after the
+admin merge (as after SHADOW-GC); the next coordinator-dispatched merge corrects it. Video
+checkpoint stays `video-freeze-2026-10-11` (`d5ef265`) until the deploy is checked live.
+Earlier: **As of:** 2026-10-11 21:35 EDT. **REVIEW-NOTE READY FOR FELIX'S ADMIN MERGE at `f9a2f0b`**
 (`4673a19` + `0cdf85c` + `f9a2f0b` on `task-review-note` from `d1ef2f1`; 8 files incl.
 `src/protocol.rs`: two `#[serde(default)]` optional fields `reviewer`, `note` on
 `ServerMsg::SubmitRejected`, invariant 13 and the `PROTOCOL_VERSION` doc rewritten to the
@@ -1046,10 +1055,17 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   and applied on every load like `REVIEWERS`; a bad value fails closed (every real submission is
   held). Per deployment, not per repo. Noted, not filed: race entries are not checked against the
   list (true before). Needs the coordinator deploy.
-- [ ] **REVIEW-NOTE** — from the UX review research: a reviewer's note never reaches the agent (a
+- [x] **REVIEW-NOTE** — from the UX review research: a reviewer's note never reaches the agent (a
   test pins it: `the_review_note_never_reaches_a_reason_or_a_message`, merging.rs ~1249); a
   rejected agent sees only "rejected in review". Delivering the note is a protocol question
   (untrusted text to an agent, rule 4): needs a design and Felix's ruling.
+  CLOSED 2026-10-11 at trunk `f9a2f0b` by Felix's admin merge (`4673a19`, `0cdf85c`, `f9a2f0b`;
+  Opus "Yes" twice): `ServerMsg::SubmitRejected` gains optional `reviewer` and `note`, sent only
+  to the submitter on a review rejection; the reason stays "rejected in review"; the logged event
+  is unchanged (the note is already on `ReviewDecided`); the CLI shows the note through
+  `quote_untrusted` with the reviewer named (the inbox hook and MCP inbox use the same text).
+  Known gap, documented: a daemon offline at the rejection learns of it by reconcile, without the
+  note. Needs the coordinator deploy.
 - [x] **AX-INBOX** — Felix approved Oct 7 (PLAN §6 "Agent integrations"): Claude Code hooks push
   new inbox items into the agent's turn as quoted data (merged, denied, wait granted, base moved,
   review decided), and a `Stop` hook keeps an agent from ending its turn while its submission is
