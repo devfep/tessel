@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 19:20 EDT. **THREE LANES DISPATCHED IN PARALLEL from trunk `3cedad8`**, on
+**As of:** 2026-10-12 20:25 EDT. **FOURTH LANE: EVIDENCE-REPO dispatched** (`lane-evidence-repo`,
+Opus, from `3cedad8`) on Felix's call to take up PLAN item 8's archive for the contest's "how
+do you track why" question; CLI-TRANSCRIPT filed to follow CLI-NOTES. The three earlier lanes:
+grant-head has its code done (protocol field, four grant paths, daemon, fixture, reference) and
+moves its CLI tests to `tests/grant_head.rs` because race-cli holds `tests/cli.rs`; cli-notes
+holds `notes.rs`, `tests/notes.rs`, CLAUDE.md and waits for `commands.rs::submit` (race-cli's
+whole-file create claim) and for the grant-head merge (a `HeldClaim` field for assumptions);
+race-cli has edits in ten files under one wide claim and was asked twice to release and
+reclaim without `commands.rs`, the skill and `tests/cli.rs`. Nobody waits while holding, so no
+deadlock; the wide claim serializes the other two until it narrows. Video script v2 written
+(handoff `orch/video-script-v2.md`).
+Earlier: **As of:** 2026-10-12 19:20 EDT. **THREE LANES DISPATCHED IN PARALLEL from trunk `3cedad8`**, on
 Felix's push to use the swarm for the "not shipped" list while there is time: CLI-NOTES
 (`lane-cli-notes`, Sonnet: `tessel submit` writes the commit's git note), COORD-GRANT-HEAD
 (`lane-grant-head`, Sonnet: additive `head` on `Granted`, held for review as `src/protocol.rs`
@@ -1582,6 +1593,31 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
+- [ ] **EVIDENCE-REPO** — PLAN item 8's archive, taken up on Felix's call (Oct 12 20:05: "it holds
+  some weight for the contest's question"). The Artifacts binding has no write method (generated
+  types: `create`, `get`, `fork`, tokens, `readFile`, `log`), so the steward's merge container
+  writes, with a write token minted and revoked like the main push. Design: the steward creates
+  `<repo>--evidence` and `<repo>--transcripts` (not forks, so no agent token ever covers them);
+  the coordinator's internal merge request gains `claim`, `intent`, `decisions` and `review`
+  (`MergeDispatch`, `request_body`; not the frozen CLI protocol); a new last step of `runMerge`,
+  only after the Worker's read of main said `merged`, writes `merges/<head>.md` (record table,
+  scopes, gate steps, intent/assumptions/evidence/rejected quoted as data, review, transcript)
+  and `merges/INDEX.md`, pushes with a lease, and the Worker verifies the bytes through the
+  binding; the outcome stays `merged` and carries `evidence: {written, path | reason}`; a
+  transcript named by `decisions.transcript` is read from the fork's branch
+  `tessel/transcript-<claim>` at `transcripts/<claim>.md`, hash-checked, and copied to
+  `<agent>/<claim>.md` in the transcripts repo or refused in the record. Budget slot added; no
+  dashboard change; one paragraph in `docs/how-tessel-works.md`. Tests on both sides; three
+  mutants. Needs a steward deploy and, for the request fields, a coordinator deploy. Dispatched
+  2026-10-12 20:25 as `lane-evidence-repo` (Opus, worktree `evidence-repo` from `3cedad8`; brief
+  in the handoff `orch/brief-evidence-repo.md`).
+- [ ] **CLI-TRANSCRIPT** — the agent side of EVIDENCE-REPO, dispatched after CLI-NOTES lands (both
+  edit `commands.rs::submit`): `tessel submit --transcript <file>` redacts the file (token and
+  secret patterns from `redact.ts`'s list, mirrored in Rust), computes its SHA-256, commits it
+  as `transcripts/<claim>.md` on the fork branch `tessel/transcript-<claim>`, pushes that branch
+  with the fork token the agent already has, and sets `DecisionRecord.transcript` to
+  `{repo: <fork>, path, sha256}`. No protocol change (`TranscriptRef` exists). Tests against the
+  real binary; the steward side (EVIDENCE-REPO) verifies the hash. Not yet dispatched.
 - [ ] **CLI-NOTES** — from the video script's "not shipped" list (Oct 11, decision 6): no code writes
   the git note CLAUDE.md asks for on every commit ("until the CLI does this automatically"). The
   CLI has the four lines at `tessel submit`: the intent from `tessel start`, `--evidence`,
