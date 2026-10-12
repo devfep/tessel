@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 16:10 EDT. **DOCS-CORE `7c7131e` REFUSED by the sandbox gate** (swarm
+**As of:** 2026-10-12 16:18 EDT. **SWARM-RECONNECT-FLAKE reproduced and dispatched** as
+`lane-swarm-flake` (Sonnet, worktree `swarm-flake` from trunk `9b6af03`, fork and identity
+made): under 24 CPU hogs 1 of 8 runs of the refused test hung with no output; the fix orders
+the test by log events and bounds every wait in `tessel-swarm/tests/reconnect.rs`. Review, gate
+under hogs, then Felix lands it before DOCS-CORE and COORD-WAITER-BASE are resubmitted, so the
+sandbox gate stops refusing sound commits. The two resubmits can also go first if Felix prefers
+(the flake is intermittent); the fix lands either way.
+Earlier: **As of:** 2026-10-12 16:10 EDT. **DOCS-CORE `7c7131e` REFUSED by the sandbox gate** (swarm
 `reconnect` test failed on a commit that touches only `README.md`, `docs/how-tessel-works.md`
 and `docs/reference/coordinator.md`, with the swarm, core and CLI code identical to the trunk).
 Investigated: the test races an 800 ms work time against a 300 ms-delayed git commit; it
@@ -1554,7 +1561,14 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   5 of 5 on the trunk code locally at 16:03 (1.6-1.9 s each, logs in the handoff
   `coord-waiter/rerun/trunk-rejection-*.log`). Fix: make the work time relative to the poison
   (gate the agent's submit on the poison having landed in the log, as the test already does for
-  the cut), as SWARM-ONLOCAL-LOAD did. Post-contest unless it refuses a landing a third time.
+  the cut), as SWARM-ONLOCAL-LOAD did. Reproduced 16:14 on the Mac under 24 synthetic CPU hogs:
+  1 of 8 single runs of the test hung past a 300 s timeout with no output (the `lifted` task
+  waits forever for a `SubmitRejected` that never comes while the agent is refused), which is
+  also what stalled the `reconnect` binary for 25 minutes in the workspace gate. Fix: order the
+  test by log events (cut at the grant, poison while the agent is out, lift, submit, cut at
+  the submit) and bound every polling loop in the file by `BOUND` with a message. Test-only.
+  Dispatched 2026-10-12 16:18 as `lane-swarm-flake` (Sonnet, worktree `swarm-flake` from
+  `9b6af03`; brief in the handoff `orch/brief-swarm-flake.md`).
 - [x] **SWARM-ONLOCAL-LOAD** — from the SWARM-SHADOW-RECONNECT gate (Oct 9): `tests/on_local.rs`
   `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` asserts the shadow's
   submit within a fixed 6000 ms of its claim; under load (Mac at load ~100, 4-vCPU Sandbox) the
