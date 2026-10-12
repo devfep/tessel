@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 14:22 EDT. **COORD-WAITER-BASE root cause found (read-only):** on a
+**As of:** 2026-10-12 14:54 EDT. **HANDOVER before a context clear Felix asked for.
+Next (Felix): implement COORD-WAITER-BASE.** Resume from `.claude/handoff-2026-10-12/CHECKPOINT.md`
+(untracked; rewritten 14:55): the fix plan, the three reviewed landings in order (SEC-HARDEN
+`3442343`, DOCS-REF `9b6af03`, README swap, DOCS-CORE `88c7383`), the GitHub `main` sync, and
+what is Felix's. Nothing runs except the three lanes' daemons (`sec-harden`, `docs-ref`,
+`docs-core`), kept for their submits.
+Earlier: **As of:** 2026-10-12 14:22 EDT. **COORD-WAITER-BASE root cause found (read-only):** on a
 merge, `src/coordinator/merging.rs:351` sends `base_moved` to agents whose claims overlap the
 touched scopes, and only then does `:352` call `grant_unblocked_waiters`; a waiter granted in that
 step was not a holder when the notices were built, and `ServerMsg::Granted` (`src/protocol.rs:543`)
