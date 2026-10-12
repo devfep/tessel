@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 13:05 EDT. **ALL 16 GRAPHICS DONE, checked by the orchestrator,
+**As of:** 2026-10-12 13:16 EDT. **SECURITY PASS DONE (read-only, Opus, a day early) on
+trunk `f9a2f0b`:** no high findings; gitleaks over 853 commits incl. `refs/notes/commits`: one
+false positive (`ACCESS_AUD`); cargo deny passes on trunk and `sprint/build`; endpoint auth,
+Access JWT checks, untrusted-text escaping and logging pass. Medium: M1 untracked `.claude/`
+(124 MB handoff) and `AGENTS.md` not ignored (fix before the repo goes public); M2 README puts
+`STEWARD_ADMIN_TOKEN` in the agent env (self-approval and test-free admin merge possible);
+M3 no container `max_instances`, `/diff` starts a container without the forgery check. Low:
+L1 dev-only sharp advisory, L2 two unredacted error logs, L3 24 h tokens, L4 `.gitignore`
+gaps, L5 unused `COORDINATOR_TOKEN` secret, L6 `tools/*.sh` export the API token, L8 repo
+`SUBMISSION_FORM.md` (first commit) claims unshipped features. **Proposed to Felix:** one lane
+SEC-HARDEN (M1, M2, M3, L2, L4, L8), `max_instances = 2`, ignore `AGENTS.md`, he deletes
+`COORDINATOR_TOKEN`. Awaiting his go.
+Earlier: **As of:** 2026-10-12 13:05 EDT. **ALL 16 GRAPHICS DONE, checked by the orchestrator,
 well before the 18:00 gate.** 8 cards (re-rendered with New York embedded from the system font
 files; zero compiler font lines), E1-E6, `fig-arch` and `fig-anatomy` (Anatomy ruling applied;
 the lever 1/2 overlap at release matches the source page's own tour frames 10-13). All
