@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 18:50 EDT. **GITHUB `main` IS CURRENT: Felix merged pull request #3** (merge
+**As of:** 2026-10-12 19:20 EDT. **THREE LANES DISPATCHED IN PARALLEL from trunk `3cedad8`**, on
+Felix's push to use the swarm for the "not shipped" list while there is time: CLI-NOTES
+(`lane-cli-notes`, Sonnet: `tessel submit` writes the commit's git note), COORD-GRANT-HEAD
+(`lane-grant-head`, Sonnet: additive `head` on `Granted`, held for review as `src/protocol.rs`
+is sensitive; closes the limit noted on COORD-WAITER-BASE), CLI-RACE (`lane-race-cli`, Opus:
+`tessel race open|join|pick` and the `race_result` notice; the coordinator side is complete).
+Disjoint claims by symbol; the race lane takes `daemon.rs::on_server_msg` last, after the
+grant-head lane. Each gets an Opus review and the orchestrator's workspace gate, then Felix
+lands them with `orch/land-lane.sh` as they come. Not taken up (infrastructure, not for
+tonight): Workers Builds previews, separate Artifacts repos for evidence and transcripts,
+commutation batching. The video script v2 (header, SENSITIVE policy, the `base_moved` line
+in the `--wait` scene, and these three if they land) is the orchestrator's next write.
+Earlier: **As of:** 2026-10-12 18:50 EDT. **GITHUB `main` IS CURRENT: Felix merged pull request #3** (merge
 commit `662e25d` at 18:43; `main`'s tree `26f7797` equals the trunk's at `3cedad8`;
 `artifacts-trunk` kept as the mirror branch). Everything landed today is on both trunks. **Left
 with Felix:** the steward deploy for SEC-HARDEN after the recordings; figure/form v3, video tag,
@@ -1570,7 +1582,37 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
-- [ ] **COORD-WAITER-BASE** — found by `lane-docs-core` capturing the worked example (Oct 12): on a
+- [ ] **CLI-NOTES** — from the video script's "not shipped" list (Oct 11, decision 6): no code writes
+  the git note CLAUDE.md asks for on every commit ("until the CLI does this automatically"). The
+  CLI has the four lines at `tessel submit`: the intent from `tessel start`, `--evidence`,
+  `--rejected`, and the `--assume` statements. Make `tessel submit` write the note
+  (`git notes add`, never overwriting an existing one) before it sends the submission, print
+  that it did and that notes are not pushed with the fork head; a write failure is a warning,
+  not a refusal. CLAUDE.md's dogfooding section and the skill updated. Tests against the real
+  binary; three mutants. CLI only. Dispatched 2026-10-12 19:20 as `lane-cli-notes` (Sonnet,
+  worktree `cli-notes` from `3cedad8`; brief in the handoff `orch/brief-cli-notes.md`).
+- [ ] **COORD-GRANT-HEAD** — the Opus note on COORD-WAITER-BASE: `ServerMsg::Granted` carries no
+  head, so an agent granted by a release, or by a merge on a scope it did not touch, keeps the
+  head from its last `welcome` and may start from a stale base; the steward's rebase guards
+  main. Fix within rule 1: add `#[serde(default)] head: Option<CommitId>` to `Granted`, set in
+  every grant path (direct, after a wait, amend, race entry) to the coordinator's trunk head;
+  the daemon applies it like `BaseMoved` and persists, so `tessel status` shows it; event log
+  unchanged; `PROTOCOL_VERSION` unchanged. Touches `src/protocol.rs` (sensitive: held for
+  review). Tests on both sides; three mutants; `docs/reference/coordinator.md` updated.
+  Dispatched 2026-10-12 19:20 as `lane-grant-head` (Sonnet, worktree `grant-head` from
+  `3cedad8`; brief in the handoff `orch/brief-grant-head.md`). Needs a coordinator deploy.
+- [ ] **CLI-RACE** — from the video script's "not shipped" list (decision 2): the coordinator decides
+  races end to end (`src/coordinator/racing.rs`: entries tried by the verification queue, the
+  winner promoted and merged, losers rejected) but the CLI has no race command. Ship `tessel
+  race open "<intent>" <scopes> --entrants N --deadline <min> --by <criteria>` (reviewer only;
+  `lowest_risk`/`smallest_diff` refused as never measured), `tessel race join <race>` (a grant
+  with `race` set; the denial card gains "join it with: tessel race join N"), `tessel race pick
+  <race> <claim>`, and a `race_result` inbox notice with the winner, ranking and own place.
+  No protocol change. Tests against the real binary with the fake coordinator driving the
+  real core; three mutants; skill and README command lists updated. Dispatched 2026-10-12
+  19:20 as `lane-race-cli` (Opus, worktree `race-cli` from `3cedad8`; brief in the handoff
+  `orch/brief-race-cli.md`). Claims the daemon symbols last, after `lane-grant-head`.
+- [x] **COORD-WAITER-BASE** — found by `lane-docs-core` capturing the worked example (Oct 12): on a
   merge, `src/coordinator/merging.rs:322` builds the `BaseMoved` notices for the holders whose
   claims overlap the touched scopes, and only then `:323` grants the unblocked waiters; a waiter
   granted there was not a holder when the notices were built, and `Granted` carries no head, so
