@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-11 21:56 EDT. **ALL FOUR OPEN BOXES DONE; REVIEW-NOTE MERGED at `f9a2f0b`** by
+**As of:** 2026-10-11 22:05 EDT. **COORDINATOR DEPLOYED by Felix: version `c49a44ca`, code
+`f9a2f0b`** (from the deploy worktree; bindings show `SENSITIVE`). Live check by the
+orchestrator: identity `orch-live-check` started, claimed `src/protocol.rs` (granted, claim 103,
+fence 283), status, stopped; `wrangler tail` for the run: 14 events, all on `c49a44ca`, 9 ok and
+5 canceled (socket ends), 0 exceptions, 0 error logs, no `SENSITIVE` config report (scratchpad
+`live-check/tail.jsonl`). Not yet seen live: a submission held with `sensitive_path`, a
+tests-failed reason naming its tests, a review note reaching an agent; the coordinator's head
+still reads `d1ef2f1` until its next dispatched merge. Steward unchanged (no redeploy needed).
+Nothing runs; every lane reclaimed. Video checkpoint: Felix's call whether to move it from
+`d5ef265` to `f9a2f0b`.
+Earlier: **As of:** 2026-10-11 21:56 EDT. **ALL FOUR OPEN BOXES DONE; REVIEW-NOTE MERGED at `f9a2f0b`** by
 Felix's admin merge (steward answer `merged`, base `d1ef2f1`, head `f9a2f0b`: a fast-forward,
 so the trunk tree is the gated one); mirrored; lane reclaimed. Deploy worktree at `f9a2f0b` with
 `build/worker` and `target/debug/tessel` rebuilt there (lanes claim with this CLI from now on).
