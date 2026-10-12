@@ -115,8 +115,9 @@ Two claims on overlapping scopes conflict where this table says so (it is symmet
 | `edit-signature` | conflict | conflict | conflict | conflict |
 | `create` | ok | conflict | conflict | conflict |
 
-So `create` conflicts with `create`, `edit-body` and `edit-signature`: two agents adding to the same
-scope are refused. `edit-signature` covers `edit-body`; only `create` covers `create`.
+So `create` conflicts with `create`, `edit-body` and `edit-signature`: when two agents ask to add
+to the same scope, the second claim is denied (or queued, with `--wait`). `edit-signature` covers
+`edit-body`; only `create` covers `create`.
 
 ## What the hook claims
 

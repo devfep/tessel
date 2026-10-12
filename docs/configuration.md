@@ -90,8 +90,8 @@ Tessel needs its own toolchain image built from its lockfiles, and the steward's
 ### Time budget
 
 All install commands share 60 s. All `[[test]]` commands share 327 s. A command that runs out of
-its share ends as a timeout (exit 124), not as a failing test
-(`tessel-steward/src/step-budget.ts:33-65`, asserted in `step-budget.test.ts:36`).
+its share ends as a timeout (exit 124 or 137), not as a failing test
+(`tessel-steward/src/step-budget.ts:33-65,77`, asserted in `step-budget.test.ts:36`).
 
 ### Who may change the gate
 
@@ -137,6 +137,7 @@ scripted swarm harness.
 | `SENSITIVE` | `[vars]` | six paths (see below) | `""` | No sensitive paths | Every load | Comma-separated path prefixes. A submission that touches a path starting with one is held for review (`src/protocol.rs:694-728`). |
 | `ALLOWED_REPO_PREFIX` | `[vars]` | not set | `swarm-` | Serves every repo | Every request | The Worker serves only repos whose name starts with it. Set it when deployments share a signing key (`src/shell.rs:222`, `src/runtime.rs:110`). |
 | `IDENTITY_SIGNING_KEY` | secret (`wrangler secret put`) | required | required | Every request is refused | Every request | HMAC key that verifies identity tokens. It must be the same value as the steward's (`src/identity.rs:11,43`, `src/runtime.rs:114`). |
+| `STEWARD` | `[[services]]` binding | `tessel-steward`, entrypoint `MergeService` | same | Merges, trials and head reads fail | Every call | The service binding through which the coordinator calls the steward (`wrangler.toml:27-30`, `src/runtime.rs:74,716`). Wrangler does not inherit it into `[env.swarm]`, which repeats it. |
 
 Which load applies a setting (`src/runtime.rs:342-365`, `src/shell.rs:235-257`): `RUN` and
 `SHADOW_ENABLED` are fixed per repo when its state is first created. Changing them in
@@ -168,7 +169,8 @@ A submission merges unattended unless one of these applies (`src/protocol.rs:694
 | `threatens_assumptions` | The work threatens an assumption another agent declared. |
 | `no_test_evidence` | The submission carries no `--evidence`. |
 
-`--evidence` is self-reported. Any non-empty text satisfies the rule (`src/coordinator.rs:1271`).
+`--evidence` is self-reported. The coordinator accepts any non-empty evidence list
+(`src/coordinator.rs:1271`); the CLI drops blank entries (`tessel-cli/src/submit.rs:63-75`).
 Nothing checks that the tests ran.
 
 ## Steward: `tessel-steward/wrangler.jsonc`
@@ -178,7 +180,7 @@ Nothing checks that the tests ran.
 | `ACCESS_TEAM_DOMAIN` | `vars` | `fepdev.cloudflareaccess.com` | `/dashboard` and `/review` answer 503 "sign-in not configured" | Cloudflare Access team domain that signs the viewer's JWT. `https://` is stripped (`src/access.ts:49`). |
 | `ACCESS_AUD` | `vars` | the Access application's AUD tag | same | The audience a JWT must carry (`src/access.ts:50`). |
 | `DASHBOARD_VIEWERS` | `vars` | one email | No account passes: every signed-in user gets 403 | Comma-separated emails allowed to open `/dashboard` and `/review`. Compared case-insensitively (`src/access.ts:54-58,172`). |
-| `REVIEWER_EMAILS` | `vars` | `devfep@gmail.com=felix` | Nobody may decide; viewing is unaffected | Comma-separated `email=agent` pairs. A person signed in as `email` approves or rejects on `/review` as `agent`. An entry that is not a pair with a valid agent id is dropped (`src/review-csrf.ts:10-23`, `src/review.ts:346`). |
+| `REVIEWER_EMAILS` | `vars` | one `email=agent` pair | Nobody may decide; viewing is unaffected | Comma-separated `email=agent` pairs. A person signed in as `email` approves or rejects on `/review` as `agent`. An entry that is not a pair with a valid agent id is dropped (`src/review-csrf.ts:10-23`, `src/review.ts:346`). |
 | `STEWARD_ADMIN_TOKEN` | secret | required | Every admin route answers 401 | Bearer token for the admin routes: create repo, fork, mint tokens, run tests, admin merge, mint identity (`src/index.ts:47-58,198-200`). |
 | `IDENTITY_SIGNING_KEY` | secret | required | Identity minting throws | Signs agent identity tokens. It must equal the coordinator's. It also signs the review page's anti-forgery tokens and the steward's own calls to the coordinator (`src/identity.ts:45`, `src/review.ts:94`, `src/coordinator-link.ts:16`). |
 
@@ -215,6 +217,13 @@ The file allows only these four keys (`config.rs:67`). An empty value counts as 
 mode `0600` (`init.rs:518`) and `tessel init` adds `.tessel/` to `.git/info/exclude`
 (`init.rs:568`). Never print, log or commit it.
 
+### Other environment variables
+
+| Variable | Default | Effect | Code |
+|---|---|---|---|
+| `XDG_RUNTIME_DIR` | the system temp directory | Base directory of the daemon socket, `<base>/tessel-<uid>/<hash of worktree>.sock` (mode 0700). The socket path may be at most 100 bytes. | `tessel-cli/src/worktree.rs:152-156,198` |
+| `CLAUDE_PROJECT_DIR` | unset | The worktree a hook guards when `--root` is not given. `tessel hook install` writes `--root`, so this is a fallback. | `tessel-cli/src/commands.rs:659-664` |
+
 ### Precedence
 
 | Command | Order, highest first |
@@ -235,7 +244,7 @@ Where the token comes from, first match wins (`init.rs:279-340`):
 2. `TESSEL_TOKEN`.
 3. With `--steward <url>`: a token minted from `POST <url>/repos/<repo>/agents/<agent>/identity`
    using `STEWARD_ADMIN_TOKEN` from the environment. The URL must be `https://`, or
-   `http://localhost` or `http://127.0.0.1` for a dev server (`init.rs:341-355`).
+   `http://localhost` or `http://127.0.0.1` for a dev server (`init.rs:365-390`).
 
 The operator mints the identity token and gives the agent only `TESSEL_TOKEN`. The admin token
 stays out of the agent's environment: with it an agent could mint a reviewer identity.
@@ -255,7 +264,7 @@ denied (`main.rs:47-52`).
 |---|---|---|
 | `<scope>...` | required | One or more scopes. Each is its own argument. |
 | `--mode` | `edit-body` | `depend`, `edit-body`, `edit-signature` or `create` (`main.rs:58`). On the wire these are `depend`, `edit_body`, `edit_signature`, `create`. |
-| `--wait` | off | Queue behind the holder instead of failing. Allowed only when the agent holds no other claim; otherwise the coordinator refuses with `wait_while_holding` (`src/coordinator.rs:770,803`). Exit 4 when queued. |
+| `--wait` | off | Queue behind the holder instead of failing. Allowed only when the agent holds no other claim; otherwise the coordinator refuses with `wait_while_holding` (`src/coordinator.rs:799-806`). An agent with a queued request may not claim at all (`:768-771`). Exit 4 when queued. |
 | `--assume "<text>"` | none | Behaviour relied on but not owned in the first scope. Repeatable. Attaches to a new claim. |
 | `--new` | off | Make a separate claim instead of adding the scopes to the one open claim. |
 | `--json` | off | Print one JSON envelope with the outcome and the moves open to the agent. |
@@ -291,7 +300,7 @@ What a held mode covers when submitting (`protocol.rs:196-210`): every mode cove
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--evidence "<text>"` | none, at least one | What shows the work is right. Repeatable. Blank text does not count (`tessel-cli/src/submit.rs:63-75`). Self-reported: the coordinator accepts any non-empty text. |
+| `--evidence "<text>"` | none, at least one | What shows the work is right. Repeatable. The CLI drops blank entries (`tessel-cli/src/submit.rs:63-75`). Self-reported: the coordinator accepts any non-empty evidence list, and nothing checks that the tests ran. |
 | `--rejected "<approach>::<reason>"` | none | An approach tried and dropped. Repeatable. |
 | `--claim <id>` | the only unsubmitted claim | Required when several are held. |
 | `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork. |
