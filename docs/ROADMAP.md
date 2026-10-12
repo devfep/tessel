@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 15:22 EDT. **SEC-HARDEN CLOSED at trunk `3442343`** (held for
+**As of:** 2026-10-12 15:24 EDT. **COORD-WAITER-BASE review: Opus "Yes" on `76786e2`** (every
+requirement met; its four mutants each failed at least one test; package gate 519, clippy and
+rustfmt clean; two low findings, not blocking: `Granted` still carries no head, so a holder
+granted on an untouched scope or by a release can start from an old base, a possible follow-up
+box; and the new waiter test makes `a_merge_grants_the_waiter_it_unblocked` redundant, left as
+is). Remaining before Felix lands: the orchestrator's workspace gate (running since 15:16, a
+clean build under load), the wasm build and the local a1/a2 replay.
+Earlier: **As of:** 2026-10-12 15:22 EDT. **SEC-HARDEN CLOSED at trunk `3442343`** (held for
 `review.ts::diff`, approved by the orchestrator through `tools/orch-review.sh`, merged 15:18,
 mirrored to GitHub `artifacts-trunk`; its daemon stopped; steward deploy still Felix's, after the
 recordings). **README swap done:** `7c7131e` in worktree `docs-core` on top of `88c7383`, under
