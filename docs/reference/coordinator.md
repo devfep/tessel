@@ -19,10 +19,11 @@ it mints the identity tokens the coordinator accepts. The manual session below u
 ## Authentication
 
 The Worker serves `/repo/<name>/ws` only to a request with `Authorization: Bearer <token>`, where
-the token is an identity token the steward signed for that repo and one agent (24 hours). Any
-other request gets `401 unauthorized` before a WebSocket is accepted. A `hello` for any other
-agent gets `not_owner` and the socket is closed. One token opens sockets for one agent only. The
-token format is documented in `src/identity.rs`.
+the token is an identity token the steward signed for that repo and one agent (24 hours). A request
+with a missing, expired or wrong token gets `401`, a path the Worker does not serve gets `404`, and
+a repo outside `ALLOWED_REPO_PREFIX` gets `403`, all before a WebSocket is
+accepted. A `hello` for any other agent gets `not_owner` and the socket is closed. One token opens
+sockets for one agent only. The token format is documented in `src/identity.rs`.
 
 `GET /repo/<name>/summary` takes the same token (any agent of the repo may read it) and answers
 `{"summary": {...}, "head_seq": n}`: the evidence counters over the repo's whole event log and the

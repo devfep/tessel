@@ -28,7 +28,7 @@ redo part of it.
 | | Without | With Tessel |
 |---|---|---|
 | Two agents want the same function | Both edit it; the later merge conflicts or breaks the build | The second is told before it edits, with the holder's intent, and waits or picks other work |
-| A signature change and a new caller | Merge cleanly in git, then the build fails | `edit-signature` and `depend` claims on the same symbol conflict, so they never run at the same time |
+| A signature change and a new caller | Merge cleanly in git, then the build fails | If the caller's agent claims `depend` on the function (the skill teaches this; the hooks claim only edits), the two claims conflict and cannot run at once. If it does not, the steward's tests reject the later one at merge, before `main` changes |
 | One agent relies on another's behaviour | Unrecorded | Recorded as an assumption; the agent whose work threatens it is told, and so is the agent who made it |
 | Who merges to `main` | Whoever pushes | Only the steward, after it rebases, checks coverage and runs the tests |
 | Code review | Every change | Only changes a rule flags, each with the reason |
@@ -76,7 +76,7 @@ numeric functions with one `node --test` test each. Both want to change `applyDi
 `src/pricing.ts`.
 
 The output below is real. It comes from the `tessel` CLI built from this code, run in two
-worktrees against the local target of [`tessel-swarm`](../tessel-swarm/README.md): the real
+clones against the local target of [`tessel-swarm`](../tessel-swarm/README.md): the real
 coordinator core behind a WebSocket on 127.0.0.1, with a local stand-in for the steward that
 cherry-picks the submitted commit onto the trunk and runs `node --test`. A small scratch program,
 not part of the repository, started that target and gave each agent a token. The deployed steward
@@ -139,8 +139,9 @@ unread inbox items: 2
 
 `a2` could have taken move 3 instead: leave this function alone and work elsewhere.
 
-**4. `a1` finishes, commits, pushes to its fork and submits.** The change keeps the behaviour, and
-the tests pass.
+**4. `a1` finishes, commits, pushes to its fork and submits.** The fork is `a1`'s own Artifacts
+repository, `swarm-docs--a1` (here, a local bare repository named `fork`); agents never push the
+trunk. The change keeps the behaviour, and the tests pass.
 
 ```
 [a1] $ git diff
@@ -210,22 +211,22 @@ unread inbox items: 3
 71a4e8a Starting repository
 ```
 
-`a2` now edits on top of `a1`'s merged change instead of racing it. The coordinator's event log
-for the run reads, in order: `claim_granted` (a1), `claim_denied` (a2), `wait_queued` (a2),
+`a2` now edits on top of `a1`'s merged change instead of racing it. The claim events in the
+coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wait_queued` (a2),
 `submitted`, `merged`, `claim_released`, `claim_granted` (a2).
 
 ## Terms
 
 | Term | What it is |
 |---|---|
-| **Claim** | A reservation of one or more scopes in a mode, held by one agent, with an intent. All of its scopes are granted or none. An agent has one open claim; a later `tessel claim` adds to it (`--new` makes a separate one). |
+| **Claim** | A reservation of one or more scopes in a mode, held by one agent, with an intent. All of its scopes are granted or none. By default the CLI keeps one open claim; a later `tessel claim` adds to it (`--new` makes a separate one). |
 | **Scope** | What a claim covers: a directory (`src/`), a file (`src/pricing.ts`) or a symbol (`src/pricing.ts::applyDiscount`). Scopes form a tree, and a claim covers everything beneath its scope. |
-| **Intention lock** | Claiming a node also puts a weaker mark on each of its parents. Two marks never conflict, so `a2` can claim `src/pricing.ts::taxFor` while `a1` holds `applyDiscount`. A real claim on the whole file conflicts with the mark, so `a2` cannot claim `src/pricing.ts` in `edit-body` meanwhile. |
+| **Intention lock** | Claiming a node also puts a weaker mark on each of its parents. Two marks never conflict, so `a2` can claim `src/pricing.ts::taxFor` while `a1` holds `applyDiscount`. A real claim on the whole file conflicts with the mark when their modes conflict, so `a2` cannot claim `src/pricing.ts` in `edit-body` meanwhile. |
 | **Mode** | What the claim lets you do: `depend` (rely on the signatures in scope), `edit-body` (change bodies only), `edit-signature` (change signatures, rename or delete), `create` (add new symbols). |
 | **Fence** | A number on every grant, from a per-repo counter that only goes up. It is stored before the grant is sent. Release, amend and submit must present the current fence, so an agent whose claim expired cannot submit work it no longer owns. |
 | **Lease** | Every claim expires 30 seconds after the agent's last heartbeat. The daemon sends one every 10 seconds. A submitted claim stops expiring until it is merged or rejected. |
 | **Fail and wait** | What happens on conflict. `fail` (the default) denies at once with the decision card. `wait` (`--wait`) queues behind the holder, and is allowed only when you hold no other claim, so no agent holds one thing while waiting for another and the queue cannot deadlock. A queued request is withdrawn when the agent's last connection closes. |
-| **Shadow** | Experiment runs only, off unless the deployment sets `SHADOW_ENABLED`. The agent is denied for real but keeps working in its fork, which places no locks and never merges; when the blocking work lands, the steward tests whether the two really conflicted. The CLI has no flag for it; the swarm harness uses it. |
+| **Shadow** | Experiment runs only, off unless the deployment sets `SHADOW_ENABLED`. The agent is denied for real but keeps working in its fork; the shadow claim places no locks and its work never merges; when the blocking work lands, the steward tests whether the two really conflicted. The CLI has no flag for it; the swarm harness uses it. |
 | **Intent** | One line on why you are working, set by `tessel start`. Agents you block see it, quoted as untrusted text. |
 | **Assumption** | Behaviour you rely on in code you do not own, recorded with `--assume`. It is not a lock: a claim that could break it is granted, but told which assumptions are at risk. When that work is submitted, it is held for review and the assuming agent is told. After it merges, the steward tests the assuming agent's work against the new `main` and logs the result. |
 | **Review by exception** | A submission merges with no human unless a rule flags it: it changes a signature, touches a path listed in `SENSITIVE`, threatens an assumption, or carries no evidence. Flagged work waits for a reviewer named in `REVIEWERS`, who decides with `tessel review` or on the steward's review page. A reviewer can never decide their own submission. |
@@ -236,7 +237,9 @@ for the run reads, in order: `claim_granted` (a1), `claim_denied` (a2), `wait_qu
 
 ### Which modes conflict
 
-Two claims on overlapping scopes conflict when their modes do:
+Two scopes overlap when one contains the other: `src/` contains `src/pricing.ts`, which contains
+`src/pricing.ts::applyDiscount`. Siblings such as `applyDiscount` and `taxFor` never overlap. Two
+claims on overlapping scopes conflict when their modes do:
 
 | | `depend` | `edit-body` | `edit-signature` | `create` |
 |---|---|---|---|---|
@@ -250,7 +253,7 @@ does not see: a caller and a change to what it calls. `create` against `create` 
 two agents adding the same thing is duplicate work.
 
 A claim also has to cover what you changed. At submit, every touched scope needs a claimed scope
-above it in a mode that permits the change: `edit-signature` permits `edit-body`, every mode
+at or above it in a mode that permits the change: `edit-signature` permits `edit-body`, every mode
 permits `depend`, and only `create` permits `create`. Anything else is `uncovered`, and nothing is
 queued.
 
@@ -279,9 +282,10 @@ queued.
 - **Symbol claims cover Rust and TypeScript** (`.rs`, `.ts`, `.mts`, `.cts`, `.tsx`). Other files
   are claimed whole. The CLI turns more than four symbol claims in one file into one file claim.
 - **The gate tests only what its image holds.** The containers have no Internet. Without a
-  `tessel.toml`, the gate runs `npm test` on a Node repository with no dependencies. Anything else
-  needs the operator to build the toolchain image from the repository's lockfiles and write a
-  `tessel.toml`.
+  `tessel.toml`, the gate runs `npm test` on a Node repository with no dependencies. With one, the
+  only allowed test commands are `npm test`, `pnpm test` or `cargo test` with a fixed set of flags,
+  and the dependencies must already be in the toolchain image. The operator builds that image
+  from the repository's lockfiles; today it bakes in Tessel's own.
 - **The CLI is Unix-only.** It uses Unix-only APIs to protect its config file and to start its
   daemon.
 - **Only Claude Code gets automatic hooks.** Other agents use the MCP server (`tessel mcp`) or call
