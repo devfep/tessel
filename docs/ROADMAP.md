@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 17:04 EDT. **DOCS-CORE CLOSED at trunk `126b944`** (Felix resubmitted
+**As of:** 2026-10-12 17:10 EDT. **COORD-WAITER-BASE CLOSED at trunk `9ab793a`** (Felix landed
+it 17:03 before the test fix; the sandbox gate passed; rebased, `merging.rs` identical; mirrored;
+daemon stopped). Deploy worktree moved to `9ab793a`; `build/worker` and the CLI binary
+rebuilding there. **Pending from Felix:** the SWARM-RECONNECT-FLAKE landing (`ac35420`, held on
+submit, orchestrator approves), and the coordinator deploy after the recordings:
+`cd /Users/felixpatawah/repos/tessel/.claude/worktrees/deploy && npx wrangler deploy`. Then the
+GitHub `main` PR from `artifacts-trunk`. Live: coordinator still `c49a44ca` (code `f9a2f0b`),
+steward from `cbef948` (SEC-HARDEN not deployed yet either: same window).
+Earlier: **As of:** 2026-10-12 17:04 EDT. **DOCS-CORE CLOSED at trunk `126b944`** (Felix resubmitted
 `7c7131e` at 16:58 before the test fix; the sandbox gate passed this time; rebased by the steward,
 the three files identical; mirrored; daemon stopped). Docs tier 1 is on the trunk: README front
 door, how-it-works, configuration reference, coordinator reference, SKILL fixes. **Still to
@@ -1548,6 +1556,13 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Dispatched 2026-10-12 15:06 as `lane-coord-waiter` (Sonnet, worktree `coord-waiter` from
   `f9a2f0b`; brief in the handoff `orch/brief-coord-waiter.md`). Committed `76786e2` 15:15 (lane
   gate 519, three mutants killed); Opus review and the orchestrator's workspace gate running.
+  CLOSED 2026-10-12 17:07 at trunk `9ab793a` (rebased by the steward onto `126b944`, `merging.rs`
+  identical; Opus review "Yes", four reviewer mutants killed; workspace gate with curl off the
+  PATH: all binaries green with the two load reruns recorded, clippy 0; wasm build 0 warnings;
+  local a1/a2 replay: `granted_after_wait` then `base_moved`, status head at the merged commit;
+  pushed and submitted by Felix, merged with no hold; mirrored). NOT DEPLOYED: Felix deploys the
+  coordinator after the recordings; the live proof is then a `--wait` claim granted by a merge
+  whose `tessel status` shows the new head.
 - [x] **SEC-HARDEN** — from the pre-submission security pass (Oct 12): `.gitignore` gaps
   (`.claude/`, `/AGENTS.md`, `.env.*`, `.dev.vars.*`, `*.pem`, `*.key`), README admin-token
   guidance (the admin token stays with the operator), the `/diff` forgery check, `redactTokens`
