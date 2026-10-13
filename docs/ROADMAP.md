@@ -5,7 +5,24 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 20:12 EDT. **EVIDENCE-REPO committed `1951854`** (19:51; 33 files; lane gate:
+**As of:** 2026-10-12 20:20 EDT. **EVIDENCE-REPO review "With fixes"** (handoff
+`evidence-repo/VERDICT.md`: six reviewer mutants killed; requirements 1, 3-8, 10 met; the
+record is written only after main read `merged`, each repo with its own token, commit id
+pinned at the gateway, read-back bytes compared, agent text fenced, paths validated; fixes:
+quote the transcript's refused reason as data, refuse any transcript path but
+`transcripts/<claim>.md`; and requirement 2 only partly met: `Submission` stores no decisions
+or review, so the record says "not supplied" for them, because `src/coordinator.rs` was held).
+Orchestrator gate on the archived copy: workspace tests exit 0, clippy 0, wasm exit 0, steward
+985 tests, tsc, oxlint, oxfmt clean (`evidence-repo/gate.log`). The lane does the two fixes now
+and completes requirement 2 after the grant-head merge frees `coordinator.rs` (rebase, carry
+`DecisionRecord` and the review decision through `MergeDispatch`). **Claim contention
+resolved by the orchestrator at 20:14:** the race lane's daemon was stopped (`tessel stop`,
+claim 110 released; its ten edited files untouched) after an hour of blocking and three
+unanswered requests; `commands.rs::submit` and the skill were added to cli-notes's claim 114
+from its worktree; the race lane restarts with the narrow list in the handoff brief message
+and takes the daemon symbols after the grant-head merge. Still waiting: Felix's grant-head
+landing line.
+Earlier: **As of:** 2026-10-12 20:12 EDT. **EVIDENCE-REPO committed `1951854`** (19:51; 33 files; lane gate:
 coordinator 523, steward vitest 985 in 50 files, tsc, oxlint, oxfmt, clippy, rustfmt all exit 0;
 three mutants killed; its note says the coordinator-side intent/decisions/review were NOT carried
 because `src/coordinator.rs` was held by grant-head: the report is asked to say what the record
