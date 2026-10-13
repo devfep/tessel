@@ -108,6 +108,8 @@ Shipped:
 - Leases, fences, the wait queue, and the decision card with valid moves.
 - Assumptions, with a test of the assuming agent's work after the threatening change merges.
 - Review by exception, decided with `tessel review` or on the steward's review page.
+- Races: a reviewer runs `tessel race open`, agents `tessel race join`, and `tessel race pick`
+  chooses a `human_pick` winner; the coordinator tries each entry's tests and merges at most one.
 - The steward: Artifacts trunk and forks, the container gate, Queue-driven notices that `main`
   moved, identity tokens, and a dashboard.
 - The CLI with Claude Code hooks, git hooks, and a local MCP server (`tessel mcp`).
@@ -115,8 +117,6 @@ Shipped:
 
 Not shipped:
 
-- Races from a client. The coordinator can rank several entries for one task, but no client opens
-  a race.
 - Decision records in git notes. Evidence and rejected approaches stay in the coordinator's event
   log.
 - Gates for repositories with dependencies without a custom image: the containers have no

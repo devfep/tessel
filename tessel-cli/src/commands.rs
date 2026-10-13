@@ -128,6 +128,7 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             reject: _,
             note,
         } => Ok(review(&cwd, claim, approve, note).await?.emit()),
+        Command::Race { action } => Ok(crate::race::command(&cwd, action).await?.emit()),
         Command::Stop => stop(&cwd).await,
         Command::Mcp { root } => {
             crate::mcp::serve(root).await?;

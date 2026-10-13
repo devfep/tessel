@@ -156,6 +156,8 @@ pub enum NoticeKind {
     Uncovered,
     /// A submission is held for a human to approve.
     ReviewRequired,
+    /// A race this agent entered or opened was ranked or decided.
+    RaceResult,
     Error,
     /// A server message this CLI does not act on.
     Unexpected,

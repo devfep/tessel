@@ -785,11 +785,30 @@ impl Daemon {
                 let reasons = reasons.clone();
                 self.on_review_required(claim, reasons, msg);
             }
-            ServerMsg::Shadowed { .. }
-            | ServerMsg::RaceOpened { .. }
-            | ServerMsg::RaceResult { .. }
-            | ServerMsg::Event { .. } => self.unexpected("message this CLI does not use", &msg),
+            msg @ ServerMsg::RaceResult { .. } => self.on_race_result(msg),
+            // `RaceOpened` answers an `OpenRace`, which `tessel race open` sends on a connection
+            // of its own, never through the daemon.
+            ServerMsg::Shadowed { .. } | ServerMsg::RaceOpened { .. } | ServerMsg::Event { .. } => {
+                self.unexpected("message this CLI does not use", &msg);
+            }
         }
+    }
+
+    /// A race this agent entered or opened was ranked or decided: an inbox notice that says where
+    /// this agent's entry placed. The coordinator sends each losing entry a `SubmitRejected` after.
+    fn on_race_result(&self, msg: ServerMsg) {
+        let ServerMsg::RaceResult {
+            race,
+            winner,
+            ref ranking,
+            ref entries,
+        } = msg
+        else {
+            return;
+        };
+        let me = AgentId(self.config.agent.clone());
+        let note = crate::race::result_note(race, winner, ranking, entries, &me);
+        self.notify(NoticeKind::RaceResult, &note, Some(msg));
     }
 
     fn unexpected(&self, note: &str, msg: &ServerMsg) {
@@ -1464,6 +1483,7 @@ impl Daemon {
             Request::Release { claim } => {
                 let _ = reply.send(self.release(claim));
             }
+            Request::JoinRace { race, scopes } => self.start_join(race, scopes, reply),
             Request::Stop => {
                 let (mut unreleased, submitted, sent) = self.release_all_for_stop();
                 unreleased.extend(self.confirm_released(sent).await);
@@ -1506,7 +1526,11 @@ impl Daemon {
                 self.start_claim(scopes, wait, &assumptions, new, reply);
             }
             Request::Ensure { wanted } => self.ensure(&wanted, reply),
-            Request::Status | Request::Release { .. } | Request::Submit { .. } | Request::Stop => {
+            Request::Status
+            | Request::Release { .. }
+            | Request::JoinRace { .. }
+            | Request::Submit { .. }
+            | Request::Stop => {
                 let _ = reply.send(refused(None, "not a claim request"));
             }
         }
@@ -1525,10 +1549,16 @@ impl Daemon {
         }
     }
 
-    /// The one claim that new scopes are added to, if the agent holds exactly one open claim.
+    /// The one claim that new scopes are added to, if the agent holds exactly one open claim
+    /// besides its race entries.
     fn amend_target(&self) -> Option<(ClaimId, tessel_coordinator::protocol::Fence)> {
-        // Amend assumes no race entries (they cannot amend: `RaceScopeFixed`) until races ship.
-        let mut open = self.state.claims.iter().filter(|held| !held.submitted);
+        // A race entry holds exactly the race's scopes and cannot amend (`RaceScopeFixed`), so
+        // new scopes go to the one other open claim, or to a claim of their own.
+        let mut open = self
+            .state
+            .claims
+            .iter()
+            .filter(|held| !held.submitted && held.race.is_none());
         let only = open.next()?;
         if open.next().is_some() {
             return None;
@@ -1687,6 +1717,51 @@ impl Daemon {
                 scopes: add,
                 queued: false,
                 amend: Some(claim),
+                assumptions: Vec::new(),
+                replies: vec![reply],
+            },
+        );
+    }
+
+    /// Enters `race` with a `JoinRace`, which never waits. The grant does not repeat the race's
+    /// scopes, so the entry is recorded with `scopes`, which the command read from the race's
+    /// `RaceOpened` event.
+    fn start_join(
+        &mut self,
+        race: tessel_coordinator::protocol::RaceId,
+        scopes: Vec<ScopeClaim>,
+        reply: oneshot::Sender<Reply>,
+    ) {
+        if !self.is_online() {
+            let why = self
+                .state
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "not welcomed yet".to_string());
+            let message = format!("not connected to the coordinator ({why}); retrying");
+            let _ = reply.send(refused(None, &message));
+            return;
+        }
+        if scopes.is_empty() {
+            let _ = reply.send(refused(None, "the race names no scopes"));
+            return;
+        }
+        let req = self.next_req;
+        self.next_req += 1;
+        let msg = ClientMsg::JoinRace {
+            req: RequestId(req),
+            race,
+        };
+        if !self.send(msg) {
+            let _ = reply.send(refused(None, "the connection just dropped; retrying"));
+            return;
+        }
+        self.pending.insert(
+            req,
+            PendingClaim {
+                scopes,
+                queued: false,
+                amend: None,
                 assumptions: Vec::new(),
                 replies: vec![reply],
             },
