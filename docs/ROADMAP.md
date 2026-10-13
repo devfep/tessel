@@ -5,7 +5,20 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 21:28 EDT. **CLI-NOTES READY TO LAND at `84e606f`** (fixes verified by the
+**As of:** 2026-10-12 21:35 EDT. **EVIDENCE-REPO READY TO LAND at `43b7a72`** (reviewer's fixes
+verified 21:27: scope cells as code spans, wrong-head case tested, size check before the read,
+`.vitest/` gone; five more mutants killed; "Ready to merge? Yes"; orchestrator workspace gate on
+the archived copy: 20 binaries, 1,196 tests, exit 0, clippy 0, wasm build exit 0, steward 993
+tests in 50 files, tsc, oxlint, oxfmt exit 0). It changes `MergeDispatch` and `Submission`
+signatures: expect a hold; the orchestrator approves. Needs a coordinator deploy (merge request
+fields) and a steward deploy (the writer) to take effect. **CLI-RACE `4ce212d`:** reviewer
+confirmed the README line, the amend test (M1 killed) and the gate (482 passed) but found the
+render wording at `render.rs:702` still false after a pick-window timeout: one-line fix sent
+21:33; verdict "No" until then, then the SKILL hunk after the notes merge. CLI-NOTES `84e606f`
+ready (gate 21 binaries, 1,202 tests). Lane REPORT.md files: notes written; race and evidence
+still missing after three requests (their verdicts and gate logs stand in for them in the
+handoff).
+Earlier: **As of:** 2026-10-12 21:28 EDT. **CLI-NOTES READY TO LAND at `84e606f`** (fixes verified by the
 reviewer 21:25: the new test `the_note_exists_while_the_coordinator_has_not_answered_the_submission`
 kills the note-after-send mutant; notes tests 6 of 6; "Ready to merge? Yes"; orchestrator
 workspace gate on the archived copy 21:24-21:26: 21 binaries green, tests exit 0, clippy 0).
