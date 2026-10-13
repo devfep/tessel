@@ -5,7 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 08:00 EDT. **CLI-TRANSCRIPT CLOSED at trunk `1e41e0f`** (Felix pushed 07:54; held for
+**As of:** 2026-10-13 08:00 EDT. **PR #5 MERGED by Felix; GitHub `main` tree equals the trunk `1e41e0f`.**
+Nothing runs. Pending from Felix: rebuild the deploy binaries at `1e41e0f`, record, deploy the
+steward and the coordinator, then the Oct 13 items.
+Earlier: **As of:** 2026-10-13 08:00 EDT. **CLI-TRANSCRIPT CLOSED at trunk `1e41e0f`** (Felix pushed 07:54; held for
 three signature changes; approved 07:55; fast-forward merge 07:58, same sha; mirrored; daemon
 stopped; landing record in the handoff `cli-transcript/LANDING.md`). GitHub pull request #5
 (`artifacts-trunk` → `main`, this one commit) is open for Felix. No agent, daemon or cargo job
