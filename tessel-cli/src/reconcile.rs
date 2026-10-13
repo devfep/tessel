@@ -23,6 +23,8 @@ pub struct ServerClaim {
     pub submitted_commit: Option<String>,
     /// Held for a human: `ReviewRequested` and not yet decided, resubmitted or rejected.
     pub awaiting_review: bool,
+    /// The assumption statements of the grant's intent.
+    pub assumptions: Vec<String>,
 }
 
 /// The claims `agent` holds after replaying `events` in order, with each claim's latest fence
@@ -37,6 +39,7 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                 claim,
                 fence,
                 scopes,
+                intent,
                 race,
                 ..
             } if owner == agent => {
@@ -49,6 +52,11 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
                         submitted: false,
                         submitted_commit: None,
                         awaiting_review: false,
+                        assumptions: intent
+                            .assumptions
+                            .iter()
+                            .map(|a| a.statement.clone())
+                            .collect(),
                     },
                 );
             }
@@ -302,7 +310,7 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
 mod tests {
     use super::*;
     use tessel_coordinator::protocol::{
-        Intent, Mode, ReleaseReason, RunId, Scope, ScopeClaim as Sc,
+        Assumption, Intent, Mode, ReleaseReason, RunId, Scope, ScopeClaim as Sc,
     };
 
     fn scopes(path: &str) -> Vec<Sc> {
@@ -350,6 +358,7 @@ mod tests {
             submitted: false,
             submitted_commit: None,
             awaiting_review: false,
+            assumptions: Vec::new(),
         }
     }
 
@@ -468,6 +477,33 @@ mod tests {
         assert!(super::plan(&recent, &live, &events)
             .set_awaiting_review
             .is_empty());
+    }
+
+    #[test]
+    fn a_live_claim_carries_the_assumptions_of_its_grant() {
+        let grant = event(
+            0,
+            EventKind::ClaimGranted {
+                agent: AgentId("a1".into()),
+                claim: ClaimId(1),
+                fence: Fence(1),
+                scopes: scopes("a.rs"),
+                intent: Intent {
+                    summary: String::new(),
+                    task_ref: None,
+                    assumptions: vec![Assumption {
+                        scope: Scope::File {
+                            path: "b.rs".into(),
+                        },
+                        statement: "b is pure".into(),
+                    }],
+                },
+                race: None,
+                at_risk: Vec::new(),
+            },
+        );
+        let live = live_claims(&AgentId("a1".into()), &[grant]);
+        assert_eq!(live[&1].assumptions, vec!["b is pure".to_string()]);
     }
 
     #[test]

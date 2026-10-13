@@ -170,6 +170,13 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   `create`; deleted or type-changed: `edit-signature`; rename: `edit-signature` on the old path,
   `create` on the new.
   Signature changes, deletions and renames hold the submission for review.
+- **The commit gets a git note.** Before sending, `tessel submit` writes the note CLAUDE.md asks
+  for (`git notes add`, four lines: `intent:` from `tessel start`, `assumes:` from the claim's
+  `--assume` statements, `rejected:` and `evidence:` from your arguments, `none` when empty,
+  several entries joined with `; `). A commit that already has a note keeps it and the output says
+  so. A refused submission still leaves the note; a write failure is a warning, not a refusal.
+  The note is local: `git push` of the fork head does not carry `refs/notes/commits`, so push it
+  with `git push <your fork> refs/notes/commits` to share it.
 - **Uncovered (exit 5)** prints the uncovered scopes and sends nothing. Claim the full set
   (release first if nothing is uncommitted) or drop the changes outside it.
 - **Accepted (exit 0)** prints the queue position (exit 7 if held for review instead). The result

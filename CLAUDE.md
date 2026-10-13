@@ -30,7 +30,11 @@ Read `PLAN.md` before starting work: it's the single source of truth for scope, 
 10. **No negative claims about other products** in docs, UI or commit messages (contest rule).
 
 ## Dogfooding: every commit carries its intent
-Until the CLI does this automatically, add a git note to each commit:
+`tessel submit` writes this note on the submitted commit, from the intent given to `tessel start`,
+the claim's `--assume` statements, `--rejected` and `--evidence`. A commit that already has a note
+keeps it. The note stays in the local repository: `git push` of the fork head does not carry
+`refs/notes/commits`. A commit that lands outside `tessel submit` (an admin merge) still gets a
+hand-written note in the same shape:
 ```
 git notes add -m "intent: <one line>
 assumes: <behaviour relied on but not owned, or none>

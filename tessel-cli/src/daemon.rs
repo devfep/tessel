@@ -172,6 +172,8 @@ struct PendingClaim {
     queued: bool,
     /// The held claim this request adds its scopes to, when it is an `Amend`.
     amend: Option<ClaimId>,
+    /// The `--assume` statements sent with the request; the held claim keeps them for the note.
+    assumptions: Vec<String>,
     replies: Vec<oneshot::Sender<Reply>>,
 }
 
@@ -845,6 +847,7 @@ impl Daemon {
                 submitted: false,
                 submitted_commit: None,
                 awaiting_review: false,
+                assumptions: pending.assumptions,
             };
             self.state.claims.push(held.clone());
             held
@@ -1106,6 +1109,7 @@ impl Daemon {
                 submitted: false,
                 submitted_commit: None,
                 awaiting_review: false,
+                assumptions: Vec::new(),
             };
             self.send_release(&held);
             let note = format!(
@@ -1132,6 +1136,7 @@ impl Daemon {
             submitted: server.submitted,
             submitted_commit: server.submitted_commit,
             awaiting_review: server.awaiting_review,
+            assumptions: server.assumptions,
         };
         self.state.claims.push(held.clone());
         held
@@ -1634,6 +1639,7 @@ impl Daemon {
                 scopes,
                 queued: false,
                 amend: None,
+                assumptions: assumptions.to_vec(),
                 replies: vec![reply],
             },
         );
@@ -1681,6 +1687,7 @@ impl Daemon {
                 scopes: add,
                 queued: false,
                 amend: Some(claim),
+                assumptions: Vec::new(),
                 replies: vec![reply],
             },
         );
@@ -2331,6 +2338,7 @@ mod tests {
             submitted: false,
             submitted_commit: None,
             awaiting_review: false,
+            assumptions: Vec::new(),
         }
     }
 
@@ -2398,11 +2406,14 @@ mod tests {
             submitted: true,
             submitted_commit: Some("f".into()),
             awaiting_review,
+            assumptions: vec!["b is pure".into()],
         };
         assert!(daemon.adopt(ClaimId(7), server(true)).awaiting_review);
         assert!(!daemon.adopt(ClaimId(8), server(false)).awaiting_review);
         let stored = daemon.state.claims.iter().find(|h| h.claim == ClaimId(7));
         assert!(stored.is_some_and(|held| held.awaiting_review));
+        let adopted = daemon.adopt(ClaimId(9), server(false));
+        assert_eq!(adopted.assumptions, vec!["b is pure".to_string()]);
     }
 
     fn lapsed_claim(claim: u64) -> HeldClaim {
@@ -2859,6 +2870,7 @@ mod tests {
             scopes: Vec::new(),
             queued: false,
             amend: None,
+            assumptions: Vec::new(),
             replies: Vec::new(),
         }
     }

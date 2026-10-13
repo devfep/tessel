@@ -488,6 +488,8 @@ pub async fn submit(
              coordinator holds such a change for human review before it merges\n",
         );
     }
+    let note = submit::note_text(&state.summary, &held.assumptions, &decisions);
+    text.push_str(&submit::write_note(&worktree.root, &fork_commit, &note));
     let request = Request::Submit {
         claim: held.claim,
         fork_commit: fork_commit.clone(),
