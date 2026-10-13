@@ -5,7 +5,7 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 20:52 EDT. **COORD-GRANT-HEAD CLOSED at trunk `780cd2f`** (Felix pushed 20:43;
+**As of:** 2026-10-12 20:49 EDT. **COORD-GRANT-HEAD CLOSED at trunk `780cd2f`** (Felix pushed 20:43;
 the lane's submit failed because it had spread its scopes over seven claims and had claimed
 symbols by bare name, which the submission's qualified names do not match; the orchestrator
 released them, amended one claim with the 24 scopes `tessel submit` listed, and submitted;
