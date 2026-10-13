@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 07:47 EDT (checkpoint on Felix's request). **CLI-TRANSCRIPT COMMITTED by the lane
+**As of:** 2026-10-13 07:54 EDT. **CLI-TRANSCRIPT READY TO LAND at `1e41e0f`** (Opus review "Ready to
+merge? Yes": brief items 1-9 and 11 met with file:line, five reviewer mutants killed, rule 4
+and rule 7 clean; two low findings left as is: test e asserts no exit code on the second submit,
+no test on the MCP `transcript` argument; orchestrator workspace gate with curl off the PATH:
+24 binaries, 1,229 tests, exit 0, clippy 0, `cargo fmt -p tessel-cli -- --check` 0; the lane wrote no
+REPORT.md, the verdict and the gate log in the handoff `cli-transcript/` stand in for it). Lane and
+reviewer agents stopped; the lane daemon holds claim 130 for the submit. **Pending from Felix:**
+`land-lane.sh cli-transcript 1e41e0f ...`; expect a hold for three signature changes (`Command`,
+`commands::submit`, `SubmitArgs`); the orchestrator approves with `orch-review.sh 130`.
+Earlier: **As of:** 2026-10-13 07:47 EDT (checkpoint on Felix's request). **CLI-TRANSCRIPT COMMITTED by the lane
 as `1e41e0f`** (9 files, +606/-23; lane gate: `cargo test -p tessel-cli` 503 passed, 0 failed, 13
 binaries; clippy 0; fmt clean; `cargo deny check licenses` ok; three mutant logs; four-line note
 on the commit; logs copied to the handoff `cli-transcript/`). The lane's REPORT.md is not yet
