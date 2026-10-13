@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 21:36 EDT. **CLI-RACE review "Yes (pending the SKILL hunk)" at `b61505b`**
+**As of:** 2026-10-12 21:50 EDT. **Every agent idle; nothing runs; three commands wait on Felix**
+(the coordinator deploy, the CLI-NOTES landing, the EVIDENCE-REPO landing; the trunk is still
+`780cd2f`, watched). **Finding, from a test at 21:48:** no git hooks are installed in the main
+checkout or any lane worktree (`.git/hooks` holds only samples; no `core.hooksPath`): the lanes
+were set up by minting identities by hand instead of `tessel init`, so `pre-commit` and
+`pre-push` never ran on today's lane commits, and a commit touching an unclaimed file goes
+through locally (shown: the race lane's skill hunk committed as `a85353f` under no claim, then
+reverted to `b61505b`). Coverage was still enforced where it counts, at `tessel submit` and in
+the steward's gate, which is why the grant-head submit was refused until its claims matched.
+Follow-up for tomorrow's lanes: run `tessel init` (or the hook install) in each worktree so the
+local hooks hold too. The race lane's skill hunk still waits for the notes merge.
+Earlier: **As of:** 2026-10-12 21:36 EDT. **CLI-RACE review "Yes (pending the SKILL hunk)" at `b61505b`**
 (wording at `render.rs:702` verified true while a pick is pending and after the window closes,
 `racing.rs:612-624, 526-534`; eight race tests pass; orchestrator gate on `4ce212d` 20 binaries,
 1,196 tests, clippy 0; the amend after it is four lines in two files, the race tests rerun by
