@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 07:19 EDT. **PR #4 MERGED by Felix at 07:19 (`f373244`); GitHub `main` tree equals
+**As of:** 2026-10-13 07:27 EDT. **CLI-TRANSCRIPT DISPATCHED** on Felix's "yes" (07:22) as
+`lane-cli-transcript` (Opus, worktree `cli-transcript` from `f3b6abf`, fork
+`tessel-dogfood--lane-cli-transcript` created, identity minted; brief in the handoff
+`orch/brief-cli-transcript.md`): `tessel submit --transcript <file>` redacts (`art_v…` and bearer
+tokens), hashes, stores the file as `transcripts/<claim>.md` on the local branch
+`tessel/transcript-<claim>` without touching the working tree, sets `DecisionRecord.transcript`
+to the fork name, path and SHA-256, prints the push line; the CLI pushes nothing (as the rest of
+`tessel submit`); same option on the MCP `tessel_submit`; six real-binary tests, three mutants.
+Only lane running; the orchestrator gates and reviews when its report arrives.
+Earlier: **As of:** 2026-10-13 07:19 EDT. **PR #4 MERGED by Felix at 07:19 (`f373244`); GitHub `main` tree equals
 the trunk at `f3b6abf`.** Pending from Felix: rebuild the deploy binaries at `f3b6abf`, record, then the
 steward deploy and a coordinator deploy, then the Oct 13 items.
 Earlier: **As of:** 2026-10-13 07:15 EDT. **CLI-RACE CLOSED at trunk `f3b6abf`; every box of Oct 12 is on the
@@ -1812,7 +1821,10 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   as `transcripts/<claim>.md` on the fork branch `tessel/transcript-<claim>`, pushes that branch
   with the fork token the agent already has, and sets `DecisionRecord.transcript` to
   `{repo: <fork>, path, sha256}`. No protocol change (`TranscriptRef` exists). Tests against the
-  real binary; the steward side (EVIDENCE-REPO) verifies the hash. Not yet dispatched.
+  real binary; the steward side (EVIDENCE-REPO) verifies the hash. Dispatched 2026-10-13 07:27
+  as `lane-cli-transcript` (Opus, worktree `cli-transcript` from `f3b6abf`; brief in the handoff
+  `orch/brief-cli-transcript.md`). Decision: the CLI builds the branch and prints the push line
+  but pushes nothing, like the rest of `tessel submit`; the agent pushes it before the gate ends.
 - [x] **CLI-NOTES** — from the video script's "not shipped" list (Oct 11, decision 6): no code writes
   the git note CLAUDE.md asks for on every commit ("until the CLI does this automatically"). The
   CLI has the four lines at `tessel submit`: the intent from `tessel start`, `--evidence`,
