@@ -22,15 +22,18 @@ import {
   uncoveredPaths,
   type ClaimedScope,
 } from "./merge-coverage";
+import type { GateStep } from "./evidence-record";
 import { TESSEL_TOML_PATH, parseGateConfig } from "./tessel-config";
 import {
   parseSha,
+  type EvidenceResult,
   type GitResult,
   type MergeOutcome,
   type Sha,
   type TrialOutcome,
 } from "./merge-types";
 import { runInstallThenTest, runStepThenRevoke, type StepOutcome } from "./run-steps";
+import { isTimedOut } from "./step-budget";
 
 /** The one update the write token may be used for: main from `base` to `head`. */
 export interface PushUpdate {
@@ -52,6 +55,14 @@ export interface TrialDeps {
   runPackageStep(step: "install" | "test"): Promise<StepOutcome>;
 }
 
+/** A merge the Worker read on main: what its record is written from. */
+export interface LandedMerge {
+  base: Sha;
+  head: Sha;
+  /** The gate's steps as they ran, or null when no gate ran (an admin merge of `tessel.toml`). */
+  gate: GateStep[] | null;
+}
+
 /** Everything `runMerge` needs from the outside world: a trial's boundaries, plus main. */
 export interface MergeDeps extends TrialDeps {
   /**
@@ -66,6 +77,12 @@ export interface MergeDeps extends TrialDeps {
   withPushAccess<T>(update: PushUpdate, use: () => Promise<T>): Promise<T>;
   /** The sha main points at now, or null if it could not be read. */
   currentMain(): Promise<Sha | null>;
+  /**
+   * Writes the evidence record of a merge that landed (`writeEvidence`). Called only after
+   * `currentMain` read the merged head, so it mints its own write tokens after main's is revoked
+   * and after the gate ended. Never throws.
+   */
+  recordMerge(landed: LandedMerge): Promise<EvidenceResult>;
 }
 
 interface Rebased {
@@ -204,6 +221,29 @@ async function checkCoverage(
   };
 }
 
+function asGateStep(outcome: StepOutcome): GateStep {
+  const wallMs = outcome.measurement?.wallMs;
+  return {
+    step: outcome.step,
+    exitCode: outcome.exitCode,
+    seconds: wallMs === undefined ? null : wallMs / 1000,
+    timedOut: isTimedOut(outcome.exitCode),
+  };
+}
+
+/** Adds the evidence record to an outcome that is `merged`; any other outcome is returned as is. */
+async function recordIfMerged(
+  deps: MergeDeps,
+  outcome: MergeOutcome,
+  gate: GateStep[] | null,
+): Promise<MergeOutcome> {
+  if (outcome.outcome !== "merged") {
+    return outcome;
+  }
+  const evidence = await deps.recordMerge({ base: outcome.base, head: outcome.head, gate });
+  return { ...outcome, evidence };
+}
+
 /**
  * Pushes, then decides the outcome from a read of main made by the Worker through the Artifacts
  * binding, never from the push command's exit code: repo code ran in the sandbox and can fake
@@ -239,6 +279,9 @@ async function pushToMain(deps: MergeDeps, base: Sha, head: Sha): Promise<MergeO
  * 5. Run the dependency check and the tests. No token of any kind is live.
  * 6. Only if the tests passed: mint the write token, push with a lease on the cloned main,
  *    revoke the write token.
+ * 7. Only if the Worker then read main at the pushed head (`merged`): write the evidence record
+ *    (`recordMerge`), with write tokens of its own for the record repos. The outcome stays
+ *    `merged` whatever happens there and carries `evidence`.
  *
  * @param deps The sandbox, token and main-reading boundaries.
  * @param commit The submitted commit, already validated as a sha.
@@ -280,12 +323,17 @@ export async function runMerge(
   }
   const uncovered = await checkCoverage(deps, base, head, scopes, policy);
   if (uncovered === "gate_only") {
-    return pushToMain(deps, base, head);
+    return recordIfMerged(deps, await pushToMain(deps, base, head), null);
   }
   if (uncovered !== undefined) {
     return uncovered;
   }
-  const tested = await runInstallThenTest((step) => deps.runPackageStep(step));
+  const gate: GateStep[] = [];
+  const tested = await runInstallThenTest(async (step) => {
+    const outcome = await deps.runPackageStep(step);
+    gate.push(asGateStep(outcome));
+    return outcome;
+  });
   if (tested.reason === "timeout") {
     return { outcome: "timeout", base, head, result: tested };
   }
@@ -295,7 +343,7 @@ export async function runMerge(
   if (!tested.passed) {
     return { outcome: "tests_failed", base, head, result: tested };
   }
-  return pushToMain(deps, base, head);
+  return recordIfMerged(deps, await pushToMain(deps, base, head), gate);
 }
 
 /**

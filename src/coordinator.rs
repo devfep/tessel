@@ -178,6 +178,15 @@ struct Submission {
     /// Not dispatched before this instant: the backoff after an infrastructure failure.
     #[serde(default)]
     retry_at_ms: Option<u64>,
+    /// The submission's decision record, which the steward writes into the merge's evidence
+    /// record. `None` for a race entry and for a submission stored before this field existed: the
+    /// record then says it was not supplied. Free text in it is the agent's, untrusted.
+    #[serde(default)]
+    decisions: Option<DecisionRecord>,
+    /// Why the submission was held for review and, once approved, the reviewer's decision. `None`
+    /// when it was not held. It means "not held" only when `decisions` is known.
+    #[serde(default)]
+    review: Option<crate::merge::ReviewRecord>,
 }
 
 impl Submission {
@@ -197,6 +206,8 @@ impl Submission {
             moved: 0,
             infra_failures: 0,
             retry_at_ms: None,
+            decisions: None,
+            review: None,
         }
     }
 }
@@ -1271,6 +1282,7 @@ impl Coordinator {
         }
         let kind = held.kind;
         let has_evidence = !decisions.evidence.is_empty();
+        let recorded = decisions.clone();
         let ordinal = take_next(&mut self.state.next_submission);
         let submitted = ActiveClaim {
             submitted: Some(ordinal),
@@ -1302,10 +1314,16 @@ impl Coordinator {
                     review_reasons(&touched, threatened, has_evidence, &self.state.sensitive);
                 review = (!reasons.is_empty()).then_some(reasons);
                 let awaiting_review = review.is_some();
-                self.queue_for_merge(
-                    claim,
-                    Submission::new(fork_commit, touched, awaiting_review, req, challenged),
-                );
+                let held_for = review.clone().map(|reasons| crate::merge::ReviewRecord {
+                    reasons,
+                    decision: None,
+                });
+                let submission = Submission {
+                    decisions: Some(recorded),
+                    review: held_for,
+                    ..Submission::new(fork_commit, touched, awaiting_review, req, challenged)
+                };
+                self.queue_for_merge(claim, submission);
                 self.queue_position(ordinal)
             }
         };

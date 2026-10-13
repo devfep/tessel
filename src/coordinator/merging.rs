@@ -29,7 +29,8 @@ use super::{
     MAX_REVIEW_NOTE_BYTES,
 };
 use crate::merge::{
-    infra_backoff_ms, MergeOutcome, Verdict, MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
+    infra_backoff_ms, MergeOutcome, MergeRecord, ReviewDecision, ReviewRecord, Verdict,
+    MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{
     AgentId, ClaimId, CommitId, ErrorCode, EventKind, ReleaseReason, RequestId, Scope, ScopeClaim,
@@ -68,6 +69,9 @@ pub struct MergeDispatch {
     pub scopes: Vec<ScopeClaim>,
     /// 1 for the first dispatch of this submission, counting every retry.
     pub attempt: u32,
+    /// What the steward writes into the merge's evidence record, taken from the held claim. Boxed:
+    /// it holds the claim's free text, and a dispatch travels inside small enums.
+    pub record: Box<MergeRecord>,
 }
 
 impl Coordinator {
@@ -243,8 +247,18 @@ impl Coordinator {
         let ordinal = held.submitted;
         let submitter = held.agent.clone();
         let submit_req = work.submit_req.unwrap_or(RequestId(0));
+        let decision = ReviewDecision {
+            reviewer: reviewer.clone(),
+            approve: true,
+            note: submitter_note,
+        };
+        let review = work.review.clone().map(|held_for| ReviewRecord {
+            decision: Some(decision),
+            ..held_for
+        });
         let released = Submission {
             awaiting_review: false,
+            review,
             ..work
         };
         self.keep_work(claim, held, released);
@@ -271,6 +285,14 @@ impl Coordinator {
             fork_commit: work.fork_commit.clone(),
             scopes: held.scopes.clone(),
             attempt,
+            // `review` is known only with `decisions`: a submission stored before both existed,
+            // or a race entry, sends neither, and the steward records them as not supplied.
+            record: Box::new(MergeRecord {
+                claim,
+                intent: held.intent.clone(),
+                decisions: work.decisions.clone(),
+                review: work.decisions.as_ref().map(|_| work.review.clone()),
+            }),
         })
     }
 
@@ -518,7 +540,7 @@ mod tests {
     use crate::merge::{StepExit, INFRA_BACKOFF_BASE_MS};
     use crate::protocol::{
         Assumption, ClientMsg, DecisionRecord, ErrorCode, Fence, Intent, Mode, OnConflict,
-        RequestId, RunId,
+        RequestId, ReviewReason, RunId,
     };
 
     const NOW: u64 = 1_000;
@@ -1062,6 +1084,44 @@ mod tests {
     }
 
     #[test]
+    fn the_dispatch_carries_the_claim_and_its_intent_for_the_evidence_record() {
+        let mut c = core();
+        let assumption = Assumption {
+            scope: file("src/b.rs"),
+            statement: "b() returns a number".into(),
+        };
+        let claim = grant_assuming(&mut c, "a", vec![edit("src/a.rs")], vec![assumption]);
+        submit(&mut c, "a", claim, "src/a.rs");
+
+        let sent = c.begin_merge(NOW).expect("dispatched");
+
+        let expected = MergeRecord {
+            claim: claim.0,
+            intent: intent(vec![Assumption {
+                scope: file("src/b.rs"),
+                statement: "b() returns a number".into(),
+            }]),
+            decisions: Some(DecisionRecord {
+                evidence: vec!["tests passed".into()],
+                ..DecisionRecord::default()
+            }),
+            review: Some(None),
+        };
+        assert_eq!(
+            *sent.record, expected,
+            "a submission that was not held sends review null"
+        );
+        let body =
+            crate::merge::request_body("demo", &sent.agent, &sent.fork_commit, &[], &sent.record);
+        let value: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+        assert_eq!(value["claim"], serde_json::json!(claim.0 .0));
+        assert_eq!(
+            value["intent"]["assumptions"][0]["statement"],
+            "b() returns a number"
+        );
+    }
+
+    #[test]
     fn the_dispatch_after_an_amend_carries_the_added_scopes() {
         let mut c = core();
         let (claim, old) = grant(&mut c, "a", vec![edit("src/a.rs")]);
@@ -1547,6 +1607,45 @@ mod tests {
             logged(&effects)[..],
             [EventKind::ReviewDecided { approve: true, .. }]
         ));
+    }
+
+    #[test]
+    fn an_approved_submission_carries_its_hold_and_the_reviewers_decision_to_the_record() {
+        let mut c = core();
+        let held = held_for_review(&mut c, "held", "src/1.rs");
+        review(&mut c, "felix", held.0, true, Some("ship it"));
+
+        let sent = c.begin_merge(NOW).expect("dispatched");
+
+        let review = ReviewRecord {
+            reasons: vec![ReviewReason::NoTestEvidence],
+            decision: Some(ReviewDecision {
+                reviewer: AgentId("felix".into()),
+                approve: true,
+                note: Some("ship it".into()),
+            }),
+        };
+        assert_eq!(sent.record.review, Some(Some(review)));
+        assert!(sent.record.decisions.is_some());
+    }
+
+    #[test]
+    fn a_submission_stored_before_its_decisions_were_kept_sends_neither_to_the_record() {
+        let mut c = core();
+        let held = held_for_review(&mut c, "held", "src/1.rs");
+        review(&mut c, "felix", held.0, true, None);
+        let mut state = serde_json::to_value(&c).unwrap();
+        let work = state["claims"][held.0 .0.to_string()]["work"]
+            .as_object_mut()
+            .unwrap();
+        assert!(work.remove("decisions").is_some(), "the field is stored");
+        assert!(work.remove("review").is_some(), "the field is stored");
+        let mut old: Coordinator = serde_json::from_value(state).unwrap();
+
+        let sent = old.begin_merge(NOW).expect("dispatched");
+
+        assert!(sent.record.decisions.is_none());
+        assert_eq!(sent.record.review, None);
     }
 
     #[test]

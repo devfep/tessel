@@ -689,6 +689,7 @@ impl Coordinator {
             &dispatch.agent,
             &dispatch.fork_commit,
             &dispatch.scopes,
+            &dispatch.record,
         );
         let call = self.call_steward_for(STEWARD_MERGE_URL, body);
         match with_timeout(call, STEWARD_CALL_TIMEOUT).await {

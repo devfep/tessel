@@ -93,17 +93,12 @@ export class TestRunner extends DurableObject<Env> {
    *
    * Call this on a Durable Object instance with a new random name for each merge.
    *
+   * @param body The merge request as `parseMergeRequest` reads it, record fields included.
    * @throws If an argument is invalid, `fork` is not a fork of `repo`, the container cannot
    *   start, or a read token could not be revoked.
    */
-  async merge(
-    repo: string,
-    fork: string,
-    commit: string,
-    scopes: unknown,
-    adminMerge: boolean,
-  ): Promise<MergeOutcome> {
-    const parsed = parseMergeRequest({ fork, commit, scopes });
+  async merge(repo: string, body: unknown, adminMerge: boolean): Promise<MergeOutcome> {
+    const parsed = parseMergeRequest(body);
     if (!parsed.ok || !isValidName(repo)) {
       throw new Error(
         "merge needs a repo name, a fork name, a 40-hex commit and the claim's scopes",

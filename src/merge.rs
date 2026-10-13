@@ -6,9 +6,11 @@
 //! are kept, with one exception: a failing test step's output is read, reduced to a few bounded
 //! lines and quoted as data at the end of the rejection reason (`tests_reason`).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::protocol::{AgentId, CommitId, Outcome, ScopeClaim};
+use crate::protocol::{
+    AgentId, ClaimId, CommitId, DecisionRecord, Intent, Outcome, ReviewReason, ScopeClaim,
+};
 
 /// A `main_moved` outcome re-dispatches the claim at once; this many in a row reject it.
 pub const MAX_MAIN_MOVED: u32 = 5;
@@ -40,22 +42,67 @@ pub fn infra_backoff_ms(retry: u32) -> u64 {
     INFRA_BACKOFF_BASE_MS.saturating_mul(factor)
 }
 
+/// What the steward writes into the evidence record of a merge that lands, beside what it measured
+/// itself (`tessel-steward/src/evidence-fields.ts` reads it; a test on each side pins the same
+/// body). It never decides the merge. Free text in it was written by the agent or a reviewer:
+/// the steward quotes it as data (CLAUDE.md rule 4).
+///
+/// `decisions` and `review` are sent only when the coordinator knows them, and the steward records
+/// each one it lacks as "not supplied by the coordinator". `review` is `Some(None)`, sent as
+/// `null`, for a submission that was not held.
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeRecord {
+    pub claim: ClaimId,
+    pub intent: Intent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<DecisionRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<Option<ReviewRecord>>,
+}
+
+/// Compared by their JSON: `Intent` and `DecisionRecord` (frozen in `protocol.rs`) have no
+/// `PartialEq`, and the JSON is exactly what the steward is sent.
+impl PartialEq for MergeRecord {
+    fn eq(&self, other: &Self) -> bool {
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
+    }
+}
+
+impl Eq for MergeRecord {}
+
+/// Why a submission was held for review (invariant 12), and the reviewer's decision. Stored with
+/// the submission until it merges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRecord {
+    pub reasons: Vec<ReviewReason>,
+    pub decision: Option<ReviewDecision>,
+}
+
+/// A reviewer's decision. The note is untrusted text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewDecision {
+    pub reviewer: AgentId,
+    pub approve: bool,
+    pub note: Option<String>,
+}
+
 /// What the coordinator sends the steward: merge `commit` from the agent's fork into main, for a
-/// claim that holds `scopes`. The steward checks the merged change against them (invariant 11);
-/// it refuses a request without `scopes`, so the check cannot be skipped.
+/// claim that holds `scopes`, with what the evidence record of the merge needs (`record`). The
+/// steward checks the merged change against `scopes` (invariant 11); it refuses a request without
+/// them, so the check cannot be skipped.
 pub fn request_body(
     repo: &str,
     agent: &AgentId,
     commit: &CommitId,
     scopes: &[ScopeClaim],
+    record: &MergeRecord,
 ) -> String {
-    serde_json::json!({
-        "repo": repo,
-        "fork": fork_name(repo, agent),
-        "commit": commit.0,
-        "scopes": scopes,
-    })
-    .to_string()
+    let mut body = serde_json::json!(record);
+    body["repo"] = repo.into();
+    body["fork"] = fork_name(repo, agent).into();
+    body["commit"] = commit.0.clone().into();
+    body["scopes"] = serde_json::json!(scopes);
+    body.to_string()
 }
 
 /// What the coordinator sends the steward's `/trial`: try `commit` from the agent's fork on main as
@@ -985,11 +1032,22 @@ mod tests {
                 mode: Mode::EditSignature,
             },
         ];
+        let record = MergeRecord {
+            claim: ClaimId(7),
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            decisions: None,
+            review: None,
+        };
         let body = request_body(
             "demo",
             &AgentId("a1".into()),
             &CommitId(SHA_A.into()),
             &scopes,
+            &record,
         );
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
@@ -1006,8 +1064,149 @@ mod tests {
                         "mode": "edit_signature"
                     },
                 ],
+                "claim": 7,
+                "intent": {"summary": "s", "task_ref": null, "assumptions": []},
             })
         );
+    }
+
+    /// `PINNED_BODY` in `tessel-steward/src/evidence-fields.test.ts` is this body, and the
+    /// steward's parser reads every field of it: change both together.
+    #[test]
+    fn request_body_carries_the_record_fields_the_steward_reads() {
+        let file = |path: &str| Scope::File { path: path.into() };
+        let record = MergeRecord {
+            claim: ClaimId(7),
+            intent: Intent {
+                summary: "Fix the parser".into(),
+                task_ref: Some("T-1".into()),
+                assumptions: vec![crate::protocol::Assumption {
+                    scope: Scope::Symbol(SymbolId {
+                        path: "src/b.rs".into(),
+                        qualified_name: "b::parse".into(),
+                    }),
+                    statement: "returns Ok on empty input".into(),
+                }],
+            },
+            decisions: Some(DecisionRecord {
+                rejected: vec![crate::protocol::RejectedApproach {
+                    approach: "regex".into(),
+                    reason: "too slow".into(),
+                }],
+                evidence: vec!["cargo test passed (12 tests)".into()],
+                transcript: Some(crate::protocol::TranscriptRef {
+                    repo: "demo--a1".into(),
+                    path: "transcripts/7.md".into(),
+                    sha256: "ab".repeat(32),
+                }),
+            }),
+            review: Some(Some(ReviewRecord {
+                reasons: vec![ReviewReason::NoTestEvidence],
+                decision: Some(ReviewDecision {
+                    reviewer: AgentId("felix".into()),
+                    approve: true,
+                    note: Some("ok".into()),
+                }),
+            })),
+        };
+        let scopes = [ScopeClaim {
+            scope: file("src/a.rs"),
+            mode: Mode::EditBody,
+        }];
+        let commit = CommitId("3".repeat(40));
+        let body = request_body("demo", &AgentId("a1".into()), &commit, &scopes, &record);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "repo": "demo",
+                "fork": "demo--a1",
+                "commit": "3".repeat(40),
+                "scopes": [{"scope": {"kind": "file", "path": "src/a.rs"}, "mode": "edit_body"}],
+                "claim": 7,
+                "intent": {
+                    "summary": "Fix the parser",
+                    "task_ref": "T-1",
+                    "assumptions": [{
+                        "scope": {
+                            "kind": "symbol",
+                            "path": "src/b.rs",
+                            "qualified_name": "b::parse",
+                        },
+                        "statement": "returns Ok on empty input",
+                    }],
+                },
+                "decisions": {
+                    "rejected": [{"approach": "regex", "reason": "too slow"}],
+                    "evidence": ["cargo test passed (12 tests)"],
+                    "transcript": {
+                        "repo": "demo--a1",
+                        "path": "transcripts/7.md",
+                        "sha256": "ab".repeat(32),
+                    },
+                },
+                "review": {
+                    "reasons": [{"reason": "no_test_evidence"}],
+                    "decision": {"reviewer": "felix", "approve": true, "note": "ok"},
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn request_body_sends_review_null_for_a_submission_that_was_not_held() {
+        let record = MergeRecord {
+            claim: ClaimId(7),
+            intent: Intent {
+                summary: "s".into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            decisions: None,
+            review: Some(None),
+        };
+        let body = request_body(
+            "demo",
+            &AgentId("a1".into()),
+            &CommitId(SHA_A.into()),
+            &[],
+            &record,
+        );
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["review"], serde_json::Value::Null);
+        assert!(value.as_object().unwrap().contains_key("review"));
+        assert!(!value.as_object().unwrap().contains_key("decisions"));
+    }
+
+    /// The steward's merged outcome carries `evidence` (whether the merge's record was written);
+    /// it says nothing about the code, so it is read past.
+    #[test]
+    fn a_merged_outcome_with_an_evidence_field_is_still_merged() {
+        let merged = |evidence: serde_json::Value| {
+            serde_json::json!({
+                "outcome": "merged",
+                "base": SHA_A,
+                "head": SHA_B,
+                "evidence": evidence,
+            })
+            .to_string()
+        };
+        let written = merged(serde_json::json!({
+            "written": true,
+            "repo": "demo--evidence",
+            "path": format!("merges/{SHA_B}.md"),
+            "head": SHA_A,
+        }));
+        let failed = merged(serde_json::json!({"written": false, "reason": "push exit 1"}));
+        for body in [written, failed] {
+            assert_eq!(
+                parse(&body),
+                MergeOutcome::Merged {
+                    base: CommitId(SHA_A.into()),
+                    head: CommitId(SHA_B.into()),
+                }
+            );
+        }
     }
 
     #[test]
