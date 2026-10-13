@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 20:45 EDT. **All three open lanes are committed and gated as far as the
+**As of:** 2026-10-12 20:52 EDT. **COORD-GRANT-HEAD CLOSED at trunk `780cd2f`** (Felix pushed 20:43;
+the lane's submit failed because it had spread its scopes over seven claims and had claimed
+symbols by bare name, which the submission's qualified names do not match; the orchestrator
+released them, amended one claim with the 24 scopes `tessel submit` listed, and submitted;
+held for the signature change and the sensitive path; approved by the orchestrator 20:48;
+fast-forward merge 20:48, same sha; mirrored to GitHub `artifacts-trunk`; daemon stopped).
+NOT DEPLOYED: the deploy worktree is moving to `780cd2f` and rebuilding the worker; Felix's
+command after that: `cd /Users/felixpatawah/repos/tessel/.claude/worktrees/deploy && npx wrangler
+deploy`. Lesson for briefs: claim symbols by the qualified name the CLI prints
+(`path::module::Type::fn`), and keep one open claim so later claims amend it. The three lanes
+were told at 20:50 to rebase onto `780cd2f`, take the freed daemon and coordinator symbols by
+qualified name, and finish.
+Earlier: **As of:** 2026-10-12 20:45 EDT. **All three open lanes are committed and gated as far as the
 held daemon symbols allow** (orchestrator-run, 20:41-20:42): CLI-NOTES WIP `7bd7667` (5 files;
 `tests/notes.rs` 4 of 5, the assumptions line waits for the daemon literals; every other CLI
 binary green); CLI-RACE WIP `3c9b24e` (8 files, 1,086 lines; CLI test binary 100 passed, 3
@@ -1692,7 +1704,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   not a refusal. CLAUDE.md's dogfooding section and the skill updated. Tests against the real
   binary; three mutants. CLI only. Dispatched 2026-10-12 18:56 as `lane-cli-notes` (Sonnet,
   worktree `cli-notes` from `3cedad8`; brief in the handoff `orch/brief-cli-notes.md`).
-- [ ] **COORD-GRANT-HEAD** — the Opus note on COORD-WAITER-BASE: `ServerMsg::Granted` carries no
+- [x] **COORD-GRANT-HEAD** — the Opus note on COORD-WAITER-BASE: `ServerMsg::Granted` carries no
   head, so an agent granted by a release, or by a merge on a scope it did not touch, keeps the
   head from its last `welcome` and may start from a stale base; the steward's rebase guards
   main. Fix within rule 1: add `#[serde(default)] head: Option<CommitId>` to `Granted`, set in
@@ -1703,7 +1715,9 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Dispatched 2026-10-12 18:56 as `lane-grant-head` (Sonnet, worktree `grant-head` from
   `3cedad8`; brief in the handoff `orch/brief-grant-head.md`). Needs a coordinator deploy.
   Committed `780cd2f` 19:30 (lane gate green; five mutants); Opus review "Yes" 19:46; workspace
-  gate and wasm build green 19:43. READY TO LAND.
+  gate and wasm build green 19:43. CLOSED 2026-10-12 20:48 at trunk `780cd2f` (fast-forward; held
+  for the signature change and the sensitive path, approved by the orchestrator; mirrored; daemon
+  stopped). NOT DEPLOYED until Felix runs the coordinator deploy.
 - [ ] **CLI-RACE** — from the video script's "not shipped" list (decision 2): the coordinator decides
   races end to end (`src/coordinator/racing.rs`: entries tried by the verification queue, the
   winner promoted and merged, losers rejected) but the CLI has no race command. Ship `tessel
