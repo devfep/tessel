@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 20:20 EDT. **EVIDENCE-REPO review "With fixes"** (handoff
+**As of:** 2026-10-12 20:34 EDT. **All three open lanes are in a known, narrow state.** CLI-RACE:
+the orchestrator restarted its daemon and claimed, as the lane, claim 120 with exactly the
+symbols it edits (main.rs, race.rs, render.rs and four of its functions, `commands.rs::run`,
+`NoticeKind`, `rpc::Request`, `review::connect`/`send`, the two test harness files); it takes
+the four daemon symbols after the grant-head merge. CLI-NOTES: holds `commands.rs::submit` and
+the skill, both wired at 20:11; the daemon literals wait for the same merge. EVIDENCE-REPO:
+both review fixes verified by the orchestrator at 20:33 (the refused reason is fenced as data
+at `evidence-record.ts:197`; a transcript path other than `transcripts/<claim>.md` is refused at
+`evidence-steps.ts:150`; its two test files pass, 22 tests); requirement 2 (decisions and
+review carried from `Submission`) follows the same merge. **One gate for everything: Felix's
+grant-head landing line.**
+Earlier: **As of:** 2026-10-12 20:20 EDT. **EVIDENCE-REPO review "With fixes"** (handoff
 `evidence-repo/VERDICT.md`: six reviewer mutants killed; requirements 1, 3-8, 10 met; the
 record is written only after main read `merged`, each repo with its own token, commit id
 pinned at the gateway, read-back bytes compared, agent text fenced, paths validated; fixes:
