@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 13:01 EDT. **Voiceover for script v4 synthesised, two takes** (handoff `video/`):
+**As of:** 2026-10-13 14:58 EDT. **Cloned-voice voiceover in progress on Felix's choice (Fish Speech).**
+Felix recorded a 24.6 s reference (Desktop `felix-ref.m4a.aifc`, 16 kHz mono; trimmed and normalised to
+21.7 s). Fish Speech 3.0 installed in the scratchpad (`fish/fish-speech`, Python 3.12, torch 2.8, MPS);
+S1-mini is gated by approval, so the open S2-Pro weights (10 GB, downloaded over Wi-Fi 13:08-14:51) are
+used; scene 1 synthesised on MPS at 5.4 tokens/s (40 s audio in 329 s incl. model load); the other six
+scenes are rendering (`fish/out-mps`). Chatterbox (MIT, cloned from the same sample, chunked at 55 words)
+has scenes 1-6 done, scene 7 rendering (`chatterbox/out`); Felix judged its scene 1 "sounds good".
+Deliverables go to the handoff `video/fish-felix/` and `video/chatterbox-felix/` with assembled tracks.
+Earlier: **As of:** 2026-10-13 13:01 EDT. **Voiceover for script v4 synthesised, two takes** (handoff `video/`):
 `andrew-edge/` (Microsoft en-US-AndrewNeural via edge-tts, 7:07 assembled) and `kokoro-michael/`
 (Kokoro 82M, Apache-2.0, local, voice am_michael, 7:30 assembled); per-scene files, one full track
 (wav + m4a) with the 4 s silence in scene 4 and 1 s scene gaps, `timing.txt` with scene starts,
