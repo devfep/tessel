@@ -1472,6 +1472,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tessel-coordinator",
  "tessel-swarm",

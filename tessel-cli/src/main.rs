@@ -19,6 +19,7 @@ mod scope;
 mod state;
 mod submit;
 mod symbols;
+mod transcript;
 mod worktree;
 
 use std::io::Write;
@@ -99,6 +100,10 @@ enum Command {
         /// The commit to merge, already pushed to your fork; defaults to HEAD.
         #[arg(long)]
         commit: Option<String>,
+        /// A session transcript to attach. It is redacted and stored on the local branch
+        /// tessel/transcript-<claim>; push that branch to your fork for the steward to copy it.
+        #[arg(long)]
+        transcript: Option<PathBuf>,
     },
     /// Approve or reject a submission held for review. Only a reviewer's decision counts.
     #[command(group(ArgGroup::new("decision").required(true).args(["approve", "reject"])))]

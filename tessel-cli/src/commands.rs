@@ -28,6 +28,7 @@ use crate::rpc::{self, ClaimOutcome, ClientError, Reply, Request, SubmitOutcome}
 use crate::scope;
 use crate::state::{self, Connection, State};
 use crate::submit;
+use crate::transcript;
 use crate::worktree::{Worktree, WorktreeError};
 use crate::{Command, HookAction};
 
@@ -119,9 +120,13 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             evidence,
             rejected,
             commit,
-        } => Ok(submit(&cwd, claim, &evidence, &rejected, commit.as_deref())
-            .await?
-            .emit()),
+            transcript,
+        } => {
+            let work = SubmitWork { commit, transcript };
+            Ok(submit(&cwd, claim, &evidence, &rejected, work)
+                .await?
+                .emit())
+        }
         Command::Review {
             claim,
             approve,
@@ -443,23 +448,34 @@ pub async fn release(cwd: &Path, claim: Option<u64>) -> anyhow::Result<Report> {
     }
 }
 
+/// The work `tessel submit` hands in: the commit to merge (default `HEAD`) and a transcript file
+/// to attach, relative to the working directory.
+pub struct SubmitWork {
+    pub commit: Option<String>,
+    pub transcript: Option<PathBuf>,
+}
+
 /// Hands one claim's finished work to the coordinator for the steward to merge. Everything that
-/// can be checked here is checked before anything is sent: the evidence, the claim, the commit
-/// and that the claim covers every file the commit changed.
+/// can be checked here is checked before anything is sent: the evidence, the transcript, the
+/// claim, the commit and that the claim covers every file the commit changed.
 pub async fn submit(
     cwd: &Path,
     claim: Option<u64>,
     evidence: &[String],
     rejected: &[String],
-    commit: Option<&str>,
+    work: SubmitWork,
 ) -> anyhow::Result<Report> {
     let worktree = Worktree::discover(cwd)?;
-    let decisions = submit::decisions(evidence, rejected)?;
+    let mut decisions = submit::decisions(evidence, rejected)?;
+    let attached = work
+        .transcript
+        .map(|path| transcript::prepare(&cwd.join(path)))
+        .transpose()?;
     let Reply::Status { state } = call_daemon(&worktree, &Request::Status).await? else {
         bail!("the daemon answered with something unexpected");
     };
     let held = submit::pick_claim(&state, claim)?;
-    let fork_commit = submit::resolve_commit(&worktree.root, commit)?;
+    let fork_commit = submit::resolve_commit(&worktree.root, work.commit.as_deref())?;
     let base = submit::diff_base(&worktree.root, &state, &fork_commit)?;
     let touched = submit::touched(&worktree.root, &base, &fork_commit)?;
     let touched = plan::collapse(touched, &held.scopes, plan::MAX_SCOPES_PER_MESSAGE);
@@ -489,6 +505,13 @@ pub async fn submit(
              coordinator holds such a change for human review before it merges\n",
         );
     }
+    let fork = format!("{}--{}", state.repo, state.agent);
+    if let Some(prepared) = &attached {
+        let (reference, line) =
+            transcript::store(&worktree.root, prepared, held.claim.0, &state.agent, &fork)?;
+        decisions.transcript = Some(reference);
+        text.push_str(&line);
+    }
     let note = submit::note_text(&state.summary, &held.assumptions, &decisions);
     text.push_str(&submit::write_note(&worktree.root, &fork_commit, &note));
     let request = Request::Submit {
@@ -497,7 +520,6 @@ pub async fn submit(
         touched,
         decisions,
     };
-    let fork = format!("{}--{}", state.repo, state.agent);
     let claim = held.claim;
     let Reply::Submit { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");

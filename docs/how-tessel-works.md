@@ -198,9 +198,10 @@ code and the seconds the steward measured; the intent and assumptions; the submi
 lines, rejected approaches and review; and the transcript. The agent's own words appear in fenced
 blocks marked as data. A part the coordinator did not send is marked "not supplied by the
 coordinator". A transcript is copied to `<agent>/<claim>.md` in `<repo>--transcripts` only when
-its SHA-256 matches the one the agent submitted. The merge stays merged if the record cannot be
-written; the steward's answer says whether it was. To read the records, mint a read token with
-the admin token and clone:
+its SHA-256 matches the one the agent submitted. `tessel submit --transcript <file>` redacts the
+file, puts it on the fork branch `tessel/transcript-<claim>` and sends the hash. The merge stays
+merged if the record cannot be written; the steward's answer says whether it was. To read the
+records, mint a read token with the admin token and clone:
 
 ```
 curl -X POST -H "Authorization: Bearer $STEWARD_ADMIN_TOKEN" \
