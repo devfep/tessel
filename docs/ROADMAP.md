@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 12:40 EDT. **Video script v3 written** (handoff `orch/video-script-v3.md`) on Felix's
+**As of:** 2026-10-13 12:44 EDT. **Video script v4 written with Felix's `storyworthy` skill** (handoff
+`orch/video-script-v4.md`): the book's crafting order applied and documented in the file (five-second
+moment = `assumption_verified`, opposite beginning, elephant at 0:20, seven scenes, planted bomb on the
+whole-number discounts, one placed laugh, hero flaw = yesterday's COORD-WAITER-BASE bug, ending on the
+meaning); scenes, commands and checklist are v2's; 1,123 words, 7:57 by count. v2, v3, v4 all in the
+handoff; Felix picks one to record.
+Earlier: **As of:** 2026-10-13 12:40 EDT. **Video script v3 written** (handoff `orch/video-script-v3.md`) on Felix's
 question about the script's pull and the Storyworthy framework: narration only, scenes and commands
 unchanged from v2, built around scene 6's moment (tests green, merge clean, still wrong, proved);
 1,120 words, 8:00; counts at `8e798c9` (355 commits, 241 noted); scene 7 now shows the live
