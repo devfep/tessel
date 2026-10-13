@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 22:12 EDT. **CLI-RACE at `55417eb`, rebased onto `84e606f`, skill paragraph in
+**As of:** 2026-10-12 22:18 EDT. **EVIDENCE-REPO CLOSED at trunk `407d1da`** (Felix pushed 22:12; the
+submit was refused for two test helpers claimed under no create scope; the orchestrator added
+`merge-executor.test.ts` create to claim 119 and submitted; held for ten signature changes
+(`Submission`, `MergeDispatch`, `request_body`, steward merge types and deps); approved 22:15;
+merged 22:16, rebased by the steward onto `84e606f`; mirrored; daemon stopped). NOT DEPLOYED:
+needs the steward deploy (the writer; with SEC-HARDEN) and a coordinator deploy (the request
+fields) after the recordings. **Last landing: CLI-RACE `55417eb`** (Felix's line below).
+Earlier: **As of:** 2026-10-12 22:12 EDT. **CLI-RACE at `55417eb`, rebased onto `84e606f`, skill paragraph in
 under claim 121** (the orchestrator claimed the freed file, rebased and folded the hunk; the
 rebase needed one `assumptions: Vec::new()` in the race join literal, done by `lane-race-fix`;
 orchestrator workspace gate on `7008fae`: 21 binaries, 1,214 tests, exit 0, clippy 0, `cargo
@@ -1763,7 +1770,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
 - [ ] **GATE-PATH** — process lesson from DEMO-TS (Oct 7): its tests spawned `curl`, which the
   gate image lacks; they passed on the Mac and the steward rejected the merge. The orchestrator's
   gate for lanes that spawn processes runs the tests with `PATH` limited to the image's tools.
-- [ ] **EVIDENCE-REPO** — PLAN item 8's archive, taken up on Felix's call (Oct 12 19:10: "it holds
+- [x] **EVIDENCE-REPO** — PLAN item 8's archive, taken up on Felix's call (Oct 12 19:10: "it holds
   some weight for the contest's question"). The Artifacts binding has no write method (generated
   types: `create`, `get`, `fork`, tokens, `readFile`, `log`), so the steward's merge container
   writes, with a write token minted and revoked like the main push. Design: the steward creates
