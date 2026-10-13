@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 07:27 EDT. **CLI-TRANSCRIPT DISPATCHED** on Felix's "yes" (07:22) as
+**As of:** 2026-10-13 07:47 EDT (checkpoint on Felix's request). **CLI-TRANSCRIPT COMMITTED by the lane
+as `1e41e0f`** (9 files, +606/-23; lane gate: `cargo test -p tessel-cli` 503 passed, 0 failed, 13
+binaries; clippy 0; fmt clean; `cargo deny check licenses` ok; three mutant logs; four-line note
+on the commit; logs copied to the handoff `cli-transcript/`). The lane's REPORT.md is not yet
+written; its daemon holds claim 130 (file claims on `main.rs`, `commands.rs`, `mcp.rs` with
+edit-signature, `transcript.rs` and `tests/transcript.rs` create, `Cargo.toml`, SKILL.md, docs).
+**Next:** Opus review of `1e41e0f`, orchestrator workspace gate, then Felix's landing line
+(`land-lane.sh cli-transcript 1e41e0f ...`, expect a hold for the signature changes). Everything
+else stands as at 07:19: trunk `f3b6abf`, GitHub `main` equal to it (PR #4 merged), coordinator
+`92108fcc`, steward deploy pending after the recordings.
+Earlier: **As of:** 2026-10-13 07:27 EDT. **CLI-TRANSCRIPT DISPATCHED** on Felix's "yes" (07:22) as
 `lane-cli-transcript` (Opus, worktree `cli-transcript` from `f3b6abf`, fork
 `tessel-dogfood--lane-cli-transcript` created, identity minted; brief in the handoff
 `orch/brief-cli-transcript.md`): `tessel submit --transcript <file>` redacts (`art_v…` and bearer
