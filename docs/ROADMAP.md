@@ -5,7 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 07:15 EDT. **CLI-RACE CLOSED at trunk `f3b6abf`; every box of Oct 12 is on the
+**As of:** 2026-10-13 07:19 EDT. **PR #4 MERGED by Felix at 07:19 (`f373244`); GitHub `main` tree equals
+the trunk at `f3b6abf`.** Pending from Felix: rebuild the deploy binaries at `f3b6abf`, record, then the
+steward deploy and a coordinator deploy, then the Oct 13 items.
+Earlier: **As of:** 2026-10-13 07:15 EDT. **CLI-RACE CLOSED at trunk `f3b6abf`; every box of Oct 12 is on the
 trunk; GitHub pull request #4 (`artifacts-trunk` → `main`, four commits since #3) is open for
 Felix.** Felix ran the landing at 07:08: push ok, submit refused for five file-level edit-body
 scopes outside the claimed symbols (imports and test helpers in `daemon.rs`, `render.rs`,
