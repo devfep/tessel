@@ -5,7 +5,22 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 22:18 EDT. **EVIDENCE-REPO CLOSED at trunk `407d1da`** (Felix pushed 22:12; the
+**As of:** 2026-10-13 07:15 EDT. **CLI-RACE CLOSED at trunk `f3b6abf`; every box of Oct 12 is on the
+trunk; GitHub pull request #4 (`artifacts-trunk` → `main`, four commits since #3) is open for
+Felix.** Felix ran the landing at 07:08: push ok, submit refused for five file-level edit-body
+scopes outside the claimed symbols (imports and test helpers in `daemon.rs`, `render.rs`,
+`rpc.rs`, `tests/cli.rs`, `tests/support/mod.rs`); the orchestrator added them to claim 121 and
+submitted; held for five signature changes (`Command`, `review::connect`, `review::send`,
+`rpc::Request`, `NoticeKind`); approved 07:09; merged 07:12, rebased by the steward onto
+`407d1da`, patch-id identical to `55417eb`; mirrored; race daemon stopped; no agent, daemon or
+cargo job runs. Trunk at `f3b6abf`: 353 commits, 239 noted (steward-rebased trunk commits carry
+no note; the lane commits do). **Pending from Felix:** merge PR #4; after the recordings, the
+steward deploy (SEC-HARDEN + EVIDENCE-REPO writer) and a coordinator deploy (evidence request
+fields); rebuild the deploy worktree binaries at `f3b6abf` before recording; form v3's "did not
+ship" list loses "races from the CLI" and the evidence repos (handoff drafts updated); then the
+Oct 13 items (form final, repo public, 2FA, submit by hand). Open box: CLI-TRANSCRIPT (filed,
+not dispatched; now possible after CLI-NOTES).
+Earlier: **As of:** 2026-10-12 22:18 EDT. **EVIDENCE-REPO CLOSED at trunk `407d1da`** (Felix pushed 22:12; the
 submit was refused for two test helpers claimed under no create scope; the orchestrator added
 `merge-executor.test.ts` create to claim 119 and submitted; held for ten signature changes
 (`Submission`, `MergeDispatch`, `request_body`, steward merge types and deps); approved 22:15;
@@ -1819,7 +1834,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   for the signature change and the sensitive path, approved by the orchestrator; mirrored; daemon
   stopped). DEPLOYED by Felix 21:50 as version `92108fcc`; proved live 21:56: a grant on the raw
   socket carries `head` = the trunk head (handoff `grant-head/live-grant-head-proof.txt`).
-- [ ] **CLI-RACE** — from the video script's "not shipped" list (decision 2): the coordinator decides
+- [x] **CLI-RACE** — from the video script's "not shipped" list (decision 2): the coordinator decides
   races end to end (`src/coordinator/racing.rs`: entries tried by the verification queue, the
   winner promoted and merged, losers rejected) but the CLI has no race command. Ship `tessel
   race open "<intent>" <scopes> --entrants N --deadline <min> --by <criteria>` (reviewer only;
@@ -1830,6 +1845,13 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   real core; three mutants; skill and README command lists updated. Dispatched 2026-10-12
   18:56 as `lane-race-cli` (Opus, worktree `race-cli` from `3cedad8`; brief in the handoff
   `orch/brief-race-cli.md`). Claims the daemon symbols last, after `lane-grant-head`.
+  CLOSED 2026-10-13 07:13 at trunk `f3b6abf` (lane commit `55417eb`, rebased by the steward onto
+  `407d1da`, patch-id identical; Opus review "Yes" after fixes, amend-guard mutant killed;
+  workspace gate 21 binaries, 1,214 tests, clippy 0, fmt clean; pushed by Felix 07:08; the submit
+  was refused for five file-level edit-body scopes outside the claimed symbols, added to claim
+  121 by the orchestrator; held for five signature changes; approved 07:09; merged 07:12;
+  mirrored; daemon stopped; landing record in the handoff `race-cli/LANDING.md`). Nothing to
+  deploy: the coordinator already decides races.
 - [x] **COORD-WAITER-BASE** — found by `lane-docs-core` capturing the worked example (Oct 12): on a
   merge, `src/coordinator/merging.rs:322` builds the `BaseMoved` notices for the holders whose
   claims overlap the touched scopes, and only then `:323` grants the unblocked waiters; a waiter
