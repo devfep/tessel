@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 20:49 EDT. **COORD-GRANT-HEAD CLOSED at trunk `780cd2f`** (Felix pushed 20:43;
+**As of:** 2026-10-12 21:10 EDT. **Three final commits on `780cd2f`, all three workspace gates
+green, three Opus reviews running.** CLI-NOTES `51748cb`, CLI-RACE `9912dc7`, EVIDENCE-REPO
+`83f60c3` (each rebased by its lane within 2 minutes of the merge, squashed, trees clean).
+Orchestrator gates on archived copies (21:00-21:06, curl off the PATH): tests exit 0 and clippy
+0 for all three; evidence also wasm build exit 0, steward vitest 988 in 50 files, tsc, oxlint,
+oxfmt exit 0 (`gate-*/gate.log` in the scratchpad, copied to the handoff on close). Reviewers
+`review-cli-notes`, `review-race-cli`, `review-evidence-final` dispatched 21:08-21:10; lane
+REPORT.md files not yet written (the lanes went idle after committing; asked for them).
+**Pending from Felix:** the coordinator deploy for COORD-GRANT-HEAD (`cd
+/Users/felixpatawah/repos/tessel/.claude/worktrees/deploy && npx wrangler deploy`; the worker is
+rebuilt there from `780cd2f`), and then one landing line per lane as each review comes back.
+Earlier: **As of:** 2026-10-12 20:49 EDT. **COORD-GRANT-HEAD CLOSED at trunk `780cd2f`** (Felix pushed 20:43;
 the lane's submit failed because it had spread its scopes over seven claims and had claimed
 symbols by bare name, which the submission's qualified names do not match; the orchestrator
 released them, amended one claim with the 24 scopes `tessel submit` listed, and submitted;
