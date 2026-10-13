@@ -5,7 +5,11 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 11:48 EDT. **Steward deploy verified live** (`wrangler deployments list`: version
+**As of:** 2026-10-13 11:44 EDT. **COORDINATOR DEPLOYED by Felix from the deploy worktree at `1e41e0f`**
+(version `e2a6d1a8`; carries COORD-GRANT-HEAD and the EVIDENCE-REPO request fields). Both services
+now run the trunk. Next: five-minute wait for the Durable Object, then Felix runs
+`orch/live-evidence.sh`; its output is the proof of the merge record and the transcript copy.
+Earlier: **As of:** 2026-10-13 11:48 EDT. **Steward deploy verified live** (`wrangler deployments list`: version
 `9321b7ba` at 100% since 11:40; the admin read-token route answers 201; `tessel-dogfood--evidence`
 and `--transcripts` answer 404, expected: the steward creates them on the first merge). The
 coordinator is still `92108fcc` (verified the same way), so the merge record is not live yet.
