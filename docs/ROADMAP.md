@@ -5,7 +5,22 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 11:44 EDT. **COORDINATOR DEPLOYED by Felix from the deploy worktree at `1e41e0f`**
+**As of:** 2026-10-13 12:00 EDT. **EVIDENCE-REPO AND CLI-TRANSCRIPT PROVED LIVE END TO END** (Felix ran
+`orch/live-evidence.sh` 11:50-11:59 on the production coordinator `e2a6d1a8` and steward `9321b7ba`:
+claim 131 on `docs/live-checks/2026-10-13-evidence.md` (create), commit `8e798c9` pushed, `tessel submit
+--transcript` wrote the note and the branch `tessel/transcript-131`, accepted at queue position 1;
+the steward merged at 11:55:35 (trunk `1e41e0f` → `8e798c9`; gate test step 230.6 s, exit 0) and
+wrote `merges/8e798c9….md` and the INDEX line to `tessel-dogfood--evidence` (record carries claim,
+agent, fork commit, base, head, scopes, gate, intent, evidence, review "not held", transcript
+pointer) and `lane-cli-transcript/131.md` to `tessel-dogfood--transcripts` with SHA-256
+`ace10e4e…3a66` equal to the one the CLI sent; the fake `art_v…` token and the bearer value in
+the transcript came back redacted. Proof: handoff `cli-transcript/live-evidence-proof.txt`.
+Script defect found and fixed after the run: it read the GitHub mirror for "trunk after" and so
+looked for the wrong record file; the record was read from the clone on disk). Trunk mirrored
+to GitHub `artifacts-trunk` at `8e798c9`; **PR #6 (`artifacts-trunk` → `main`, that one docs
+commit) is open for Felix.** Nothing runs. Remaining for Felix: merge PR #6, recordings, form
+final (v4: the IF DEPLOYED markers can now go), repo public, 2FA, submit by hand.
+Earlier: **As of:** 2026-10-13 11:44 EDT. **COORDINATOR DEPLOYED by Felix from the deploy worktree at `1e41e0f`**
 (version `e2a6d1a8`; carries COORD-GRANT-HEAD and the EVIDENCE-REPO request fields). Both services
 now run the trunk. Next: five-minute wait for the Durable Object, then Felix runs
 `orch/live-evidence.sh`; its output is the proof of the merge record and the transcript copy.
