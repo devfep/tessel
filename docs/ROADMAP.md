@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 12:06 EDT. **PR #6 MERGED by Felix; GitHub `main` tree equals the trunk `8e798c9`.**
+**As of:** 2026-10-13 12:40 EDT. **Video script v3 written** (handoff `orch/video-script-v3.md`) on Felix's
+question about the script's pull and the Storyworthy framework: narration only, scenes and commands
+unchanged from v2, built around scene 6's moment (tests green, merge clean, still wrong, proved);
+1,120 words, 8:00; counts at `8e798c9` (355 commits, 241 noted); scene 7 now shows the live
+evidence record. Felix chooses v2 or v3 for the recording.
+Earlier: **As of:** 2026-10-13 12:06 EDT. **PR #6 MERGED by Felix; GitHub `main` tree equals the trunk `8e798c9`.**
 Nothing runs; nothing is pending from the orchestrator. Remaining for Felix: recordings, form
 final from `orch/submission-form-v4.md`, repo public, 2FA, submit by hand (deadline Oct 14).
 Earlier: **As of:** 2026-10-13 12:00 EDT. **EVIDENCE-REPO AND CLI-TRANSCRIPT PROVED LIVE END TO END** (Felix ran
