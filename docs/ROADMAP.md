@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 07:54 EDT. **CLI-TRANSCRIPT READY TO LAND at `1e41e0f`** (Opus review "Ready to
+**As of:** 2026-10-13 08:00 EDT. **CLI-TRANSCRIPT CLOSED at trunk `1e41e0f`** (Felix pushed 07:54; held for
+three signature changes; approved 07:55; fast-forward merge 07:58, same sha; mirrored; daemon
+stopped; landing record in the handoff `cli-transcript/LANDING.md`). GitHub pull request #5
+(`artifacts-trunk` → `main`, this one commit) is open for Felix. No agent, daemon or cargo job
+runs. Every filed box is closed. **Pending from Felix:** merge PR #5; rebuild the deploy worktree
+binaries at `1e41e0f` before recording; after the recordings the steward deploy (SEC-HARDEN +
+evidence writer) and a coordinator deploy (evidence request fields); then the Oct 13 items.
+Earlier: **As of:** 2026-10-13 07:54 EDT. **CLI-TRANSCRIPT READY TO LAND at `1e41e0f`** (Opus review "Ready to
 merge? Yes": brief items 1-9 and 11 met with file:line, five reviewer mutants killed, rule 4
 and rule 7 clean; two low findings left as is: test e asserts no exit code on the second submit,
 no test on the MCP `transcript` argument; orchestrator workspace gate with curl off the PATH:
@@ -1834,7 +1841,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   mutants. Needs a steward deploy and, for the request fields, a coordinator deploy. Dispatched
   2026-10-12 19:21 as `lane-evidence-repo` (Opus, worktree `evidence-repo` from `3cedad8`; brief
   in the handoff `orch/brief-evidence-repo.md`).
-- [ ] **CLI-TRANSCRIPT** — the agent side of EVIDENCE-REPO, dispatched after CLI-NOTES lands (both
+- [x] **CLI-TRANSCRIPT** — the agent side of EVIDENCE-REPO, dispatched after CLI-NOTES lands (both
   edit `commands.rs::submit`): `tessel submit --transcript <file>` redacts the file (token and
   secret patterns from `redact.ts`'s list, mirrored in Rust), computes its SHA-256, commits it
   as `transcripts/<claim>.md` on the fork branch `tessel/transcript-<claim>`, pushes that branch
@@ -1844,6 +1851,10 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   as `lane-cli-transcript` (Opus, worktree `cli-transcript` from `f3b6abf`; brief in the handoff
   `orch/brief-cli-transcript.md`). Decision: the CLI builds the branch and prints the push line
   but pushes nothing, like the rest of `tessel submit`; the agent pushes it before the gate ends.
+  CLOSED 2026-10-13 07:58 at trunk `1e41e0f` (fast-forward; Opus review "Yes", five reviewer
+  mutants killed; workspace gate 24 binaries, 1,229 tests, clippy 0, fmt 0; held for three
+  signature changes, approved by the orchestrator; mirrored). Needs no deploy on its own; the
+  steward side (EVIDENCE-REPO) deploys with the steward.
 - [x] **CLI-NOTES** — from the video script's "not shipped" list (Oct 11, decision 6): no code writes
   the git note CLAUDE.md asks for on every commit ("until the CLI does this automatically"). The
   CLI has the four lines at `tessel submit`: the intent from `tessel start`, `--evidence`,
