@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 11:41 EDT. **STEWARD DEPLOYED by Felix at 11:40 from the deploy worktree at `1e41e0f`**
+**As of:** 2026-10-13 11:48 EDT. **Steward deploy verified live** (`wrangler deployments list`: version
+`9321b7ba` at 100% since 11:40; the admin read-token route answers 201; `tessel-dogfood--evidence`
+and `--transcripts` answer 404, expected: the steward creates them on the first merge). The
+coordinator is still `92108fcc` (verified the same way), so the merge record is not live yet.
+Live check script written for Felix: handoff `orch/live-evidence.sh` (claims a new docs file,
+commits, pushes, submits with a transcript holding a fake token, pushes the transcript branch,
+waits for the merge, reads back `merges/<head>.md` and the transcript copy, checks the hash and
+the redaction). Runs after the coordinator deploy and a five-minute wait.
+Earlier: **As of:** 2026-10-13 11:41 EDT. **STEWARD DEPLOYED by Felix at 11:40 from the deploy worktree at `1e41e0f`**
 (version `9321b7ba`; carries SEC-HARDEN `3442343` and the EVIDENCE-REPO writer `407d1da`; the merge
 record and transcript copy go live once the coordinator sends the request fields). Next: the
 coordinator deploy, then the live end-to-end check after a few minutes.
