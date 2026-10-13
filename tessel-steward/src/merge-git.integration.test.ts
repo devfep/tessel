@@ -109,6 +109,7 @@ class Repos {
       runPackageStep: async () => PASSING,
       withPushAccess: async (_update, use) => use(),
       currentMain: async () => this.mainHead(),
+      recordMerge: async () => ({ written: false, reason: "no record repo in this test" }),
       ...overrides,
     };
   }

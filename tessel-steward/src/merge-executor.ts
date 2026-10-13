@@ -5,6 +5,8 @@ import {
   runPackageStep,
   userOptions,
 } from "./container-step";
+import { recordDeps } from "./evidence-binding";
+import { writeEvidence } from "./evidence-steps";
 import { readGatePlan, startOptions } from "./gate-plan";
 import { MAIN_BRANCH, type GitCommand } from "./merge-commands";
 import { runMerge, runTrial, type MergeDeps, type TrialDeps } from "./merge-steps";
@@ -106,6 +108,9 @@ interface Sandbox extends TrialSandbox {
   main: ArtifactsRepo;
   mainRemote: string;
   host: string;
+  fork: ArtifactsRepo;
+  /** The `exec` user of the run's gate plan, which git runs as too. */
+  user: { user?: string };
 }
 
 /** Resolves the commit of main that a run is gated by and based on, before anything starts. */
@@ -173,6 +178,7 @@ async function withSandbox<T>(
     );
     container.start(start);
 
+    const user = userOptions(plan);
     const deps: TrialDeps = {
       sources: {
         workspace: WORKSPACE,
@@ -180,11 +186,12 @@ async function withSandbox<T>(
         forkRemote: forkInfo.remote,
         forkBranch: forkInfo.defaultBranch,
       },
-      run: (command) => runGit(container, command, userOptions(plan)),
+      run: (command) => runGit(container, command, user),
       revokeReadTokens,
       runPackageStep: async (step) => redactOutput(await runPackageStep(container, plan, step)),
     };
-    return await use({ deps, pinned, container, main, mainRemote: mainInfo.remote, host });
+    const mainRemote = mainInfo.remote;
+    return await use({ deps, pinned, container, main, mainRemote, host, fork, user });
   } finally {
     await destroyContainer(container, repo);
     await revokeReadTokens();
@@ -196,8 +203,10 @@ async function withSandbox<T>(
  * steps and `MergeOutcome` for the results.
  *
  * The write token is minted by `withPushAccess` after the tests passed, lives in
- * `MergePushGateway` for the one push, and is revoked straight after. Call this on a Durable
- * Object instance with a new random name for each merge. See `withSandbox` for the rest.
+ * `MergePushGateway` for the one push, and is revoked straight after. Once main reads `merged`,
+ * the record step (`writeEvidence`) mints write tokens of its own, one record repo at a time, each
+ * revoked after its push. Call this on a Durable Object instance with a new random name for each
+ * merge. See `withSandbox` for the rest.
  *
  * Known limit: the repo's tests run as the same user as the rest of the container, so a process
  * they detach (setsid, nohup) can outlive `timeout` and still run when the write token is minted.
@@ -215,45 +224,60 @@ export async function executeMerge(
   request: MergeRequest,
   adminMerge: boolean,
 ): Promise<MergeOutcome> {
-  return withSandbox(
-    ctx,
-    env,
-    repo,
-    request.fork,
-    pinCurrentMain,
-    async ({ deps, pinned, container, main, mainRemote, host }) => {
-      const mergeDeps: MergeDeps = {
-        ...deps,
-        pinnedMain: pinned,
-        withPushAccess: async (update, use) => {
-          const token = await main.createToken("write", WRITE_TOKEN_TTL_SECONDS);
-          const revoke = revokeOnce(
-            () => main.revokeToken(token.id),
-            reportRevokeFailure(repo, token.id),
-          );
-          try {
-            const gateway = ctx.exports.MergePushGateway({
-              props: {
-                remote: mainRemote,
-                ref: `refs/heads/${MAIN_BRANCH}`,
-                old: update.base,
-                new: update.head,
-                token: token.plaintext,
-              },
-            });
-            await container.interceptOutboundHttps(host, gateway);
-            return await use();
-          } finally {
-            await revoke();
-          }
-        },
-        currentMain: () => readMainHead(main),
-      };
+  return withSandbox(ctx, env, repo, request.fork, pinCurrentMain, async (sandbox) => {
+    const { deps, pinned, container, main, mainRemote, host } = sandbox;
+    const record = recordDeps({
+      ctx,
+      env,
+      container,
+      host,
+      fork: sandbox.fork,
+      user: sandbox.user,
+    });
+    const mergeDeps: MergeDeps = {
+      ...deps,
+      pinnedMain: pinned,
+      withPushAccess: async (update, use) => {
+        const token = await main.createToken("write", WRITE_TOKEN_TTL_SECONDS);
+        const revoke = revokeOnce(
+          () => main.revokeToken(token.id),
+          reportRevokeFailure(repo, token.id),
+        );
+        try {
+          const gateway = ctx.exports.MergePushGateway({
+            props: {
+              remote: mainRemote,
+              ref: `refs/heads/${MAIN_BRANCH}`,
+              old: update.base,
+              new: update.head,
+              token: token.plaintext,
+            },
+          });
+          await container.interceptOutboundHttps(host, gateway);
+          return await use();
+        } finally {
+          await revoke();
+        }
+      },
+      currentMain: () => readMainHead(main),
+      recordMerge: (landed) =>
+        writeEvidence(record.deps, {
+          ...landed,
+          repo,
+          fork: request.fork,
+          commit: request.commit,
+          scopes: request.scopes,
+          fields: request.record,
+        }),
+    };
+    try {
       return redactOutcome(
         await runMerge(mergeDeps, request.commit, request.scopes, { adminMerge }),
       );
-    },
-  );
+    } finally {
+      record.dispose();
+    }
+  });
 }
 
 /**

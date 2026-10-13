@@ -123,7 +123,7 @@ fn decided(events: &[Event], from_seq: u64, claim: ClaimId, approve: bool) -> bo
         })
 }
 
-async fn send(socket: &mut Socket, msg: &ClientMsg) -> anyhow::Result<()> {
+pub(crate) async fn send(socket: &mut Socket, msg: &ClientMsg) -> anyhow::Result<()> {
     let text = serde_json::to_string(msg).context("cannot encode a message")?;
     socket
         .send(Message::text(text))
@@ -132,7 +132,7 @@ async fn send(socket: &mut Socket, msg: &ClientMsg) -> anyhow::Result<()> {
 }
 
 /// Opens the socket and says `Hello`; returns once the coordinator has welcomed this agent.
-async fn connect(config: &Config, base: &str) -> anyhow::Result<Socket> {
+pub(crate) async fn connect(config: &Config, base: &str) -> anyhow::Result<Socket> {
     let mut socket = open_socket(config).await.map_err(|failure| match failure {
         ConnectFailure::Fatal(message) | ConnectFailure::Transient(message) => anyhow!(message),
     })?;

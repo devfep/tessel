@@ -10,6 +10,7 @@ mod init;
 mod mcp;
 mod moves;
 mod plan;
+mod race;
 mod reconcile;
 mod render;
 mod review;
@@ -112,6 +113,12 @@ enum Command {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Open a race, enter one, or pick its winner: several agents attempt one task and the
+    /// coordinator merges one entry.
+    Race {
+        #[command(subcommand)]
+        action: RaceAction,
+    },
     /// Release everything, close the socket and stop the daemon.
     Stop,
     /// Serve the commands as tools of a local MCP server on stdin and stdout.
@@ -132,6 +139,34 @@ enum Command {
         #[arg(long)]
         task: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum RaceAction {
+    /// Reviewer: open a race for one task. It holds its scopes until the coordinator picks the
+    /// entry to merge.
+    Open {
+        /// What the entrants are to do; every entry's claim carries it.
+        intent: String,
+        /// The scopes the race holds (edit-body): `dir/`, `path/file.rs` or
+        /// `path/file.rs::qualified::name`.
+        #[arg(required = true)]
+        scopes: Vec<String>,
+        /// How many agents may enter, 1 to 8.
+        #[arg(long)]
+        entrants: u32,
+        /// Minutes from now until the race is judged, at most 120.
+        #[arg(long)]
+        deadline: u64,
+        /// How the winner is chosen, applied in order: a comma list of `tests_pass`,
+        /// `first_submitted` and `human_pick`.
+        #[arg(long)]
+        by: String,
+    },
+    /// Enter an open race: a claim on exactly the race's scopes. Submit with `tessel submit`.
+    Join { race: u64 },
+    /// Reviewer: choose the winner of a `human_pick` race, from the ranked entries.
+    Pick { race: u64, claim: u64 },
 }
 
 #[derive(Subcommand)]
@@ -225,6 +260,7 @@ fn main() -> ExitCode {
         | Command::Release { .. }
         | Command::Submit { .. }
         | Command::Review { .. }
+        | Command::Race { .. }
         | Command::Stop
         | Command::Mcp { .. }
         | Command::Hook {

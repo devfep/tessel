@@ -248,7 +248,8 @@ describe("MergeService", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: "already_merged", base: COMMIT });
-    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES, false);
+    const body = { repo: "demo", fork: "demo--a1", commit: COMMIT, scopes: SCOPES };
+    expect(merge).toHaveBeenCalledWith("demo", body, false);
     expect(trial).not.toHaveBeenCalled();
   });
 
@@ -262,7 +263,7 @@ describe("MergeService", () => {
     }
     expect(merge).toHaveBeenCalledTimes(3);
     for (const call of merge.mock.calls as unknown[][]) {
-      expect(call[4]).toBe(false);
+      expect(call[2]).toBe(false);
     }
   });
 

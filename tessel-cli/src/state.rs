@@ -30,6 +30,10 @@ pub struct HeldClaim {
     /// in the merge queue (`Accepted` after approval).
     #[serde(default)]
     pub awaiting_review: bool,
+    /// What the agent said it relies on but does not own when it made this claim, from `--assume`.
+    /// `tessel submit` writes them into the commit's git note.
+    #[serde(default)]
+    pub assumptions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +156,8 @@ pub enum NoticeKind {
     Uncovered,
     /// A submission is held for a human to approve.
     ReviewRequired,
+    /// A race this agent entered or opened was ranked or decided.
+    RaceResult,
     Error,
     /// A server message this CLI does not act on.
     Unexpected,

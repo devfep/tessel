@@ -320,10 +320,174 @@ fn git(root: &Path, args: &[&str]) -> anyhow::Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// The git note for a submitted commit, in the four-line shape `CLAUDE.md` asks for. The texts
+/// are the agent's own and go in verbatim; several entries on one line are joined with `; `.
+pub fn note_text(intent: &str, assumptions: &[String], record: &DecisionRecord) -> String {
+    let rejected: Vec<String> = record
+        .rejected
+        .iter()
+        .map(|r| format!("{}::{}", r.approach, r.reason))
+        .collect();
+    format!(
+        "intent: {intent}\nassumes: {}\nrejected: {}\nevidence: {}",
+        joined_or_none(assumptions),
+        joined_or_none(&rejected),
+        joined_or_none(&record.evidence)
+    )
+}
+
+fn joined_or_none(entries: &[String]) -> String {
+    if entries.is_empty() {
+        "none".to_string()
+    } else {
+        entries.join("; ")
+    }
+}
+
+/// Writes `note` on `commit` with `git notes add`, run in the repository at `root`, and returns
+/// the line to print. A commit that already has a note keeps it. A failure is a warning: the
+/// submission is what the agent asked for.
+pub fn write_note(root: &Path, commit: &str, note: &str) -> String {
+    let short = &commit[..commit.len().min(7)];
+    match has_note(root, commit) {
+        Ok(true) => return "note: commit already has a note; left as is\n".to_string(),
+        Ok(false) => {}
+        Err(why) => return note_warning(&why),
+    }
+    match git(root, &["notes", "add", "-m", note, commit]) {
+        Ok(_) => format!(
+            "note written on {short} (refs/notes/commits; push with git push <your fork> \
+             refs/notes/commits to share it)\n"
+        ),
+        Err(why) => note_warning(&format!("{why:#}")),
+    }
+}
+
+fn note_warning(why: &str) -> String {
+    format!(
+        "warning: the commit's git note was not written ({}); the submission goes on\n",
+        escape(why)
+    )
+}
+
+/// `git notes list <commit>` exits 0 when there is a note and 1 when there is none. Any other
+/// failure (an unknown object, a corrupt notes ref) is an error.
+fn has_note(root: &Path, commit: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["notes", "list", commit])
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if output.status.code() == Some(1) {
+        return Ok(false);
+    }
+    Err(format!(
+        "git notes list failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tessel_coordinator::protocol::SymbolId;
+
+    #[test]
+    fn empty_assumptions_and_rejections_read_none() {
+        let record = DecisionRecord {
+            evidence: vec!["e1".into()],
+            ..DecisionRecord::default()
+        };
+        assert_eq!(
+            note_text("do it", &[], &record),
+            "intent: do it\nassumes: none\nrejected: none\nevidence: e1"
+        );
+    }
+
+    fn head_sha(root: &Path) -> String {
+        String::from_utf8(git(root, &["rev-parse", "HEAD"]).unwrap())
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    fn shown(root: &Path, sha: &str) -> String {
+        String::from_utf8(git(root, &["notes", "show", sha]).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn write_note_puts_the_text_on_the_commit_and_says_so() {
+        let dir = repo();
+        let sha = head_sha(dir.path());
+        let line = write_note(dir.path(), &sha, "intent: i\nassumes: none");
+        assert_eq!(
+            line,
+            format!(
+                "note written on {} (refs/notes/commits; push with git push <your fork> \
+                 refs/notes/commits to share it)\n",
+                &sha[..7]
+            )
+        );
+        assert_eq!(shown(dir.path(), &sha), "intent: i\nassumes: none\n");
+    }
+
+    #[test]
+    fn write_note_leaves_an_existing_note_alone() {
+        let dir = repo();
+        let sha = head_sha(dir.path());
+        run(
+            dir.path(),
+            &["notes", "add", "-m", "by hand\n\n two ", &sha],
+        );
+        let before = shown(dir.path(), &sha);
+        let line = write_note(dir.path(), &sha, "intent: i");
+        assert_eq!(line, "note: commit already has a note; left as is\n");
+        assert_eq!(shown(dir.path(), &sha), before);
+    }
+
+    #[test]
+    fn write_note_warns_when_git_cannot_write_it() {
+        let dir = repo();
+        let sha = head_sha(dir.path());
+        // A ref below refs/notes/commits/ keeps git from creating refs/notes/commits itself.
+        run(
+            dir.path(),
+            &["update-ref", "refs/notes/commits/blocker", &sha],
+        );
+        let line = write_note(dir.path(), &sha, "intent: i");
+        assert!(
+            line.starts_with("warning: the commit's git note was not written"),
+            "{line}"
+        );
+        assert!(line.ends_with("the submission goes on\n"), "{line}");
+    }
+
+    #[test]
+    fn several_note_entries_are_joined_with_a_semicolon() {
+        let record = DecisionRecord {
+            evidence: vec!["e1".into(), "e2".into()],
+            rejected: vec![
+                RejectedApproach {
+                    approach: "x".into(),
+                    reason: "slow".into(),
+                },
+                RejectedApproach {
+                    approach: "y".into(),
+                    reason: "wrong".into(),
+                },
+            ],
+            ..DecisionRecord::default()
+        };
+        let assumes = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            note_text("i", &assumes, &record),
+            "intent: i\nassumes: a; b\nrejected: x::slow; y::wrong\nevidence: e1; e2"
+        );
+    }
 
     fn run(root: &Path, args: &[&str]) {
         git(root, args).unwrap();

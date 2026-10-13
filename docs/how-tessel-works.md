@@ -188,6 +188,26 @@ a lease, and confirms by reading `main` back.
   claim 1 is merged; main is now at 377008f3559846cce4e8f2990b86ea216a779b0e
 ```
 
+Once the read of `main` confirms the merge, the steward writes its record into two Artifacts
+repositories of its own, created on first use: `<repo>--evidence` and `<repo>--transcripts`. They
+are not forks, so no agent can get a write token for them; only the steward writes them, with a
+write token it mints for one push and revokes straight after. Each merge adds
+`merges/<head>.md` to `<repo>--evidence` and a line to `merges/INDEX.md`. The record holds the
+repo, claim, agent, fork commit, base and head; the claim's scopes; each gate step with its exit
+code and the seconds the steward measured; the intent and assumptions; the submission's evidence
+lines, rejected approaches and review; and the transcript. The agent's own words appear in fenced
+blocks marked as data. A part the coordinator did not send is marked "not supplied by the
+coordinator". A transcript is copied to `<agent>/<claim>.md` in `<repo>--transcripts` only when
+its SHA-256 matches the one the agent submitted. The merge stays merged if the record cannot be
+written; the steward's answer says whether it was. To read the records, mint a read token with
+the admin token and clone:
+
+```
+curl -X POST -H "Authorization: Bearer $STEWARD_ADMIN_TOKEN" \
+  https://<steward>/repos/<repo>--evidence/read-tokens       # answers {remote, token}
+git -c http.extraHeader="Authorization: Bearer <token>" clone <remote>
+```
+
 **6. The waiting agent is granted.** The merge released `a1`'s claim, and the coordinator then
 granted the queued request.
 
@@ -277,8 +297,10 @@ queued.
   and pick a winner, but no shipped client opens a race.
 - **Evidence is self-reported.** The steward runs the gate on every merge, but the `--evidence`
   lines are whatever the agent wrote.
-- **Decision records stay in the event log.** Evidence and rejected approaches are stored with the
-  `submitted` event; nothing writes them to git notes.
+- **Decision records are not written to git notes.** Evidence lines and rejected approaches are
+  stored with the `submitted` event and in the merge's evidence record, not beside the commit. Work
+  that lands through a race carries no decision record or review to the steward, so its evidence
+  record marks them as not supplied.
 - **Symbol claims cover Rust and TypeScript** (`.rs`, `.ts`, `.mts`, `.cts`, `.tsx`). Other files
   are claimed whole. The CLI turns more than four symbol claims in one file into one file claim.
 - **The gate tests only what its image holds.** The containers have no Internet. Without a

@@ -12,12 +12,20 @@ export const LOCAL_GIT_COMMANDS_MAX = 8;
 export const KILL_AFTER_SECONDS = 5;
 
 /**
+ * Commands of the record step after a merge landed (`evidence-steps.ts`): one per record repo it
+ * writes, the transcript copy and the evidence record. Each builds and pushes one commit.
+ */
+export const RECORD_COMMANDS_MAX = 2;
+
+/**
  * Time that no step's timeout covers, reserved by name so the sum is honest:
  * - `containerStart`: starting the container and the first exec answering (a 2.5 GB image).
  * - `tokens`: minting and intercepting the read tokens, the write token and its revocation.
  * - `reads`: repo info, the head of main and `tessel.toml` through the Artifacts binding.
  * - `teardown`: destroying the container and revoking what is left.
  * - `measurement`: the peak-memory read after the test step.
+ * - `record`: the record step's binding calls: opening or creating the two record repos, reading
+ *   their trees and the transcript, minting and revoking their write tokens, reading the result.
  */
 export const RESERVED_SECONDS = {
   containerStart: 60,
@@ -25,6 +33,7 @@ export const RESERVED_SECONDS = {
   reads: 10,
   teardown: 15,
   measurement: 5,
+  record: 10,
 } as const;
 
 /** Spare seconds on top of everything above, so a small overrun is not a timeout. */
@@ -38,6 +47,7 @@ const FIXED_STEP_SECONDS = {
   dependencyCheck: 10,
   install: 60,
   push: 30,
+  record: 10,
 } as const;
 
 function reservedSeconds(): number {
@@ -46,9 +56,10 @@ function reservedSeconds(): number {
 
 /** Worst case of every step but the test: each single command also waits out its kill grace. */
 function worstCaseWithoutTest(): number {
-  const { clone, fetch, rebase, push, local, install } = FIXED_STEP_SECONDS;
+  const { clone, fetch, rebase, push, local, install, record } = FIXED_STEP_SECONDS;
   const singles = clone + fetch + rebase + push + 4 * KILL_AFTER_SECONDS;
-  return singles + LOCAL_GIT_COMMANDS_MAX * (local + KILL_AFTER_SECONDS) + install;
+  const records = RECORD_COMMANDS_MAX * (record + KILL_AFTER_SECONDS);
+  return singles + LOCAL_GIT_COMMANDS_MAX * (local + KILL_AFTER_SECONDS) + install + records;
 }
 
 /**
@@ -56,8 +67,9 @@ function worstCaseWithoutTest(): number {
  * is its share and the kill grace is added on top (counted in `worstCaseSeconds`); the commands of
  * `install` and `test` share their step's seconds, grace included (`runWithinBudget`).
  * `test` is whatever remains of the call timeout after the other shares, the reserved time and
- * the margin: 327 s today. A step that runs out of its share ends as an infrastructure outcome,
- * never as a failing test (`isTimedOut`). `dependencyCheck` runs inside `install`.
+ * the margin: 287 s today. A step that runs out of its share ends as an infrastructure outcome,
+ * never as a failing test (`isTimedOut`). `dependencyCheck` runs inside `install`. `record` runs
+ * after the push, so the push never waits on it.
  */
 export const STEP_SECONDS = {
   ...FIXED_STEP_SECONDS,

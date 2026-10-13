@@ -8,10 +8,11 @@ function json(body: unknown, status: number): Response {
 }
 
 /**
- * Validates `{ "fork", "commit", "scopes" }` for `repo`, checks that the fork is a fork of `repo`, and runs
- * the merge in a fresh test runner. Answers 200 with the `MergeOutcome` or 400 with an error. A
- * merge that throws is for the caller to report. `adminMerge` comes from the route, never from the
- * body: only the admin route may merge a change to `tessel.toml`.
+ * Validates `{ "fork", "commit", "scopes" }` (and the optional record fields) for `repo`, checks
+ * that the fork is a fork of `repo`, and runs the merge in a fresh test runner. Answers 200 with
+ * the `MergeOutcome` or 400 with an error. A merge that throws is for the caller to report.
+ * `adminMerge` comes from the route, never from the body: only the admin route may merge a change
+ * to `tessel.toml`.
  */
 export async function handleMergeRequest(
   env: Env,
@@ -26,13 +27,13 @@ export async function handleMergeRequest(
   if (!parsed.ok) {
     return json({ error: parsed.error }, 400);
   }
-  const { fork, commit, scopes } = parsed.request;
+  const { fork } = parsed.request;
   using handle = await env.ARTIFACTS.get(fork);
   if (!isForkOf(repo, await handle.info())) {
     return json({ error: `${fork} is not a fork of ${repo}` }, 400);
   }
   const runner = env.TEST_RUNNER.getByName(crypto.randomUUID());
-  return json(await runner.merge(repo, fork, commit, scopes, adminMerge), 200);
+  return json(await runner.merge(repo, body, adminMerge), 200);
 }
 
 /**

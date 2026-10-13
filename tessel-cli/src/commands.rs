@@ -128,6 +128,7 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             reject: _,
             note,
         } => Ok(review(&cwd, claim, approve, note).await?.emit()),
+        Command::Race { action } => Ok(crate::race::command(&cwd, action).await?.emit()),
         Command::Stop => stop(&cwd).await,
         Command::Mcp { root } => {
             crate::mcp::serve(root).await?;
@@ -488,6 +489,8 @@ pub async fn submit(
              coordinator holds such a change for human review before it merges\n",
         );
     }
+    let note = submit::note_text(&state.summary, &held.assumptions, &decisions);
+    text.push_str(&submit::write_note(&worktree.root, &fork_commit, &note));
     let request = Request::Submit {
         claim: held.claim,
         fork_commit: fork_commit.clone(),

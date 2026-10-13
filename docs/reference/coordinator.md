@@ -97,8 +97,11 @@ In the first terminal (the `a1` socket above), after `hello`, send:
 
     {"type":"claim","req":1,"intent":{"summary":"rename login","task_ref":null},"scopes":[{"scope":{"kind":"symbol","path":"src/auth.rs","qualified_name":"auth::login"},"mode":"edit_signature"}],"on_conflict":"fail"}
 
-Expect a `granted` reply with a `claim` id and `fence`. In a second terminal, open a socket with
-`A2_TOKEN`:
+Expect a `granted` reply with a `claim` id and `fence`. Every `granted` (a direct grant, the grant
+a queued agent receives, the reply to an `amend` and a race entry's grant) also carries `head`, the
+trunk head the coordinator knew when it granted, or `null` when it knows none yet. An agent adopts
+it as its view of main, as it does the head in `base_moved`; an older server omits the field, and
+an older client ignores it. In a second terminal, open a socket with `A2_TOKEN`:
 
     websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $A2_TOKEN"
 

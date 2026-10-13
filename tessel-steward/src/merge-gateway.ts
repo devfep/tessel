@@ -64,22 +64,51 @@ export class MergeReadGateway extends WorkerEntrypoint<Env, ReadGatewayProps> {
 export class MergePushGateway extends WorkerEntrypoint<Env, PushGatewayProps> {
   override async fetch(request: Request): Promise<Response> {
     const { token, ...expected } = this.ctx.props;
-    if (isReceivePackDiscovery(request, expected)) {
+    return forwardExpectedPush(request, expected, token);
+  }
+}
+
+/** Forwards the requests of the one expected push with the token, and refuses everything else. */
+async function forwardExpectedPush(
+  request: Request,
+  expected: ExpectedPush,
+  token: string,
+): Promise<Response> {
+  if (isReceivePackDiscovery(request, expected)) {
+    const headers = withToken(request.headers, token);
+    return fetch(new Request(request, { headers, redirect: "manual" }));
+  }
+  if (!isReceivePackPost(request, expected) || request.headers.has("Content-Encoding")) {
+    return forbidden();
+  }
+  const body = await readBodyCapped(request.body, MAX_PUSH_BODY_BYTES);
+  if (body === undefined) {
+    return new Response("Payload Too Large", { status: 413 });
+  }
+  const commands = parsePushCommands(body);
+  if (commands === undefined || !isExpectedPush(commands, expected)) {
+    return forbidden();
+  }
+  const headers = withToken(request.headers, token);
+  return fetch(new Request(request.url, { method: "POST", headers, body, redirect: "manual" }));
+}
+
+/**
+ * Receives every HTTPS request the merge sandbox makes to the Artifacts git host while the record
+ * of a merge is written to one of the steward's record repos (`evidence-steps.ts`). It is
+ * installed only after the merge landed, with a write token for that record repo.
+ *
+ * It forwards the fetch of that repo, and the push of exactly one update: `old` -> `new` on main,
+ * where `new` is the commit the Worker computed itself (`planCommit`). A repo with no commit yet
+ * has `old` all zeros, which is what git sends for a ref it creates.
+ */
+export class RecordPushGateway extends WorkerEntrypoint<Env, PushGatewayProps> {
+  override async fetch(request: Request): Promise<Response> {
+    const { token, ...expected } = this.ctx.props;
+    if (isAllowedGitRequest(request, expected.remote)) {
       const headers = withToken(request.headers, token);
       return fetch(new Request(request, { headers, redirect: "manual" }));
     }
-    if (!isReceivePackPost(request, expected) || request.headers.has("Content-Encoding")) {
-      return forbidden();
-    }
-    const body = await readBodyCapped(request.body, MAX_PUSH_BODY_BYTES);
-    if (body === undefined) {
-      return new Response("Payload Too Large", { status: 413 });
-    }
-    const commands = parsePushCommands(body);
-    if (commands === undefined || !isExpectedPush(commands, expected)) {
-      return forbidden();
-    }
-    const headers = withToken(request.headers, token);
-    return fetch(new Request(request.url, { method: "POST", headers, body, redirect: "manual" }));
+    return forwardExpectedPush(request, expected, token);
   }
 }

@@ -6,7 +6,8 @@ use std::fmt::Write as _;
 
 use serde_json::{json, Value};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, Conflict, HeldAssumption, Mode, ReviewReason, Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, Conflict, ErrorCode, HeldAssumption, Mode, RaceEntry, RaceId, ReviewReason,
+    Scope, ScopeClaim, ServerMsg,
 };
 
 use crate::moves::{denial_moves, next_moves, Move, Situation};
@@ -160,8 +161,11 @@ fn scopes_text(scopes: &[ScopeClaim]) -> String {
 
 fn held_line(held: &HeldClaim) -> String {
     let submitted = if held.submitted { " [submitted]" } else { "" };
+    let race = held
+        .race
+        .map_or_else(String::new, |race| format!(" [race {}]", race.0));
     format!(
-        "claim {} fence {} expires_at_ms {}{submitted}: {}",
+        "claim {} fence {} expires_at_ms {}{race}{submitted}: {}",
         held.claim.0,
         held.fence.0,
         held.expires_at_ms,
@@ -199,6 +203,7 @@ fn conflict_card(conflict: &Conflict) -> String {
     out.push('\n');
     if let Some(race) = conflict.race {
         let _ = writeln!(out, "  that claim is in race {}", race.0);
+        let _ = writeln!(out, "  join it with: tessel race join {}", race.0);
     }
     let _ = writeln!(
         out,
@@ -583,11 +588,11 @@ pub fn notice_text(notice: &Notice) -> String {
             let _ = writeln!(out, "  claim {} waits for a human to approve it:", claim.0);
             out.push_str(&review_reasons_text(reasons));
         }
+        race @ ServerMsg::RaceResult { .. } => out.push_str(&race_result_notice(race)),
         ServerMsg::Welcome { .. }
         | ServerMsg::Shadowed { .. }
         | ServerMsg::Accepted { .. }
         | ServerMsg::RaceOpened { .. }
-        | ServerMsg::RaceResult { .. }
         | ServerMsg::Event { .. } => {
             let _ = writeln!(out, "  (no further detail shown; see inbox.jsonl)");
         }
@@ -607,6 +612,7 @@ pub fn needs_attention(kind: NoticeKind) -> bool {
         | NoticeKind::SubmitRejected
         | NoticeKind::Uncovered
         | NoticeKind::ReviewRequired
+        | NoticeKind::RaceResult
         | NoticeKind::Error => true,
         NoticeKind::WaitQueued
         | NoticeKind::GrantedAfterWait
@@ -614,6 +620,122 @@ pub fn needs_attention(kind: NoticeKind) -> bool {
         | NoticeKind::Merged
         | NoticeKind::Unexpected => false,
     }
+}
+
+/// What `tessel race open` prints once the coordinator opened the race.
+pub fn race_opened_text(race: RaceId, deadline_ms: u64, now_ms: u64) -> String {
+    let minutes = deadline_ms.saturating_sub(now_ms).div_ceil(60_000);
+    format!(
+        "opened race {race}; deadline_ms {deadline_ms} (in about {minutes} min)\n\
+         entrants join with: tessel race join {race}\n",
+        race = race.0
+    )
+}
+
+/// What `tessel race join` prints once the entry is granted. The coordinator sends entrants no
+/// deadline, so none is shown.
+pub fn race_joined_text(race: RaceId, held: &HeldClaim, at_risk: &[HeldAssumption]) -> String {
+    format!(
+        "entered race {} as claim {}; submit with `tessel submit` before the race's deadline\n\
+         granted {}\n{}",
+        race.0,
+        held.claim.0,
+        held_line(held),
+        at_risk_text(at_risk)
+    )
+}
+
+/// A refusal of a race request, quoted: the coordinator's text is data.
+pub fn race_refused_text(what: &str, code: Option<ErrorCode>, message: &str) -> String {
+    let code = code.map_or_else(|| "local".to_string(), |c| format!("{c:?}"));
+    format!(
+        "tessel: race {what} refused ({code}).\n{}",
+        quote_untrusted("the coordinator", message)
+    )
+}
+
+fn tests_text(passed: Option<bool>) -> &'static str {
+    match passed {
+        Some(true) => "tests passed",
+        Some(false) => "tests failed",
+        None => "tests not run",
+    }
+}
+
+/// The body of a `race_result` notice; empty for any other message.
+fn race_result_notice(msg: &ServerMsg) -> String {
+    let ServerMsg::RaceResult {
+        race,
+        winner,
+        ranking,
+        entries,
+    } = msg
+    else {
+        return String::new();
+    };
+    race_result_text(*race, *winner, ranking, entries)
+}
+
+/// How a race was decided: the winner, or why there is none, then the ranking, best first, and
+/// the entries the filters dropped.
+pub fn race_result_text(
+    race: RaceId,
+    winner: Option<ClaimId>,
+    ranking: &[ClaimId],
+    entries: &[RaceEntry],
+) -> String {
+    let agent_of = |claim: ClaimId| {
+        entries
+            .iter()
+            .find(|entry| entry.claim == claim)
+            .map_or_else(|| "unknown".to_string(), |entry| escape(&entry.agent.0))
+    };
+    let mut out = match winner {
+        Some(claim) => format!(
+            "  race {}: winner: claim {} (agent {})\n",
+            race.0,
+            claim.0,
+            agent_of(claim)
+        ),
+        None if ranking.is_empty() => format!("  race {}: no entry survived\n", race.0),
+        None => format!(
+            "  race {}: no winner named; this race is decided by a human pick, and if none comes \
+             before the window closes, every entry gets submit_rejected\n",
+            race.0
+        ),
+    };
+    let ranked: Vec<String> = ranking
+        .iter()
+        .enumerate()
+        .map(|(index, claim)| {
+            let tests = entries
+                .iter()
+                .find(|entry| entry.claim == *claim)
+                .map_or("tests not run", |entry| tests_text(entry.tests_passed));
+            format!(
+                "{}. claim {} (agent {}, {tests})",
+                index + 1,
+                claim.0,
+                agent_of(*claim)
+            )
+        })
+        .collect();
+    if !ranked.is_empty() {
+        let _ = writeln!(out, "  ranking: {}", ranked.join(", "));
+    }
+    for entry in entries
+        .iter()
+        .filter(|entry| !ranking.contains(&entry.claim))
+    {
+        let _ = writeln!(
+            out,
+            "  not ranked: claim {} (agent {}, {})",
+            entry.claim.0,
+            escape(&entry.agent.0),
+            tests_text(entry.tests_passed)
+        );
+    }
+    out
 }
 
 pub fn status_text(state: &State, running: bool, unread: usize) -> String {

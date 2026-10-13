@@ -23,7 +23,8 @@ export const STEWARD_COMMITTER_EMAIL = "steward@tessel.invalid";
 /** Every replayed commit gets this committer date, so a retried rebase yields the same shas. */
 export const STEWARD_COMMITTER_DATE = "2026-01-01T00:00:00Z";
 
-const GIT_ENV: Record<string, string> = {
+/** The environment of every git command the steward runs: no user config, no prompt, no editor. */
+export const GIT_ENV: Record<string, string> = {
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_TERMINAL_PROMPT: "0",

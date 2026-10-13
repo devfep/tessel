@@ -6,6 +6,7 @@ import {
   KILL_AFTER_SECONDS,
   LOCAL_GIT_COMMANDS_MAX,
   MARGIN_SECONDS,
+  RECORD_COMMANDS_MAX,
   RESERVED_SECONDS,
   STEP_SECONDS,
   STEWARD_CALL_TIMEOUT_SECONDS,
@@ -20,10 +21,11 @@ describe("the step budget", () => {
   });
 
   it("counts every step once, each single command with its kill grace, the local ones at their maximum", () => {
-    const { clone, fetch, local, rebase, install, test, push } = STEP_SECONDS;
+    const { clone, fetch, local, rebase, install, test, push, record } = STEP_SECONDS;
     const singles = clone + fetch + rebase + push + 4 * KILL_AFTER_SECONDS;
+    const records = RECORD_COMMANDS_MAX * (record + KILL_AFTER_SECONDS);
     expect(worstCaseSeconds()).toBe(
-      singles + LOCAL_GIT_COMMANDS_MAX * (local + KILL_AFTER_SECONDS) + install + test,
+      singles + LOCAL_GIT_COMMANDS_MAX * (local + KILL_AFTER_SECONDS) + install + test + records,
     );
   });
 
@@ -33,8 +35,14 @@ describe("the step budget", () => {
     );
   });
 
-  it("leaves the test step 327 seconds, the remainder after every other share", () => {
-    expect(STEP_SECONDS.test).toBe(327);
+  it("leaves the test step 287 seconds, the remainder after every other share", () => {
+    expect(STEP_SECONDS.test).toBe(287);
+  });
+
+  it("gives the record step its own share, two commands, and keeps the push's share whole", () => {
+    expect(STEP_SECONDS.record).toBe(10);
+    expect(RECORD_COMMANDS_MAX).toBe(2);
+    expect(STEP_SECONDS.push).toBe(30);
   });
 
   it("reserves time for the container start, tokens, reads, teardown and measurement", () => {
@@ -42,6 +50,7 @@ describe("the step budget", () => {
       "containerStart",
       "measurement",
       "reads",
+      "record",
       "teardown",
       "tokens",
     ]);

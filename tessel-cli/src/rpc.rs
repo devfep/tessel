@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tessel_coordinator::protocol::{
-    ClaimId, Conflict, DecisionRecord, ErrorCode, HeldAssumption, ReviewReason, ScopeClaim,
+    ClaimId, Conflict, DecisionRecord, ErrorCode, HeldAssumption, RaceId, ReviewReason, ScopeClaim,
 };
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -36,6 +36,12 @@ pub enum Request {
     },
     Release {
         claim: Option<ClaimId>,
+    },
+    /// Enter a race. `scopes` are the race's, from its `RaceOpened` event: the grant does not
+    /// repeat them, and the daemon records the entry like any claim.
+    JoinRace {
+        race: RaceId,
+        scopes: Vec<ScopeClaim>,
     },
     /// Send a `Submit` for a held claim. The command has already computed `touched` and checked
     /// coverage; the daemon only owns the fence and the connection.

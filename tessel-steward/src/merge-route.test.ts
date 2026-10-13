@@ -4,7 +4,11 @@ import steward from "./index";
 
 // test-runner and merge-gateway import "cloudflare:workers", which only the Workers runtime has.
 vi.mock("./test-runner", () => ({ ArtifactsGitGateway: vi.fn(), TestRunner: vi.fn() }));
-vi.mock("./merge-gateway", () => ({ MergePushGateway: vi.fn(), MergeReadGateway: vi.fn() }));
+vi.mock("./merge-gateway", () => ({
+  MergePushGateway: vi.fn(),
+  MergeReadGateway: vi.fn(),
+  RecordPushGateway: vi.fn(),
+}));
 vi.mock("./merge-service", () => ({ MergeService: vi.fn() }));
 
 const ADMIN = "admin-token";
@@ -58,7 +62,8 @@ describe("POST /repos/<repo>/merges", () => {
     const response = await post(env, { fork: "demo--a1", commit: COMMIT, scopes: SCOPES });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ outcome: "commit_not_in_fork" });
-    expect(merge).toHaveBeenCalledWith("demo", "demo--a1", COMMIT, SCOPES, true);
+    const body = { fork: "demo--a1", commit: COMMIT, scopes: SCOPES };
+    expect(merge).toHaveBeenCalledWith("demo", body, true);
   });
 
   it("answers 401 without the admin token, and runs nothing", async () => {

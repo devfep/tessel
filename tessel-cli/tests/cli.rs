@@ -19,8 +19,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use support::{eventually, eventually_every, git, Agent, Fake, Lose};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, ErrorCode, Fence, Intent, Mode, OnConflict, RequestId,
-    Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, ClientMsg, CommitId, Criterion, ErrorCode, Fence, Intent, Mode, OnConflict,
+    RequestId, Scope, ScopeClaim, ServerMsg,
 };
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -2581,5 +2581,368 @@ async fn a_merged_commit_outside_this_work_never_moves_the_base() -> Result<()> 
     back_online(&fake, &a1, before).await?;
     eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(()))).await?;
     assert_eq!(a1.status()?["state"]["start_base"], pinned);
+    Ok(())
+}
+
+// ---------- races ----------
+
+const TOK_R: &str = "tok-r1-S3CRETvalue";
+
+/// A coordinator with `r1` as its only reviewer and agents `a1` and `a2`. Nobody is started.
+async fn race_world() -> Result<(Fake, Agent, Agent, Agent)> {
+    let fake = Fake::start(30_000, &[("a1", TOK1), ("a2", TOK2), ("r1", TOK_R)]).await?;
+    fake.set_reviewers(&["r1"]);
+    let a1 = Agent::new(&fake, "a1", TOK1)?;
+    let a2 = Agent::new(&fake, "a2", TOK2)?;
+    let r1 = Agent::new(&fake, "r1", TOK_R)?;
+    Ok((fake, a1, a2, r1))
+}
+
+fn epoch_ms() -> Result<u64> {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    Ok(u64::try_from(since.as_millis())?)
+}
+
+/// The race id in `tessel race open`'s first line.
+fn race_id(stdout: &str) -> Result<u64> {
+    let rest = stdout
+        .strip_prefix("opened race ")
+        .with_context(|| format!("no race id in {stdout:?}"))?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Ok(digits.parse()?)
+}
+
+/// `r1` opens a race on `src/b.rs` for 30 minutes and returns its id.
+fn open_race(r1: &Agent, entrants: &str, by: &str) -> Result<u64> {
+    let done = r1.tessel(&[
+        "race",
+        "open",
+        "make b faster",
+        "src/b.rs",
+        "--entrants",
+        entrants,
+        "--deadline",
+        "30",
+        "--by",
+        by,
+    ])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    race_id(&done.stdout)
+}
+
+/// Commits a change to `src/b.rs` and submits it as the agent's race entry; returns its claim.
+fn submit_entry(agent: &Agent, word: &str) -> Result<u64> {
+    let root = agent.root();
+    let body = format!("pub fn b() {{\n    let _ = \"{word}\";\n}}\n");
+    std::fs::write(root.join("src/b.rs"), body)?;
+    git(&root, &["commit", "-q", "-am", word])?;
+    let done = agent.tessel(&["submit", "--evidence", "tests passed"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    agent.status()?["state"]["claims"][0]["claim"]
+        .as_u64()
+        .context("no entry claim")
+}
+
+/// The agent's inbox, read and unread, once it holds `needle`.
+async fn inbox_with(agent: &Agent, needle: &str) -> Result<String> {
+    eventually(SHORT, || {
+        let inbox = agent.tessel(&["inbox", "--all"])?.stdout;
+        Ok(inbox.contains(needle).then_some(inbox))
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn race_open_prints_the_id_and_deadline_and_sends_ms_and_criteria_in_order() -> Result<()> {
+    let (fake, _a1, _a2, r1) = race_world().await?;
+    let before = epoch_ms()?;
+    let done = r1.tessel(&[
+        "race",
+        "open",
+        "make b faster",
+        "src/b.rs",
+        "--entrants",
+        "3",
+        "--deadline",
+        "30",
+        "--by",
+        "human_pick,tests_pass,first_submitted",
+    ])?;
+    let after = epoch_ms()?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let sent: Vec<(u64, Vec<Criterion>, u32)> = fake
+        .received("r1")
+        .into_iter()
+        .filter_map(|msg| {
+            let ClientMsg::OpenRace {
+                deadline_ms,
+                criteria,
+                max_entrants,
+                ..
+            } = msg
+            else {
+                return None;
+            };
+            Some((deadline_ms, criteria, max_entrants))
+        })
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let (deadline_ms, criteria, entrants) = sent[0].clone();
+    let thirty_minutes = 30 * 60 * 1000;
+    assert!(
+        (before + thirty_minutes..=after + thirty_minutes).contains(&deadline_ms),
+        "deadline {deadline_ms} is not 30 minutes after {before}..{after}"
+    );
+    assert_eq!(
+        criteria,
+        [
+            Criterion::HumanPick,
+            Criterion::TestsPass,
+            Criterion::FirstSubmitted
+        ]
+    );
+    assert_eq!(entrants, 3);
+    let race = race_id(&done.stdout)?;
+    assert!(
+        done.stdout
+            .contains(&format!("opened race {race}; deadline_ms {deadline_ms}")),
+        "{}",
+        done.stdout
+    );
+    assert!(
+        done.stdout
+            .contains(&format!("entrants join with: tessel race join {race}")),
+        "{}",
+        done.stdout
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn race_open_by_a_non_reviewer_prints_the_coordinators_refusal() -> Result<()> {
+    let (_fake, a1, _a2, _r1) = race_world().await?;
+    let done = a1.tessel(&[
+        "race",
+        "open",
+        "make b faster",
+        "src/b.rs",
+        "--entrants",
+        "2",
+        "--deadline",
+        "30",
+        "--by",
+        "tests_pass",
+    ])?;
+    assert_eq!(done.code, 10, "{}", done.all());
+    assert!(
+        done.stderr
+            .contains("only a configured reviewer may open a race"),
+        "{}",
+        done.all()
+    );
+    assert!(done.stderr.contains("NotOwner"), "{}", done.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn race_open_refuses_unmeasured_criteria_before_sending_anything() -> Result<()> {
+    let (fake, _a1, _a2, r1) = race_world().await?;
+    for by in ["tests_pass,lowest_risk", "smallest_diff"] {
+        let done = r1.tessel(&[
+            "race",
+            "open",
+            "make b faster",
+            "src/b.rs",
+            "--entrants",
+            "2",
+            "--deadline",
+            "30",
+            "--by",
+            by,
+        ])?;
+        assert_eq!(done.code, 1, "{}", done.all());
+        assert!(done.stderr.contains("never measured"), "{}", done.all());
+        assert!(done.stderr.contains("nothing was sent"), "{}", done.all());
+    }
+    assert!(fake.received("r1").is_empty(), "{:?}", fake.received("r1"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn race_join_is_granted_with_the_race_set_and_status_shows_it() -> Result<()> {
+    let (fake, _a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "2", "tests_pass,first_submitted")?;
+    a2.start("race for b")?;
+    let done = a2.tessel(&["race", "join", &race.to_string()])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    let held = a2.status()?["state"]["claims"][0].clone();
+    assert_eq!(held["race"], race, "{held}");
+    assert_eq!(held["scopes"][0]["scope"]["path"], "src/b.rs", "{held}");
+    let claim = held["claim"].as_u64().context("no claim id")?;
+    assert!(
+        done.stdout.contains(&format!(
+            "entered race {race} as claim {claim}; submit with `tessel submit` before the \
+             race's deadline"
+        )),
+        "{}",
+        done.stdout
+    );
+    let joins: Vec<u64> = fake
+        .received("a2")
+        .into_iter()
+        .filter_map(|msg| {
+            let ClientMsg::JoinRace { race, .. } = msg else {
+                return None;
+            };
+            Some(race.0)
+        })
+        .collect();
+    assert_eq!(joins, [race]);
+    let status = a2.tessel(&["status"])?.stdout;
+    assert!(
+        status.contains(&format!("claim {claim} fence"))
+            && status.contains(&format!("[race {race}]")),
+        "{status}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_beside_a_race_entry_is_a_new_claim_and_the_entry_keeps_its_scopes() -> Result<()> {
+    let (_fake, _a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "2", "tests_pass")?;
+    a2.start("race for b")?;
+    assert_eq!(a2.tessel(&["race", "join", &race.to_string()])?.code, 0);
+    let entry = a2.status()?["state"]["claims"][0]["claim"].clone();
+    // An entry cannot amend (`RaceScopeFixed`), so the claim must not be added to it.
+    let done = a2.tessel(&["claim", "src/a.rs"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(
+        !done.stdout.contains("added to your open claim"),
+        "{}",
+        done.stdout
+    );
+    let claims = a2.status()?["state"]["claims"].clone();
+    assert_eq!(claims.as_array().map(Vec::len), Some(2), "{claims}");
+    assert_eq!(claims[0]["claim"], entry, "{claims}");
+    assert_eq!(claims[0]["race"], race, "{claims}");
+    assert_eq!(
+        claims[0]["scopes"].as_array().map(Vec::len),
+        Some(1),
+        "{claims}"
+    );
+    assert_eq!(
+        claims[0]["scopes"][0]["scope"]["path"], "src/b.rs",
+        "{claims}"
+    );
+    assert_eq!(claims[1]["race"], Value::Null, "{claims}");
+    assert_eq!(
+        claims[1]["scopes"][0]["scope"]["path"], "src/a.rs",
+        "{claims}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_denied_by_a_race_shows_how_to_join_it() -> Result<()> {
+    let (_fake, a1, _a2, r1) = race_world().await?;
+    let race = open_race(&r1, "2", "tests_pass")?;
+    a1.start("edit b")?;
+    let done = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(done.code, 3, "{}", done.all());
+    assert!(
+        done.stdout.contains(&format!(
+            "  that claim is in race {race}\n  join it with: tessel race join {race}\n"
+        )),
+        "{}",
+        done.stdout
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_race_result_names_the_winner_the_ranking_and_each_entrants_place() -> Result<()> {
+    let (fake, a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "2", "tests_pass,first_submitted")?;
+    for agent in [&a1, &a2] {
+        agent.start("race for b")?;
+        let done = agent.tessel(&["race", "join", &race.to_string()])?;
+        assert_eq!(done.code, 0, "{}", done.all());
+    }
+    let first = submit_entry(&a1, "first")?;
+    let second = submit_entry(&a2, "second")?;
+    // Both entrants submitted, so the race is judged: each entry's tests are tried in turn.
+    for _ in 0..2 {
+        eventually(SHORT, || Ok(fake.verify_next(true).then_some(()))).await?;
+    }
+    let ranking = format!(
+        "ranking: 1. claim {first} (agent a1, tests passed), 2. claim {second} (agent a2, tests \
+         passed)"
+    );
+    let won = inbox_with(&a1, "[race_result]").await?;
+    assert!(
+        won.contains(&format!(
+            "race {race}: your entry, claim {first}, placed 1 of 2 and won"
+        )),
+        "{won}"
+    );
+    assert!(
+        won.contains(&format!("winner: claim {first} (agent a1)")),
+        "{won}"
+    );
+    assert!(won.contains(&ranking), "{won}");
+    let lost = inbox_with(&a2, "lost the race").await?;
+    assert!(lost.contains("[submit_rejected]"), "{lost}");
+    assert!(
+        lost.contains(&format!(
+            "race {race}: your entry, claim {second}, placed 2 of 2"
+        )),
+        "{lost}"
+    );
+    assert!(lost.contains(&ranking), "{lost}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn race_pick_sends_pick_winner_and_the_entrant_hears_the_choice() -> Result<()> {
+    let (fake, _a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "1", "human_pick")?;
+    a2.start("race for b")?;
+    assert_eq!(a2.tessel(&["race", "join", &race.to_string()])?.code, 0);
+    let entry = submit_entry(&a2, "only")?;
+    eventually(SHORT, || Ok(fake.verify_next(true).then_some(()))).await?;
+    let waiting = inbox_with(&a2, "[race_result]").await?;
+    assert!(
+        waiting.contains(&format!(
+            "  race {race}: no winner named; this race is decided by a human pick, and if none \
+             comes before the window closes, every entry gets submit_rejected\n"
+        )),
+        "{waiting}"
+    );
+    let done = r1.tessel(&["race", "pick", &race.to_string(), &entry.to_string()])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert!(
+        done.stdout.contains(&format!(
+            "picked claim {entry} as the winner of race {race}"
+        )),
+        "{}",
+        done.stdout
+    );
+    let picks: Vec<(u64, u64)> = fake
+        .received("r1")
+        .into_iter()
+        .filter_map(|msg| {
+            let ClientMsg::PickWinner { race, claim, .. } = msg else {
+                return None;
+            };
+            Some((race.0, claim.0))
+        })
+        .collect();
+    assert_eq!(picks, [(race, entry)]);
+    let decided = inbox_with(&a2, "and won").await?;
+    assert!(
+        decided.contains(&format!("winner: claim {entry} (agent a2)")),
+        "{decided}"
+    );
     Ok(())
 }

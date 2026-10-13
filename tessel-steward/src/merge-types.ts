@@ -1,3 +1,4 @@
+import { parseRecordFields, type MergeRecordFields } from "./evidence-fields";
 import { isValidName } from "./identity";
 import { parseScopes, type ClaimedScope } from "./merge-coverage";
 import type { StepOutcome } from "./run-steps";
@@ -15,20 +16,23 @@ export function parseSha(value: unknown): Sha | undefined {
 
 /**
  * A request to merge `commit`, which must be reachable from the default branch of `fork`, for a
- * claim that holds `scopes`. The merged change must be covered by them (invariant 11).
+ * claim that holds `scopes`. The merged change must be covered by them (invariant 11). `record`
+ * is what the coordinator sent for the merge's evidence record; it never decides the merge.
  */
 export interface MergeRequest {
   fork: string;
   commit: Sha;
   scopes: ClaimedScope[];
+  record: MergeRecordFields;
 }
 
 export type ParsedMergeRequest = { ok: true; request: MergeRequest } | { ok: false; error: string };
 
 /**
  * Validates the body of `POST /repos/<repo>/merges`:
- * `{ "fork": <repo name>, "commit": <sha>, "scopes": [{ "scope", "mode" }] }`. A request without
- * `scopes` is invalid: the coverage check is never skipped.
+ * `{ "fork": <repo name>, "commit": <sha>, "scopes": [{ "scope", "mode" }] }`, plus the optional
+ * record fields `claim`, `intent`, `decisions` and `review` (see `parseRecordFields`, which never
+ * refuses a request). A request without `scopes` is invalid: the coverage check is never skipped.
  */
 export function parseMergeRequest(body: unknown): ParsedMergeRequest {
   if (typeof body !== "object" || body === null) {
@@ -50,7 +54,8 @@ export function parseMergeRequest(body: unknown): ParsedMergeRequest {
   if (!parsedScopes.ok) {
     return parsedScopes;
   }
-  return { ok: true, request: { fork, commit: sha, scopes: parsedScopes.scopes } };
+  const record = parseRecordFields(body as Record<string, unknown>);
+  return { ok: true, request: { fork, commit: sha, scopes: parsedScopes.scopes, record } };
 }
 
 /** A request to try `commit` of `fork` on top of main as it was at `main`, without merging it. */
@@ -155,12 +160,22 @@ export function isSafeBranchName(name: string): boolean {
 export type GitResult = Omit<StepOutcome, "step" | "passed">;
 
 /**
+ * What became of a merge's evidence record (`evidence-steps.ts`). `written: true` only when the
+ * Worker read the record back from main of `repo` through the Artifacts binding, at `head`, with
+ * the bytes it wrote. It never changes the merge's outcome.
+ */
+export type EvidenceResult =
+  | { written: true; repo: string; path: string; head: Sha }
+  | { written: false; reason: string };
+
+/**
  * The result of one merge attempt. Exactly one variant; the fields of a variant are exactly what
  * is known when it is returned.
  *
  * Evidence (CLAUDE.md rule 7). Only these are verified facts about the code:
  * - `merged`: main was updated to `head`. The Worker read main through the Artifacts binding after
- *   the push and got `head`; the sandbox's exit code is not trusted.
+ *   the push and got `head`; the sandbox's exit code is not trusted. `evidence` says whether the
+ *   record of the merge was written (`runMerge` always sets it; it is not merge evidence itself).
  * - `conflict`: replaying the commit onto the real main at `base` stopped with these files
  *   unmerged. This is the only outcome that shows a conflict was real.
  * - `tests_failed`: the repo's own gate (`npm test`, or the `[[test]]` commands of the trunk's
@@ -195,7 +210,7 @@ export type GitResult = Omit<StepOutcome, "step" | "passed">;
  * `stdout`/`stderr` in any `result` come from the repo or from git and are untrusted data.
  */
 export type MergeOutcome =
-  | { outcome: "merged"; base: Sha; head: Sha }
+  | { outcome: "merged"; base: Sha; head: Sha; evidence?: EvidenceResult }
   | { outcome: "already_merged"; base: Sha }
   | { outcome: "conflict"; base: Sha; files: string[] }
   | { outcome: "tests_failed"; base: Sha; head: Sha; result: StepOutcome }

@@ -550,6 +550,10 @@ pub enum ServerMsg {
         /// Other agents' assumptions this claim could break (invariant 8).
         #[serde(default)]
         at_risk: Vec<HeldAssumption>,
+        /// The trunk head the coordinator knew when it granted; `None` when it knows none yet.
+        /// An older server omits it.
+        #[serde(default)]
+        head: Option<CommitId>,
     },
     Denied {
         req: RequestId,

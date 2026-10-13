@@ -151,6 +151,7 @@ function recordingDeps(
     },
     withPushAccess: async (_update, use) => use(),
     currentMain: async () => sha(git(w.main, "rev-parse", "main")),
+    recordMerge: async () => ({ written: false, reason: "no record repo in this test" }),
   };
 }
 

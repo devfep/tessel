@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tempfile::TempDir;
 use tessel_coordinator::coordinator::{Config, Coordinator};
-use tessel_coordinator::merge::MergeOutcome;
+use tessel_coordinator::merge::{MergeOutcome, TrialOutcome, TrialReport};
 use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
@@ -216,6 +216,27 @@ impl Fake {
         let (events, outbound) = shell::split_effects(effects);
         self.inner.deliver(None, outbound);
         self.inner.publish(events);
+    }
+
+    /// Runs the next queued verification (a race entry's trial) on the real core, as the steward
+    /// would, with its tests passing or failing. Returns false when nothing was ready to run.
+    pub fn verify_next(&self, passed: bool) -> bool {
+        let effects = {
+            let mut core = lock(&self.inner.core);
+            let Some(dispatch) = core.begin_verification(now_ms()) else {
+                return false;
+            };
+            let outcome = if passed {
+                TrialOutcome::Clean {}
+            } else {
+                TrialOutcome::TestsFailed {}
+            };
+            core.verification_outcome(dispatch.id, &TrialReport::stopped(outcome), now_ms())
+        };
+        let (events, outbound) = shell::split_effects(effects);
+        self.inner.deliver(None, outbound);
+        self.inner.publish(events);
+        true
     }
 
     /// Cuts every open socket without a close frame, as a network failure would.

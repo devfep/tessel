@@ -37,7 +37,47 @@ describe("parseMergeRequest", () => {
   it("accepts a fork name and a sha", () => {
     expect(parseMergeRequest({ fork: "demo--agent-1", commit: SHA, scopes: SCOPES })).toEqual({
       ok: true,
-      request: { fork: "demo--agent-1", commit: SHA, scopes: SCOPES },
+      request: { fork: "demo--agent-1", commit: SHA, scopes: SCOPES, record: { malformed: [] } },
+    });
+  });
+
+  it("accepts the optional record fields and keeps them out of the merge's own fields", () => {
+    const body = {
+      fork: "demo--a1",
+      commit: SHA,
+      scopes: SCOPES,
+      claim: 7,
+      intent: { summary: "s", task_ref: null, assumptions: [] },
+      decisions: { rejected: [], evidence: ["e"], transcript: null },
+      review: null,
+    };
+    expect(parseMergeRequest(body)).toEqual({
+      ok: true,
+      request: {
+        fork: "demo--a1",
+        commit: SHA,
+        scopes: SCOPES,
+        record: {
+          claim: 7,
+          intent: { summary: "s", taskRef: null, assumptions: [] },
+          decisions: { rejected: [], evidence: ["e"], transcript: null },
+          review: null,
+          malformed: [],
+        },
+      },
+    });
+  });
+
+  it("still rejects a request without scopes when it carries the record fields", () => {
+    const body = { fork: "f", commit: SHA, claim: 7, intent: { summary: "s" }, review: null };
+    expect(parseMergeRequest(body).ok).toBe(false);
+  });
+
+  it("merges a request whose record fields are malformed, naming them", () => {
+    const body = { fork: "f", commit: SHA, scopes: SCOPES, claim: -1, intent: "fix it" };
+    expect(parseMergeRequest(body)).toMatchObject({
+      ok: true,
+      request: { record: { malformed: ["claim", "intent"] } },
     });
   });
 

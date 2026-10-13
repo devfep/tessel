@@ -9,7 +9,7 @@ import { redactTokens } from "./redact";
 import { mintForkWriteToken } from "./token-policy";
 import { movesTrunkMain, pokeTrunkMoved } from "./trunk-poke";
 
-export { MergePushGateway, MergeReadGateway } from "./merge-gateway";
+export { MergePushGateway, MergeReadGateway, RecordPushGateway } from "./merge-gateway";
 export { MergeService } from "./merge-service";
 export { ArtifactsGitGateway, TestRunner } from "./test-runner";
 

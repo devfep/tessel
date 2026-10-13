@@ -172,6 +172,8 @@ struct PendingClaim {
     queued: bool,
     /// The held claim this request adds its scopes to, when it is an `Amend`.
     amend: Option<ClaimId>,
+    /// The `--assume` statements sent with the request; the held claim keeps them for the note.
+    assumptions: Vec<String>,
     replies: Vec<oneshot::Sender<Reply>>,
 }
 
@@ -700,23 +702,22 @@ impl Daemon {
                 req,
                 claim,
                 fence,
-                expires_at_ms,
                 race,
-                at_risk,
-            } => match self.pending.remove(&req.0) {
-                Some(pending) => self.on_granted(pending, claim, fence, race, at_risk),
-                None => self.unexpected(
-                    "grant for an unknown request",
-                    &ServerMsg::Granted {
-                        req,
-                        claim,
-                        fence,
-                        expires_at_ms,
-                        race,
-                        at_risk,
-                    },
-                ),
-            },
+                ref at_risk,
+                ref head,
+                ..
+            } => {
+                if let Some(head) = head {
+                    self.state.coordinator_head = Some(head.0.clone());
+                    self.persist();
+                }
+                match self.pending.remove(&req.0) {
+                    Some(pending) => {
+                        self.on_granted(pending, claim, fence, race, at_risk.clone());
+                    }
+                    None => self.unexpected("grant for an unknown request", &msg),
+                }
+            }
             ServerMsg::Denied { req, conflicts } => {
                 let msg = ServerMsg::Denied {
                     req,
@@ -784,11 +785,30 @@ impl Daemon {
                 let reasons = reasons.clone();
                 self.on_review_required(claim, reasons, msg);
             }
-            ServerMsg::Shadowed { .. }
-            | ServerMsg::RaceOpened { .. }
-            | ServerMsg::RaceResult { .. }
-            | ServerMsg::Event { .. } => self.unexpected("message this CLI does not use", &msg),
+            msg @ ServerMsg::RaceResult { .. } => self.on_race_result(msg),
+            // `RaceOpened` answers an `OpenRace`, which `tessel race open` sends on a connection
+            // of its own, never through the daemon.
+            ServerMsg::Shadowed { .. } | ServerMsg::RaceOpened { .. } | ServerMsg::Event { .. } => {
+                self.unexpected("message this CLI does not use", &msg);
+            }
         }
+    }
+
+    /// A race this agent entered or opened was ranked or decided: an inbox notice that says where
+    /// this agent's entry placed. The coordinator sends each losing entry a `SubmitRejected` after.
+    fn on_race_result(&self, msg: ServerMsg) {
+        let ServerMsg::RaceResult {
+            race,
+            winner,
+            ref ranking,
+            ref entries,
+        } = msg
+        else {
+            return;
+        };
+        let me = AgentId(self.config.agent.clone());
+        let note = crate::race::result_note(race, winner, ranking, entries, &me);
+        self.notify(NoticeKind::RaceResult, &note, Some(msg));
     }
 
     fn unexpected(&self, note: &str, msg: &ServerMsg) {
@@ -846,6 +866,7 @@ impl Daemon {
                 submitted: false,
                 submitted_commit: None,
                 awaiting_review: false,
+                assumptions: pending.assumptions,
             };
             self.state.claims.push(held.clone());
             held
@@ -867,6 +888,7 @@ impl Daemon {
                 expires_at_ms: held.expires_at_ms,
                 race,
                 at_risk: at_risk.clone(),
+                head: None,
             };
             self.notify(
                 NoticeKind::AtRisk,
@@ -1106,6 +1128,7 @@ impl Daemon {
                 submitted: false,
                 submitted_commit: None,
                 awaiting_review: false,
+                assumptions: Vec::new(),
             };
             self.send_release(&held);
             let note = format!(
@@ -1132,6 +1155,7 @@ impl Daemon {
             submitted: server.submitted,
             submitted_commit: server.submitted_commit,
             awaiting_review: server.awaiting_review,
+            assumptions: server.assumptions,
         };
         self.state.claims.push(held.clone());
         held
@@ -1459,6 +1483,7 @@ impl Daemon {
             Request::Release { claim } => {
                 let _ = reply.send(self.release(claim));
             }
+            Request::JoinRace { race, scopes } => self.start_join(race, scopes, reply),
             Request::Stop => {
                 let (mut unreleased, submitted, sent) = self.release_all_for_stop();
                 unreleased.extend(self.confirm_released(sent).await);
@@ -1501,7 +1526,11 @@ impl Daemon {
                 self.start_claim(scopes, wait, &assumptions, new, reply);
             }
             Request::Ensure { wanted } => self.ensure(&wanted, reply),
-            Request::Status | Request::Release { .. } | Request::Submit { .. } | Request::Stop => {
+            Request::Status
+            | Request::Release { .. }
+            | Request::JoinRace { .. }
+            | Request::Submit { .. }
+            | Request::Stop => {
                 let _ = reply.send(refused(None, "not a claim request"));
             }
         }
@@ -1520,10 +1549,16 @@ impl Daemon {
         }
     }
 
-    /// The one claim that new scopes are added to, if the agent holds exactly one open claim.
+    /// The one claim that new scopes are added to, if the agent holds exactly one open claim
+    /// besides its race entries.
     fn amend_target(&self) -> Option<(ClaimId, tessel_coordinator::protocol::Fence)> {
-        // Amend assumes no race entries (they cannot amend: `RaceScopeFixed`) until races ship.
-        let mut open = self.state.claims.iter().filter(|held| !held.submitted);
+        // A race entry holds exactly the race's scopes and cannot amend (`RaceScopeFixed`), so
+        // new scopes go to the one other open claim, or to a claim of their own.
+        let mut open = self
+            .state
+            .claims
+            .iter()
+            .filter(|held| !held.submitted && held.race.is_none());
         let only = open.next()?;
         if open.next().is_some() {
             return None;
@@ -1634,6 +1669,7 @@ impl Daemon {
                 scopes,
                 queued: false,
                 amend: None,
+                assumptions: assumptions.to_vec(),
                 replies: vec![reply],
             },
         );
@@ -1681,6 +1717,52 @@ impl Daemon {
                 scopes: add,
                 queued: false,
                 amend: Some(claim),
+                assumptions: Vec::new(),
+                replies: vec![reply],
+            },
+        );
+    }
+
+    /// Enters `race` with a `JoinRace`, which never waits. The grant does not repeat the race's
+    /// scopes, so the entry is recorded with `scopes`, which the command read from the race's
+    /// `RaceOpened` event.
+    fn start_join(
+        &mut self,
+        race: tessel_coordinator::protocol::RaceId,
+        scopes: Vec<ScopeClaim>,
+        reply: oneshot::Sender<Reply>,
+    ) {
+        if !self.is_online() {
+            let why = self
+                .state
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "not welcomed yet".to_string());
+            let message = format!("not connected to the coordinator ({why}); retrying");
+            let _ = reply.send(refused(None, &message));
+            return;
+        }
+        if scopes.is_empty() {
+            let _ = reply.send(refused(None, "the race names no scopes"));
+            return;
+        }
+        let req = self.next_req;
+        self.next_req += 1;
+        let msg = ClientMsg::JoinRace {
+            req: RequestId(req),
+            race,
+        };
+        if !self.send(msg) {
+            let _ = reply.send(refused(None, "the connection just dropped; retrying"));
+            return;
+        }
+        self.pending.insert(
+            req,
+            PendingClaim {
+                scopes,
+                queued: false,
+                amend: None,
+                assumptions: Vec::new(),
                 replies: vec![reply],
             },
         );
@@ -2331,6 +2413,7 @@ mod tests {
             submitted: false,
             submitted_commit: None,
             awaiting_review: false,
+            assumptions: Vec::new(),
         }
     }
 
@@ -2398,11 +2481,14 @@ mod tests {
             submitted: true,
             submitted_commit: Some("f".into()),
             awaiting_review,
+            assumptions: vec!["b is pure".into()],
         };
         assert!(daemon.adopt(ClaimId(7), server(true)).awaiting_review);
         assert!(!daemon.adopt(ClaimId(8), server(false)).awaiting_review);
         let stored = daemon.state.claims.iter().find(|h| h.claim == ClaimId(7));
         assert!(stored.is_some_and(|held| held.awaiting_review));
+        let adopted = daemon.adopt(ClaimId(9), server(false));
+        assert_eq!(adopted.assumptions, vec!["b is pure".to_string()]);
     }
 
     fn lapsed_claim(claim: u64) -> HeldClaim {
@@ -2837,5 +2923,84 @@ mod tests {
         daemon.welcome_deadline = Some(Instant::now() + PROBE_LIMIT);
         daemon.on_welcome("a".repeat(40), 30_000);
         assert!(daemon.welcome_deadline.is_none());
+    }
+
+    const HEAD_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HEAD_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// A `granted` as it arrives on the wire; `head` is absent from the object when `None`.
+    fn granted_json(head: Option<serde_json::Value>) -> ServerMsg {
+        let mut msg = serde_json::json!({
+            "type": "granted", "req": 5, "claim": 9, "fence": 9,
+            "expires_at_ms": 0, "race": null,
+        });
+        if let Some(head) = head {
+            msg["head"] = head;
+        }
+        serde_json::from_value(msg).unwrap()
+    }
+
+    fn pending_claim() -> PendingClaim {
+        PendingClaim {
+            scopes: Vec::new(),
+            queued: false,
+            amend: None,
+            assumptions: Vec::new(),
+            replies: Vec::new(),
+        }
+    }
+
+    fn persisted_head(daemon: &Daemon) -> Option<String> {
+        State::read(&daemon.worktree)
+            .unwrap()
+            .and_then(|state| state.coordinator_head)
+    }
+
+    fn daemon_knowing_head_a(dir: &std::path::Path) -> Daemon {
+        let mut daemon = daemon_in(dir);
+        daemon.state.coordinator_head = Some(HEAD_A.to_string());
+        daemon
+    }
+
+    #[test]
+    fn a_grant_for_a_pending_claim_adopts_the_head_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_knowing_head_a(dir.path());
+        daemon.pending.insert(5, pending_claim());
+
+        daemon.on_server_msg(granted_json(Some(HEAD_B.into())));
+
+        assert_eq!(daemon.state.coordinator_head.as_deref(), Some(HEAD_B));
+        assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_B));
+    }
+
+    #[test]
+    fn a_grant_for_an_unknown_request_still_adopts_and_writes_the_head_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_knowing_head_a(dir.path());
+        assert_eq!(persisted_head(&daemon), None, "nothing was written yet");
+
+        daemon.on_server_msg(granted_json(Some(HEAD_B.into())));
+
+        assert_eq!(daemon.state.coordinator_head.as_deref(), Some(HEAD_B));
+        assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_B));
+    }
+
+    #[test]
+    fn a_grant_without_a_head_leaves_the_head_alone() {
+        for head in [None, Some(serde_json::Value::Null)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut daemon = daemon_knowing_head_a(dir.path());
+            daemon.pending.insert(5, pending_claim());
+
+            daemon.on_server_msg(granted_json(head.clone()));
+
+            assert_eq!(
+                daemon.state.coordinator_head.as_deref(),
+                Some(HEAD_A),
+                "{head:?}"
+            );
+            assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_A), "{head:?}");
+        }
     }
 }

@@ -75,6 +75,22 @@ function respond(argv: string[], world: World): { exitCode: number; stdout: stri
   return answers.find(([needle]) => text.includes(needle))?.[1] ?? { exitCode: 0, stdout: "" };
 }
 
+/** The files a `git fast-import` stream of the record step writes, by path. */
+async function importedFiles(stdin: ReadableStream<Uint8Array>): Promise<Map<string, string>> {
+  const text = await new Response(stdin).text();
+  const files = new Map<string, string>();
+  const pattern = /M 100644 inline (\S+)\ndata (\d+)\n/g;
+  for (const match of text.matchAll(pattern)) {
+    const start = (match.index ?? 0) + match[0].length;
+    files.set(match[1] ?? "", text.slice(start, start + Number(match[2])));
+  }
+  return files;
+}
+
+function isRecordRepo(name: string): boolean {
+  return name.endsWith("--evidence") || name.endsWith("--transcripts");
+}
+
 function build(overrides: Partial<World> = {}) {
   const world: World = {
     forkSource: "artifacts:tessel/demo",
@@ -100,6 +116,27 @@ function build(overrides: Partial<World> = {}) {
   const execUsers: Array<{ command: string; user: string | undefined; cwd: string | undefined }> =
     [];
   let pushed = false;
+  const recordHeads = new Map<string, string>();
+  const recordFiles = new Map<string, Map<string, string>>();
+  let recordUpdate: { remote: string; new: string } | undefined;
+
+  function recordRepo(name: string) {
+    return {
+      info: async () => ({
+        remote: `https://git.example/git/tessel/${name}.git`,
+        defaultBranch: "main",
+        source: null,
+      }),
+      log: async () => {
+        const head = recordHeads.get(name);
+        return head === undefined ? [] : [{ hash: head }];
+      },
+      readFile: async (args: { ref: string; path: string }) => {
+        const text = recordFiles.get(name)?.get(args.path);
+        return text === undefined ? null : new Blob([text]);
+      },
+    };
+  }
 
   function repo(name: string) {
     return {
@@ -133,6 +170,7 @@ function build(overrides: Partial<World> = {}) {
         return [{ hash: world.mainNow }];
       },
       [Symbol.dispose]: () => undefined,
+      ...(isRecordRepo(name) ? recordRepo(name) : {}),
     };
   }
 
@@ -154,8 +192,18 @@ function build(overrides: Partial<World> = {}) {
     interceptOutboundHttps: async (_host: string, gateway: { name: string }) => {
       events.push(`intercept ${gateway.name}`);
     },
-    exec: async (cmd: string[], options?: { user?: string; cwd?: string }) => {
+    exec: async (
+      cmd: string[],
+      options?: { user?: string; cwd?: string; stdin?: ReadableStream<Uint8Array> },
+    ) => {
       const argv = cmd.slice(3);
+      if (argv[3] === "tessel-record" && options?.stdin !== undefined && recordUpdate) {
+        const name = /([^/]+)\.git$/.exec(argv[4] ?? "")?.[1] ?? "";
+        events.push(`exec record ${name}`);
+        recordFiles.set(name, await importedFiles(options.stdin));
+        recordHeads.set(name, recordUpdate.new);
+        return { stdout: textStream(""), stderr: textStream(""), exitCode: Promise.resolve(0) };
+      }
       execUsers.push({ command: argv.join(" "), user: options?.user, cwd: options?.cwd });
       const { exitCode, stdout } = respond(argv, world);
       events.push(`exec ${argv.join(" ")}`);
@@ -173,6 +221,10 @@ function build(overrides: Partial<World> = {}) {
   const exportsStub = {
     MergeReadGateway: () => ({ name: "read-gateway" }),
     MergePushGateway: pushGateway,
+    RecordPushGateway: (options: { props: { remote: string; new: string } }) => {
+      recordUpdate = options.props;
+      return { name: "record-gateway" };
+    },
   };
   const ctx = { container, exports: exportsStub } as unknown as DurableObjectState;
   const env = { ARTIFACTS: { get: async (name: string) => repo(name) } } as unknown as Env;
@@ -183,6 +235,7 @@ const request = {
   fork: "demo--a1",
   commit: COMMIT,
   scopes: [{ scope: { kind: "dir" as const, path: "src" }, mode: "edit_body" as const }],
+  record: { malformed: [] },
 };
 
 describe("executeMerge", () => {
@@ -190,12 +243,48 @@ describe("executeMerge", () => {
     const { ctx, env, events } = build();
     const outcome = await executeMerge(ctx, env, "demo", request, false);
 
-    expect(outcome).toEqual({ outcome: "merged", base: BASE, head: HEAD });
+    expect(outcome).toMatchObject({ outcome: "merged", base: BASE, head: HEAD });
     const at = (needle: string) => events.findIndex((event) => event.includes(needle));
     expect(at("mint write")).toBeGreaterThan(at("npm test"));
     expect(at("postBuffer")).toBeGreaterThan(at("mint write"));
     expect(at("revoke demo-write")).toBeGreaterThan(at("postBuffer"));
-    expect(events.filter((event) => event.startsWith("mint write"))).toHaveLength(1);
+    expect(events.filter((event) => event === "mint write demo")).toHaveLength(1);
+  });
+
+  it("writes the evidence record after main read merged, with its own write token", async () => {
+    const { ctx, env, events } = build();
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
+
+    expect(outcome).toMatchObject({
+      outcome: "merged",
+      evidence: { written: true, repo: "demo--evidence", path: `merges/${HEAD}.md` },
+    });
+    const at = (event: string) => events.indexOf(event);
+    expect(at("mint write demo--evidence")).toBeGreaterThan(at("revoke demo-write"));
+    expect(at("intercept record-gateway")).toBeGreaterThan(at("mint write demo--evidence"));
+    expect(at("exec record demo--evidence")).toBeGreaterThan(at("intercept record-gateway"));
+    expect(at("revoke demo--evidence-write")).toBeGreaterThan(at("exec record demo--evidence"));
+    expect(at("destroy")).toBeGreaterThan(at("revoke demo--evidence-write"));
+  });
+
+  it("keeps a merge merged when its record cannot be written, and says why", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { ctx, env, events } = build();
+    const get = (env.ARTIFACTS as unknown as { get: (name: string) => Promise<unknown> }).get;
+    (env.ARTIFACTS as unknown as { get: unknown }).get = async (name: string) => {
+      if (isRecordRepo(name)) {
+        throw new Error("artifacts unavailable");
+      }
+      return get(name);
+    };
+    const outcome = await executeMerge(ctx, env, "demo", request, false);
+    expect(outcome).toEqual({
+      outcome: "merged",
+      base: BASE,
+      head: HEAD,
+      evidence: { written: false, reason: "artifacts unavailable" },
+    });
+    expect(events.some((event) => event.startsWith("mint write demo--"))).toBe(false);
   });
 
   it("has revoked both read tokens before the first command that is not a fetch", async () => {

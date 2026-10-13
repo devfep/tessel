@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { DEPENDENCIES_DECLARED_EXIT_CODE } from "./dependency-check";
 import type { GitCommand } from "./merge-commands";
 import type { ClaimedScope } from "./merge-coverage";
-import { runMerge, type MergeDeps } from "./merge-steps";
-import { parseSha, type GitResult, type Sha } from "./merge-types";
+import { runMerge, type LandedMerge, type MergeDeps } from "./merge-steps";
+import { parseSha, type EvidenceResult, type GitResult, type Sha } from "./merge-types";
 import { REVOKE_FAILED_MESSAGE, makeOutcome, type StepOutcome } from "./run-steps";
 import { LOCAL_GIT_COMMANDS_MAX, STEP_SECONDS } from "./step-budget";
 
@@ -21,6 +21,12 @@ const MERGE_BASE = sha("2");
 const COMMIT = sha("3");
 const HEAD = sha("4");
 const RACER = sha("5");
+const RECORDED: EvidenceResult = {
+  written: true,
+  repo: "demo--evidence",
+  path: `merges/${HEAD}.md`,
+  head: sha("e"),
+};
 const WHOLE_REPO: ClaimedScope[] = [
   { scope: { kind: "dir", path: "" }, mode: "edit_signature" },
   { scope: { kind: "dir", path: "" }, mode: "create" },
@@ -99,6 +105,7 @@ function harness(overrides: Partial<Plan> = {}) {
   };
   const events: string[] = [];
   const commands: GitCommand[] = [];
+  const landings: LandedMerge[] = [];
   const deps: MergeDeps = {
     pinnedMain: BASE,
     sources: {
@@ -146,15 +153,20 @@ function harness(overrides: Partial<Plan> = {}) {
       events.push("currentMain");
       return plan.mainAfterPush;
     },
+    recordMerge: async (landed) => {
+      events.push("record-merge");
+      landings.push(landed);
+      return RECORDED;
+    },
   };
-  return { deps, events, commands };
+  return { deps, events, commands, landings };
 }
 
 describe("runMerge", () => {
   it("fetches, revokes the reads, verifies, rebases, tests, then mints and revokes the write token", async () => {
     const { deps, events } = harness();
     const outcome = await runMerge(deps, COMMIT, WHOLE_REPO);
-    expect(outcome).toEqual({ outcome: "merged", base: BASE, head: HEAD });
+    expect(outcome).toEqual({ outcome: "merged", base: BASE, head: HEAD, evidence: RECORDED });
     expect(events).toEqual([
       "git:clone",
       "git:fetch",
@@ -172,6 +184,7 @@ describe("runMerge", () => {
       "git:push",
       "revoke-write",
       "currentMain",
+      "record-merge",
     ]);
   });
 
@@ -188,6 +201,71 @@ describe("runMerge", () => {
     await runMerge(deps, COMMIT, WHOLE_REPO);
     const rebase = commands.find((command) => gitStep(command) === "rebase");
     expect(rebase?.argv.slice(-4)).toEqual(["--onto", BASE, MERGE_BASE, COMMIT]);
+  });
+
+  it("writes the record only after main reads merged, after the write token and gate", async () => {
+    const { deps, events } = harness();
+    await runMerge(deps, COMMIT, WHOLE_REPO);
+    const record = events.indexOf("record-merge");
+    expect(record).toBe(events.length - 1);
+    expect(record).toBeGreaterThan(events.indexOf("currentMain"));
+    expect(record).toBeGreaterThan(events.indexOf("revoke-write"));
+    expect(record).toBeGreaterThan(events.indexOf("package:test"));
+  });
+
+  it("writes no record for an outcome that is not merged", async () => {
+    const cases: Array<Partial<Plan>> = [
+      { test: 1 },
+      { install: 1 },
+      { test: 124 },
+      { mainAfterPush: BASE },
+      { mainAfterPush: RACER },
+      { mainAfterPush: null },
+      { git: { changed: { exitCode: 0, stdout: "M\0src/a.ts\0A\0docs/x.md\0" } } },
+    ];
+    for (const overrides of cases) {
+      const { deps, events } = harness(overrides);
+      const outcome = await runMerge(deps, COMMIT, [
+        { scope: { kind: "dir", path: "src" }, mode: "edit_signature" },
+      ]);
+      expect(outcome.outcome).not.toBe("merged");
+      expect(events).not.toContain("record-merge");
+      expect(outcome).not.toHaveProperty("evidence");
+    }
+  });
+
+  it("records the gate's steps as they ran, with the seconds the steward measured", async () => {
+    const { deps, landings } = harness();
+    const runPackageStep = deps.runPackageStep;
+    deps.runPackageStep = async (step) => {
+      const outcome = await runPackageStep(step);
+      return step === "test"
+        ? { ...outcome, measurement: { wallMs: 12_340, peakMemoryBytes: null } }
+        : outcome;
+    };
+    await runMerge(deps, COMMIT, WHOLE_REPO);
+    expect(landings).toEqual([
+      {
+        base: BASE,
+        head: HEAD,
+        gate: [
+          { step: "install", exitCode: 0, seconds: null, timedOut: false },
+          { step: "test", exitCode: 0, seconds: 12.34, timedOut: false },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps the outcome merged when the record was not written, and carries why", async () => {
+    const { deps } = harness();
+    const failed: EvidenceResult = { written: false, reason: "push exit 1" };
+    deps.recordMerge = async () => failed;
+    expect(await runMerge(deps, COMMIT, WHOLE_REPO)).toEqual({
+      outcome: "merged",
+      base: BASE,
+      head: HEAD,
+      evidence: failed,
+    });
   });
 
   it("never mints a write token when the tests fail", async () => {
@@ -309,6 +387,14 @@ describe("runMerge", () => {
       });
       expect(events.some((event) => event.startsWith("package:"))).toBe(false);
       expect(events.some((event) => event.startsWith("mint-write"))).toBe(true);
+    });
+
+    it("records a merge of only tessel.toml with no gate steps", async () => {
+      const { deps, landings } = harness({
+        git: { changed: { exitCode: 0, stdout: "M\0tessel.toml\0" } },
+      });
+      await runMerge(deps, COMMIT, WHOLE_REPO, ADMIN);
+      expect(landings).toEqual([{ base: BASE, head: HEAD, gate: null }]);
     });
 
     it("still enforces the claim's coverage on a diff of only tessel.toml", async () => {
@@ -462,6 +548,7 @@ describe("runMerge", () => {
       outcome: "merged",
       base: BASE,
       head: HEAD,
+      evidence: RECORDED,
     });
   });
 
