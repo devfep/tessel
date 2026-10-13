@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 21:35 EDT. **EVIDENCE-REPO READY TO LAND at `43b7a72`** (reviewer's fixes
+**As of:** 2026-10-12 21:36 EDT. **CLI-RACE review "Yes (pending the SKILL hunk)" at `b61505b`**
+(wording at `render.rs:702` verified true while a pick is pending and after the window closes,
+`racing.rs:612-624, 526-534`; eight race tests pass; orchestrator gate on `4ce212d` 20 binaries,
+1,196 tests, clippy 0; the amend after it is four lines in two files, the race tests rerun by
+the orchestrator 8 of 8). Its last hunk, the skill paragraph, needs `skills/tessel/SKILL.md`,
+which claim 114 (CLI-NOTES) holds until the notes merge; releasing that scope early would leave
+the notes submission uncovered. **So the order is fixed: Felix deploys the coordinator, lands
+CLI-NOTES `84e606f` and EVIDENCE-REPO `43b7a72` (each held for a signature change, the
+orchestrator approves); after the notes merge the race lane claims the skill file, adds its
+paragraph, re-gates, and lands last.**
+Earlier: **As of:** 2026-10-12 21:35 EDT. **EVIDENCE-REPO READY TO LAND at `43b7a72`** (reviewer's fixes
 verified 21:27: scope cells as code spans, wrong-head case tested, size check before the read,
 `.vitest/` gone; five more mutants killed; "Ready to merge? Yes"; orchestrator workspace gate on
 the archived copy: 20 binaries, 1,196 tests, exit 0, clippy 0, wasm build exit 0, steward 993
