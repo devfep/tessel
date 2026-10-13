@@ -5,7 +5,20 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 19:50 EDT. **COORD-GRANT-HEAD READY TO LAND at `780cd2f`** (lane
+**As of:** 2026-10-12 20:12 EDT. **EVIDENCE-REPO committed `1951854`** (19:51; 33 files; lane gate:
+coordinator 523, steward vitest 985 in 50 files, tsc, oxlint, oxfmt, clippy, rustfmt all exit 0;
+three mutants killed; its note says the coordinator-side intent/decisions/review were NOT carried
+because `src/coordinator.rs` was held by grant-head: the report is asked to say what the record
+holds instead). Opus review and the orchestrator's workspace gate (archived copy, wasm build,
+steward checks) running since 20:08. **CLI-NOTES partial:** the note writer is in `submit.rs`
+(`note_text`, `write_note`, `has_note`, five unit tests green), CLAUDE.md updated; still needs
+`commands.rs::submit` (race-cli's whole-file create claim), the skill (same), and daemon.rs
+literals for the assumptions field (grant-head's claims, released at its merge; patch saved in
+the lane's scratch). **CLI-RACE:** no edit since 19:11; it polls the daemon symbols grant-head
+holds and has ignored three requests to narrow claim 110. **Chain:** Felix lands grant-head →
+its merge frees the daemon symbols → race-cli finishes and lands → cli-notes takes `submit` and
+the skill and lands. COORD-GRANT-HEAD is still waiting for Felix's landing line (below).
+Earlier: **As of:** 2026-10-12 19:50 EDT. **COORD-GRANT-HEAD READY TO LAND at `780cd2f`** (lane
 `lane-grant-head`; `head: Option<CommitId>` with `#[serde(default)]` on `Granted`, set in
 `place_grant`, the amend reply and the race entry; the daemon adopts and persists it before
 answering; four real-binary tests in the new `tests/grant_head.rs` because race-cli holds
