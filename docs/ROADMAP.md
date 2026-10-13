@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 21:50 EDT. **Every agent idle; nothing runs; three commands wait on Felix**
+**As of:** 2026-10-12 21:58 EDT. **COORD-GRANT-HEAD DEPLOYED AND PROVED LIVE** (Felix: `npx wrangler
+deploy` from the deploy worktree at `780cd2f`, version `92108fcc`, 21:50). Proof on the raw
+websocket as `lane-docs-ref`: at 21:52 and 21:54 the grant still came without `head` (the
+Durable Object, held awake by the lane daemons' sockets, was still on the previous code); at
+21:56 the grant carried `"head":"780cd2f…"` (handoff `grant-head/live-grant-head-proof.txt`).
+Lesson: after a coordinator deploy, allow a few minutes before a live check. All lane and
+reviewer agents stopped; three daemons hold the pending claims. **Pending from Felix:** the
+CLI-NOTES landing (`84e606f`) and the EVIDENCE-REPO landing (`43b7a72`).
+Earlier: **As of:** 2026-10-12 21:50 EDT. **Every agent idle; nothing runs; three commands wait on Felix**
 (the coordinator deploy, the CLI-NOTES landing, the EVIDENCE-REPO landing; the trunk is still
 `780cd2f`, watched). **Finding, from a test at 21:48:** no git hooks are installed in the main
 checkout or any lane worktree (`.git/hooks` holds only samples; no `core.hooksPath`): the lanes
@@ -1786,7 +1794,8 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   Committed `780cd2f` 19:30 (lane gate green; five mutants); Opus review "Yes" 19:46; workspace
   gate and wasm build green 19:43. CLOSED 2026-10-12 20:48 at trunk `780cd2f` (fast-forward; held
   for the signature change and the sensitive path, approved by the orchestrator; mirrored; daemon
-  stopped). NOT DEPLOYED until Felix runs the coordinator deploy.
+  stopped). DEPLOYED by Felix 21:50 as version `92108fcc`; proved live 21:56: a grant on the raw
+  socket carries `head` = the trunk head (handoff `grant-head/live-grant-head-proof.txt`).
 - [ ] **CLI-RACE** — from the video script's "not shipped" list (decision 2): the coordinator decides
   races end to end (`src/coordinator/racing.rs`: entries tried by the verification queue, the
   winner promoted and merged, losers rejected) but the CLI has no race command. Ship `tessel
