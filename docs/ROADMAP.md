@@ -5,7 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 12:00 EDT. **EVIDENCE-REPO AND CLI-TRANSCRIPT PROVED LIVE END TO END** (Felix ran
+**As of:** 2026-10-13 12:06 EDT. **PR #6 MERGED by Felix; GitHub `main` tree equals the trunk `8e798c9`.**
+Nothing runs; nothing is pending from the orchestrator. Remaining for Felix: recordings, form
+final from `orch/submission-form-v4.md`, repo public, 2FA, submit by hand (deadline Oct 14).
+Earlier: **As of:** 2026-10-13 12:00 EDT. **EVIDENCE-REPO AND CLI-TRANSCRIPT PROVED LIVE END TO END** (Felix ran
 `orch/live-evidence.sh` 11:50-11:59 on the production coordinator `e2a6d1a8` and steward `9321b7ba`:
 claim 131 on `docs/live-checks/2026-10-13-evidence.md` (create), commit `8e798c9` pushed, `tessel submit
 --transcript` wrote the note and the branch `tessel/transcript-131`, accepted at queue position 1;
