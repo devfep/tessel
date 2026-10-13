@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 12:44 EDT. **Video script v4 written with Felix's `storyworthy` skill** (handoff
+**As of:** 2026-10-13 13:01 EDT. **Voiceover for script v4 synthesised, two takes** (handoff `video/`):
+`andrew-edge/` (Microsoft en-US-AndrewNeural via edge-tts, 7:07 assembled) and `kokoro-michael/`
+(Kokoro 82M, Apache-2.0, local, voice am_michael, 7:30 assembled); per-scene files, one full track
+(wav + m4a) with the 4 s silence in scene 4 and 1 s scene gaps, `timing.txt` with scene starts,
+levels even (about -20 dB and -24 dB mean), no silent file. Not listened to by the orchestrator: Felix
+checks pronunciation of Tessel, cartQuantity, applyDiscount, devfep. Fish Speech and Chatterbox
+held for a cloned-voice take if wanted (Fish weights are CC-BY-NC-SA).
+Earlier: **As of:** 2026-10-13 12:44 EDT. **Video script v4 written with Felix's `storyworthy` skill** (handoff
 `orch/video-script-v4.md`): the book's crafting order applied and documented in the file (five-second
 moment = `assumption_verified`, opposite beginning, elephant at 0:20, seven scenes, planted bomb on the
 whole-number discounts, one placed laugh, hero flaw = yesterday's COORD-WAITER-BASE bug, ending on the
