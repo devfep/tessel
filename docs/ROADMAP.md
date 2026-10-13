@@ -5,7 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 08:00 EDT. **PR #5 MERGED by Felix; GitHub `main` tree equals the trunk `1e41e0f`.**
+**As of:** 2026-10-13 11:34 EDT. **Deploy worktree rebuilt by Felix at `1e41e0f`** (11:33; `tessel` and
+`tessel-swarm` debug binaries; `tessel race` and `tessel submit --transcript` present in `--help`).
+Recordings next, then the steward and coordinator deploys from that worktree.
+Earlier: **As of:** 2026-10-13 08:00 EDT. **PR #5 MERGED by Felix; GitHub `main` tree equals the trunk `1e41e0f`.**
 Nothing runs. Pending from Felix: rebuild the deploy binaries at `1e41e0f`, record, deploy the
 steward and the coordinator, then the Oct 13 items.
 Earlier: **As of:** 2026-10-13 08:00 EDT. **CLI-TRANSCRIPT CLOSED at trunk `1e41e0f`** (Felix pushed 07:54; held for
