@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 21:58 EDT. **COORD-GRANT-HEAD DEPLOYED AND PROVED LIVE** (Felix: `npx wrangler
+**As of:** 2026-10-12 22:02 EDT. **CLI-NOTES CLOSED at trunk `84e606f`** (Felix pushed 21:57; the
+submit was refused for four scopes claimed by bare name; the orchestrator added the qualified
+scopes to claim 114 and submitted; held for three signature changes (`PendingClaim`,
+`ServerClaim`, `HeldClaim`, all additive serde-default fields); approved 22:00; fast-forward
+merge 22:00, same sha; mirrored; daemon stopped). `tessel submit` now writes the four-line git
+note itself. **Next:** the race lane's skill hunk under its own claim on the freed file, rebase
+onto `84e606f`, gate, then Felix lands EVIDENCE-REPO `43b7a72` and CLI-RACE.
+Earlier: **As of:** 2026-10-12 21:58 EDT. **COORD-GRANT-HEAD DEPLOYED AND PROVED LIVE** (Felix: `npx wrangler
 deploy` from the deploy worktree at `780cd2f`, version `92108fcc`, 21:50). Proof on the raw
 websocket as `lane-docs-ref`: at 21:52 and 21:54 the grant still came without `head` (the
 Durable Object, held awake by the lane daemons' sockets, was still on the previous code); at
@@ -1772,7 +1779,7 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   with the fork token the agent already has, and sets `DecisionRecord.transcript` to
   `{repo: <fork>, path, sha256}`. No protocol change (`TranscriptRef` exists). Tests against the
   real binary; the steward side (EVIDENCE-REPO) verifies the hash. Not yet dispatched.
-- [ ] **CLI-NOTES** — from the video script's "not shipped" list (Oct 11, decision 6): no code writes
+- [x] **CLI-NOTES** — from the video script's "not shipped" list (Oct 11, decision 6): no code writes
   the git note CLAUDE.md asks for on every commit ("until the CLI does this automatically"). The
   CLI has the four lines at `tessel submit`: the intent from `tessel start`, `--evidence`,
   `--rejected`, and the `--assume` statements. Make `tessel submit` write the note
