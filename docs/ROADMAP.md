@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 14:58 EDT. **Cloned-voice voiceover in progress on Felix's choice (Fish Speech).**
+**As of:** 2026-10-13 15:45 EDT. **Cloned-voice voiceover DONE in Felix's voice, Fish Speech S2-Pro** (Felix: "fish
+sounds just like me"). Handoff `video/fish-felix/`: seven scenes (scene 4 in two parts), full track 7:14
+(`tessel-voiceover-v4-fish-felix.wav/.m4a`) and a loudness-normalised master (`…-normalised.wav/.m4a`,
+-16 LUFS, 48 kHz), `timing.txt`, the trimmed reference, the scripts. Long scenes needed sentence groups
+tagged `<|speaker:0|>` so the model batches them (its cap is 1,024 tokens, about 47 s, per batch);
+scene 2 is 6 batches, 88 s. Chatterbox take (MIT) complete as fallback in `video/chatterbox-felix/`
+(6:16). Andrew and Kokoro takes remain. Nothing runs. Remaining for Felix: screen recording to the
+v4 timing sheet, form final, repo public, 2FA, submit.
+Earlier: **As of:** 2026-10-13 14:58 EDT. **Cloned-voice voiceover in progress on Felix's choice (Fish Speech).**
 Felix recorded a 24.6 s reference (Desktop `felix-ref.m4a.aifc`, 16 kHz mono; trimmed and normalised to
 21.7 s). Fish Speech 3.0 installed in the scratchpad (`fish/fish-speech`, Python 3.12, torch 2.8, MPS);
 S1-mini is gated by approval, so the open S2-Pro weights (10 GB, downloaded over Wi-Fi 13:08-14:51) are
