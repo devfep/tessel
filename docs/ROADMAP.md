@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 21:15 EDT. **Three Opus reviews back, each "With fixes"; fixes sent 21:13-21:15.**
+**As of:** 2026-10-12 21:28 EDT. **CLI-NOTES READY TO LAND at `84e606f`** (fixes verified by the
+reviewer 21:25: the new test `the_note_exists_while_the_coordinator_has_not_answered_the_submission`
+kills the note-after-send mutant; notes tests 6 of 6; "Ready to merge? Yes"; orchestrator
+workspace gate on the archived copy 21:24-21:26: 21 binaries green, tests exit 0, clippy 0).
+**Landing (Felix):** `land-lane.sh cli-notes 84e606f "..."`; the lane's claim 114 holds its scopes
+by qualified name (`daemon::Daemon::on_granted` and so on), and the commit changes `HeldClaim`
+and `ServerClaim` signatures, so expect a hold; the orchestrator approves. CLI-RACE `4ce212d`
+and EVIDENCE-REPO `43b7a72` amended with their fixes; reviewers confirming; gates running.
+Earlier: **As of:** 2026-10-12 21:15 EDT. **Three Opus reviews back, each "With fixes"; fixes sent 21:13-21:15.**
 CLI-NOTES `51748cb` (requirements met, five reviewer mutants, one survived: nothing proves the
 note is written before the send; fix: a test with the fake holding the submission; plus the
 `git push <your fork>` hint and a report correction). CLI-RACE `9912dc7` (requirements met except
