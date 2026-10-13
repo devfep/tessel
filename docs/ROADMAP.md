@@ -5,7 +5,16 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 22:02 EDT. **CLI-NOTES CLOSED at trunk `84e606f`** (Felix pushed 21:57; the
+**As of:** 2026-10-12 22:12 EDT. **CLI-RACE at `55417eb`, rebased onto `84e606f`, skill paragraph in
+under claim 121** (the orchestrator claimed the freed file, rebased and folded the hunk; the
+rebase needed one `assumptions: Vec::new()` in the race join literal, done by `lane-race-fix`;
+orchestrator workspace gate on `7008fae`: 21 binaries, 1,214 tests, exit 0, clippy 0, `cargo
+fmt --check` 0; final review found three wording points in the skill paragraph, fixed in
+`55417eb`: "names the winner, if any", the review-only "no daemon" line, exit 3 for `race open`;
+reviewer confirmed 22:11, "Ready to merge? Yes"). **CLI-RACE READY TO LAND at `55417eb`;
+EVIDENCE-REPO READY TO LAND at `43b7a72`: two landing lines for Felix**, each held for signature
+changes, the orchestrator approves.
+Earlier: **As of:** 2026-10-12 22:02 EDT. **CLI-NOTES CLOSED at trunk `84e606f`** (Felix pushed 21:57; the
 submit was refused for four scopes claimed by bare name; the orchestrator added the qualified
 scopes to claim 114 and submitted; held for three signature changes (`PendingClaim`,
 `ServerClaim`, `HeldClaim`, all additive serde-default fields); approved 22:00; fast-forward
