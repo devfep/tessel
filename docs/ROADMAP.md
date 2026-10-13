@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 20:34 EDT. **All three open lanes are in a known, narrow state.** CLI-RACE:
+**As of:** 2026-10-12 20:45 EDT. **All three open lanes are committed and gated as far as the
+held daemon symbols allow** (orchestrator-run, 20:41-20:42): CLI-NOTES WIP `7bd7667` (5 files;
+`tests/notes.rs` 4 of 5, the assumptions line waits for the daemon literals; every other CLI
+binary green); CLI-RACE WIP `3c9b24e` (8 files, 1,086 lines; CLI test binary 100 passed, 3
+failed, exactly the three that need the daemon's `JoinRace`/`RaceResult` handling, which the
+command refuses with "pending" until then; unit 236 and the other binaries green);
+EVIDENCE-REPO `95ba70a` on top of `1951854` (the two review fixes; steward vitest 988 passed in
+50 files, tsc, oxlint, oxfmt clean). What remains in each is behind grant-head's claims on
+`daemon.rs` and `coordinator.rs`, proved by a denied claim from the notes worktree at 20:36.
+**Gate: Felix's grant-head landing line.**
+Earlier: **As of:** 2026-10-12 20:34 EDT. **All three open lanes are in a known, narrow state.** CLI-RACE:
 the orchestrator restarted its daemon and claimed, as the lane, claim 120 with exactly the
 symbols it edits (main.rs, race.rs, render.rs and four of its functions, `commands.rs::run`,
 `NoticeKind`, `rpc::Request`, `review::connect`/`send`, the two test harness files); it takes
