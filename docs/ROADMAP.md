@@ -5,7 +5,23 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-12 21:10 EDT. **Three final commits on `780cd2f`, all three workspace gates
+**As of:** 2026-10-12 21:15 EDT. **Three Opus reviews back, each "With fixes"; fixes sent 21:13-21:15.**
+CLI-NOTES `51748cb` (requirements met, five reviewer mutants, one survived: nothing proves the
+note is written before the send; fix: a test with the fake holding the submission; plus the
+`git push <your fork>` hint and a report correction). CLI-RACE `9912dc7` (requirements met except
+6: the skill and README lines are in patches, not the commit; the "waiting for a human pick"
+notice is not true after the pick window times out; the race-entry amend guard is untested;
+fixes: README now, the render wording, a real-binary amend test; the SKILL lines after the
+notes merge frees the file, so no command is documented before it is on the trunk). EVIDENCE-REPO
+`83f60c3` (requirements 1-10 met, requirement 2 complete: `Submission` stores decisions and
+review, the approve path adds the reviewer's decision, `dispatch_of` sends them; eight mutants
+killed, one survived; fixes: scope cells as code spans, a wrong-head test, a transcript size
+check before reading, trash the untracked `.vitest/`). Landing order once each is fixed and
+re-gated: CLI-NOTES, then CLI-RACE (it needs SKILL.md); EVIDENCE-REPO is independent of both
+and touches no sensitive path, so it is held only if a signature changed (`MergeDispatch` and
+`Submission` did: expect a hold). **Pending from Felix:** the coordinator deploy for
+COORD-GRANT-HEAD.
+Earlier: **As of:** 2026-10-12 21:10 EDT. **Three final commits on `780cd2f`, all three workspace gates
 green, three Opus reviews running.** CLI-NOTES `51748cb`, CLI-RACE `9912dc7`, EVIDENCE-REPO
 `83f60c3` (each rebased by its lane within 2 minutes of the merge, squashed, trees clean).
 Orchestrator gates on archived copies (21:00-21:06, curl off the PATH): tests exit 0 and clippy
