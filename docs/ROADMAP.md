@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 20:20 EDT. **Five of seven scenes recorded through the panes; draft cut rebuilt.**
+**As of:** 2026-10-13 20:39 EDT. **Scenes 1, 2, 5, 6 re-shot clean after Felix allowed the consent dialogs
+(20:24); scene 7 and the question card are composited from `video/cards/` in the edit.** The demo Terminal
+window is in native full screen (168x53, status bar off, pane labels agent-1..4); TextEdit windows go full
+screen through `video/fs.sh`; Preview is no longer used (its Open dialog broke a take). Takes:
+scene1-203347, scene2-203437 (panes verified: claim granted, agent-4 granted, agent-2 denied with the
+card, queued, `granted_after_wait`), scene5-203042, scene6-203628. `video/edit.sh` rebuilt
+`tessel-demo-v4-draft.mp4`; placeholders remain only for scenes 3, 4a, 4b, which need Felix's two pushes
+and the Approve click (and Chrome for the review page and dashboard). State: agent-1 online with no
+claim, agent-2 holds the cartQuantity edit-body claim from scene 2, agent-4 holds cartTotal; both are
+released before scene 3.
+Earlier: **As of:** 2026-10-13 20:20 EDT. **Five of seven scenes recorded through the panes; draft cut rebuilt.**
 The demo now runs in a Terminal window opened from a generated profile (`video/TesselDemo.terminal`,
 Menlo 22, 112x44, attaches tmux `demo`; no AppleScript needed) and takes capture that window's region
 (`REGION=109,95,1493,1022`). Takes (video/takes/): scene1-201334 (rename diff, evidence table, questions
