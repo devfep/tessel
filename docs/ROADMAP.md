@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 23:28 EDT. **Correction: the three re-shoots are black.** The screen was locked (Felix away;
+**As of:** 2026-10-13 23:36 EDT. **Cut complete on the good takes** (`video/tessel-demo-v4-draft-overlaid.mp4`,
+434.3 s = voiceover; scenefx holds short takes' last frame). Open in VLC for Felix. Plan for tomorrow: a fresh
+demo repo, re-shoot 2, 3, 6 (screen unlocked, brightness-checked), then Felix's scene 4a/4b and a dashboard
+shot on the same repo, then the final pipeline run; then form final, repo public, submit. Note: agent-3 on
+`swarm-video2` was restarted but holds no claim (its daemon stop released it), so `base_moved` there is not
+guaranteed; the fresh-repo plan avoids that.
+Earlier: **As of:** 2026-10-13 23:28 EDT. **Correction: the three re-shoots are black.** The screen was locked (Felix away;
 `CGSSessionScreenIsLocked` true; a capture now is 1920x1080 solid black), so the 23:19-23:22 takes recorded
 nothing; moved to `video/takes/black/`. The pipeline is rebuilding on the good `swarm-video2` takes; scene 4
 runs on `swarm-video2` (claim 6), RUNSHEET corrected. `caffeinate -d -i` running for ten hours; every future
