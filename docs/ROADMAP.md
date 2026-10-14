@@ -2408,6 +2408,9 @@ only by an admin merge Felix runs from a script the orchestrator writes (scopes 
   and a padded name are refused as malformed; a clean scope is granted.
 
 ## Post-contest (recorded 2026-10-09 on Felix's decision; nothing here is scheduled)
+- MCP Events: push inbox notices (`granted_after_wait`, `base_moved`, `assumption_challenged`, `merged`) to agents
+  through the draft MCP Events spec instead of `tessel inbox` polling, as Cloudflare's MCP server does for
+  Workers issues (noted 2026-10-14 from a post Felix sent).
 
 From the UX proposal (https://claude.ai/artifact/V5ifR3B8wfUtsdbpH7JZXd) and the mockups
 (https://claude.ai/artifact/F4ee5swgmrjuxDyFgUaTi6). Recorded so the ideas are not lost; none is a box.
