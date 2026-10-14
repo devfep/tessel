@@ -92,7 +92,16 @@ newer, pnpm, and `wrangler`.
     cargo build -p tessel-cli       # the tessel CLI at target/debug/tessel
     cd tessel-steward && pnpm install --frozen-lockfile && pnpm test
 
-Run the coordinator locally: put `IDENTITY_SIGNING_KEY=<a long random value>` in `.dev.vars`,
-then `npx wrangler dev` (port 8787). The coordinator reference (docs/reference/coordinator.md)
-shows how to mint an agent token from a deployed steward and drive a claim and a conflict by hand.
-Deploying the steward needs an account with Artifacts enabled.
+See it run with no Cloudflare account: the swarm harness runs scripted agents twice on a small
+TypeScript repository, once with plain git and once against the real coordinator core on
+127.0.0.1 with a local steward, and prints the A/B table (about 10 seconds to build, 15 to run):
+
+    cargo build -p tessel-swarm
+    target/debug/tessel-swarm run --seed 1 --tasks 10 --agents 4 --overlap 0.5 --out swarm-results
+
+Run the coordinator Worker locally: put `IDENTITY_SIGNING_KEY=<a long random value>` in
+`.dev.vars`, then `npx wrangler dev` (port 8787; the first run compiles the Worker to wasm). Every
+socket needs an agent identity token minted by a deployed steward (the Worker answers 401 without
+one), so driving a claim and a conflict by hand, as `docs/reference/coordinator.md` shows, needs
+the steward deployed to an account with Artifacts enabled. The live instance in the form is that
+deployment.
