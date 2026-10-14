@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 07:45 EDT. **SUBMISSION-DOCS MERGED: trunk `da442c8`** (claim 135, merged ~07:43 without a
+**As of:** 2026-10-14 07:55 EDT. **PR #7 `artifacts-trunk`→`main` OPEN (5e48b7d colours + da442c8 docs); its
+merge was refused to the orchestrator ("Merge Without Review") and goes to Felix: `gh pr merge 7 --merge`.**
+Reviews on the PR diff: security review, no findings (CSS tokens and static selectors only; docs carry no
+secrets); code review of the four files by the orchestrator (the `/code-review` run reported on the local
+STATE log instead; its record-accuracy notes on ROADMAP.md are post-contest housekeeping, except the
+third-party line at the Oct 11 entry, reworded now). Gate: fresh clone of `5e48b7d` green; `da442c8` prose.
+Earlier: **As of:** 2026-10-14 07:45 EDT. **SUBMISSION-DOCS MERGED: trunk `da442c8`** (claim 135, merged ~07:43 without a
 hold; the held claim 133 did not block the queue). Mirrored to GitHub `artifacts-trunk`; lane daemon stopped.
 Claim 133 (card) still awaits Felix's "approve"; then orch-review, mirror, steward deploy, PR to main.
 Earlier: **As of:** 2026-10-14 07:40 EDT. **SUBMISSION-DOCS `da442c8` pushed and submitted (claim 135, queue position 2
@@ -778,8 +784,8 @@ coordinator `c49a44ca` live. Overnight, video work only (no repo change): two fi
 checked (Anatomy "Claims, interlocked", a signal-box lever frame driven by the real conflict
 table; iso-glow "Tessel on Cloudflare", requests as orange pulses), Cloudflare palette with
 meaning, no Cloudflare marks; shot list v1 (8:57); four third-party tools vetted read-only;
-renderer chosen: HyperFrames `0.8.145`, engine only, never its skills (its `usage` command reads
-agent credentials), telemetry off; no music or SFX. **Next (Oct 12, recording day):** Felix checks
+renderer chosen: HyperFrames `0.8.145`, engine only, its skills not installed, telemetry off; no
+music or SFX. **Next (Oct 12, recording day):** Felix checks
 the figures and form v3, captures the shot-list screenshots; the orchestrator times a 10 s
 HyperFrames draft, then builds the graphics with an 18:00 gate to plain cards; Felix records the
 live scenes after rehearsing the assumption scene. Oct 13: read-only security pass, form final,
