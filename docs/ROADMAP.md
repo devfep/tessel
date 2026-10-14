@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 08:58 EDT. **REVIEW-CARD-2 `e2166d7` SUBMITTED, HELD as claim 137** (STYLE edit-signature).
+**As of:** 2026-10-14 09:30 EDT. **Felix approved the accent-free card ("Approved the new design devoid of
+accents"). Claim 137 approved by orch-review, but the steward's sandbox run failed a flaky CLI test
+(`a_claim_whose_reply_was_lost_is_found_and_answered_after_the_reconnect`, exit 101) → submit_rejected, then the
+claim lapsed. Same commit `e2166d7` re-claimed (138), resubmitted, held, approved by orch-review 09:29; trunk
+watcher running.** Steward deploy from the orchestrator REFUSED (Production Deploy): Felix's `!` line after the
+merge, from `.claude/worktrees/deploy` (checkout the new trunk sha, `cd tessel-steward && npx wrangler deploy`).
+PR #8 `artifacts-trunk`→`main` OPEN at `004779b` (card layout); it follows the branch when CARD-2 lands and its
+body gets the second commit. Both lane agents idle; old lane daemon pid 46551 to stop after the merge.
+Earlier: **As of:** 2026-10-14 08:58 EDT. **REVIEW-CARD-2 `e2166d7` SUBMITTED, HELD as claim 137** (STYLE edit-signature).
 Orchestrator read the diff (blockquote and callout lose their left borders, `| ` prefix dropped, `.caption` →
 `.from` line above each block), re-ran the gate (1018 tests, typecheck, oxlint, oxfmt all 0), checked the
 renders (no side bars, no pipes) and sent them to Felix. The fork needed a lease-guarded force push (it held
