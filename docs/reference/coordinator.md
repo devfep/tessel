@@ -56,12 +56,14 @@ the environment of that command. Run it yourself, in the agent's worktree, with 
 for that one command, then start the agent without it; or set `TESSEL_TOKEN` to a token you minted
 and `tessel init` writes it to `.tessel/config.toml`.
 
-| Token | Minted by | Lasts | Opens |
+| What | Route | Lasts | Answers or opens |
 |---|---|---|---|
+| Trunk repository | `POST /repos/<repo>` | until deleted | creates the trunk with default branch `main`; answers its `remote` and an Artifacts token for the first push |
+| Fork | `POST /repos/<repo>/forks/<repo>--<agent>` | until deleted | one per agent; copies the trunk's default branch and answers the fork's `remote`, with no token |
 | Identity token | `POST /repos/<repo>/agents/<agent>/identity` | 24 hours | the coordinator, for one repo and one agent |
-| Fork write token | `POST /repos/<repo>--<agent>/tokens` | 1 hour | a push to that one fork |
+| Fork write token | `POST /repos/<repo>--<agent>/tokens` | 1 hour | a push to that one fork; a repo that is not a fork gets `403` |
 
-Both routes take `STEWARD_ADMIN_TOKEN`. `tessel init` keeps a token already in
+Every route takes `STEWARD_ADMIN_TOKEN`. `tessel init` keeps a token already in
 `.tessel/config.toml` for the same repo and agent. To renew one, run `tessel init --steward <url>`
 again: with `--steward` it skips the kept token, takes `TESSEL_TOKEN` if set, and otherwise mints a
 new token with `STEWARD_ADMIN_TOKEN`.
@@ -100,8 +102,8 @@ In the first terminal (the `a1` socket above), after `hello`, send:
 Expect a `granted` reply with a `claim` id and `fence`. Every `granted` (a direct grant, the grant
 a queued agent receives, the reply to an `amend` and a race entry's grant) also carries `head`, the
 trunk head the coordinator knew when it granted, or `null` when it knows none yet. An agent adopts
-it as its view of main, as it does the head in `base_moved`; an older server omits the field, and
-an older client ignores it. In a second terminal, open a socket with `A2_TOKEN`:
+it as its view of main, as it does the head in `base_moved`. In a second terminal, open a socket
+with `A2_TOKEN`:
 
     websocat ws://localhost:8787/repo/demo/ws -H="Authorization: Bearer $A2_TOKEN"
 
@@ -149,11 +151,11 @@ both Workers.
   refuses any other with `403` before it reads the token. Unset serves every repo. The swarm
   deployment sets it to `swarm-`.
 
-The coordinator refuses to start on a missing `RUN` or any other `SHADOW_ENABLED` value. Those two
-are read only when a repo has no stored state yet; an existing repo keeps the values it was created
-with, and changing them later has no effect on it. `REVIEWERS` and `SENSITIVE` are applied every
-time a repo loads. A bad `REVIEWERS` value means nobody can review; a bad `SENSITIVE` value holds
-every submission.
+A repo with no stored state fails to load when `RUN` is missing or empty, or when `SHADOW_ENABLED`
+is set to anything but `"true"` or `"false"`. Those two are read only when a repo has no stored
+state yet; an existing repo keeps the values it was created with, and changing them later has no
+effect on it. `REVIEWERS` and `SENSITIVE` are applied every time a repo loads. A bad `REVIEWERS`
+value means nobody can review; a bad `SENSITIVE` value holds every submission.
 
 ## MCP server
 
