@@ -5,7 +5,8 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 10:25 EDT. **ACCESS-VIEWERS dispatched** on Felix's decision (checked against the official
+**As of:** 2026-10-14 10:50 EDT. **ACCESS-VIEWERS `bca6320` submitted (claim 139, held: sensitive paths + AccessConfig signature), approved by orch-review on Felix's choice of the option; steward merging.** Orchestrator gate: 1026 tests, typecheck, oxlint, oxfmt all 0; diff read (anyViewer only after the token checks). First submit was refused uncovered (access-fixtures.ts::CONFIG edit-signature), scope added, resubmitted.
+Earlier: **As of:** 2026-10-14 10:25 EDT. **ACCESS-VIEWERS dispatched** on Felix's decision (checked against the official
 terms: a live instance is optional, a login gate is allowed, §9 asks for access on request): a `*` entry in
 `DASHBOARD_VIEWERS` admits any Access-verified email; deciding stays `REVIEWER_EMAILS`. Lane
 `lane-access-viewers` (worktree `access-viewers` from `e2166d7`, fork and identity minted, brief
