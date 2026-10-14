@@ -183,6 +183,42 @@ describe("verifyAccessToken", () => {
   });
 });
 
+describe("verifyAccessToken with a * viewer entry", () => {
+  const OPEN = { ...CONFIG, anyViewer: true };
+  const verifyOpen = (token: string | null) =>
+    verifyAccessToken(token, OPEN, { fetchImpl: signer.certsFetch(), now: () => NOW_MS });
+
+  it("admits a verified email that is not listed", async () => {
+    const token = await signer.sign(validClaims({ email: "judge@example.org" }));
+    expect(await verifyOpen(token)).toEqual({ ok: true, email: "judge@example.org" });
+  });
+
+  it("still answers 401 without a token", async () => {
+    expect(await verifyOpen(null)).toMatchObject({ ok: false, status: 401 });
+  });
+
+  it("still answers 401 for an expired token", async () => {
+    const token = await signer.sign(validClaims({ exp: NOW_S - 1 }));
+    expect(await verifyOpen(token)).toMatchObject({ ok: false, status: 401 });
+  });
+
+  it("still answers 401 for a token signed by another key", async () => {
+    const impostor = await TestSigner.create();
+    const token = await impostor.sign(validClaims({ email: "judge@example.org" }));
+    expect(await verifyOpen(token)).toMatchObject({
+      ok: false,
+      status: 401,
+      reason: "bad signature",
+    });
+  });
+
+  it("still answers 403 for an email that is not ASCII", async () => {
+    // U+212A (Kelvin sign) lowercases to "k".
+    const token = await signer.sign(validClaims({ email: "Kim@example.com" }));
+    expect(await verifyOpen(token)).toMatchObject({ ok: false, status: 403 });
+  });
+});
+
 /** Fills the cache at `NOW_MS`, then serves `next` for every later fetch and counts them. */
 async function primedFetch(next: () => Promise<Response>) {
   const good = signer.certsFetch();
@@ -300,7 +336,16 @@ describe("readAccessConfig", () => {
       teamDomain: TEAM,
       audience: AUD,
       viewers: ["felix@example.com", "other@example.com"],
+      anyViewer: false,
     });
+  });
+
+  it.each([
+    ["*", { anyViewer: true, viewers: [] }],
+    ["felix@example.com, *", { anyViewer: true, viewers: ["felix@example.com"] }],
+    ["felix@example.com", { anyViewer: false, viewers: ["felix@example.com"] }],
+  ])("reads the viewer list %j", (list, expected) => {
+    expect(readAccessConfig({ ...full, DASHBOARD_VIEWERS: list })).toMatchObject(expected);
   });
 
   it.each([

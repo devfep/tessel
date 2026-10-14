@@ -5,7 +5,12 @@ export const AUD = "aud-tag-1";
 export const VIEWER = "felix@example.com";
 export const NOW_MS = 1_790_000_000_000;
 export const NOW_S = NOW_MS / 1000;
-export const CONFIG: AccessConfig = { teamDomain: TEAM, audience: AUD, viewers: [VIEWER] };
+export const CONFIG: AccessConfig = {
+  teamDomain: TEAM,
+  audience: AUD,
+  viewers: [VIEWER],
+  anyViewer: false,
+};
 
 export type Claims = Record<string, unknown>;
 
