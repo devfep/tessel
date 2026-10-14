@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 21:12 EDT. **Captions done:** Whisper word timings forced-aligned to the script's 86
+**As of:** 2026-10-13 21:17 EDT. **Captioned draft built** (`video/tessel-demo-v4-draft-captioned.mp4`, 7:14:
+takes cropped to 16:9, captions overlaid as PIL strips via `video/burn-captions.sh`, since this ffmpeg has no
+subtitle filter). Form v4 gains the merge-lock point from Anthropic's post (pre-merge gate plus post-merge
+verification today; claim-aware parallel merges are the unshipped batching item). Waiting on Felix for
+scenes 3-4.
+Earlier: **As of:** 2026-10-13 21:12 EDT. **Captions done:** Whisper word timings forced-aligned to the script's 86
 sentences (`video/captions/align.py`, ratio 0.92) → `video/tessel-demo-v4.srt` with the exact script text.
 All demo claims released; four agents online, none held; panes clear. Form v4 cites Anthropic's Oct 13
 post "Redesigning source control at Anthropic" (merge rate 2,500 → 30,000 a day; source control, builds
