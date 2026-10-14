@@ -5,7 +5,8 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 07:55 EDT. **PR #7 `artifacts-trunk`→`main` OPEN (5e48b7d colours + da442c8 docs); its
+**As of:** 2026-10-14 07:58 EDT. **PR #7 MERGED by Felix at 07:42: GitHub `main` = `20927fe` (trunk `da442c8`).**
+Earlier: **As of:** 2026-10-14 07:55 EDT. **PR #7 `artifacts-trunk`→`main` OPEN (5e48b7d colours + da442c8 docs); its
 merge was refused to the orchestrator ("Merge Without Review") and goes to Felix: `gh pr merge 7 --merge`.**
 Reviews on the PR diff: security review, no findings (CSS tokens and static selectors only; docs carry no
 secrets); code review of the four files by the orchestrator (the `/code-review` run reported on the local
