@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 10:00 EDT. **PR #8 MERGED by Felix: GitHub `main` = trunk `e2166d7` (merge commit). Repo public, steward `7dbc5c12` live, coordinator `e2a6d1a8`. All build work done; the submission (form, video upload, submit) is Felix's, by hand, before 02:59 EDT Oct 15.**
+**As of:** 2026-10-14 10:25 EDT. **ACCESS-VIEWERS dispatched** on Felix's decision (checked against the official
+terms: a live instance is optional, a login gate is allowed, §9 asks for access on request): a `*` entry in
+`DASHBOARD_VIEWERS` admits any Access-verified email; deciding stays `REVIEWER_EMAILS`. Lane
+`lane-access-viewers` (worktree `access-viewers` from `e2166d7`, fork and identity minted, brief
+`orch/brief-access-viewers.md`). After it lands: steward deploy (Felix), Felix adds an Access policy "Allow
+everyone, One-time PIN" on the steward application, PR to main, then the form's live-instance line.
+Earlier: **As of:** 2026-10-14 10:00 EDT. **PR #8 MERGED by Felix: GitHub `main` = trunk `e2166d7` (merge commit). Repo public, steward `7dbc5c12` live, coordinator `e2a6d1a8`. All build work done; the submission (form, video upload, submit) is Felix's, by hand, before 02:59 EDT Oct 15.**
 Earlier: **As of:** 2026-10-14 09:55 EDT. **STEWARD DEPLOYED by Felix from `e2166d7`: version `7dbc5c12`** (images unchanged, already remote). PR #8 merge still Felix's line: `gh pr merge 8 --merge --repo devfep/tessel`.
 Earlier: **As of:** 2026-10-14 09:40 EDT. **REVIEW-CARD-2 MERGED: trunk `e2166d7`** (claim 138, merged 09:36; mirrored to
 GitHub `artifacts-trunk`; lane daemon stopped). **PR #8 updated** (004779b + e2166d7; body lists both). Security
