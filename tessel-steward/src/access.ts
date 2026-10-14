@@ -10,6 +10,11 @@ export interface AccessConfig {
   audience: string;
   /** Emails allowed to view, compared case-insensitively. */
   viewers: readonly string[];
+  /**
+   * A `*` entry in `DASHBOARD_VIEWERS`: any email Access verified may view; the Access policy
+   * decides who can sign in.
+   */
+  anyViewer: boolean;
 }
 
 export type AccessVerdict =
@@ -51,11 +56,12 @@ export function readAccessConfig(env: {
   if (teamDomain === "" || audience === "") {
     return undefined;
   }
-  const viewers = (env.DASHBOARD_VIEWERS ?? "")
+  const entries = (env.DASHBOARD_VIEWERS ?? "")
     .split(",")
     .map((email) => email.trim().toLowerCase())
     .filter((email) => email !== "");
-  return { teamDomain, audience, viewers };
+  const viewers = entries.filter((email) => email !== "*");
+  return { teamDomain, audience, viewers, anyViewer: entries.includes("*") };
 }
 
 function fromBase64Url(text: string): Uint8Array<ArrayBuffer> {
@@ -169,7 +175,7 @@ function checkClaims(
   // Some non-ASCII characters lowercase to ASCII ones (U+212A to "k"), so they must not reach
   // the compare.
   const isAscii = [...email].every((char) => (char.codePointAt(0) ?? 128) < 128);
-  if (!isAscii || !config.viewers.includes(email.toLowerCase())) {
+  if (!isAscii || !(config.anyViewer || config.viewers.includes(email.toLowerCase()))) {
     return denied(403, "this account may not view the dashboard");
   }
   return { ok: true, email };
@@ -177,11 +183,13 @@ function checkClaims(
 
 /**
  * Verifies a `Cf-Access-Jwt-Assertion` token: RS256 signature against the team's published keys,
- * issuer, audience, expiry and not-before, then the email against the viewer list.
+ * issuer, audience, expiry and not-before, then the email against the viewer list. With
+ * `anyViewer` every verified ASCII email passes; it never skips a check before the email's.
  *
  * @param token The header value; `null` when the header is absent.
- * @returns The viewer's email, or a 401 (no usable token), 403 (valid token, email not listed)
- *   or 503 (no keys cached and the team's keys could not be fetched; fails closed).
+ * @returns The viewer's email, or a 401 (no usable token), 403 (valid token, email not listed
+ *   and no `*` entry, or not ASCII) or 503 (no keys cached and the team's keys could not be
+ *   fetched; fails closed).
  */
 export async function verifyAccessToken(
   token: string | null,

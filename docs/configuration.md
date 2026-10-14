@@ -177,9 +177,9 @@ Nothing checks that the tests ran.
 
 | Name | Where | Value in repo | If unset | Effect |
 |---|---|---|---|---|
-| `ACCESS_TEAM_DOMAIN` | `vars` | `fepdev.cloudflareaccess.com` | `/dashboard` and `/review` answer 503 "sign-in not configured" | Cloudflare Access team domain that signs the viewer's JWT. `https://` is stripped (`src/access.ts:49`). |
-| `ACCESS_AUD` | `vars` | the Access application's AUD tag | same | The audience a JWT must carry (`src/access.ts:50`). |
-| `DASHBOARD_VIEWERS` | `vars` | one email | No account passes: every signed-in user gets 403 | Comma-separated emails allowed to open `/dashboard` and `/review`. Compared case-insensitively (`src/access.ts:54-58,172`). |
+| `ACCESS_TEAM_DOMAIN` | `vars` | `fepdev.cloudflareaccess.com` | `/dashboard` and `/review` answer 503 "sign-in not configured" | Cloudflare Access team domain that signs the viewer's JWT. `https://` is stripped (`src/access.ts:54`). |
+| `ACCESS_AUD` | `vars` | the Access application's AUD tag | same | The audience a JWT must carry (`src/access.ts:55`). |
+| `DASHBOARD_VIEWERS` | `vars` | `*` | No account passes: every signed-in user gets 403 | Comma-separated emails allowed to open `/dashboard` and `/review`, compared case-insensitively. A `*` entry admits any email the Access policy lets sign in; `REVIEWER_EMAILS` still decides who may approve or reject (`src/access.ts:59-64,178`). |
 | `REVIEWER_EMAILS` | `vars` | one `email=agent` pair | Nobody may decide; viewing is unaffected | Comma-separated `email=agent` pairs. A person signed in as `email` approves or rejects on `/review` as `agent`. An entry that is not a pair with a valid agent id is dropped (`src/review-csrf.ts:10-23`, `src/review.ts:346`). |
 | `STEWARD_ADMIN_TOKEN` | secret | required | Every admin route answers 401 | Bearer token for the admin routes: create repo, fork, mint tokens, run tests, admin merge, mint identity (`src/index.ts:47-58,198-200`). |
 | `IDENTITY_SIGNING_KEY` | secret | required | Identity minting throws | Signs agent identity tokens. It must equal the coordinator's. It also signs the review page's anti-forgery tokens and the steward's own calls to the coordinator (`src/identity.ts:45`, `src/review.ts:94`, `src/coordinator-link.ts:16`). |
