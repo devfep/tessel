@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 23:25 EDT. **Scenes 2, 3, 6 re-shot on `swarm-video3`** (installed binary, no warning;
+**As of:** 2026-10-13 23:28 EDT. **Correction: the three re-shoots are black.** The screen was locked (Felix away;
+`CGSSessionScreenIsLocked` true; a capture now is 1920x1080 solid black), so the 23:19-23:22 takes recorded
+nothing; moved to `video/takes/black/`. The pipeline is rebuilding on the good `swarm-video2` takes; scene 4
+runs on `swarm-video2` (claim 6), RUNSHEET corrected. `caffeinate -d -i` running for ten hours; every future
+take is preceded by a brightness check of a still capture. `swarm-video3` stays available (its agents
+online, agent-4's claim 2 held) for a full re-shoot of 2, 3, 6 and 4 if the schedule allows.
+Earlier: **As of:** 2026-10-13 23:25 EDT. **Scenes 2, 3, 6 re-shot on `swarm-video3`** (installed binary, no warning;
 `tail -6` shows `# pass 12`; scene 6 prints a real count `trunk commits: 355 / with a note: 241`; the merge
 record is a rendered card in the edit, no TextEdit). Agent-4's held submission there is claim 2; scene 4
 runs on that repo (RUNSHEET.md updated). `edit.sh` now bridges scenes with a held frame + 0.5 s crossfade
