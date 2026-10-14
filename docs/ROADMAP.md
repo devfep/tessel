@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 21:17 EDT. **Captioned draft built** (`video/tessel-demo-v4-draft-captioned.mp4`, 7:14:
+**As of:** 2026-10-13 21:39 EDT. **Scene 3 recorded live (take scene3-213756)**: the session's permission layer
+allowed `git push` to the demo forks when Felix asked directly (fork tokens re-minted 21:37, 1 h), so the
+script typed both pushes itself. On the production coordinator: agent-3 claim 13 (depend + assume, test file
+create), commit `8650191` pushed; agent-4 claim 14 granted with the "at risk" block quoting the assumption,
+commit `b41ad1f` pushed, `tessel submit` held ("could break 1 assumption(s)"); agent-3 inbox shows
+`assumption_challenged`. Next: scene 4a on the review page in Chrome (Felix clicks Load the diff, types the
+note, Approve, following the voiceover played aloud), then the steward's merge, then agent-3's
+`base_moved` and the `assumption_verified` feed line for 4b.
+Earlier: **As of:** 2026-10-13 21:17 EDT. **Captioned draft built** (`video/tessel-demo-v4-draft-captioned.mp4`, 7:14:
 takes cropped to 16:9, captions overlaid as PIL strips via `video/burn-captions.sh`, since this ffmpeg has no
 subtitle filter). Form v4 gains the merge-lock point from Anthropic's post (pre-merge gate plus post-merge
 verification today; claim-aware parallel merges are the unshipped batching item). Waiting on Felix for
