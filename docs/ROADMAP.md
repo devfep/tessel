@@ -5,7 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 07:40 EDT. **SUBMISSION-DOCS `da442c8` pushed and submitted (claim 135, queue position 2
+**As of:** 2026-10-14 07:45 EDT. **SUBMISSION-DOCS MERGED: trunk `da442c8`** (claim 135, merged ~07:43 without a
+hold; the held claim 133 did not block the queue). Mirrored to GitHub `artifacts-trunk`; lane daemon stopped.
+Claim 133 (card) still awaits Felix's "approve"; then orch-review, mirror, steward deploy, PR to main.
+Earlier: **As of:** 2026-10-14 07:40 EDT. **SUBMISSION-DOCS `da442c8` pushed and submitted (claim 135, queue position 2
 behind held claim 133).** Orchestrator read the diff (checklist statuses as briefed, form byte-identical to
 `orch/submission-form-final.md`, one line amended after the fresh-clone pass). Fresh-clone verification of
 `5e48b7d` PASSED (cargo test --workspace all green, CLI builds, steward 994). Watching the trunk
