@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 07:30 EDT. **Resumed; SUBMISSION-DOCS lane dispatched.** Claim 133 (card `d86b911`) still
+**As of:** 2026-10-14 07:40 EDT. **SUBMISSION-DOCS `da442c8` pushed and submitted (claim 135, queue position 2
+behind held claim 133).** Orchestrator read the diff (checklist statuses as briefed, form byte-identical to
+`orch/submission-form-final.md`, one line amended after the fresh-clone pass). Fresh-clone verification of
+`5e48b7d` PASSED (cargo test --workspace all green, CLI builds, steward 994). Watching the trunk
+(`watch-trunk.sh` in the background). Claim 133 still awaits Felix's "approve".
+Earlier: **As of:** 2026-10-14 07:30 EDT. **Resumed; SUBMISSION-DOCS lane dispatched.** Claim 133 (card `d86b911`) still
 held, awaiting Felix's "approve". Fresh-clone verification of the trunk `5e48b7d` running in the session
 scratch (`fresh-verify.log`). `cargo deny check licenses` ok. Video probed: 1920x1080 H.264 30 fps, AAC, 7:14,
 voice only. Form final written to `orch/submission-form-final.md` (Anthropic Oct 13 post re-verified: 2,500 →
