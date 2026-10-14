@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 07:58 EDT. **PR #7 MERGED by Felix at 07:42: GitHub `main` = `20927fe` (trunk `da442c8`).**
+**As of:** 2026-10-14 08:20 EDT. **Claim 133 (card `d86b911`) APPROVED by Felix 08:05 after seeing the renders;
+orch-review ran; steward merging (trunk watcher on `da442c8` running).** Felix then rejected the card's left-accent
+borders and `| ` quote prefixes as "AI slop": researched on Mobbin (GitLab, Graphite, Meetup, Laravel Cloud, Maze,
+Fabric) and shadcn Alert/Card; **REVIEW-CARD-2** brief at `orch/brief-review-card-2.md` (quoted text as a muted
+panel with an attribution line above, callout as a 1 px ring panel, no side bars, no pipes) goes to the same lane
+after the merge and the mirror. Then review, Felix's look at the renders, land, ONE steward deploy, PR to main.
+Earlier: **As of:** 2026-10-14 07:58 EDT. **PR #7 MERGED by Felix at 07:42: GitHub `main` = `20927fe` (trunk `da442c8`).**
 Earlier: **As of:** 2026-10-14 07:55 EDT. **PR #7 `artifacts-trunk`→`main` OPEN (5e48b7d colours + da442c8 docs); its
 merge was refused to the orchestrator ("Merge Without Review") and goes to Felix: `gh pr merge 7 --merge`.**
 Reviews on the PR diff: security review, no findings (CSS tokens and static selectors only; docs carry no
