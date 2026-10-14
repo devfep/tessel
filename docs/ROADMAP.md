@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 08:30 EDT. **REVIEW-CARD MERGED: trunk `004779b`** (claim 133, merged 08:08, mirrored).
+**As of:** 2026-10-14 08:58 EDT. **REVIEW-CARD-2 `e2166d7` SUBMITTED, HELD as claim 137** (STYLE edit-signature).
+Orchestrator read the diff (blockquote and callout lose their left borders, `| ` prefix dropped, `.caption` →
+`.from` line above each block), re-ran the gate (1018 tests, typecheck, oxlint, oxfmt all 0), checked the
+renders (no side bars, no pipes) and sent them to Felix. The fork needed a lease-guarded force push (it held
+the pre-rebase `d86b911`). Needs Felix's "approve" → orch-review 137 → mirror → steward deploy → PR to main.
+Earlier: **As of:** 2026-10-14 08:30 EDT. **REVIEW-CARD MERGED: trunk `004779b`** (claim 133, merged 08:08, mirrored).
 **REVIEW-CARD-2 lane dispatched** (fresh Opus agent `lane-review-card-2`, same worktree, brief
 `orch/brief-review-card-2.md`). Steward NOT redeployed yet: one deploy after CARD-2 lands.
 Earlier: **As of:** 2026-10-14 08:20 EDT. **Claim 133 (card `d86b911`) APPROVED by Felix 08:05 after seeing the renders;
