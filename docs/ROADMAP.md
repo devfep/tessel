@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 23:13 EDT. **Adversarial review and motion design applied.** Three Opus reviewers on
+**As of:** 2026-10-13 23:25 EDT. **Scenes 2, 3, 6 re-shot on `swarm-video3`** (installed binary, no warning;
+`tail -6` shows `# pass 12`; scene 6 prints a real count `trunk commits: 355 / with a note: 241`; the merge
+record is a rendered card in the edit, no TextEdit). Agent-4's held submission there is claim 2; scene 4
+runs on that repo (RUNSHEET.md updated). `edit.sh` now bridges scenes with a held frame + 0.5 s crossfade
+instead of black. Full pipeline rebuilding. Then only scenes 4a/4b and a dashboard shot remain (Felix,
+Chrome).
+Earlier: **As of:** 2026-10-13 23:13 EDT. **Adversarial review and motion design applied.** Three Opus reviewers on
 Felix's request (handoff `video/review/`: CRITIQUE-judge.md, CRITIQUE-editor.md, MOTION-DESIGN.md) with the
 competition page, rules PDF and rubric. Done from their lists: pan-and-zoom into the active pane from the
 4096-wide take via zoompan timed by output frame (`captions/scenefx.py`, 1.8x, punch 2.2x on "at risk" and
