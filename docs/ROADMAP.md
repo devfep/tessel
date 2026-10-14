@@ -5,7 +5,22 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 22:01 EDT. **Colour, highlights, new repo.** Felix asked for readable terminal output and
+**As of:** 2026-10-13 23:13 EDT. **Adversarial review and motion design applied.** Three Opus reviewers on
+Felix's request (handoff `video/review/`: CRITIQUE-judge.md, CRITIQUE-editor.md, MOTION-DESIGN.md) with the
+competition page, rules PDF and rubric. Done from their lists: pan-and-zoom into the active pane from the
+4096-wide take via zoompan timed by output frame (`captions/scenefx.py`, 1.8x, punch 2.2x on "at risk" and
+the hold; boxes overlaid before the zoom so they travel); scene 5 replaced by data callouts over the blurred
+source (`captions/callouts.py`, run labels "Run A: policy wait" / "Run B: shadow, separate run", numbers as
+digits, red for the losses), scene 1's 0:19-0:32 likewise ("26 of 40 thrown away"), which also removes every
+desktop leak; cards regenerated with working arrows and the end line "Green and clean is not proof. A
+verified outcome is."; captions re-split to two lines under 7 s with digits and yellow key terms in one panel,
+none during the silence or the cards; question stamps at the four answer moments; the 4 s silence holds
+scene 4b's first frame; `tessel` installed to ~/.cargo/bin so the init warning disappears on a re-shoot.
+Pipeline: `edit.sh` (scenefx for 1,2,3,6; callouts for 5; cards for 7) then `burn-overlays.sh` (stamps +
+captions); rebuilding now. Still needed from Felix: scene 4a (review page, Approve), 4b (`assumption_verified`
+feed line), a dashboard shot, and, if time allows, scenes 2-3 re-shot on a fresh repo with the installed
+binary and `tail -6` plus a real note count in scene 6. Not taken: a 20 s races insert (needs new narration).
+Earlier: **As of:** 2026-10-13 22:01 EDT. **Colour, highlights, new repo.** Felix asked for readable terminal output and
 pointers to what the voiceover addresses. Done: `video/panecolors.zsh` (prompt colour per agent; tessel
 output colourised: grants green, blocked/held/notices red, at-risk/queued yellow, quoted text magenta,
 moves cyan); scenes 2 and 3 re-shot in colour on a fresh demo repo `swarm-video2` (the old one's
