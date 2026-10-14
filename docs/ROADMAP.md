@@ -5,7 +5,8 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 09:40 EDT. **REVIEW-CARD-2 MERGED: trunk `e2166d7`** (claim 138, merged 09:36; mirrored to
+**As of:** 2026-10-14 09:55 EDT. **STEWARD DEPLOYED by Felix from `e2166d7`: version `7dbc5c12`** (images unchanged, already remote). PR #8 merge still Felix's line: `gh pr merge 8 --merge --repo devfep/tessel`.
+Earlier: **As of:** 2026-10-14 09:40 EDT. **REVIEW-CARD-2 MERGED: trunk `e2166d7`** (claim 138, merged 09:36; mirrored to
 GitHub `artifacts-trunk`; lane daemon stopped). **PR #8 updated** (004779b + e2166d7; body lists both). Security
 review of the PR diff: markup, CSS and tests only, no findings; code review: orchestrator read both diffs, Opus
 reviewed the layout commit. **Two lines for Felix:** (1) steward deploy from `.claude/worktrees/deploy` (now at
