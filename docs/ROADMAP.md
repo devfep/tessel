@@ -5,7 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 08:20 EDT. **Claim 133 (card `d86b911`) APPROVED by Felix 08:05 after seeing the renders;
+**As of:** 2026-10-14 08:30 EDT. **REVIEW-CARD MERGED: trunk `004779b`** (claim 133, merged 08:08, mirrored).
+**REVIEW-CARD-2 lane dispatched** (fresh Opus agent `lane-review-card-2`, same worktree, brief
+`orch/brief-review-card-2.md`). Steward NOT redeployed yet: one deploy after CARD-2 lands.
+Earlier: **As of:** 2026-10-14 08:20 EDT. **Claim 133 (card `d86b911`) APPROVED by Felix 08:05 after seeing the renders;
 orch-review ran; steward merging (trunk watcher on `da442c8` running).** Felix then rejected the card's left-accent
 borders and `| ` quote prefixes as "AI slop": researched on Mobbin (GitLab, Graphite, Meetup, Laravel Cloud, Maze,
 Fabric) and shadcn Alert/Card; **REVIEW-CARD-2** brief at `orch/brief-review-card-2.md` (quoted text as a muted
