@@ -1,7 +1,7 @@
 # Configuration reference
 
 Every setting Tessel reads, where it is set, its default, what it does, and the code that reads it.
-Values are checked against commit `3442343`. A setting that is not on this page is not
+Values are checked against commit `bca6320`. A setting that is not on this page is not
 configurable: the limits in [Fixed limits](#fixed-limits) are constants in the code.
 
 Contents: [`tessel.toml`](#per-repository-tesseltoml-the-gate) ·

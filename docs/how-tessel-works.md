@@ -294,14 +294,14 @@ queued.
 
 ## What Tessel does not do
 
-- **Races are not available from a client.** The coordinator can run several agents on one task
-  and pick a winner, but no shipped client opens a race.
 - **Evidence is self-reported.** The steward runs the gate on every merge, but the `--evidence`
   lines are whatever the agent wrote.
-- **Decision records are not written to git notes.** Evidence lines and rejected approaches are
-  stored with the `submitted` event and in the merge's evidence record, not beside the commit. Work
-  that lands through a race carries no decision record or review to the steward, so its evidence
-  record marks them as not supplied.
+- **The git note stays local unless pushed.** `tessel submit` writes the four-line note (`intent`,
+  `assumes`, `rejected`, `evidence`) on the commit before it sends the submission (see "The commit
+  gets a git note" in [Submitting](../skills/tessel/SKILL.md#submitting)). Pushing the fork head
+  does not carry it. The coordinator's event log, with the `submitted` event, and the merge's
+  record in `<repo>--evidence` keep the same data. Work that lands through a race carries no
+  decision record or review to the steward, so its evidence record marks them as not supplied.
 - **Symbol claims cover Rust and TypeScript** (`.rs`, `.ts`, `.mts`, `.cts`, `.tsx`). Other files
   are claimed whole. The CLI turns more than four symbol claims in one file into one file claim.
 - **The gate tests only what its image holds.** The containers have no Internet. Without a

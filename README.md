@@ -78,6 +78,22 @@ writes it, with the coordinator's event log, to `swarm-results/`. Which agent wi
 function varies with timing, so your numbers can differ from run to run.
 [`tessel-swarm/README.md`](tessel-swarm/README.md) explains every row.
 
+## Try it live
+
+A deployed instance runs on Cloudflare:
+
+- [Review page for `swarm-video7`](https://tessel-steward.devfep.workers.dev/review/swarm-video7):
+  two held submissions on a demo repository.
+- [Dashboard for `swarm-video7`](https://tessel-steward.devfep.workers.dev/dashboard/swarm-video7).
+- [Dashboard for
+  `tessel-dogfood`](https://tessel-steward.devfep.workers.dev/dashboard/tessel-dogfood): Tessel's
+  own repository, built through Tessel since 5 October 2026.
+
+Sign in through Cloudflare Access with any email address, using the one-time PIN it sends. The
+pages are for viewing only: approving, rejecting and loading a diff are limited to the listed
+reviewer. The two held cards on `swarm-video7` are real submissions that the review rules held:
+one threatens another agent's assumption, the other changes a signature.
+
 ## Evidence
 
 The counting rule: **a denial is not a prevented conflict.** Only verified outcomes count.
@@ -112,13 +128,20 @@ Shipped:
   chooses a `human_pick` winner; the coordinator tries each entry's tests and merges at most one.
 - The steward: Artifacts trunk and forks, the container gate, Queue-driven notices that `main`
   moved, identity tokens, and a dashboard.
-- The CLI with Claude Code hooks, git hooks, and a local MCP server (`tessel mcp`).
+- The CLI with Claude Code hooks, git hooks, and a local MCP server (`tessel mcp`). One
+  `tessel init` sets up a worktree.
+- Every grant carries the trunk's head commit.
+- The git note at submit: `tessel submit` writes the four-line note (`intent`, `assumes`,
+  `rejected`, `evidence`) on the commit before it sends the submission.
+- Merge records: after every merge the steward writes the claim, intent, decisions, review and gate
+  results to the Artifacts repository `<repo>--evidence`, and copies a verified transcript to
+  `<repo>--transcripts`. `tessel submit --transcript <file>` redacts a transcript and attaches it.
 - Shadow verification and the swarm harness for A/B runs.
 
 Not shipped:
 
-- Decision records in git notes. Evidence and rejected approaches stay in the coordinator's event
-  log.
+- Preview deployments with Workers Builds.
+- Batching merges that commute. Claims carry the scope data, but merges still run one at a time.
 - Gates for repositories with dependencies without a custom image: the containers have no
   Internet, so the operator bakes dependencies into the toolchain image and writes a
   `tessel.toml`.
@@ -133,6 +156,18 @@ Not shipped:
 - [Configuration](docs/configuration.md): every setting of both Workers.
 - [`skills/tessel/SKILL.md`](skills/tessel/SKILL.md): the workflow taught to agents.
 - Build the CLI with `cargo install --path tessel-cli`.
+
+Run the tests from a fresh clone. You need Rust stable (`rustup`) with the
+`wasm32-unknown-unknown` target, Node 22, pnpm and `wrangler`.
+
+    git clone https://github.com/devfep/tessel.git && cd tessel
+    cargo test --workspace          # protocol, coordinator, CLI and swarm harness
+    cargo build -p tessel-cli       # the tessel CLI at target/debug/tessel
+    cd tessel-steward && pnpm install --frozen-lockfile && pnpm test
+
+Running the coordinator locally is in the
+[coordinator reference](docs/reference/coordinator.md#run-locally). Deploying the steward needs an
+account with Artifacts enabled.
 
 Keep `STEWARD_ADMIN_TOKEN` with the human operator. Mint each agent's identity token, fork and
 fork write token from your own shell, and give each agent only its own identity token (as
