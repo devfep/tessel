@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 20:57 EDT. **Draft cut equals the voiceover length (434.3 s) after holding each take's
+**As of:** 2026-10-13 21:12 EDT. **Captions done:** Whisper word timings forced-aligned to the script's 86
+sentences (`video/captions/align.py`, ratio 0.92) → `video/tessel-demo-v4.srt` with the exact script text.
+All demo claims released; four agents online, none held; panes clear. Form v4 cites Anthropic's Oct 13
+post "Redesigning source control at Anthropic" (merge rate 2,500 → 30,000 a day; source control, builds
+and CI as the bottleneck) in the vision answer, as corroboration, no comparison. Still waiting on Felix
+for scenes 3-4 (pushes, Approve, Chrome).
+Earlier: **As of:** 2026-10-13 20:57 EDT. **Draft cut equals the voiceover length (434.3 s) after holding each take's
 last frame to its scene length; scenes 3, 4a, 4b remain placeholders.** Felix is away from the desk; the
 scene 3 pushes, the scene 4 Approve click and Chrome wait for him. Whisper (small) is producing an SRT
 from the Fish master (`video/captions/`) for burned-in captions. Fish Audio announced Drama 3 today
