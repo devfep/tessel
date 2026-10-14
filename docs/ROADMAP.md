@@ -5,7 +5,14 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 00:20 EDT. **COMPLETE CUT: `video/tessel-demo-v4-complete.mp4`** (7:14, all seven
+**As of:** 2026-10-14 00:32 EDT. **review-colors pushed and submitted from the orchestrator** (the push was
+permitted this time; the submit was refused for `review-page.ts::STYLE` as edit-signature, scope added to claim
+132, resubmitted, **held for review**). Felix stopped the orchestrator's approval call and ran the landing line
+himself (already pushed, already submitted); the approval is his decision: on the review page
+(`/review/tessel-dogfood`, claim 132) or by saying "approve" for `orch-review.sh 132`. The card redesign lane
+waits on that merge for its claim and has been told to apply Emil Kowalski's design skills (installed by Felix
+tonight: design foundations, typography, surfaces, forms, ui-polish, ui-review). Video complete, unchanged.
+Earlier: **As of:** 2026-10-14 00:20 EDT. **COMPLETE CUT: `video/tessel-demo-v4-complete.mp4`** (7:14, all seven
 scenes from the live system, Felix's voice, zoom, highlights, callouts, captions, stamps, crossfades; scene 4a
 with a 1.33x push on the review card following the page down, the inbox `base_moved` tail and the dashboard
 feed crop; scene 4b feed crop then the summary). Segments are padded to their scene length (freeze of the
