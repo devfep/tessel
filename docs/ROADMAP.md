@@ -5,7 +5,21 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 15:45 EDT. **Cloned-voice voiceover DONE in Felix's voice, Fish Speech S2-Pro** (Felix: "fish
+**As of:** 2026-10-13 20:11 EDT. **Live recording in progress; blocked on two macOS consent dialogs only Felix
+can click.** Done: demo repo `swarm-video` (`71a4e8a`, four forks, Felix ran `tessel-swarm demo-repo` 19:55);
+`video/demo-setup.sh` cloned the forks with write tokens, minted identities, started agents 2-4 with
+their intents (agent-1 is initialised on camera; its pane shell carries the admin token unseen); tmux
+session `demo` with four labelled panes driven by `tmux send-keys`; `video/take.sh`/`at.sh`/`take-wait.sh`
+record the screen while the scene's voiceover plays; cards rendered (`video/cards/`); `video/edit.sh`
+assembles takes + placeholders under the Fish master (draft `video/tessel-demo-v4-draft.mp4`, 7:14,
+scenes 1-2 from takes, rest placeholders). Takes so far are unusable: a "Ghostty is requesting to access
+your screen" dialog and a "Ghostty wants to control Terminal" dialog sit in the frame, and the scene 2
+take ran while pane 1 was stuck in `git diff`'s pager (fixed: `core.pager cat`, stray claims released,
+agent-1 still uninitialised). Terminal.app and iTerm do not answer AppleScript until the consent is
+given; Ghostty's window holds the demo as a tab at 75x46. Next, after Felix clicks Allow: full-screen
+demo window with a large font, retake scenes 1-2, scenes 5-7 (local files, cards), scenes 3-4 with
+Felix's two pushes and the Approve click, then `edit.sh` for the final.
+Earlier: **As of:** 2026-10-13 15:45 EDT. **Cloned-voice voiceover DONE in Felix's voice, Fish Speech S2-Pro** (Felix: "fish
 sounds just like me"). Handoff `video/fish-felix/`: seven scenes (scene 4 in two parts), full track 7:14
 (`tessel-voiceover-v4-fish-felix.wav/.m4a`) and a loudness-normalised master (`…-normalised.wav/.m4a`,
 -16 LUFS, 48 kHz), `timing.txt`, the trimmed reference, the scripts. Long scenes needed sentence groups
