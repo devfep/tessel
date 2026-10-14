@@ -169,7 +169,7 @@ Run the tests from a fresh clone. You need Rust stable (`rustup`) with the
     git clone https://github.com/devfep/tessel.git && cd tessel
     cargo test --workspace          # protocol, coordinator, CLI and swarm harness
     cargo build -p tessel-cli       # the tessel CLI at target/debug/tessel
-    cd tessel-steward && pnpm install --frozen-lockfile && pnpm test
+    (cd tessel-steward && pnpm install --frozen-lockfile && pnpm test)
 
 Running the coordinator locally is in the
 [coordinator reference](docs/reference/coordinator.md#run-locally). Deploying the steward needs an
