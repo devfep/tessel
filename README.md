@@ -15,6 +15,9 @@ each other's.
 To try it, [run the swarm harness](#see-it-run) on your own machine with no account, or [sign in to
 the live review page](#try-it-live).
 
+Documentation site: <https://devfep.github.io/tessel/> (this README and the pages under docs/
+rendered from main).
+
 ## The problem
 
 Two agents in one repository each work in their own branch and see nothing of the other. When
