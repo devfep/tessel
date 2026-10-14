@@ -317,7 +317,6 @@ describe("reviewPage content", () => {
   it("offers a viewer who may not decide no buttons, no token and no diff", async () => {
     const html = markup((await render([cardOf()])).html);
     expect(html).not.toContain("data-reject-csrf");
-    expect(html).not.toContain("data-action=");
     expect(html).not.toContain("<button");
     expect(html).toContain("not a listed reviewer");
   });
@@ -350,6 +349,14 @@ describe("reviewPage content", () => {
     expect(html).toMatch(/\.bar \{[^}]*position: sticky; bottom: 0/);
     expect(html).toMatch(/\.buttons button \{[^}]*min-height: 48px/);
     expect(html).toContain("prefers-color-scheme: dark");
+  });
+
+  it("colours Approve green once enabled and Reject red, through attribute selectors", async () => {
+    const { html } = await render([cardOf()], reviewer);
+    expect(html).toMatch(
+      /button\[data-action="approve"\]:not\(:disabled\) \{[^}]*background: var\(--ok\)/,
+    );
+    expect(html).toMatch(/button\[data-action="reject"\] \{[^}]*color: var\(--bad\)/);
   });
 });
 

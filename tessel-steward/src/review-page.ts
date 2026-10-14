@@ -151,10 +151,11 @@ document.addEventListener("click", function (event) {
 
 const STYLE = `
 :root { color-scheme: light dark; --bg: #fff; --fg: #1b1f24; --mute: #5b6470; --card: #f5f6f8;
-  --line: #d6dae0; --accent: #0b5cad; --bad: #b3261e; --ok: #1a7f37; --warn: #b26a00; }
+  --line: #d6dae0; --accent: #0b5cad; --bad: #b3261e; --ok: #1a7f37;
+  --on-ok: #fff; --warn: #b26a00; }
 @media (prefers-color-scheme: dark) { :root { --bg: #14171b; --fg: #e6e8eb; --mute: #98a1ad;
   --card: #1c2025; --line: #323841; --accent: #6cb2ff; --bad: #ff8a80; --ok: #6fd58a;
-  --warn: #f0b429; } }
+  --on-ok: #0b2a14; --warn: #f0b429; } }
 *, *::before, *::after { box-sizing: border-box; }
 body { margin: 0 auto; padding: 16px; max-width: 42rem; font: 15px/1.45 system-ui, sans-serif;
   background: var(--bg); color: var(--fg); }
@@ -185,6 +186,13 @@ button { font: inherit; min-height: 44px; padding: 6px 14px; }
   background: var(--card); border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; }
 .buttons { display: flex; gap: 8px; }
 .buttons button { flex: 1; min-height: 48px; }
+.buttons button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button[data-action="approve"]:not(:disabled) { background: var(--ok); color: var(--on-ok);
+  border: 1px solid var(--ok); border-radius: 6px; font-weight: 600; }
+button[data-action="approve"]:not(:disabled):hover { filter: brightness(.9); }
+button[data-action="reject"] { background: transparent; color: var(--bad);
+  border: 1px solid var(--bad); border-radius: 6px; }
+button[data-action="reject"]:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
 .note { color: var(--mute); font-size: .85rem; margin: 0 0 6px; overflow-wrap: anywhere; }
 .bad { color: var(--bad); } .ok { color: var(--ok); }
 code { overflow-wrap: anywhere; }
