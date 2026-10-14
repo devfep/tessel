@@ -5,7 +5,17 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 07:16 EDT. **CHECKPOINT before a context clear.** Full handoff in
+**As of:** 2026-10-14 07:30 EDT. **Resumed; SUBMISSION-DOCS lane dispatched.** Claim 133 (card `d86b911`) still
+held, awaiting Felix's "approve". Fresh-clone verification of the trunk `5e48b7d` running in the session
+scratch (`fresh-verify.log`). `cargo deny check licenses` ok. Video probed: 1920x1080 H.264 30 fps, AAC, 7:14,
+voice only. Form final written to `orch/submission-form-final.md` (Anthropic Oct 13 post re-verified: 2,500 →
+30,000 merges a day; merge-queue lock given up for post-merge testing; swarm numbers match
+`docs/evidence/2026-10-09`). Lane `lane-submission-docs` (Sonnet, worktree `submission-docs`, fork and
+identity minted, brief `orch/brief-submission-docs.md`) replaces `SUBMISSION_FORM.md` and refreshes
+`SUBMISSION_CHECKLIST.md` statuses; docs only, expected to merge without a hold once pushed and submitted.
+Next: card approve → orch-review → mirror → steward deploy; land the docs lane; PR `artifacts-trunk`→`main`;
+Felix fills the form and submits by hand (deadline 02:59 EDT Oct 15).
+Earlier: **As of:** 2026-10-14 07:16 EDT. **CHECKPOINT before a context clear.** Full handoff in
 `.claude/handoff-2026-10-12/HANDOFF-2026-10-14.md`. Pending: claim 133 (card redesign `d86b911`) awaits
 Felix's "approve" → orch-review → mirror → steward deploy; optional scene 4 re-shoot on `swarm-video7`
 (Felix's clicks); form final, PR to main, repo public, submit. Felix redeployed the steward from `5e48b7d`
