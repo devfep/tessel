@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 01:27 EDT. **REVIEW-CARD lane finished: commit `610855b`** (+620/-142 in review-page.ts and
+**As of:** 2026-10-14 01:38 EDT. **REVIEW-CARD at `d86b911` held for approval** (Opus review "With fixes": the
+submitter excluded from the assumers named, the hold tag per reason; fixes applied and verified; 1015 tests, 10
+mutants; pushed from the orchestrator; duplicate claim 134 released; create + edit-signature scopes on both
+files added to claim 133; submitted; held for five internal signature changes). Approval: Felix's word.
+Then mirror and the steward deploy from the new trunk.
+Earlier: **As of:** 2026-10-14 01:27 EDT. **REVIEW-CARD lane finished: commit `610855b`** (+620/-142 in review-page.ts and
 its test; summary line, four labelled blocks, receipt timeline, labelled note field; gate: 1013 tests, typecheck,
 oxlint, oxfmt; 7 mutants; rendered light, dark and 390 px; no REPORT.md, the git note stands in). Opus review
 with Emil Kowalski's ui-review skill dispatched. Felix asked for the scene 4 click through "cua driver" and
