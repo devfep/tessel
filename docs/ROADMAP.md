@@ -5,7 +5,11 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 00:32 EDT. **review-colors pushed and submitted from the orchestrator** (the push was
+**As of:** 2026-10-14 00:43 EDT. **REVIEW-COLORS MERGED at trunk `5e48b7d`** (approved 00:42 after Felix's
+"approve"; the coordinator reported the claim already decided when the orchestrator's approval ran, and the
+trunk had moved to `5e48b7d`; mirrored; lane daemon stopped). NOT DEPLOYED: needs the steward deploy from
+the deploy worktree at `5e48b7d` (Felix). The card redesign lane can now claim the files.
+Earlier: **As of:** 2026-10-14 00:32 EDT. **review-colors pushed and submitted from the orchestrator** (the push was
 permitted this time; the submit was refused for `review-page.ts::STYLE` as edit-signature, scope added to claim
 132, resubmitted, **held for review**). Felix stopped the orchestrator's approval call and ran the landing line
 himself (already pushed, already submitted); the approval is his decision: on the review page
