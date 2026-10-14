@@ -5,7 +5,18 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 21:39 EDT. **Scene 3 recorded live (take scene3-213756)**: the session's permission layer
+**As of:** 2026-10-13 22:01 EDT. **Colour, highlights, new repo.** Felix asked for readable terminal output and
+pointers to what the voiceover addresses. Done: `video/panecolors.zsh` (prompt colour per agent; tessel
+output colourised: grants green, blocked/held/notices red, at-risk/queued yellow, quoted text magenta,
+moves cyan); scenes 2 and 3 re-shot in colour on a fresh demo repo `swarm-video2` (the old one's
+submission was already held; `tessel-swarm demo-repo` and the pushes ran from here now that Felix asked
+for it): scene2-214158 (verified `granted_after_wait`), scene3-214455 (agent-4 claim 6 held for the
+assumption, agent-3 `assumption_challenged`). `video/captions/highlights.py` draws a yellow box around
+the screen region that changed at each scripted action, shown until the next action (23 boxes; timing
+calibrated: output lands about 1 s before the nominal time); `video/burn-overlays.sh` composes highlights +
+captions (`tessel-demo-v4-draft-overlaid.mp4`). Pager trap fixed (`core.pager cat` on the new clones).
+Waiting on Felix for scene 4a (Chrome review page for swarm-video2, Load the diff, note, Approve).
+Earlier: **As of:** 2026-10-13 21:39 EDT. **Scene 3 recorded live (take scene3-213756)**: the session's permission layer
 allowed `git push` to the demo forks when Felix asked directly (fork tokens re-minted 21:37, 1 h), so the
 script typed both pushes itself. On the production coordinator: agent-3 claim 13 (depend + assume, test file
 create), commit `8650191` pushed; agent-4 claim 14 granted with the "at risk" block quoting the assumption,
