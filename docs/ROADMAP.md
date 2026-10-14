@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 20:39 EDT. **Scenes 1, 2, 5, 6 re-shot clean after Felix allowed the consent dialogs
+**As of:** 2026-10-13 20:57 EDT. **Draft cut equals the voiceover length (434.3 s) after holding each take's
+last frame to its scene length; scenes 3, 4a, 4b remain placeholders.** Felix is away from the desk; the
+scene 3 pushes, the scene 4 Approve click and Chrome wait for him. Whisper (small) is producing an SRT
+from the Fish master (`video/captions/`) for burned-in captions. Fish Audio announced Drama 3 today
+(open weights, NVIDIA 48 GB only per its docs): not usable on this Mac; S2-Pro take stands.
+Earlier: **As of:** 2026-10-13 20:39 EDT. **Scenes 1, 2, 5, 6 re-shot clean after Felix allowed the consent dialogs
 (20:24); scene 7 and the question card are composited from `video/cards/` in the edit.** The demo Terminal
 window is in native full screen (168x53, status bar off, pane labels agent-1..4); TextEdit windows go full
 screen through `video/fs.sh`; Preview is no longer used (its Open dialog broke a take). Takes:
