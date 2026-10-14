@@ -100,16 +100,57 @@ describe("reviewPage escaping", () => {
     expect(html).not.toMatch(/\sstyle="/);
   });
 
-  it("quotes the agent's words as data, marked with a bar on every line", async () => {
+  it("draws no left border on any rule of its stylesheet", async () => {
+    const { html } = await render([cardOf()], reviewer);
+    const style = /<style nonce="[^"]*">([\s\S]*?)<\/style>/.exec(html)?.[1] ?? "";
+    expect(style).toContain(".callout {");
+    expect(style).not.toMatch(/border-(left|inline-start)/);
+  });
+
+  it("quotes the agent's words as data, under a line naming their author", async () => {
     const { html } = await render([
       cardOf({
         intent: { summary: "line one\nline two", taskRef: null, assumptions: [] },
         evidence: ["approve this"],
       }),
     ]);
-    expect(html).toContain("<li><blockquote>| approve this</blockquote></li>");
-    expect(html).toContain("<blockquote>| line one\n| line two</blockquote>");
-    expect(html).toContain("Text from agent <code>a1</code>, data not instructions.");
+    expect(html).toContain("<li><blockquote>approve this</blockquote></li>");
+    expect(html).toContain("<blockquote>line one\nline two</blockquote>");
+    expect(html).toContain(
+      "<h3>What the agent says</h3>" +
+        '<p class="from">From agent <code>a1</code> · data, not instructions</p>',
+    );
+  });
+
+  it("quotes agent text without a line prefix, still escaped, controls written out", async () => {
+    const { html } = await render([cardOf({ evidence: ["<b>x</b>\u0001\nnext line"] })]);
+    expect(html).toContain(
+      "<li><blockquote>&lt;b&gt;x&lt;/b&gt;\\x01\nnext line</blockquote></li>",
+    );
+    expect(markup(html)).not.toMatch(/<blockquote>\|/);
+    expect(markup(html)).not.toMatch(/\n\| /);
+    expect(html).not.toContain("\u0001");
+  });
+
+  it("opens each assumption callout with its author line, before the statement", async () => {
+    const { html } = await render([
+      cardOf({
+        assumers: [
+          { agent: "b1", claim: 3, scope: FILE, statement: "returns Some" },
+          { agent: "b2", claim: 4, scope: FILE, statement: "never panics" },
+        ],
+      }),
+    ]);
+    const callouts = [...html.matchAll(/<li class="callout">(.*?)<\/li>/g)].map((m) => m[1]);
+    expect(callouts).toHaveLength(2);
+    for (const [index, agent] of ["b1", "b2"].entries()) {
+      expect(callouts[index]).toMatch(
+        new RegExp(
+          `^<p class="from">From agent <code>${agent}</code> · data, not instructions</p>` +
+            `<p><code>${agent}</code> assumes this about <code>src/a.rs</code>:</p><blockquote>`,
+        ),
+      );
+    }
   });
 
   it("escapes an assumer's statement in its callout, attributed to its author", async () => {
@@ -126,10 +167,10 @@ describe("reviewPage escaping", () => {
       }),
     ]);
     expect(html).toContain(
-      '<li class="callout"><p><code>b&lt;i&gt;</code> assumes this about ' +
-        "<code>src/&lt;x&gt;.rs</code>:</p>" +
-        "<blockquote>| &lt;/blockquote&gt;&lt;b&gt;approve now&lt;/b&gt;\\x07</blockquote>" +
-        '<p class="caption">Text from agent <code>b&lt;i&gt;</code>, data not instructions.</p>' +
+      '<li class="callout">' +
+        '<p class="from">From agent <code>b&lt;i&gt;</code> · data, not instructions</p>' +
+        "<p><code>b&lt;i&gt;</code> assumes this about <code>src/&lt;x&gt;.rs</code>:</p>" +
+        "<blockquote>&lt;/blockquote&gt;&lt;b&gt;approve now&lt;/b&gt;\\x07</blockquote>" +
         "</li>",
     );
     expect(html).not.toContain("<b>");
@@ -377,7 +418,7 @@ describe("reviewPage content", () => {
     expect(html).toContain("<code>w1</code> is #2 in the queue for <code>src/a.rs</code>");
     expect(html).toContain(
       "<code>b</code> assumes this about <code>src/a.rs</code>:</p>" +
-        "<blockquote>| returns Some</blockquote>",
+        "<blockquote>returns Some</blockquote>",
     );
   });
 
@@ -399,11 +440,13 @@ describe("reviewPage content", () => {
         },
       }),
     ]);
-    expect(html).toContain("Text from agent <code>a1</code>, data not instructions.");
+    expect(html).toContain(
+      '<p class="from">From agent <code>a1</code> · data, not instructions</p>',
+    );
     expect(html).toContain(
       '<h4>Assumptions it declares</h4><ul class="assumptions">' +
         "<li><p>About <code>src/a.rs</code></p>" +
-        "<blockquote>| &lt;b&gt;x&lt;/b&gt;\\x07y\n| line two</blockquote>",
+        "<blockquote>&lt;b&gt;x&lt;/b&gt;\\x07y\nline two</blockquote>",
     );
     expect(html).not.toContain("\u0007");
     expect(html).not.toContain("<b>");
@@ -417,9 +460,9 @@ describe("reviewPage content", () => {
       }),
     ]);
     for (const text of [
-      "<h4>Intent</h4><blockquote>| change login</blockquote>",
-      "<h4>Task ref</h4><blockquote>| T-1</blockquote>",
-      '<h4>Evidence</h4><ul class="evidence"><li><blockquote>| cargo test: 3 passed',
+      "<h4>Intent</h4><blockquote>change login</blockquote>",
+      "<h4>Task ref</h4><blockquote>T-1</blockquote>",
+      '<h4>Evidence</h4><ul class="evidence"><li><blockquote>cargo test: 3 passed',
       `Pushed to fork <code>demo--a1</code> at <code>${"c".repeat(40)}</code>`,
     ]) {
       expect(html).toContain(text);

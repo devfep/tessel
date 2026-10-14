@@ -192,12 +192,11 @@ p { margin: 0; }
 code { font: .875em ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px var(--s1);
   border-radius: 4px; background: var(--quote); overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums; }
-.caption code, .meta code, .detail code { font-size: .9em; }
+.from code, .meta code, .detail code { font-size: .9em; }
 .mode code { font-size: 1em; padding: 0; background: none; white-space: normal; }
 blockquote { margin: var(--s1) 0 0; padding: var(--s2) var(--s3); background: var(--quote);
-  border-left: 3px solid var(--line); border-radius: 0 4px 4px 0; white-space: pre-wrap; }
-.caption { color: var(--mute); font-size: .875rem; font-style: italic; margin-top: var(--s1); }
-.caption code { font-style: normal; }
+  border-radius: 6px; white-space: pre-wrap; }
+.from { font-size: .8125rem; color: var(--mute); margin: 0 0 var(--s1); }
 .reasons li { position: relative; padding: var(--s3) var(--s3) var(--s3) var(--s6);
   background: var(--warn-bg); border-radius: 8px; }
 .reasons li::before { content: ""; position: absolute; left: var(--s3); top: 1.15em;
@@ -211,8 +210,8 @@ blockquote { margin: var(--s1) 0 0; padding: var(--s2) var(--s3); background: va
   border: 1px solid var(--line); color: var(--mute); white-space: nowrap; }
 .hold { border-color: var(--warn); color: var(--warn); }
 .touched + .meta { margin-top: var(--s3); }
-.callout { padding: var(--s3); background: var(--bg); box-shadow: var(--raised);
-  border-left: 4px solid var(--warn); border-radius: 8px; }
+.callout { padding: var(--s3); background: var(--bg); box-shadow: 0 0 0 1px var(--line);
+  border-radius: 8px; }
 .receipt { font-variant-numeric: tabular-nums; }
 .receipt li { position: relative; padding: 0 0 var(--s4) var(--s6); margin: 0; }
 .receipt li::before { content: ""; position: absolute; left: 0; top: .3em; width: 14px;
@@ -271,12 +270,9 @@ function code(value: unknown): string {
   return `<code>${escapeHtml(visibleControls(String(value)))}</code>`;
 }
 
-/** Agent text as a block of data: each line starts with `| `, so it cannot pass for page text. */
+/** Agent text as a block of data in its own panel, escaped, its control characters written out. */
 function dataBlock(value: string): string {
-  const lines = visibleControls(value)
-    .split("\n")
-    .map((line) => `| ${line}`);
-  return `<blockquote>${escapeHtml(lines.join("\n"))}</blockquote>`;
+  return `<blockquote>${escapeHtml(visibleControls(value))}</blockquote>`;
 }
 
 /** Writes control characters other than newline and tab as `\xNN`, so none acts on the page. */
@@ -290,9 +286,9 @@ function visibleControls(value: string): string {
   return out;
 }
 
-/** The attribution under every block of agent text. */
+/** The attribution line above agent text: whose words they are, and that they are data. */
 function fromAgent(agent: string): string {
-  return `<p class="caption">Text from agent ${code(agent)}, data not instructions.</p>`;
+  return `<p class="from">From agent ${code(agent)} · data, not instructions</p>`;
 }
 
 function section(label: string, body: string): string {
@@ -534,7 +530,7 @@ function agentSection(item: ReviewCard): string {
 function assumerCallout(assumer: Assumer): string {
   const who = `${code(assumer.agent)} assumes this about ${code(scopeText(assumer.scope))}:`;
   const statement = dataBlock(assumer.statement);
-  return `<li class="callout"><p>${who}</p>${statement}${fromAgent(assumer.agent)}</li>`;
+  return `<li class="callout">${fromAgent(assumer.agent)}<p>${who}</p>${statement}</li>`;
 }
 
 function waiterItem(waiter: Waiter): string {
