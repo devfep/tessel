@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 01:25 EDT. **Scene 4 on the coloured page: blocked on Felix's click.** Attempts tonight:
+**As of:** 2026-10-14 01:27 EDT. **REVIEW-CARD lane finished: commit `610855b`** (+620/-142 in review-page.ts and
+its test; summary line, four labelled blocks, receipt timeline, labelled note field; gate: 1013 tests, typecheck,
+oxlint, oxfmt; 7 mutants; rendered light, dark and 390 px; no REPORT.md, the git note stands in). Opus review
+with Emil Kowalski's ui-review skill dispatched. Felix asked for the scene 4 click through "cua driver" and
+"computer use tool": the permission layer refused cua-driver as an auto-mode bypass; the Chrome computer tool
+needs the Claude in Chrome extension, which is not connected to this session.
+Earlier: **As of:** 2026-10-14 01:25 EDT. **Scene 4 on the coloured page: blocked on Felix's click.** Attempts tonight:
 swarm-video5 take 010117 (Felix approved inside the 5 s countdown: only the end state recorded), swarm-video6
 take 011733 (Felix: "we have to redo it"), swarm-video7 prepared (scenes 2, 3 re-shot, claim 2 held). Felix
 asked for it without him; the session's permission layer refused every form (System Events click, a Quartz
