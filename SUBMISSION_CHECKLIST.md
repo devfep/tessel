@@ -33,7 +33,7 @@ Status: ✅ done · 🟡 in progress · ⬜ not started · 👤 only you can con
 - ℹ️ Submission details and video are kept up to 180 days
 - ✅ Public repository URL (form placeholder is a GitHub URL; any public host works): `https://github.com/devfep/tessel`
 - ✅ Instructions for running or trying the project: the form text field and `SUBMISSION_FORM.md`, tested from a fresh clone (fresh clone of `e164717` on 2026-10-09 and of `5e48b7d` on 2026-10-14: cargo test --workspace, cargo build -p tessel-cli and the steward's pnpm test all pass)
-- ⬜ Optional: a live instance judges can try (helps the 25% UX score; mind Artifacts billing from Oct 15)
+- ✅ Optional: a live instance judges can try (helps the 25% UX score; mind Artifacts billing from Oct 15)
 - ⬜ All required application fields completed
 - 👤 Select "Yes" to the Terms and Conditions in the form
 - 👤 Only one submission per entrant
@@ -50,8 +50,8 @@ Status: ✅ done · 🟡 in progress · ⬜ not started · 👤 only you can con
 ## What the judges score (Rules §6)
 | Weight | Criterion | Our answer |
 |---|---|---|
-| 50% | Originality and quality of the prototype for agent-oriented collaboration | Transactions for code: hierarchical semantic claims, fencing, commutation-based merge planning, races |
-| 25% | Concurrency, coordination, context preservation, review, conflict handling | Live claim map, `BaseMoved`, intent in git-notes, risk gate, deterministic merge order |
+| 50% | Originality and quality of the prototype for agent-oriented collaboration | Transactions for code: hierarchical semantic claims, fencing, decision cards, races |
+| 25% | Concurrency, coordination, context preservation, review, conflict handling | Dashboard, `base_moved` notices, intent and evidence in git notes and merge records, review by exception, one merge at a time in submission order |
 | 25% | Ease of use and product/user experience | One-command CLI, live dashboard with stats |
 
 Ties go to the 50% category.
@@ -61,7 +61,7 @@ Ties go to the 50% category.
 - ✅ Answer their four questions explicitly in the video (question cards on screen in scenes 1, 2, 4 and 6):
   - How do agents know what other agents are working on? → claims + live map
   - What happens when changes conflict? → conflict modes, denial with intent, races
-  - How do you review everything agents produce? → risk-scored gate, humans see only the top slice
+  - How do you review everything agents produce? → review by exception: only submissions a rule flags reach a person, each with its reason
   - How do you track *why* a change was made? → intent and evidence in git-notes
 - ✅ Compare multiple changes and decide which ships → **race mode** (`tessel race open/join/pick`; protocol, coordinator and CLI shipped)
 

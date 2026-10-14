@@ -1,12 +1,12 @@
 # Configuration reference
 
 Every setting Tessel reads, where it is set, its default, what it does, and the code that reads it.
-Values are checked against commit `bca6320`. A setting that is not on this page is not
+Values are checked against commit `9e363c1`. A setting that is not on this page is not
 configurable: the limits in [Fixed limits](#fixed-limits) are constants in the code.
 
 Contents: [`tessel.toml`](#per-repository-tesseltoml-the-gate) ·
 [Coordinator](#coordinator-wranglertoml) · [Steward](#steward-tessel-stewardwranglerjsonc) ·
-[Agent and worktree](#agent-and-worktree) · [Per claim](#per-claim-cli-flags) ·
+[Agent and worktree](#agent-and-worktree) · [CLI commands and flags](#cli-commands-and-flags) ·
 [Fixed limits](#fixed-limits) · [What is pluggable](#what-is-pluggable)
 
 ## Per repository: `tessel.toml` (the gate)
@@ -249,7 +249,7 @@ Where the token comes from, first match wins (`init.rs:279-340`):
 The operator mints the identity token and gives the agent only `TESSEL_TOKEN`. The admin token
 stays out of the agent's environment: with it an agent could mint a reviewer identity.
 
-## Per claim: CLI flags
+## CLI commands and flags
 
 Flags are from `tessel-cli/src/main.rs`.
 
@@ -304,6 +304,7 @@ What a held mode covers when submitting (`protocol.rs:196-210`): every mode cove
 | `--rejected "<approach>::<reason>"` | none | An approach tried and dropped. Repeatable. |
 | `--claim <id>` | the only unsubmitted claim | Required when several are held. |
 | `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork. |
+| `--transcript <file>` | none | A session transcript. Redacted, at most 4 MiB, stored on the local branch `tessel/transcript-<claim>`; push that branch to your fork (`tessel-cli/src/transcript.rs`). |
 
 Push first: `git push <your fork> HEAD:main`. The steward fetches only the fork's default branch
 and needs the commit reachable from it (`tessel-steward/src/merge-commands.ts:55-62`,
@@ -321,6 +322,10 @@ reviewer's own (`src/coordinator/merging.rs:201-222`).
 `tessel status [--json]`, `tessel inbox [--all]`, `tessel release [<claim>]`, `tessel stop`,
 `tessel mcp --root <worktree>`, `tessel hook install [--git]` (`main.rs:73-177`).
 
+`tessel race open <intent> <scope>... --entrants <1-8> --deadline <minutes, at most 120> --by
+<criteria>`, `tessel race join <race>`, `tessel race pick <race> <claim>` (`tessel-cli/src/race.rs`;
+the coordinator enforces the limits, `src/coordinator/racing.rs`).
+
 ## Fixed limits
 
 None of these is configurable.
@@ -333,7 +338,7 @@ None of these is configurable.
 | Identity token lifetime | 24 h | `tessel-steward/src/identity.ts:2` |
 | Identity token size | 1024 bytes | `src/identity.rs:33` |
 | Fork write token lifetime | 1 h | `tessel-steward/src/index.ts:16` |
-| Read token for a mirror fetch | 10 min | `tessel-steward/src/index.ts:18` |
+| Read token (`/read-tokens`) | 10 min | `tessel-steward/src/index.ts:18` |
 | Review page anti-forgery token | 1 h | `tessel-steward/src/review-csrf.ts:4` |
 | WebSocket text frame | 64 KiB | `src/shell.rs:23` |
 | Scopes in one Claim, Amend or Submit | 256 | `src/coordinator.rs:1631` |
