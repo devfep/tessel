@@ -5,7 +5,15 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 00:08 EDT. **Every scene recorded.** Felix returned 23:37 on an ultrawide (3440x1440, 1x);
+**As of:** 2026-10-14 00:20 EDT. **COMPLETE CUT: `video/tessel-demo-v4-complete.mp4`** (7:14, all seven
+scenes from the live system, Felix's voice, zoom, highlights, callouts, captions, stamps, crossfades; scene 4a
+with a 1.33x push on the review card following the page down, the inbox `base_moved` tail and the dashboard
+feed crop; scene 4b feed crop then the summary). Segments are padded to their scene length (freeze of the
+last frame; bc output formatted). `lane-review-colors` review "Yes" (contrast table, mutants): Felix's landing
+line is pending, then the steward deploy; `lane-review-card` working (draft renders in its scratch).
+MCP Events noted post-contest. Remaining: Felix's landing + steward deploy, optional re-shoot of scene 4 on
+the coloured/redesigned page (needs a fresh repo and scenes 2-3 again), form final, repo public, submit.
+Earlier: **As of:** 2026-10-14 00:08 EDT. **Every scene recorded.** Felix returned 23:37 on an ultrawide (3440x1440, 1x);
 the demo Terminal window was set to a 16:9 region (467,31,2505x1409, Menlo 24) and takes capture that region
 (`REGION`), with a brightness check first. Fresh repo `swarm-video4`: scenes 1, 2, 3, 6 re-shot 23:40-23:44
 (no warning block, `# pass 12` visible, real note count 241 of 355); scene 4a at 00:03 with Felix clicking Load
