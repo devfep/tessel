@@ -5,7 +5,13 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 09:30 EDT. **Felix approved the accent-free card ("Approved the new design devoid of
+**As of:** 2026-10-14 09:40 EDT. **REVIEW-CARD-2 MERGED: trunk `e2166d7`** (claim 138, merged 09:36; mirrored to
+GitHub `artifacts-trunk`; lane daemon stopped). **PR #8 updated** (004779b + e2166d7; body lists both). Security
+review of the PR diff: markup, CSS and tests only, no findings; code review: orchestrator read both diffs, Opus
+reviewed the layout commit. **Two lines for Felix:** (1) steward deploy from `.claude/worktrees/deploy` (now at
+`e2166d7`): `cd .claude/worktrees/deploy/tessel-steward && npx wrangler deploy`; (2) `gh pr merge 8 --merge`.
+Then: repo is public, form answers in `SUBMISSION_FORM.md`, video at `video/tessel-demo-v4-complete.mp4`, submit by hand.
+Earlier: **As of:** 2026-10-14 09:30 EDT. **Felix approved the accent-free card ("Approved the new design devoid of
 accents"). Claim 137 approved by orch-review, but the steward's sandbox run failed a flaky CLI test
 (`a_claim_whose_reply_was_lost_is_found_and_answered_after_the_reconnect`, exit 101) → submit_rejected, then the
 claim lapsed. Same commit `e2166d7` re-claimed (138), resubmitted, held, approved by orch-review 09:29; trunk
