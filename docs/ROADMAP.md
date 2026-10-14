@@ -5,7 +5,21 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 20:11 EDT. **Live recording in progress; blocked on two macOS consent dialogs only Felix
+**As of:** 2026-10-13 20:20 EDT. **Five of seven scenes recorded through the panes; draft cut rebuilt.**
+The demo now runs in a Terminal window opened from a generated profile (`video/TesselDemo.terminal`,
+Menlo 22, 112x44, attaches tmux `demo`; no AppleScript needed) and takes capture that window's region
+(`REGION=109,95,1493,1022`). Takes (video/takes/): scene1-201334 (rename diff, evidence table, questions
+card), scene2-201437 (agent-1 init + start, claims: 4 granted edit-signature, agent-4 claim 5, agent-2
+denied with the card, `--wait` queued position 1, release, `granted_after_wait` as claim 6; all verified
+in the panes), scene5-201638 (the two evidence tables and the precision README), scene6-201738 (agent-2's
+card scrolled back, `git log --notes -3 8e798c9`, the live merge record, the note count), scene7-201852
+(diagram, not-shipped and end cards). `video/edit.sh` rebuilt `tessel-demo-v4-draft.mp4` (7:14) with
+placeholders only for scenes 3, 4a, 4b. Every take still has the macOS consent dialog in frame: once
+Felix clicks Allow, each scene is re-shot by the same scripted command. Scenes 3 and 4 wait for Felix
+(two pushes, the Approve click, Chrome). State: agent-1 online, agent-2 holds claim 6 (cartQuantity
+edit-body), agent-4 holds claim 5 (cartTotal); release both before scene 3's retake if the dashboard
+should show only scene 3's claims.
+Earlier: **As of:** 2026-10-13 20:11 EDT. **Live recording in progress; blocked on two macOS consent dialogs only Felix
 can click.** Done: demo repo `swarm-video` (`71a4e8a`, four forks, Felix ran `tessel-swarm demo-repo` 19:55);
 `video/demo-setup.sh` cloned the forks with write tokens, minted identities, started agents 2-4 with
 their intents (agent-1 is initialised on camera; its pane shell carries the admin token unseen); tmux
