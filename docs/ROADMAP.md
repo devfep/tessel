@@ -5,7 +5,10 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 00:43 EDT. **REVIEW-COLORS MERGED at trunk `5e48b7d`** (approved 00:42 after Felix's
+**As of:** 2026-10-14 00:45 EDT. **Steward version `ede55e6e` is live from `5e48b7d`** (run from the orchestrator,
+permitted): Approve green when enabled, Reject a red outline. Deploy worktree detached at `5e48b7d`. Fresh
+demo repo `swarm-video5` set up for a scene 4 re-shoot on the coloured page (scenes 2, 3, 6 re-run first).
+Earlier: **As of:** 2026-10-14 00:43 EDT. **REVIEW-COLORS MERGED at trunk `5e48b7d`** (approved 00:42 after Felix's
 "approve"; the coordinator reported the claim already decided when the orchestrator's approval ran, and the
 trunk had moved to `5e48b7d`; mirrored; lane daemon stopped). NOT DEPLOYED: needs the steward deploy from
 the deploy worktree at `5e48b7d` (Felix). The card redesign lane can now claim the files.
