@@ -5,7 +5,8 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 09:55 EDT. **STEWARD DEPLOYED by Felix from `e2166d7`: version `7dbc5c12`** (images unchanged, already remote). PR #8 merge still Felix's line: `gh pr merge 8 --merge --repo devfep/tessel`.
+**As of:** 2026-10-14 10:00 EDT. **PR #8 MERGED by Felix: GitHub `main` = trunk `e2166d7` (merge commit). Repo public, steward `7dbc5c12` live, coordinator `e2a6d1a8`. All build work done; the submission (form, video upload, submit) is Felix's, by hand, before 02:59 EDT Oct 15.**
+Earlier: **As of:** 2026-10-14 09:55 EDT. **STEWARD DEPLOYED by Felix from `e2166d7`: version `7dbc5c12`** (images unchanged, already remote). PR #8 merge still Felix's line: `gh pr merge 8 --merge --repo devfep/tessel`.
 Earlier: **As of:** 2026-10-14 09:40 EDT. **REVIEW-CARD-2 MERGED: trunk `e2166d7`** (claim 138, merged 09:36; mirrored to
 GitHub `artifacts-trunk`; lane daemon stopped). **PR #8 updated** (004779b + e2166d7; body lists both). Security
 review of the PR diff: markup, CSS and tests only, no findings; code review: orchestrator read both diffs, Opus
