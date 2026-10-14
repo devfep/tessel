@@ -5,7 +5,12 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-14 01:38 EDT. **REVIEW-CARD at `d86b911` held for approval** (Opus review "With fixes": the
+**As of:** 2026-10-14 07:16 EDT. **CHECKPOINT before a context clear.** Full handoff in
+`.claude/handoff-2026-10-12/HANDOFF-2026-10-14.md`. Pending: claim 133 (card redesign `d86b911`) awaits
+Felix's "approve" → orch-review → mirror → steward deploy; optional scene 4 re-shoot on `swarm-video7`
+(Felix's clicks); form final, PR to main, repo public, submit. Felix redeployed the steward from `5e48b7d`
+(version `109cee68`, same code). Video complete at `video/tessel-demo-v4-complete.mp4`.
+Earlier: **As of:** 2026-10-14 01:38 EDT. **REVIEW-CARD at `d86b911` held for approval** (Opus review "With fixes": the
 submitter excluded from the assumers named, the hold tag per reason; fixes applied and verified; 1015 tests, 10
 mutants; pushed from the orchestrator; duplicate claim 134 released; create + edit-signature scopes on both
 files added to claim 133; submitted; held for five internal signature changes). Approval: Felix's word.
