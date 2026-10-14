@@ -5,7 +5,19 @@ this file tracks the tasks that deliver it. Only the orchestrator edits this fil
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-13 23:36 EDT. **Cut complete on the good takes** (`video/tessel-demo-v4-draft-overlaid.mp4`,
+**As of:** 2026-10-14 00:08 EDT. **Every scene recorded.** Felix returned 23:37 on an ultrawide (3440x1440, 1x);
+the demo Terminal window was set to a 16:9 region (467,31,2505x1409, Menlo 24) and takes capture that region
+(`REGION`), with a brightness check first. Fresh repo `swarm-video4`: scenes 1, 2, 3, 6 re-shot 23:40-23:44
+(no warning block, `# pass 12` visible, real note count 241 of 355); scene 4a at 00:03 with Felix clicking Load
+the diff, note and Approve on the review page (Chrome sized to the same region, page zoom 150%); the steward
+merged claim 2 at 00:03:31; agent-3's `base_moved` recorded as `scene4a-tail-000541`; scene 4b from the
+dashboard: event feed `#33 assumption_verified`, summary `assumptions_confirmed_broken: 1`. `edit.sh` now
+assembles 4a (review page 0-40 s, inbox tail, feed) and 4b (dashboard), zoom 1.45x for 1x sources. Felix asked
+for semantic button colours and a more digestible card: `lane-review-colors` committed `5e48b7d` (Approve
+green when enabled, Reject red outline; steward tests 994 passed; Opus review running); `lane-review-card`
+(Opus) dispatched on the card's hierarchy, grouping, callouts and receipt timeline (brief
+`orch/brief-review-card.md`), waiting on the colour lane's claim. "Emil" asked. Pipeline rebuilding.
+Earlier: **As of:** 2026-10-13 23:36 EDT. **Cut complete on the good takes** (`video/tessel-demo-v4-draft-overlaid.mp4`,
 434.3 s = voiceover; scenefx holds short takes' last frame). Open in VLC for Felix. Plan for tomorrow: a fresh
 demo repo, re-shoot 2, 3, 6 (screen unlocked, brightness-checked), then Felix's scene 4a/4b and a dashboard
 shot on the same repo, then the final pipeline run; then form final, repo public, submit. Note: agent-3 on
