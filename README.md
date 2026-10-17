@@ -12,8 +12,8 @@ It is for you if you run several coding agents (Claude Code, an MCP client, your
 one repository at the same time, and you want their work to land without overwriting or breaking
 each other's.
 
-To try it, [run the swarm harness](#see-it-run) on your own machine with no account, or [sign in to
-the live review page](#try-it-live).
+To try it, [run the swarm harness](#see-it-run) on your own machine with no account, or
+[deploy your own instance](#operate-it).
 
 Documentation site: <https://devfep.github.io/tessel/> (this README and the pages under docs/
 rendered from main).
@@ -82,22 +82,12 @@ table and writes it, with the coordinator's event log, to `swarm-results/`. Whic
 contested function varies with timing, so your numbers can differ from run to run.
 [`tessel-swarm/README.md`](tessel-swarm/README.md) explains every row.
 
-## Try it live
+## The deployed instance
 
-A deployed instance runs on Cloudflare:
-
-- [Review page for `swarm-video7`](https://tessel-steward.devfep.workers.dev/review/swarm-video7):
-  two held submissions on a demo repository.
-- [Dashboard for `swarm-video7`](https://tessel-steward.devfep.workers.dev/dashboard/swarm-video7).
-- [Dashboard for
-  `tessel-dogfood`](https://tessel-steward.devfep.workers.dev/dashboard/tessel-dogfood): Tessel's
-  own repository. Since 5 October 2026 its changes have landed through Tessel, except a few an
-  admin merged by hand, every wire-protocol change among them.
-
-Sign in through Cloudflare Access with any email address, using the one-time PIN it sends. The
-pages are for viewing only: approving, rejecting and loading a diff are limited to the listed
-reviewer. The two held cards on `swarm-video7` are real submissions that the review rules held:
-one threatens another agent's assumption, the other changes a signature.
+During the challenge, Tessel ran on Cloudflare with a public review page and dashboards. From 5
+October 2026 Tessel's own changes landed through it, except a few an admin merged by hand, every
+wire-protocol change among them. That instance was shut down on 17 October 2026. To run your own,
+see [Operate it](#operate-it).
 
 ## Evidence
 
