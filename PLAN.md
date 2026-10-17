@@ -98,8 +98,8 @@ person-weeks for one maintainer working with agents.
 | 1. Portable host and lander (~10-12) | `runtime.rs` moved step for step into the sans-IO host; the simulator with invariants I1 to I12 and failpoints; `tessel-server` with SQLite, versioned state, the protocol range, metrics, Ed25519 identity and token minting; the Rust lander and a local test runner; minimal advisory mode; Cloudflare and TypeScript code deleted |
 | 2. GitHub landing (~5-7) | GitHub App adapter: human-provisioned fork pool, candidate pull requests whose CI runs without secrets, two rulesets, `updateRefs` compare-and-swap, polling reconciliation; `tessel admin doctor` |
 | 3. Adoptable | Trials on GitHub; the `tessel/claims` advisory check; review page and dashboard behind OIDC; per-repo review configuration; `tessel admin`; backup, restore drill, retention; signed releases and an image |
-| 4. Reach | Symbol claims for Python and Go; hooks for a second agent harness; Linux and macOS packages |
-| 5. Design partners | Real teams; queue wait, CI duration and merge outcomes measured |
+| 4. Reach | Symbol claims for Python and Go; Sandcastle (`mattpocock/sandcastle`) as the second agent harness: a template whose sandboxed agents claim and submit through Tessel, which lands their work in place of an LLM merge step; Linux and macOS packages |
+| 5. Design partners | Real teams; queue wait, CI duration and merge outcomes measured; an A/B of Sandcastle's `parallel-planner` with and without Tessel on the same issues (textual conflicts, broken tests on main, wasted runs) |
 | 6. On evidence only | Native parallel merge queue; self-hosted git and sandbox; several nodes |
 
 ## 8. Dogfooding
