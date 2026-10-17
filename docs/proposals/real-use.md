@@ -173,6 +173,12 @@ Adapters do only I/O.
 **The smallest deployment a team would accept:** `tessel-server` with SQLite, a GitHub App, the
 repository's existing CI, and the `tessel` CLI. No sandbox and no git hosting.
 
+**Agents in sandboxes.** Agent harnesses such as Sandcastle run each agent in a container or
+microVM. The CLI and its per-worktree daemon then run inside the sandbox, so the sandbox needs a
+network route to `tessel-server` and a way to receive the agent's identity token. Phase 1 keeps
+that possible: the server address and token come from configuration, never from the host's
+filesystem layout.
+
 **Advisory mode.** Tessel coordinates claims while humans and CI still merge. The minimal version
 (Phase 1): head sync releases a submitted claim once its commit is an ancestor of main, which works
 with merge commits. The GitHub version (Phase 3): a required `tessel/claims` check on each pull
@@ -390,10 +396,13 @@ Sizes are rough person-weeks for one maintainer working with agents.
 - The rest of `tessel admin`; backup, restore drill and retention.
 - Signed release binaries and an image.
 
-**Phase 4: reach.** Symbol claims for Python and Go; hooks for a second agent harness; Linux and
-macOS packages.
+**Phase 4: reach.** Symbol claims for Python and Go; Sandcastle (`mattpocock/sandcastle`) as the
+second agent harness, through a template whose sandboxed agents claim and submit through Tessel,
+which lands their work in place of an LLM merge step; Linux and macOS packages.
 
-**Phase 5: design partners.** Real teams; queue wait, CI duration and merge outcomes measured.
+**Phase 5: design partners.** Real teams; queue wait, CI duration and merge outcomes measured; an
+A/B of Sandcastle's `parallel-planner` with and without Tessel on the same issues (textual
+conflicts, broken tests on main, wasted runs).
 
 **Phase 6, only if the data or a user calls for it:** a native parallel merge queue; a self-hosted
 git host and sandbox; several nodes.
