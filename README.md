@@ -5,15 +5,15 @@ agent edits code, it claims what it will touch: a directory, a file, or one func
 overlaps another agent's work is refused before anything is written, with the other agent's intent
 and the moves still open. Finished work goes to the agent's own fork and is submitted; a steward
 rebases it, checks that the claim covered every change, runs the tests, and only then pushes
-`main`. Work merges with no human unless a rule flags it, and a flagged change says why. Tessel
-runs on Cloudflare: Workers, Durable Objects, Artifacts, Queues, Containers and Access.
+`main`. Work merges with no human unless a rule flags it, and a flagged change says why. Tessel's
+first implementation ran on Cloudflare. It is being rebuilt as a single server that works with
+GitHub and the team's own CI; [`PLAN.md`](PLAN.md) has the plan and its status.
 
 It is for you if you run several coding agents (Claude Code, an MCP client, your own scripts) on
 one repository at the same time, and you want their work to land without overwriting or breaking
 each other's.
 
-To try it, [run the swarm harness](#see-it-run) on your own machine with no account, or
-[deploy your own instance](#operate-it).
+To try it, [run the swarm harness](#see-it-run) on your own machine with no account.
 
 Documentation site: <https://devfep.github.io/tessel/> (this README and the pages under docs/
 rendered from main).
