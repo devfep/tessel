@@ -49,4 +49,3 @@ exclude:
   - "tessel-swarm/tests/"
   - "docs/ROADMAP.md"
   - "docs/BUILD-PROTOCOL.md"
-  - "SUBMISSION_CHECKLIST.md"

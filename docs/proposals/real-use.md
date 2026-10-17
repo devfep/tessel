@@ -1,8 +1,7 @@
 # Proposal: Tessel for real use
 
-Status: draft for Felix's decision, 17 October 2026, revised after four adversarial reviews
-(correctness, security, testing, real use and operations). Nothing here changes `PLAN.md` until
-approved (CLAUDE.md rule 9).
+Status: approved by Felix on 17 October 2026, after four adversarial reviews (correctness,
+security, testing, real use and operations). `PLAN.md` summarises it and records the decisions.
 
 The challenge is over. Tessel is now being built for teams who would trust it with their main
 branch, so it has to be robust, well tested, and fit how teams already work. This proposal says
@@ -165,9 +164,9 @@ These exist now, in the serial queue, and are fixed before anything is built on 
 
 **CI before any refactor.** GitHub Actions, pinned to SHAs and checked with zizmor and
 actionlint: fmt; clippy with `-D warnings`, native and `wasm32-unknown-unknown --features runtime`;
-cargo-nextest for the workspace; `cargo deny check`; the steward's typecheck, oxlint and vitest,
-including the real-git integration tests. Nightly: proptest at 10,000 cases, a simulator seed
-sweep, and cargo-mutants on changed files with a minimum kill rate.
+cargo-nextest for the workspace; `cargo deny check advisories bans`; the steward's typecheck,
+oxlint and vitest, including the real-git integration tests. Nightly: proptest at 10,000 cases,
+a simulator seed sweep, and cargo-mutants on changed files with a minimum kill rate.
 
 **Characterisation tests first.** Before moving `runtime.rs`, one test per behavioural rule it
 documents, as the list the new host must pass.
@@ -291,21 +290,10 @@ from a review finding:
 in every steward dispatch (the steward refuses lower epochs), and modelled in stateright with two
 nodes, lease expiry and clock skew before it is built.
 
-## Decisions for Felix
+## Decisions (17 October 2026)
 
-1. **The plan and its order.** Approve GitHub-first, with the parallel queue and self-hosted
-   sandbox deferred until data or a user calls for them? Recommendation: yes.
-2. **The Cloudflare adapter.** It cannot be checked live after 12 November. Recommendation: keep
-   it until `tessel-server` passes the same suites, then tag the last Cloudflare version and remove
-   it, rather than maintain an adapter nothing verifies.
-3. **Language.** Rule 8 kept TypeScript only for Cloudflare's SDKs. Recommendation: build the
-   GitHub adapter in Rust inside `tessel-server`, for a single binary; the TypeScript steward stays
-   only as long as the Cloudflare adapter does.
-4. **Protocol.** Replacing the exact version match with a range changes the handshake. Additive
-   (a new optional field in `Welcome`) or a `PROTOCOL_VERSION` bump? Recommendation: additive.
-5. **Licence policy.** Rule 3 is a whitelist, but SQLite (public domain), the PostgreSQL License,
-   and git and glibc in container images are not on it. Recommendation: allow public domain and
-   the PostgreSQL License for linked code, and allow GPL tools run as separate programs in images
-   (never linked), recorded as explicit `cargo deny` exceptions.
-6. **Project framing.** `CLAUDE.md` and `PLAN.md` still describe a contest entry with a deadline
-   and a frozen protocol. Recommendation: rewrite both for real use once this plan is approved.
+Felix approved the plan and its order. The decisions are recorded in `PLAN.md`, section 9:
+Cloudflare has no special status and its code is removed as soon as the portable host replaces it;
+the GitHub adapter is Rust inside `tessel-server`; the protocol version range is a new optional
+field; the contest-era licence whitelist no longer applies; `CLAUDE.md` and `PLAN.md` are rewritten
+for real use.

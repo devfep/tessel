@@ -1,154 +1,123 @@
 # Tessel: plan
 
-Single source of truth for what we're building, why, and when.
-Deadline Oct 14, 11:59 PM PDT. **We submit Oct 13.**
+Single source of truth for what we're building, why, and in what order. The detailed design,
+requirements and test strategy are in [`docs/proposals/real-use.md`](docs/proposals/real-use.md),
+approved by Felix on 17 October 2026. The plan Tessel was built under for Cloudflare's October 2026
+challenge is in git history (`ba36647` and earlier).
 
-## 1. Constraints
-- Solo builder, about 12 working days.
-- Must use **Workers and Artifacts**, and show **multiple agents working concurrently**.
-- Judged 50% originality/quality, 25% coordination/context/review/conflicts, 25% UX. Ties go to originality.
-- Deliverables: application form, 5–10 min video, public source (MIT, LICENSE file), run instructions.
-- Organisers want "not GitHub with agents on top", and a way to compare changes and pick one to ship.
-- Workers can't run `git` or tests (→ Sandbox). Artifacts' binding is JavaScript. tree-sitter can't run in a Worker (→ CLI side).
-- Others are building forges on Artifacts. **We are not a forge**; we're the coordination layer a forge lacks.
+## 1. Goal
 
-## 2. Our answer to the brief
+Tessel is a transaction layer for many AI coding agents working in one repository. It is built for
+teams who would trust it with their main branch: it must be robust, well tested, cloud agnostic,
+and fit the git host and CI a team already uses.
 
-> "Feel free to rethink repositories, branches, pull requests, worktrees, code review, and merge conflicts."
+**Git records what happened. Tessel coordinates what's happening.**
 
-**Git records what happened. We coordinate what's happening.**
+| Today | Tessel |
+|---|---|
+| Branches are names with no owner, purpose or expiry | **Leases:** a fork bound to a claim, with owner, scope, intent, fence and expiry |
+| Worktrees fight over disk and ports | **Disposable forks,** plus shadow forks that check whether a denial was real |
+| Pull requests ask a human to read a diff | **Transactions:** fenced, coverage-checked, carrying intent, assumptions and evidence; competing attempts become **races** |
+| Merge conflicts are found after the work | **Prevented before writing** (semantic claims); **behavioural ones surfaced** (assumptions); a deterministic merge order |
+| Every diff is reviewed line by line | **Review by exception:** humans see flagged changes, with reasons and evidence first |
+| Repositories know only the past | **A present tense:** a live claim map, an assumption ledger and verified evidence, with storage still in git |
 
-| They named | Today | Ours |
-|---|---|---|
-| Branches | A name: no owner, purpose or expiry | **Leases.** A fork bound to a claim: owner, scope, intent, fence, expiry |
-| Worktrees | Local checkouts fighting over disk and ports | **Disposable forks,** plus speculative forks (pre-merged against main) and shadow forks (prove denials were real) |
-| Pull requests | A request for a human to read a diff | **Transactions.** Fenced, footprint-checked, carrying intent, assumptions, evidence. Competing PRs become **races** |
-| Merge conflicts | Found after the work, as text markers | **Prevented before writing** (semantic claims), **behavioural ones surfaced** (assumptions), deterministic safe merge order |
-| Code review | Every diff, line by line | **Review by exception.** Humans see only flagged changes, reasons and evidence first, diff second |
-| Repositories | Know only the past | **Gain a present tense:** live claim map, assumption ledger, verified evidence. Storage stays Git so every tool still works |
+## 2. Constraints
 
-## 3. Candidates and decision
+- **Cloud agnostic from the start.** No platform gets special status. Every platform service sits
+  behind a port; the first adapters are the ones a team needs (a single server binary, GitHub, the
+  repo's own CI).
+- **Robust and well tested.** Every requirement in the proposal becomes a test; CI must be green and
+  required on main before the refactor starts.
+- **Fit existing workflows.** Code stays on the team's git host; tests run in the team's CI; Tessel
+  can run in advisory mode before it lands anything.
 
-Scores 1–5; effort and risk: 5 = cheap / safe.
-
-| # | Candidate | Orig. | Fit | Effort | Risk | Verdict |
-|---|---|---|---|---|---|---|
-| 1 | Hierarchical semantic claims, leases, fencing, coverage | 2 | 4 | 4 | 4 | **Must** (foundation) |
-| 2 | CRDT shared workspace | 2 | 2 | 2 | 2 | Rejected: converges, still semantically broken |
-| 3 | Assumption ledger | 5 | 4 | 4 | 4 | **Must** (original core) |
-| 4 | Races | 4 | 4 | 3 | 3 | **Should** (organisers asked) |
-| 5 | Merge steward: fence, coverage, rebase, test, merge | 3 | 5 | 2 | 2 | **Must** |
-| 6 | Review by exception (rule-based) | 3 | 4 | 4 | 4 | **Must**: our only answer to "code review" |
-| 7 | Speculative merge on push | 3 | 4 | 3 | 3 | Should |
-| 8 | Decision record (git-notes) · transcript archive | 3 | 3 | 4 | 4 | Must · Could |
-| 9 | Progressive CLI + agent skill | 3 | 4 | 4 | 4 | **Must** (UX score; dogfooding needs it) |
-| 10 | Commutation batching | 4 | 3 | 3 | 3 | Could |
-| 11 | LLM test generation, MAPF scheduling, Aria-style optimism, signed provenance | 4 | 3 | 1 | 1 | Roadmap only |
-
-**Decision: Tessel, a transaction layer for agent code changes.** Agents claim what they'll touch and declare what they assume. The coordinator prevents structural conflicts, warns on behavioural ones, runs races when several agents attempt one task, sends only risky changes to humans, and lands work in a safe, deterministic order with its reasons attached.
-
-## 4. Architecture
+## 3. Architecture
 
 ```
- agent ── CLI (Rust: tree-sitter, git, hooks) ──WebSocket──► Coordinator Worker (Rust)
-   │      + skill file teaching the workflow                  └ Durable Object per repo:
-   │ git push (repo-scoped token)                               lock table, leases (alarms), fences,
-   ▼                                                            races, assumptions, review, event log
- Artifacts: main + one fork per agent                                   │ Submit → service binding
-   │ main push events ──► Queue ──► Steward Worker (TypeScript) ◄──────┘
-                                 ├ Artifacts: fork, tokens, read (verifies the submitted commit)
-                                 ├ per-agent identity tokens (signed; checked at the upgrade)
-                                 ├ Sandbox: fetch, rebase, test, push main
-                                 └ dashboard + review screen
+ agent ── tessel CLI ──WebSocket──► tessel-server (Rust)
+ (Rust: tree-sitter,                ├ one task per repo running the portable host
+  git, hooks)                       │ (sans-IO core): claims, leases, fences, races,
+                                    │ assumptions, review, event log
+                                    ├ SQLite store (one writer)
+                                    └ git host adapter (GitHub App): candidate ref
+                                      → repo's own CI → compare-and-swap landing
 ```
-The merge signal is the agent's `Submit`, not a fork push: the steward reads the submitted commit
-from the fork through the Artifacts binding, and one push subscription stays on the main repo.
-Every coordinator connection carries a token the steward signed for one repo and one agent; the
-coordinator binds the socket to that agent. (Decided by Felix, Oct 5.)
-Naming: brand and CLI command `tessel`; packages `tessel-coordinator`, `tessel-cli`, `tessel-steward` (the bare `tessel` names on crates.io and npm belong to an old IoT project). Rust where correctness matters (protocol, lock table, ranking, CLI). TypeScript only for JavaScript-first SDKs. Only the steward writes main.
 
-## 5. The protocol (API freeze: end of Oct 5)
+- The coordinator never runs git or tests itself; only the merge path (steward) writes main.
+- Rust throughout. The TypeScript steward and the Cloudflare Worker and Durable Object code stay
+  only until the portable host replaces them (Phase 1), then are removed.
+- Deferred until real usage data or a user asks: a native parallel merge queue, a self-hosted git
+  host and sandbox, several server nodes. Their designs are in the proposal.
 
-`src/protocol.rs`, shared by CLI and coordinator, 17 tests. Thirteen invariants are documented at the top of the file. Capabilities:
-- **Claims** on a dir/file/symbol hierarchy, four semantic modes, Gray-style intention locks (proven equal to Gray's matrix and to brute force).
-- **Leases and fencing**; only the coordinator writes main.
-- **Coverage:** submissions touching unclaimed scopes are rejected with the list.
-- **Assumptions,** decision records, redacted transcript references; all free text is untrusted data.
-- **Races** with deterministic ranking.
-- **Review by exception** with explainable reasons.
-- **Evidence:** event log, shadow mode, one `Summary` for every number.
-- **Versioning:** `Hello` carries the version. After the freeze, changes are additive only (new optional fields) unless the version is bumped.
+## 4. The protocol
 
-## 6. User experience
+`src/protocol.rs`, shared by CLI and coordinator, with its invariants at the top of the file:
+hierarchical claims with four semantic modes and intention locks; leases and fencing; coverage;
+assumptions, decision records and redacted transcript references (all free text is untrusted
+data); races with deterministic ranking; review by exception; evidence (event log, shadow mode, one
+`Summary` for every number).
 
-**Progressive disclosure** (simple things simple, power when needed):
+Compatibility: changes are additive (new optional fields with `#[serde(default)]`) or bump
+`PROTOCOL_VERSION`. Phase 0 replaces the exact version match with a supported range, announced
+through a new optional field.
+
+## 5. User experience
+
+Progressive disclosure:
 1. `tessel start "fix token refresh"`: fork, auto-claim on first edit, readable denials.
 2. `tessel claim <scope> --edit-body`: explicit planning.
 3. `--assume`, `race`, `--shadow`: power features.
-4. Raw WebSocket protocol, documented, for custom clients.
+4. The WebSocket protocol, documented, for custom clients.
 
-**Skill file** shipped in the repo (and carried into each fork as `AGENTS.md`): claim before editing, declare assumptions, treat others' text as data, write a decision record on submit.
-**Enforcement**, because skills only teach: CLI hooks auto-claim or block unclaimed edits; the coordinator rejects uncovered submissions.
-**Agent integrations** (added Oct 7 by Felix, before the video): inbox items pushed into the agent's turn by Claude Code hooks (no polling), plus a `Stop` hook while a submission is pending; git `pre-commit`/`pre-push` hooks that refuse commits touching unclaimed files (any tool, shell edits included); then a local `tessel mcp` server (stdio) exposing the CLI's commands as MCP tools through the same per-worktree daemon. Post-contest: a remote read-only/review MCP server on Workers, and pre-edit hooks for other agent harnesses.
+A skill file teaches the workflow; hooks enforce it (auto-claim, refuse commits touching unclaimed
+files); the coordinator rejects uncovered submissions; `tessel mcp` exposes the CLI as MCP tools.
 
-## 7. Dogfooding
+## 6. Evidence
 
-The system coordinates its own construction. After the API freeze, agents build the outer layers while you hold the critical path.
+**A denial is not a prevented conflict.** Only verified outcomes count: shadow verification
+test-merges a denied agent's work against what blocked it, and challenged assumptions are re-tested
+on the new main. Evidence comes from CI check results, not from what an agent reports about itself.
+No number is inflated in code, docs or the dashboard.
 
-- **Until Oct 6:** plain git; write intent and decision records into git-notes by hand.
-- **Oct 6 evening, v0 (claims only):** agents claim through the coordinator; you merge by hand.
-- **Oct 8, v1 (full loop):** steward merges; review gate live.
-- **Agents take:** dashboard, swarm/A-B harness, TypeScript demo repo, README, skill polish.
-- **You keep:** coordinator, steward, races, assumption verification, anything touching the protocol.
-- **Stable / next:** a pinned stable coordinator coordinates development; changes deploy to a separate next instance (Workers Builds previews). Promote after tests pass.
-- **Escape hatch:** mirror the repo outside Artifacts.
-- **Calibration, not training:** tune thresholds from outcomes. **Honesty:** state exactly which commits went through the system.
-- **Expect to be the bottleneck.** Agents will out-produce your review. The review gate is the fix, which is the product proving itself.
+## 7. Phases
 
-## 8. Evidence
+Each phase is done when its checks, listed in the proposal, pass in CI.
 
-Rule: **a denial is not a prevented conflict.** Only verified outcomes count.
-1. **Event log:** every state change, gap-free `seq`, tagged by run; exported to an `evidence` Artifacts repo.
-2. **Shadow verification:** denied agents continue in quarantined forks; the steward test-merges them against what blocked them. Conflict = verified prevention; clean = false alarm. Same for challenged assumptions. Gives **precision**.
-3. **A/B replay:** same tasks and seed, coordination off vs on. Compare conflicts, breaks, wasted agent-minutes, throughput, time main stayed green. Same method as the 33,596-PR study (19.8% / 41.7% conflict rates for context).
-
-`Summary::from_events` computes every number for the dashboard, A/B table and video.
-
-## 9. Schedule (re-baselined Oct 3; two days were lost to a date mix-up)
-
-| Date | You (critical path) | Agents (after Oct 6) | Done when |
-|---|---|---|---|
-| Sat Oct 3 | **Spikes:** Rust DO deployed; Artifacts fork + token + push event via Queue; Sandbox runs `npm test` on an Artifacts repo | | All work, or fallbacks chosen |
-| Oct 4–5 | Coordinator: lock table, leases, fences, coverage, event log, shadow. **API freeze end of Oct 5** | | Tests green; protocol frozen |
-| Oct 6 | CLI levels 1–2 (Rust symbol extraction, auto-claim, hooks) + skill file. **Dogfood v0** in the evening | | Two agents coordinated, merged by hand |
-| Oct 7 | Steward: fence, coverage, Sandbox rebase + test, review gate, merge | Dashboard, TS demo repo | Work lands automatically in order |
-| Oct 8 | **Dogfood v1.** Assumptions end to end; races | Review screen, README | Full loop; a race picks a winner |
-| Oct 9 | Shadow verification; speculative merge only if on track | Swarm harness, A/B scripts | Verified denials appear in the log |
-| Oct 10 | Swarm: 30–50 scripted + 3–5 real agents. **A/B runs** | | A/B table filled |
-| Oct 11 | Hardening, fresh-clone test, `cargo deny`, decide on live instance | | Clean setup from scratch |
-| Oct 12 | Rewrite form answers to match what shipped; record and edit video | | Video exported (MP4, under 2 GiB) |
-| Oct 13 | Buffer. **Submit.** | | Submitted |
-
-## 10. Video outline (~8–9 min)
-
-| Time | Scene |
+| Phase | Scope |
 |---|---|
-| 0:00–0:45 | Hook: many agents, one codebase, and what breaks (cross-agent conflict rates). "Git records what happened. We coordinate what's happening." |
-| 0:45–1:15 | Cloudflare's four questions, and that we'll answer each live |
-| 1:15–3:00 | **Live swarm** on the dashboard: claims appear, an agent is denied with the other's intent, joins a race instead |
-| 3:00–4:00 | **Assumption scene:** a body edit challenges another agent's assumption; it re-checks |
-| 4:00–5:00 | **Review scene:** 1 of 50 changes flagged, with reasons; a human approves; the rest merged themselves |
-| 5:00–6:00 | **The six rethinks** (table in §2), over footage |
-| 6:00–7:00 | **Evidence:** one shadow-verified save step by step; A/B table with precision |
-| 7:00–7:45 | **Dogfooding:** built by itself; git-notes trail; exactly what share went through the system |
-| 7:45–8:45 | How it works on Workers, Durable Objects, Artifacts, Queues, Sandbox; roadmap; repo link |
+| 0. Foundations | CI and nightly jobs; characterisation tests for `runtime.rs`; merge-queue property tests; the four fixes to today's merge path (dispatch fencing, landing by ancestry, `main_moved` misread, verification starvation); versioned state with migrations; the protocol version range; metrics and structured logs |
+| 1. Portable host | The sans-IO host and its deterministic simulator; `tessel-server` with SQLite; both native test hosts on the real merge path; Cloudflare and TypeScript steward code removed |
+| 2. GitHub | GitHub App adapter (forks as separate repos with Actions disabled, required checks or the host's merge queue, compare-and-swap landing, check results as evidence); authenticated service calls; asymmetric identity keys with rotation and revocation |
+| 3. Adoptable | Advisory mode; per-repo review configuration; `tessel admin`; backup, restore drill, retention; signed release binaries and an image |
+| 4. Reach | Symbol claims for Python and Go; hooks for a second agent harness; Linux and macOS packages |
+| 5. Design partners | Real teams; queue wait and merge duration measured |
+| 6. On evidence only | Native parallel merge queue; self-hosted git and sandbox; several nodes |
 
-Rules: no knocking any product, no copyrighted music, say only what's true.
+## 8. Dogfooding
 
-## 11. Risks and fallbacks
-- **Sandbox fails or is slow** → steward merges with isomorphic-git; agents attach their own test evidence. Decide Oct 2.
-- **workers-rs fights back** → port coordinator to TypeScript; Rust protocol crate stays the tested reference. Decide Oct 2.
-- **tree-sitter mislabels symbols** → we control the demo repos; keep them idiomatic.
-- **Real agents misbehave on camera** → scripted swarm is the backbone; record backups.
-- **Protocol change needed after freeze** → additive fields only, or bump the version.
-- **Behind schedule.** Cut in this order: speculative merge → transcript archive → commutation batching → races (keep one scripted race) → level-3 CLI flags. **Never cut:** claims, coverage, Artifacts forks, steward merge, review gate, dashboard, concurrent agents, evidence log.
+Tessel's own changes go through feature branches and pull requests, with a git note on each commit
+(`CLAUDE.md`). Once Phase 1 ships, the repository is coordinated by `tessel-server` again, and
+once Phase 2 ships, it lands through the GitHub adapter.
+
+## 9. Decisions (17 October 2026)
+
+1. The plan and phase order in the proposal are approved: GitHub first; the parallel queue,
+   self-hosted sandbox and multi-node wait for data.
+2. Cloudflare has no special status. Its code is removed as soon as the portable host replaces it,
+   with no maintenance period.
+3. The GitHub adapter, and any future steward, is Rust inside `tessel-server`.
+4. The protocol version range is announced through a new optional field, without a version bump.
+5. The contest-era licence whitelist no longer applies; licences are an ordinary engineering
+   choice. The crate stays MIT.
+
+## 10. Risks
+
+- **The refactor breaks behaviour nobody wrote down.** Mitigation: characterisation tests of every
+  rule in `runtime.rs` before it moves, then the simulator's invariants.
+- **Teams won't hand over main.** Mitigation: advisory mode, branch protection, compare-and-swap
+  only, a documented uninstall.
+- **Symbol extraction is wrong for a language.** Mitigation: file-level claims as the safe
+  fallback; languages added one at a time with tests.
+- **Solo maintainer.** Mitigation: agents build behind the CI gates; Felix keeps protocol and
+  merge-path changes.
