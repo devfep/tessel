@@ -6,8 +6,10 @@ fork at `devfep/spike-target`. Reproduce with `scripts/spike/` (`setup.sh`,
 `run.sh user|app|webhooks`, `teardown.sh`). Full run, in order: `teardown.sh`, `setup.sh`,
 `run.sh user`, `run.sh app`; neither `user` nor `app` can be repeated on the same repository.
 
-**Status: partly answered.** Everything that runs under devfep's own login is measured below.
-The two results that need the lander App's installation token are not run yet (see "Still open").
+**Status: answered.** Questions 1 and 2 were measured twice: with devfep's own login, and with the
+lander App's installation token, narrowed to contents write on `spike-target` only. Each
+experiment ran once, the user-token steps and the App steps on 18 October 2026 (the App run at
+14:16 UTC), so each result is one observation, repeated only where stated.
 
 ## Setup under test
 
@@ -26,7 +28,8 @@ The two results that need the lander App's installation token are not run yet (s
 
 ## 1. Does a fork pull request's check satisfy ruleset B for `updateRefs`?
 
-**Yes, measured with devfep's token (an organisation admin, not a bypass actor of B).**
+**Yes, measured with devfep's token (an organisation admin, not a bypass actor of B) and with
+the App's token (a bypass actor of A, with rulesets A and B both active).**
 
 | Attempt (only B active) | Result |
 |---|---|
@@ -37,11 +40,23 @@ The commit was never pushed to the target repository: it was reachable only thro
 the pull request. The check run reported `app: github-actions`. B has no bypass, so an admin is
 held to it; the refusal is the control that shows the rule is being enforced.
 
-Not yet measured: the same landing with the App's token while A is also active (see "Still open").
+With the App token, contents write only, A and B both active:
+
+| Attempt | Result |
+|---|---|
+| `updateRefs` of PR #3's head (`spike-z`), check completed with `success`, correct `beforeOid` | accepted, main is that head |
+| `updateRefs` of PR #4's head (`spike-w`) immediately after it opened, check not finished | refused, `UNPROCESSABLE`: `Branch 'refs/heads/main' is protected: Cannot update this protected ref. Required status check "check" is expected.` |
+
+The first row shows that a token holding contents write alone is enough to land with
+`updateRefs` when the App is A's bypass actor and the check has passed. The second row shows that
+the bypass actor of A is still subject to ruleset B. The message names both phrases even though
+A is bypassed; the same actor, token and call shape succeeded once the check had passed, so the
+blocking rule was B. Which rule contributed the "Cannot update" wording was not isolated.
 
 ## 2. Is a stale `beforeOid` refused?
 
-**Yes, measured as devfep with only B active; A's bypass half is open.**
+**Yes, with devfep's token (only B active) and with the App as bypass actor of A (A and B
+active).**
 
 - `updateRefs` with a stale `beforeOid` and a fast-forward `afterOid` with a passing check was
   refused 3 of 3 times, back to back in one run, and main did not move. The three-call loop was
@@ -58,12 +73,15 @@ Not yet measured: the same landing with the App's token while A is also active (
   decides.
 - Ruleset A with the user token (not a bypass actor), check passed, correct `beforeOid`: refused,
   `Cannot update this protected ref.` main unchanged.
-
-Open: the same stale call with the App as bypass actor of A (App-token step below).
+- The App (bypass actor of A, token narrowed to contents write) with a stale `beforeOid` (the
+  commit before main's head) and PR #4's head, whose check had completed with `success`: refused
+  with the same generic `Something went wrong while executing your query ... Please include
+  <request id>` error, once, and main did not move. The same call with the correct `beforeOid`
+  was accepted. So the bypass of A does not bypass the compare-and-swap.
 
 ## 3. Timings
 
-Three fork pull requests, GitHub's timestamps (one-second resolution), seconds after the commit
+Four fork pull requests, GitHub's timestamps (one-second resolution), seconds after the commit
 was created:
 
 | PR | workflow run created | check started | check completed |
@@ -71,9 +89,10 @@ was created:
 | x | 7 | 10 | 14 |
 | y | 4 | 7 | 10 |
 | z | 5 | 7 | 9 |
+| w (App run) | 4 | 6 | 9 |
 
 Pull request creation (API) took 1 s after the commit each time. A trivial workflow therefore
-needs about 9 to 14 s from commit to a landable head; real CI adds its own duration. Three
+needs about 9 to 14 s from commit to a landable head; real CI adds its own duration. Four
 samples on a free-plan public repository say nothing about queueing under load.
 
 Webhooks: a repository webhook to an unreachable host (`*.invalid`) still records each attempt;
@@ -92,11 +111,12 @@ were not measured.
 
 **A durable job.** The landing itself is one atomic request, but it is not the whole operation:
 
-1. Readiness takes seconds and arrives asynchronously (9-14 s here for a trivial check), so the
+1. Readiness takes seconds and arrives asynchronously (9-14 s here for a trivial check, four samples), so the
    lander cannot hold one request open across it; it must wait for the check, from a hint or a
    poll.
 2. A refused `updateRefs` can be a rule (typed message), a lost compare (generic server error) or
    a real transient failure, and the generic one is not distinguishable from the other two. The
+   App as bypass actor gets the same generic error on a stale base. The
    lander journals the head before the call (requirement 6), then reads the ref: main equal to
    the head means landed, anything else means retry or re-base.
 3. Webhooks arrive within about 3 s, so they work as hints that bring the poll forward.
@@ -105,29 +125,11 @@ So the host's `Call` for landing is: journal, `updateRefs`, read back, with the 
 authority. This is the shape the proposal already describes. Nothing in the results asks for a
 change to it.
 
-## Still open: commands that need the App token
-
-Both need the installation token, minted inside `run.sh app` only. State left in the sandbox:
-rulesets A and B active, PR #3 (`spike-z`) open and mergeable, main at the head of PR #2.
-
-Run `scripts/spike/run.sh app` once Felix authorises minting. Expected output:
-
-```
-accepted (as expected)  Q1: App bypasses A, check passed on z, correct beforeOid
-PR #4 for w: ...
-refused (as expected)  Q1 control: App bypasses A but not B, check not finished
-TIMING ...
-refused (as expected)  Q2a: App bypass actor, stale beforeOid
-accepted (as expected)  Q2a control: App, correct beforeOid
-```
-
-and exit code 0. An `UNEXPECTED` line means the step did not behave as predicted. It may be a finding (the App
-bypass failed to apply, or A's bypass lets a stale base through), a missing permission on the
-narrowed token, or different wording of the message. Read the printed (redacted) message before
-deciding. The stage records each such result, carries on, and exits non-zero at the end.
-
 ## Other limits of this spike
 
+- The App steps ran once, at 14:16 UTC on 18 October 2026; the stale-base refusal with the App is
+  a single observation. Nothing was run to show whether a transient failure and a stale base can
+  be told apart by anything but a read-back.
 - The `.invalid` webhook measures dispatch only.
 - A failing check was not tested; the refusal while the check was missing is the only negative
   control for B.
@@ -135,4 +137,4 @@ deciding. The stage records each such result, carries on, and exits non-zero at 
   prerequisite 10 were not exercised (the fork owner is an organisation admin, so approval for
   first-time contributors never applied).
 - `setup.sh` is idempotent (second run: no creations). `teardown.sh` was not run; it needs
-  `gh auth refresh -s delete_repo`, and the sandbox is still up.
+  `gh auth refresh -s delete_repo`, and the sandbox is still up, with main at the head of PR #4.
