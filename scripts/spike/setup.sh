@@ -45,6 +45,7 @@ YAML
 
 ensure_fork() {
   if repo_exists "$FORK_OWNER/$REPO"; then
+    require_our_fork
     log "fork $FORK_OWNER/$REPO exists"
     return
   fi
@@ -59,7 +60,8 @@ ensure_fork() {
 
 ensure_hook() {
   local existing
-  existing=$(gh api "repos/$ORG/$REPO/hooks" --jq ".[] | select(.config.url == \"$HOOK_URL\") | .id")
+  existing=$(gh api "repos/$ORG/$REPO/hooks" \
+    --jq ".[] | select(.config.url == \"$HOOK_URL\") | .id")
   if [[ -n $existing ]]; then
     log "webhook exists ($existing)"
     return

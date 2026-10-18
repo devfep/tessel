@@ -22,13 +22,24 @@ die() {
 
 # Removes anything token-shaped from stdin.
 redact() {
-  sed -E 's/(ghs|ghp|gho|ghu|ghr)_[A-Za-z0-9]+/[redacted]/g; s/(github_pat)_[A-Za-z0-9_]+/[redacted]/g; s/eyJ[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*/[redacted]/g'
+  sed -E -e 's/(ghs|ghp|gho|ghu|ghr)_[A-Za-z0-9]+/[redacted]/g' \
+    -e 's/(github_pat)_[A-Za-z0-9_]+/[redacted]/g' \
+    -e 's/eyJ[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*/[redacted]/g'
 }
 
 # Seconds since the epoch for a GitHub ISO-8601 timestamp such as 2026-10-18T12:00:00Z.
 epoch() { jq -nr --arg t "$1" '$t | sub("\\.[0-9]+"; "") | fromdateiso8601'; }
 
 repo_exists() { gh api "repos/$1" >/dev/null 2>&1; }
+
+# Dies unless devfep/spike-target is a fork of the sandbox repository: never touch another repo.
+require_our_fork() {
+  local ours
+  ours=$(gh api "repos/$FORK_OWNER/$REPO" \
+    --jq ".fork and .parent.full_name == \"$ORG/$REPO\"" 2>/dev/null) || ours=
+  [[ $ours == true ]] ||
+    die "$FORK_OWNER/$REPO exists but is not a fork of $ORG/$REPO; refusing to use it"
+}
 
 ruleset_id() {
   gh api "repos/$ORG/$REPO/rulesets" --jq ".[] | select(.name == \"$1\") | .id"
@@ -66,10 +77,12 @@ ruleset_apply() {
   id=$(ruleset_id "$name")
   if [[ -z $id ]]; then
     ruleset_body "$name" "$enforcement" |
-      gh api -X POST "repos/$ORG/$REPO/rulesets" --input - --jq '"created ruleset \(.name) (\(.enforcement))"'
+      gh api -X POST "repos/$ORG/$REPO/rulesets" --input - \
+        --jq '"created ruleset \(.name) (\(.enforcement))"'
   else
     ruleset_body "$name" "$enforcement" |
-      gh api -X PUT "repos/$ORG/$REPO/rulesets/$id" --input - --jq '"updated ruleset \(.name) (\(.enforcement))"'
+      gh api -X PUT "repos/$ORG/$REPO/rulesets/$id" --input - \
+        --jq '"updated ruleset \(.name) (\(.enforcement))"'
   fi
 }
 
@@ -94,7 +107,11 @@ repo_node_id() { gh api "repos/$ORG/$REPO" --jq .node_id; }
 # first argument uses the stored gh login.
 update_ref_as() {
   local token=$1 before=$2 after=$3 out id
-  id=$(repo_node_id)
+  id=$(repo_node_id) || id=
+  if [[ -z $id ]]; then
+    printf 'error: could not read the repository node id\n'
+    return 1
+  fi
   # shellcheck disable=SC2016 # GraphQL variables, not shell expansions
   local query='mutation($repo: ID!, $before: GitObjectID!, $after: GitObjectID!) {
     updateRefs(input: {repositoryId: $repo, refUpdates:
@@ -111,17 +128,22 @@ update_ref_as() {
   fi
 }
 
-# expect_refused LABEL CMD...: passes when the command fails, prints its output.
+# expect_refused LABEL PATTERN CMD...: passes only when the command fails with output matching
+# the extended regex PATTERN. Any other failure (bad credentials, network) is UNEXPECTED.
 expect_refused() {
-  local label=$1 out
-  shift
+  local label=$1 pattern=$2 out
+  shift 2
   if out=$("$@" 2>&1); then
     log "UNEXPECTED ACCEPT  $label"
-    printf '%s\n' "$out" >&2
+    return 1
+  fi
+  if ! printf '%s' "$out" | grep -qE "$pattern"; then
+    log "UNEXPECTED REFUSAL: $label: $(printf '%s' "$out" | redact | head -c 300)"
     return 1
   fi
   log "refused (as expected)  $label"
-  printf '%s\n' "$out" | head -c 600 | sed 's/^/    /' >&2
+  printf '%s\n' "$out" | redact | head -c 600 | sed 's/^/    /' >&2
+  printf '\n' >&2
 }
 
 # expect_accepted LABEL CMD...: passes when the command succeeds.
@@ -129,8 +151,7 @@ expect_accepted() {
   local label=$1 out
   shift
   if ! out=$("$@" 2>&1); then
-    log "UNEXPECTED REFUSAL  $label"
-    printf '%s\n' "$out" | head -c 600 | sed 's/^/    /' >&2
+    log "UNEXPECTED REFUSAL: $label: $(printf '%s' "$out" | redact | head -c 300)"
     return 1
   fi
   log "accepted (as expected)  $label"

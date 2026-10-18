@@ -2,14 +2,19 @@
 
 Answers the P0-SPIKE questions in `docs/proposals/real-use.md` ("The GitHub adapter", spike
 paragraph). Run on 18 October 2026 against `tessel-sandbox/spike-target` (public, free plan) with a
-fork at `devfep/spike-target`. Reproduce with `scripts/spike/` (`setup.sh`, `run.sh user|app|webhooks`,
-`teardown.sh`; the header of `run.sh` says the order).
+fork at `devfep/spike-target`. Reproduce with `scripts/spike/` (`setup.sh`,
+`run.sh user|app|webhooks`, `teardown.sh`). Full run, in order: `teardown.sh`, `setup.sh`,
+`run.sh user`, `run.sh app`; neither `user` nor `app` can be repeated on the same repository.
 
 **Status: partly answered.** Everything that runs under devfep's own login is measured below.
 The two results that need the lander App's installation token are not run yet (see "Still open").
 
 ## Setup under test
 
+- The spike App also holds administration write (to manage rulesets) and checks, statuses and
+  actions read. The installation token the script uses for landing is narrowed at mint time to
+  contents write only (the proposal's item 1), so the App-stage answers hold for a lander with
+  that one write permission, and the token is revoked when the script exits.
 - Workflow `check` (job `check`), trigger `pull_request`, read-only token, one `echo ok` step.
 - Ruleset A: restrict updates and block force pushes on the default branch; bypass actor is the
   App (ID 5368982, `Integration`, always).
@@ -25,7 +30,7 @@ The two results that need the lander App's installation token are not run yet (s
 
 | Attempt (only B active) | Result |
 |---|---|
-| `updateRefs` of the fork head 1 s after opening the pull request, check not finished | refused: `Required status check "check" is expected.` main unchanged |
+| `updateRefs` of the fork head immediately after the pull request opened, check not finished | refused: `Required status check "check" is expected.` main unchanged |
 | the same call after the `check` run completed with `success` on the fork pull request head | accepted, main is the head commit |
 
 The commit was never pushed to the target repository: it was reachable only through the fork and
@@ -39,12 +44,16 @@ Not yet measured: the same landing with the App's token while A is also active (
 **Yes, measured as devfep with only B active; A's bypass half is open.**
 
 - `updateRefs` with a stale `beforeOid` and a fast-forward `afterOid` with a passing check was
-  refused 3 of 3 times and main did not move. Without the compare, it would have been a valid
+  refused 3 of 3 times, back to back in one run, and main did not move. The three-call loop was
+  added to `run.sh` after that run, from an ad hoc loop with the same calls; the committed script
+  has not run it. Without the compare, it would have been a valid
   fast-forward. The same call with the correct `beforeOid` was accepted.
 - The refusal is not a typed rule error. GitHub returns `Something went wrong while executing your
   query ... Please include <request id> when reporting this issue.` with no `type` and no reason.
-  Rule refusals are typed (`UNPROCESSABLE`, `Branch 'refs/heads/main' is protected: ...`), and a
-  non-fast-forward is `rejecting non-fast-forward update`. So **a stale base cannot be told apart
+  Rule refusals are typed (`UNPROCESSABLE`, `Branch 'refs/heads/main' is protected: ...`; seen in
+  the `run.sh user` steps for the missing check and ruleset A). A non-fast-forward update is
+  `rejecting non-fast-forward update`; that one came from an ad hoc call, not a script step. So
+  **a stale base cannot be told apart
   from a transient server error by the response**; the lander must read the ref back before it
   decides.
 - Ruleset A with the user token (not a bypass actor), check passed, correct `beforeOid`: refused,
@@ -69,11 +78,14 @@ samples on a free-plan public repository say nothing about queueing under load.
 
 Webhooks: a repository webhook to an unreachable host (`*.invalid`) still records each attempt;
 `delivered_at` is the time of the attempt (`failed to connect`), so this measures GitHub's
-dispatch delay, not a receiver's. Over 12 deliveries, the delay between the event timestamp in
-the payload and `delivered_at` was 0 to 3 s (check_run created 0-2, check_run completed 1-2,
+dispatch delay, not a receiver's. The hook recorded 17 deliveries; 11 carry an event timestamp
+in the payload (3 opened, 3 check_run created, 3 check_run completed, 2 closed), and for those the
+delay between that timestamp and `delivered_at` was 0 to 3 s
+(check_run created 0-2, check_run completed 1-2,
 pull_request opened 2-3, pull_request closed 2 after the landing). The payload timestamps have
-one-second resolution, so each lag is ±1 s. GitHub does not retry these, which matches the
-proposal's rule that the poll is authoritative. Delivery to a real receiver and its own latency
+one-second resolution, so each lag is ±1 s. All 11 show `redelivery: false`, so no failed
+delivery was retried during the run; that matches the proposal's rule that the poll is
+authoritative. Delivery to a real receiver and its own latency
 were not measured.
 
 ## 4. One request, or a durable job finished by reconciliation?

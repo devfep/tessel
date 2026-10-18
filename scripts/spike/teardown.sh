@@ -7,6 +7,10 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
 source "$here/lib.sh"
 
+if repo_exists "$FORK_OWNER/$REPO"; then
+  require_our_fork
+fi
+
 for full in "$FORK_OWNER/$REPO" "$ORG/$REPO"; do
   if repo_exists "$full"; then
     gh repo delete "$full" --yes

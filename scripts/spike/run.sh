@@ -5,10 +5,12 @@
 #   run.sh app       experiments as the lander App (questions 1 and 2a with the bypass actor)
 #   run.sh webhooks  webhook delivery latency from the hook's recent deliveries
 #
-# Run setup.sh first, and `teardown.sh && setup.sh` between full runs: `user` refuses a
-# repository whose main already holds spike commits. Timestamps are GitHub's, one second
-# resolution. The installation token is minted in this file only, kept in APP_TOKEN, and
-# reaches gh and curl through the environment or stdin, never an argument or a file.
+# Full run, in this order: teardown.sh, setup.sh, run.sh user, run.sh app. Neither `user` nor
+# `app` can be repeated on the same repository (`user` refuses a main that already holds spike
+# commits; `app` needs PR spike-z open and would collide on the spike-w branch), so recover with
+# teardown.sh then setup.sh. Timestamps are GitHub's, one second resolution. The installation
+# token is minted in this file only, narrowed to contents write, kept in APP_TOKEN, revoked on
+# exit, and reaches gh and curl through the environment or stdin, never an argument or a file.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -40,12 +42,24 @@ mint_app_token() {
   local jwt response
   jwt=$(app_jwt)
   response=$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" |
-    curl -sS -K - -X POST -H 'Accept: application/vnd.github+json' \
-      -d "{\"repositories\":[\"$REPO\"]}" \
+    curl -q -sS --proto '=https' -K - -X POST -H 'Accept: application/vnd.github+json' \
+      -d "{\"repositories\":[\"$REPO\"],\"permissions\":{\"contents\":\"write\"}}" \
       "https://api.github.com/app/installations/$INSTALLATION_ID/access_tokens")
   jwt=
   APP_TOKEN=$(printf '%s' "$response" | jq -r '.token // empty')
-  [[ -n $APP_TOKEN ]] || die "no installation token: $(printf '%s' "$response" | jq -r '.message // "unknown error"')"
+  if [[ -z $APP_TOKEN ]]; then
+    die "no installation token: $(printf '%s' "$response" | jq -r '.message // "unknown error"')"
+  fi
+  trap revoke_app_token EXIT
+}
+
+# Revokes APP_TOKEN. Prints nothing derived from the token.
+revoke_app_token() {
+  [[ -n $APP_TOKEN ]] || return 0
+  printf 'header = "Authorization: Bearer %s"\n' "$APP_TOKEN" |
+    curl -q -sS --proto '=https' -K - -X DELETE -o /dev/null \
+      'https://api.github.com/installation/token' || log "warning: token revocation failed"
+  APP_TOKEN=
 }
 
 # Creates a fork branch one commit ahead of upstream main and opens a pull request from it.
@@ -109,7 +123,8 @@ stage_user() {
   log "== Q1 (user token, only ruleset B active)"
   create_pr x
   x_head=$HEAD_SHA
-  expect_refused "Q1 control: check not finished" update_ref_as "" "$base0" "$x_head"
+  expect_refused "Q1 control: check not finished" 'Required status check' \
+    update_ref_as "" "$base0" "$x_head"
   assert_main "$base0" "refused update must not move main"
   await_check
   expect_accepted "Q1: fork PR check completed" update_ref_as "" "$base0" "$x_head"
@@ -121,6 +136,7 @@ stage_user() {
   await_check
   for _ in 1 2 3; do
     expect_refused "Q2a: stale beforeOid (GitHub returns a generic error)" \
+      'Something went wrong' \
       update_ref_as "" "$base0" "$y_head"
   done
   assert_main "$x_head" "stale update must not move main"
@@ -133,6 +149,7 @@ stage_user() {
   await_check
   ruleset_apply "$RULESET_A" active
   expect_refused "Q2b: non-bypass actor, check passed, correct beforeOid" \
+    'Cannot update this protected ref' \
     update_ref_as "" "$y_head" "$z_head"
   assert_main "$y_head" "ruleset A must hold"
   log "PR for spike-z (head $z_head) is left open for: run.sh app"
@@ -156,9 +173,11 @@ stage_app() {
   create_pr w
   w_head=$HEAD_SHA
   expect_refused "Q1 control: App bypasses A but not B, check not finished" \
+    'Required status check' \
     update_ref_as "$APP_TOKEN" "$z_head" "$w_head"
   await_check
   expect_refused "Q2a: App bypass actor, stale beforeOid" \
+    'Something went wrong' \
     update_ref_as "$APP_TOKEN" "$stale" "$w_head"
   assert_main "$z_head" "stale App update must not move main"
   expect_accepted "Q2a control: App, correct beforeOid" \
@@ -168,22 +187,24 @@ stage_app() {
 
 # Prints each delivery's lag behind the event timestamp inside its payload.
 stage_webhooks() {
-  local hook id d event action delivered ts
+  local hook id d event action delivered ts redelivery
   hook=$(gh api "repos/$ORG/$REPO/hooks" --jq ".[] | select(.config.url == \"$HOOK_URL\") | .id")
   [[ -n $hook ]] || die "no spike webhook; run setup.sh"
-  printf 'event\taction\tdelivered_at\tevent_at\tlag_s\tstatus\n'
+  printf 'event\taction\tdelivered_at\tevent_at\tlag_s\tredelivery\tstatus\n'
   for id in $(gh api "repos/$ORG/$REPO/hooks/$hook/deliveries?per_page=100" --jq '.[].id'); do
     d=$(gh api "repos/$ORG/$REPO/hooks/$hook/deliveries/$id")
     event=$(printf '%s' "$d" | jq -r .event)
     action=$(printf '%s' "$d" | jq -r '.action // "-"')
     delivered=$(printf '%s' "$d" | jq -r .delivered_at)
+    redelivery=$(printf '%s' "$d" | jq -r .redelivery)
     ts=$(printf '%s' "$d" | jq -r '.request.payload |
       (.check_run.completed_at // .check_run.started_at
         // (if .action == "closed" then .pull_request.closed_at else .pull_request.created_at end)
         // empty)')
     [[ -n $ts ]] || continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$event" "$action" "$delivered" "$ts" \
-      "$(($(epoch "$delivered") - $(epoch "$ts")))" "$(printf '%s' "$d" | jq -r .status)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$event" "$action" "$delivered" "$ts" \
+      "$(($(epoch "$delivered") - $(epoch "$ts")))" "$redelivery" \
+      "$(printf '%s' "$d" | jq -r .status)"
   done
 }
 
