@@ -143,7 +143,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["0/1"]
+        shard: ["0/4", "1/4", "2/4", "3/4"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -159,7 +159,7 @@ jobs:
       - name: Diff against the base branch
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: git diff "$(git hash-object -t tree /dev/null)" HEAD -- src/coordinator/trunk.rs > "$RUNNER_TEMP/pr.diff"
+        run: git diff "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/pr.diff"
       - name: Mutants on changed lines
         env:
           SHARD: ${{ matrix.shard }}
