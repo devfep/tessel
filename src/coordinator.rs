@@ -350,9 +350,8 @@ struct CoordinatorState {
     #[serde(default)]
     next_verification: u64,
     /// How many merges may be dispatched in a row while a verification is ready before the next
-    /// one waits for it (invariant 12 of the real-use proposal, `verifying`). A deployment
-    /// setting; a stored state from before it loads with the default.
-    #[serde(default = "verifying::default_slot_after")]
+    /// one waits for it (`verifying`). Never stored: every load restores `VERIFY_SLOT_AFTER`.
+    #[serde(skip, default = "verifying::default_slot_after")]
     verify_slot_after: u32,
     /// Merges dispatched in a row while a verification was ready; reset when one is dispatched.
     #[serde(default)]
@@ -420,8 +419,10 @@ impl Coordinator {
     }
 
     /// Replace how many merges may be dispatched in a row while a verification is ready before
-    /// the next merge waits for the verification. At least 1: 0 is read as 1.
-    pub fn set_verify_slot_after(&mut self, merges: u32) {
+    /// the next merge waits for the verification. At least 1: 0 is read as 1. For tests: a host
+    /// setting is added when a deployment needs one.
+    #[cfg(test)]
+    pub(crate) fn set_verify_slot_after(&mut self, merges: u32) {
         self.state.verify_slot_after = merges.max(1);
     }
 
@@ -490,8 +491,6 @@ impl Coordinator {
         let now_ms = self.advance_clock(now_ms);
         let mut effects = self.expire(now_ms);
         effects.extend(self.route(agent, msg, now_ms));
-        let dropped = self.drop_ended_verifications(now_ms, &effects);
-        effects.extend(dropped);
         effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
@@ -519,7 +518,7 @@ impl Coordinator {
             let claim = ClaimId(id);
             remove_locks(&mut self.locks, claim, &expired);
             let reason = ReleaseReason::LeaseExpired;
-            effects.push(self.event(now_ms, EventKind::ClaimReleased { claim, reason }));
+            effects.extend(self.claim_released(claim, reason, now_ms));
             effects.push(Effect::Notify {
                 agent: expired.agent,
                 msg: ServerMsg::LeaseExpired {
@@ -535,8 +534,6 @@ impl Coordinator {
         if any_expired {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
-        let dropped = self.drop_ended_verifications(now_ms, &effects);
-        effects.extend(dropped);
         effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
@@ -1246,8 +1243,7 @@ impl Coordinator {
         }
         self.state.claims.remove(&claim.0);
         remove_locks(&mut self.locks, claim, &released);
-        let reason = ReleaseReason::Agent;
-        let mut effects = vec![self.event(now_ms, EventKind::ClaimReleased { claim, reason })];
+        let mut effects = self.claim_released(claim, ReleaseReason::Agent, now_ms);
         if let ClaimKind::Entry(race) = released.kind {
             effects.extend(self.entrant_left(race, claim, now_ms));
         }

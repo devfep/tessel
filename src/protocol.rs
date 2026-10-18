@@ -892,8 +892,9 @@ pub enum EventKind {
         assumption: Assumption,
         outcome: Outcome,
     },
-    /// A queued assumption verification was discarded because its claim ended before the trial
-    /// ran (invariant 8). Not an outcome: nothing was tried, so no counter treats it as verified.
+    /// A queued assumption verification was discarded because its claim ended before an answer
+    /// was applied (invariant 8). A trial already running for it has its answer discarded. Not an
+    /// outcome: no counter treats it as verified.
     VerificationDropped {
         claim: ClaimId,
         assumption: Assumption,

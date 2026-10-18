@@ -110,9 +110,8 @@ impl ClaimNumber for &ClaimId {
 impl Coordinator {
     /// The merge to run now, marking it in flight. Returns the merge already in flight if there is
     /// one (a restart re-dispatches it) and never starts a second. `None` when nothing is ready:
-    /// no submission, all held for review, the next one is in backoff, or the verification slot
-    /// is due (`verification_has_slot`: `verify_slot_after` merges went ahead of a ready
-    /// verification, which is dispatched next).
+    /// no submission, all held for review, the next one is in backoff, a verification is in
+    /// flight, or the verification slot is due (`merge_must_wait`).
     ///
     /// The marker is part of the state: the caller persists it before calling the steward.
     pub fn begin_merge(&mut self, now_ms: u64) -> Option<MergeDispatch> {
@@ -123,7 +122,7 @@ impl Coordinator {
             }
             self.state.merge_in_flight = None;
         }
-        if self.verification_has_slot(now_ms) {
+        if self.merge_must_wait(now_ms) {
             return None;
         }
         let claim = self.next_to_merge()?;
@@ -190,7 +189,7 @@ impl Coordinator {
             }
             return Some(now_ms);
         }
-        if self.verification_has_slot(now_ms) {
+        if self.merge_must_wait(now_ms) {
             return None;
         }
         let claim = self.next_to_merge()?;
@@ -234,7 +233,7 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        let mut effects = match outcome.verdict() {
+        let effects = match outcome.verdict() {
             Verdict::Landed { base, head } => self.land(claim, &held, (base, head), now_ms),
             Verdict::Rejected { reason } => {
                 self.reject_work(claim, held, Rejection::plain(reason), now_ms)
@@ -242,8 +241,6 @@ impl Coordinator {
             Verdict::MainMoved => self.retry_after_move(claim, held, now_ms),
             Verdict::Infrastructure => self.retry_after_infrastructure(claim, held, now_ms),
         };
-        let dropped = self.drop_ended_verifications(now_ms, &effects);
-        effects.extend(dropped);
         effects
     }
 
@@ -435,14 +432,8 @@ impl Coordinator {
                     head: head.clone(),
                 },
             },
-            self.event(
-                now_ms,
-                EventKind::ClaimReleased {
-                    claim,
-                    reason: ReleaseReason::Merged,
-                },
-            ),
         ];
+        effects.extend(self.claim_released(claim, ReleaseReason::Merged, now_ms));
         effects.extend(self.grant_unblocked_waiters(now_ms));
         effects.extend(self.notify_base_moved(&held.agent, &head, &touched, now_ms));
         let challenged = held
