@@ -118,8 +118,8 @@ pub(super) struct Verification {
 pub(super) struct VerifyFlight {
     /// The queued verification being run.
     id: u64,
-    /// The dispatch the answer must carry (see `State::last_dispatch`). 0 in a state stored
-    /// before dispatch ids existed, which no issued id equals.
+    /// The dispatch the answer must carry (see `CoordinatorState::last_dispatch`). 0 in a state
+    /// stored before dispatch ids existed, which no issued id equals.
     #[serde(default)]
     dispatch: u64,
 }
@@ -411,8 +411,8 @@ impl Coordinator {
 
     /// Apply the steward's answer to the verification dispatch `dispatch`
     /// (`VerifyDispatch::id`). An answer to any other dispatch is stale, including an earlier
-    /// dispatch of the verification now in flight, and changes nothing. An answer for a verification whose claim ended
-    /// meanwhile is discarded and logs nothing.
+    /// dispatch of the verification now in flight, and changes nothing. An answer for a
+    /// verification whose claim ended meanwhile is discarded and logs nothing.
     pub fn verification_outcome(
         &mut self,
         dispatch: u64,
@@ -688,7 +688,7 @@ mod tests {
         submit(c, who, claim, path);
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, claim.0);
-        c.merge_outcome(c.merge_flight_id(), &landed(head), NOW)
+        c.merge_outcome(c.merge_flight_id(claim.0), &landed(head), NOW)
     }
 
     /// `a1` holds a claim on `src/b.rs` that assumes `src/a.rs`, and `a2` edits `src/a.rs`.
@@ -708,7 +708,7 @@ mod tests {
     fn merge_challenger(c: &mut Coordinator, challenger: ClaimId, head: &str) -> Vec<Effect> {
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger);
-        c.merge_outcome(c.merge_flight_id(), &landed(head), NOW)
+        c.merge_outcome(c.merge_flight_id(challenger), &landed(head), NOW)
     }
 
     fn pending(c: &Coordinator) -> usize {
@@ -855,7 +855,11 @@ mod tests {
         submit(&mut c, "a1", (assuming, a1), "src/b.rs");
         // a1's own merge is now due, and has priority; put it in backoff to let the trial run.
         c.begin_merge(NOW).unwrap();
-        c.merge_outcome(c.merge_flight_id(), &MergeOutcome::ServiceUnavailable, NOW);
+        c.merge_outcome(
+            c.merge_flight_id(assuming),
+            &MergeOutcome::ServiceUnavailable,
+            NOW,
+        );
         let dispatch = c.begin_verification(NOW).unwrap();
         assert_eq!(dispatch.commit, Some(CommitId(fork_sha("a1"))));
 
@@ -947,7 +951,7 @@ mod tests {
         assert_eq!(dispatch.claim, next.0);
         assert_eq!(c.begin_verification(NOW), None, "a merge is in flight");
 
-        c.merge_outcome(c.merge_flight_id(), &landed(MAIN2), NOW);
+        c.merge_outcome(c.merge_flight_id(next.0), &landed(MAIN2), NOW);
         assert!(c.begin_verification(NOW).is_some(), "the queue is empty");
     }
 
@@ -959,7 +963,11 @@ mod tests {
         let next = grant(&mut c, "a3", vec![edit("src/c.rs")], Vec::new());
         submit(&mut c, "a3", next, "src/c.rs");
         c.begin_merge(NOW).expect("the merge runs");
-        c.merge_outcome(c.merge_flight_id(), &MergeOutcome::ServiceUnavailable, NOW);
+        c.merge_outcome(
+            c.merge_flight_id(next.0),
+            &MergeOutcome::ServiceUnavailable,
+            NOW,
+        );
 
         assert!(c.begin_merge(NOW).is_none(), "the merge is in backoff");
         assert!(c.begin_verification(NOW).is_some());
@@ -981,9 +989,14 @@ mod tests {
 
         let first = c.begin_verification(NOW).expect("the first runs");
         assert_eq!(c.begin_verification(NOW), None, "one at a time");
+        let first_entry = c.state.verifications[0].id;
         c.verification_outcome(first.id, &clean_then(TrialOutcome::Clean {}), NOW);
-        let second = c.begin_verification(NOW).expect("then the second");
-        assert_ne!(first.id, second.id);
+        c.begin_verification(NOW).expect("then the second");
+        assert_eq!(c.state.verifications.len(), 1, "the first is done");
+        assert_ne!(
+            c.state.verifications[0].id, first_entry,
+            "a different entry"
+        );
         assert_eq!(c.state.verifications[0].claim, assuming.0);
     }
 
@@ -1184,7 +1197,7 @@ mod tests {
 
         let dispatch = c.begin_merge(NOW).expect("a1's own merge");
         assert_eq!(dispatch.claim, assuming);
-        let effects = c.merge_outcome(c.merge_flight_id(), &landed(MAIN2), NOW);
+        let effects = c.merge_outcome(c.merge_flight_id(assuming), &landed(MAIN2), NOW);
 
         assert_eq!(pending(&c), 0);
         assert!(verified_events(&effects).is_empty());
@@ -1251,6 +1264,35 @@ mod tests {
     }
 
     #[test]
+    fn a_verification_dispatch_id_is_not_reused_across_a_restart() {
+        let mut c = core();
+        let (_, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        let first = c.begin_verification(NOW).unwrap();
+        let stored = serde_json::to_string(&c).unwrap();
+        let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
+        assert!(restarted.recover_verification(NOW).is_empty());
+        let retry = NOW + INFRA_BACKOFF_BASE_MS;
+        let second = restarted.begin_verification(retry).unwrap();
+        assert!(
+            second.id > first.id,
+            "{} is not past {}",
+            second.id,
+            first.id
+        );
+        let before = serde_json::to_string(&restarted).unwrap();
+
+        let late =
+            restarted.verification_outcome(first.id, &clean_then(TrialOutcome::Clean {}), retry);
+
+        assert!(late.is_empty());
+        assert_eq!(serde_json::to_string(&restarted).unwrap(), before);
+        let answered =
+            restarted.verification_outcome(second.id, &clean_then(TrialOutcome::Clean {}), retry);
+        assert_eq!(verified_events(&answered).len(), 1);
+    }
+
+    #[test]
     fn a_newer_merge_replaces_a_queued_verification_of_the_same_assumption() {
         let mut c = core();
         let (assuming, first) = challenged(&mut c);
@@ -1264,7 +1306,7 @@ mod tests {
             base: CommitId(MAIN.into()),
             head: CommitId(MAIN2.into()),
         };
-        c.merge_outcome(c.merge_flight_id(), &after_first, NOW);
+        c.merge_outcome(c.merge_flight_id(second.0), &after_first, NOW);
 
         assert_eq!(pending(&c), 1, "deduplicated");
         let queued = &c.state.verifications[0];
@@ -1296,7 +1338,7 @@ mod tests {
             base: CommitId(MAIN.into()),
             head: CommitId(OTHER.into()),
         };
-        c.merge_outcome(c.merge_flight_id(), &moved, NOW);
+        c.merge_outcome(c.merge_flight_id(unrelated.0), &moved, NOW);
         // The second challenging merge starts from OTHER, not from the queued verification's main.
         let second = grant(&mut c, "a3", vec![edit("src/a.rs")], Vec::new());
         submit(&mut c, "a3", second, "src/a.rs");
@@ -1305,7 +1347,7 @@ mod tests {
             base: CommitId(OTHER.into()),
             head: CommitId(MAIN2.into()),
         };
-        c.merge_outcome(c.merge_flight_id(), &after, NOW);
+        c.merge_outcome(c.merge_flight_id(second.0), &after, NOW);
 
         assert_eq!(pending(&c), 2, "not deduplicated across an unrelated merge");
         let spans: Vec<_> = c
@@ -2156,7 +2198,7 @@ mod tests {
             files: vec!["src/a.rs".into()],
         };
 
-        let effects = c.merge_outcome(c.merge_flight_id(), &conflict, NOW);
+        let effects = c.merge_outcome(c.merge_flight_id(blocker), &conflict, NOW);
 
         assert!(settled(&effects).is_empty());
         assert!(is_live(&c, blocker), "a rejected claim returns to active");

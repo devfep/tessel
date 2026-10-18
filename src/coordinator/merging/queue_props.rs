@@ -191,6 +191,9 @@ enum Op {
     OpenRace,
     JoinRace(usize),
     Trial(bool),
+    /// A trial whose process died after the dispatch: the core is saved and loaded, the cut-off
+    /// dispatch is recovered and tried again, and the first dispatch's late answer arrives.
+    CutOffTrial(bool),
     PickWinner(usize),
     Begin,
     /// An answer for `target`: 0 is the merge in flight, any other value a claim seen before
@@ -250,6 +253,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         1 => Just(Op::OpenRace),
         1 => (0..AGENTS).prop_map(Op::JoinRace),
         1 => any::<bool>().prop_map(Op::Trial),
+        1 => any::<bool>().prop_map(Op::CutOffTrial),
         1 => (0..8usize).prop_map(Op::PickWinner),
         10 => Just(Op::Begin),
         6 => (answers(), 0..10usize).prop_map(|(answer, target)| Op::Answer { answer, target }),
@@ -422,6 +426,7 @@ fn apply(world: &mut World, op: &Op) {
         Op::OpenRace => open_race(world),
         Op::JoinRace(index) => join_race(world, *index),
         Op::Trial(pass) => trial(world, *pass),
+        Op::CutOffTrial(pass) => cut_off_trial(world, *pass),
         Op::PickWinner(pick) => pick_winner(world, *pick),
         Op::Begin => {
             begin_checked(world);
@@ -593,8 +598,8 @@ fn review(world: &mut World, approve: bool, pick: usize) -> Vec<Effect> {
     world.handle(&agent("felix"), msg)
 }
 
-fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
-    let report = if pass {
+fn trial_report(pass: bool) -> TrialReport {
+    if pass {
         TrialReport {
             before: Some(TrialOutcome::Clean {}),
             after: Some(TrialOutcome::Clean {}),
@@ -604,7 +609,49 @@ fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
             before: Some(TrialOutcome::TestsFailed {}),
             after: None,
         }
+    }
+}
+
+/// A verification dispatched, then cut off by a restart: its ids are never reused, and the first
+/// dispatch's late answer changes nothing, whether or not the trial is dispatched again.
+fn cut_off_trial(world: &mut World, pass: bool) -> Vec<Effect> {
+    let report = trial_report(pass);
+    let Some(first) = world.core.begin_verification(world.now) else {
+        return Vec::new();
     };
+    world.model.issue(None, first.id);
+    world.core = load(&save(&world.core));
+    let mut effects = world.core.recover_verification(world.now);
+    world.now = world
+        .core
+        .next_verification_ms(false, world.now)
+        .unwrap_or(world.now);
+    let again = world.core.begin_verification(world.now);
+    if let Some(second) = &again {
+        world.model.issue(None, second.id);
+    }
+    let before = save(&world.core);
+    let late = world
+        .core
+        .verification_outcome(first.id, &report, world.now);
+    assert!(late.is_empty(), "the cut-off dispatch's answer had effects");
+    assert_eq!(
+        before,
+        save(&world.core),
+        "the cut-off dispatch's answer changed the state"
+    );
+    if let Some(second) = again {
+        effects.extend(
+            world
+                .core
+                .verification_outcome(second.id, &report, world.now),
+        );
+    }
+    effects
+}
+
+fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
+    let report = trial_report(pass);
     match world.core.begin_verification(world.now) {
         Some(dispatch) => {
             world.model.issue(None, dispatch.id);
