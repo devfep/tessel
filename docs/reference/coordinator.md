@@ -1,5 +1,8 @@
 # Coordinator reference
 
+This describes the Cloudflare host as it is today, which Phase 1 of [`PLAN.md`](../../PLAN.md)
+replaces with `tessel-server`.
+
 The coordinator is a Rust Worker with one Durable Object per repository. It speaks the claim
 protocol (`src/protocol.rs`) with each agent's `tessel` daemon over a WebSocket. Claims, fences,
 the wait queue, leases and the event log survive restarts: every message's state change and
@@ -179,8 +182,7 @@ both deployed.
 ## Dogfooding gate
 
 The steward judges a repo by the `tessel.toml` on the trunk commit a run is based on (read through
-the Artifacts binding, never from a fork). Tessel's own is at the repository root, and Tessel's own
-trunk is the Artifacts repo `tessel-dogfood`.
+the Artifacts binding, never from a fork). Tessel's own is at the repository root.
 
 - **Who may change the gate.** A submission over the coordinator's service binding whose rebased
   diff touches `tessel.toml` is rejected as `gate_changed` ("changes the gate (tessel.toml); only
@@ -192,13 +194,13 @@ trunk is the Artifacts repo `tessel-dogfood`.
 - **Recovery from a broken trunk gate.** A gate-only admin merge pushes **without running any
   tests**; that is the point, and the admin takes responsibility for the file. Steps, with
   `STEWARD_ADMIN_TOKEN` as the bearer token:
-  1. `POST /repos/tessel-dogfood/forks/tessel-dogfood--admin` creates a fork.
-  2. `POST /repos/tessel-dogfood--admin/tokens` mints a write token for it.
+  1. `POST /repos/<repo>/forks/<repo>--admin` creates a fork.
+  2. `POST /repos/<repo>--admin/tokens` mints a write token for it.
   3. Push one commit that changes only `tessel.toml` to the fork's default branch.
-  4. `POST /repos/tessel-dogfood/merges` with `{"fork":"tessel-dogfood--admin","commit":"<sha>",
+  4. `POST /repos/<repo>/merges` with `{"fork":"<repo>--admin","commit":"<sha>",
      "scopes":[{"scope":{"kind":"file","path":"tessel.toml"},"mode":"edit_body"}]}`. The answer
      is `merged`, or `gate_invalid` if the new file does not pass the validation above.
-  5. `POST /repos/tessel-dogfood/test-runs` should answer `step: "test"` again.
+  5. `POST /repos/<repo>/test-runs` should answer `step: "test"` again.
 - **Allowed commands:** `pnpm test`, `npm test`, or `cargo test` with only `--workspace --locked
   --offline --no-fail-fast --all-targets --all-features --release --lib --bins --tests`. Nothing
   that can pick another toolchain, config or compiler (`+nightly`, `--config`, `-Z`,
@@ -213,10 +215,7 @@ trunk is the Artifacts repo `tessel-dogfood`.
      `tessel-steward/`: it rebuilds the `toolchain` image from them (build context: the repository
      root) and deploys.
   2. Merge the change through the steward as usual; its install step now finds the dependencies.
-  3. `POST /repos/tessel-dogfood/test-runs` should answer `step: "test"`, `passed: true`.
-- **Mirror:** `tools/mirror.sh` pushes the Artifacts trunk (`tessel-dogfood`) to the GitHub branch
-  `artifacts-trunk`, fast-forward only. The first run creates the branch; later runs abort unless
-  the push is a fast-forward. Milestone pull requests go from `artifacts-trunk`.
+  3. `POST /repos/<repo>/test-runs` should answer `step: "test"`, `passed: true`.
 
 ## Tests
 

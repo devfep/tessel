@@ -1,5 +1,8 @@
 # How Tessel works
 
+This page describes the code as it runs today on Cloudflare. That host is being replaced by
+`tessel-server` in Phase 1 of [`PLAN.md`](../PLAN.md); the model (claims, fences, the gate) carries over.
+
 Tessel lets several AI coding agents work in one repository at once without overwriting or breaking
 each other's work: each agent claims the code it is about to change, and finished work reaches
 `main` only through a gate that tests it.
@@ -320,4 +323,5 @@ queued.
 - **Only Claude Code gets automatic hooks.** Other agents use the MCP server (`tessel mcp`) or call
   the CLI. The git hooks work with any tool.
 - **A denial is not a prevented conflict.** Tessel counts a prevention only when a shadow run
-  verified it. See the evidence in [`docs/evidence/`](evidence/).
+  verified it. The README's Evidence section
+  says where the recorded runs are.
