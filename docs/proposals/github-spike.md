@@ -118,13 +118,17 @@ Delivery to a real receiver and its own latency were not measured.
 2. A refused `updateRefs` can be a rule (typed message), a lost compare (generic server error) or
    a real transient failure, and the generic one is not distinguishable from the other two. The
    App as bypass actor gets the same generic error on a stale base. The
-   lander journals the head before the call (requirement 6), then reads the ref: main equal to
-   the head means landed, anything else means retry or re-base.
+   lander journals the head before the call (requirement 6), then reads the ref: the journaled
+   head being an ancestor of main means landed (main is usually equal to it), main still at the
+   base means retry, anything else means re-base. Ancestry, not equality: main can move past the
+   landed head before the read-back (a bypassing admin's push, or a reconcile that runs only
+   after a restart), and equality would then call a landed commit unlanded and land it again.
 3. Webhooks arrive within about 3 s, so they work as hints that bring the poll forward.
 
 So the host's `Call` for landing is: journal, `updateRefs`, read back, with the poll as the
-authority. This is the shape the proposal already describes. Nothing in the results asks for a
-change to it.
+authority. The proposal (`real-use.md`, Architecture, "Calls") adds what these results ask for:
+an `Unknown` answer for the generic error, reconciled rather than counted as a failure, and
+deadlines long enough for full CI runs. `Call` is frozen from these results.
 
 ## Other limits of this spike
 
