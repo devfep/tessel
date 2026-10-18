@@ -99,9 +99,9 @@ samples on a free-plan public repository say nothing about queueing under load.
 Webhooks: a repository webhook to an unreachable host (`*.invalid`) still records each attempt;
 `delivered_at` is the time of the attempt (`failed to connect`), so this measures GitHub's
 dispatch delay, not a receiver's. The figures below are from the user-token run only: the hook
-recorded 17 deliveries by then, and 11 carry an event timestamp in the payload (3 opened, 3 check_run created, 3 check_run completed, 2 closed), and for those the
-delay between that timestamp and `delivered_at` was 0 to 3 s
-(check_run created 0-2, check_run completed 1-2,
+recorded 17 deliveries by then, and 11 carry an event timestamp in the payload (3 opened,
+3 check_run created, 3 check_run completed, 2 closed). For those, the delay between that
+timestamp and `delivered_at` was 0 to 3 s (check_run created 0-2, check_run completed 1-2,
 pull_request opened 2-3, pull_request closed 2 after the landing). The payload timestamps have
 one-second resolution, so each lag is ±1 s. All 11 show `redelivery: false`, so no failed
 delivery was retried during the run; that matches the proposal's rule that the poll is
