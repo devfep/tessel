@@ -4,16 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      files:
-        description: Space-separated Rust files whose mutants are all tested
-        required: true
-        type: string
-      regex:
-        description: Optional regex; only mutants whose name matches are tested
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -182,39 +172,6 @@ jobs:
             *) echo "::error::cargo mutants exited $code (2 missed, 4 baseline failed, 5 or 6 bad diff)."
                exit "$code" ;;
           esac
-      - name: Show missed mutants
-        if: failure()
-        run: cat mutants.out/missed.txt
-
-  mutants-dispatch:
-    name: Mutants on named files
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          shared-key: mutants
-          save-if: false
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
-        with:
-          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.148
-      - name: Mutants in the named files
-        env:
-          FILES: ${{ inputs.files }}
-          REGEX: ${{ inputs.regex }}
-        run: |
-          args=()
-          for file in $FILES; do
-            args+=(--file "$file")
-          done
-          if [ -n "$REGEX" ]; then
-            args+=(--re "$REGEX")
-          fi
-          cargo mutants --package tessel-coordinator --test-tool nextest --jobs 2 "${args[@]}"
       - name: Show missed mutants
         if: failure()
         run: cat mutants.out/missed.txt
