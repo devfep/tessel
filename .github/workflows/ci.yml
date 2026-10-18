@@ -152,13 +152,14 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          if [ ! -s "$RUNNER_TEMP/pr.diff" ]; then
-            echo "Empty diff: no mutants to test."
-            exit 0
-          fi
           code=0
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --package tessel-coordinator \
-            --test-tool nextest --jobs 2 --shard "$SHARD" || code=$?
+          cargo mutants --package tessel-coordinator --test-tool nextest --jobs 2 \
+            --shard "$SHARD" -f src/shell.rs -f src/coordinator/trunk.rs -f src/merge.rs \
+            --re 'src/shell\.rs.*(binary_rejection|parse_client_msg|decide|agents?_to_withdraw|keep_first|load_core|sensitive_or_all|decide_store|poke_reply|merge_cut_off|plan_delivery|bind_on_welcome|alarm_at_ms|after_page|clamp_watch_from|watcher_indexes|add_page|summary|close_log_line|log_text)|src/coordinator/trunk\.rs.*parse_head_response|src/merge\.rs.*from_response' \
+            || code=$?
+          echo "== caught"; cat mutants.out/caught.txt || true
+          echo "== missed"; cat mutants.out/missed.txt || true
+          echo "== timeout"; cat mutants.out/timeout.txt || true
           case "$code" in
             0) ;;
             3) if [ -s mutants.out/missed.txt ]; then
