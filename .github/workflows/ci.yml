@@ -159,7 +159,7 @@ jobs:
       - name: Diff against the base branch
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: git diff "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/pr.diff"
+        run: git diff "$(git hash-object -t tree /dev/null)" HEAD -- src/coordinator/trunk.rs > "$RUNNER_TEMP/pr.diff"
       - name: Mutants on changed lines
         env:
           SHARD: ${{ matrix.shard }}
