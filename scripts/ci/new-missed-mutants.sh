@@ -24,7 +24,7 @@ for file in "$baseline" "$@"; do
 done
 
 counted_names() {
-  sed -E -e 's/:[0-9]+:[0-9]+:/:/' -e '/^[[:space:]]*$/d' "$@" |
+  cat "$@" | tr -d '\r' | sed -E -e 's/[[:space:]]+$//' -e 's/:[0-9]+:[0-9]+:/:/' -e '/^$/d' |
     LC_ALL=C sort | uniq -c | sed -E 's/^ +//'
 }
 

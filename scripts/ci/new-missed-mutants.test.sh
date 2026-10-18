@@ -81,6 +81,17 @@ else
   echo "ok: ten copies against a baseline of nine fail"
 fi
 
+# A baseline or list saved with CRLF endings or trailing spaces names the same mutants.
+sed 's/$/ \r/' "$baseline" >"$work/crlf-baseline.txt"
+got=0
+"$script" "$work/crlf-baseline.txt" "$work/unchanged.txt" >/dev/null 2>&1 || got=$?
+if [ "$got" -ne 0 ]; then
+  echo "FAIL: CRLF baseline: exit $got, want 0"
+  failures=$((failures + 1))
+else
+  echo "ok: CRLF and trailing spaces in the baseline are ignored"
+fi
+
 # Blank lines are not mutants.
 printf '\n%s\n\n   \n' "$(cat "$work/unchanged.txt")" >"$work/blank.txt"
 expect "blank lines are ignored" 0 "$work/blank.txt"
