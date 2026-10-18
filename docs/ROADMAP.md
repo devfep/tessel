@@ -7,14 +7,13 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 afternoon. Phase 0 is done except P0-UNVERIFIABLE-LANDING: P0-SPIKE closes
-with this pull request, and the six CI jobs are required on `main` by the ruleset "main: CI
-required" (pull requests only, no force push or deletion, no bypass). Contest cleanup is #30.
-**Next:** Phase 1 planning; the spike's answers (`docs/proposals/github-spike.md`) unfreeze the
-host's `Call` design.
-**Pending from Felix:** P0-UNVERIFIABLE-LANDING needs a protocol decision (recommended: a new
-`VerificationDropped` reason). Tearing down the spike sandbox needs `gh auth refresh -s
-delete_repo`; the sandbox costs nothing and can stay until Phase 2.
+**As of:** 2026-10-18 evening. Phase 0 is done: P0-UNVERIFIABLE-LANDING closes with this pull
+request. The six CI jobs are required on `main` by the ruleset "main: CI required" (pull requests
+only, no force push or deletion, no bypass).
+**Next:** the Phase 1 plan (`docs/proposals/phase-1.md`), in adversarial review; its pull request
+carries the decisions for Felix.
+**Pending from Felix:** tearing down the spike sandbox needs `gh auth refresh -s delete_repo`; the
+sandbox costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
 requests; open the second after the first merges.
@@ -74,10 +73,14 @@ load and flake checks run on CI runners.
   `tessel-cli` `heartbeats_keep_a_claim_alive_past_its_lease` (once; passed on rerun). Both pass on
   GitHub. Replace the timing assertions with ordering or explicit signals, or move them behind the
   daemon clock seam planned for Phase 1 (proposal, "Flake control"); never add retries.
-- [ ] **P0-UNVERIFIABLE-LANDING** — from the P0-LANDED-COMMIT review: when a recovered merge
-  lands with no known baseline, its assumption verifications are not queued and nothing records
-  that they were skipped. Make it visible (rule 7, invariant 10), which needs a protocol decision
-  from Felix: a new `VerificationDropped` reason or a separate counter.
+- [x] **P0-UNVERIFIABLE-LANDING** (this pull request) — from the P0-LANDED-COMMIT review: when a
+  recovered merge lands with no known baseline, its assumption verifications are not queued and
+  nothing records that they were skipped. Make it visible (rule 7, invariant 10). Decided after
+  adversarial critique, at Felix's delegation: a new `VerificationDropped` reason would add an
+  enum value to a logged event, which invariant 13 says bumps `PROTOCOL_VERSION`, and its
+  `ReleaseReason` would be false (the assuming claim is still live). Built instead: `Merged`
+  gains the optional lists `unverified` and `untried_shadows`, and `Summary` the separate counter
+  `verifications_unverifiable`; additive, no version bump.
 - [ ] **COORD-HEAD-FROM-AGENT** — from the same review: until the first landing or head read,
   the coordinator's `head` is the base the first agent declared in its `Hello`
   (`src/coordinator.rs`), and it becomes the baseline of the first dispatch unchecked. Phase 1:
