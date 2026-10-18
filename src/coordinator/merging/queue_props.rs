@@ -15,8 +15,8 @@ use crate::merge::{
     MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Intent, Mode,
-    OnConflict, RaceId, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Fence, Intent,
+    Mode, OnConflict, RaceId, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
 };
 
 const START: u64 = 1_000;
@@ -201,7 +201,8 @@ enum Op {
     Cycle {
         answer: Answer,
     },
-    /// A whole race from opening to the winner entering the queue, with `entrants` agents.
+    /// A whole race from opening to the winner entering the queue, with `entrants` agents, then
+    /// the queue is drained.
     Race {
         entrants: usize,
         evidence: bool,
@@ -209,6 +210,14 @@ enum Op {
     /// Approve a held submission, then ask for the next merge: a held claim submitted before the
     /// one in flight is now the head of the queue.
     ApproveThenBegin(usize),
+    /// A held submission and a tested one behind it: the tested one is dispatched, the held one
+    /// is approved while it is in flight and must wait its turn.
+    Overtake {
+        first: usize,
+        offset: usize,
+    },
+    /// Every agent submits tested work on its own file, then the queue is answered in order.
+    Pipeline(Vec<Answer>),
     /// The same non-final answer `times` in a row, to reach the retry bounds.
     Repeat {
         answer: Answer,
@@ -236,18 +245,28 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         1 => (0..8usize).prop_map(Op::PickWinner),
         10 => Just(Op::Begin),
         6 => (answers(), 0..10usize).prop_map(|(answer, target)| Op::Answer { answer, target }),
-        5 => (1..4usize, any::<bool>())
+        8 => (1..4usize, any::<bool>())
             .prop_map(|(entrants, evidence)| Op::Race { entrants, evidence }),
         3 => (0..8usize).prop_map(Op::ApproveThenBegin),
-        5 => answers().prop_map(|answer| Op::Cycle { answer }),
+        4 => (0..AGENTS, 1..AGENTS).prop_map(|(first, offset)| Op::Overtake { first, offset }),
+        4 => proptest::collection::vec(answers(), 1..6).prop_map(Op::Pipeline),
+        8 => answers().prop_map(|answer| Op::Cycle { answer }),
         3 => (retryable(), 1..8usize).prop_map(|(answer, times)| Op::Repeat { answer, times }),
         1 => Just(Op::Restart),
         1 => Just(Op::Watchdog),
     ];
-    proptest::collection::vec(op, 1..80)
+    proptest::collection::vec(op, 1..40)
 }
 
-/// What the test tracks on its own, never read back from the core's counters.
+/// The merge the model believes is in flight.
+#[derive(Debug, Clone, Copy)]
+struct Flight {
+    claim: u64,
+    attempt: u32,
+    dispatched_ms: u64,
+}
+
+/// What the test tracks on its own, never read back from the core's counters or ordinals.
 #[derive(Debug, Clone, Default)]
 struct Model {
     /// Claims whose submission was held and not yet decided.
@@ -260,37 +279,40 @@ struct Model {
     infra: BTreeMap<u64, u32>,
     /// Every claim id seen, for stale answers.
     seen: Vec<u64>,
-    /// The merge the test believes is in flight, with its attempt and dispatch time.
-    inflight: Option<(u64, u32, u64)>,
+    /// Claims in the order their submissions were accepted: "taken in submission order". An
+    /// approval does not move a claim, a new submission goes to the end.
+    order: Vec<u64>,
+    inflight: Option<Flight>,
 }
 
 #[derive(Debug, Clone)]
 struct World {
-    c: Coordinator,
+    core: Coordinator,
     now: u64,
-    m: Model,
-    /// Debug text of every effect since the step began, to compare a restored core with the original.
+    model: Model,
+    /// Debug text of every effect and dispatch since the step began, to compare a restored core
+    /// with the original.
     trace: String,
 }
 
 fn new_world() -> World {
-    let mut c = Coordinator::new(Config {
+    let mut core = Coordinator::new(Config {
         run: RunId("props".into()),
         lease_ms: LEASE,
         shadow_enabled: true,
     })
     .unwrap();
-    c.set_reviewers(vec![agent("felix")]);
+    core.set_reviewers(vec![agent("felix")]);
     World {
-        c,
+        core,
         now: START,
-        m: Model::default(),
+        model: Model::default(),
         trace: String::new(),
     }
 }
 
-fn save(c: &Coordinator) -> String {
-    serde_json::to_string(c).unwrap()
+fn save(core: &Coordinator) -> String {
+    serde_json::to_string(core).unwrap()
 }
 
 fn load(saved: &str) -> Coordinator {
@@ -320,7 +342,7 @@ fn replies(effects: &[Effect]) -> Vec<&ServerMsg> {
 impl World {
     /// The claim's submission, if it is submitted with work to merge.
     fn live(&self, claim: u64) -> bool {
-        self.c
+        self.core
             .state
             .claims
             .get(&claim)
@@ -328,12 +350,12 @@ impl World {
     }
 
     fn handle(&mut self, who: &AgentId, msg: ClientMsg) -> Vec<Effect> {
-        self.c.handle(who, msg, self.now)
+        self.core.handle(who, msg, self.now)
     }
 
     /// The first claim of `who` that has not been submitted.
-    fn open_claim(&self, who: &AgentId) -> Option<(ClaimId, crate::protocol::Fence)> {
-        self.c
+    fn open_claim(&self, who: &AgentId) -> Option<(ClaimId, Fence)> {
+        self.core
             .state
             .claims
             .iter()
@@ -341,149 +363,148 @@ impl World {
             .map(|(id, held)| (ClaimId(*id), held.fence))
     }
 
-    /// The submitted, not held claim with the lowest submission ordinal: the one merge order
-    /// ("one merge is in flight per repo, taken in submission order") dispatches next.
+    /// The next claim to merge by the model's own order: the earliest accepted submission that is
+    /// still queued and not held for review.
     fn head_of_queue(&self) -> Option<u64> {
-        let mut best: Option<(u64, u64)> = None;
-        for (id, held) in &self.c.state.claims {
-            let (Some(ordinal), Some(work)) = (held.submitted, held.work.as_ref()) else {
-                continue;
-            };
-            if work.awaiting_review {
-                continue;
-            }
-            if best.is_none_or(|(low, _)| ordinal < low) {
-                best = Some((ordinal, *id));
-            }
-        }
-        best.map(|(_, id)| id)
+        self.model
+            .order
+            .iter()
+            .copied()
+            .find(|id| self.live(*id) && !self.model.held.contains(id))
     }
 }
 
-fn apply(w: &mut World, op: &Op) {
-    w.now += 1;
+fn apply(world: &mut World, op: &Op) {
+    world.now += 1;
     let effects = match op {
         Op::Claim {
             who: index,
             target,
             wait,
             signature,
-        } => {
-            let mode = if *signature {
-                Mode::EditSignature
-            } else {
-                Mode::EditBody
-            };
-            let msg = ClientMsg::Claim {
-                req: RequestId(1),
-                intent: Intent {
-                    summary: "work".into(),
-                    task_ref: None,
-                    assumptions: Vec::new(),
-                },
-                scopes: vec![scope_of(*target, mode)],
-                on_conflict: if *wait {
-                    OnConflict::Wait
-                } else {
-                    OnConflict::Fail
-                },
-            };
-            w.handle(&who(*index), msg)
-        }
-        Op::Heartbeat(index) => w.handle(&who(*index), ClientMsg::Heartbeat),
+        } => claim(world, *index, *target, *wait, *signature),
+        Op::Heartbeat(index) => world.handle(&who(*index), ClientMsg::Heartbeat),
         Op::Tick(ms) => {
-            w.now += ms;
-            w.c.expire(w.now)
+            world.now += ms;
+            world.core.expire(world.now)
         }
         Op::Submit {
             who: index,
             evidence,
-        } => submit(w, &who(*index), *evidence),
-        Op::Release(index) => release(w, &who(*index)),
-        Op::Review { approve, pick } => review(w, *approve, *pick),
-        Op::OpenRace => {
-            let msg = ClientMsg::OpenRace {
-                req: RequestId(5),
-                intent: Intent {
-                    summary: "race".into(),
-                    task_ref: None,
-                    assumptions: Vec::new(),
-                },
-                scopes: vec![scope_of(0, Mode::EditBody)],
-                max_entrants: 3,
-                deadline_ms: w.now + 20_000,
-                criteria: vec![Criterion::TestsPass, Criterion::FirstSubmitted],
-            };
-            w.handle(&agent("felix"), msg)
-        }
-        Op::JoinRace(index) => {
-            let race = RaceId(w.c.state.next_race.saturating_sub(1).max(1));
-            let msg = ClientMsg::JoinRace {
-                req: RequestId(2),
-                race,
-            };
-            w.handle(&who(*index), msg)
-        }
-        Op::Trial(pass) => trial(w, *pass),
-        Op::PickWinner(pick) => pick_winner(w, *pick),
+        } => submit(world, &who(*index), *evidence),
+        Op::Release(index) => release(world, &who(*index)),
+        Op::Review { approve, pick } => review(world, *approve, *pick),
+        Op::OpenRace => open_race(world),
+        Op::JoinRace(index) => join_race(world, *index),
+        Op::Trial(pass) => trial(world, *pass),
+        Op::PickWinner(pick) => pick_winner(world, *pick),
         Op::Begin => {
-            begin_checked(w);
+            begin_checked(world);
             Vec::new()
         }
         Op::Answer { answer, target } => {
-            let claim = target_claim(w, *target);
-            answer_checked(w, claim, *answer)
+            let claim = target_claim(world, *target);
+            answer_checked(world, claim, *answer)
         }
         Op::Cycle { answer } => {
-            cycle(w, *answer);
+            cycle(world, *answer);
             Vec::new()
         }
         Op::Race { entrants, evidence } => {
-            apply(w, &Op::OpenRace);
-            for index in 0..*entrants {
-                apply(w, &Op::JoinRace(index));
-                apply(
-                    w,
-                    &Op::Submit {
-                        who: index,
-                        evidence: *evidence,
-                    },
-                );
-            }
-            for _ in 0..*entrants {
-                apply(w, &Op::Trial(true));
-            }
-            apply(w, &Op::Tick(25_000));
+            run_race(world, *entrants, *evidence);
             Vec::new()
         }
         Op::ApproveThenBegin(pick) => {
-            let effects = review(w, true, *pick);
-            emit(w, effects);
-            begin_checked(w);
+            approve_then_begin(world, *pick);
+            Vec::new()
+        }
+        Op::Overtake { first, offset } => {
+            run_overtake(world, *first, *offset);
+            Vec::new()
+        }
+        Op::Pipeline(answers) => {
+            run_pipeline(world, answers);
             Vec::new()
         }
         Op::Repeat { answer, times } => {
             for _ in 0..*times {
-                cycle(w, *answer);
+                cycle(world, *answer);
             }
             Vec::new()
         }
-        Op::Restart => recover_checked(w),
+        Op::Restart => recover_checked(world),
         Op::Watchdog => {
-            if let Some((_, _, dispatched)) = w.m.inflight {
-                w.now = w.now.max(dispatched + MERGE_WATCHDOG_MS);
+            if let Some(flight) = world.model.inflight {
+                world.now = world.now.max(flight.dispatched_ms + MERGE_WATCHDOG_MS);
             }
-            recover_checked(w)
+            recover_checked(world)
         }
     };
-    emit(w, effects);
+    emit(world, effects);
 }
 
-fn submit(w: &mut World, who: &AgentId, evidence: bool) -> Vec<Effect> {
-    let Some((claim, fence)) = w.open_claim(who) else {
+fn plain_intent(summary: &str) -> Intent {
+    Intent {
+        summary: summary.into(),
+        task_ref: None,
+        assumptions: Vec::new(),
+    }
+}
+
+fn claim(
+    world: &mut World,
+    index: usize,
+    target: usize,
+    wait: bool,
+    signature: bool,
+) -> Vec<Effect> {
+    let mode = if signature {
+        Mode::EditSignature
+    } else {
+        Mode::EditBody
+    };
+    let msg = ClientMsg::Claim {
+        req: RequestId(1),
+        intent: plain_intent("work"),
+        scopes: vec![scope_of(target, mode)],
+        on_conflict: if wait {
+            OnConflict::Wait
+        } else {
+            OnConflict::Fail
+        },
+    };
+    world.handle(&who(index), msg)
+}
+
+fn open_race(world: &mut World) -> Vec<Effect> {
+    let msg = ClientMsg::OpenRace {
+        req: RequestId(5),
+        intent: plain_intent("race"),
+        scopes: vec![scope_of(0, Mode::EditBody)],
+        max_entrants: 3,
+        deadline_ms: world.now + 20_000,
+        criteria: vec![Criterion::TestsPass, Criterion::FirstSubmitted],
+    };
+    world.handle(&agent("felix"), msg)
+}
+
+fn latest_race(world: &World) -> RaceId {
+    RaceId(world.core.state.next_race.saturating_sub(1).max(1))
+}
+
+fn join_race(world: &mut World, index: usize) -> Vec<Effect> {
+    let msg = ClientMsg::JoinRace {
+        req: RequestId(2),
+        race: latest_race(world),
+    };
+    world.handle(&who(index), msg)
+}
+
+fn submit(world: &mut World, who: &AgentId, evidence: bool) -> Vec<Effect> {
+    let Some((claim, fence)) = world.open_claim(who) else {
         return Vec::new();
     };
-    let touched = w.c.state.claims[&claim.0].scopes.clone();
+    let touched = world.core.state.claims[&claim.0].scopes.clone();
     let decisions = DecisionRecord {
         evidence: if evidence {
             vec!["tests passed".into()]
@@ -500,31 +521,40 @@ fn submit(w: &mut World, who: &AgentId, evidence: bool) -> Vec<Effect> {
         touched,
         decisions,
     };
-    w.handle(who, msg)
+    world.handle(who, msg)
 }
 
-fn release(w: &mut World, who: &AgentId) -> Vec<Effect> {
-    let found =
-        w.c.state
-            .claims
-            .iter()
-            .find(|(_, held)| held.agent == *who)
-            .map(|(id, held)| (ClaimId(*id), held.fence));
-    let Some((claim, fence)) = found else {
+fn release_claim(world: &mut World, claim: u64) -> Vec<Effect> {
+    let Some(held) = world.core.state.claims.get(&claim) else {
         return Vec::new();
     };
+    let (agent, fence) = (held.agent.clone(), held.fence);
     let msg = ClientMsg::Release {
-        claim,
+        claim: ClaimId(claim),
         fence,
         req: None,
     };
-    w.handle(who, msg)
+    world.handle(&agent, msg)
 }
 
-fn review(w: &mut World, approve: bool, pick: usize) -> Vec<Effect> {
-    let held: Vec<u64> = w.m.held.iter().copied().collect();
+fn release(world: &mut World, who: &AgentId) -> Vec<Effect> {
+    let found = world
+        .core
+        .state
+        .claims
+        .iter()
+        .find(|(_, held)| held.agent == *who)
+        .map(|(id, _)| *id);
+    match found {
+        Some(claim) => release_claim(world, claim),
+        None => Vec::new(),
+    }
+}
+
+fn review(world: &mut World, approve: bool, pick: usize) -> Vec<Effect> {
+    let held: Vec<u64> = world.model.held.iter().copied().collect();
     let claim = if held.is_empty() {
-        w.m.seen.get(pick).copied().unwrap_or(UNKNOWN_CLAIM)
+        world.model.seen.get(pick).copied().unwrap_or(UNKNOWN_CLAIM)
     } else {
         held[pick % held.len()]
     };
@@ -534,10 +564,10 @@ fn review(w: &mut World, approve: bool, pick: usize) -> Vec<Effect> {
         approve,
         note: None,
     };
-    w.handle(&agent("felix"), msg)
+    world.handle(&agent("felix"), msg)
 }
 
-fn trial(w: &mut World, pass: bool) -> Vec<Effect> {
+fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
     let report = if pass {
         TrialReport {
             before: Some(TrialOutcome::Clean {}),
@@ -549,132 +579,255 @@ fn trial(w: &mut World, pass: bool) -> Vec<Effect> {
             after: None,
         }
     };
-    match w.c.begin_verification(w.now) {
-        Some(dispatch) => w.c.verification_outcome(dispatch.id, &report, w.now),
+    match world.core.begin_verification(world.now) {
+        Some(dispatch) => world
+            .core
+            .verification_outcome(dispatch.id, &report, world.now),
         None => Vec::new(),
     }
 }
 
-fn pick_winner(w: &mut World, pick: usize) -> Vec<Effect> {
-    let race = RaceId(w.c.state.next_race.saturating_sub(1).max(1));
-    let claim =
-        w.c.state
-            .claims
-            .keys()
-            .nth(pick)
-            .map_or(ClaimId(1), |id| ClaimId(*id));
+fn pick_winner(world: &mut World, pick: usize) -> Vec<Effect> {
+    let claim = world
+        .core
+        .state
+        .claims
+        .keys()
+        .nth(pick)
+        .map_or(ClaimId(1), |id| ClaimId(*id));
     let msg = ClientMsg::PickWinner {
         req: RequestId(8),
-        race,
+        race: latest_race(world),
         claim,
     };
-    w.handle(&agent("felix"), msg)
+    world.handle(&agent("felix"), msg)
 }
 
-fn target_claim(w: &World, target: usize) -> u64 {
+fn target_claim(world: &World, target: usize) -> u64 {
     if target == 0 {
-        return w.m.inflight.map_or(UNKNOWN_CLAIM, |(id, _, _)| id);
+        return world
+            .model
+            .inflight
+            .map_or(UNKNOWN_CLAIM, |flight| flight.claim);
     }
-    w.m.seen
-        .get((target - 1) % w.m.seen.len().max(1))
+    let seen = &world.model.seen;
+    seen.get((target - 1) % seen.len().max(1))
         .copied()
         .unwrap_or(UNKNOWN_CLAIM)
 }
 
+/// An open race from a clean slate: every agent releases its claims, the entrants join and
+/// submit, the trials pass, the deadline passes, and the queue is answered `merged` twice.
+fn run_race(world: &mut World, entrants: usize, evidence: bool) {
+    for index in 0..AGENTS * 2 {
+        apply(world, &Op::Release(index));
+    }
+    apply(world, &Op::OpenRace);
+    for index in 0..entrants {
+        apply(world, &Op::JoinRace(index));
+        apply(
+            world,
+            &Op::Submit {
+                who: index,
+                evidence,
+            },
+        );
+    }
+    for _ in 0..entrants {
+        apply(world, &Op::Trial(true));
+    }
+    apply(world, &Op::Tick(25_000));
+    for _ in 0..2 {
+        cycle(world, Answer::Merged);
+    }
+}
+
+fn approve_then_begin(world: &mut World, pick: usize) {
+    let effects = review(world, true, pick);
+    emit(world, effects);
+    begin_checked(world);
+}
+
+/// Claim two files, submit the first untested (held) and the second tested, dispatch the second,
+/// then approve the first while the second is in flight.
+fn run_overtake(world: &mut World, first: usize, offset: usize) {
+    let second = (first + offset) % AGENTS;
+    for (index, target) in [(first, 1), (second, 2)] {
+        apply(
+            world,
+            &Op::Claim {
+                who: index,
+                target,
+                wait: false,
+                signature: false,
+            },
+        );
+    }
+    apply(
+        world,
+        &Op::Submit {
+            who: first,
+            evidence: false,
+        },
+    );
+    apply(
+        world,
+        &Op::Submit {
+            who: second,
+            evidence: true,
+        },
+    );
+    begin_checked(world);
+    approve_then_begin(world, 0);
+}
+
+fn run_pipeline(world: &mut World, answers: &[Answer]) {
+    for index in 0..AGENTS {
+        apply(
+            world,
+            &Op::Claim {
+                who: index,
+                target: index,
+                wait: false,
+                signature: false,
+            },
+        );
+        apply(
+            world,
+            &Op::Submit {
+                who: index,
+                evidence: true,
+            },
+        );
+    }
+    for answer in answers {
+        cycle(world, *answer);
+    }
+}
+
 /// `begin_merge`, with the rules about what it may return checked.
-fn begin_checked(w: &mut World) {
-    let was_live = w.m.inflight.filter(|(id, _, _)| w.live(*id));
-    let before_ordinal_head = w.head_of_queue();
-    let dispatch = w.c.begin_merge(w.now);
+fn begin_checked(world: &mut World) {
+    // A submitted claim cannot be released or expire, so the claim in flight stays queued.
+    let was_live = world.model.inflight;
+    assert!(was_live.is_none_or(|flight| world.live(flight.claim)));
+    let head = world.head_of_queue();
+    let dispatch = world.core.begin_merge(world.now);
+    world.trace.push_str(&format!("{dispatch:?}"));
     let Some(dispatch) = dispatch else {
         // Documented: `None` when nothing is ready. An in-flight merge is always returned.
         assert!(
             was_live.is_none(),
             "begin_merge dropped the merge in flight"
         );
-        w.m.inflight = None;
+        world.model.inflight = None;
         return;
     };
     let id = dispatch.claim.0;
-    assert!(w.c.has_merge_in_flight());
-    let again = w.c.clone().begin_merge(w.now);
+    assert!(world.core.has_merge_in_flight());
+    let again = world.core.clone().begin_merge(world.now);
     assert_eq!(
         again.as_ref().map(|d| (d.claim, d.attempt)),
         Some((dispatch.claim, dispatch.attempt)),
         "check 3: a second begin_merge returned something other than the merge in flight"
     );
-    if let Some((live, attempt, _)) = was_live {
-        assert_eq!(id, live, "check 3: begin_merge started a second merge");
+    if let Some(flight) = was_live {
         assert_eq!(
-            dispatch.attempt, attempt,
+            id, flight.claim,
+            "check 3: begin_merge started a second merge"
+        );
+        assert_eq!(
+            dispatch.attempt, flight.attempt,
             "the in-flight attempt is unchanged"
         );
         return;
     }
-    let work = w.c.state.claims[&id].work.as_ref().unwrap();
+    let work = world.core.state.claims[&id].work.as_ref().unwrap();
     assert!(
-        !w.m.held.contains(&id) && !work.awaiting_review,
+        !world.model.held.contains(&id) && !work.awaiting_review,
         "check 2: a submission held for review was dispatched"
     );
     assert_eq!(
         Some(id),
-        before_ordinal_head,
+        head,
         "merges are taken in submission order, held claims skipped"
     );
     assert!(
-        work.retry_at_ms.is_none_or(|due| due <= w.c.state.clock_ms),
+        work.retry_at_ms
+            .is_none_or(|due| due <= world.core.state.clock_ms),
         "a claim in backoff was dispatched"
     );
-    let expected =
-        w.m.moved.get(&id).copied().unwrap_or(0) + w.m.infra.get(&id).copied().unwrap_or(0) + 1;
+    let expected = world.model.moved.get(&id).copied().unwrap_or(0)
+        + world.model.infra.get(&id).copied().unwrap_or(0)
+        + 1;
     assert_eq!(
         dispatch.attempt, expected,
         "check 4: attempt counts every answer so far"
     );
     // Documented on `next_merge_ms`: the watchdog is `MERGE_WATCHDOG_MS` after the call starts.
     assert_eq!(
-        w.c.next_merge_ms(true, w.now),
-        Some(w.now + MERGE_WATCHDOG_MS)
+        world.core.next_merge_ms(true, world.now),
+        Some(world.now + MERGE_WATCHDOG_MS)
     );
-    assert_eq!(w.c.next_merge_ms(false, w.now), Some(w.now));
-    w.m.inflight = Some((id, dispatch.attempt, w.now));
+    assert_eq!(world.core.next_merge_ms(false, world.now), Some(world.now));
+    world.model.inflight = Some(Flight {
+        claim: id,
+        attempt: dispatch.attempt,
+        dispatched_ms: world.now,
+    });
 }
 
 /// Apply the steward's answer for `claim` through `merge_outcome` and check what it did.
-fn answer_checked(w: &mut World, claim: u64, answer: Answer) -> Vec<Effect> {
-    let current = w.m.inflight.is_some_and(|(id, _, _)| id == claim);
+fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> {
+    let current = world
+        .model
+        .inflight
+        .is_some_and(|flight| flight.claim == claim);
     if !current {
         // Documented: an answer for any other claim is stale and changes nothing.
-        w.c.expire(w.now);
-        let before = save(&w.c);
-        let effects = w.c.merge_outcome(ClaimId(claim), &answer.outcome(), w.now);
+        world.core.expire(world.now);
+        let before = save(&world.core);
+        let effects = world
+            .core
+            .merge_outcome(ClaimId(claim), &answer.outcome(), world.now);
         assert!(
             effects.is_empty(),
             "a stale answer had effects: {effects:?}"
         );
-        assert_eq!(before, save(&w.c), "a stale answer changed the state");
-        return effects;
-    }
-    let was_live = w.live(claim);
-    let effects = w.c.merge_outcome(ClaimId(claim), &answer.outcome(), w.now);
-    w.m.inflight = None;
-    assert!(
-        !w.c.has_merge_in_flight(),
-        "the answer left a marker behind"
-    );
-    if !was_live {
-        assert!(
-            effects.is_empty(),
-            "an answer for a vanished claim had effects"
+        assert_eq!(
+            before,
+            save(&world.core),
+            "a stale answer changed the state"
         );
         return effects;
     }
-    expect_class(w, claim, answer.class(), &effects);
+    assert!(world.live(claim), "the claim in flight is still queued");
+    let retry_before = world
+        .core
+        .state
+        .claims
+        .get(&claim)
+        .and_then(|held| held.work.as_ref())
+        .and_then(|work| work.retry_at_ms);
+    let effects = world
+        .core
+        .merge_outcome(ClaimId(claim), &answer.outcome(), world.now);
+    world.model.inflight = None;
+    assert!(
+        !world.core.has_merge_in_flight(),
+        "the answer left a marker behind"
+    );
+    expect_class(world, claim, answer.class(), &effects, retry_before);
     effects
 }
 
 /// What `class` must have done to a live claim.
-fn expect_class(w: &mut World, claim: u64, class: Class, effects: &[Effect]) {
+fn expect_class(
+    world: &mut World,
+    claim: u64,
+    class: Class,
+    effects: &[Effect],
+    retry_before: Option<u64>,
+) {
     let merged_events = kinds(effects)
         .into_iter()
         .filter(|kind| matches!(kind, EventKind::Merged { claim: c, .. } if c.0 == claim))
@@ -687,16 +840,16 @@ fn expect_class(w: &mut World, claim: u64, class: Class, effects: &[Effect]) {
         Class::Landed => {
             assert_eq!(merged_events, 1, "check 1: one Merged for a landed claim");
             assert!(
-                !w.c.state.claims.contains_key(&claim),
+                !world.core.state.claims.contains_key(&claim),
                 "a merged claim is released"
             );
         }
         Class::Rejected => {
             assert_eq!(rejected_events, 1);
-            assert_reopened(w, claim);
+            assert_reopened(world, claim);
         }
         Class::Moved => {
-            let moved = w.m.moved.entry(claim).or_insert(0);
+            let moved = world.model.moved.entry(claim).or_insert(0);
             *moved += 1;
             let moved = *moved;
             assert_eq!(merged_events, 0);
@@ -706,97 +859,129 @@ fn expect_class(w: &mut World, claim: u64, class: Class, effects: &[Effect]) {
                     rejected_events, 1,
                     "check 4: rejected at {moved} main-moved"
                 );
-                assert_reopened(w, claim);
+                assert_reopened(world, claim);
             } else {
                 assert_eq!(rejected_events, 0, "check 4: rejected after only {moved}");
                 assert!(
-                    w.live(claim),
+                    world.live(claim),
                     "check 4: still queued after {moved} main-moved"
                 );
+                assert_redispatched_at_once(world, claim, retry_before);
             }
         }
-        Class::Infra => {
-            let failures = w.m.infra.entry(claim).or_insert(0);
-            *failures += 1;
-            let failures = *failures;
-            assert_eq!(merged_events, 0);
-            // `MAX_INFRA_RETRIES` retries are allowed: the failure after them rejects.
-            if failures > MAX_INFRA_RETRIES {
-                assert_eq!(
-                    rejected_events, 1,
-                    "check 4: rejected at failure {failures}"
-                );
-                assert_reopened(w, claim);
-            } else {
-                assert_eq!(
-                    rejected_events, 0,
-                    "check 4: rejected at failure {failures}"
-                );
-                let due = w.c.state.claims[&claim].work.as_ref().unwrap().retry_at_ms;
-                assert_eq!(
-                    due,
-                    Some(w.c.state.clock_ms + infra_backoff_ms(failures)),
-                    "check 4: backoff after failure {failures}"
-                );
-            }
-        }
+        Class::Infra => expect_infra(world, claim, merged_events, rejected_events),
     }
 }
 
+/// `src/merge.rs`: a `main_moved` answer "re-dispatches the claim at once", so it sets no backoff
+/// and the next `begin_merge` returns the same claim.
+fn assert_redispatched_at_once(world: &World, claim: u64, retry_before: Option<u64>) {
+    let retry_after = world.core.state.claims[&claim]
+        .work
+        .as_ref()
+        .and_then(|work| work.retry_at_ms);
+    assert_eq!(
+        retry_after, retry_before,
+        "check 4: main_moved set a backoff"
+    );
+    let next = world.core.clone().begin_merge(world.now);
+    assert_eq!(
+        next.map(|dispatch| dispatch.claim.0),
+        world.head_of_queue(),
+        "check 4: the claim was not dispatched again at once after main_moved"
+    );
+}
+
+fn expect_infra(world: &mut World, claim: u64, merged_events: usize, rejected_events: usize) {
+    let failures = world.model.infra.entry(claim).or_insert(0);
+    *failures += 1;
+    let failures = *failures;
+    assert_eq!(merged_events, 0);
+    // `MAX_INFRA_RETRIES` retries are allowed: the failure after them rejects.
+    if failures > MAX_INFRA_RETRIES {
+        assert_eq!(
+            rejected_events, 1,
+            "check 4: rejected at failure {failures}"
+        );
+        assert_reopened(world, claim);
+        return;
+    }
+    assert_eq!(
+        rejected_events, 0,
+        "check 4: rejected at failure {failures}"
+    );
+    let due = world.core.state.claims[&claim]
+        .work
+        .as_ref()
+        .unwrap()
+        .retry_at_ms;
+    assert_eq!(
+        due,
+        Some(world.core.state.clock_ms + infra_backoff_ms(failures)),
+        "check 4: backoff after failure {failures}"
+    );
+}
+
 /// A rejected claim is active again: unsubmitted, nothing to merge, still holding its scopes.
-fn assert_reopened(w: &World, claim: u64) {
-    let held =
-        w.c.state
-            .claims
-            .get(&claim)
-            .expect("a rejected claim stays");
+fn assert_reopened(world: &World, claim: u64) {
+    let held = world
+        .core
+        .state
+        .claims
+        .get(&claim)
+        .expect("a rejected claim stays");
     assert!(held.submitted.is_none() && held.work.is_none());
 }
 
 /// The process died with a merge in flight. `recover_merge` counts it as an infrastructure failure.
-fn recover_checked(w: &mut World) -> Vec<Effect> {
-    let Some((claim, _, _)) = w.m.inflight else {
-        let effects = w.c.recover_merge(w.now);
-        assert!(effects.is_empty() && !w.c.has_merge_in_flight());
+fn recover_checked(world: &mut World) -> Vec<Effect> {
+    let Some(flight) = world.model.inflight else {
+        let effects = world.core.recover_merge(world.now);
+        assert!(effects.is_empty() && !world.core.has_merge_in_flight());
         return effects;
     };
-    let was_live = w.live(claim);
-    let effects = w.c.recover_merge(w.now);
-    w.m.inflight = None;
-    assert!(!w.c.has_merge_in_flight());
-    if was_live {
-        expect_class(w, claim, Class::Infra, &effects);
-    }
+    assert!(
+        world.live(flight.claim),
+        "the claim in flight is still queued"
+    );
+    let effects = world.core.recover_merge(world.now);
+    world.model.inflight = None;
+    assert!(!world.core.has_merge_in_flight());
+    let rejected = kinds(&effects)
+        .into_iter()
+        .filter(|kind| matches!(kind, EventKind::SubmitRejected { claim: c, .. } if c.0 == flight.claim))
+        .count();
+    expect_infra(world, flight.claim, 0, rejected);
     effects
 }
 
 /// Wait out the head's backoff, dispatch, answer.
-fn cycle(w: &mut World, answer: Answer) {
-    if w.m.inflight.is_none() {
-        if let Some(due) = w.c.next_merge_ms(false, w.now) {
-            w.now = w.now.max(due);
-            w.c.expire(w.now);
+fn cycle(world: &mut World, answer: Answer) {
+    if world.model.inflight.is_none() {
+        if let Some(due) = world.core.next_merge_ms(false, world.now) {
+            world.now = world.now.max(due);
+            world.core.expire(world.now);
         }
     }
-    begin_checked(w);
-    if let Some((claim, _, _)) = w.m.inflight {
-        let effects = answer_checked(w, claim, answer);
-        emit(w, effects);
+    begin_checked(world);
+    if let Some(flight) = world.model.inflight {
+        let effects = answer_checked(world, flight.claim, answer);
+        emit(world, effects);
     }
 }
 
 /// Record what the core just did in the model and in the trace compared with the restored core.
-fn emit(w: &mut World, effects: Vec<Effect>) {
-    observe(w, &effects);
-    w.trace.push_str(&format!("{effects:?}"));
+fn emit(world: &mut World, effects: Vec<Effect>) {
+    observe(world, &effects);
+    world.trace.push_str(&format!("{effects:?}"));
 }
 
 /// Update the model from what the core just did, and check that no claim merges twice.
-fn observe(w: &mut World, effects: &[Effect]) {
+fn observe(world: &mut World, effects: &[Effect]) {
     for kind in kinds(effects) {
         if let EventKind::Merged { claim, .. } = kind {
             assert!(
-                w.m.merged.insert(claim.0),
+                world.model.merged.insert(claim.0),
                 "check 1: claim {} was merged twice",
                 claim.0
             );
@@ -804,104 +989,127 @@ fn observe(w: &mut World, effects: &[Effect]) {
         if let EventKind::ReviewDecided { claim, .. } | EventKind::SubmitRejected { claim, .. } =
             kind
         {
-            w.m.held.remove(&claim.0);
+            world.model.held.remove(&claim.0);
         }
     }
     for msg in replies(effects) {
         if let ServerMsg::ReviewRequired { claim, .. } = msg {
-            w.m.held.insert(claim.0);
+            world.model.held.insert(claim.0);
+        }
+        if let ServerMsg::Accepted { claim, .. } | ServerMsg::ReviewRequired { claim, .. } = msg {
+            world.model.order.retain(|id| *id != claim.0);
+            world.model.order.push(claim.0);
         }
     }
 }
 
 /// Checks that hold after every step, whatever the step was.
-fn check_after(w: &mut World) {
-    for id in w.c.state.claims.keys() {
-        assert!(!w.m.merged.contains(id), "check 1: a merged claim is back");
-        if !w.m.seen.contains(id) {
-            w.m.seen.push(*id);
+fn check_after(world: &mut World) {
+    for id in world.core.state.claims.keys() {
+        assert!(
+            !world.model.merged.contains(id),
+            "check 1: a merged claim is back"
+        );
+        if !world.model.seen.contains(id) {
+            world.model.seen.push(*id);
         }
     }
-    let ids: Vec<u64> = w.c.state.claims.keys().copied().collect();
-    w.m.held.retain(|id| ids.contains(id));
-    let live: Vec<u64> = ids.into_iter().filter(|id| w.live(*id)).collect();
-    w.m.moved.retain(|id, _| live.contains(id));
-    w.m.infra.retain(|id, _| live.contains(id));
+    let ids: Vec<u64> = world.core.state.claims.keys().copied().collect();
+    let live: Vec<u64> = ids.iter().copied().filter(|id| world.live(*id)).collect();
+    for id in &live {
+        assert!(
+            world.model.order.contains(id),
+            "claim {id} is queued but its submission was never accepted"
+        );
+    }
+    world.model.held.retain(|id| ids.contains(id));
+    let submitted: Vec<u64> = world
+        .core
+        .state
+        .claims
+        .iter()
+        .filter(|(_, held)| held.submitted.is_some())
+        .map(|(id, _)| *id)
+        .collect();
+    world.model.order.retain(|id| submitted.contains(id));
+    world.model.moved.retain(|id, _| live.contains(id));
+    world.model.infra.retain(|id, _| live.contains(id));
     assert_eq!(
-        w.c.has_merge_in_flight(),
-        w.m.inflight.is_some(),
+        world.core.has_merge_in_flight(),
+        world.model.inflight.is_some(),
         "check 3: the marker and the dispatched merge disagree"
     );
-    check_no_wedge(w);
+    check_no_wedge(world);
 }
 
 /// Check 6: if the queue has work, the core dispatches it or reports a wake no later than the
 /// moment it becomes dispatchable. Wakes are never before `now` (`next_merge_ms`).
-fn check_no_wedge(w: &World) {
-    let now = w.now.max(w.c.state.clock_ms);
-    if w.c.has_merge_in_flight() {
+fn check_no_wedge(world: &World) {
+    let core = &world.core;
+    let now = world.now.max(core.state.clock_ms);
+    if core.has_merge_in_flight() {
         // Not merging here: a stored marker means a restart, recovered at once.
         assert_eq!(
-            w.c.next_wake_ms(false, false, now),
+            core.next_wake_ms(false, false, now),
             Some(now),
             "check 6: marker"
         );
         // Merging here: the watchdog covers a hung instance.
-        let wake = w.c.next_wake_ms(true, false, now);
+        let wake = core.next_wake_ms(true, false, now);
         assert!(
             wake.is_some_and(|at| at <= now + MERGE_WATCHDOG_MS),
             "check 6: watchdog"
         );
         return;
     }
-    let Some(head) = w.head_of_queue() else {
+    let Some(head) = world.head_of_queue() else {
         return;
     };
-    let work = w.c.state.claims[&head].work.as_ref().unwrap();
+    let work = core.state.claims[&head].work.as_ref().unwrap();
     let eligible_at = work.retry_at_ms.unwrap_or(0).max(now);
-    let wake = w.c.next_wake_ms(false, false, now);
+    let wake = core.next_wake_ms(false, false, now);
     assert!(
         wake.is_some_and(|at| now <= at && at <= eligible_at),
         "check 6: wake {wake:?} is after claim {head} becomes eligible at {eligible_at}"
     );
     if eligible_at == now {
         assert!(
-            w.c.clone().begin_merge(now).is_some(),
+            core.clone().begin_merge(now).is_some(),
             "check 6: claim {head} is eligible now and begin_merge did not dispatch it"
         );
     }
 }
 
 fn run(script: &[Op]) {
-    let mut w = new_world();
+    let mut world = new_world();
     for op in script {
         // Check 5: the state survives a save and load. The restored core and the original take
         // the same step and must end identical.
-        let saved = save(&w.c);
-        let mut twin = World {
-            c: load(&saved),
-            now: w.now,
-            m: w.m.clone(),
+        let saved = save(&world.core);
+        let mut restored = World {
+            core: load(&saved),
+            now: world.now,
+            model: world.model.clone(),
             trace: String::new(),
         };
         assert_eq!(
             saved,
-            save(&twin.c),
+            save(&restored.core),
             "check 5: save then load changed the state"
         );
-        w.trace.clear();
-        apply(&mut w, op);
-        apply(&mut twin, op);
+        world.trace.clear();
+        apply(&mut world, op);
+        apply(&mut restored, op);
         assert_eq!(
-            w.trace, twin.trace,
+            world.trace, restored.trace,
             "check 5: a restored core behaved differently"
         );
         assert_eq!(
-            save(&w.c),
-            save(&twin.c),
+            save(&world.core),
+            save(&restored.core),
             "check 5: restored state diverged"
         );
-        check_after(&mut w);
+        check_after(&mut world);
     }
 }
 
