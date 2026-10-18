@@ -368,8 +368,8 @@ ownership").
   `tessel-server admin token`, replacing the steward's HMAC minting (the Rust HMAC check went in
   P1-DROP-WORKER) and `tessel init --steward` (S1), with the route and token refusals of R1 as
   adapter tests; ed25519-dalek (current 3.0.0) is the candidate, chosen in the task under the
-  dependency rule. P1-RUNNER: the local test runner as its own binary, refusing to start unless configured
-  for a single trusted user.
+  dependency rule. P1-RUNNER: the local test runner as its own binary, refusing to start unless
+  configured for a single trusted user.
 
 **M5. Lander behind the server; advisory mode.** The lander and the runner as their own binaries
 (`tessel-lander`, `tessel-runner`), started by `tessel-server` from configured paths, accepting
