@@ -92,7 +92,8 @@ pub enum CallAnswer {
         refusal: Refusal,
     },
     /// The call may or may not have taken effect: a stale `beforeOid`, a reply lost after a
-    /// push, a lost call. The core decides what follows.
+    /// push, a lost call. A late `Land` that finds main moved also arrives as `Unknown`; the core
+    /// then reconciles. The core decides what follows.
     Unknown,
 }
 
@@ -110,8 +111,30 @@ pub enum Refusal {
     },
     /// The rebased commit changes the gate (`tessel.toml` or CI configuration).
     GateChanged,
-    TestsFailed,
+    /// The repo's tests ran and did not pass.
+    TestsFailed {
+        failure: TestFailure,
+    },
     CommitNotInFork,
+    /// The git host refused the update by a rule of its own (a protected ref, a missing required
+    /// check). GitHub types these (`UNPROCESSABLE`, `Branch 'refs/heads/main' is protected: ...`,
+    /// `docs/proposals/github-spike.md` section 2), unlike a stale `beforeOid`, which is `Unknown`.
+    Rule {
+        /// The host's message, untrusted. The lander cuts it to `REASON_OUTPUT_MAX_CHARS`
+        /// characters; it is shown quoted and never read.
+        message: String,
+    },
+}
+
+/// The failed test step: its exit code and the tails of its output, as `merge::StepExit` carries
+/// them. The output is untrusted text from the repo's tests. A rejection reason is built from it
+/// by `merge::tests_reason`, which bounds it (`REASON_OUTPUT_MAX_LINES`,
+/// `REASON_OUTPUT_LINE_MAX_CHARS`, `REASON_OUTPUT_MAX_CHARS`) and quotes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestFailure {
+    pub exit_code: i64,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// One run of a trial.
@@ -214,8 +237,17 @@ mod tests {
             prop::collection::vec(".{0,12}", 0..3).prop_map(|files| Refusal::Conflict { files }),
             any::<u64>().prop_map(|total| Refusal::Uncovered { total }),
             Just(Refusal::GateChanged),
-            Just(Refusal::TestsFailed),
+            (any::<i64>(), ".{0,40}", ".{0,40}").prop_map(|(exit_code, stdout, stderr)| {
+                Refusal::TestsFailed {
+                    failure: TestFailure {
+                        exit_code,
+                        stdout,
+                        stderr,
+                    },
+                }
+            }),
             Just(Refusal::CommitNotInFork),
+            ".{0,40}".prop_map(|message| Refusal::Rule { message }),
         ]
     }
 
