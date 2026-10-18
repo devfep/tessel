@@ -18,6 +18,10 @@
 //!   freed scopes unblock are granted first, so a waiter granted by this merge holds a claim when
 //!   the notices go out and learns main moved: `Granted` carries no head. The log reads
 //!   `ClaimGranted` before `BaseMoved`.
+//! - A submission whose first dispatch was lost (`Submission::unanswered_from`) is the exception to
+//!   submission order: it is dispatched before any other and waited for through its backoff, even
+//!   if a held submission with a lower ordinal is approved meanwhile. The steward may have landed
+//!   it, and a merge that lands in between would widen what its verification compares.
 //! - Assumptions are challenged once, at submit time (invariant 8). A merge does not challenge them
 //!   again: the evidence counters count every `AssumptionChallenged` event. A merge does record
 //!   what the submission challenged for verification (see `verifying`).
@@ -394,10 +398,11 @@ impl Coordinator {
         due <= now_ms
     }
 
-    /// The earliest submission that may be dispatched: submitted and not held for review. Only real
-    /// claims have `work`, so shadow claims never qualify.
+    /// The earliest submission that may be dispatched: submitted and not held for review, except
+    /// that one in doubt (`unanswered_from`) comes first. Only real claims have `work`, so shadow
+    /// claims never qualify.
     fn next_to_merge(&self) -> Option<ClaimId> {
-        let mut next: Option<(u64, ClaimId)> = None;
+        let mut next: Option<(bool, u64, ClaimId)> = None;
         for (id, held) in &self.state.claims {
             let (Some(ordinal), Some(work)) = (held.submitted, held.work.as_ref()) else {
                 continue;
@@ -405,11 +410,12 @@ impl Coordinator {
             if work.awaiting_review {
                 continue;
             }
-            if next.is_none_or(|(best, _)| ordinal < best) {
-                next = Some((ordinal, ClaimId(*id)));
+            let in_doubt = work.in_doubt;
+            if next.is_none_or(|(best_doubt, best, _)| (!in_doubt, ordinal) < (!best_doubt, best)) {
+                next = Some((in_doubt, ordinal, ClaimId(*id)));
             }
         }
-        next.map(|(_, claim)| claim)
+        next.map(|(_, _, claim)| claim)
     }
 
     /// Main holds the claim's work at `head`: release the claim, grant the waiters the freed
@@ -570,7 +576,6 @@ impl Coordinator {
             return Vec::new();
         };
         work.moved += 1;
-        work.unanswered_from = None;
         if work.moved >= MAX_MAIN_MOVED {
             let reason = format!(
                 "main moved under the merge {MAX_MAIN_MOVED} times: contention, not a code \
@@ -594,7 +599,8 @@ impl Coordinator {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
         };
-        if work.unanswered_from.is_none() {
+        if !work.in_doubt {
+            work.in_doubt = true;
             work.unanswered_from = dispatched_from;
         }
         work.infra_failures += 1;
