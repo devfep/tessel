@@ -1,0 +1,3 @@
+# src/runtime.rs is Cloudflare Worker glue for wasm. It has no tests, so every mutant in it would
+# be missed. It is deleted in M6 (Phase 1 plan), so it is excluded, not tested.
+exclude_globs = ["src/runtime.rs"]
