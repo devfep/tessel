@@ -132,11 +132,11 @@ pub fn trial_request_body(
 }
 
 /// Planted for the mutation check: an untested branch and a loop a mutant can make endless.
-pub fn planted_drain(mut remaining: u32) -> u32 {
+pub fn planted_drain(mut remaining: u32) -> u64 {
     if remaining > 1000 {
         return 1000;
     }
-    let mut steps = 0;
+    let mut steps: u64 = 0;
     while remaining > 0 {
         remaining -= 1;
         steps += 1;
