@@ -534,6 +534,9 @@ impl Coordinator {
 }
 
 #[cfg(test)]
+mod queue_props;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::coordinator::Config;
