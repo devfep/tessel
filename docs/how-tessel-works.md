@@ -83,8 +83,8 @@ clones against the local target of [`tessel-swarm`](../tessel-swarm/README.md): 
 coordinator core behind a WebSocket on 127.0.0.1, with a local stand-in for the steward that
 cherry-picks the submitted commit onto the trunk and runs `node --test`. A small scratch program,
 not part of the repository, started that target and gave each agent a token. The real steward
-(`tessel-steward/`) does more at the merge step, as step 5 says. Lines are quoted as printed; nothing is edited except
-where a line says `[...]`.
+(`tessel-steward/`) does more at the merge step, as step 5 says. Lines are quoted as printed;
+nothing is edited except where a line says `[...]`.
 
 **1. `a1` says what it is doing, then claims the function.** The claim names one symbol, so the
 rest of the file stays free.
