@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{ClaimId, CommitId, ScopeClaim};
+use crate::protocol::{AgentId, ClaimId, CommitId, ScopeClaim};
 
 /// Names a call. The adapter echoes it in `Replied` and `CallLost`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -39,6 +39,8 @@ pub enum Request {
     /// claim's scopes and the gate paths, and return the head. No repo code runs.
     Prepare {
         claim: ClaimId,
+        /// Whose fork `fork_commit` is on.
+        agent: AgentId,
         fork_commit: CommitId,
         scopes: Vec<ScopeClaim>,
     },
@@ -49,6 +51,8 @@ pub enum Request {
     /// Verify a challenged assumption: `commit` (or the fork's head, if `None`) against `before`
     /// and then against `main`.
     Trial {
+        /// Whose fork `commit` is on, and whose head is tried when `commit` is `None`.
+        agent: AgentId,
         commit: Option<CommitId>,
         before: CommitId,
         main: CommitId,
@@ -135,6 +139,10 @@ mod tests {
         "[0-9a-f]{1,40}".prop_map(CommitId)
     }
 
+    fn agent() -> impl Strategy<Value = AgentId> {
+        "[a-z0-9-]{1,12}".prop_map(AgentId)
+    }
+
     fn scope() -> impl Strategy<Value = ScopeClaim> {
         ("[a-z/._]{0,12}", any::<bool>()).prop_map(|(path, dir)| ScopeClaim {
             scope: if dir {
@@ -148,22 +156,30 @@ mod tests {
 
     fn request() -> impl Strategy<Value = Request> {
         prop_oneof![
-            (any::<u64>(), commit(), prop::collection::vec(scope(), 0..3)).prop_map(
-                |(claim, fork_commit, scopes)| Request::Prepare {
+            (
+                any::<u64>(),
+                agent(),
+                commit(),
+                prop::collection::vec(scope(), 0..3)
+            )
+                .prop_map(|(claim, agent, fork_commit, scopes)| Request::Prepare {
                     claim: ClaimId(claim),
+                    agent,
                     fork_commit,
                     scopes,
-                }
-            ),
+                }),
             (commit(), commit()).prop_map(|(base, head)| Request::Test { base, head }),
             (commit(), commit()).prop_map(|(base, head)| Request::Land { base, head }),
-            (prop::option::of(commit()), commit(), commit()).prop_map(|(commit, before, main)| {
-                Request::Trial {
-                    commit,
-                    before,
-                    main,
+            (agent(), prop::option::of(commit()), commit(), commit()).prop_map(
+                |(agent, commit, before, main)| {
+                    Request::Trial {
+                        agent,
+                        commit,
+                        before,
+                        main,
+                    }
                 }
-            }),
+            ),
             prop::collection::vec(commit(), 0..4)
                 .prop_map(|submitted| Request::ReadHead { submitted }),
             commit().prop_map(|head| Request::Reconcile { head }),
