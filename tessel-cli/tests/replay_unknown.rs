@@ -77,6 +77,15 @@ async fn a_known_kind_with_a_payload_this_daemon_cannot_parse_fails_the_read() -
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     assert_eq!(a1.held_claims()?, 0);
+    let clean = hellos(&fake);
+    fake.drop_connections();
+    eventually(SHORT, || {
+        let online = a1.status()?["state"]["connection"] == "online";
+        Ok((hellos(&fake) > clean && online).then_some(()))
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(a1.held_claims()?, 0);
     fake.replace_in_replay(
         3,
         r#"{"type":"event","event":{"seq":3,"at_ms":1,"run":"r","event":"claim_released"}}"#,
@@ -84,12 +93,10 @@ async fn a_known_kind_with_a_payload_this_daemon_cannot_parse_fails_the_read() -
     let before = hellos(&fake);
     fake.drop_connections();
     eventually(SHORT, || Ok((hellos(&fake) > before).then_some(()))).await?;
-    eventually(SHORT, || {
-        let log = std::fs::read_to_string(a1.root().join(".tessel/daemon.log"))?;
-        Ok(log.contains("cannot read the event log").then_some(()))
-    })
-    .await?;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(a1.held_claims()?, 0, "a released claim was adopted");
+    let log = std::fs::read_to_string(a1.root().join(".tessel/daemon.log"))?;
+    assert!(log.contains("cannot read the event log"), "{log}");
     Ok(())
 }
 
@@ -180,5 +187,50 @@ async fn a_skipped_live_message_stays_counted_across_a_reconnect() -> Result<()>
     .await?;
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(skipped(&a1)?, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_event_skipped_live_and_again_in_the_replay_is_counted_once() -> Result<()> {
+    let (fake, a1) = world().await?;
+    a1.start("seen twice")?;
+    let frame =
+        r#"{"type":"event","event":{"seq":3,"at_ms":1,"run":"r","event":"from_the_future"}}"#;
+    fake.send_raw("a1", frame);
+    eventually(SHORT, || Ok((skipped(&a1)? == 1).then_some(()))).await?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    fake.replace_in_replay(3, frame);
+    let before = hellos(&fake);
+    fake.drop_connections();
+    eventually(SHORT, || {
+        let online = a1.status()?["state"]["connection"] == "online";
+        Ok((hellos(&fake) > before && online).then_some(()))
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(skipped(&a1)?, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_skip_at_or_below_the_last_read_seq_is_not_counted_again() -> Result<()> {
+    let (fake, a1) = world().await?;
+    a1.start("late duplicate")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let before = hellos(&fake);
+    fake.drop_connections();
+    eventually(SHORT, || {
+        let online = a1.status()?["state"]["connection"] == "online";
+        Ok((hellos(&fake) > before && online).then_some(()))
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    fake.send_raw(
+        "a1",
+        r#"{"type":"event","event":{"seq":1,"at_ms":1,"run":"r","event":"from_the_future"}}"#,
+    );
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(skipped(&a1)?, 0);
     Ok(())
 }

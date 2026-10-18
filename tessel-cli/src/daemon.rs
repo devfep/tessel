@@ -287,6 +287,8 @@ struct Daemon {
     log_skips: u64,
     /// Skipped live events the last read did not cover (they came after its end marker).
     live_event_skips: Vec<u64>,
+    /// The highest `seq` of the last read; a live skip at or below it is already in `log_skips`.
+    read_last_seq: Option<u64>,
     /// Skipped live messages that are not events; the log never holds them.
     message_skips: u64,
     /// Claims granted since the current connection was welcomed.
@@ -446,6 +448,7 @@ impl Daemon {
             lost_releases: HashSet::new(),
             log_skips: 0,
             live_event_skips: Vec::new(),
+            read_last_seq: None,
             message_skips: 0,
             fresh: HashSet::new(),
             snapshot: None,
@@ -715,6 +718,7 @@ impl Daemon {
                 envelope,
             } if generation == self.generation => {
                 match envelope.seq {
+                    Some(seq) if self.read_last_seq.is_some_and(|last| seq <= last) => {}
                     Some(seq) => self.live_event_skips.push(seq),
                     None => self.message_skips += 1,
                 }
@@ -1054,6 +1058,7 @@ impl Daemon {
             }
         };
         self.log_skips = u64::try_from(unknown.len()).unwrap_or(u64::MAX);
+        self.read_last_seq = last_seq;
         self.live_event_skips
             .retain(|seq| last_seq.is_none_or(|last| *seq > last));
         self.refresh_skipped();
