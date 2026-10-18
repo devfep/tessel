@@ -69,11 +69,48 @@ async fn an_unknown_event_kind_in_the_replay_does_not_hide_the_events_after_it()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_known_kind_with_a_payload_this_daemon_cannot_parse_is_skipped_too() -> Result<()> {
-    let frame =
-        r#"{"type":"event","event":{"seq":0,"at_ms":1,"run":"r","event":"agent_connected"}}"#;
-    adopts_the_grant_behind(frame).await?;
+async fn a_known_kind_with_a_payload_this_daemon_cannot_parse_fails_the_read() -> Result<()> {
+    // claim_released at seq 3 without its fields: skipping it would leave the released claim 1
+    // looking live, so the read must fail and nothing be adopted.
+    let (fake, a1) = world().await?;
+    a1.start("released claim")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    assert_eq!(a1.held_claims()?, 0);
+    fake.replace_in_replay(
+        3,
+        r#"{"type":"event","event":{"seq":3,"at_ms":1,"run":"r","event":"claim_released"}}"#,
+    );
+    let before = hellos(&fake);
+    fake.drop_connections();
+    eventually(SHORT, || Ok((hellos(&fake) > before).then_some(()))).await?;
+    eventually(SHORT, || {
+        let log = std::fs::read_to_string(a1.root().join(".tessel/daemon.log"))?;
+        Ok(log.contains("cannot read the event log").then_some(()))
+    })
+    .await?;
+    assert_eq!(a1.held_claims()?, 0, "a released claim was adopted");
     Ok(())
+}
+
+async fn live_frame_with_bad_payload_drops_the_socket(frame: &str) -> Result<()> {
+    let (fake, a1) = world().await?;
+    a1.start("bad payload")?;
+    let before = hellos(&fake);
+    fake.send_raw("a1", frame);
+    eventually(SHORT, || Ok((hellos(&fake) > before).then_some(()))).await?;
+    assert_eq!(skipped(&a1)?, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_granted_with_a_bad_payload_drops_the_socket() -> Result<()> {
+    live_frame_with_bad_payload_drops_the_socket(r#"{"type":"granted"}"#).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_lease_expired_with_a_bad_payload_drops_the_socket() -> Result<()> {
+    live_frame_with_bad_payload_drops_the_socket(r#"{"type":"lease_expired","claim":"x"}"#).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -125,5 +162,23 @@ async fn a_live_frame_that_is_not_json_still_ends_the_connection() -> Result<()>
     fake.send_raw("a1", "this is not json");
     eventually(SHORT, || Ok((hellos(&fake) > before).then_some(()))).await?;
     assert_eq!(skipped(&a1)?, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_skipped_live_message_stays_counted_across_a_reconnect() -> Result<()> {
+    let (fake, a1) = world().await?;
+    a1.start("future message, then a reconnect")?;
+    fake.send_raw("a1", r#"{"type":"from_the_future"}"#);
+    eventually(SHORT, || Ok((skipped(&a1)? == 1).then_some(()))).await?;
+    let before = hellos(&fake);
+    fake.drop_connections();
+    eventually(SHORT, || {
+        let online = a1.status()?["state"]["connection"] == "online";
+        Ok((hellos(&fake) > before && online).then_some(()))
+    })
+    .await?;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(skipped(&a1)?, 1);
     Ok(())
 }

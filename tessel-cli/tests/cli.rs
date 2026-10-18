@@ -1935,15 +1935,17 @@ async fn an_event_of_an_unknown_kind_in_the_replay_is_skipped_and_the_read_still
     let (fake, a1, _a2) = world(30_000).await?;
     a1.start("future event in the log")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    // The log is: connected (0), granted (1). Seq 0 reaches the daemon as a kind it does not know.
+    // The log is: connected (0), the read socket's connect (1), granted (2). Seq 0 reaches the
+    // daemon as a kind it does not know.
     fake.replace_in_replay(0, &unknown_event(0));
+    let reads = daemon_log(&a1)?.matches("(complete)").count();
     let before = hellos(&fake, "a1");
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
     eventually(SHORT, || {
-        Ok(daemon_log(&a1)?
-            .contains("unknown event seq 0 kind \"from_the_future\"")
-            .then_some(()))
+        let log = daemon_log(&a1)?;
+        let skipped = log.contains("unknown event seq 0 kind \"from_the_future\"");
+        Ok((skipped && log.matches("(complete)").count() > reads).then_some(()))
     })
     .await?;
     let log = daemon_log(&a1)?;
@@ -1956,7 +1958,6 @@ async fn an_event_of_an_unknown_kind_in_the_replay_is_skipped_and_the_read_still
         !log.contains("\"n\":1"),
         "the whole frame was logged: {log}"
     );
-    assert!(log.contains("(complete)"), "{log}");
     assert_eq!(a1.held_claims()?, 1);
     assert_eq!(a1.status()?["state"]["skipped_frames"], 1);
     assert_eq!(a1.status()?["state"]["connection"], "online");

@@ -110,6 +110,8 @@ pub(crate) struct LogRead {
     pub(crate) complete: bool,
     /// Frames this daemon could not decode. They are not in `events`.
     pub(crate) unknown: Vec<UnknownEnvelope>,
+    /// The highest `seq` read, skipped events included.
+    pub(crate) last_seq: Option<u64>,
 }
 
 /// How much of an unknown frame's kind or type is kept for the log; it is the coordinator's text.
@@ -141,10 +143,58 @@ fn bounded(text: &str) -> String {
     text.chars().take(KIND_LOG_CHARS).collect()
 }
 
-/// Reads `text` as a frame to skip: a JSON object with a string `type` that is not a `ServerMsg`
-/// this daemon can decode. An event must also carry a numeric `seq`, because skipping one without
-/// counting it would hide a gap. Text that is not JSON, not an object, or has no `type` is `None`:
-/// that is a broken link, not a newer coordinator, and stays an error.
+/// The `type` of every `ServerMsg` this daemon can decode. A test checks it against the enum.
+const KNOWN_MESSAGE_TYPES: &[&str] = &[
+    "welcome",
+    "granted",
+    "denied",
+    "shadowed",
+    "queued",
+    "accepted",
+    "merged",
+    "submit_rejected",
+    "uncovered",
+    "review_required",
+    "base_moved",
+    "assumption_challenged",
+    "lease_expired",
+    "race_opened",
+    "race_result",
+    "event",
+    "error",
+];
+
+/// The kind of every `EventKind` this daemon can decode. A test checks it against the enum.
+const KNOWN_EVENT_KINDS: &[&str] = &[
+    "agent_connected",
+    "claim_granted",
+    "claim_denied",
+    "claim_shadowed",
+    "claim_amended",
+    "claim_released",
+    "wait_queued",
+    "wait_withdrawn",
+    "submitted",
+    "merged",
+    "submit_rejected",
+    "review_requested",
+    "review_decided",
+    "base_moved",
+    "assumption_challenged",
+    "race_opened",
+    "race_decided",
+    "denial_verified",
+    "assumption_verified",
+    "replay_merged",
+];
+
+/// Reads `text` as a frame to skip: a JSON object with a string `type` that this daemon has no
+/// name for, or an event of a kind it has no name for. An event must also carry a numeric `seq`,
+/// because skipping one without counting it would hide a gap.
+///
+/// A name this daemon knows with a payload it cannot parse is `None`, as is text that is not
+/// JSON, not an object, or has no `type`: skipping it could drop a grant, a release or a lease
+/// end this daemon acts on, so it stays an error.
 fn unknown_envelope(text: &str) -> Option<UnknownEnvelope> {
     if serde_json::from_str::<ServerMsg>(text).is_ok() {
         return None;
@@ -152,6 +202,9 @@ fn unknown_envelope(text: &str) -> Option<UnknownEnvelope> {
     let frame: serde_json::Value = serde_json::from_str(text).ok()?;
     let kind = frame.get("type")?.as_str()?;
     if kind != "event" {
+        if KNOWN_MESSAGE_TYPES.contains(&kind) {
+            return None;
+        }
         return Some(UnknownEnvelope {
             seq: None,
             kind: Some(bounded(kind)),
@@ -159,13 +212,13 @@ fn unknown_envelope(text: &str) -> Option<UnknownEnvelope> {
     }
     let event = frame.get("event")?;
     let seq = event.get("seq")?.as_u64()?;
-    let kind = event
-        .get("event")
-        .and_then(serde_json::Value::as_str)
-        .map(bounded);
+    let kind = event.get("event").and_then(serde_json::Value::as_str);
+    if kind.is_some_and(|kind| KNOWN_EVENT_KINDS.contains(&kind)) {
+        return None;
+    }
     Some(UnknownEnvelope {
         seq: Some(seq),
-        kind,
+        kind: kind.map(bounded),
     })
 }
 
@@ -230,6 +283,12 @@ struct Daemon {
     lost_requests: Vec<PendingClaim>,
     /// Claims released just before the socket dropped; the release may not have arrived.
     lost_releases: HashSet<ClaimId>,
+    /// Frames skipped in the last event-log read.
+    log_skips: u64,
+    /// Skipped live events the last read did not cover (they came after its end marker).
+    live_event_skips: Vec<u64>,
+    /// Skipped live messages that are not events; the log never holds them.
+    message_skips: u64,
     /// Claims granted since the current connection was welcomed.
     fresh: HashSet<ClaimId>,
     /// The task reading the event log. Aborted when the working socket drops: a bound read
@@ -385,6 +444,9 @@ impl Daemon {
             deferred: VecDeque::new(),
             lost_requests: Vec::new(),
             lost_releases: HashSet::new(),
+            log_skips: 0,
+            live_event_skips: Vec::new(),
+            message_skips: 0,
             fresh: HashSet::new(),
             snapshot: None,
             in_tx,
@@ -652,8 +714,11 @@ impl Daemon {
                 generation,
                 envelope,
             } if generation == self.generation => {
-                self.state.skipped_frames += 1;
-                self.persist();
+                match envelope.seq {
+                    Some(seq) => self.live_event_skips.push(seq),
+                    None => self.message_skips += 1,
+                }
+                self.refresh_skipped();
                 self.log(&format!("skipped {envelope} on the live socket"));
             }
             Incoming::HeartbeatAnswered {
@@ -949,6 +1014,16 @@ impl Daemon {
         Some(held.clone())
     }
 
+    /// Puts the skipped-frame total, which `tessel status` shows, into the saved state.
+    fn refresh_skipped(&mut self) {
+        let live = u64::try_from(self.live_event_skips.len()).unwrap_or(u64::MAX);
+        self.state.skipped_frames = self
+            .log_skips
+            .saturating_add(live)
+            .saturating_add(self.message_skips);
+        self.persist();
+    }
+
     /// Compares this agent's claims in the coordinator's log with the local ones, and repairs
     /// the difference. The rules are in `reconcile`.
     async fn on_snapshot(&mut self, log: Result<LogRead, String>) {
@@ -958,6 +1033,7 @@ impl Daemon {
             events,
             complete,
             unknown,
+            last_seq,
         } = match log {
             Ok(log) => log,
             Err(why) => {
@@ -977,7 +1053,10 @@ impl Daemon {
                 return;
             }
         };
-        self.state.skipped_frames = u64::try_from(unknown.len()).unwrap_or(u64::MAX);
+        self.log_skips = u64::try_from(unknown.len()).unwrap_or(u64::MAX);
+        self.live_event_skips
+            .retain(|seq| last_seq.is_none_or(|last| *seq > last));
+        self.refresh_skipped();
         for envelope in &unknown {
             self.log(&format!("skipped {envelope} in the event log"));
         }
@@ -2115,6 +2194,7 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
         complete: marker && gapless,
         events,
         unknown,
+        last_seq: seqs.iter().copied().max(),
     })
 }
 
@@ -2433,10 +2513,44 @@ mod tests {
         );
     }
 
+    /// The names serde lists in its error for a tag it does not know: every variant of the enum.
+    fn variants_named_by_serde<T: serde::de::DeserializeOwned>(unknown: &str) -> Vec<String> {
+        let error = serde_json::from_str::<T>(unknown).err();
+        let message = error.expect("an unknown tag decoded").to_string();
+        let (_, listed) = message.split_once("expected one of ").expect(&message);
+        let listed = listed.split(" at line").next().unwrap_or(listed);
+        listed
+            .split(", ")
+            .map(|name| name.trim_matches('`').to_string())
+            .collect()
+    }
+
     #[test]
-    fn a_known_type_with_a_payload_that_does_not_parse_is_skipped() {
-        let found = unknown_envelope(r#"{"type":"welcome"}"#);
-        assert_eq!(found.and_then(|e| e.kind), Some("welcome".to_string()));
+    fn every_server_message_type_and_event_kind_is_in_the_known_lists() {
+        let mut types = variants_named_by_serde::<ServerMsg>(r#"{"type":"zzz"}"#);
+        types.sort();
+        let mut known: Vec<String> = KNOWN_MESSAGE_TYPES.iter().map(|t| (*t).into()).collect();
+        known.sort();
+        assert_eq!(types, known);
+        let mut kinds = variants_named_by_serde::<EventKind>(r#"{"event":"zzz"}"#);
+        kinds.sort();
+        let mut known: Vec<String> = KNOWN_EVENT_KINDS.iter().map(|t| (*t).into()).collect();
+        known.sort();
+        assert_eq!(kinds, known);
+    }
+
+    #[test]
+    fn a_known_name_with_a_payload_that_does_not_parse_is_not_skipped() {
+        for text in [
+            r#"{"type":"welcome"}"#,
+            r#"{"type":"granted"}"#,
+            r#"{"type":"lease_expired","claim":"x"}"#,
+            r#"{"type":"error","code":"a_code_from_the_future","message":"m"}"#,
+            r#"{"type":"event","event":{"seq":3,"at_ms":1,"run":"r","event":"claim_released"}}"#,
+            r#"{"type":"event","event":{"seq":0,"at_ms":1,"run":"r","event":"agent_connected"}}"#,
+        ] {
+            assert_eq!(unknown_envelope(text), None, "{text}");
+        }
     }
 
     #[test]
