@@ -178,6 +178,18 @@ struct Submission {
     /// Not dispatched before this instant: the backoff after an infrastructure failure.
     #[serde(default)]
     retry_at_ms: Option<u64>,
+    /// Main's head at the first dispatch whose answer was lost or unusable (a restart, a timeout,
+    /// an unreachable steward): the attempt may have landed on top of it. The first one is kept
+    /// through later answers, `main_moved` included: a cut-off attempt that went on to push makes
+    /// the retry find main moved. A submission with this set is dispatched before any other and
+    /// waited for through its backoff, so no merge from the queue lands in between; if a retry is
+    /// answered `already_merged`, this is main as it was just before the work landed (only an
+    /// admin merge can make it older than that). `None` when no attempt is in doubt.
+    #[serde(default)]
+    unanswered_from: Option<CommitId>,
+    /// An attempt is in doubt (see `unanswered_from`), whether or not main was known then.
+    #[serde(default)]
+    in_doubt: bool,
     /// The submission's decision record, which the steward writes into the merge's evidence
     /// record. `None` for a race entry and for a submission stored before this field existed: the
     /// record then says it was not supplied. Free text in it is the agent's, untrusted.
@@ -206,6 +218,8 @@ impl Submission {
             moved: 0,
             infra_failures: 0,
             retry_at_ms: None,
+            unanswered_from: None,
+            in_doubt: false,
             decisions: None,
             review: None,
         }
@@ -223,6 +237,10 @@ struct InFlight {
     /// stored before dispatch ids existed, which no issued id equals.
     #[serde(default)]
     dispatch: u64,
+    /// Main's head as the coordinator knew it when this dispatch was made. If the answer is lost,
+    /// the submission may have landed on top of it (`Submission::unanswered_from`).
+    #[serde(default)]
+    main: Option<CommitId>,
 }
 
 /// A `Submit` message minus the sender.

@@ -7,8 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proptest::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use proptest::prelude::*;
+use proptest::test_runner::TestRunner;
+
+use crate::coordinator::verifying::Subject;
 use crate::coordinator::{Config, Coordinator, Effect};
 use crate::merge::{
     infra_backoff_ms, MergeOutcome, StepExit, TrialOutcome, TrialReport, MAX_INFRA_RETRIES,
@@ -22,6 +26,8 @@ use crate::protocol::{
 const START: u64 = 1_000;
 const LEASE: u64 = 30_000;
 const MAIN: &str = "dddddddddddddddddddddddddddddddddddddddd";
+/// Main as an `already_merged` answer reports it: never equal to `MAIN`, which a merge lands at.
+const LANDED: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const AGENTS: usize = 4;
 /// Merges that may be dispatched in a row while a verification is ready (I12).
 const SLOT_AFTER: u32 = 4;
@@ -114,7 +120,7 @@ impl Answer {
                 head: CommitId(MAIN.into()),
             },
             Answer::AlreadyMerged => MergeOutcome::AlreadyMerged {
-                base: CommitId(MAIN.into()),
+                base: CommitId(LANDED.into()),
             },
             Answer::Conflict => MergeOutcome::Conflict {
                 files: vec!["a.rs".into()],
@@ -161,6 +167,11 @@ fn answers() -> impl Strategy<Value = Answer> {
         2 => Just(Answer::PushFailed),
         3 => Just(Answer::ServiceUnavailable),
     ]
+}
+
+/// An answer that leaves the attempt in doubt: it may have landed.
+fn lost_answer() -> impl Strategy<Value = Answer> {
+    prop_oneof![Just(Answer::ServiceUnavailable), Just(Answer::Timeout)]
 }
 
 fn retryable() -> impl Strategy<Value = Answer> {
@@ -230,6 +241,17 @@ enum Op {
         answer: Answer,
         times: usize,
     },
+    /// The queue is drained, then an agent's claim assumes the file `on` and another agent's
+    /// work on it is submitted. Its first dispatch is lost (a restart, or `lost` as the answer),
+    /// and the retry is answered `already_merged`: the landing must not queue a trial that
+    /// compares main with itself.
+    RecoveredLanding {
+        who: usize,
+        on: usize,
+        restart: bool,
+        lost: Answer,
+        moved_between: bool,
+    },
     /// A claim that assumes the file `on` keeps its current behaviour: when another agent's work
     /// on that file merges, a verification of this claim is queued.
     Assume {
@@ -284,6 +306,11 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         3 => (retryable(), 1..8usize).prop_map(|(answer, times)| Op::Repeat { answer, times }),
         3 => (0..AGENTS, 0..TARGETS - 1, 0..TARGETS - 1)
             .prop_map(|(who, target, on)| Op::Assume { who, target, on }),
+        4 => (0..AGENTS, 0..TARGETS - 1, any::<bool>(), lost_answer(), any::<bool>()).prop_map(
+            |(who, on, restart, lost, moved_between)| Op::RecoveredLanding {
+                who, on, restart, lost, moved_between
+            }
+        ),
         2 => Just(Op::StallTrial),
         3 => (SLOT_AFTER as usize..3 * SLOT_AFTER as usize)
             .prop_map(|rounds| Op::Storm { rounds }),
@@ -320,6 +347,10 @@ struct Model {
     /// approval does not move a claim, a new submission goes to the end.
     order: Vec<u64>,
     inflight: Option<Flight>,
+    /// Claims whose dispatch was answered with an infrastructure failure or lost: the steward may
+    /// have landed them. They are dispatched before any other claim, held-and-approved ones
+    /// included, until they land or are rejected.
+    doubt: BTreeSet<u64>,
     /// Every dispatch id the core issued (merge and verification), oldest first, with the claim
     /// of a merge dispatch. Ids are unique and only grow, across restarts too.
     issued: Vec<(Option<u64>, u64)>,
@@ -442,11 +473,13 @@ impl World {
     /// The next claim to merge by the model's own order: the earliest accepted submission that is
     /// still queued and not held for review.
     fn head_of_queue(&self) -> Option<u64> {
-        self.model
-            .order
-            .iter()
-            .copied()
-            .find(|id| self.live(*id) && !self.model.held.contains(id))
+        let ready = |id: &u64| self.live(*id) && !self.model.held.contains(id);
+        let in_doubt = |id: &u64| self.model.doubt.contains(id);
+        let order = self.model.order.iter().copied();
+        order
+            .clone()
+            .find(|id| ready(id) && in_doubt(id))
+            .or_else(|| order.clone().find(ready))
     }
 }
 
@@ -501,6 +534,16 @@ fn apply(world: &mut World, op: &Op) {
         }
         Op::Pipeline(answers) => {
             run_pipeline(world, answers);
+            Vec::new()
+        }
+        Op::RecoveredLanding {
+            who,
+            on,
+            restart,
+            lost,
+            moved_between,
+        } => {
+            run_recovered_landing(world, (*who, *on), (*restart, *lost), *moved_between);
             Vec::new()
         }
         Op::Repeat { answer, times } => {
@@ -888,6 +931,98 @@ fn run_overtake(world: &mut World, first: usize, offset: usize) {
     approve_then_begin(world, 0);
 }
 
+/// The claim a `Granted` reply names, if the request was granted.
+fn granted(effects: &[Effect]) -> Option<u64> {
+    replies(effects).into_iter().find_map(|msg| {
+        let ServerMsg::Granted { claim, .. } = msg else {
+            return None;
+        };
+        Some(claim.0)
+    })
+}
+
+/// A challenging submission whose first dispatch is lost and whose retry is answered
+/// `already_merged`: the verification it queues must start from main as it was at the lost
+/// dispatch and end at the steward's main, and none may compare main with itself.
+fn run_recovered_landing(
+    world: &mut World,
+    (who, on): (usize, usize),
+    (restart, lost): (bool, Answer),
+    moved_between: bool,
+) {
+    for _ in 0..AGENTS * 2 {
+        if world.head_of_queue().is_none() {
+            break;
+        }
+        cycle(world, Answer::Merged);
+    }
+    let target = (on + 1) % (TARGETS - 1);
+    let assuming = assume(world, who, target, on);
+    let assuming_claim = granted(&assuming);
+    emit(world, assuming);
+    let claimed = claim(world, who + 1, on, false, false);
+    let challenger = granted(&claimed);
+    emit(world, claimed);
+    let submitted = submit(world, &self::who(who + 1), true);
+    let challenges = kinds(&submitted)
+        .iter()
+        .any(|kind| matches!(kind, EventKind::AssumptionChallenged { .. }));
+    emit(world, submitted);
+    if let Some(claim) = challenger.filter(|claim| world.model.held.contains(claim)) {
+        let approval = ClientMsg::Review {
+            req: RequestId(7),
+            claim: ClaimId(claim),
+            approve: true,
+            note: None,
+        };
+        let decided = world.handle(&agent("felix"), approval);
+        emit(world, decided);
+    }
+    let first_main = world.core.state.head.clone();
+    begin_checked(world);
+    let Some(flight) = world.model.inflight else {
+        return;
+    };
+    if restart {
+        let recovered = recover_checked(world);
+        emit(world, recovered);
+    } else {
+        let answered = answer_checked(world, flight.claim, lost);
+        emit(world, answered);
+    }
+    if moved_between {
+        // The cut-off attempt went on to push: the retry finds main moved, and the baseline stays.
+        cycle(world, Answer::MainMoved);
+    }
+    cycle(world, Answer::AlreadyMerged);
+    let landed = challenger.is_some_and(|claim| world.model.merged.contains(&claim));
+    // A baseline equal to the landing's main has no span: nothing is queued (check 7).
+    let spans = first_main.as_ref().is_some_and(|main| main.0 != LANDED);
+    let assuming_live = assuming_claim.is_some_and(|id| world.core.state.claims.contains_key(&id));
+    if !(landed && challenges && spans && assuming_live && Some(flight.claim) == challenger) {
+        return;
+    }
+    let queued = world.core.state.verifications.iter().find(|queued| {
+        Some(queued.claim.0) == assuming_claim
+            && matches!(queued.subject, Subject::Assumption { .. })
+    });
+    let queued = queued.expect("a landing with a baseline and a challenge queues its verification");
+    assert_eq!(
+        Some(&queued.before),
+        first_main.as_ref(),
+        "check 8: baseline is the first lost main"
+    );
+    assert_eq!(
+        queued.main,
+        CommitId(LANDED.into()),
+        "check 8: ends at the steward's main"
+    );
+    CHECK_8_RUNS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many times check 8 got past its early returns and ran, over the whole test.
+static CHECK_8_RUNS: AtomicUsize = AtomicUsize::new(0);
+
 fn run_pipeline(world: &mut World, answers: &[Answer]) {
     for index in 0..AGENTS {
         apply(
@@ -1096,6 +1231,7 @@ fn expect_class(
         .count();
     match class {
         Class::Landed => {
+            world.model.doubt.remove(&claim);
             assert_eq!(merged_events, 1, "check 1: one Merged for a landed claim");
             assert!(
                 !world.core.state.claims.contains_key(&claim),
@@ -1103,6 +1239,7 @@ fn expect_class(
             );
         }
         Class::Rejected => {
+            world.model.doubt.remove(&claim);
             assert_eq!(rejected_events, 1);
             assert_reopened(world, claim);
         }
@@ -1113,6 +1250,7 @@ fn expect_class(
             assert_eq!(merged_events, 0);
             // `MAX_MAIN_MOVED` answers reject the claim, never fewer.
             if moved >= MAX_MAIN_MOVED {
+                world.model.doubt.remove(&claim);
                 assert_eq!(
                     rejected_events, 1,
                     "check 4: rejected at {moved} main-moved"
@@ -1156,6 +1294,7 @@ fn assert_redispatched_at_once(world: &World, claim: u64, retry_before: Option<u
 }
 
 fn expect_infra(world: &mut World, claim: u64, merged_events: usize, rejected_events: usize) {
+    world.model.doubt.insert(claim);
     let failures = world.model.infra.entry(claim).or_insert(0);
     *failures += 1;
     let failures = *failures;
@@ -1167,6 +1306,7 @@ fn expect_infra(world: &mut World, claim: u64, merged_events: usize, rejected_ev
             "check 4: rejected at failure {failures}"
         );
         assert_reopened(world, claim);
+        world.model.doubt.remove(&claim);
         return;
     }
     assert_eq!(
@@ -1296,6 +1436,7 @@ fn check_after(world: &mut World) {
         );
     }
     world.model.held.retain(|id| ids.contains(id));
+    world.model.doubt.retain(|id| ids.contains(id));
     let submitted: Vec<u64> = world
         .core
         .state
@@ -1307,6 +1448,16 @@ fn check_after(world: &mut World) {
     world.model.order.retain(|id| submitted.contains(id));
     world.model.moved.retain(|id, _| live.contains(id));
     world.model.infra.retain(|id, _| live.contains(id));
+    for queued in &world.core.state.verifications {
+        let compares_itself = match queued.subject {
+            Subject::Assumption { .. } | Subject::Shadow { .. } => queued.before == queued.main,
+            Subject::RaceEntry { .. } => false,
+        };
+        assert!(
+            !compares_itself,
+            "check 7: a trial compares main with itself (an already_merged landing)"
+        );
+    }
     assert_eq!(
         world.core.has_merge_in_flight(),
         world.model.inflight.is_some(),
@@ -1403,9 +1554,18 @@ fn run(script: &[Op]) {
     }
 }
 
-proptest! {
-    #[test]
-    fn random_merge_queue_scripts_keep_the_queue_rules(script in ops()) {
+#[test]
+fn random_merge_queue_scripts_keep_the_queue_rules() {
+    let mut runner = TestRunner::default();
+    let outcome = runner.run(&ops(), |script| {
         run(&script);
+        Ok(())
+    });
+    if let Err(failure) = outcome {
+        panic!("{failure}");
     }
+    assert!(
+        CHECK_8_RUNS.load(Ordering::Relaxed) > 0,
+        "check 8 never ran: every case returned before reaching it"
+    );
 }

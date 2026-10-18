@@ -7,6 +7,10 @@
 //! - Verifications are recorded when the challenging submission lands, one per challenged
 //!   (claim, assumption), for claims still live. They are part of the persisted state, so they are
 //!   stored before anything is sent (CLAUDE.md rule 6).
+//! - A landing whose baseline is unknown queues nothing: a retry answered `already_merged` with no
+//!   earlier attempt in doubt, or with main unchanged since that attempt began, has no span to
+//!   compare. No verification is queued and nothing is counted, so the challenged assumptions
+//!   stay unverified. This is not logged: no event says that a landing went unverified.
 //! - The commit to try is chosen when the trial is dispatched, not when it is recorded: the
 //!   assuming claim's submitted `fork_commit` at that moment; for a claim that has not submitted
 //!   it is `None`, and the steward reads the head of the agent's fork and says which commit that
@@ -118,13 +122,13 @@ pub(super) enum Subject {
 pub(super) struct Verification {
     id: u64,
     agent: AgentId,
-    claim: ClaimId,
+    pub(super) claim: ClaimId,
     #[serde(flatten)]
-    subject: Subject,
+    pub(super) subject: Subject,
     /// Main before the merge that challenged the assumption: the baseline of the trial.
-    before: CommitId,
+    pub(super) before: CommitId,
     /// Main after the merge that challenged the assumption.
-    main: CommitId,
+    pub(super) main: CommitId,
     /// Infrastructure failures so far.
     #[serde(default)]
     infra_failures: u32,
@@ -807,6 +811,195 @@ mod tests {
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger);
         c.merge_outcome(c.merge_flight_id(challenger), &landed(head), NOW)
+    }
+
+    fn already_merged(base: &str) -> MergeOutcome {
+        MergeOutcome::AlreadyMerged {
+            base: CommitId(base.into()),
+        }
+    }
+
+    /// Lands an earlier merge so main is `MAIN`, then dispatches the challenger and loses the
+    /// answer. Returns the challenger and the time its retry is due.
+    fn challenger_with_lost_answer(c: &mut Coordinator) -> (ClaimId, u64) {
+        merge_edit(c, "a0", "src/z.rs", MAIN);
+        let (_, challenger) = challenged(c);
+        let dispatch = c.begin_merge(NOW).expect("a merge is due");
+        assert_eq!(dispatch.claim, challenger);
+        c.recover_merge(NOW);
+        let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
+        (challenger, work.retry_at_ms.expect("a retry is scheduled"))
+    }
+
+    #[test]
+    fn a_recovered_merge_verifies_against_the_main_it_was_dispatched_from() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_eq!(pending(&c), 1);
+        let queued = &c.state.verifications[0];
+        assert_eq!(queued.before, CommitId(MAIN.into()));
+        assert_eq!(queued.main, CommitId(MAIN2.into()));
+    }
+
+    /// The trunk head moves to `head` while no merge is in flight, as a head read applies it.
+    fn trunk_moves_to(c: &mut Coordinator, head: &str, now: u64) {
+        c.trunk_moved(now);
+        let read = c.begin_head_read().expect("a head read is due");
+        c.trunk_read(&read, Some(CommitId(head.into())), now);
+    }
+
+    #[test]
+    fn a_head_read_between_the_attempts_does_not_move_the_baseline() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        trunk_moves_to(&mut c, MAIN2, NOW + 1);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_eq!(pending(&c), 1);
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn main_moved_after_a_lost_answer_keeps_the_first_baseline() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        // The cut-off attempt kept running at the steward and pushed; the retry finds main moved.
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(
+            c.merge_flight_id(challenger),
+            &MergeOutcome::MainMoved {},
+            due,
+        );
+        trunk_moves_to(&mut c, MAIN2, due + 1);
+        c.begin_merge(due + 1)
+            .expect("main moved: dispatched at once");
+        c.merge_outcome(
+            c.merge_flight_id(challenger),
+            &already_merged(OTHER),
+            due + 1,
+        );
+
+        assert_eq!(pending(&c), 1);
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
+        assert_eq!(c.state.verifications[0].main, CommitId(OTHER.into()));
+    }
+
+    #[test]
+    fn a_second_lost_answer_keeps_the_first_baseline() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        trunk_moves_to(&mut c, MAIN2, NOW + 1);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.recover_merge(due);
+        let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
+        let again = work.retry_at_ms.expect("a second retry is scheduled");
+        c.begin_merge(again)
+            .expect("the second retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(OTHER), again);
+
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn the_baseline_survives_a_save_and_load_before_the_retry() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        let stored = serde_json::to_string(&c).unwrap();
+        let mut c: Coordinator = serde_json::from_str(&stored).unwrap();
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn a_submission_in_doubt_is_not_overtaken_by_one_approved_meanwhile() {
+        let mut c = core();
+        c.set_reviewers(vec![agent("felix")]);
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        // Lower ordinal, held for review (no test evidence).
+        let held = grant(&mut c, "a3", vec![edit("src/y.rs")], Vec::new());
+        let msg = ClientMsg::Submit {
+            req: RequestId(9),
+            claim: held.0,
+            fence: held.1,
+            fork_commit: CommitId(fork_sha("a3")),
+            touched: vec![edit("src/y.rs")],
+            decisions: DecisionRecord::default(),
+        };
+        c.handle(&agent("a3"), msg, NOW);
+        let (_, challenger) = challenged(&mut c);
+        let dispatch = c.begin_merge(NOW).expect("a merge is due");
+        assert_eq!(dispatch.claim, challenger, "the held submission is skipped");
+        c.recover_merge(NOW);
+        let review = ClientMsg::Review {
+            req: RequestId(7),
+            claim: held.0,
+            approve: true,
+            note: None,
+        };
+        c.handle(&agent("felix"), review, NOW + 1);
+
+        assert_eq!(
+            c.begin_merge(NOW + 2),
+            None,
+            "the claim in doubt is waited for"
+        );
+        let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
+        let due = work.retry_at_ms.expect("a retry is scheduled");
+        assert_eq!(c.begin_merge(due).map(|d| d.claim), Some(challenger));
+    }
+
+    #[test]
+    fn an_unreachable_steward_leaves_the_same_baseline_as_a_restart() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let (_, challenger) = challenged(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        c.merge_outcome(
+            c.merge_flight_id(challenger),
+            &MergeOutcome::ServiceUnavailable,
+            NOW,
+        );
+        let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
+        let due = work.retry_at_ms.expect("a retry is scheduled");
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn an_already_merged_answer_to_a_first_dispatch_queues_nothing() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let (_, challenger) = challenged(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
+
+        assert_eq!(
+            pending(&c),
+            0,
+            "nothing of this submission is known to have landed"
+        );
+    }
+
+    #[test]
+    fn a_recovered_merge_that_left_main_unchanged_queues_nothing() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN), due);
+
+        assert_eq!(
+            pending(&c),
+            0,
+            "main did not move, so there is no span to verify"
+        );
     }
 
     fn pending(c: &Coordinator) -> usize {

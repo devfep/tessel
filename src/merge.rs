@@ -12,7 +12,10 @@ use crate::protocol::{
     AgentId, ClaimId, CommitId, DecisionRecord, Intent, Outcome, ReviewReason, ScopeClaim,
 };
 
-/// A `main_moved` outcome re-dispatches the claim at once; this many in a row reject it.
+/// A `main_moved` outcome re-dispatches the claim at once. The answers are counted per submission
+/// (an infrastructure failure in between does not reset the count): the `MAX_MAIN_MOVED`th rejects
+/// the claim, so it is re-dispatched `MAX_MAIN_MOVED - 1` times at most. The merge-queue property
+/// test (`queue_props`, check 4) checks exactly that: never rejected before, always rejected at.
 pub const MAX_MAIN_MOVED: u32 = 5;
 
 /// An infrastructure outcome is retried this many times before the claim is rejected.
@@ -171,7 +174,9 @@ pub enum MergeOutcome {
         base: CommitId,
         head: CommitId,
     },
-    /// The rebase left nothing to add to main, which is at `base`.
+    /// The rebase left nothing to add to main, which is at `base`: the main the steward pinned
+    /// for this attempt and read back from its clone, so main as it is now, with the commit's
+    /// changes already in it. It does not name the commit that landed them.
     AlreadyMerged {
         base: CommitId,
     },
@@ -235,6 +240,10 @@ impl MergeOutcome {
 pub enum Verdict {
     /// Main now holds the work, at `head`.
     Landed { base: CommitId, head: CommitId },
+    /// Main already holds the work, at `main`, but this answer does not say which commit landed
+    /// it or what main was before: a retry after an attempt whose answer was lost. The caller
+    /// supplies the earlier main it recorded; without one, the landing cannot be verified.
+    AlreadyLanded { main: CommitId },
     /// A verified rejection of the work, in fixed form. The only repo text a reason carries is
     /// failing test output, bounded and quoted as data at the end of a tests-failed reason.
     Rejected { reason: String },
@@ -251,10 +260,7 @@ impl MergeOutcome {
                 base: base.clone(),
                 head: head.clone(),
             },
-            MergeOutcome::AlreadyMerged { base } => Verdict::Landed {
-                base: base.clone(),
-                head: base.clone(),
-            },
+            MergeOutcome::AlreadyMerged { base } => Verdict::AlreadyLanded { main: base.clone() },
             MergeOutcome::Conflict { files } => Verdict::Rejected {
                 reason: format!(
                     "conflicts with main in {} file(s); rebase onto main and resubmit",
@@ -1267,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_lands_at_its_head_and_an_already_merged_commit_at_the_base() {
+    fn a_merge_lands_at_its_head_and_an_already_merged_commit_is_found_in_main() {
         let merged = MergeOutcome::Merged {
             base: CommitId(SHA_A.into()),
             head: CommitId(SHA_B.into()),
@@ -1284,9 +1290,8 @@ mod tests {
         };
         assert_eq!(
             already.verdict(),
-            Verdict::Landed {
-                base: CommitId(SHA_A.into()),
-                head: CommitId(SHA_A.into())
+            Verdict::AlreadyLanded {
+                main: CommitId(SHA_A.into())
             }
         );
     }

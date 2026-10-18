@@ -3,7 +3,10 @@
 //! One merge is in flight per repo, taken in submission order. The shell persists the in-flight
 //! marker (`begin_merge`) before it calls the steward, and applies the answer with
 //! `merge_outcome`. A restart that finds a marker dispatches the same claim again, which is safe:
-//! the steward answers `already_merged` for a commit it already landed.
+//! the steward answers `already_merged` for a commit it already landed. That answer names main as
+//! it is now, not the commit that landed or what main was before, so the baseline of what it
+//! queues for verification is main as recorded at the first dispatch whose answer was lost
+//! (`Submission::unanswered_from`). Without one, nothing is queued.
 //!
 //! Every dispatch, merge or verification, gets a persisted id from one counter that never repeats.
 //! The answer carries the id of the dispatch it answers, and only the dispatch in flight can be
@@ -15,6 +18,10 @@
 //!   freed scopes unblock are granted first, so a waiter granted by this merge holds a claim when
 //!   the notices go out and learns main moved: `Granted` carries no head. The log reads
 //!   `ClaimGranted` before `BaseMoved`.
+//! - A submission whose first dispatch was lost (`Submission::unanswered_from`) is the exception to
+//!   submission order: it is dispatched before any other and waited for through its backoff, even
+//!   if a held submission with a lower ordinal is approved meanwhile. The steward may have landed
+//!   it, and a merge that lands in between would widen what its verification compares.
 //! - Assumptions are challenged once, at submit time (invariant 8). A merge does not challenge them
 //!   again: the evidence counters count every `AssumptionChallenged` event. A merge does record
 //!   what the submission challenged for verification (see `verifying`).
@@ -135,6 +142,7 @@ impl Coordinator {
             claim,
             attempt,
             dispatch: self.state.last_dispatch + 1,
+            main: self.state.head.clone(),
         };
         let dispatch = self.dispatch_of(&flight)?;
         self.state.last_dispatch = flight.dispatch;
@@ -172,7 +180,7 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        self.retry_after_infrastructure(flight.claim, held, now_ms)
+        self.retry_after_infrastructure(flight.claim, held, flight.main, now_ms)
     }
 
     /// When the shell should next run `begin_merge`, as an absolute time in milliseconds since the
@@ -234,12 +242,21 @@ impl Coordinator {
             return Vec::new();
         }
         match outcome.verdict() {
-            Verdict::Landed { base, head } => self.land(claim, &held, (base, head), now_ms),
+            Verdict::Landed { base, head } => self.land(claim, &held, Some(base), head, now_ms),
+            Verdict::AlreadyLanded { main } => {
+                let before = held
+                    .work
+                    .as_ref()
+                    .and_then(|work| work.unanswered_from.clone());
+                self.land(claim, &held, before, main, now_ms)
+            }
             Verdict::Rejected { reason } => {
                 self.reject_work(claim, held, Rejection::plain(reason), now_ms)
             }
             Verdict::MainMoved => self.retry_after_move(claim, held, now_ms),
-            Verdict::Infrastructure => self.retry_after_infrastructure(claim, held, now_ms),
+            Verdict::Infrastructure => {
+                self.retry_after_infrastructure(claim, held, flight.main, now_ms)
+            }
         }
     }
 
@@ -335,6 +352,7 @@ impl Coordinator {
             claim,
             attempt,
             dispatch,
+            main: _,
         } = *flight;
         let held = self.state.claims.get(&claim.0)?;
         let work = held.work.as_ref()?;
@@ -380,10 +398,11 @@ impl Coordinator {
         due <= now_ms
     }
 
-    /// The earliest submission that may be dispatched: submitted and not held for review. Only real
-    /// claims have `work`, so shadow claims never qualify.
+    /// The earliest submission that may be dispatched: submitted and not held for review, except
+    /// that one in doubt (`unanswered_from`) comes first. Only real claims have `work`, so shadow
+    /// claims never qualify.
     fn next_to_merge(&self) -> Option<ClaimId> {
-        let mut next: Option<(u64, ClaimId)> = None;
+        let mut next: Option<(bool, u64, ClaimId)> = None;
         for (id, held) in &self.state.claims {
             let (Some(ordinal), Some(work)) = (held.submitted, held.work.as_ref()) else {
                 continue;
@@ -391,21 +410,27 @@ impl Coordinator {
             if work.awaiting_review {
                 continue;
             }
-            if next.is_none_or(|(best, _)| ordinal < best) {
-                next = Some((ordinal, ClaimId(*id)));
+            let in_doubt = work.in_doubt;
+            if next.is_none_or(|(best_doubt, best, _)| (!in_doubt, ordinal) < (!best_doubt, best)) {
+                next = Some((in_doubt, ordinal, ClaimId(*id)));
             }
         }
-        next.map(|(_, claim)| claim)
+        next.map(|(_, _, claim)| claim)
     }
 
     /// Main holds the claim's work at `head`: release the claim, grant the waiters the freed
     /// scopes unblock, then tell the submitter and everyone whose claim overlaps, those new holders
     /// included.
+    ///
+    /// `before` is main as it was before the work landed. With `None`, or `before == head`, the
+    /// span of the landing is unknown, so no verification or trial is queued: one that compared
+    /// main with itself would say nothing, and nothing is claimed as verified.
     fn land(
         &mut self,
         claim: ClaimId,
         held: &ActiveClaim,
-        (base, head): (CommitId, CommitId),
+        before: Option<CommitId>,
+        head: CommitId,
         now_ms: u64,
     ) -> Vec<Effect> {
         let touched = held
@@ -440,8 +465,10 @@ impl Coordinator {
             .as_ref()
             .map(|work| work.challenged.clone())
             .unwrap_or_default();
-        self.record_verifications(&challenged, &base, &head);
-        self.record_shadow_verifications(claim, &base, &head);
+        if let Some(before) = before.filter(|before| *before != head) {
+            self.record_verifications(&challenged, &before, &head);
+            self.record_shadow_verifications(claim, &before, &head);
+        }
         effects
     }
 
@@ -541,7 +568,9 @@ impl Coordinator {
         ]
     }
 
-    /// Main moved under the merge. Dispatch the same claim again, up to `MAX_MAIN_MOVED` times.
+    /// Main moved under the merge. Dispatch the same claim again. This answer is counted per
+    /// submission, whatever came between; the `MAX_MAIN_MOVED`th rejects the claim, so there are
+    /// at most `MAX_MAIN_MOVED - 1` re-dispatches.
     fn retry_after_move(&mut self, claim: ClaimId, held: ActiveClaim, now_ms: u64) -> Vec<Effect> {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
@@ -559,15 +588,21 @@ impl Coordinator {
     }
 
     /// The attempt did not finish. Retry after a backoff, up to `MAX_INFRA_RETRIES` times.
+    /// `dispatched_from` is main as the attempt began; the attempt may have landed on it.
     fn retry_after_infrastructure(
         &mut self,
         claim: ClaimId,
         held: ActiveClaim,
+        dispatched_from: Option<CommitId>,
         now_ms: u64,
     ) -> Vec<Effect> {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
         };
+        if !work.in_doubt {
+            work.in_doubt = true;
+            work.unanswered_from = dispatched_from;
+        }
         work.infra_failures += 1;
         if work.infra_failures > MAX_INFRA_RETRIES {
             let reason = format!(
