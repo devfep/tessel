@@ -92,6 +92,19 @@ else
   echo "ok: CRLF and trailing spaces in the baseline are ignored"
 fi
 
+# Shards' files are read as separate files: a last line without a newline stays its own line.
+printf '%s\n%s' "src/merge.rs:10:5: replace land -> bool with true" \
+  "src/merge.rs:40:9: replace land -> bool with true" >"$work/shard-a.txt"
+echo "src/shell.rs:7:3: delete match arm Mode::Edit" >"$work/shard-b.txt"
+got=0
+"$script" "$baseline" "$work/shard-a.txt" "$work/shard-b.txt" >/dev/null 2>&1 || got=$?
+if [ "$got" -ne 0 ]; then
+  echo "FAIL: first file without a trailing newline: exit $got, want 0"
+  failures=$((failures + 1))
+else
+  echo "ok: a file without a trailing newline does not merge into the next file"
+fi
+
 # Blank lines are not mutants.
 printf '\n%s\n\n   \n' "$(cat "$work/unchanged.txt")" >"$work/blank.txt"
 expect "blank lines are ignored" 0 "$work/blank.txt"
