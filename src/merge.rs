@@ -131,15 +131,6 @@ pub fn trial_request_body(
     body.to_string()
 }
 
-/// Planted for the mutation check: a branch no test reaches.
-pub fn planted_retry_cap(retry: u32) -> u32 {
-    if retry > 5 {
-        5
-    } else {
-        retry
-    }
-}
-
 /// The name of an agent's Artifacts fork of `repo`.
 pub fn fork_name(repo: &str, agent: &AgentId) -> String {
     format!("{repo}--{}", agent.0)
