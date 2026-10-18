@@ -7,14 +7,15 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-17 evening.
-**Ready for Felix to merge:** PR #19 (P0-CI; Opus review "With fixes" twice, all fixed but the
-steward image, ruled out of scope; all six jobs green on GitHub, fast lane 1m9s cold) and PR #20
-(P0-MQ-PROPTEST; Opus "Yes" after one fix pass; 19 mutants killed, no bugs found). After #19
-merges, #20 merges `main` in so CI runs on it.
-**Next to dispatch:** P0-DISPATCH-ID and P0-CLI-REPLAY-UNKNOWN-EVENT (disjoint files).
-**Pending from Felix:** the spike organisation and App (P0-SPIKE); a ruleset making the six CI
-jobs required on `main`.
+**As of:** 2026-10-18 morning. Merged: P0-CI, P0-MQ-PROPTEST, P0-DISPATCH-ID,
+P0-CLI-REPLAY-UNKNOWN-EVENT.
+**Ready for Felix to merge, in order:** #25 P0-VERIFY-SLOT; #26 P0-LANDED-COMMIT with
+P0-DOC-MAIN-MOVED (stacked on #25, retargets to `main`); #27 P0-FLAKE-WALLCLOCK; this roadmap PR.
+Each was reviewed by Opus to "Yes" and is green on CI.
+**Pending from Felix:** P0-SPIKE (a free organisation and a GitHub App); a ruleset making the six CI
+jobs required on `main`; P0-UNVERIFIABLE-LANDING needs a protocol decision.
+**Rule from 18 October:** no synthetic CPU load on this Mac (it broke another project's builds);
+load and flake checks run on CI runners.
 
 ## Phase 0: foundations
 
