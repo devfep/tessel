@@ -63,6 +63,37 @@ grep -q "found 2, baseline allows 1" "$work/out.txt" || {
   failures=$((failures + 1))
 }
 
+# Counts compare as numbers: 10 copies against a baseline of 9 is new, though "10" < "9" as text.
+for _ in 1 2 3 4 5 6 7 8 9; do
+  echo "src/lib.rs: replace f -> bool with true"
+done >"$work/nine.txt"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  echo "src/lib.rs:5:5: replace f -> bool with true"
+done >"$work/ten.txt"
+nine_baseline=$work/baseline-nine.txt
+cp "$work/nine.txt" "$nine_baseline"
+got=0
+"$script" "$nine_baseline" "$work/ten.txt" >/dev/null 2>&1 || got=$?
+if [ "$got" -ne 1 ]; then
+  echo "FAIL: ten copies against a baseline of nine: exit $got, want 1"
+  failures=$((failures + 1))
+else
+  echo "ok: ten copies against a baseline of nine fail"
+fi
+
+# Blank lines are not mutants.
+printf '\n%s\n\n   \n' "$(cat "$work/unchanged.txt")" >"$work/blank.txt"
+expect "blank lines are ignored" 0 "$work/blank.txt"
+
+got=0
+"$script" "$baseline" >/dev/null 2>&1 || got=$?
+if [ "$got" -ne 2 ]; then
+  echo "FAIL: one argument: exit $got, want 2"
+  failures=$((failures + 1))
+else
+  echo "ok: one argument is a usage error"
+fi
+
 got=0
 "$script" "$baseline" "$work/missing.txt" >/dev/null 2>&1 || got=$?
 if [ "$got" -ne 2 ]; then
