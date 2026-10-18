@@ -82,12 +82,12 @@ load and flake checks run on CI runners.
   the coordinator's `head` is the base the first agent declared in its `Hello`
   (`src/coordinator.rs`), and it becomes the baseline of the first dispatch unchecked. Phase 1:
   read the trunk head from the git host when the repo loads, before any dispatch.
-- [x] **P0-SPIKE** (this pull request) — the GitHub spike in the proposal ("The GitHub adapter", spike paragraph):
-  does a fork pull request's check satisfy a required-checks ruleset for a direct `updateRefs` of
-  that commit; is a stale `beforeOid` refused with the App as bypass actor; check and webhook
-  latencies. Done: a written answer in `docs/proposals/` and a script that reproduces it. Felix
-  created the organisation `tessel-sandbox` and the private App `tessel-lander-spike` (ID 5368982;
-  contents, pull requests and administration write; checks, statuses and actions read; no
+- [x] **P0-SPIKE** (this pull request) — the GitHub spike in the proposal ("The GitHub adapter",
+  spike paragraph): does a fork pull request's check satisfy a required-checks ruleset for a direct
+  `updateRefs` of that commit; is a stale `beforeOid` refused with the App as bypass actor; check
+  and webhook latencies. Done: a written answer in `docs/proposals/` and a script that reproduces
+  it. Felix created the organisation `tessel-sandbox` and the private App `tessel-lander-spike` (ID
+  5368982; contents, pull requests and administration write; checks, statuses and actions read; no
   webhook) on 18 October. Its private key is kept outside the repository and is never committed.
   Answered in `docs/proposals/github-spike.md`: a fork pull request's check satisfies the
   required-checks ruleset for a direct `updateRefs`, also for the App as bypass actor of the
