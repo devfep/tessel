@@ -930,9 +930,11 @@ fn run_overtake(world: &mut World, first: usize, offset: usize) {
 
 /// The claim a `Granted` reply names, if the request was granted.
 fn granted(effects: &[Effect]) -> Option<u64> {
-    replies(effects).into_iter().find_map(|msg| match msg {
-        ServerMsg::Granted { claim, .. } => Some(claim.0),
-        _ => None,
+    replies(effects).into_iter().find_map(|msg| {
+        let ServerMsg::Granted { claim, .. } = msg else {
+            return None;
+        };
+        Some(claim.0)
     })
 }
 
