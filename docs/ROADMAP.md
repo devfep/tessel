@@ -7,10 +7,14 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-17. Phase 0 started after Felix merged PR #16.
-**Running:** P0-CI (lane A), P0-MQ-PROPTEST (lane B).
-**Pending from Felix:** P0-SPIKE needs a GitHub test organisation (or a public test repository)
-and permission to create a GitHub App in it; making CI checks required on `main` once P0-CI lands.
+**As of:** 2026-10-17 evening.
+**Ready for Felix to merge:** PR #19 (P0-CI; Opus review "With fixes" twice, all fixed but the
+steward image, ruled out of scope; all six jobs green on GitHub, fast lane 1m9s cold) and PR #20
+(P0-MQ-PROPTEST; Opus "Yes" after one fix pass; 19 mutants killed, no bugs found). After #19
+merges, #20 merges `main` in so CI runs on it.
+**Next to dispatch:** P0-DISPATCH-ID and P0-CLI-REPLAY-UNKNOWN-EVENT (disjoint files).
+**Pending from Felix:** the spike organisation and App (P0-SPIKE); making CI checks required on
+`main` once #19 lands.
 
 ## Phase 0: foundations
 
@@ -49,6 +53,10 @@ and permission to create a GitHub App in it; making CI checks required on `main`
   dropped verifications are logged as a new `VerificationDropped` event and counted in `Summary`
   (proposal, fixes table, I12). Needs P0-CLI-REPLAY-UNKNOWN-EVENT. Done: a property test that a
   ready verification runs within N merges under continuous merge load.
+- [ ] **P0-DOC-MAIN-MOVED** — from the P0-MQ-PROPTEST review: `src/merge.rs` documents
+  `MAX_MAIN_MOVED` as answers "in a row", but the code counts them per submission (an infra failure
+  does not reset the count, which is the safer rule), and `merging.rs` says "up to MAX_MAIN_MOVED
+  times" where there are MAX_MAIN_MOVED - 1 re-dispatches. Fix the docs to match the code. Small.
 - [ ] **P0-SPIKE** — the GitHub spike in the proposal ("The GitHub adapter", spike paragraph):
   does a fork pull request's check satisfy a required-checks ruleset for a direct `updateRefs` of
   that commit; is a stale `beforeOid` refused with the App as bypass actor; check and webhook
@@ -75,6 +83,10 @@ Kept, and scheduled where they fit:
 - [ ] **COORD-APPLY-LOADED** — `runtime.rs` applies a steward outcome after an await without
   reloading the core. Phase 1: the host's one-outstanding-commit model removes it; a host test
   pins it.
+- [ ] **COORD-WAKE-WHILE-VERIFYING** — from the P0-MQ-PROPTEST review: `runtime.rs` (~661)
+  calls `next_wake_ms(true, false, ..)` even while this instance is verifying, which looks like an
+  immediate-alarm loop during a verification. Phase 1: a host test (I4, "the wake is in the
+  future") pins it when the orchestration moves.
 - [ ] **REVIEW-SENSITIVE** — the sensitive-path review reason can never fire (no list is
   configured). Phase 3, with per-repo review configuration.
 - [ ] **REVIEW-NOTE** — a reviewer's note never reaches the agent. Needs a design (untrusted text,
