@@ -429,6 +429,40 @@ mod tests {
         );
     }
 
+    /// Runs the harness on its own thread and records when each agent's directory first appears.
+    /// An agent creates its directory when its simulated work time is over, so directories that
+    /// appear one work time apart mean the agents worked one after another.
+    fn first_appearances(
+        tasks: &[Task],
+        agents: usize,
+        work_ms: u64,
+    ) -> (OffResult, Vec<Duration>) {
+        let dir = scratch();
+        let (root, config) = (dir.path().to_path_buf(), OffConfig { agents, work_ms });
+        let tasks = tasks.to_vec();
+        let runner = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+                .block_on(run_off(&tasks, &root, config))
+                .unwrap()
+        });
+        let started = Instant::now();
+        let mut seen: Vec<Option<Duration>> = vec![None; agents];
+        while !runner.is_finished() && seen.iter().any(Option::is_none) {
+            for (slot, at) in seen.iter_mut().enumerate() {
+                if at.is_none() && dir.path().join(format!("slot{slot}")).exists() {
+                    *at = Some(started.elapsed());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let result = runner.join().unwrap();
+        let seen = seen.into_iter().map(|at| at.unwrap()).collect();
+        (result, seen)
+    }
+
     #[test]
     fn agents_work_at_the_same_time() {
         let tasks = [
@@ -437,13 +471,19 @@ mod tests {
             body(3, "available"),
             body(4, "loyaltyPoints"),
         ];
-        let result = run_with(&tasks, 4, 1000);
+        let work_ms = 1500;
+        let (result, seen) = first_appearances(&tasks, 4, work_ms);
         assert_eq!(result.counts.clean, 4);
+        let spread = seen
+            .iter()
+            .max()
+            .unwrap()
+            .saturating_sub(*seen.iter().min().unwrap());
+        let in_turn = Duration::from_millis(work_ms * (tasks.len() as u64 - 1));
         assert!(
-            result.wall_ms < result.work_ms,
-            "wall {} ms against {} ms of work in total: the branches were built one after another",
-            result.wall_ms,
-            result.work_ms
+            spread < in_turn,
+            "agents ended their work {spread:?} apart; four working in turn are at least \
+             {in_turn:?} apart"
         );
     }
 }
