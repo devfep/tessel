@@ -23,6 +23,7 @@ HEAD_SHA=
 PR_NUM=
 T_PUSH=0
 T_PR=0
+UNEXPECTED=0
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
@@ -57,7 +58,7 @@ mint_app_token() {
 revoke_app_token() {
   [[ -n $APP_TOKEN ]] || return 0
   printf 'header = "Authorization: Bearer %s"\n' "$APP_TOKEN" |
-    curl -q -sS --proto '=https' -K - -X DELETE -o /dev/null \
+    curl -q -sS --proto '=https' -K - --fail -X DELETE -o /dev/null \
       'https://api.github.com/installation/token' || log "warning: token revocation failed"
   APP_TOKEN=
 }
@@ -108,6 +109,15 @@ await_check() {
     "app $(printf '%s' "$run" | jq -r .app.slug)"
 }
 
+# Runs a step and counts it instead of stopping when it reports an unexpected result.
+soft() { "$@" || UNEXPECTED=$((UNEXPECTED + 1)); }
+
+check_main() {
+  [[ $(main_sha) == "$1" ]] && return 0
+  log "UNEXPECTED MAIN: main is $(main_sha), expected $1 ($2)"
+  return 1
+}
+
 assert_main() {
   [[ $(main_sha) == "$1" ]] || die "main is $(main_sha), expected $1 ($2)"
 }
@@ -156,7 +166,7 @@ stage_user() {
 }
 
 stage_app() {
-  local stale z_head w_head current
+  local stale z_head w_head current landed
   [[ -n $(ruleset_id "$RULESET_A") ]] || die "run setup.sh and run.sh user first"
   ruleset_apply "$RULESET_A" active
   ruleset_apply "$RULESET_B" active
@@ -166,23 +176,29 @@ stage_app() {
   mint_app_token
 
   log "== Q1 and Q2 (App token, rulesets A and B active)"
-  expect_accepted "Q1: App bypasses A, check passed on z, correct beforeOid" \
+  soft expect_accepted "Q1: App bypasses A, check passed on z, correct beforeOid" \
     update_ref_as "$APP_TOKEN" "$current" "$z_head"
-  assert_main "$z_head" "App landing of z"
+  soft check_main "$z_head" "App landing of z"
+  landed=$(main_sha)
 
   create_pr w
   w_head=$HEAD_SHA
-  expect_refused "Q1 control: App bypasses A but not B, check not finished" \
+  soft expect_refused "Q1 control: App bypasses A but not B, check not finished" \
     'Required status check' \
-    update_ref_as "$APP_TOKEN" "$z_head" "$w_head"
+    update_ref_as "$APP_TOKEN" "$landed" "$w_head"
   await_check
-  expect_refused "Q2a: App bypass actor, stale beforeOid" \
+  soft expect_refused "Q2a: App bypass actor, stale beforeOid" \
     'Something went wrong' \
     update_ref_as "$APP_TOKEN" "$stale" "$w_head"
-  assert_main "$z_head" "stale App update must not move main"
-  expect_accepted "Q2a control: App, correct beforeOid" \
-    update_ref_as "$APP_TOKEN" "$z_head" "$w_head"
-  assert_main "$w_head" "App landing of w"
+  soft check_main "$landed" "stale App update must not move main"
+  soft expect_accepted "Q2a control: App, correct beforeOid" \
+    update_ref_as "$APP_TOKEN" "$landed" "$w_head"
+  soft check_main "$w_head" "App landing of w"
+
+  if ((UNEXPECTED > 0)); then
+    die "$UNEXPECTED unexpected result(s); read the messages above"
+  fi
+  log "all App-token steps behaved as expected"
 }
 
 # Prints each delivery's lag behind the event timestamp inside its payload.

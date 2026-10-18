@@ -121,8 +121,10 @@ refused (as expected)  Q2a: App bypass actor, stale beforeOid
 accepted (as expected)  Q2a control: App, correct beforeOid
 ```
 
-and exit code 0. Any `UNEXPECTED` line is a finding, not a script bug: the App bypass either
-failed to apply, or A's bypass also lets a stale base through.
+and exit code 0. An `UNEXPECTED` line means the step did not behave as predicted. It may be a finding (the App
+bypass failed to apply, or A's bypass lets a stale base through), a missing permission on the
+narrowed token, or different wording of the message. Read the printed (redacted) message before
+deciding. The stage records each such result, carries on, and exits non-zero at the end.
 
 ## Other limits of this spike
 
