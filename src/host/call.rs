@@ -122,16 +122,16 @@ pub enum Refusal {
     /// check). GitHub types these (`UNPROCESSABLE`, `Branch 'refs/heads/main' is protected: ...`,
     /// `docs/proposals/github-spike.md` section 2), unlike a stale `beforeOid`, which is `Unknown`.
     Rule {
-        /// The host's message, untrusted. The lander cuts it to `REASON_OUTPUT_MAX_CHARS`
-        /// characters; it is shown quoted and never read.
+        /// The host's message, untrusted. The lander must cut it to
+        /// `REASON_OUTPUT_MAX_CHARS` characters; it is shown quoted and never read.
         message: String,
     },
 }
 
 /// The failed test step: its exit code and the tails of its output, as `merge::StepExit` carries
-/// them. The output is untrusted text from the repo's tests. A rejection reason is built from it
-/// by `merge::tests_reason`, which bounds it (`REASON_OUTPUT_MAX_LINES`,
-/// `REASON_OUTPUT_LINE_MAX_CHARS`, `REASON_OUTPUT_MAX_CHARS`) and quotes it.
+/// them. The output is untrusted text from the repo's tests. A rejection reason built from it must
+/// bound it (`REASON_OUTPUT_MAX_LINES`, `REASON_OUTPUT_LINE_MAX_CHARS`,
+/// `REASON_OUTPUT_MAX_CHARS`) and quote it, as `merge::tests_reason` does for `StepExit`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestFailure {
     pub exit_code: i64,
