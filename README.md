@@ -15,9 +15,6 @@ each other's.
 
 To try it, [run the swarm harness](#see-it-run) on your own machine with no account.
 
-Documentation site: <https://devfep.github.io/tessel/> (this README and the pages under docs/
-rendered from main).
-
 ## The problem
 
 Two agents in one repository each work in their own branch and see nothing of the other. When
@@ -82,18 +79,22 @@ table and writes it, with the coordinator's event log, to `swarm-results/`. Whic
 contested function varies with timing, so your numbers can differ from run to run.
 [`tessel-swarm/README.md`](tessel-swarm/README.md) explains every row.
 
-## The deployed instance
+## Hosting today
 
-During the challenge, Tessel ran on Cloudflare with a public review page and dashboards. From 5
-October 2026 Tessel's own changes landed through it, except a few an admin merged by hand, every
-wire-protocol change among them. That instance was shut down on 17 October 2026. To run your own,
-see [Operate it](#operate-it).
+The coordinator and steward in this repository run on Cloudflare Workers, Durable Objects and
+Artifacts. Phase 1 of [`PLAN.md`](PLAN.md) replaces that host with `tessel-server`, which is not
+built yet. Nothing is deployed from this repository at the moment. To run the Cloudflare host
+yourself, see [Operate it](#operate-it).
 
 ## Evidence
 
 The counting rule: **a denial is not a prevented conflict.** Only verified outcomes count.
-Everything below is in [`docs/evidence/`](docs/evidence/), with the event logs the numbers came
-from.
+The `on` runs used the Cloudflare coordinator deployed at the time (now shut down); the `off`
+row is a local replay. Their event logs are no longer in the tree; they are in the git tag
+`contest-2026-10`, under
+[`docs/evidence/2026-10-09`](https://github.com/devfep/tessel/tree/contest-2026-10/docs/evidence/2026-10-09).
+`tessel-swarm run --seed 3 --tasks 40 --agents 30 --overlap 0.5` runs the same tasks against the
+local core; expect different numbers.
 
 The same 40 tasks (seed 3, 30 agents, overlap 0.5) on 9 October 2026:
 
@@ -103,13 +104,13 @@ The same 40 tasks (seed 3, 30 agents, overlap 0.5) on 9 October 2026:
   claims queued behind a holder. The 40 include 20 submissions held for review and approved by
   the harness's scripted reviewer. It was slower: 837 seconds of wall time against 14 for the
   local replay, or 2.8 landed per minute against 59.6.
-  [`2026-10-09/ab-wait`](docs/evidence/2026-10-09/ab-wait/README.md)
+  (`docs/evidence/2026-10-09/ab-wait` at the tag)
 - **With Tessel, shadow runs** (live coordinator): 28 claims were denied and their work was done
   anyway in forks that could never merge, then tried against what blocked them. **20 verified
   preventions, 9 false alarms, 3 inconclusive.** A shadow claim can face more than one blocker, so
   the 32 trials outnumber the 28 claims. A false alarm is a denial whose work would have merged
   cleanly, and it counts as a false alarm, never as a prevention.
-  [`2026-10-09/ab-shadow`](docs/evidence/2026-10-09/ab-shadow/README.md)
+  (`docs/evidence/2026-10-09/ab-shadow` at the tag)
 
 ## What shipped and what did not
 
@@ -135,7 +136,6 @@ Shipped:
 
 Not shipped:
 
-- Preview deployments with Workers Builds.
 - Batching merges that commute. Claims carry the scope data, but merges still run one at a time.
 - Gates that install dependencies at run time. The containers have no Internet, so the operator
   bakes a repository's dependencies into the toolchain image and writes a `tessel.toml`.
@@ -150,8 +150,8 @@ Not shipped:
 - [Configuration](docs/configuration.md): every setting of both Workers.
 - [`skills/tessel/SKILL.md`](skills/tessel/SKILL.md): the workflow taught to agents.
 - Build the CLI with `cargo install --path tessel-cli`.
-- [Dogfooding gate](docs/reference/coordinator.md#dogfooding-gate): Tessel merges its own code
-  through its own gate.
+- [The `tessel.toml` gate](docs/reference/coordinator.md#dogfooding-gate): who may change a
+  repository's gate and how to recover from a broken one.
 
 Run the tests from a fresh clone. You need Rust stable (`rustup`) with the
 `wasm32-unknown-unknown` target, Node 22.18 or newer, pnpm and `wrangler`.

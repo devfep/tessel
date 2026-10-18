@@ -1,5 +1,8 @@
 # Configuration reference
 
+This page covers the Cloudflare host as it is today, which Phase 1 of [`PLAN.md`](../PLAN.md)
+replaces with `tessel-server`.
+
 Every setting Tessel reads, where it is set, its default, what it does, and the code that reads it.
 Values are checked against commit `9e363c1`. A setting that is not on this page is not
 configurable: the limits in [Fixed limits](#fixed-limits) are constants in the code.
