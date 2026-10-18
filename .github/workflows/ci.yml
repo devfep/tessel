@@ -14,28 +14,54 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "0"
 
 jobs:
-  fast:
-    name: Fast lane
+  lint:
+    name: Fast lane, fmt and clippy
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          shared-key: fast
+          shared-key: fast-lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy (native)
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (no default features)
+        run: cargo clippy -p tessel-coordinator --no-default-features --all-targets -- -D warnings
+
+  wasm:
+    name: Fast lane, wasm clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: fast-wasm
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Clippy (wasm32)
-        run: cargo clippy -p tessel-coordinator --target wasm32-unknown-unknown --features runtime -- -D warnings
+        run: cargo clippy -p tessel-coordinator --target wasm32-unknown-unknown -- -D warnings
+
+  core-tests:
+    name: Fast lane, core library tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: fast-core-tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Core library tests
         run: cargo test -p tessel-coordinator --lib
 
@@ -47,16 +73,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           shared-key: workspace
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
         with:
-          tool: cargo-nextest,cargo-deny
+          tool: cargo-nextest@0.9.148
       - name: Workspace tests
         run: cargo nextest run --workspace
+
+  deny:
+    name: Slow lane, advisories and bans
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
+        with:
+          tool: cargo-deny@0.20.2
       - name: Advisories and bans
         run: cargo deny check advisories bans
 
@@ -76,7 +113,7 @@ jobs:
           version: 12.14.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: pnpm
           cache-dependency-path: tessel-steward/pnpm-lock.yaml
       - name: Install
