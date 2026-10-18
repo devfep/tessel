@@ -230,6 +230,16 @@ enum Op {
         answer: Answer,
         times: usize,
     },
+    /// The queue is drained, then an agent's claim assumes the file `on` and another agent's
+    /// work on it is submitted. Its first dispatch is lost (a restart, or `lost` as the answer),
+    /// and the retry is answered `already_merged`: the landing must not queue a trial that
+    /// compares main with itself.
+    RecoveredLanding {
+        who: usize,
+        on: usize,
+        restart: bool,
+        lost: Answer,
+    },
     /// A claim that assumes the file `on` keeps its current behaviour: when another agent's work
     /// on that file merges, a verification of this claim is queued.
     Assume {
@@ -284,6 +294,9 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         3 => (retryable(), 1..8usize).prop_map(|(answer, times)| Op::Repeat { answer, times }),
         3 => (0..AGENTS, 0..TARGETS - 1, 0..TARGETS - 1)
             .prop_map(|(who, target, on)| Op::Assume { who, target, on }),
+        4 => (0..AGENTS, 0..TARGETS - 1, any::<bool>(), retryable()).prop_map(
+            |(who, on, restart, lost)| Op::RecoveredLanding { who, on, restart, lost }
+        ),
         2 => Just(Op::StallTrial),
         3 => (SLOT_AFTER as usize..3 * SLOT_AFTER as usize)
             .prop_map(|rounds| Op::Storm { rounds }),
@@ -501,6 +514,15 @@ fn apply(world: &mut World, op: &Op) {
         }
         Op::Pipeline(answers) => {
             run_pipeline(world, answers);
+            Vec::new()
+        }
+        Op::RecoveredLanding {
+            who,
+            on,
+            restart,
+            lost,
+        } => {
+            run_recovered_landing(world, (*who, *on), *restart, *lost);
             Vec::new()
         }
         Op::Repeat { answer, times } => {
@@ -886,6 +908,36 @@ fn run_overtake(world: &mut World, first: usize, offset: usize) {
     );
     begin_checked(world);
     approve_then_begin(world, 0);
+}
+
+fn run_recovered_landing(
+    world: &mut World,
+    (who, on): (usize, usize),
+    restart: bool,
+    lost: Answer,
+) {
+    for _ in 0..AGENTS * 2 {
+        if world.head_of_queue().is_none() {
+            break;
+        }
+        cycle(world, Answer::Merged);
+    }
+    let target = (on + 1) % (TARGETS - 1);
+    let assuming = assume(world, who, target, on);
+    emit(world, assuming);
+    let challenger = who + 1;
+    let claimed = claim(world, challenger, on, false, false);
+    emit(world, claimed);
+    let submitted = submit(world, &self::who(challenger), true);
+    emit(world, submitted);
+    if restart {
+        begin_checked(world);
+        let recovered = recover_checked(world);
+        emit(world, recovered);
+    } else {
+        cycle(world, lost);
+    }
+    cycle(world, Answer::AlreadyMerged);
 }
 
 fn run_pipeline(world: &mut World, answers: &[Answer]) {
