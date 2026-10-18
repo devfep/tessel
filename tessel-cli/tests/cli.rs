@@ -315,10 +315,28 @@ async fn wait_queues_and_the_grant_arrives_after_the_holder_releases() -> Result
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn heartbeats_keep_a_claim_alive_past_its_lease() -> Result<()> {
-    let (_fake, a1, a2) = world(600).await?;
+    // The lease is long against the load a busy machine puts on the daemon: a heartbeat every
+    // third of it, and a link given up on after one and a half heartbeats unanswered.
+    let (_fake, a1, a2) = world(3_000).await?;
     a1.start("long job")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    tokio::time::sleep(Duration::from_millis(1600)).await;
+    let mut mark = a1.status()?["state"]["claims"][0]["expires_at_ms"]
+        .as_u64()
+        .context("the agent holds no claim")?;
+    // Twice: let the expiry run out on the clock the coordinator also reads, then see heartbeats
+    // push it past that. One renewal alone would also come from a single early heartbeat.
+    for round in 1..=2 {
+        let lapsed = mark;
+        eventually(SHORT, || Ok((now_ms() > lapsed).then_some(())))
+            .await
+            .with_context(|| format!("round {round}: the clock never passed the expiry"))?;
+        mark = eventually(SHORT, || {
+            let renewed = a1.status()?["state"]["claims"][0]["expires_at_ms"].as_u64();
+            Ok(renewed.filter(|&expires| expires > lapsed))
+        })
+        .await
+        .with_context(|| format!("round {round}: no heartbeat renewed the expiry past {lapsed}"))?;
+    }
     assert_eq!(
         a1.held_claims()?,
         1,
@@ -1992,6 +2010,15 @@ async fn a_replay_frame_that_is_not_an_event_envelope_still_fails_the_read() -> 
 async fn an_unknown_event_on_the_live_socket_is_ignored_and_the_connection_stays() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
     a1.start("future event live")?;
+    // The event-log reader's socket sends its own hello, so count hellos only once its first read
+    // is over: from then on every further hello is a redial.
+    eventually(SHORT, || {
+        Ok((daemon_log(&a1)?.contains("(complete)")
+            && a1.status()?["state"]["connection"] == "online")
+            .then_some(()))
+    })
+    .await
+    .context("the first event-log read never completed with the daemon online")?;
     let before = hellos(&fake, "a1");
     fake.send_raw("a1", &unknown_event(99));
     eventually(SHORT, || {
@@ -1999,8 +2026,11 @@ async fn an_unknown_event_on_the_live_socket_is_ignored_and_the_connection_stays
             .contains("unknown event seq 99 kind \"from_the_future\"")
             .then_some(()))
     })
-    .await?;
-    forget_the_coordinator_head(&fake, &a1).await?;
+    .await
+    .context("the daemon never logged the unknown live event")?;
+    forget_the_coordinator_head(&fake, &a1)
+        .await
+        .context("the daemon stopped taking live messages after the unknown event")?;
     assert_eq!(
         hellos(&fake, "a1"),
         before,
@@ -2016,7 +2046,8 @@ async fn an_unknown_event_on_the_live_socket_is_ignored_and_the_connection_stays
     eventually(SHORT, || {
         Ok((daemon_log(&a1)?.matches("(complete)").count() > reads).then_some(()))
     })
-    .await?;
+    .await
+    .context("the read after the redial never completed")?;
     let inbox = a1.tessel(&["inbox", "--all"])?;
     assert!(
         !inbox.stdout.contains("not read to its end"),
