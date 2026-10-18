@@ -185,6 +185,7 @@ const KNOWN_EVENT_KINDS: &[&str] = &[
     "race_decided",
     "denial_verified",
     "assumption_verified",
+    "verification_dropped",
     "replay_merged",
 ];
 
@@ -2224,6 +2225,7 @@ fn is_connection_of(event: &Event, agent: &AgentId) -> bool {
         | EventKind::RaceDecided { .. }
         | EventKind::DenialVerified { .. }
         | EventKind::AssumptionVerified { .. }
+        | EventKind::VerificationDropped { .. }
         | EventKind::ReplayMerged { .. } => false,
     }
 }

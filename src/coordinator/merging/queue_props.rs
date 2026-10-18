@@ -15,14 +15,16 @@ use crate::merge::{
     MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Fence, Intent,
-    Mode, OnConflict, RaceId, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
+    AgentId, Assumption, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Fence,
+    Intent, Mode, OnConflict, RaceId, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
 };
 
 const START: u64 = 1_000;
 const LEASE: u64 = 30_000;
 const MAIN: &str = "dddddddddddddddddddddddddddddddddddddddd";
 const AGENTS: usize = 4;
+/// Merges that may be dispatched in a row while a verification is ready (I12).
+const SLOT_AFTER: u32 = 4;
 /// Four files and the directory above them, so some scopes conflict and some do not.
 const TARGETS: usize = 5;
 const UNKNOWN_CLAIM: u64 = 999_999;
@@ -228,6 +230,22 @@ enum Op {
         answer: Answer,
         times: usize,
     },
+    /// A claim that assumes the file `on` keeps its current behaviour: when another agent's work
+    /// on that file merges, a verification of this claim is queued.
+    Assume {
+        who: usize,
+        target: usize,
+        on: usize,
+    },
+    /// A verification that gets no answer in time: it is tried, fails on infrastructure and waits
+    /// out its backoff.
+    StallTrial,
+    /// Continuous merge load with a verification waiting: each round is one alarm, a merge and
+    /// then a verification when the core offers one. A ready verification must run within
+    /// `SLOT_AFTER` merges.
+    Storm {
+        rounds: usize,
+    },
     /// The process died with a merge in flight and came back.
     Restart,
     /// The instance hung: the watchdog fires `MERGE_WATCHDOG_MS` after the dispatch.
@@ -264,6 +282,11 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         4 => proptest::collection::vec(answers(), 1..6).prop_map(Op::Pipeline),
         8 => answers().prop_map(|answer| Op::Cycle { answer }),
         3 => (retryable(), 1..8usize).prop_map(|(answer, times)| Op::Repeat { answer, times }),
+        3 => (0..AGENTS, 0..TARGETS - 1, 0..TARGETS - 1)
+            .prop_map(|(who, target, on)| Op::Assume { who, target, on }),
+        2 => Just(Op::StallTrial),
+        3 => (SLOT_AFTER as usize..3 * SLOT_AFTER as usize)
+            .prop_map(|rounds| Op::Storm { rounds }),
         1 => Just(Op::Restart),
         1 => Just(Op::Watchdog),
         6 => (answers(), 0..16usize).prop_map(|(answer, pick)| Op::LateAnswer { answer, pick }),
@@ -300,6 +323,9 @@ struct Model {
     /// Every dispatch id the core issued (merge and verification), oldest first, with the claim
     /// of a merge dispatch. Ids are unique and only grow, across restarts too.
     issued: Vec<(Option<u64>, u64)>,
+    /// Merges dispatched in a row while a verification was ready, counted from the test's own
+    /// reading of the queue; a verification dispatch resets it (I12).
+    ahead: u32,
 }
 
 impl Model {
@@ -332,6 +358,7 @@ fn new_world() -> World {
     })
     .unwrap();
     core.set_reviewers(vec![agent("felix")]);
+    core.set_verify_slot_after(SLOT_AFTER);
     World {
         core,
         now: START,
@@ -390,6 +417,26 @@ impl World {
             .iter()
             .find(|(_, held)| held.agent == *who && held.submitted.is_none())
             .map(|(id, held)| (ClaimId(*id), held.fence))
+    }
+
+    /// Whether the verification at the head of the queue could be dispatched now: one is queued,
+    /// none is in flight and the head is not in backoff.
+    fn verification_ready(&self) -> bool {
+        let state = &self.core.state;
+        let now = self.now.max(state.clock_ms);
+        state.verification_in_flight.is_none()
+            && state
+                .verifications
+                .first()
+                .is_some_and(|next| next.retry_at_ms.is_none_or(|due| due <= now))
+    }
+
+    /// I12: `SLOT_AFTER` merges went ahead of a verification that is still ready, and no merge
+    /// is in flight, so the next merge must wait for the verification.
+    fn slot_due(&self) -> bool {
+        !self.core.has_merge_in_flight()
+            && self.model.ahead >= SLOT_AFTER
+            && self.verification_ready()
     }
 
     /// The next claim to merge by the model's own order: the earliest accepted submission that is
@@ -462,6 +509,16 @@ fn apply(world: &mut World, op: &Op) {
             }
             Vec::new()
         }
+        Op::Assume {
+            who: index,
+            target,
+            on,
+        } => assume(world, *index, *target, *on),
+        Op::StallTrial => stall_trial(world),
+        Op::Storm { rounds } => {
+            storm(world, *rounds);
+            Vec::new()
+        }
         Op::Restart => recover_checked(world),
         Op::LateAnswer { answer, pick } => late_answer(world, *pick, *answer),
         Op::Watchdog => {
@@ -503,6 +560,24 @@ fn claim(
         } else {
             OnConflict::Fail
         },
+    };
+    world.handle(&who(index), msg)
+}
+
+fn assume(world: &mut World, index: usize, target: usize, on: usize) -> Vec<Effect> {
+    let intent = Intent {
+        summary: "assumes".into(),
+        task_ref: None,
+        assumptions: vec![Assumption {
+            scope: scope_of(on, Mode::Depend).scope,
+            statement: "unchanged".into(),
+        }],
+    };
+    let msg = ClientMsg::Claim {
+        req: RequestId(1),
+        intent,
+        scopes: vec![scope_of(target, Mode::EditBody)],
+        on_conflict: OnConflict::Fail,
     };
     world.handle(&who(index), msg)
 }
@@ -619,6 +694,7 @@ fn cut_off_trial(world: &mut World, pass: bool) -> Vec<Effect> {
     let Some(first) = world.core.begin_verification(world.now) else {
         return Vec::new();
     };
+    world.model.ahead = 0;
     world.model.issue(None, first.id);
     world.core = load(&save(&world.core));
     let mut effects = world.core.recover_verification(world.now);
@@ -654,12 +730,67 @@ fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
     let report = trial_report(pass);
     match world.core.begin_verification(world.now) {
         Some(dispatch) => {
+            world.model.ahead = 0;
             world.model.issue(None, dispatch.id);
             world
                 .core
                 .verification_outcome(dispatch.id, &report, world.now)
         }
         None => Vec::new(),
+    }
+}
+
+/// A verification dispatched whose answer is an infrastructure failure: it is retried after a
+/// backoff, which stays open when the step ends.
+fn stall_trial(world: &mut World) -> Vec<Effect> {
+    let Some(dispatch) = world.core.begin_verification(world.now) else {
+        return Vec::new();
+    };
+    world.model.ahead = 0;
+    world.model.issue(None, dispatch.id);
+    let report = TrialReport::stopped(TrialOutcome::ServiceUnavailable);
+    world
+        .core
+        .verification_outcome(dispatch.id, &report, world.now)
+}
+
+/// One alarm per round under a continuous stream of tested submissions: a merge, then a
+/// verification if the core offers one. The first round also leaves a verification queued.
+fn storm(world: &mut World, rounds: usize) {
+    for index in 0..AGENTS * 2 {
+        apply(world, &Op::Release(index));
+    }
+    apply(
+        world,
+        &Op::Assume {
+            who: 0,
+            target: 3,
+            on: 0,
+        },
+    );
+    for round in 0..rounds {
+        let who = 1 + round % (AGENTS - 1);
+        for op in [
+            Op::Claim {
+                who,
+                target: round % 3,
+                wait: false,
+                signature: false,
+            },
+            Op::Submit {
+                who,
+                evidence: true,
+            },
+            Op::Review {
+                approve: true,
+                pick: 0,
+            },
+        ] {
+            apply(world, &op);
+        }
+        cycle(world, Answer::Merged);
+        apply(world, &Op::Trial(true));
+        check_after(world);
     }
 }
 
@@ -787,8 +918,16 @@ fn begin_checked(world: &mut World) {
     let was_live = world.model.inflight;
     assert!(was_live.is_none_or(|flight| world.live(flight.claim)));
     let head = world.head_of_queue();
+    let slot_due = world.slot_due();
+    let ready = world.verification_ready();
     let dispatch = world.core.begin_merge(world.now);
     world.trace.push_str(&format!("{dispatch:?}"));
+    if slot_due {
+        assert!(
+            dispatch.is_none(),
+            "I12: a merge went ahead of a verification after {SLOT_AFTER} merges"
+        );
+    }
     let Some(dispatch) = dispatch else {
         // Documented: `None` when nothing is ready. An in-flight merge is always returned.
         assert!(
@@ -798,6 +937,9 @@ fn begin_checked(world: &mut World) {
         world.model.inflight = None;
         return;
     };
+    if was_live.is_none() {
+        world.model.ahead = if ready { world.model.ahead + 1 } else { 0 };
+    }
     let id = dispatch.claim.0;
     assert!(world.core.has_merge_in_flight());
     let again = world.core.clone().begin_merge(world.now);
@@ -1001,9 +1143,14 @@ fn assert_redispatched_at_once(world: &World, claim: u64, retry_before: Option<u
         "check 4: main_moved set a backoff"
     );
     let next = world.core.clone().begin_merge(world.now);
+    let expected = if world.slot_due() {
+        None
+    } else {
+        world.head_of_queue()
+    };
     assert_eq!(
         next.map(|dispatch| dispatch.claim.0),
-        world.head_of_queue(),
+        expected,
         "check 4: the claim was not dispatched again at once after main_moved"
     );
 }
@@ -1107,6 +1254,16 @@ fn observe(world: &mut World, effects: &[Effect]) {
         {
             world.model.held.remove(&claim.0);
         }
+        // A race winner is told it is held by a notice, not a reply; the event is the record.
+        if let EventKind::ReviewRequested { claim, .. } = kind {
+            world.model.held.insert(claim.0);
+        }
+        if let EventKind::VerificationDropped { claim, .. } = kind {
+            assert!(
+                !world.core.state.claims.contains_key(&claim.0),
+                "a verification was dropped for a claim that is still live"
+            );
+        }
     }
     for msg in replies(effects) {
         if let ServerMsg::ReviewRequired { claim, .. } = msg {
@@ -1155,6 +1312,11 @@ fn check_after(world: &mut World) {
         world.model.inflight.is_some(),
         "check 3: the marker and the dispatched merge disagree"
     );
+    assert!(
+        world.model.ahead <= SLOT_AFTER,
+        "I12: {} merges went ahead of a ready verification",
+        world.model.ahead
+    );
     check_no_wedge(world);
 }
 
@@ -1175,6 +1337,18 @@ fn check_no_wedge(world: &World) {
         assert!(
             wake.is_some_and(|at| at <= now + MERGE_WATCHDOG_MS),
             "check 6: watchdog"
+        );
+        return;
+    }
+    if world.slot_due() {
+        assert!(
+            core.clone().begin_verification(now).is_some(),
+            "I12: the verification owed the slot was not dispatchable"
+        );
+        assert_eq!(
+            core.next_wake_ms(false, false, now),
+            Some(now),
+            "I12: the verification owed the slot has no wake"
         );
         return;
     }

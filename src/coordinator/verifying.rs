@@ -17,15 +17,26 @@
 //!   failing, or that clashes with an unrelated merge, would be counted as an assumption broken by
 //!   this one.
 //! - One verification runs at a time, and only while no merge is due: merges have priority. A
-//!   merge in backoff does not hold a verification up. Time-outs, the watchdog and the bounded
+//!   merge in backoff does not hold a verification up. Priority is bounded (invariant I12 of
+//!   `docs/proposals/real-use.md`): after `verify_slot_after` merges (default 4, set by
+//!   `set_verify_slot_after`) are dispatched in a row while the head verification is ready (queued,
+//!   not in backoff, none in flight), the next `begin_merge` returns `None` and the verification
+//!   is dispatched first, which resets the count. A merge dispatched while no verification is
+//!   ready also resets it, so only an unbroken run of merges past a ready verification counts. A
+//!   merge in flight is never interrupted. The shell runs one merge and then one verification per
+//!   alarm and never both at once (`run_alarm`), so `begin_merge` does not check for a
+//!   verification in flight: a restart recovers a cut-off one before any merge is dispatched. Time-outs, the watchdog and the bounded
 //!   infrastructure retries are the merge queue's (`merge::STEWARD_CALL_TIMEOUT_MS`,
 //!   `MERGE_WATCHDOG_MS`, `MAX_INFRA_RETRIES`). The steward runs the two sides of a trial at the
 //!   same time; a side that outlives the call timeout is an infrastructure failure, so the
 //!   verification ends `Inconclusive` after the retries (see `STEWARD_CALL_TIMEOUT_MS`).
-//! - A claim that ends before its verification runs (released, expired or merged) drops it, and
-//!   nothing is logged: there is no longer anyone whose assumption could be broken, and an event
-//!   would count a verification that never happened. A verification already running for a claim
-//!   that ends has its answer discarded.
+//! - A claim that ends before its verification runs (released, expired, lost a race or merged)
+//!   drops it. An assumption verification is logged as `VerificationDropped` with the claim, the
+//!   assumption and the reason the claim ended, and `Summary` counts it as `verifications_dropped`,
+//!   apart from every verified outcome: nothing was tried, so it is never a broken or a held
+//!   assumption. Race entry and shadow trials are dropped without an event; the race and
+//!   `DenialVerified` are their record. A verification already running for a claim that ends is
+//!   dropped (and logged) at once and has its answer discarded.
 //! - Back-to-back merges that challenge the same (claim, assumption) before it runs keep only the
 //!   newest main, with the baseline of the oldest of them: the second started from the main the
 //!   first produced, so the span holds only challenging merges. If another merge came between,
@@ -70,8 +81,31 @@ use crate::merge::{
     infra_backoff_ms, TestsVerdict, TrialReport, TrialVerdict, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{
-    AgentId, Assumption, ClaimId, CommitId, EventKind, Outcome, RaceId, ReleaseReason,
+    AgentId, Assumption, ClaimId, CommitId, Event, EventKind, Outcome, RaceId, ReleaseReason,
 };
+
+/// The merges a verification may wait through while it is ready, unless the coordinator sets
+/// another number.
+const DEFAULT_SLOT_AFTER: u32 = 4;
+
+pub(super) fn default_slot_after() -> u32 {
+    DEFAULT_SLOT_AFTER
+}
+
+/// Why `claim` ended, as the `ClaimReleased` among `effects` says.
+fn release_reason(effects: &[Effect], claim: ClaimId) -> Option<ReleaseReason> {
+    effects.iter().find_map(|effect| match effect {
+        Effect::Log(Event {
+            kind:
+                EventKind::ClaimReleased {
+                    claim: released,
+                    reason,
+                },
+            ..
+        }) if *released == claim => Some(*reason),
+        Effect::Log(_) | Effect::Reply(_) | Effect::Notify { .. } => None,
+    })
+}
 
 /// An assumption a submission challenged at submit time, kept with the submission until it merges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,7 +144,7 @@ pub(super) struct Verification {
     infra_failures: u32,
     /// Not dispatched before this instant: the backoff after an infrastructure failure.
     #[serde(default)]
-    retry_at_ms: Option<u64>,
+    pub(super) retry_at_ms: Option<u64>,
 }
 
 /// The verification in flight: persisted before the steward is called.
@@ -297,19 +331,78 @@ impl Coordinator {
     }
 
     /// Forget the verifications of claims that no longer exist. Claim ids are never reused, so a
-    /// claim that is gone has ended. Every path that removes a claim (`handle`, `expire` and a
-    /// merge's outcome) ends with this call, so the queue only ever holds live claims between
-    /// calls and the readers need not check.
-    pub(super) fn drop_ended_verifications(&mut self) {
+    /// claim that is gone has ended. Every path that removes a claim (`handle`, `expire`, a
+    /// merge's outcome and a verification's outcome, which can close a race) ends with this call,
+    /// so the queue only ever holds live claims between calls and the readers need not check.
+    ///
+    /// Each dropped assumption verification is logged as `VerificationDropped`, with the reason
+    /// the claim ended read from the `ClaimReleased` in `ended`, the effects of the same call.
+    /// Race entry and shadow trials are not logged: the race and `DenialVerified` are their
+    /// record.
+    pub(super) fn drop_ended_verifications(
+        &mut self,
+        now_ms: u64,
+        ended: &[Effect],
+    ) -> Vec<Effect> {
         let claims = &self.state.claims;
-        self.state
-            .verifications
-            .retain(|queued| claims.contains_key(&queued.claim.0));
+        let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.state.verifications)
+            .into_iter()
+            .partition(|queued| claims.contains_key(&queued.claim.0));
+        self.state.verifications = kept;
+        let mut effects = Vec::new();
+        for dropped in gone {
+            let Subject::Assumption { assumption } = dropped.subject else {
+                continue;
+            };
+            let claim = dropped.claim;
+            let Some(reason) = release_reason(ended, claim) else {
+                continue;
+            };
+            let kind = EventKind::VerificationDropped {
+                claim,
+                assumption,
+                reason,
+            };
+            effects.push(self.event(now_ms, kind));
+        }
+        effects
+    }
+
+    /// Whether the head verification may be dispatched now: one is queued, it is not in backoff
+    /// and none is in flight.
+    fn verification_ready(&self, now_ms: u64) -> bool {
+        if self.state.verification_in_flight.is_some() {
+            return false;
+        }
+        let Some(next) = self.state.verifications.first() else {
+            return false;
+        };
+        next.retry_at_ms.is_none_or(|due| due <= now_ms)
+    }
+
+    /// Whether the verification slot is due: `verify_slot_after` merges were dispatched in a row
+    /// while the head verification was ready, and it still is. The next merge then waits for it.
+    /// Never while a merge is in flight: that one is already running.
+    pub(super) fn verification_has_slot(&self, now_ms: u64) -> bool {
+        self.state.merge_in_flight.is_none()
+            && self.state.merges_past_verification >= self.state.verify_slot_after
+            && self.verification_ready(now_ms)
+    }
+
+    /// Account for a merge just dispatched: it went ahead of a ready verification, or none was
+    /// waiting and the run of merges is broken.
+    pub(super) fn count_merge_past_verification(&mut self, now_ms: u64) {
+        if self.verification_ready(now_ms) {
+            self.state.merges_past_verification =
+                self.state.merges_past_verification.saturating_add(1);
+        } else {
+            self.state.merges_past_verification = 0;
+        }
     }
 
     /// The verification to run now, marking it in flight. `None` while one is in flight, while a
-    /// merge is due or in flight (merges first), or when nothing is queued or the next one is in
-    /// backoff. The queue is strict: a verification in backoff is waited for.
+    /// merge is due or in flight (merges first, unless the verification slot is due), or when
+    /// nothing is queued or the next one is in backoff. The queue is strict: a verification in backoff is waited for.
     ///
     /// The marker is part of the state: the caller persists it before calling the steward.
     pub fn begin_verification(&mut self, now_ms: u64) -> Option<VerifyDispatch> {
@@ -350,6 +443,7 @@ impl Coordinator {
             dispatch: dispatch_id,
         });
         self.state.last_dispatch = dispatch_id;
+        self.state.merges_past_verification = 0;
         Some(dispatch)
     }
 
@@ -421,6 +515,8 @@ impl Coordinator {
     ) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
         let mut effects = self.apply_verification_outcome(dispatch, report, now_ms);
+        let dropped = self.drop_ended_verifications(now_ms, &effects);
+        effects.extend(dropped);
         effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
@@ -532,6 +628,7 @@ impl Coordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinator::merging::MergeDispatch;
     use crate::coordinator::Config;
     use crate::merge::{MergeOutcome, TrialOutcome, INFRA_BACKOFF_BASE_MS};
     use crate::protocol::{
@@ -606,6 +703,23 @@ mod tests {
                     return None;
                 };
                 Some((*claim, *outcome))
+            })
+            .collect()
+    }
+
+    fn dropped_events(effects: &[Effect]) -> Vec<(ClaimId, Assumption, ReleaseReason)> {
+        logged(effects)
+            .into_iter()
+            .filter_map(|kind| {
+                let EventKind::VerificationDropped {
+                    claim,
+                    assumption,
+                    reason,
+                } = kind
+                else {
+                    return None;
+                };
+                Some((*claim, assumption.clone(), *reason))
             })
             .collect()
     }
@@ -1154,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn a_released_assuming_claim_drops_its_verification_without_logging() {
+    fn a_released_assuming_claim_drops_its_verification_and_logs_the_drop() {
         let mut c = core();
         let (assuming, challenger) = challenged(&mut c);
         merge_challenger(&mut c, challenger, MAIN);
@@ -1169,20 +1283,34 @@ mod tests {
 
         assert_eq!(pending(&c), 0);
         assert!(verified_events(&effects).is_empty());
+        assert_eq!(
+            dropped_events(&effects),
+            [(
+                assuming,
+                assumes("src/a.rs", "f returns Some"),
+                ReleaseReason::Agent
+            )]
+        );
         assert_eq!(c.begin_verification(NOW), None);
         assert_eq!(c.next_verification_ms(false, NOW), None);
     }
 
     #[test]
-    fn an_expired_assuming_claim_drops_its_verification_without_logging() {
+    fn an_expired_assuming_claim_drops_its_verification_and_logs_the_drop() {
         let mut c = core();
-        let (_, challenger) = challenged(&mut c);
+        let (assuming, challenger) = challenged(&mut c);
         merge_challenger(&mut c, challenger, MAIN);
 
         let effects = c.expire(NOW + LEASE + 1);
 
         assert_eq!(pending(&c), 0);
         assert!(verified_events(&effects).is_empty());
+        let dropped = dropped_events(&effects);
+        assert_eq!(dropped.len(), 1, "{effects:?}");
+        assert_eq!(
+            (dropped[0].0, dropped[0].2),
+            (assuming, ReleaseReason::LeaseExpired)
+        );
         assert_eq!(c.begin_verification(NOW + LEASE + 1), None);
     }
 
@@ -1201,6 +1329,181 @@ mod tests {
 
         assert_eq!(pending(&c), 0);
         assert!(verified_events(&effects).is_empty());
+        let dropped = dropped_events(&effects);
+        assert_eq!(dropped.len(), 1, "{effects:?}");
+        assert_eq!(
+            (dropped[0].0, dropped[0].2),
+            (assuming, ReleaseReason::Merged)
+        );
+    }
+
+    #[test]
+    fn a_dropped_verification_is_counted_on_its_own_and_never_as_verified() {
+        let mut c = core();
+        let (assuming, challenger) = challenged(&mut c);
+        let merged = merge_challenger(&mut c, challenger, MAIN);
+        let fence = c.state.claims[&assuming.0].fence;
+        let release = ClientMsg::Release {
+            claim: assuming,
+            fence,
+            req: None,
+        };
+        let released = c.handle(&agent("a1"), release, NOW);
+
+        let summary = Summary::from_events(&all_events(&[&merged, &released]));
+
+        assert_eq!(summary.verifications_dropped, 1);
+        assert_eq!(summary.assumptions_confirmed_broken, 0);
+        assert_eq!(summary.assumptions_challenged, 0);
+        assert_eq!(
+            summary.conflicts_prevented_verified + summary.false_alarms,
+            0
+        );
+        assert_eq!(summary.precision, None);
+    }
+
+    #[test]
+    fn a_ready_verification_is_not_starved_by_a_continuous_stream_of_merges() {
+        let mut c = core();
+        let (_, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        assert_eq!(pending(&c), 1);
+        let mut merges = 0;
+        let mut dispatched = None;
+        while merges < 12 && dispatched.is_none() {
+            let who = format!("m{merges}");
+            let path = format!("src/m{merges}.rs");
+            let claim = grant(&mut c, &who, vec![edit(&path)], Vec::new());
+            submit(&mut c, &who, claim, &path);
+            dispatched = c.begin_verification(NOW);
+            if dispatched.is_some() {
+                break;
+            }
+            c.begin_merge(NOW).expect("a merge is due");
+            c.merge_outcome(c.merge_flight_id(claim.0), &landed(MAIN), NOW);
+            merges += 1;
+        }
+        assert!(
+            dispatched.is_some(),
+            "no verification ran in {merges} merges"
+        );
+        assert!(merges <= 4, "the verification waited for {merges} merges");
+    }
+
+    /// Submit a fresh tested edit and merge it at once: one more merge dispatched.
+    fn merge_next(c: &mut Coordinator, round: usize) -> Option<MergeDispatch> {
+        let who = format!("m{round}");
+        let path = format!("src/m{round}.rs");
+        let claim = grant(c, &who, vec![edit(&path)], Vec::new());
+        submit(c, &who, claim, &path);
+        let dispatch = c.begin_merge(NOW)?;
+        c.merge_outcome(dispatch.id, &landed(MAIN), NOW);
+        Some(dispatch)
+    }
+
+    #[test]
+    fn the_verification_gets_the_slot_after_exactly_the_configured_number_of_merges() {
+        for after in [1, 2, 4, 7] {
+            let mut c = core();
+            c.set_verify_slot_after(after);
+            let (_, challenger) = challenged(&mut c);
+            merge_challenger(&mut c, challenger, MAIN);
+            for round in 0..after as usize {
+                let who = format!("m{round}");
+                let path = format!("src/m{round}.rs");
+                let claim = grant(&mut c, &who, vec![edit(&path)], Vec::new());
+                submit(&mut c, &who, claim, &path);
+                assert!(
+                    c.begin_verification(NOW).is_none(),
+                    "merge {round} has priority"
+                );
+                let dispatch = c.begin_merge(NOW).expect("the merge is dispatched");
+                c.merge_outcome(dispatch.id, &landed(MAIN), NOW);
+            }
+            let claim = grant(&mut c, "late", vec![edit("src/late.rs")], Vec::new());
+            submit(&mut c, "late", claim, "src/late.rs");
+            assert_eq!(
+                c.begin_merge(NOW),
+                None,
+                "after {after} merges the slot is the verification's"
+            );
+            assert_eq!(
+                c.next_merge_ms(false, NOW),
+                None,
+                "no merge wake while the slot is due"
+            );
+            assert_eq!(c.next_verification_ms(false, NOW), Some(NOW));
+            assert!(c.begin_verification(NOW).is_some(), "after {after} merges");
+            let after_slot = c.begin_merge(NOW).expect("merges go on after the slot");
+            assert_eq!(after_slot.claim, claim.0);
+        }
+    }
+
+    #[test]
+    fn the_slot_is_not_taken_while_the_verification_is_in_backoff() {
+        let mut c = core();
+        let (_, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        let first = c.begin_verification(NOW).unwrap();
+        c.verification_outcome(first.id, &clean_then(TrialOutcome::Clone {}), NOW);
+        assert_eq!(c.begin_verification(NOW), None, "in backoff");
+        for round in 0..3 * 4 {
+            assert!(
+                merge_next(&mut c, round).is_some(),
+                "merge {round} waited for a verification that cannot run"
+            );
+        }
+    }
+
+    #[test]
+    fn the_slot_is_not_taken_while_a_verification_is_in_flight() {
+        let mut c = core();
+        let (_, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        for round in 0..4 {
+            assert!(merge_next(&mut c, round).is_some());
+        }
+        assert!(c.begin_verification(NOW).is_some());
+        assert!(c.has_verification_in_flight());
+        for round in 4..12 {
+            assert!(merge_next(&mut c, round).is_some(), "merge {round} stalled");
+        }
+    }
+
+    #[test]
+    fn merges_without_a_waiting_verification_do_not_count_toward_the_slot() {
+        let mut c = core();
+        for round in 0..10 {
+            assert!(merge_next(&mut c, round).is_some());
+        }
+        let (_, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        for round in 10..14 {
+            assert!(merge_next(&mut c, round).is_some(), "merge {round}");
+        }
+        assert!(c.begin_verification(NOW).is_some());
+    }
+
+    #[test]
+    fn the_merge_count_is_stored_and_a_stored_state_without_it_loads_with_the_default() {
+        let mut c = core();
+        let (_, challenger) = challenged(&mut c);
+        merge_challenger(&mut c, challenger, MAIN);
+        for round in 0..3 {
+            merge_next(&mut c, round);
+        }
+        let mut reloaded: Coordinator =
+            serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        merge_next(&mut reloaded, 3);
+        assert_eq!(reloaded.state.merges_past_verification, 4);
+
+        let mut stored: serde_json::Value = serde_json::to_value(&c).unwrap();
+        let map = stored.as_object_mut().unwrap();
+        assert!(map.remove("merges_past_verification").is_some());
+        assert!(map.remove("verify_slot_after").is_some());
+        let old: Coordinator = serde_json::from_value(stored).unwrap();
+        assert_eq!(old.state.merges_past_verification, 0);
+        assert_eq!(old.state.verify_slot_after, DEFAULT_SLOT_AFTER);
     }
 
     #[test]

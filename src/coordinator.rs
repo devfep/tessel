@@ -349,6 +349,14 @@ struct CoordinatorState {
     /// Id of the next verification; starts at 0 and is never reused.
     #[serde(default)]
     next_verification: u64,
+    /// How many merges may be dispatched in a row while a verification is ready before the next
+    /// one waits for it (invariant 12 of the real-use proposal, `verifying`). A deployment
+    /// setting; a stored state from before it loads with the default.
+    #[serde(default = "verifying::default_slot_after")]
+    verify_slot_after: u32,
+    /// Merges dispatched in a row while a verification was ready; reset when one is dispatched.
+    #[serde(default)]
+    merges_past_verification: u32,
     /// The last dispatch id issued, shared by merge and verification dispatches. Persisted with
     /// the state, so an id is never reused, across a restart too: an answer applies only to the
     /// dispatch it answers, not to a later dispatch of the same claim or verification. The first
@@ -411,6 +419,12 @@ impl Coordinator {
         self.state.reviewers = reviewers;
     }
 
+    /// Replace how many merges may be dispatched in a row while a verification is ready before
+    /// the next merge waits for the verification. At least 1: 0 is read as 1.
+    pub fn set_verify_slot_after(&mut self, merges: u32) {
+        self.state.verify_slot_after = merges.max(1);
+    }
+
     /// Replace the path prefixes that hold a submission for review. They come from the Worker's
     /// `SENSITIVE` variable and are applied on every load. A directory entry ends in `/`, so
     /// `src/auth/` does not also match `src/authz.rs`.
@@ -443,6 +457,8 @@ impl Coordinator {
             verifications: Vec::new(),
             verification_in_flight: None,
             next_verification: 0,
+            verify_slot_after: verifying::default_slot_after(),
+            merges_past_verification: 0,
             last_dispatch: 0,
             claims: BTreeMap::new(),
             races: BTreeMap::new(),
@@ -474,7 +490,8 @@ impl Coordinator {
         let now_ms = self.advance_clock(now_ms);
         let mut effects = self.expire(now_ms);
         effects.extend(self.route(agent, msg, now_ms));
-        self.drop_ended_verifications();
+        let dropped = self.drop_ended_verifications(now_ms, &effects);
+        effects.extend(dropped);
         effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
@@ -518,7 +535,8 @@ impl Coordinator {
         if any_expired {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
-        self.drop_ended_verifications();
+        let dropped = self.drop_ended_verifications(now_ms, &effects);
+        effects.extend(dropped);
         effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
@@ -6104,6 +6122,7 @@ mod tests {
                 | EventKind::RaceDecided { .. }
                 | EventKind::DenialVerified { .. }
                 | EventKind::AssumptionVerified { .. }
+                | EventKind::VerificationDropped { .. }
                 | EventKind::ReplayMerged { .. } => {}
             }
         }

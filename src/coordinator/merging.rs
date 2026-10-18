@@ -110,7 +110,9 @@ impl ClaimNumber for &ClaimId {
 impl Coordinator {
     /// The merge to run now, marking it in flight. Returns the merge already in flight if there is
     /// one (a restart re-dispatches it) and never starts a second. `None` when nothing is ready:
-    /// no submission, all held for review, or the next one is in backoff.
+    /// no submission, all held for review, the next one is in backoff, or the verification slot
+    /// is due (`verification_has_slot`: `verify_slot_after` merges went ahead of a ready
+    /// verification, which is dispatched next).
     ///
     /// The marker is part of the state: the caller persists it before calling the steward.
     pub fn begin_merge(&mut self, now_ms: u64) -> Option<MergeDispatch> {
@@ -120,6 +122,9 @@ impl Coordinator {
                 return Some(dispatch);
             }
             self.state.merge_in_flight = None;
+        }
+        if self.verification_has_slot(now_ms) {
+            return None;
         }
         let claim = self.next_to_merge()?;
         let work = self.state.claims.get(&claim.0)?.work.as_ref()?;
@@ -135,6 +140,7 @@ impl Coordinator {
         let dispatch = self.dispatch_of(&flight)?;
         self.state.last_dispatch = flight.dispatch;
         self.state.merge_in_flight = Some(flight);
+        self.count_merge_past_verification(now_ms);
         Some(dispatch)
     }
 
@@ -184,6 +190,9 @@ impl Coordinator {
             }
             return Some(now_ms);
         }
+        if self.verification_has_slot(now_ms) {
+            return None;
+        }
         let claim = self.next_to_merge()?;
         let work = self.state.claims.get(&claim.0)?.work.as_ref()?;
         Some(work.retry_at_ms.unwrap_or(0).max(now_ms))
@@ -225,7 +234,7 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        let effects = match outcome.verdict() {
+        let mut effects = match outcome.verdict() {
             Verdict::Landed { base, head } => self.land(claim, &held, (base, head), now_ms),
             Verdict::Rejected { reason } => {
                 self.reject_work(claim, held, Rejection::plain(reason), now_ms)
@@ -233,7 +242,8 @@ impl Coordinator {
             Verdict::MainMoved => self.retry_after_move(claim, held, now_ms),
             Verdict::Infrastructure => self.retry_after_infrastructure(claim, held, now_ms),
         };
-        self.drop_ended_verifications();
+        let dropped = self.drop_ended_verifications(now_ms, &effects);
+        effects.extend(dropped);
         effects
     }
 
@@ -352,10 +362,14 @@ impl Coordinator {
     }
 
     /// Whether the merge queue has something to do at `now_ms`: a merge in flight, or a submission
-    /// ready to be dispatched (not held for review, not in backoff). Verifications wait for it.
+    /// ready to be dispatched (not held for review, not in backoff). Verifications wait for it,
+    /// except when the verification slot is due.
     pub(super) fn merge_pending_at(&self, now_ms: u64) -> bool {
         if self.state.merge_in_flight.is_some() {
             return true;
+        }
+        if self.verification_has_slot(now_ms) {
+            return false;
         }
         let Some(claim) = self.next_to_merge() else {
             return false;

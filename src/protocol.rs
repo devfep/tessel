@@ -892,6 +892,13 @@ pub enum EventKind {
         assumption: Assumption,
         outcome: Outcome,
     },
+    /// A queued assumption verification was discarded because its claim ended before the trial
+    /// ran (invariant 8). Not an outcome: nothing was tried, so no counter treats it as verified.
+    VerificationDropped {
+        claim: ClaimId,
+        assumption: Assumption,
+        reason: ReleaseReason,
+    },
     /// Uncoordinated A/B runs: plain-git merge of one agent's work, in order.
     ReplayMerged {
         agent: AgentId,
@@ -913,6 +920,10 @@ pub struct Summary {
     pub precision: Option<f64>,
     pub assumptions_challenged: u64,
     pub assumptions_confirmed_broken: u64,
+    /// Assumption verifications discarded because their claim ended first. Never a verified
+    /// outcome: it is counted apart from `assumptions_confirmed_broken`.
+    #[serde(default)]
+    pub verifications_dropped: u64,
     pub merges: u64,
     /// Submissions held for a human (`ReviewRequested` events). Some are rejected or still
     /// waiting, so `merges` minus this is not the count merged without review.
@@ -942,6 +953,7 @@ impl Summary {
                         s.assumptions_confirmed_broken += 1;
                     }
                 }
+                EventKind::VerificationDropped { .. } => s.verifications_dropped += 1,
                 EventKind::Merged { .. } => s.merges += 1,
                 EventKind::ReviewRequested { .. } => s.reviews_requested += 1,
                 EventKind::BaseMoved { notified, .. } => {
