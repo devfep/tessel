@@ -131,29 +131,6 @@ pub fn trial_request_body(
     body.to_string()
 }
 
-/// Planted for the mutation check: an untested branch and a loop a mutant can make endless.
-pub fn planted_drain(mut remaining: u32) -> u32 {
-    if remaining > 1000 {
-        return 1000;
-    }
-    let mut steps = 0;
-    while remaining > 0 {
-        remaining -= 1;
-        steps += 1;
-    }
-    steps
-}
-
-#[cfg(test)]
-mod planted_tests {
-    use super::planted_drain;
-
-    #[test]
-    fn drain_is_bounded() {
-        assert!(planted_drain(3) < 100);
-    }
-}
-
 /// The name of an agent's Artifacts fork of `repo`.
 pub fn fork_name(repo: &str, agent: &AgentId) -> String {
     format!("{repo}--{}", agent.0)
