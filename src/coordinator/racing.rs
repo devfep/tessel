@@ -1689,7 +1689,7 @@ mod tests {
             base: CommitId(MAIN.into()),
             head: CommitId("e".repeat(40)),
         };
-        let merged = c.merge_outcome(one.0, &landed, NOW + 6);
+        let merged = c.merge_outcome(c.merge_flight_id(one.0), &landed, NOW + 6);
         assert!(notices(&merged, "a1")
             .iter()
             .any(|msg| matches!(msg, ServerMsg::Merged { claim, .. } if *claim == one.0)));
@@ -1992,7 +1992,7 @@ mod tests {
             base: CommitId(MAIN.into()),
             head: CommitId("e".repeat(40)),
         };
-        c.merge_outcome(*claim, &landed, NOW + 4);
+        c.merge_outcome(c.merge_flight_id(*claim), &landed, NOW + 4);
         let trial = c
             .begin_verification(NOW + 5)
             .expect("the race's tests run next");
@@ -2529,7 +2529,7 @@ mod tests {
         let refused = MergeOutcome::Conflict {
             files: vec!["src/a.rs".into()],
         };
-        let effects = c.merge_outcome(one.0, &refused, NOW + 4);
+        let effects = c.merge_outcome(c.merge_flight_id(one.0), &refused, NOW + 4);
         assert!(notices(&effects, "a1")
             .iter()
             .any(|msg| matches!(msg, ServerMsg::SubmitRejected { .. })));
@@ -2689,7 +2689,7 @@ mod tests {
                         base: CommitId(MAIN.into()),
                         head: CommitId(MAIN.into()),
                     };
-                    c.merge_outcome(dispatch.claim, &landed, *now);
+                    c.merge_outcome(dispatch.id, &landed, *now);
                 }
             }
             Op::Pick(who) => {

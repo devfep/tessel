@@ -670,10 +670,10 @@ impl Coordinator {
         self.settle(&persisted, None).await?;
         let outcome = self.ask_steward(dispatch).await;
         self.merging.set(None);
-        let claim = dispatch.claim;
+        let dispatch_id = dispatch.id;
         let prepared = self
             .apply_loaded(Work::Plain, |core| {
-                core.merge_outcome(claim, &outcome, now_ms())
+                core.merge_outcome(dispatch_id, &outcome, now_ms())
             })
             .await?;
         let applied = self.ready(prepared, "apply merge outcome")?;

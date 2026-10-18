@@ -219,6 +219,10 @@ struct InFlight {
     claim: ClaimId,
     /// 1 for the first dispatch of the submission.
     attempt: u32,
+    /// The dispatch the answer must carry (see `CoordinatorState::last_dispatch`). 0 in a state
+    /// stored before dispatch ids existed, which no issued id equals.
+    #[serde(default)]
+    dispatch: u64,
 }
 
 /// A `Submit` message minus the sender.
@@ -345,6 +349,12 @@ struct CoordinatorState {
     /// Id of the next verification; starts at 0 and is never reused.
     #[serde(default)]
     next_verification: u64,
+    /// The last dispatch id issued, shared by merge and verification dispatches. Persisted with
+    /// the state, so an id is never reused, across a restart too: an answer applies only to the
+    /// dispatch it answers, not to a later dispatch of the same claim or verification. The first
+    /// id issued is 1.
+    #[serde(default)]
+    last_dispatch: u64,
     claims: BTreeMap<u64, ActiveClaim>,
     /// Races that have not been decided, keyed by race id (invariant 7).
     #[serde(default)]
@@ -433,6 +443,7 @@ impl Coordinator {
             verifications: Vec::new(),
             verification_in_flight: None,
             next_verification: 0,
+            last_dispatch: 0,
             claims: BTreeMap::new(),
             races: BTreeMap::new(),
             next_race: first_race(),
@@ -3138,7 +3149,7 @@ mod tests {
             base: CommitId("abc".into()),
             head: CommitId(MERGED_HEAD.into()),
         };
-        let effects = c.merge_outcome(claim, &outcome, NOW + 1);
+        let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, NOW + 1);
         (c, effects)
     }
 

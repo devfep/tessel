@@ -402,7 +402,7 @@ async fn steward_loop(hub: Arc<Hub>, trunk: Git, forks: PathBuf, verify: bool) {
             .await
             .unwrap_or(MergeOutcome::GitFailed {});
         let mut state = lock(&hub.state);
-        let effects = state.core.merge_outcome(dispatch.claim, &outcome, now_ms());
+        let effects = state.core.merge_outcome(dispatch.id, &outcome, now_ms());
         let (events, outbound) = shell::split_effects(effects);
         state.flush(None, events, outbound);
     }

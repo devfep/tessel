@@ -26,6 +26,8 @@ const AGENTS: usize = 4;
 /// Four files and the directory above them, so some scopes conflict and some do not.
 const TARGETS: usize = 5;
 const UNKNOWN_CLAIM: u64 = 999_999;
+/// A dispatch id the core never issues in a script.
+const UNISSUED_DISPATCH: u64 = 1_000_000_000;
 
 fn agent(name: &str) -> AgentId {
     AgentId(name.into())
@@ -189,6 +191,9 @@ enum Op {
     OpenRace,
     JoinRace(usize),
     Trial(bool),
+    /// A trial whose process died after the dispatch: the core is saved and loaded, the cut-off
+    /// dispatch is recovered and tried again, and the first dispatch's late answer arrives.
+    CutOffTrial(bool),
     PickWinner(usize),
     Begin,
     /// An answer for `target`: 0 is the merge in flight, any other value a claim seen before
@@ -227,6 +232,12 @@ enum Op {
     Restart,
     /// The instance hung: the watchdog fires `MERGE_WATCHDOG_MS` after the dispatch.
     Watchdog,
+    /// An answer carrying a dispatch id issued earlier (a call that outlived its dispatch). It is
+    /// stale whatever claim it was for, even the one in flight now, and must change nothing.
+    LateAnswer {
+        answer: Answer,
+        pick: usize,
+    },
 }
 
 fn ops() -> impl Strategy<Value = Vec<Op>> {
@@ -242,6 +253,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         1 => Just(Op::OpenRace),
         1 => (0..AGENTS).prop_map(Op::JoinRace),
         1 => any::<bool>().prop_map(Op::Trial),
+        1 => any::<bool>().prop_map(Op::CutOffTrial),
         1 => (0..8usize).prop_map(Op::PickWinner),
         10 => Just(Op::Begin),
         6 => (answers(), 0..10usize).prop_map(|(answer, target)| Op::Answer { answer, target }),
@@ -254,6 +266,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         3 => (retryable(), 1..8usize).prop_map(|(answer, times)| Op::Repeat { answer, times }),
         1 => Just(Op::Restart),
         1 => Just(Op::Watchdog),
+        6 => (answers(), 0..16usize).prop_map(|(answer, pick)| Op::LateAnswer { answer, pick }),
     ];
     proptest::collection::vec(op, 1..40)
 }
@@ -261,6 +274,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
 /// The merge the model believes is in flight.
 #[derive(Debug, Clone, Copy)]
 struct Flight {
+    id: u64,
     claim: u64,
     attempt: u32,
     dispatched_ms: u64,
@@ -283,6 +297,21 @@ struct Model {
     /// approval does not move a claim, a new submission goes to the end.
     order: Vec<u64>,
     inflight: Option<Flight>,
+    /// Every dispatch id the core issued (merge and verification), oldest first, with the claim
+    /// of a merge dispatch. Ids are unique and only grow, across restarts too.
+    issued: Vec<(Option<u64>, u64)>,
+}
+
+impl Model {
+    /// Record a dispatch the core just issued: its id is new and larger than every earlier one.
+    fn issue(&mut self, claim: Option<u64>, id: u64) {
+        let last = self.issued.last().map_or(0, |(_, last)| *last);
+        assert!(
+            id > last,
+            "dispatch id {id} is not past the last one, {last}"
+        );
+        self.issued.push((claim, id));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -397,6 +426,7 @@ fn apply(world: &mut World, op: &Op) {
         Op::OpenRace => open_race(world),
         Op::JoinRace(index) => join_race(world, *index),
         Op::Trial(pass) => trial(world, *pass),
+        Op::CutOffTrial(pass) => cut_off_trial(world, *pass),
         Op::PickWinner(pick) => pick_winner(world, *pick),
         Op::Begin => {
             begin_checked(world);
@@ -433,6 +463,7 @@ fn apply(world: &mut World, op: &Op) {
             Vec::new()
         }
         Op::Restart => recover_checked(world),
+        Op::LateAnswer { answer, pick } => late_answer(world, *pick, *answer),
         Op::Watchdog => {
             if let Some(flight) = world.model.inflight {
                 world.now = world.now.max(flight.dispatched_ms + MERGE_WATCHDOG_MS);
@@ -567,8 +598,8 @@ fn review(world: &mut World, approve: bool, pick: usize) -> Vec<Effect> {
     world.handle(&agent("felix"), msg)
 }
 
-fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
-    let report = if pass {
+fn trial_report(pass: bool) -> TrialReport {
+    if pass {
         TrialReport {
             before: Some(TrialOutcome::Clean {}),
             after: Some(TrialOutcome::Clean {}),
@@ -578,11 +609,56 @@ fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
             before: Some(TrialOutcome::TestsFailed {}),
             after: None,
         }
+    }
+}
+
+/// A verification dispatched, then cut off by a restart: its ids are never reused, and the first
+/// dispatch's late answer changes nothing, whether or not the trial is dispatched again.
+fn cut_off_trial(world: &mut World, pass: bool) -> Vec<Effect> {
+    let report = trial_report(pass);
+    let Some(first) = world.core.begin_verification(world.now) else {
+        return Vec::new();
     };
+    world.model.issue(None, first.id);
+    world.core = load(&save(&world.core));
+    let mut effects = world.core.recover_verification(world.now);
+    world.now = world
+        .core
+        .next_verification_ms(false, world.now)
+        .unwrap_or(world.now);
+    let again = world.core.begin_verification(world.now);
+    if let Some(second) = &again {
+        world.model.issue(None, second.id);
+    }
+    let before = save(&world.core);
+    let late = world
+        .core
+        .verification_outcome(first.id, &report, world.now);
+    assert!(late.is_empty(), "the cut-off dispatch's answer had effects");
+    assert_eq!(
+        before,
+        save(&world.core),
+        "the cut-off dispatch's answer changed the state"
+    );
+    if let Some(second) = again {
+        effects.extend(
+            world
+                .core
+                .verification_outcome(second.id, &report, world.now),
+        );
+    }
+    effects
+}
+
+fn trial(world: &mut World, pass: bool) -> Vec<Effect> {
+    let report = trial_report(pass);
     match world.core.begin_verification(world.now) {
-        Some(dispatch) => world
-            .core
-            .verification_outcome(dispatch.id, &report, world.now),
+        Some(dispatch) => {
+            world.model.issue(None, dispatch.id);
+            world
+                .core
+                .verification_outcome(dispatch.id, &report, world.now)
+        }
         None => Vec::new(),
     }
 }
@@ -739,6 +815,10 @@ fn begin_checked(world: &mut World) {
             dispatch.attempt, flight.attempt,
             "the in-flight attempt is unchanged"
         );
+        assert_eq!(
+            dispatch.id, flight.id,
+            "the dispatch in flight keeps its id when it is returned again"
+        );
         return;
     }
     let work = world.core.state.claims[&id].work.as_ref().unwrap();
@@ -769,7 +849,9 @@ fn begin_checked(world: &mut World) {
         Some(world.now + MERGE_WATCHDOG_MS)
     );
     assert_eq!(world.core.next_merge_ms(false, world.now), Some(world.now));
+    world.model.issue(Some(id), dispatch.id);
     world.model.inflight = Some(Flight {
+        id: dispatch.id,
         claim: id,
         attempt: dispatch.attempt,
         dispatched_ms: world.now,
@@ -778,28 +860,19 @@ fn begin_checked(world: &mut World) {
 
 /// Apply the steward's answer for `claim` through `merge_outcome` and check what it did.
 fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> {
-    let current = world
-        .model
-        .inflight
-        .is_some_and(|flight| flight.claim == claim);
-    if !current {
-        // Documented: an answer for any other claim is stale and changes nothing.
-        world.core.expire(world.now);
-        let before = save(&world.core);
-        let effects = world
-            .core
-            .merge_outcome(ClaimId(claim), &answer.outcome(), world.now);
-        assert!(
-            effects.is_empty(),
-            "a stale answer had effects: {effects:?}"
-        );
-        assert_eq!(
-            before,
-            save(&world.core),
-            "a stale answer changed the state"
-        );
-        return effects;
-    }
+    let current = world.model.inflight.filter(|flight| flight.claim == claim);
+    let Some(flight) = current else {
+        // Documented: an answer for any other claim is stale and changes nothing. It carries the
+        // latest dispatch id issued for that claim, or an id never issued.
+        let id = world
+            .model
+            .issued
+            .iter()
+            .rev()
+            .find(|(of, _)| *of == Some(claim))
+            .map_or(UNISSUED_DISPATCH, |(_, id)| *id);
+        return stale_answer(world, id, answer);
+    };
     assert!(world.live(claim), "the claim in flight is still queued");
     let retry_before = world
         .core
@@ -810,7 +883,7 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
         .and_then(|work| work.retry_at_ms);
     let effects = world
         .core
-        .merge_outcome(ClaimId(claim), &answer.outcome(), world.now);
+        .merge_outcome(flight.id, &answer.outcome(), world.now);
     world.model.inflight = None;
     assert!(
         !world.core.has_merge_in_flight(),
@@ -818,6 +891,49 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
     );
     expect_class(world, claim, answer.class(), &effects, retry_before);
     effects
+}
+
+/// An answer to dispatch `id`, which is not the merge in flight: no effects and no state change.
+fn stale_answer(world: &mut World, id: u64, answer: Answer) -> Vec<Effect> {
+    assert!(
+        world.model.inflight.is_none_or(|flight| flight.id != id),
+        "the test sent a stale answer with the id in flight"
+    );
+    world.core.expire(world.now);
+    let before = save(&world.core);
+    let effects = world.core.merge_outcome(id, &answer.outcome(), world.now);
+    assert!(
+        effects.is_empty(),
+        "a stale answer had effects: {effects:?}"
+    );
+    assert_eq!(
+        before,
+        save(&world.core),
+        "a stale answer changed the state"
+    );
+    let report = TrialReport::stopped(TrialOutcome::Clean {});
+    let verified = world.core.verification_outcome(id, &report, world.now);
+    assert!(
+        verified.is_empty() && before == save(&world.core),
+        "a stale verification answer changed the state"
+    );
+    effects
+}
+
+/// An answer for an earlier dispatch: any id issued before, other than the merge in flight.
+fn late_answer(world: &mut World, pick: usize, answer: Answer) -> Vec<Effect> {
+    let in_flight = world.model.inflight.map(|flight| flight.id);
+    let earlier: Vec<u64> = world
+        .model
+        .issued
+        .iter()
+        .map(|(_, id)| *id)
+        .filter(|id| Some(*id) != in_flight)
+        .collect();
+    if earlier.is_empty() {
+        return Vec::new();
+    }
+    stale_answer(world, earlier[pick % earlier.len()], answer)
 }
 
 /// What `class` must have done to a live claim.
