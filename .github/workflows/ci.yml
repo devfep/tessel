@@ -64,6 +64,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Core library tests
         run: cargo test -p tessel-coordinator --lib
+      - name: Runtime rules table names real tests
+        run: scripts/ci/check-named-tests.sh
 
   rust-workspace:
     name: Slow lane, Rust workspace
