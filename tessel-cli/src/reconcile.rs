@@ -111,6 +111,7 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
             | EventKind::RaceDecided { .. }
             | EventKind::DenialVerified { .. }
             | EventKind::AssumptionVerified { .. }
+            | EventKind::VerificationDropped { .. }
             | EventKind::ReplayMerged { .. } => {}
         }
     }
@@ -160,6 +161,7 @@ pub fn landed_commits(agent: &AgentId, events: &[Event]) -> Vec<String> {
             | EventKind::RaceDecided { .. }
             | EventKind::DenialVerified { .. }
             | EventKind::AssumptionVerified { .. }
+            | EventKind::VerificationDropped { .. }
             | EventKind::ReplayMerged { .. } => {}
         }
     }
@@ -191,6 +193,7 @@ fn ended_claims(events: &[Event]) -> HashSet<ClaimId> {
             | EventKind::RaceDecided { .. }
             | EventKind::DenialVerified { .. }
             | EventKind::AssumptionVerified { .. }
+            | EventKind::VerificationDropped { .. }
             | EventKind::ReplayMerged { .. } => {}
         }
     }

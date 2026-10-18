@@ -349,6 +349,13 @@ struct CoordinatorState {
     /// Id of the next verification; starts at 0 and is never reused.
     #[serde(default)]
     next_verification: u64,
+    /// How many merges may be dispatched in a row while a verification is ready before the next
+    /// one waits for it (`verifying`). Never stored: every load restores `VERIFY_SLOT_AFTER`.
+    #[serde(skip, default = "verifying::default_slot_after")]
+    verify_slot_after: u32,
+    /// Merges dispatched in a row while a verification was ready; reset when one is dispatched.
+    #[serde(default)]
+    merges_past_verification: u32,
     /// The last dispatch id issued, shared by merge and verification dispatches. Persisted with
     /// the state, so an id is never reused, across a restart too: an answer applies only to the
     /// dispatch it answers, not to a later dispatch of the same claim or verification. The first
@@ -411,6 +418,14 @@ impl Coordinator {
         self.state.reviewers = reviewers;
     }
 
+    /// Replace how many merges may be dispatched in a row while a verification is ready before
+    /// the next merge waits for the verification. At least 1: 0 is read as 1. For tests: a host
+    /// setting is added when a deployment needs one.
+    #[cfg(test)]
+    pub(crate) fn set_verify_slot_after(&mut self, merges: u32) {
+        self.state.verify_slot_after = merges.max(1);
+    }
+
     /// Replace the path prefixes that hold a submission for review. They come from the Worker's
     /// `SENSITIVE` variable and are applied on every load. A directory entry ends in `/`, so
     /// `src/auth/` does not also match `src/authz.rs`.
@@ -443,6 +458,8 @@ impl Coordinator {
             verifications: Vec::new(),
             verification_in_flight: None,
             next_verification: 0,
+            verify_slot_after: verifying::default_slot_after(),
+            merges_past_verification: 0,
             last_dispatch: 0,
             claims: BTreeMap::new(),
             races: BTreeMap::new(),
@@ -474,7 +491,6 @@ impl Coordinator {
         let now_ms = self.advance_clock(now_ms);
         let mut effects = self.expire(now_ms);
         effects.extend(self.route(agent, msg, now_ms));
-        self.drop_ended_verifications();
         effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
@@ -502,7 +518,7 @@ impl Coordinator {
             let claim = ClaimId(id);
             remove_locks(&mut self.locks, claim, &expired);
             let reason = ReleaseReason::LeaseExpired;
-            effects.push(self.event(now_ms, EventKind::ClaimReleased { claim, reason }));
+            effects.extend(self.claim_released(claim, reason, now_ms));
             effects.push(Effect::Notify {
                 agent: expired.agent,
                 msg: ServerMsg::LeaseExpired {
@@ -518,7 +534,6 @@ impl Coordinator {
         if any_expired {
             effects.extend(self.grant_unblocked_waiters(now_ms));
         }
-        self.drop_ended_verifications();
         effects.extend(self.drop_finished_shadows(now_ms));
         effects
     }
@@ -1228,8 +1243,7 @@ impl Coordinator {
         }
         self.state.claims.remove(&claim.0);
         remove_locks(&mut self.locks, claim, &released);
-        let reason = ReleaseReason::Agent;
-        let mut effects = vec![self.event(now_ms, EventKind::ClaimReleased { claim, reason })];
+        let mut effects = self.claim_released(claim, ReleaseReason::Agent, now_ms);
         if let ClaimKind::Entry(race) = released.kind {
             effects.extend(self.entrant_left(race, claim, now_ms));
         }
@@ -6104,6 +6118,7 @@ mod tests {
                 | EventKind::RaceDecided { .. }
                 | EventKind::DenialVerified { .. }
                 | EventKind::AssumptionVerified { .. }
+                | EventKind::VerificationDropped { .. }
                 | EventKind::ReplayMerged { .. } => {}
             }
         }

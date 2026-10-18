@@ -98,6 +98,7 @@ pub fn count(events: &[Event]) -> LogCounts {
             | EventKind::RaceOpened { .. }
             | EventKind::RaceDecided { .. }
             | EventKind::AssumptionVerified { .. }
+            | EventKind::VerificationDropped { .. }
             | EventKind::ReplayMerged { .. } => {}
         }
     }
@@ -193,6 +194,7 @@ fn owed_trials(events: &[Event]) -> Vec<(ClaimId, ClaimId)> {
             | EventKind::RaceOpened { .. }
             | EventKind::RaceDecided { .. }
             | EventKind::AssumptionVerified { .. }
+            | EventKind::VerificationDropped { .. }
             | EventKind::ReplayMerged { .. } => {}
         }
     }
@@ -233,6 +235,7 @@ pub fn connected(kind: &EventKind) -> Option<&AgentId> {
         | EventKind::RaceDecided { .. }
         | EventKind::DenialVerified { .. }
         | EventKind::AssumptionVerified { .. }
+        | EventKind::VerificationDropped { .. }
         | EventKind::ReplayMerged { .. } => None,
     }
 }
@@ -259,6 +262,7 @@ pub fn review_requested(kind: &EventKind) -> Option<ClaimId> {
         | EventKind::RaceDecided { .. }
         | EventKind::DenialVerified { .. }
         | EventKind::AssumptionVerified { .. }
+        | EventKind::VerificationDropped { .. }
         | EventKind::ReplayMerged { .. } => None,
     }
 }
@@ -454,6 +458,7 @@ fn follow_open(mut open: Open, kind: &EventKind) -> Standing {
         | EventKind::RaceDecided { .. }
         | EventKind::DenialVerified { .. }
         | EventKind::AssumptionVerified { .. }
+        | EventKind::VerificationDropped { .. }
         | EventKind::ReplayMerged { .. } => {}
     }
     Standing::Open(open)
@@ -481,6 +486,7 @@ pub fn review_decided(kind: &EventKind) -> Option<ClaimId> {
         | EventKind::RaceDecided { .. }
         | EventKind::DenialVerified { .. }
         | EventKind::AssumptionVerified { .. }
+        | EventKind::VerificationDropped { .. }
         | EventKind::ReplayMerged { .. } => None,
     }
 }

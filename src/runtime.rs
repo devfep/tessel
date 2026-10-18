@@ -11,7 +11,8 @@
 //! Verifications: after a merge that challenged assumptions, `run_one_verification` asks the
 //! steward's `/trial` to test each assuming agent's work on the new main, the same way: the marker
 //! is stored first, the answer is stored before anyone is told, and it runs only when no merge is
-//! due. A trial never merges or pushes.
+//! due, or when the core's verification slot says a ready verification goes before the next merge
+//! (`verify_slot_after` merges in a row). A trial never merges or pushes.
 //!
 //! Persist before send (CLAUDE.md rule 6): `apply` runs the core and returns an `Applied`;
 //! `persist` stores its state and events in one transaction and returns a `store::Persisted`;

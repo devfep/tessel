@@ -558,8 +558,7 @@ impl Coordinator {
         let mut effects = Vec::new();
         for claim in cut_off {
             self.state.claims.remove(&claim.0);
-            let reason = ReleaseReason::LostRace;
-            effects.push(self.event(now_ms, EventKind::ClaimReleased { claim, reason }));
+            effects.extend(self.claim_released(claim, ReleaseReason::LostRace, now_ms));
         }
         if let Some(head) = self.state.head.clone() {
             for (claim, agent) in submitted {
@@ -743,23 +742,18 @@ impl Coordinator {
             claim,
             reason: reason.clone(),
         };
-        let released = EventKind::ClaimReleased {
-            claim,
-            reason: ReleaseReason::LostRace,
-        };
-        vec![
-            self.event(now_ms, rejected),
-            self.event(now_ms, released),
-            Effect::Notify {
-                agent,
-                msg: ServerMsg::SubmitRejected {
-                    claim,
-                    reason,
-                    reviewer: None,
-                    note: None,
-                },
+        let mut effects = vec![self.event(now_ms, rejected)];
+        effects.extend(self.claim_released(claim, ReleaseReason::LostRace, now_ms));
+        effects.push(Effect::Notify {
+            agent,
+            msg: ServerMsg::SubmitRejected {
+                claim,
+                reason,
+                reviewer: None,
+                note: None,
             },
-        ]
+        });
+        effects
     }
 
     /// The winner's entry becomes a real claim that holds the race's scopes with locks of its own

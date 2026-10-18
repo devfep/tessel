@@ -532,6 +532,7 @@ impl SummaryTally {
             precision: _,
             assumptions_challenged,
             assumptions_confirmed_broken,
+            verifications_dropped,
             merges,
             reviews_requested,
             base_moved_notices,
@@ -546,6 +547,7 @@ impl SummaryTally {
         total.false_alarms += false_alarms;
         total.assumptions_challenged += assumptions_challenged;
         total.assumptions_confirmed_broken += assumptions_confirmed_broken;
+        total.verifications_dropped += verifications_dropped;
         total.merges += merges;
         total.reviews_requested += reviews_requested;
         total.base_moved_notices += base_moved_notices;
