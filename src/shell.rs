@@ -533,6 +533,7 @@ impl SummaryTally {
             assumptions_challenged,
             assumptions_confirmed_broken,
             verifications_dropped,
+            verifications_unverifiable,
             merges,
             reviews_requested,
             base_moved_notices,
@@ -548,6 +549,7 @@ impl SummaryTally {
         total.assumptions_challenged += assumptions_challenged;
         total.assumptions_confirmed_broken += assumptions_confirmed_broken;
         total.verifications_dropped += verifications_dropped;
+        total.verifications_unverifiable += verifications_unverifiable;
         total.merges += merges;
         total.reviews_requested += reviews_requested;
         total.base_moved_notices += base_moved_notices;
@@ -2770,6 +2772,8 @@ mod tests {
         EventKind::Merged {
             claim: ClaimId(1),
             head: CommitId("abc".to_string()),
+            unverified: Vec::new(),
+            untried_shadows: Vec::new(),
         }
     }
 
@@ -2784,6 +2788,8 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(1),
                 head: CommitId("abc".to_string()),
+                unverified: Vec::new(),
+                untried_shadows: Vec::new(),
             },
         ];
         let mut log = Vec::new();

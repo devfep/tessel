@@ -5,14 +5,14 @@
 //!
 //! The case count is proptest's default (256), so `PROPTEST_CASES=10000` raises it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proptest::prelude::*;
 use proptest::test_runner::TestRunner;
 
-use crate::coordinator::verifying::Subject;
+use crate::coordinator::verifying::{Subject, Verification};
 use crate::coordinator::{Config, Coordinator, Effect};
 use crate::merge::{
     infra_backoff_ms, MergeOutcome, StepExit, TrialOutcome, TrialReport, MAX_INFRA_RETRIES,
@@ -1158,9 +1158,11 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
         .get(&claim)
         .and_then(|held| held.work.as_ref())
         .and_then(|work| work.retry_at_ms);
+    let owed = owed_verifications(world, claim);
     let effects = world
         .core
         .merge_outcome(flight.id, &answer.outcome(), world.now);
+    check_unverifiable(world, claim, &owed, &effects);
     world.model.inflight = None;
     assert!(
         !world.core.has_merge_in_flight(),
@@ -1169,6 +1171,107 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
     expect_class(world, claim, answer.class(), &effects, retry_before);
     effects
 }
+
+/// What a landing of `claim` owes verification, read before the answer is applied: the
+/// (assuming claim, assumption) pairs it challenged whose assuming claim is live, and the
+/// submitted shadow claims it blocks.
+type Owed = (HashSet<(u64, Assumption)>, HashSet<u64>, HashSet<String>);
+
+fn owed_verifications(world: &World, claim: u64) -> Owed {
+    let state = &world.core.state;
+    let mut pairs = HashSet::new();
+    if let Some(work) = state.claims.get(&claim).and_then(|held| held.work.as_ref()) {
+        for challenge in &work.challenged {
+            if state.claims.contains_key(&challenge.claim.0) {
+                pairs.insert((challenge.claim.0, challenge.assumption.clone()));
+            }
+        }
+    }
+    let mut shadows = HashSet::new();
+    for (id, shadow) in &state.claims {
+        let Some(denial) = &shadow.denial else {
+            continue;
+        };
+        if denial.blocked_by.contains(&ClaimId(claim)) && denial.fork_commit.is_some() {
+            shadows.insert(*id);
+        }
+    }
+    let queue = state.verifications.iter().map(save_trial).collect();
+    (pairs, shadows, queue)
+}
+
+/// A queued trial as stored. A trial the landing queued has an id the queue did not hold.
+fn save_trial(trial: &Verification) -> String {
+    serde_json::to_string(trial).unwrap()
+}
+
+/// Check 9: every live challenged assumption of a landing is either queued for verification
+/// against the new main or listed as unverified on its `Merged` event, never both and never
+/// neither; the same for the submitted shadow claims it blocks (queued or untried).
+fn check_unverifiable(world: &World, claim: u64, owed: &Owed, effects: &[Effect]) {
+    let mut landed = None;
+    for kind in kinds(effects) {
+        if let EventKind::Merged {
+            claim: c,
+            head,
+            unverified,
+            untried_shadows,
+        } = kind
+        {
+            if c.0 == claim {
+                landed = Some((head, unverified, untried_shadows));
+            }
+        }
+    }
+    let Some((head, unverified, untried)) = landed else {
+        return;
+    };
+    let mut listed = HashSet::new();
+    for item in unverified {
+        assert!(
+            listed.insert((item.claim.0, item.assumption.clone())),
+            "check 9: an assumption is listed twice"
+        );
+    }
+    let mut queued = HashSet::new();
+    let mut tried = HashSet::new();
+    for trial in &world.core.state.verifications {
+        if trial.main != *head || owed.2.contains(&save_trial(trial)) {
+            continue;
+        }
+        match &trial.subject {
+            Subject::Assumption { assumption } => {
+                queued.insert((trial.claim.0, assumption.clone()));
+            }
+            Subject::Shadow { blocking_claim } if blocking_claim.0 == claim => {
+                tried.insert(trial.claim.0);
+            }
+            Subject::Shadow { .. } | Subject::RaceEntry { .. } => {}
+        }
+    }
+    assert!(
+        queued.is_disjoint(&listed),
+        "check 9: an assumption is both queued and listed unverified"
+    );
+    let covered: HashSet<_> = queued.union(&listed).cloned().collect();
+    assert_eq!(
+        covered, owed.0,
+        "check 9: queued plus unverified differs from live challenged"
+    );
+    let untried: HashSet<u64> = untried.iter().map(|id| id.0).collect();
+    assert!(tried.is_disjoint(&untried));
+    let covered: HashSet<u64> = tried.union(&untried).copied().collect();
+    assert_eq!(
+        covered, owed.1,
+        "check 9: tried plus untried shadows differ from those owed"
+    );
+    if !unverified.is_empty() || !untried.is_empty() {
+        CHECK_9_RUNS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// How many landings listed something unverified, over the whole test.
+static CHECK_9_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 /// An answer to dispatch `id`, which is not the merge in flight: no effects and no state change.
 fn stale_answer(world: &mut World, id: u64, answer: Answer) -> Vec<Effect> {
@@ -1567,5 +1670,9 @@ fn random_merge_queue_scripts_keep_the_queue_rules() {
     assert!(
         CHECK_8_RUNS.load(Ordering::Relaxed) > 0,
         "check 8 never ran: every case returned before reaching it"
+    );
+    assert!(
+        CHECK_9_RUNS.load(Ordering::Relaxed) > 0,
+        "check 9 never saw an unverified landing"
     );
 }

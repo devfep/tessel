@@ -2450,6 +2450,8 @@ mod tests {
                 EventKind::Merged {
                     claim: ClaimId(1),
                     head: CommitId("c".repeat(40)),
+                    unverified: Vec::new(),
+                    untried_shadows: Vec::new(),
                 },
             ),
         ];

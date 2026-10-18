@@ -637,6 +637,8 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(claim),
                 head: CommitId("d".repeat(40)),
+                unverified: Vec::new(),
+                untried_shadows: Vec::new(),
             },
         )
     }
@@ -884,6 +886,8 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(1),
                 head,
+                unverified: Vec::new(),
+                untried_shadows: Vec::new(),
             },
         ));
         assert_eq!(standing(&log, "a01", "t01"), Standing::Merged);

@@ -559,6 +559,8 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(claim),
                 head: tessel_coordinator::protocol::CommitId("h".into()),
+                unverified: Vec::new(),
+                untried_shadows: Vec::new(),
             },
         )
     }

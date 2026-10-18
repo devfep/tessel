@@ -9,8 +9,11 @@
 //!   stored before anything is sent (CLAUDE.md rule 6).
 //! - A landing whose baseline is unknown queues nothing: a retry answered `already_merged` with no
 //!   earlier attempt in doubt, or with main unchanged since that attempt began, has no span to
-//!   compare. No verification is queued and nothing is counted, so the challenged assumptions
-//!   stay unverified. This is not logged: no event says that a landing went unverified.
+//!   compare. The challenged assumptions stay unverified, and the landing says so: `Merged` lists
+//!   them as `unverified` (those whose assuming claim is still live, the ones that would have
+//!   been queued) and the submitted shadow claims it did not try as `untried_shadows`.
+//!   `Summary::verifications_unverifiable` counts the assumptions. It is neither a verified
+//!   outcome nor a drop, and no baseline is invented for it.
 //! - The commit to try is chosen when the trial is dispatched, not when it is recorded: the
 //!   assuming claim's submitted `fork_commit` at that moment; for a claim that has not submitted
 //!   it is `None`, and the steward reads the head of the agent's fork and says which commit that
@@ -87,6 +90,7 @@ use crate::merge::{
 };
 use crate::protocol::{
     AgentId, Assumption, ClaimId, CommitId, EventKind, Outcome, RaceId, ReleaseReason,
+    UnverifiedAssumption,
 };
 
 /// The merges that may be dispatched in a row while a verification is ready. Not stored: every
@@ -215,15 +219,28 @@ impl Coordinator {
         }
     }
 
-    /// Queue a trial for each submitted shadow claim that `blocking` denied, now that `blocking`
-    /// has merged: the shadow claim's commit tried on `main`, with `before` as the baseline. A
-    /// shadow claim that has not submitted has nothing to try and is skipped.
-    pub(super) fn record_shadow_verifications(
-        &mut self,
+    /// The challenged assumptions whose assuming claim is still live: the ones
+    /// `record_verifications` queues, and the ones a landing without a baseline lists as
+    /// unverified.
+    pub(super) fn live_challenged(&self, challenged: &[Challenged]) -> Vec<UnverifiedAssumption> {
+        let mut live = Vec::new();
+        for challenge in challenged {
+            if self.state.claims.contains_key(&challenge.claim.0) {
+                live.push(UnverifiedAssumption {
+                    claim: challenge.claim,
+                    assumption: challenge.assumption.clone(),
+                });
+            }
+        }
+        live
+    }
+
+    /// The submitted shadow claims that `blocking` denied, with their agents, in claim id order.
+    /// One that has not submitted has nothing to try and is left out.
+    pub(super) fn submitted_shadows_blocked_by(
+        &self,
         blocking: ClaimId,
-        before: &CommitId,
-        main: &CommitId,
-    ) {
+    ) -> Vec<(ClaimId, AgentId)> {
         let mut shadows = Vec::new();
         for (id, shadow) in &self.state.claims {
             let Some(denial) = &shadow.denial else {
@@ -233,6 +250,19 @@ impl Coordinator {
                 shadows.push((ClaimId(*id), shadow.agent.clone()));
             }
         }
+        shadows
+    }
+
+    /// Queue a trial for each submitted shadow claim that `blocking` denied, now that `blocking`
+    /// has merged: the shadow claim's commit tried on `main`, with `before` as the baseline. A
+    /// shadow claim that has not submitted has nothing to try and is skipped.
+    pub(super) fn record_shadow_verifications(
+        &mut self,
+        blocking: ClaimId,
+        before: &CommitId,
+        main: &CommitId,
+    ) {
+        let shadows = self.submitted_shadows_blocked_by(blocking);
         for (claim, agent) in shadows {
             let id = super::take_next(&mut self.state.next_verification);
             self.state.verifications.push(Verification {
@@ -2942,5 +2972,136 @@ mod tests {
             })
             .collect();
         assert_eq!(reviewers, [Some(agent("felix"))]);
+    }
+
+    // ---- landings with no baseline say what they skipped ----
+
+    fn landing_of(effects: &[Effect]) -> (Vec<UnverifiedAssumption>, Vec<ClaimId>) {
+        let mut merged = Vec::new();
+        for kind in logged(effects) {
+            if let EventKind::Merged {
+                unverified,
+                untried_shadows,
+                ..
+            } = kind
+            {
+                merged.push((unverified.clone(), untried_shadows.clone()));
+            }
+        }
+        assert_eq!(merged.len(), 1, "{effects:?}");
+        merged.remove(0)
+    }
+
+    /// The landing left the assumption unverified and counted, with nothing queued, dropped or
+    /// broken.
+    fn assert_unverifiable(c: &Coordinator, effects: &[Effect], assuming: ClaimId) {
+        let (unverified, untried) = landing_of(effects);
+        let expected = UnverifiedAssumption {
+            claim: assuming,
+            assumption: assumes("src/a.rs", "f returns Some"),
+        };
+        assert_eq!(unverified, [expected]);
+        assert!(untried.is_empty());
+        assert_eq!(pending(c), 0);
+        let summary = summary_of(&[effects]);
+        assert_eq!(summary.verifications_unverifiable, 1);
+        assert_eq!(summary.verifications_dropped, 0);
+        assert_eq!(summary.assumptions_confirmed_broken, 0);
+    }
+
+    #[test]
+    fn an_already_merged_first_dispatch_lists_the_assumption_it_could_not_verify() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let (assuming, challenger) = challenged(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
+
+        assert_unverifiable(&c, &effects, assuming);
+    }
+
+    #[test]
+    fn a_recovery_with_no_known_head_at_dispatch_lists_the_assumption() {
+        let mut c = core();
+        for who in ["a1", "a2"] {
+            let hello = ClientMsg::Hello {
+                agent: agent(who),
+                base: CommitId("0".repeat(40)),
+                protocol: 1,
+            };
+            c.handle(&agent(who), hello, NOW);
+        }
+        let (assuming, challenger) = challenged(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        c.recover_merge(NOW);
+        let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
+        let due = work.retry_at_ms.expect("a retry is scheduled");
+        c.begin_merge(due).expect("the retry is dispatched");
+        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_unverifiable(&c, &effects, assuming);
+    }
+
+    #[test]
+    fn a_recovery_that_left_main_unchanged_lists_the_assumption() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        let assuming = ClaimId(challenger.0 - 1);
+        c.begin_merge(due).expect("the retry is dispatched");
+        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN), due);
+
+        assert_unverifiable(&c, &effects, assuming);
+    }
+
+    #[test]
+    fn a_landing_with_a_baseline_lists_nothing() {
+        let mut c = core();
+        let (_, challenger) = challenged(&mut c);
+        let effects = merge_challenger(&mut c, challenger, MAIN);
+
+        let (unverified, untried) = landing_of(&effects);
+        assert!(unverified.is_empty() && untried.is_empty());
+        assert_eq!(summary_of(&[&effects]).verifications_unverifiable, 0);
+    }
+
+    #[test]
+    fn an_assumption_whose_claim_has_ended_is_not_listed() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let (assuming, challenger) = challenged(&mut c);
+        let release = ClientMsg::Release {
+            req: Some(RequestId(11)),
+            claim: assuming,
+            fence: c.state.claims[&assuming.0].fence,
+        };
+        c.handle(&agent("a1"), release, NOW);
+        c.begin_merge(NOW).expect("a merge is due");
+        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
+
+        let (unverified, _) = landing_of(&effects);
+        assert!(
+            unverified.is_empty(),
+            "nothing was in doubt: {unverified:?}"
+        );
+        assert_eq!(summary_of(&[&effects]).verifications_unverifiable, 0);
+    }
+
+    #[test]
+    fn a_submitted_shadow_the_landing_could_not_try_is_listed_and_then_settled() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let (shadowed, blocker) = shadowed_and_submitted(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        let effects = c.merge_outcome(c.merge_flight_id(blocker), &already_merged(MAIN2), NOW);
+
+        let (unverified, untried) = landing_of(&effects);
+        assert!(unverified.is_empty());
+        assert_eq!(untried, [shadowed]);
+        assert_eq!(pending(&c), 0);
+        assert!(denial_events(&effects).is_empty());
+        assert_eq!(summary_of(&[&effects]).verifications_unverifiable, 0);
+        let next = c.handle(&agent("a1"), ClientMsg::Heartbeat, NOW);
+        assert_eq!(settled(&next), [shadowed], "{next:?}");
+        assert!(!is_live(&c, shadowed));
     }
 }
