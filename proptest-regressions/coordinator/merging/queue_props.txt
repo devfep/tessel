@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9e74116de9bc276a46d5f4615778cd1423cb503d3953d21f930350508e41c6ed # shrinks to script = [Pipeline([Merged, Merged]), Race { entrants: 1, evidence: false }, Race { entrants: 1, evidence: false }, RecoveredLanding { who: 0, on: 0, restart: false, lost: MainMoved }, ApproveThenBegin(0), Cycle { answer: AlreadyMerged }]
+cc 5db89a93ef5addd9f57b33393d5218513a30ebdd1b0606e498b464dbd6862499 # shrinks to script = [RecoveredLanding { who: 0, on: 0, restart: false, lost: MainMoved }]
+cc 5348b28a24df7fab986fb92fe7e1240c8cef3cd2563cbb7480898b8cd955abfe # shrinks to script = [RecoveredLanding { who: 0, on: 0, restart: false, lost: ServiceUnavailable, moved_between: false }]
+cc d8a836306e9bf6296a2129cb4448fff291325afd62677b6ad3f7c2b4930cddf0 # shrinks to script = [RecoveredLanding { who: 0, on: 0, restart: false, lost: ServiceUnavailable, moved_between: false }, RecoveredLanding { who: 0, on: 2, restart: false, lost: ServiceUnavailable, moved_between: false }]
