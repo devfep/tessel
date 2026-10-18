@@ -423,6 +423,6 @@ async fn a_commit_of_more_than_256_scopes_is_refused_locally_with_exit_1() -> Re
     let done = a1.tessel(&["submit", "--evidence", "cargo test passed"])?;
     assert_eq!(done.code, 1, "{}", done.all());
     assert!(done.stderr.contains("at most 256"), "{}", done.stderr);
-    assert!(sent_touched(&fake).is_empty());
+    assert_eq!(sent_touched(&fake), []);
     Ok(())
 }

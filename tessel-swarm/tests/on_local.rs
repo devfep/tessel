@@ -912,7 +912,7 @@ async fn a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive() {
         "one agent waited for several leases: {:?}",
         run.result.results
     );
-    assert!(lease_expired(&run.result.events).is_empty());
+    assert_eq!(lease_expired(&run.result.events), []);
     run.server.shutdown().await;
 }
 

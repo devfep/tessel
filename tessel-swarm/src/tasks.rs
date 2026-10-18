@@ -504,7 +504,7 @@ mod tests {
         assert!(claims.contains(&file("src/cart.ts", Mode::Create)));
         assert!(claims.contains(&file("test/extra2.test.ts", Mode::Create)));
         let ours = touched(&base, &after);
-        assert!(tessel_coordinator::protocol::uncovered(&claims, &ours).is_empty());
+        assert_eq!(tessel_coordinator::protocol::uncovered(&claims, &ours), []);
     }
 
     #[test]

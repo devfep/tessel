@@ -624,7 +624,7 @@ mod tests {
     fn an_empty_index_touches_nothing() {
         let dir = repo();
         let root = dir.path();
-        assert!(touched_index(root, &head(root)).unwrap().is_empty());
+        assert_eq!(touched_index(root, &head(root)).unwrap(), []);
     }
 
     #[test]
