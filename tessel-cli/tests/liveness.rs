@@ -15,7 +15,7 @@ mod support;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use support::{eventually, Agent, Fake};
+use support::{eventually, now_ms, Agent, Fake};
 use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, ServerMsg};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -108,16 +108,33 @@ async fn a_claim_lost_on_a_silent_link_is_reported_not_assumed_live() -> Result<
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn heartbeats_into_a_silent_link_do_not_extend_the_local_expiry() -> Result<()> {
-    let (fake, a1) = claimed(3_000).await?;
+    const LEASE_MS: u64 = 3_000;
+    let (fake, a1) = claimed(LEASE_MS).await?;
     fake.go_silent();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let settled = expiry(&a1)?;
-    // The window spans a whole heartbeat period, and the link is still up when it is sent.
-    tokio::time::sleep(Duration::from_millis(1_100)).await;
-    assert_eq!(
-        expiry(&a1)?,
-        settled,
-        "a heartbeat nobody answered renewed the expiry"
+    fake.set_accepting(false);
+    eventually(SHORT, || Ok(fake.all_sockets_muted().then_some(()))).await?;
+    // Past this instant no pong can reach the daemon, and a pong already on its way answers a
+    // heartbeat sent before it, so a renewal it causes ends no later than `ceiling`. Only a
+    // heartbeat that renews without being answered can take the expiry beyond it.
+    let ceiling = now_ms() + LEASE_MS;
+    let deadline = tokio::time::Instant::now() + SHORT;
+    // The claim lapses locally once the link is down and the lease has run out.
+    while let Some(expires) = a1.status()?["state"]["claims"][0]["expires_at_ms"].as_u64() {
+        assert!(
+            expires <= ceiling,
+            "the expiry moved {} ms past the last answered heartbeat's lease",
+            expires - ceiling
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the claim never lapsed on a link that stayed silent"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let log = std::fs::read_to_string(a1.root().join(".tessel/daemon.log"))?;
+    assert!(
+        log.contains("link dead"),
+        "no heartbeat went unanswered while the expiry was watched:\n{log}"
     );
     Ok(())
 }
