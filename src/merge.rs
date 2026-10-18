@@ -12,7 +12,10 @@ use crate::protocol::{
     AgentId, ClaimId, CommitId, DecisionRecord, Intent, Outcome, ReviewReason, ScopeClaim,
 };
 
-/// A `main_moved` outcome re-dispatches the claim at once; this many in a row reject it.
+/// A `main_moved` outcome re-dispatches the claim at once. The answers are counted per submission
+/// (an infrastructure failure in between does not reset the count): the `MAX_MAIN_MOVED`th rejects
+/// the claim, so it is re-dispatched `MAX_MAIN_MOVED - 1` times at most. The merge-queue property
+/// test (`queue_props`, check 4) checks exactly that: never rejected before, always rejected at.
 pub const MAX_MAIN_MOVED: u32 = 5;
 
 /// An infrastructure outcome is retried this many times before the claim is rejected.

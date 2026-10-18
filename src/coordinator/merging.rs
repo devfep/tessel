@@ -562,7 +562,9 @@ impl Coordinator {
         ]
     }
 
-    /// Main moved under the merge. Dispatch the same claim again, up to `MAX_MAIN_MOVED` times.
+    /// Main moved under the merge. Dispatch the same claim again. This answer is counted per
+    /// submission, whatever came between; the `MAX_MAIN_MOVED`th rejects the claim, so there are
+    /// at most `MAX_MAIN_MOVED - 1` re-dispatches.
     fn retry_after_move(&mut self, claim: ClaimId, held: ActiveClaim, now_ms: u64) -> Vec<Effect> {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
