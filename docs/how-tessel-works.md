@@ -1,7 +1,7 @@
 # How Tessel works
 
 This page describes the code as it runs today on Cloudflare. That host is being replaced by
-`tessel-server` in Phase 1 of [`PLAN.md`](../PLAN.md); the model (claims, fences, the gate) carries over.
+`tessel-server` in Phase 1 of [`PLAN.md`](../PLAN.md).
 
 Tessel lets several AI coding agents work in one repository at once without overwriting or breaking
 each other's work: each agent claims the code it is about to change, and finished work reaches
@@ -82,8 +82,8 @@ The output below is real. It comes from the `tessel` CLI built from this code, r
 clones against the local target of [`tessel-swarm`](../tessel-swarm/README.md): the real
 coordinator core behind a WebSocket on 127.0.0.1, with a local stand-in for the steward that
 cherry-picks the submitted commit onto the trunk and runs `node --test`. A small scratch program,
-not part of the repository, started that target and gave each agent a token. The deployed steward
-does more at the merge step, as step 5 says. Lines are quoted as printed; nothing is edited except
+not part of the repository, started that target and gave each agent a token. The real steward
+(`tessel-steward/`) does more at the merge step, as step 5 says. Lines are quoted as printed; nothing is edited except
 where a line says `[...]`.
 
 **1. `a1` says what it is doing, then claims the function.** The claim names one symbol, so the
@@ -180,10 +180,10 @@ rules. None applies here: a body change, not on a sensitive path, threatening no
 evidence attached. So the work goes straight to the merge queue.
 
 **5. The steward lands it.** The local stand-in cherry-picked the commit onto the trunk and ran
-`node --test`. The deployed steward does this in a container with no Internet access: it clones
-`main`, fetches the fork, checks the commit is on the fork's `main`, rebases it, checks that the
-claim covers every file the rebased change touches, runs the repository's gate, pushes `main` with
-a lease, and confirms by reading `main` back.
+`node --test`. The real steward (`tessel-steward/`) does this in a container with no Internet
+access: it clones `main`, fetches the fork, checks the commit is on the fork's `main`, rebases
+it, checks that the claim covers every file the rebased change touches, runs the repository's
+gate, pushes `main` with a lease, and confirms by reading `main` back.
 
 ```
 [a1] $ tessel inbox
@@ -323,5 +323,4 @@ queued.
 - **Only Claude Code gets automatic hooks.** Other agents use the MCP server (`tessel mcp`) or call
   the CLI. The git hooks work with any tool.
 - **A denial is not a prevented conflict.** Tessel counts a prevention only when a shadow run
-  verified it. The README's Evidence section
-  says where the recorded runs are.
+  verified it. [The README](../README.md#evidence) says where the recorded runs are.

@@ -82,16 +82,19 @@ contested function varies with timing, so your numbers can differ from run to ru
 ## Hosting today
 
 The coordinator and steward in this repository run on Cloudflare Workers, Durable Objects and
-Artifacts. That host is being replaced by `tessel-server` (see [`PLAN.md`](PLAN.md), Phase 1);
-nothing is deployed from this repository at the moment. To run the Cloudflare host yourself, see
-[Operate it](#operate-it).
+Artifacts. Phase 1 of [`PLAN.md`](PLAN.md) replaces that host with `tessel-server`, which is not
+built yet. Nothing is deployed from this repository at the moment. To run the Cloudflare host
+yourself, see [Operate it](#operate-it).
 
 ## Evidence
 
 The counting rule: **a denial is not a prevented conflict.** Only verified outcomes count.
-The numbers below come from runs against a live Cloudflare coordinator. Their event logs are no
-longer in the tree; they are in the git tag `contest-2026-10`, under `docs/evidence/`. Rerun them
-with the swarm harness above.
+The `on` runs used the Cloudflare coordinator deployed at the time (now shut down); the `off`
+row is a local replay. Their event logs are no longer in the tree; they are in the git tag
+`contest-2026-10`, under
+[`docs/evidence/2026-10-09`](https://github.com/devfep/tessel/tree/contest-2026-10/docs/evidence/2026-10-09).
+`tessel-swarm run --seed 3 --tasks 40 --agents 30 --overlap 0.5` runs the same tasks against the
+local core; expect different numbers.
 
 The same 40 tasks (seed 3, 30 agents, overlap 0.5) on 9 October 2026:
 
@@ -133,7 +136,6 @@ Shipped:
 
 Not shipped:
 
-- Preview deployments with Workers Builds.
 - Batching merges that commute. Claims carry the scope data, but merges still run one at a time.
 - Gates that install dependencies at run time. The containers have no Internet, so the operator
   bakes a repository's dependencies into the toolchain image and writes a `tessel.toml`.
@@ -148,8 +150,8 @@ Not shipped:
 - [Configuration](docs/configuration.md): every setting of both Workers.
 - [`skills/tessel/SKILL.md`](skills/tessel/SKILL.md): the workflow taught to agents.
 - Build the CLI with `cargo install --path tessel-cli`.
-- [Dogfooding gate](docs/reference/coordinator.md#dogfooding-gate): Tessel merges its own code
-  through its own gate.
+- [The `tessel.toml` gate](docs/reference/coordinator.md#dogfooding-gate): who may change a
+  repository's gate and how to recover from a broken one.
 
 Run the tests from a fresh clone. You need Rust stable (`rustup`) with the
 `wasm32-unknown-unknown` target, Node 22.18 or newer, pnpm and `wrangler`.
