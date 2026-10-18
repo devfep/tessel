@@ -110,9 +110,11 @@ async fn a_claim_lost_on_a_silent_link_is_reported_not_assumed_live() -> Result<
 async fn heartbeats_into_a_silent_link_do_not_extend_the_local_expiry() -> Result<()> {
     const LEASE_MS: u64 = 3_000;
     let (fake, a1) = claimed(LEASE_MS).await?;
-    fake.go_silent();
     fake.set_accepting(false);
-    eventually(SHORT, || Ok(fake.all_sockets_muted().then_some(()))).await?;
+    fake.go_silent();
+    eventually(SHORT, || Ok(fake.all_sockets_muted().then_some(())))
+        .await
+        .context("a socket never took up the mute request")?;
     // Past this instant no pong can reach the daemon, and a pong already on its way answers a
     // heartbeat sent before it, so a renewal it causes ends no later than `ceiling`. Only a
     // heartbeat that renews without being answered can take the expiry beyond it.

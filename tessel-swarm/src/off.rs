@@ -459,7 +459,20 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         let result = runner.join().unwrap();
-        let seen = seen.into_iter().map(|at| at.unwrap()).collect();
+        let seen = seen
+            .into_iter()
+            .enumerate()
+            .map(|(slot, at)| {
+                at.or_else(|| {
+                    dir.path()
+                        .join(format!("slot{slot}"))
+                        .exists()
+                        .then(|| started.elapsed())
+                })
+                .ok_or(format!("slot{slot} never appeared"))
+                .unwrap()
+            })
+            .collect();
         (result, seen)
     }
 
@@ -479,11 +492,11 @@ mod tests {
             .max()
             .unwrap()
             .saturating_sub(*seen.iter().min().unwrap());
-        let in_turn = Duration::from_millis(work_ms * (tasks.len() as u64 - 1));
+        let one_work_time = Duration::from_millis(work_ms);
         assert!(
-            spread < in_turn,
-            "agents ended their work {spread:?} apart; four working in turn are at least \
-             {in_turn:?} apart"
+            spread < one_work_time,
+            "agents ended their work {spread:?} apart; any agent that waited for another is at \
+             least {one_work_time:?} behind it"
         );
     }
 }
