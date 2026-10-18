@@ -13,8 +13,8 @@ steward image, ruled out of scope; all six jobs green on GitHub, fast lane 1m9s 
 (P0-MQ-PROPTEST; Opus "Yes" after one fix pass; 19 mutants killed, no bugs found). After #19
 merges, #20 merges `main` in so CI runs on it.
 **Next to dispatch:** P0-DISPATCH-ID and P0-CLI-REPLAY-UNKNOWN-EVENT (disjoint files).
-**Pending from Felix:** the spike organisation and App (P0-SPIKE); making CI checks required on
-`main` once #19 lands.
+**Pending from Felix:** the spike organisation and App (P0-SPIKE); a ruleset making the six CI
+jobs required on `main`.
 
 ## Phase 0: foundations
 
@@ -67,28 +67,23 @@ merges, #20 merges `main` in so CI runs on it.
 
 Kept, and scheduled where they fit:
 
-- [ ] **SWARM-ONLOCAL-LOAD-2** — `tessel-swarm/tests/on_local.rs`
-  `a_shadow_submission_is_on_record_early_and_its_work_time_is_still_counted` fails under load: it
-  compares two agents' claim-to-submit spans, which depend on uneven git timing. Assert the order
-  of the two `Submitted` events instead, and that the shadow's result still counts `work_ms`. Also
-  seen once: `local::tests::work_that_already_fails_on_main...` (passes alone). With P0-CI.
-- [ ] **CLI-GITHOOK-REINSTALL** — `tessel-cli/src/githook.rs`: re-running `tessel hook install`
-  after another tool overwrote the shim bails because `<hook>.pre-tessel` exists. Move the old
-  backup aside with a date, chain the new hook, report both. Test first. Any free lane.
-- [ ] **SWARM-PUSH-PHRASES** — `tessel-swarm/src/git.rs`: add "the remote end hung up
-  unexpectedly", "unexpected disconnect while reading sideband packet", "connection timed out" and
-  "empty reply from server" to the transient set, with tests. Any free lane.
+- [x] **SWARM-ONLOCAL-LOAD-2** — already done before Phase 0 (the test asserts the order of the two
+  `Submitted` events, `tessel-swarm/tests/on_local.rs`); the contest roadmap had left the box open.
+- [x] **CLI-GITHOOK-REINSTALL** — already done before Phase 0 (`cdb445c`: a different hook moves the
+  old backup to a dated name and is chained; tests in `tessel-cli/tests/githook.rs`); the contest
+  roadmap had left the box open.
+- [x] **SWARM-PUSH-PHRASES** — already done before Phase 0 (all four phrases are in the transient
+  set with tests, `tessel-swarm/src/git.rs`); the contest roadmap had left the box open.
 - [ ] **COORD-UNDELIVERED-GRANT** — a `Granted` that fails to send closes the socket but leaves the
   claim held until its lease lapses. Phase 1, in the host (send failure handling).
-- [ ] **COORD-APPLY-LOADED** — `runtime.rs` applies a steward outcome after an await without
-  reloading the core. Phase 1: the host's one-outstanding-commit model removes it; a host test
-  pins it.
+- [x] **COORD-APPLY-LOADED** — already done before Phase 0 (`apply_loaded` reloads the core before
+  applying a steward outcome, `src/runtime.rs`); the contest roadmap had left the box open.
 - [ ] **COORD-WAKE-WHILE-VERIFYING** — from the P0-MQ-PROPTEST review: `runtime.rs` (~661)
   calls `next_wake_ms(true, false, ..)` even while this instance is verifying, which looks like an
   immediate-alarm loop during a verification. Phase 1: a host test (I4, "the wake is in the
   future") pins it when the orchestration moves.
-- [ ] **REVIEW-SENSITIVE** — the sensitive-path review reason can never fire (no list is
-  configured). Phase 3, with per-repo review configuration.
+- [x] **REVIEW-SENSITIVE** — already done before Phase 0 (`ae62618`: submissions touching paths in
+  the `SENSITIVE` variable are held); the contest roadmap had left the box open.
 - [ ] **REVIEW-NOTE** — a reviewer's note never reaches the agent. Needs a design (untrusted text,
   rule 3) and Felix's ruling. Phase 3.
 
