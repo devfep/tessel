@@ -803,6 +803,7 @@ mod tests {
             connection: crate::state::Connection::Online,
             lease_ms: None,
             last_error: None,
+            skipped_frames: 0,
             claims: Vec::new(),
             queued: None,
             updated_at_ms: 0,

@@ -1930,39 +1930,36 @@ fn daemon_log(agent: &Agent) -> Result<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_event_of_an_unknown_kind_in_the_replay_marks_the_read_incomplete_not_failed(
+async fn an_event_of_an_unknown_kind_in_the_replay_is_skipped_and_the_read_still_completes(
 ) -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
     a1.start("future event in the log")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    // The log is: connected (0), granted (1). Seq 1 reaches the daemon as a kind it does not know.
-    fake.replace_in_replay(1, &unknown_event(1));
+    // The log is: connected (0), the read socket's connect (1), granted (2). Seq 0 reaches the
+    // daemon as a kind it does not know.
+    fake.replace_in_replay(0, &unknown_event(0));
+    let reads = daemon_log(&a1)?.matches("(complete)").count();
     let before = hellos(&fake, "a1");
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
     eventually(SHORT, || {
-        Ok(a1
-            .tessel(&["inbox", "--all"])?
-            .stdout
-            .contains("not read to its end")
-            .then_some(()))
+        let log = daemon_log(&a1)?;
+        let skipped = log.contains("unknown event seq 0 kind \"from_the_future\"");
+        Ok((skipped && log.matches("(complete)").count() > reads).then_some(()))
     })
     .await?;
     let log = daemon_log(&a1)?;
     assert!(!log.contains("cannot read the event log"), "{log}");
     assert!(
-        log.contains("unknown event seq 1 kind \"from_the_future\""),
+        log.contains("unknown event seq 0 kind \"from_the_future\""),
         "{log}"
     );
     assert!(
         !log.contains("\"n\":1"),
         "the whole frame was logged: {log}"
     );
-    assert_eq!(
-        a1.held_claims()?,
-        1,
-        "an incomplete read dropped a live claim"
-    );
+    assert_eq!(a1.held_claims()?, 1);
+    assert_eq!(a1.status()?["state"]["skipped_frames"], 1);
     assert_eq!(a1.status()?["state"]["connection"], "online");
     Ok(())
 }
@@ -1971,7 +1968,7 @@ async fn an_event_of_an_unknown_kind_in_the_replay_marks_the_read_incomplete_not
 async fn a_replay_frame_that_is_not_an_event_envelope_still_fails_the_read() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
     a1.start("garbage in the log")?;
-    for frame in ["this is not json", r#"{"type":"from_the_future","n":1}"#] {
+    for frame in ["this is not json", r#"{"n":1}"#, "[]"] {
         fake.replace_in_replay(0, frame);
         let before = hellos(&fake, "a1");
         fake.drop_connections();

@@ -78,6 +78,11 @@ pub struct State {
     pub connection: Connection,
     pub lease_ms: Option<u64>,
     pub last_error: Option<String>,
+    /// Frames from the coordinator this daemon could not decode and skipped: the replay's count
+    /// at the last reconnect plus those on the live socket since. Above zero, the daemon is
+    /// older than the coordinator and its view may lack what those frames said.
+    #[serde(default)]
+    pub skipped_frames: u64,
     pub claims: Vec<HeldClaim>,
     pub queued: Option<QueuedWait>,
     pub updated_at_ms: u64,

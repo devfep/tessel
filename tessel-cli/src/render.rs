@@ -760,6 +760,14 @@ pub fn status_text(state: &State, running: bool, unread: usize) -> String {
     if let Some(error) = &state.last_error {
         let _ = writeln!(out, "last error: {}", one_line(error));
     }
+    if state.skipped_frames > 0 {
+        let _ = writeln!(
+            out,
+            "view may be incomplete: skipped {} frame(s) this daemon cannot decode; it is \
+             older than the coordinator",
+            state.skipped_frames
+        );
+    }
     let _ = writeln!(out, "base: {} (sent in the last hello)", state.base);
     let _ = writeln!(out, "start: {}", state.start_base);
     if let Some(head) = &state.coordinator_head {

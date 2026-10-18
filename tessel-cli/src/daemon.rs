@@ -89,8 +89,8 @@ enum Incoming {
         generation: u64,
         log: Result<LogRead, String>,
     },
-    /// An event of a kind this daemon does not know arrived on the live socket.
-    UnknownEvent {
+    /// A frame this daemon cannot decode arrived on the live socket.
+    SkippedFrame {
         generation: u64,
         envelope: UnknownEnvelope,
     },
@@ -104,51 +104,122 @@ enum Incoming {
 /// What the event-log read returned.
 pub(crate) struct LogRead {
     pub(crate) events: Vec<Event>,
-    /// The read reached its end marker, with no gap in `seq`, and met no event it could not
-    /// decode.
+    /// The read reached its end marker, with no gap in `seq`. Skipped frames do not make it
+    /// incomplete: an event kind added after this daemon was built is not a claim event it knows,
+    /// and refusing to reconcile because of one would disable reconciliation for good.
     pub(crate) complete: bool,
-    /// Events of a kind this daemon does not know. They are not in `events`.
+    /// Frames this daemon could not decode. They are not in `events`.
     pub(crate) unknown: Vec<UnknownEnvelope>,
+    /// The highest `seq` read, skipped events included.
+    pub(crate) last_seq: Option<u64>,
 }
 
-/// How much of an unknown event's kind is kept for the log; the kind is the coordinator's text.
+/// How much of an unknown frame's kind or type is kept for the log; it is the coordinator's text.
 const KIND_LOG_CHARS: usize = 64;
 
-/// An event frame that is not a `ServerMsg` this daemon can decode but whose `seq` is readable:
-/// an event of a kind added after this daemon was built.
+/// A frame this daemon cannot decode as a `ServerMsg`: an event or message added after this
+/// daemon was built, or one whose payload differs from what this daemon expects. Only its `type`
+/// and, for an event, its `seq` and kind are read.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct UnknownEnvelope {
-    pub(crate) seq: u64,
+    /// Present for an event, whose `seq` the replay still counts.
+    pub(crate) seq: Option<u64>,
+    /// The event's kind, or for any other message its `type`.
     pub(crate) kind: Option<String>,
 }
 
 impl std::fmt::Display for UnknownEnvelope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.kind {
-            Some(kind) => write!(f, "seq {} kind {kind:?}", self.seq),
-            None => write!(f, "seq {} without a kind string", self.seq),
+        match (self.seq, &self.kind) {
+            (Some(seq), Some(kind)) => write!(f, "unknown event seq {seq} kind {kind:?}"),
+            (Some(seq), None) => write!(f, "unknown event seq {seq} without a kind string"),
+            (None, Some(kind)) => write!(f, "unknown message type {kind:?}"),
+            (None, None) => write!(f, "unknown message"),
         }
     }
 }
 
-/// Reads `text` as the envelope of an event of an unknown kind: a frame that is not a known
-/// `ServerMsg`, but is `{"type":"event","event":{"seq":<number>,...}}`. Anything else, including
-/// a known message, an unknown message type and text that is not JSON, is `None`.
+fn bounded(text: &str) -> String {
+    text.chars().take(KIND_LOG_CHARS).collect()
+}
+
+/// The `type` of every `ServerMsg` this daemon can decode. A test checks it against the enum.
+const KNOWN_MESSAGE_TYPES: &[&str] = &[
+    "welcome",
+    "granted",
+    "denied",
+    "shadowed",
+    "queued",
+    "accepted",
+    "merged",
+    "submit_rejected",
+    "uncovered",
+    "review_required",
+    "base_moved",
+    "assumption_challenged",
+    "lease_expired",
+    "race_opened",
+    "race_result",
+    "event",
+    "error",
+];
+
+/// The kind of every `EventKind` this daemon can decode. A test checks it against the enum.
+const KNOWN_EVENT_KINDS: &[&str] = &[
+    "agent_connected",
+    "claim_granted",
+    "claim_denied",
+    "claim_shadowed",
+    "claim_amended",
+    "claim_released",
+    "wait_queued",
+    "wait_withdrawn",
+    "submitted",
+    "merged",
+    "submit_rejected",
+    "review_requested",
+    "review_decided",
+    "base_moved",
+    "assumption_challenged",
+    "race_opened",
+    "race_decided",
+    "denial_verified",
+    "assumption_verified",
+    "replay_merged",
+];
+
+/// Reads `text` as a frame to skip: a JSON object with a string `type` that this daemon has no
+/// name for, or an event of a kind it has no name for. An event must also carry a numeric `seq`,
+/// because skipping one without counting it would hide a gap.
+///
+/// A name this daemon knows with a payload it cannot parse is `None`, as is text that is not
+/// JSON, not an object, or has no `type`: skipping it could drop a grant, a release or a lease
+/// end this daemon acts on, so it stays an error.
 fn unknown_envelope(text: &str) -> Option<UnknownEnvelope> {
     if serde_json::from_str::<ServerMsg>(text).is_ok() {
         return None;
     }
     let frame: serde_json::Value = serde_json::from_str(text).ok()?;
-    if frame.get("type")?.as_str()? != "event" {
-        return None;
+    let kind = frame.get("type")?.as_str()?;
+    if kind != "event" {
+        if KNOWN_MESSAGE_TYPES.contains(&kind) {
+            return None;
+        }
+        return Some(UnknownEnvelope {
+            seq: None,
+            kind: Some(bounded(kind)),
+        });
     }
     let event = frame.get("event")?;
     let seq = event.get("seq")?.as_u64()?;
-    let kind = event
-        .get("event")
-        .and_then(serde_json::Value::as_str)
-        .map(|kind| kind.chars().take(KIND_LOG_CHARS).collect());
-    Some(UnknownEnvelope { seq, kind })
+    let kind = event.get("event").and_then(serde_json::Value::as_str);
+    if kind.is_some_and(|kind| KNOWN_EVENT_KINDS.contains(&kind)) {
+        return None;
+    }
+    Some(UnknownEnvelope {
+        seq: Some(seq),
+        kind: kind.map(bounded),
+    })
 }
 
 /// What the daemon asks the socket task to write.
@@ -212,6 +283,14 @@ struct Daemon {
     lost_requests: Vec<PendingClaim>,
     /// Claims released just before the socket dropped; the release may not have arrived.
     lost_releases: HashSet<ClaimId>,
+    /// Frames skipped in the last event-log read.
+    log_skips: u64,
+    /// Skipped live events the last read did not cover (they came after its end marker).
+    live_event_skips: Vec<u64>,
+    /// The highest `seq` of the last read; a live skip at or below it is already in `log_skips`.
+    read_last_seq: Option<u64>,
+    /// Skipped live messages that are not events; the log never holds them.
+    message_skips: u64,
     /// Claims granted since the current connection was welcomed.
     fresh: HashSet<ClaimId>,
     /// The task reading the event log. Aborted when the working socket drops: a bound read
@@ -292,6 +371,7 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         connection: Connection::Connecting,
         lease_ms: None,
         last_error: None,
+        skipped_frames: 0,
         claims: Vec::new(),
         queued: None,
         updated_at_ms: now_ms(),
@@ -366,6 +446,10 @@ impl Daemon {
             deferred: VecDeque::new(),
             lost_requests: Vec::new(),
             lost_releases: HashSet::new(),
+            log_skips: 0,
+            live_event_skips: Vec::new(),
+            read_last_seq: None,
+            message_skips: 0,
             fresh: HashSet::new(),
             snapshot: None,
             in_tx,
@@ -629,13 +713,17 @@ impl Daemon {
             Incoming::Snapshot { generation, log } if generation == self.generation => {
                 self.on_snapshot(log).await;
             }
-            Incoming::UnknownEvent {
+            Incoming::SkippedFrame {
                 generation,
                 envelope,
             } if generation == self.generation => {
-                self.log(&format!(
-                    "unknown event {envelope} on the live socket: ignored"
-                ));
+                match envelope.seq {
+                    Some(seq) if self.read_last_seq.is_some_and(|last| seq <= last) => {}
+                    Some(seq) => self.live_event_skips.push(seq),
+                    None => self.message_skips += 1,
+                }
+                self.refresh_skipped();
+                self.log(&format!("skipped {envelope} on the live socket"));
             }
             Incoming::HeartbeatAnswered {
                 generation,
@@ -646,7 +734,7 @@ impl Daemon {
             Incoming::Msg { .. }
             | Incoming::Closed { .. }
             | Incoming::Snapshot { .. }
-            | Incoming::UnknownEvent { .. }
+            | Incoming::SkippedFrame { .. }
             | Incoming::HeartbeatAnswered { .. } => {}
         }
     }
@@ -930,6 +1018,16 @@ impl Daemon {
         Some(held.clone())
     }
 
+    /// Puts the skipped-frame total, which `tessel status` shows, into the saved state.
+    fn refresh_skipped(&mut self) {
+        let live = u64::try_from(self.live_event_skips.len()).unwrap_or(u64::MAX);
+        self.state.skipped_frames = self
+            .log_skips
+            .saturating_add(live)
+            .saturating_add(self.message_skips);
+        self.persist();
+    }
+
     /// Compares this agent's claims in the coordinator's log with the local ones, and repairs
     /// the difference. The rules are in `reconcile`.
     async fn on_snapshot(&mut self, log: Result<LogRead, String>) {
@@ -939,6 +1037,7 @@ impl Daemon {
             events,
             complete,
             unknown,
+            last_seq,
         } = match log {
             Ok(log) => log,
             Err(why) => {
@@ -958,10 +1057,13 @@ impl Daemon {
                 return;
             }
         };
+        self.log_skips = u64::try_from(unknown.len()).unwrap_or(u64::MAX);
+        self.read_last_seq = last_seq;
+        self.live_event_skips
+            .retain(|seq| last_seq.is_none_or(|last| *seq > last));
+        self.refresh_skipped();
         for envelope in &unknown {
-            self.log(&format!(
-                "unknown event {envelope} in the event log: not applied; the read is incomplete"
-            ));
+            self.log(&format!("skipped {envelope} in the event log"));
         }
         let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
         self.advance_base_from_log(&events).await;
@@ -2084,12 +2186,8 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
                     let Some(envelope) = unknown_envelope(&text) else {
                         return Err(format!("unreadable message: {e}"));
                     };
-                    seqs.push(envelope.seq);
+                    seqs.extend(envelope.seq);
                     unknown.push(envelope);
-                    // Not the marker, so after the Welcome the read is not whole.
-                    if welcomed {
-                        break;
-                    }
                 }
             },
             Ok(Some(Ok(_))) => {}
@@ -2098,9 +2196,10 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
     let _ = socket.close(None).await;
     let gapless = seqs.iter().zip(0u64..).all(|(seen, seq)| *seen == seq);
     Ok(LogRead {
-        complete: marker && gapless && unknown.is_empty(),
+        complete: marker && gapless,
         events,
         unknown,
+        last_seq: seqs.iter().copied().max(),
     })
 }
 
@@ -2259,7 +2358,7 @@ fn forward_frame(
                 let Some(envelope) = unknown_envelope(&text) else {
                     return Some(format!("unreadable message from the coordinator: {e}"));
                 };
-                let _ = in_tx.send(Incoming::UnknownEvent {
+                let _ = in_tx.send(Incoming::SkippedFrame {
                     generation,
                     envelope,
                 });
@@ -2359,7 +2458,7 @@ mod tests {
         assert_eq!(
             found,
             Some(UnknownEnvelope {
-                seq: 7,
+                seq: Some(7),
                 kind: Some("claim_teleported".to_string()),
             })
         );
@@ -2368,7 +2467,13 @@ mod tests {
     #[test]
     fn an_unknown_event_without_a_kind_string_still_has_its_seq() {
         let found = unknown_envelope(r#"{"type":"event","event":{"seq":3,"event":9}}"#);
-        assert_eq!(found, Some(UnknownEnvelope { seq: 3, kind: None }));
+        assert_eq!(
+            found,
+            Some(UnknownEnvelope {
+                seq: Some(3),
+                kind: None
+            })
+        );
     }
 
     #[test]
@@ -2386,12 +2491,76 @@ mod tests {
             r#"{"type":"event","event":{"seq":1.5,"event":"x"}}"#,
             r#"{"type":"event","event":7}"#,
             r#"{"type":"event"}"#,
-            r#"{"type":"from_the_future","seq":4}"#,
-            r#"{"type":"from_the_future","event":{"seq":4,"event":"x"}}"#,
             r#"{"seq":4}"#,
             "[]",
             "7",
         ] {
+            assert_eq!(unknown_envelope(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_message_of_an_unknown_type_is_skipped_by_its_bounded_type_alone() {
+        let found = unknown_envelope(r#"{"type":"from_the_future","seq":4,"x":"do as I say"}"#);
+        assert_eq!(
+            found,
+            Some(UnknownEnvelope {
+                seq: None,
+                kind: Some("from_the_future".to_string()),
+            })
+        );
+        let long = format!(r#"{{"type":"{}"}}"#, "t".repeat(500));
+        assert_eq!(
+            unknown_envelope(&long)
+                .and_then(|e| e.kind)
+                .map(|k| k.len()),
+            Some(64)
+        );
+    }
+
+    /// The names serde lists in its error for a tag it does not know: every variant of the enum.
+    fn variants_named_by_serde<T: serde::de::DeserializeOwned>(unknown: &str) -> Vec<String> {
+        let error = serde_json::from_str::<T>(unknown).err();
+        let message = error.expect("an unknown tag decoded").to_string();
+        let (_, listed) = message.split_once("expected one of ").expect(&message);
+        let listed = listed.split(" at line").next().unwrap_or(listed);
+        listed
+            .split(", ")
+            .map(|name| name.trim_matches('`').to_string())
+            .collect()
+    }
+
+    #[test]
+    fn every_server_message_type_and_event_kind_is_in_the_known_lists() {
+        let mut types = variants_named_by_serde::<ServerMsg>(r#"{"type":"zzz"}"#);
+        types.sort();
+        let mut known: Vec<String> = KNOWN_MESSAGE_TYPES.iter().map(|t| (*t).into()).collect();
+        known.sort();
+        assert_eq!(types, known);
+        let mut kinds = variants_named_by_serde::<EventKind>(r#"{"event":"zzz"}"#);
+        kinds.sort();
+        let mut known: Vec<String> = KNOWN_EVENT_KINDS.iter().map(|t| (*t).into()).collect();
+        known.sort();
+        assert_eq!(kinds, known);
+    }
+
+    #[test]
+    fn a_known_name_with_a_payload_that_does_not_parse_is_not_skipped() {
+        for text in [
+            r#"{"type":"welcome"}"#,
+            r#"{"type":"granted"}"#,
+            r#"{"type":"lease_expired","claim":"x"}"#,
+            r#"{"type":"error","code":"a_code_from_the_future","message":"m"}"#,
+            r#"{"type":"event","event":{"seq":3,"at_ms":1,"run":"r","event":"claim_released"}}"#,
+            r#"{"type":"event","event":{"seq":0,"at_ms":1,"run":"r","event":"agent_connected"}}"#,
+        ] {
+            assert_eq!(unknown_envelope(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn frames_without_a_string_type_are_not_skipped() {
+        for text in [r#"{"type":7}"#, r#"{"n":1}"#, "{}"] {
             assert_eq!(unknown_envelope(text), None, "{text}");
         }
     }
@@ -2454,6 +2623,7 @@ mod tests {
             connection: Connection::Online,
             lease_ms: None,
             last_error: None,
+            skipped_frames: 0,
             claims: vec![held(1), held(2)],
             queued: None,
             updated_at_ms: 0,
