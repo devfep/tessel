@@ -190,6 +190,11 @@ enum Op {
         wait: bool,
         signature: bool,
     },
+    /// A claim that shadows whatever blocks it, so a landing can owe it a trial.
+    Shadow {
+        who: usize,
+        target: usize,
+    },
     Heartbeat(usize),
     Tick(u64),
     Submit {
@@ -259,6 +264,13 @@ enum Op {
         target: usize,
         on: usize,
     },
+    /// The queue is drained, then an agent's work on `on` is submitted with another agent's
+    /// shadow claim on the same file submitted behind it, and the landing is answered
+    /// `already_merged` at the first dispatch: the shadow claim cannot be tried and is listed.
+    ShadowedLanding {
+        who: usize,
+        on: usize,
+    },
     /// A verification that gets no answer in time: it is tried, fails on infrastructure and waits
     /// out its backoff.
     StallTrial,
@@ -285,6 +297,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         6 => (0..AGENTS, 0..TARGETS, any::<bool>(), any::<bool>()).prop_map(
             |(who, target, wait, signature)| Op::Claim { who, target, wait, signature }
         ),
+        3 => (0..AGENTS, 0..TARGETS).prop_map(|(who, target)| Op::Shadow { who, target }),
         2 => (0..AGENTS).prop_map(Op::Heartbeat),
         3 => (1..90_000u64).prop_map(Op::Tick),
         8 => (0..AGENTS, any::<bool>()).prop_map(|(who, evidence)| Op::Submit { who, evidence }),
@@ -311,6 +324,7 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
                 who, on, restart, lost, moved_between
             }
         ),
+        2 => (0..AGENTS, 0..TARGETS - 1).prop_map(|(who, on)| Op::ShadowedLanding { who, on }),
         2 => Just(Op::StallTrial),
         3 => (SLOT_AFTER as usize..3 * SLOT_AFTER as usize)
             .prop_map(|rounds| Op::Storm { rounds }),
@@ -492,6 +506,7 @@ fn apply(world: &mut World, op: &Op) {
             wait,
             signature,
         } => claim(world, *index, *target, *wait, *signature),
+        Op::Shadow { who: index, target } => shadow(world, *index, *target),
         Op::Heartbeat(index) => world.handle(&who(*index), ClientMsg::Heartbeat),
         Op::Tick(ms) => {
             world.now += ms;
@@ -544,6 +559,10 @@ fn apply(world: &mut World, op: &Op) {
             moved_between,
         } => {
             run_recovered_landing(world, (*who, *on), (*restart, *lost), *moved_between);
+            Vec::new()
+        }
+        Op::ShadowedLanding { who, on } => {
+            run_shadowed_landing(world, *who, *on);
             Vec::new()
         }
         Op::Repeat { answer, times } => {
@@ -603,6 +622,16 @@ fn claim(
         } else {
             OnConflict::Fail
         },
+    };
+    world.handle(&who(index), msg)
+}
+
+fn shadow(world: &mut World, index: usize, target: usize) -> Vec<Effect> {
+    let msg = ClientMsg::Claim {
+        req: RequestId(1),
+        intent: plain_intent("shadow"),
+        scopes: vec![scope_of(target, Mode::EditBody)],
+        on_conflict: OnConflict::Shadow,
     };
     world.handle(&who(index), msg)
 }
@@ -941,6 +970,29 @@ fn granted(effects: &[Effect]) -> Option<u64> {
     })
 }
 
+/// A landing answered `already_merged` at its first dispatch, with a submitted shadow claim
+/// behind it: check 9 requires the shadow claim to be listed untried.
+fn run_shadowed_landing(world: &mut World, who: usize, on: usize) {
+    for _ in 0..AGENTS * 2 {
+        if world.head_of_queue().is_none() {
+            break;
+        }
+        cycle(world, Answer::Merged);
+    }
+    let claimed = claim(world, who, on, false, false);
+    let blocker = granted(&claimed);
+    emit(world, claimed);
+    let shadowed = shadow(world, who + 1, on);
+    emit(world, shadowed);
+    for index in [who, who + 1] {
+        let submitted = submit(world, &self::who(index), true);
+        emit(world, submitted);
+    }
+    if blocker.is_some_and(|claim| world.live(claim) && !world.model.held.contains(&claim)) {
+        cycle(world, Answer::AlreadyMerged);
+    }
+}
+
 /// A challenging submission whose first dispatch is lost and whose retry is answered
 /// `already_merged`: the verification it queues must start from main as it was at the lost
 /// dispatch and end at the steward's main, and none may compare main with itself.
@@ -1259,19 +1311,28 @@ fn check_unverifiable(world: &World, claim: u64, owed: &Owed, effects: &[Effect]
         "check 9: queued plus unverified differs from live challenged"
     );
     let untried: HashSet<u64> = untried.iter().map(|id| id.0).collect();
-    assert!(tried.is_disjoint(&untried));
+    assert!(
+        tried.is_disjoint(&untried),
+        "check 9: a shadow is both tried and listed untried"
+    );
     let covered: HashSet<u64> = tried.union(&untried).copied().collect();
     assert_eq!(
         covered, owed.1,
         "check 9: tried plus untried shadows differ from those owed"
     );
-    if !unverified.is_empty() || !untried.is_empty() {
+    if !unverified.is_empty() {
         CHECK_9_RUNS.fetch_add(1, Ordering::Relaxed);
+    }
+    if !untried.is_empty() {
+        CHECK_9_SHADOW_RUNS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-/// How many landings listed something unverified, over the whole test.
+/// How many landings listed an unverified assumption, over the whole test.
 static CHECK_9_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many landings listed an untried shadow claim, over the whole test.
+static CHECK_9_SHADOW_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 /// An answer to dispatch `id`, which is not the merge in flight: no effects and no state change.
 fn stale_answer(world: &mut World, id: u64, answer: Answer) -> Vec<Effect> {
@@ -1674,5 +1735,9 @@ fn random_merge_queue_scripts_keep_the_queue_rules() {
     assert!(
         CHECK_9_RUNS.load(Ordering::Relaxed) > 0,
         "check 9 never saw an unverified landing"
+    );
+    assert!(
+        CHECK_9_SHADOW_RUNS.load(Ordering::Relaxed) > 0,
+        "check 9 never saw an untried shadow"
     );
 }

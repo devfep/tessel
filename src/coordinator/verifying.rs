@@ -3104,4 +3104,18 @@ mod tests {
         assert_eq!(settled(&next), [shadowed], "{next:?}");
         assert!(!is_live(&c, shadowed));
     }
+
+    #[test]
+    fn an_unsubmitted_shadow_is_not_listed_as_untried() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let blocker = grant(&mut c, "a2", vec![edit("src/a.rs")], Vec::new());
+        shadow(&mut c, "a1", "src/a.rs");
+        submit(&mut c, "a2", blocker, "src/a.rs");
+        c.begin_merge(NOW).expect("a merge is due");
+        let effects = c.merge_outcome(c.merge_flight_id(blocker.0), &already_merged(MAIN2), NOW);
+
+        let (_, untried) = landing_of(&effects);
+        assert!(untried.is_empty(), "nothing to try: {untried:?}");
+    }
 }
