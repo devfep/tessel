@@ -7,14 +7,21 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 19:25 EDT. P1-CI-MUTANTS (`1e48ff4`, #35) and P1-RULES (`0b6ff41`, #36)
+**As of:** 2026-10-18 19:51 EDT. P1-CI-MUTANTS (`1e48ff4`, #35) and P1-RULES (`0b6ff41`, #36)
 merged; CI on `main` is green at `0b6ff41`. Their worktrees and local branches are reclaimed.
-**Dispatched (19:20):** P1-HOST-TYPES (lane A, `.claude/worktrees/p1-host-types`, branch
-`task-p1-host-types`) and P1-CI-NIGHTLY (lane B, `.claude/worktrees/p1-ci-nightly`, branch
-`task-p1-ci-nightly`), both from `0b6ff41`.
-**Next:** P1-FLAKE-REPLAY-HELLO in the first lane to free up; P1-LANDER-GIT (lane B) once
-P1-CI-NIGHTLY merges.
-**Pending from Felix:** ruleset step 1: add "Slow lane, mutants on changed lines" to "main: CI
+**In flight:**
+- P1-HOST-TYPES (lane A): reviewer's Yes at `6f77dc8` after two fix passes, CI green, #40 ready
+  for Felix. Worktree `.claude/worktrees/p1-host-types` kept until it merges.
+- P1-CI-NIGHTLY (lane B, `.claude/worktrees/p1-ci-nightly`): reviewer's Yes on fix pass 1 at
+  `0fe4a59`; `6064a7e` (the reviewer's last nit) and the baseline are not pushed yet, because a
+  push cancels the pull request's first run (39176270373), whose missed mutants seed
+  `.cargo/mutants-missed-baseline.txt`. Then: push, a green run, the same reviewer's re-check,
+  #39 out of draft.
+- P1-FLAKE-REPLAY-HELLO (lane A, `.claude/worktrees/p1-flake-replay`, from `0b6ff41`),
+  dispatched 19:50.
+**Next:** P1-LANDER-GIT (lane B) once P1-CI-NIGHTLY merges.
+**Pending from Felix:** merging #40, whose body lists where the types differ from the frozen
+`Call` text (decision 12). Ruleset step 1: add "Slow lane, mutants on changed lines" to "main: CI
 required" (M1 is not done until it is required). Deleting the merged remote branches
 `task-p1-ci-mutants`, `task-p1-rules`, `docs/roadmap-phase1-m1` and `tmp-rules-mutants` (#37,
 closed) was refused to the orchestrator: `git push origin --delete task-p1-ci-mutants
