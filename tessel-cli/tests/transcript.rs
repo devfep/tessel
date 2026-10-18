@@ -203,7 +203,7 @@ async fn an_empty_transcript_is_refused_before_anything_is_sent() -> Result<()> 
         "{}",
         done.all()
     );
-    assert!(sent_transcripts(&fake, "a1").is_empty());
+    assert_eq!(sent_transcripts(&fake, "a1"), []);
     assert!(!branch_exists(&a1, claim));
     let head = git(&a1.root(), &["rev-parse", "HEAD"])?;
     assert!(git(&a1.root(), &["notes", "show", head.trim()]).is_err());
@@ -224,7 +224,7 @@ async fn a_transcript_over_four_mib_is_refused_and_one_at_four_mib_is_sent() -> 
         "{}",
         done.all()
     );
-    assert!(sent_transcripts(&fake, "a1").is_empty());
+    assert_eq!(sent_transcripts(&fake, "a1"), []);
     assert!(!branch_exists(&a1, claim));
 
     let path = transcript_file(outside.path(), &vec![b'a'; LIMIT])?;

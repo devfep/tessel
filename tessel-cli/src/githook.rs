@@ -568,7 +568,7 @@ mod tests {
             push_line(SHA)
         );
         assert_eq!(pushed_commits(input.as_bytes()).unwrap(), vec![SHA]);
-        assert!(pushed_commits(b"").unwrap().is_empty());
+        assert_eq!(pushed_commits(b"").unwrap(), Vec::<String>::new());
     }
 
     #[test]

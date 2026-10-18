@@ -143,7 +143,7 @@ async fn an_over_long_note_is_refused_before_anything_is_sent() -> Result<()> {
     let done = r1.tessel(&["review", &claim.to_string(), "--approve", "--note", &note])?;
     assert_eq!(done.code, 1, "{}", done.all());
     assert!(done.stderr.contains("1025 bytes"), "{}", done.stderr);
-    assert!(reviews(&fake, "r1").is_empty());
+    assert_eq!(reviews(&fake, "r1"), []);
     Ok(())
 }
 
@@ -158,7 +158,7 @@ async fn exactly_one_of_approve_and_reject_is_required() -> Result<()> {
         let done = r1.tessel(&args)?;
         assert_eq!(done.code, 2, "{args:?}: {}", done.all());
     }
-    assert!(reviews(&fake, "r1").is_empty());
+    assert_eq!(reviews(&fake, "r1"), []);
     Ok(())
 }
 
@@ -261,6 +261,6 @@ async fn a_worktree_error_other_than_not_a_repository_is_reported() -> Result<()
     let done = reviewer.tessel(&["review", &claim.to_string(), "--approve"])?;
     assert_eq!(done.code, 1, "{}", done.all());
     assert!(done.stderr.contains("too long"), "{}", done.stderr);
-    assert!(reviews(&fake, "r1").is_empty());
+    assert_eq!(reviews(&fake, "r1"), []);
     Ok(())
 }

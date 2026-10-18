@@ -455,9 +455,10 @@ mod tests {
             complete: false,
             ..local
         };
-        assert!(super::plan(&truncated, &live, &events)
-            .set_awaiting_review
-            .is_empty());
+        assert_eq!(
+            super::plan(&truncated, &live, &events).set_awaiting_review,
+            []
+        );
         let requested = &events[..3];
         let live_requested = live_claims(&AgentId("a1".into()), requested);
         let mut submitted = held(1, 1, "a.rs");
@@ -474,9 +475,7 @@ mod tests {
             fresh: &fresh,
             ..local
         };
-        assert!(super::plan(&recent, &live, &events)
-            .set_awaiting_review
-            .is_empty());
+        assert_eq!(super::plan(&recent, &live, &events).set_awaiting_review, []);
     }
 
     #[test]
@@ -620,7 +619,7 @@ mod tests {
         ];
         let plan = plan_for(&local, &events, &[], &[]);
         assert_eq!(plan.forget, vec![ClaimId(2)]);
-        assert!(plan.set_submitted.is_empty());
+        assert_eq!(plan.set_submitted, []);
     }
 
     #[test]
@@ -644,7 +643,7 @@ mod tests {
             ]
         );
         let incomplete = plan_incomplete(&local, &events, &[], &[]);
-        assert!(incomplete.set_submitted.is_empty());
+        assert_eq!(incomplete.set_submitted, []);
     }
 
     #[test]
@@ -664,7 +663,7 @@ mod tests {
             lost_releases: &none,
             complete: true,
         };
-        assert!(super::plan(&local, &live, &events).set_submitted.is_empty());
+        assert_eq!(super::plan(&local, &live, &events).set_submitted, []);
     }
 
     #[test]
@@ -770,7 +769,7 @@ mod tests {
     fn a_fence_never_goes_backwards() {
         let local = [held(1, 5, "a.rs")];
         let events = vec![granted(0, "a1", 1, 3, "a.rs")];
-        assert!(plan_for(&local, &events, &[], &[]).refresh.is_empty());
+        assert_eq!(plan_for(&local, &events, &[], &[]).refresh, []);
     }
 
     #[test]
@@ -802,7 +801,7 @@ mod tests {
         let events = vec![granted(0, "a1", 7, 9, "a.rs")];
         let plan = plan_for(&[], &events, &[], &[7]);
         assert_eq!(plan.release_again, vec![(ClaimId(7), Fence(9))]);
-        assert!(plan.adopt.is_empty());
+        assert_eq!(plan.adopt, []);
     }
 
     #[test]
@@ -825,7 +824,7 @@ mod tests {
         assert_eq!(plan.forget, vec![ClaimId(1)]);
         // A claim missing from a truncated log is kept.
         let plan = plan_for(&local, &[], &[], &[]);
-        assert!(plan.forget.is_empty());
+        assert_eq!(plan.forget, []);
     }
 
     #[test]
@@ -856,6 +855,6 @@ mod tests {
             lost_releases: &none,
             complete: true,
         };
-        assert!(super::plan(&local, &live, &ended).forget.is_empty());
+        assert_eq!(super::plan(&local, &live, &ended).forget, []);
     }
 }
