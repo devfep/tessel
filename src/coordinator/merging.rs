@@ -6,7 +6,8 @@
 //! the steward answers `already_merged` for a commit it already landed. That answer names main as
 //! it is now, not the commit that landed or what main was before, so the baseline of what it
 //! queues for verification is main as recorded at the first dispatch whose answer was lost
-//! (`Submission::unanswered_from`). Without one, nothing is queued.
+//! (`Submission::unanswered_from`). Without one, nothing is queued, and the `Merged` event lists
+//! the assumptions and shadow claims that went unverified (see `verifying`).
 //!
 //! Every dispatch, merge or verification, gets a persisted id from one counter that never repeats.
 //! The answer carries the id of the dispatch it answers, and only the dispatch in flight can be
@@ -424,7 +425,8 @@ impl Coordinator {
     ///
     /// `before` is main as it was before the work landed. With `None`, or `before == head`, the
     /// span of the landing is unknown, so no verification or trial is queued: one that compared
-    /// main with itself would say nothing, and nothing is claimed as verified.
+    /// main with itself would say nothing, and nothing is claimed as verified. What was skipped is
+    /// listed on the `Merged` event (`unverified`, `untried_shadows`).
     fn land(
         &mut self,
         claim: ClaimId,
@@ -441,12 +443,27 @@ impl Coordinator {
         self.state.head = Some(head.clone());
         self.state.claims.remove(&claim.0);
         super::remove_locks(&mut self.locks, claim, held);
+        let challenged = held
+            .work
+            .as_ref()
+            .map(|work| work.challenged.clone())
+            .unwrap_or_default();
+        let baseline = before.filter(|before| *before != head);
+        let (unverified, untried_shadows) = if baseline.is_some() {
+            (Vec::new(), Vec::new())
+        } else {
+            let shadows = self.submitted_shadows_blocked_by(claim);
+            let untried: Vec<ClaimId> = shadows.into_iter().map(|(shadow, _)| shadow).collect();
+            (self.live_challenged(&challenged), untried)
+        };
         let mut effects = vec![
             self.event(
                 now_ms,
                 EventKind::Merged {
                     claim,
                     head: head.clone(),
+                    unverified,
+                    untried_shadows,
                 },
             ),
             Effect::Notify {
@@ -460,12 +477,7 @@ impl Coordinator {
         effects.extend(self.claim_released(claim, ReleaseReason::Merged, now_ms));
         effects.extend(self.grant_unblocked_waiters(now_ms));
         effects.extend(self.notify_base_moved(&held.agent, &head, &touched, now_ms));
-        let challenged = held
-            .work
-            .as_ref()
-            .map(|work| work.challenged.clone())
-            .unwrap_or_default();
-        if let Some(before) = before.filter(|before| *before != head) {
+        if let Some(before) = baseline {
             self.record_verifications(&challenged, &before, &head);
             self.record_shadow_verifications(claim, &before, &head);
         }

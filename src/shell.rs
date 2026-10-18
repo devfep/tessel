@@ -533,6 +533,7 @@ impl SummaryTally {
             assumptions_challenged,
             assumptions_confirmed_broken,
             verifications_dropped,
+            verifications_unverifiable,
             merges,
             reviews_requested,
             base_moved_notices,
@@ -548,6 +549,7 @@ impl SummaryTally {
         total.assumptions_challenged += assumptions_challenged;
         total.assumptions_confirmed_broken += assumptions_confirmed_broken;
         total.verifications_dropped += verifications_dropped;
+        total.verifications_unverifiable += verifications_unverifiable;
         total.merges += merges;
         total.reviews_requested += reviews_requested;
         total.base_moved_notices += base_moved_notices;
@@ -978,8 +980,8 @@ pub fn error_log_line(error: &str, agent: Option<&AgentId>) -> String {
 mod tests {
     use super::*;
     use crate::protocol::{
-        ClaimId, CommitId, EventKind, Fence, Intent, Mode, OnConflict, Outcome, Scope, ScopeClaim,
-        Summary,
+        Assumption, ClaimId, CommitId, EventKind, Fence, Intent, Mode, OnConflict, Outcome,
+        ReleaseReason, Scope, ScopeClaim, Summary, UnverifiedAssumption,
     };
 
     #[test]
@@ -2770,6 +2772,17 @@ mod tests {
         EventKind::Merged {
             claim: ClaimId(1),
             head: CommitId("abc".to_string()),
+            unverified: Vec::new(),
+            untried_shadows: Vec::new(),
+        }
+    }
+
+    fn assumption() -> Assumption {
+        Assumption {
+            scope: Scope::File {
+                path: "a.rs".into(),
+            },
+            statement: "f returns Some".into(),
         }
     }
 
@@ -2781,9 +2794,19 @@ mod tests {
             verified_denial(Outcome::TextualConflict),
             verified_denial(Outcome::Clean),
             verified_denial(Outcome::Inconclusive),
+            EventKind::VerificationDropped {
+                claim: ClaimId(4),
+                assumption: assumption(),
+                reason: ReleaseReason::Agent,
+            },
             EventKind::Merged {
                 claim: ClaimId(1),
                 head: CommitId("abc".to_string()),
+                unverified: vec![UnverifiedAssumption {
+                    claim: ClaimId(4),
+                    assumption: assumption(),
+                }],
+                untried_shadows: Vec::new(),
             },
         ];
         let mut log = Vec::new();
@@ -2813,12 +2836,14 @@ mod tests {
             report["summary"],
             serde_json::to_value(Summary::from_events(&log)).unwrap()
         );
-        assert_eq!(report["head_seq"], 6);
+        assert_eq!(report["head_seq"], 7);
         assert_eq!(report["summary"]["denials"], 3);
         assert_eq!(report["summary"]["conflicts_prevented_verified"], 1);
         assert_eq!(report["summary"]["false_alarms"], 1);
         assert_eq!(report["summary"]["precision"], 0.5);
         assert_eq!(report["summary"]["merges"], 1);
+        assert_eq!(report["summary"]["verifications_dropped"], 1);
+        assert_eq!(report["summary"]["verifications_unverifiable"], 1);
     }
 
     #[test]
@@ -2892,10 +2917,10 @@ mod tests {
         assert_eq!(tally.summary(), before, "an empty read changes nothing");
         assert_eq!(tally.next_seq(), 3);
         tally.add_page(&log[3..]);
-        assert_eq!(tally.next_seq(), 7);
+        assert_eq!(tally.next_seq(), 8);
         assert_ne!(tally.summary(), before);
         assert_eq!(tally.summary(), Summary::from_events(&log));
-        assert_eq!(report_json(&log)["head_seq"], 6);
+        assert_eq!(report_json(&log)["head_seq"], 7);
     }
 
     mod paging {

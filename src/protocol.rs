@@ -761,6 +761,14 @@ impl Outcome {
     }
 }
 
+/// An assumption that a landing challenged and that could not be queued for verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnverifiedAssumption {
+    /// The assuming claim.
+    pub claim: ClaimId,
+    pub assumption: Assumption,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseReason {
@@ -842,6 +850,17 @@ pub enum EventKind {
     Merged {
         claim: ClaimId,
         head: CommitId,
+        /// Assumptions this landing challenged whose assuming claim was still live, but that
+        /// could not be queued for verification because main as it was before the landing is
+        /// unknown (a recovered merge). They stay unverified; `Summary` counts them as
+        /// `verifications_unverifiable`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unverified: Vec<UnverifiedAssumption>,
+        /// Submitted shadow claims this landing blocked that were not tried, for the same reason.
+        /// Each is settled without a `DenialVerified`, so the denial counts as neither prevented
+        /// nor a false alarm.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        untried_shadows: Vec<ClaimId>,
     },
     SubmitRejected {
         claim: ClaimId,
@@ -925,6 +944,11 @@ pub struct Summary {
     /// outcome: it is counted apart from `assumptions_confirmed_broken`.
     #[serde(default)]
     pub verifications_dropped: u64,
+    /// Assumption verifications never queued because the landing's baseline was unknown
+    /// (`EventKind::Merged::unverified`). Never a verified outcome and not a drop: the claim was
+    /// live and nothing could be compared.
+    #[serde(default)]
+    pub verifications_unverifiable: u64,
     pub merges: u64,
     /// Submissions held for a human (`ReviewRequested` events). Some are rejected or still
     /// waiting, so `merges` minus this is not the count merged without review.
@@ -955,7 +979,10 @@ impl Summary {
                     }
                 }
                 EventKind::VerificationDropped { .. } => s.verifications_dropped += 1,
-                EventKind::Merged { .. } => s.merges += 1,
+                EventKind::Merged { unverified, .. } => {
+                    s.merges += 1;
+                    s.verifications_unverifiable += unverified.len() as u64;
+                }
                 EventKind::ReviewRequested { .. } => s.reviews_requested += 1,
                 EventKind::BaseMoved { notified, .. } => {
                     s.base_moved_notices += notified.len() as u64
@@ -1260,6 +1287,8 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(3),
                 head: CommitId("abc".into()),
+                unverified: Vec::new(),
+                untried_shadows: Vec::new(),
             },
         );
         let json = serde_json::to_string(&e).unwrap();
@@ -1270,6 +1299,57 @@ mod tests {
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back.seq, 42);
         assert!(matches!(back.kind, EventKind::Merged { .. }));
+    }
+
+    #[test]
+    fn a_merged_event_without_the_unverified_fields_parses_to_empty_lists() {
+        let old = r#"{"seq":7,"at_ms":1,"run":"r","event":"merged","claim":3,"head":"abc"}"#;
+        let EventKind::Merged {
+            unverified,
+            untried_shadows,
+            ..
+        } = serde_json::from_str::<Event>(old).unwrap().kind
+        else {
+            panic!("expected Merged");
+        };
+        assert!(unverified.is_empty() && untried_shadows.is_empty());
+    }
+
+    #[test]
+    fn a_merged_event_ignores_unknown_fields_and_omits_empty_lists() {
+        let newer = r#"{"seq":7,"at_ms":1,"run":"r","event":"merged","claim":3,"head":"abc",
+            "from_a_later_version":[1]}"#;
+        let event = serde_json::from_str::<Event>(newer).unwrap();
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("unverified") && !json.contains("untried_shadows"),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn a_merged_event_round_trips_what_it_could_not_verify() {
+        let kind = EventKind::Merged {
+            claim: ClaimId(3),
+            head: CommitId("abc".into()),
+            unverified: vec![UnverifiedAssumption {
+                claim: ClaimId(2),
+                assumption: Assumption {
+                    scope: Scope::File {
+                        path: "a.rs".into(),
+                    },
+                    statement: "f returns Some".into(),
+                },
+            }],
+            untried_shadows: vec![ClaimId(5)],
+        };
+        let json = serde_json::to_string(&ev(1, kind.clone())).unwrap();
+        assert!(
+            json.contains("unverified") && json.contains("untried_shadows"),
+            "{json}"
+        );
+        let back = serde_json::from_str::<Event>(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     #[test]
