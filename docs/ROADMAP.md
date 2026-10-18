@@ -7,13 +7,16 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 evening. Phase 0 is done: P0-UNVERIFIABLE-LANDING closes with this pull
-request. The six CI jobs are required on `main` by the ruleset "main: CI required" (pull requests
-only, no force push or deletion, no bypass).
-**Next:** the Phase 1 plan (`docs/proposals/phase-1.md`), in adversarial review; its pull request
-carries the decisions for Felix.
-**Pending from Felix:** tearing down the spike sandbox needs `gh auth refresh -s delete_repo`; the
-sandbox costs nothing and can stay until Phase 2.
+**As of:** 2026-10-18 evening. Phase 0 is done (P0-UNVERIFIABLE-LANDING `9777496`, #32). The
+Phase 1 plan merged (`a7ae3b7`, #33), which freezes the host's `Call` design (decision 12). The
+six CI jobs are required on `main` by the ruleset "main: CI required".
+**Dispatched:** P1-CI-MUTANTS (lane B) and P1-RULES (lane A), together, as the plan orders.
+**Next:** P1-CI-NIGHTLY (lane B) after P1-CI-MUTANTS; P1-HOST-TYPES (lane A) after P1-RULES;
+P1-LANDER-GIT (lane B) once the CI tasks merge.
+**Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
+(`docs/proposals/phase-1.md`); none blocks M1. Ruleset step 1 (add "Slow lane, mutants on
+changed lines") after P1-CI-MUTANTS merges. Tearing down the spike sandbox needs `gh auth refresh
+-s delete_repo`; it costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
 requests; open the second after the first merges.
@@ -97,6 +100,31 @@ load and flake checks run on CI runners.
   update-restriction ruleset; a stale `beforeOid` is refused, but with a generic "Something went
   wrong" error, so the lander reads the ref back; checks took 9-14 s on a trivial workflow; a
   contents-write token is enough to land. Landing is a durable job finished by reconciliation.
+
+## Phase 1: portable host, `tessel-server` and the Rust lander
+
+The plan, its milestones M1-M6, lanes and file ownership are in `docs/proposals/phase-1.md`. Each
+task's full text (files, what, done-check) is there; this list tracks status. M1 and M2 are
+planned to task level; M3-M6 are re-planned at each milestone boundary.
+
+### M1. Guardrails and the host's types
+
+Done when: the mutation job is required and green; the nightly run is green once; the rules check
+passes; the host types round-trip; the lander git tests pass.
+
+- [ ] **P1-CI-MUTANTS** — lane B. Per-pull-request mutation check on changed lines, sharded, with
+  one aggregating required job; a `workflow_dispatch` run for unchanged files.
+- [ ] **P1-RULES** — lane A. Every rule in `src/runtime.rs` named, with its status ("now",
+  "after move", "dropped") and a script that fails if a "now" row's test is missing.
+- [ ] **P1-CI-NIGHTLY** — lane B, after P1-CI-MUTANTS. Proptest at 10,000 cases and full
+  mutants nightly, compared with a baseline that only shrinks.
+- [ ] **P1-HOST-TYPES** — lane A, after P1-RULES. The host's `Input`, `Output`, `Call` and
+  `CallAnswer` types, no behaviour.
+- [ ] **P1-LANDER-GIT** — lane B, after the CI tasks. The lander's git layer and coverage check
+  ported from the steward, with a deterministic rebase.
+
+Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
+COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
 
 ## Carried over from the contest build
 
