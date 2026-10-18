@@ -7,11 +7,14 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 midday. Phase 0 is merged except P0-SPIKE and P0-UNVERIFIABLE-LANDING;
-CI on `main` is green. No lanes or worktrees are live.
-**Next to dispatch:** P0-SPIKE, once the App is installed.
-**Pending from Felix:** installing the App `tessel-lander-spike` on `tessel-sandbox`; a ruleset
-making the six CI jobs required on `main`; P0-UNVERIFIABLE-LANDING needs a protocol decision.
+**As of:** 2026-10-18 afternoon. Phase 0 is done except P0-UNVERIFIABLE-LANDING: P0-SPIKE closes
+with this pull request, and the six CI jobs are required on `main` by the ruleset "main: CI
+required" (pull requests only, no force push or deletion, no bypass). Contest cleanup is #30.
+**Next:** Phase 1 planning; the spike's answers (`docs/proposals/github-spike.md`) unfreeze the
+host's `Call` design.
+**Pending from Felix:** P0-UNVERIFIABLE-LANDING needs a protocol decision (recommended: a new
+`VerificationDropped` reason). Tearing down the spike sandbox needs `gh auth refresh -s
+delete_repo`; the sandbox costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
 requests; open the second after the first merges.
@@ -79,13 +82,18 @@ load and flake checks run on CI runners.
   the coordinator's `head` is the base the first agent declared in its `Hello`
   (`src/coordinator.rs`), and it becomes the baseline of the first dispatch unchecked. Phase 1:
   read the trunk head from the git host when the repo loads, before any dispatch.
-- [ ] **P0-SPIKE** — the GitHub spike in the proposal ("The GitHub adapter", spike paragraph):
+- [x] **P0-SPIKE** (this pull request) — the GitHub spike in the proposal ("The GitHub adapter", spike paragraph):
   does a fork pull request's check satisfy a required-checks ruleset for a direct `updateRefs` of
   that commit; is a stale `beforeOid` refused with the App as bypass actor; check and webhook
   latencies. Done: a written answer in `docs/proposals/` and a script that reproduces it. Felix
   created the organisation `tessel-sandbox` and the private App `tessel-lander-spike` (ID 5368982;
   contents, pull requests and administration write; checks, statuses and actions read; no
   webhook) on 18 October. Its private key is kept outside the repository and is never committed.
+  Answered in `docs/proposals/github-spike.md`: a fork pull request's check satisfies the
+  required-checks ruleset for a direct `updateRefs`, also for the App as bypass actor of the
+  update-restriction ruleset; a stale `beforeOid` is refused, but with a generic "Something went
+  wrong" error, so the lander reads the ref back; checks took 9-14 s on a trivial workflow; a
+  contents-write token is enough to land. Landing is a durable job finished by reconciliation.
 
 ## Carried over from the contest build
 
