@@ -1308,6 +1308,11 @@ fn check_after(world: &mut World) {
     world.model.moved.retain(|id, _| live.contains(id));
     world.model.infra.retain(|id, _| live.contains(id));
     assert_eq!(
+        world.core.self_comparing_trials(),
+        0,
+        "check 7: a trial compares main with itself (an already_merged landing)"
+    );
+    assert_eq!(
         world.core.has_merge_in_flight(),
         world.model.inflight.is_some(),
         "check 3: the marker and the dispatched merge disagree"

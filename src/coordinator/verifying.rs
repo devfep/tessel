@@ -246,6 +246,25 @@ impl Coordinator {
         }
     }
 
+    /// How many queued assumption verifications and shadow trials compare main with itself
+    /// (`before == main`): none may exist, since they would say nothing. Race entries compare
+    /// one head with itself by design and are not counted.
+    #[cfg(test)]
+    pub(crate) fn self_comparing_trials(&self) -> usize {
+        let compares_itself = |queued: &&Verification| {
+            queued.before == queued.main
+                && match queued.subject {
+                    Subject::Assumption { .. } | Subject::Shadow { .. } => true,
+                    Subject::RaceEntry { .. } => false,
+                }
+        };
+        self.state
+            .verifications
+            .iter()
+            .filter(compares_itself)
+            .count()
+    }
+
     /// Drop each submitted shadow claim that nothing is owed through (see the module docs). Run
     /// after anything that can end a claim or finish a trial. Each drop is logged as
     /// `ClaimReleased { Settled }`, in claim id order.
@@ -807,6 +826,131 @@ mod tests {
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger);
         c.merge_outcome(c.merge_flight_id(challenger), &landed(head), NOW)
+    }
+
+    fn already_merged(base: &str) -> MergeOutcome {
+        MergeOutcome::AlreadyMerged {
+            base: CommitId(base.into()),
+        }
+    }
+
+    /// Lands an earlier merge so main is `MAIN`, then dispatches the challenger and loses the
+    /// answer. Returns the challenger and the time its retry is due.
+    fn challenger_with_lost_answer(c: &mut Coordinator) -> (ClaimId, u64) {
+        merge_edit(c, "a0", "src/z.rs", MAIN);
+        let (_, challenger) = challenged(c);
+        let dispatch = c.begin_merge(NOW).expect("a merge is due");
+        assert_eq!(dispatch.claim, challenger);
+        c.recover_merge(NOW);
+        let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
+        (challenger, work.retry_at_ms.expect("a retry is scheduled"))
+    }
+
+    #[test]
+    fn a_recovered_merge_verifies_against_the_main_it_was_dispatched_from() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_eq!(pending(&c), 1);
+        let queued = &c.state.verifications[0];
+        assert_eq!(queued.before, CommitId(MAIN.into()));
+        assert_eq!(queued.main, CommitId(MAIN2.into()));
+    }
+
+    /// The trunk head moves to `head` while no merge is in flight, as a head read applies it.
+    fn trunk_moves_to(c: &mut Coordinator, head: &str, now: u64) {
+        c.trunk_moved(now);
+        let read = c.begin_head_read().expect("a head read is due");
+        c.trunk_read(&read, Some(CommitId(head.into())), now);
+    }
+
+    #[test]
+    fn a_head_read_between_the_attempts_does_not_move_the_baseline() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        trunk_moves_to(&mut c, MAIN2, NOW + 1);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_eq!(pending(&c), 1);
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn an_attempt_that_found_main_moved_did_not_land_so_the_baseline_restarts() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(
+            c.merge_flight_id(challenger),
+            &MergeOutcome::MainMoved {},
+            due,
+        );
+        trunk_moves_to(&mut c, MAIN2, due + 1);
+        c.begin_merge(due + 1)
+            .expect("main moved: dispatched at once");
+        c.recover_merge(due + 1);
+        let retry = c.state.claims[&challenger.0]
+            .work
+            .as_ref()
+            .unwrap()
+            .retry_at_ms;
+        let retry = retry.expect("a retry is scheduled");
+        c.begin_merge(retry).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(OTHER), retry);
+
+        assert_eq!(pending(&c), 1);
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN2.into()));
+    }
+
+    #[test]
+    fn an_unreachable_steward_leaves_the_same_baseline_as_a_restart() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let (_, challenger) = challenged(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        c.merge_outcome(
+            c.merge_flight_id(challenger),
+            &MergeOutcome::ServiceUnavailable,
+            NOW,
+        );
+        let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
+        let due = work.retry_at_ms.expect("a retry is scheduled");
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn an_already_merged_answer_to_a_first_dispatch_queues_nothing() {
+        let mut c = core();
+        merge_edit(&mut c, "a0", "src/z.rs", MAIN);
+        let (_, challenger) = challenged(&mut c);
+        c.begin_merge(NOW).expect("a merge is due");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
+
+        assert_eq!(
+            pending(&c),
+            0,
+            "nothing of this submission is known to have landed"
+        );
+    }
+
+    #[test]
+    fn a_recovered_merge_that_left_main_unchanged_queues_nothing() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        c.begin_merge(due).expect("the retry is dispatched");
+        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN), due);
+
+        assert_eq!(
+            pending(&c),
+            0,
+            "main did not move, so there is no span to verify"
+        );
     }
 
     fn pending(c: &Coordinator) -> usize {

@@ -43,7 +43,11 @@ merges, #20 merges `main` in so CI runs on it.
 - [ ] **P0-LANDED-COMMIT** — `already_merged` no longer becomes `Landed { head: base }`
   (`src/merge.rs`); the outcome carries the landed commit when known, and no verification or
   trial is queued until it is (proposal, fixes table). Done: a test that no verification compares
-  main with itself, failing before the change.
+  main with itself, failing before the change. Built: the steward's `already_merged` base is
+  main as it is now, not the landed commit, so the coordinator records main at each dispatch
+  (`InFlight::main`) and keeps the first one whose answer was lost (`unanswered_from`); a retry
+  answered `already_merged` lands with that as `before`. With none, or with main unchanged, the
+  landing is recorded but nothing is queued to verify it. No steward change.
 - [ ] **P0-CLI-REPLAY-UNKNOWN-EVENT** — carried over: `tessel-cli/src/daemon.rs` aborts replay or
   drops the socket on one event it cannot parse, so any new event kind breaks older daemons.
   Decode the envelope tolerantly (seq plus a possibly unknown kind) and keep replaying. Must land
