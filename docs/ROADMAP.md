@@ -63,6 +63,14 @@ jobs required on `main`.
   `tessel-cli` `heartbeats_keep_a_claim_alive_past_its_lease` (once; passed on rerun). Both pass on GitHub. Replace the timing assertions with ordering or
   explicit signals, or move them behind the daemon clock seam planned for Phase 1 (proposal,
   "Flake control"); never add retries.
+- [ ] **P0-UNVERIFIABLE-LANDING** — from the P0-LANDED-COMMIT review: when a recovered merge
+  lands with no known baseline, its assumption verifications are not queued and nothing records
+  that they were skipped. Make it visible (rule 7, invariant 10), which needs a protocol decision
+  from Felix: a new `VerificationDropped` reason or a separate counter.
+- [ ] **COORD-HEAD-FROM-AGENT** — from the same review: until the first landing or head read,
+  the coordinator's `head` is the base the first agent declared in its `Hello`
+  (`src/coordinator.rs`), and it becomes the baseline of the first dispatch unchecked. Phase 1:
+  read the trunk head from the git host when the repo loads, before any dispatch.
 - [ ] **P0-SPIKE** — the GitHub spike in the proposal ("The GitHub adapter", spike paragraph):
   does a fork pull request's check satisfy a required-checks ruleset for a direct `updateRefs` of
   that commit; is a stale `beforeOid` refused with the App as bypass actor; check and webhook
