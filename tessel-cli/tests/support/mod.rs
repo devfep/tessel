@@ -24,7 +24,7 @@ use tokio_tungstenite::WebSocketStream;
 
 pub const REPO: &str = "demo";
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -35,6 +35,8 @@ struct SocketEntry {
     id: u64,
     bound: Option<AgentId>,
     watching: bool,
+    /// The socket has seen a `go_silent` or `go_deaf` request and reads nothing more.
+    muted: bool,
     tx: mpsc::UnboundedSender<Wire>,
 }
 
@@ -80,6 +82,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Inner {
+    fn mark_muted(&self, id: u64) {
+        if let Some(entry) = lock(&self.sockets).iter_mut().find(|s| s.id == id) {
+            entry.muted = true;
+        }
+    }
+
     /// Records events in the log and sends them to the sockets that watch it.
     fn publish(&self, events: Vec<Event>) {
         let mut log = lock(&self.events);
@@ -255,6 +263,13 @@ impl Fake {
     /// is followed by pongs that answer no ping.
     pub fn go_deaf(&self) {
         self.mute.send_modify(|mute| *mute = (mute.0 + 1, true));
+    }
+
+    /// Every open socket has taken up a `go_silent` or `go_deaf` request. The request itself only
+    /// queues the change; until this is true a socket may still read a frame and answer it.
+    pub fn all_sockets_muted(&self) -> bool {
+        let sockets = lock(&self.inner.sockets);
+        !sockets.is_empty() && sockets.iter().all(|s| s.muted)
     }
 
     /// Refuses (or accepts again) new connections with HTTP 503. Open sockets are unaffected.
@@ -434,16 +449,13 @@ async fn serve(
         *next += 1;
         *next
     };
-    inner
-        .sockets
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(SocketEntry {
-            id,
-            bound: None,
-            watching: false,
-            tx,
-        });
+    lock(&inner.sockets).push(SocketEntry {
+        id,
+        bound: None,
+        watching: false,
+        muted: false,
+        tx,
+    });
     let mut session = Session {
         verified: Some(agent),
         ..Session::default()
@@ -452,6 +464,7 @@ async fn serve(
         tokio::select! {
             _ = mute.changed() => {
                 (deaf, mute_writes) = (true, !mute.borrow_and_update().1);
+                inner.mark_muted(id);
             }
             _ = kill.changed() => {
                 if !keeps_open(&inner, id, *kill.borrow_and_update()) {
