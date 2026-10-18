@@ -14,6 +14,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 rules=${1:-$root/docs/reference/runtime-rules.md}
 runtime=$root/src/runtime.rs
 failures=0
+min_reason=30
 
 trim() {
   local value=$1
@@ -38,6 +39,12 @@ fail() {
 
 # Rule rows are lines that start with "| R<number> |". Cells are split on " | ".
 rows=$(grep -E '^\| R[0-9]+ \|' "$rules" || true)
+
+# Any other table line must be the header or the separator, so a malformed row is not skipped.
+while IFS= read -r line; do
+  [[ $line =~ ^\|\ R[0-9]+\ \| || $line == "| Rule |"* || $line =~ ^\|[-\|[:space:]]+$ ]] ||
+    fail "table line is not a rule row (write '| R<number> | ...'): ${line:0:60}"
+done < <(grep -E '^[[:space:]]*\|' "$rules" || true)
 [[ -n $rows ]] || {
   echo "check-named-tests: $rules has no rule rows" >&2
   exit 1
@@ -73,10 +80,15 @@ while IFS= read -r row; do
     ;;
   "after move")
     [[ -n $names ]] || fail "$rule is 'after move' but names no host or adapter test"
+    while IFS= read -r name; do
+      [[ -z $name || $name =~ ^(host|adapter)_[a-z0-9_]+$ ]] ||
+        fail "$rule names '$name'; an after-move test is named host_* or adapter_*"
+    done <<<"$names"
     ;;
   dropped)
-    [[ $(trim "$tests") == dropped:*[![:space:]]* ]] ||
-      fail "$rule is 'dropped' but gives no reason (write 'dropped: <reason>')"
+    reason=$(trim "$tests")
+    [[ $reason == dropped:* && ${#reason} -ge $min_reason ]] ||
+      fail "$rule is 'dropped' without a reason of $min_reason characters (dropped: <reason>)"
     ;;
   *)
     fail "$rule has status '$status'; expected now, after move or dropped"
@@ -86,8 +98,8 @@ while IFS= read -r row; do
 done <<<"$rows"
 
 if [[ -f $runtime ]]; then
-  runtime_fns=$(sed -n 's/^[[:space:]]*\(pub \)\{0,1\}\(async \)\{0,1\}fn \([A-Za-z0-9_]*\).*/\3/p' \
-    "$runtime" | sort -u)
+  fn_pattern='s/^[[:space:]]*\(pub \)\{0,1\}\(async \)\{0,1\}fn \([A-Za-z0-9_]*\).*/\3/p'
+  runtime_fns=$(sed -n "$fn_pattern" "$runtime" | sort -u)
   while IFS= read -r name; do
     grep -qxF "$name" <<<"$covered_fns" || fail "fn $name of src/runtime.rs is in no row"
   done <<<"$runtime_fns"
