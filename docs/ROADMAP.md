@@ -57,12 +57,12 @@ jobs required on `main`.
   `MAX_MAIN_MOVED` as answers "in a row", but the code counts them per submission (an infra failure
   does not reset the count, which is the safer rule), and `merging.rs` says "up to MAX_MAIN_MOVED
   times" where there are MAX_MAIN_MOVED - 1 re-dispatches. Fix the docs to match the code. Small.
-- [ ] **P0-FLAKE-WALLCLOCK** — at a local load average near 240, two tests fail on wall-clock
-  checks in code no Phase 0 change touched: `tessel-swarm`
-  `off::tests::agents_work_at_the_same_time` ("branches were built one after another") and
-  `tessel-cli` `heartbeats_keep_a_claim_alive_past_its_lease` (once; passed on rerun). Both pass on GitHub. Replace the timing assertions with ordering or
-  explicit signals, or move them behind the daemon clock seam planned for Phase 1 (proposal,
-  "Flake control"); never add retries.
+- [ ] **P0-FLAKE-WALLCLOCK** — at a local load average near 240, two tests fail on wall-clock checks
+  in code no Phase 0 change touched: `tessel-swarm` `off::tests::agents_work_at_the_same_time`
+  ("branches were built one after another") and `tessel-cli`
+  `heartbeats_keep_a_claim_alive_past_its_lease` (once; passed on rerun). Both pass on GitHub.
+  Replace the timing assertions with ordering or explicit signals, or move them behind the daemon
+  clock seam planned for Phase 1 (proposal, "Flake control"); never add retries.
 - [ ] **P0-UNVERIFIABLE-LANDING** — from the P0-LANDED-COMMIT review: when a recovered merge
   lands with no known baseline, its assumption verifications are not queued and nothing records
   that they were skipped. Make it visible (rule 7, invariant 10), which needs a protocol decision
