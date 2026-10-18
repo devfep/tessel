@@ -369,9 +369,9 @@ ownership").
   P1-DROP-WORKER) and `tessel init --steward` (S1), with the route and token refusals of R1 as
   adapter tests that port the `routes` cases P1-DROP-WORKER deletes from `src/shell.rs` one for
   one (404; 405 with `Allow`; 403; 401 with the fixed body), each named in the rules list, so
-  R1 ends the gap with the coverage it had; ed25519-dalek (current 3.0.0) is the candidate, chosen in the task under the
-  dependency rule. P1-RUNNER: the local test runner as its own binary, refusing to start unless
-  configured for a single trusted user.
+  R1 ends the gap with the coverage it had; ed25519-dalek (current 3.0.0) is the candidate,
+  chosen in the task under the dependency rule. P1-RUNNER: the local test runner as its own
+  binary, refusing to start unless configured for a single trusted user.
 
 **M5. Lander behind the server; advisory mode.** The lander and the runner as their own binaries
 (`tessel-lander`, `tessel-runner`), started by `tessel-server` from configured paths, accepting
