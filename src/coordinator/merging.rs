@@ -233,15 +233,14 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        let effects = match outcome.verdict() {
+        match outcome.verdict() {
             Verdict::Landed { base, head } => self.land(claim, &held, (base, head), now_ms),
             Verdict::Rejected { reason } => {
                 self.reject_work(claim, held, Rejection::plain(reason), now_ms)
             }
             Verdict::MainMoved => self.retry_after_move(claim, held, now_ms),
             Verdict::Infrastructure => self.retry_after_infrastructure(claim, held, now_ms),
-        };
-        effects
+        }
     }
 
     /// Decide a submission held for review (invariant 12). Only a configured reviewer may, never
