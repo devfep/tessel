@@ -7,7 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use proptest::prelude::*;
+use proptest::test_runner::TestRunner;
 
 use crate::coordinator::verifying::Subject;
 use crate::coordinator::{Config, Coordinator, Effect};
@@ -1014,7 +1017,11 @@ fn run_recovered_landing(
         CommitId(LANDED.into()),
         "check 8: ends at the steward's main"
     );
+    CHECK_8_RUNS.fetch_add(1, Ordering::Relaxed);
 }
+
+/// How many times check 8 got past its early returns and ran, over the whole test.
+static CHECK_8_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 fn run_pipeline(world: &mut World, answers: &[Answer]) {
     for index in 0..AGENTS {
@@ -1547,9 +1554,18 @@ fn run(script: &[Op]) {
     }
 }
 
-proptest! {
-    #[test]
-    fn random_merge_queue_scripts_keep_the_queue_rules(script in ops()) {
+#[test]
+fn random_merge_queue_scripts_keep_the_queue_rules() {
+    let mut runner = TestRunner::default();
+    let outcome = runner.run(&ops(), |script| {
         run(&script);
+        Ok(())
+    });
+    if let Err(failure) = outcome {
+        panic!("{failure}");
     }
+    assert!(
+        CHECK_8_RUNS.load(Ordering::Relaxed) > 0,
+        "check 8 never ran: every case returned before reaching it"
+    );
 }
