@@ -93,7 +93,9 @@ pub enum CallAnswer {
     },
     /// The call may or may not have taken effect: a stale `beforeOid`, a reply lost after a
     /// push, a lost call. A late `Land` that finds main moved also arrives as `Unknown`; the core
-    /// then reconciles. The core decides what follows.
+    /// then reconciles. The core decides what follows. A stored or received answer of a kind this
+    /// build does not know also reads as `Unknown`, the one answer that never decides an outcome.
+    #[serde(other)]
     Unknown,
 }
 
@@ -285,6 +287,12 @@ mod tests {
             let json = serde_json::to_string(&answer).unwrap();
             prop_assert_eq!(serde_json::from_str::<CallAnswer>(&json).unwrap(), answer);
         }
+    }
+
+    #[test]
+    fn an_answer_of_an_unknown_kind_reads_as_unknown() {
+        let answer: CallAnswer = serde_json::from_str(r#"{"kind":"from_a_newer_build"}"#).unwrap();
+        assert_eq!(answer, CallAnswer::Unknown);
     }
 
     #[test]
