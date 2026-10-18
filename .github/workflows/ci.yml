@@ -173,7 +173,12 @@ jobs:
             --test-tool nextest --jobs 2 --shard "$SHARD" || code=$?
           case "$code" in
             0) ;;
-            3) echo "::warning::Timeouts only, no missed mutants (exit 3). See mutants.out/timeout.txt." ;;
+            3) if [ -s mutants.out/missed.txt ]; then
+                 echo "::error::Timeouts and missed mutants (exit 3 hides the misses):"
+                 cat mutants.out/missed.txt
+                 exit 2
+               fi
+               echo "::warning::Timeouts only, no missed mutants (exit 3). See mutants.out/timeout.txt." ;;
             *) echo "::error::cargo mutants exited $code (2 missed, 4 baseline failed, 5 or 6 bad diff)."
                exit "$code" ;;
           esac
