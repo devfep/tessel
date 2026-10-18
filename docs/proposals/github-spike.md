@@ -45,7 +45,7 @@ With the App token, contents write only, A and B both active:
 | Attempt | Result |
 |---|---|
 | `updateRefs` of PR #3's head (`spike-z`), check completed with `success`, correct `beforeOid` | accepted, main is that head |
-| `updateRefs` of PR #4's head (`spike-w`) immediately after it opened, check not finished | refused, `UNPROCESSABLE`: `Branch 'refs/heads/main' is protected: Cannot update this protected ref. Required status check "check" is expected.` |
+| `updateRefs` of PR #4's head (`spike-w`) immediately after it opened, check not finished | refused, `UNPROCESSABLE`: `Branch 'refs/heads/main' is protected: Cannot update this protected ref. Required status check "check" is expected..` (two periods, as logged) |
 
 The first row shows that a token holding contents write alone is enough to land with
 `updateRefs` when the App is A's bypass actor and the check has passed. The second row shows that
@@ -74,7 +74,8 @@ active).**
 - Ruleset A with the user token (not a bypass actor), check passed, correct `beforeOid`: refused,
   `Cannot update this protected ref.` main unchanged.
 - The App (bypass actor of A, token narrowed to contents write) with a stale `beforeOid` (the
-  commit before main's head) and PR #4's head, whose check had completed with `success`: refused
+  head of PR #1, `f8367d0`, two commits behind main, which was PR #3's head when the call ran)
+  and PR #4's head, whose check had completed with `success`: refused
   with the same generic `Something went wrong while executing your query ... Please include
   <request id>` error, once, and main did not move. The same call with the correct `beforeOid`
   was accepted. So the bypass of A does not bypass the compare-and-swap.
@@ -97,23 +98,23 @@ samples on a free-plan public repository say nothing about queueing under load.
 
 Webhooks: a repository webhook to an unreachable host (`*.invalid`) still records each attempt;
 `delivered_at` is the time of the attempt (`failed to connect`), so this measures GitHub's
-dispatch delay, not a receiver's. The hook recorded 17 deliveries; 11 carry an event timestamp
-in the payload (3 opened, 3 check_run created, 3 check_run completed, 2 closed), and for those the
+dispatch delay, not a receiver's. The figures below are from the user-token run only: the hook
+recorded 17 deliveries by then, and 11 carry an event timestamp in the payload (3 opened, 3 check_run created, 3 check_run completed, 2 closed), and for those the
 delay between that timestamp and `delivered_at` was 0 to 3 s
 (check_run created 0-2, check_run completed 1-2,
 pull_request opened 2-3, pull_request closed 2 after the landing). The payload timestamps have
 one-second resolution, so each lag is ±1 s. All 11 show `redelivery: false`, so no failed
 delivery was retried during the run; that matches the proposal's rule that the poll is
-authoritative. Delivery to a real receiver and its own latency
-were not measured.
+authoritative. The hook now holds 25 deliveries; the 8 from the App run were not analysed.
+Delivery to a real receiver and its own latency were not measured.
 
 ## 4. One request, or a durable job finished by reconciliation?
 
 **A durable job.** The landing itself is one atomic request, but it is not the whole operation:
 
-1. Readiness takes seconds and arrives asynchronously (9-14 s here for a trivial check, four samples), so the
-   lander cannot hold one request open across it; it must wait for the check, from a hint or a
-   poll.
+1. Readiness takes seconds and arrives asynchronously (9-14 s here for a trivial check, four
+   samples), so the lander cannot hold one request open across it; it must wait for the check,
+   from a hint or a poll.
 2. A refused `updateRefs` can be a rule (typed message), a lost compare (generic server error) or
    a real transient failure, and the generic one is not distinguishable from the other two. The
    App as bypass actor gets the same generic error on a stale base. The
