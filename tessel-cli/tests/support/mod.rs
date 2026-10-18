@@ -211,7 +211,7 @@ impl Fake {
                 base: CommitId("b".repeat(40)),
                 head: CommitId("c".repeat(40)),
             };
-            core.merge_outcome(dispatch.claim, &landed, now_ms())
+            core.merge_outcome(dispatch.id, &landed, now_ms())
         };
         let (events, outbound) = shell::split_effects(effects);
         self.inner.deliver(None, outbound);
