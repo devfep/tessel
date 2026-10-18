@@ -56,7 +56,7 @@ on GitHub runners only, never on the Mac.
 | Lane | Owns |
 |---|---|
 | A, host and server | `src/host/**` (new), `src/sim/**` (new), `src/lib.rs`, `src/shell.rs`, `src/protocol.rs` (additive changes only), `src/coordinator.rs`, `src/coordinator/**` and `src/merge.rs` except in M3, `docs/reference/runtime-rules.md` (new), `tests/runtime_rules.rs` (new), `scripts/ci/check-named-tests.sh` (new), `tests/simulator.rs` (new), `tessel-cli/tests/support/mod.rs`, `tessel-cli/src/daemon.rs` (the range warning, M4), `tessel-swarm/src/local.rs`, `tessel-server/Cargo.toml` and `tessel-server/src/{main,repo,store,ws,metrics}.rs` (new; `main.rs` wires lane B's subcommands) |
-| B, lander, merge path, CI and identity | `.github/workflows/**`, `.cargo/**` (new), `scripts/ci/**` (new) except the named-tests check, `tessel-lander/**` (new), in M3 `src/merge.rs`, `src/coordinator.rs` and `src/coordinator/**`, `tessel-server/src/{identity,admin}.rs` (new), `tessel-cli/src/init.rs`, `deploy/dogfood/**` (new), the deletions: `src/runtime.rs`, `src/store.rs`, `wrangler.toml` (M3), `src/identity.rs` (M4), `tessel-steward/` (M6) |
+| B, lander, merge path, CI and identity | `.github/workflows/**`, `.cargo/**` (new), `scripts/ci/**` (new) except the named-tests check, `tessel-lander/**` (new), in M3 `src/merge.rs`, `src/coordinator.rs` and `src/coordinator/**`, `tessel-server/src/{identity,admin}.rs` (new), `tessel-cli/src/init.rs`, `deploy/dogfood/**` (new), the deletions and doc rewrites of P1-DROP-WORKER (M3: `src/runtime.rs`, `src/store.rs`, `src/identity.rs`, `wrangler.toml`, `tessel-swarm/src/{live,guard,main}.rs`, `README.md`, `docs/how-tessel-works.md`, `docs/reference/coordinator.md`, `docs/configuration.md`, a proposed `CLAUDE.md` edit) and of `tessel-steward/` (M6) |
 
 Shared files: the root `Cargo.toml` (workspace members, features) and `Cargo.lock`. A lane that
 adds a member or a dependency does it in its own small commit, and the orchestrator does not run
@@ -284,11 +284,28 @@ ownership").
 - P1-DROP-WORKER (lane B, first in M3, decision 13): deletes `src/runtime.rs`, `src/store.rs`,
   `wrangler.toml`, the `worker` and `console_error_panic_hook` dependencies, the `cdylib` crate
   type, the `wasm32-unknown-unknown` target and the "Fast lane, wasm clippy" job, with ruleset
-  step 2 made right before it merges. `src/identity.rs` and the HMAC check in
-  `shell::authorize` stay, natively built, until the Ed25519 identity replaces them in M4; the
-  TypeScript steward and its CI job stay until M6 as the lander's reference. Done: CI green
-  without the wasm job; `cargo tree -p tessel-coordinator` has no `worker`; the rules list's
-  "Lives in" column still points at `6efe835`, where the deleted code can be read.
+  step 2 made right before it merges. It also deletes what only the Worker called:
+  `src/identity.rs`, the `#[cfg(feature = "runtime")]` items in `src/shell.rs` (`Denied`,
+  `Inbound`, `authorize`, `only_method` and the `routes` test module) and the `runtime` feature
+  itself, so no feature is left holding dead code from M3 to M4; the Ed25519 identity in M4 is
+  written fresh in `tessel-server`, and rule R1 moves to "adapter" with it (`parse_route` stays
+  in `shell` with its tests). Renaming the feature or keeping it for the
+  three weeks would keep code with no caller (`PLAN.md` and `CLAUDE.md`: replace, don't
+  deprecate). It deletes `tessel-swarm`'s live target (`src/live.rs`, the `--target live` path in
+  `src/main.rs`, and the Cloudflare host names in `src/guard.rs`, keeping `ScratchRepo`): it
+  needs a Cloudflare coordinator and steward that can no longer exist, and a live target against
+  a hosted `tessel-server` is added when an A/B run needs one, not before. And it rewrites the
+  docs that describe the deleted code, so no agent follows them from M3 to M6: `README.md`,
+  `docs/how-tessel-works.md`, `docs/reference/coordinator.md`, `docs/configuration.md`, and,
+  proposed in the same pull request for Felix to merge, `CLAUDE.md`'s Layout (`runtime.rs`,
+  `store.rs`, `identity.rs`) and Commands (`npx wrangler dev`); `docs/BUILD-PROTOCOL.md`'s gate
+  row for the wasm warning count is the orchestrator's to change. The TypeScript steward and its
+  CI job stay until M6 as the lander's reference. Done: CI green without the wasm job;
+  `cargo build -p tessel-coordinator` and its clippy with default features pass natively, and
+  `Cargo.toml` has no `runtime` feature; `cargo tree -p tessel-coordinator` has no `worker`,
+  `hmac` or `sha2`; a search of the docs above finds no `wrangler`, `Durable Object` or
+  `runtime.rs` outside history notes; the rules list's "Lives in" column still points at
+  `6efe835`, where the deleted code can be read.
 - P1-SIM-CORE (lane A): `src/sim/` (SplitMix64 moved from `tessel-swarm/src/rng.rs`); the driver
   on the test kit; a clock that jumps; a store that loses uncommitted writes on crash and can fail
   a commit without crashing; a crash after any output and a reload; client traffic (claims,
@@ -348,10 +365,10 @@ ownership").
   a new optional field of `Welcome` with the CLI warning outside it (O2), structured
   `(tenant, repo)` ids (S5).
 - Lane B: Ed25519 identity with `kid`, `aud`, tenant claims and reserved service names, minted by
-  `tessel-server admin token`, replacing the steward's HMAC minting, `src/identity.rs` (deleted
-  with the HMAC check in `shell::authorize` and the `runtime` feature) and `tessel init --steward`
-  (S1); ed25519-dalek (current 3.0.0) is the candidate, chosen in the task under the dependency
-  rule. P1-RUNNER: the local test runner as its own binary, refusing to start unless configured
+  `tessel-server admin token`, replacing the steward's HMAC minting (the Rust HMAC check went in
+  P1-DROP-WORKER) and `tessel init --steward` (S1), with the route and token refusals of R1 as
+  adapter tests; ed25519-dalek (current 3.0.0) is the candidate, chosen in the task under the
+  dependency rule. P1-RUNNER: the local test runner as its own binary, refusing to start unless configured
   for a single trusted user.
 
 **M5. Lander behind the server; advisory mode.** The lander and the runner as their own binaries
@@ -496,7 +513,7 @@ is not an option, nor is any other machine at home, for the same reason.
 Recommended: **Fly.io** (decision 2): the lowest cost that is orderable today, nothing to
 administer, and remote builds keep image builds off the Mac. Fallback if Felix declines Fly
 billing: Hetzner CX23 when it is in stock; if neither is available, M6's dogfood gate waits and
-the deletion with it, while Phase 2 design does not depend on it (proposed change E).
+the deletion with it, while Phase 2 design does not depend on it (proposed change D).
 
 The Fly configuration is the dogfood instance's own (`deploy/dogfood/fly.toml`, with
 `auto_stop_machines = "off"` and one machine always running, since head sync stops while a
@@ -623,8 +640,15 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
     host test, and the code stays readable at `6efe835`. What the later gate protects, the
     lander's reference and its CI check, is the TypeScript steward, which stays until M6. This
     matches `PLAN.md`'s decision 2 ("removed as soon as the portable host replaces it") and keeps
-    the phase order. If Felix declines, the staged landing waits for the deletion in M6, after
-    advisory mode, which pushes M3's merge-path work about four weeks later.
+    the phase order. It is reversible: P1-DROP-WORKER is one pull request that `git revert`
+    undoes, and nothing deployed needs restoring. If Felix declines, the staged landing waits for
+    the deletion in M6, after advisory mode, which pushes M3's merge-path work about four weeks
+    later.
+14. **The native test hosts are rebuilt earlier**: the CLI's in M2, as the wire-level check of
+    the move, and the swarm's in M5. The proposal lists them with the deletion (Phase 1, item
+    7). Like decision 13, this reorders items within Phase 1 and leaves `PLAN.md`'s scope and
+    phase order as they are, so both are filed here as decisions rather than as proposed changes
+    to `PLAN.md`; recommended for both, for the reasons given. It is reversible the same way.
 
 ## Proposed changes for Felix
 
@@ -637,16 +661,16 @@ These change `PLAN.md` scope or order, so they wait for Felix (rule 10):
   `--not-landed` settles a `Land` stuck in doubt after the operator has read main; without it,
   a git host that never answers `Reconcile` holds the repository's queue for good. `resolve`
   only feeds the core the answer `Reconcile` would have given, so the core's rules still apply.
+  If Felix declines `resolve`, a `Land` stuck in doubt holds the queue for good: no submission
+  of that repository lands again until the git host answers, and the only other way out is
+  editing the database by hand.
 - **B. A deployment for the dogfood server in Phase 1**: a plain container build of the server
   binary, and `deploy/dogfood/fly.toml` as that instance's own configuration, ahead of Phase 3's
   signed image. It is not a release and is not signed.
 - **C. I2's `Truncated` clause and I9's restore clause are checked when retention and backup
   arrive (Phase 3).** `PLAN.md` says "the simulator with invariants I1 to I12"; the rest of each
   is checked in Phase 1 (table above).
-- **D. The native test hosts are rebuilt earlier.** The proposal lists them with the deletion
-  (Phase 1, item 7); this plan rebuilds the CLI's in M2, as the wire-level check of the move, and
-  the swarm's in M5.
-- **E. Phase 2 design may start before the deletion.** If M6 slips (the dogfood gate, hosting),
+- **D. Phase 2 design may start before the deletion.** If M6 slips (the dogfood gate, hosting),
   Phase 2's GitHub adapter design can start, since it depends on the host and the lander, not on
   the deletion. Building Phase 2 still waits for Phase 1's done-check.
 
@@ -658,7 +682,7 @@ adapter test in `tessel-server` (M4), or dropped. P1-RULES checks and completes 
 
 | Rule | Lines | Statement | Lives in | Then |
 |---|---|---|---|---|
-| R1 | 128-131, 149-171 | Routes and token checks decide 404, 405 with `Allow`, 403, 401 with a fixed body | `shell::authorize`; status mapping in runtime | now; status mapping in the adapter |
+| R1 | 128-131, 149-171 | Routes and token checks decide 404, 405 with `Allow`, 403, 401 with a fixed body | `shell::authorize`; status mapping in runtime | now until P1-DROP-WORKER deletes `authorize`, then adapter (M4) |
 | R2 | 136-139 | The Worker drops `Authorization` and sets the verified agent itself; a caller cannot choose it | runtime | adapter: a client-sent agent header is ignored |
 | R3 | 162-169 | A refusal is logged with its reason and path, never the token or key | runtime | adapter log test |
 | R4 | 208-219 | Summary and trunk-moved need the verified agent (401 otherwise) | runtime | adapter |
