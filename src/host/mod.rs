@@ -21,32 +21,27 @@ pub struct BatchId(pub u64);
 /// Something that happened, with the time it was observed. The host never reads a clock.
 #[derive(Debug, Clone)]
 pub enum Input {
-    /// A socket opened. `verified` is the agent the adapter authenticated, if any.
+    /// A socket opened. `verified` is the agent the adapter authenticated: a request without one
+    /// is refused before the host sees it (R4), so there is always one.
     Opened {
         now_ms: u64,
         sock: SocketId,
-        verified: Option<AgentId>,
+        verified: AgentId,
     },
+    /// A text frame arrived on `sock`. Free text: untrusted.
     Frame {
         now_ms: u64,
         sock: SocketId,
         text: String,
     },
-    Closed {
-        now_ms: u64,
-        sock: SocketId,
-    },
-    Wake {
-        now_ms: u64,
-    },
-    TrunkPoked {
-        now_ms: u64,
-    },
+    /// `sock` closed, cleanly or not.
+    Closed { now_ms: u64, sock: SocketId },
+    /// The wake set by `Output::SetWake` is due.
+    Wake { now_ms: u64 },
+    /// Main may have moved; the host reads the head when it can.
+    TrunkPoked { now_ms: u64 },
     /// The answer to `Output::Load`: the stored core state, or `None` for a repository with none.
-    Loaded {
-        now_ms: u64,
-        stored: Option<String>,
-    },
+    Loaded { now_ms: u64, stored: Option<String> },
     /// The answer to `Output::ReadEvents`: a page of the stored log. `done` ends the replay.
     ReplayPage {
         now_ms: u64,
@@ -54,14 +49,10 @@ pub enum Input {
         events: Vec<Event>,
         done: bool,
     },
-    Committed {
-        now_ms: u64,
-        batch: BatchId,
-    },
-    CommitFailed {
-        now_ms: u64,
-        batch: BatchId,
-    },
+    /// The batch is stored.
+    Committed { now_ms: u64, batch: BatchId },
+    /// The batch is not stored; nothing in it may be sent.
+    CommitFailed { now_ms: u64, batch: BatchId },
     /// A call was answered, `Unknown` included.
     Replied {
         now_ms: u64,
@@ -69,15 +60,13 @@ pub enum Input {
         answer: CallAnswer,
     },
     /// The adapter lost the call before an answer: counts as `CallAnswer::Unknown`.
-    CallLost {
-        now_ms: u64,
-        call: CallId,
-    },
+    CallLost { now_ms: u64, call: CallId },
 }
 
 /// Something the adapter must do.
 #[derive(Debug, Clone)]
 pub enum Output {
+    /// Read the stored core state; the answer is `Input::Loaded`.
     Load,
     /// Store `entries` (key and JSON) in one transaction, then report `Committed` or
     /// `CommitFailed` for `batch`.
@@ -86,35 +75,28 @@ pub enum Output {
         entries: Vec<(String, String)>,
     },
     /// Held until the batch it follows has committed (protocol invariant 4).
-    Send {
-        sock: SocketId,
-        msg: ServerMsg,
-    },
-    SetSession {
-        sock: SocketId,
-        session: Session,
-    },
+    Send { sock: SocketId, msg: ServerMsg },
+    /// Record the session of `sock` (its verified and bound agent, watch position, closed flag).
+    SetSession { sock: SocketId, session: Session },
+    /// Close `sock` with a WebSocket close code and a reason.
     Close {
         sock: SocketId,
         code: u16,
         reason: String,
     },
+    /// Read up to `limit` stored events from `from_seq` for `sock`'s replay; the answer is
+    /// `Input::ReplayPage`.
     ReadEvents {
         sock: SocketId,
         from_seq: u64,
         limit: usize,
     },
     /// The next wake, or `None` to clear it.
-    SetWake {
-        at_ms: Option<u64>,
-    },
+    SetWake { at_ms: Option<u64> },
     /// Emitted only after the batch that persisted the call has committed.
     Call(Call),
-    Log {
-        line: String,
-    },
-    Metric {
-        name: String,
-        value: u64,
-    },
+    /// A log line. It names the repo and the operation and never carries a token.
+    Log { line: String },
+    /// A counter or gauge sample.
+    Metric { name: String, value: u64 },
 }
