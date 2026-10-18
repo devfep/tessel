@@ -8,8 +8,9 @@ use serde_json::{json, Value};
 use tessel_coordinator::coordinator::{parse_head_response, Coordinator as Core, Effect};
 use tessel_coordinator::merge::{MergeOutcome, TrialOutcome, TrialReport};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind, Fence,
-    Intent, Mode, OnConflict, Outcome, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
+    AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
+    Fence, Intent, Mode, OnConflict, Outcome, RaceId, ReleaseReason, RequestId, RunId, Scope,
+    ScopeClaim, ServerMsg, Summary, UnverifiedAssumption,
 };
 use tessel_coordinator::shell::{
     after_page, agents_to_withdraw, alarm_at_ms, binary_rejection, bind_on_welcome,
@@ -617,4 +618,130 @@ fn r40_accept_close_and_error_lines_carry_the_agent_and_cut_what_a_peer_wrote() 
     assert!(line.contains(r"line one\nline two"));
     assert!(line.contains(r"agent=a\nb"));
     assert!(!line.contains(&"x".repeat(121)), "a long reason is cut");
+}
+
+fn assumption() -> Assumption {
+    Assumption {
+        scope: Scope::File {
+            path: "a.rs".into(),
+        },
+        statement: "f returns Some".into(),
+    }
+}
+
+/// `count` events of every kind `Summary` counts, with `count` entries in each list it measures.
+fn every_counted_kind(count: u64) -> Vec<EventKind> {
+    let n = count as usize;
+    let many_agents: Vec<AgentId> = (0..n).map(|i| agent(&format!("n{i}"))).collect();
+    let unverified = vec![
+        UnverifiedAssumption {
+            claim: ClaimId(4),
+            assumption: assumption(),
+        };
+        n
+    ];
+    let mut kinds = Vec::new();
+    for _ in 0..count {
+        kinds.extend([
+            EventKind::ClaimGranted {
+                agent: agent("a"),
+                claim: ClaimId(1),
+                fence: Fence(1),
+                scopes: Vec::new(),
+                intent: Intent {
+                    summary: "s".into(),
+                    task_ref: None,
+                    assumptions: Vec::new(),
+                },
+                race: None,
+                at_risk: Vec::new(),
+            },
+            EventKind::ClaimShadowed {
+                agent: agent("a"),
+                claim: ClaimId(2),
+                scopes: Vec::new(),
+                conflicts: Vec::new(),
+            },
+            EventKind::DenialVerified {
+                shadow_claim: ClaimId(2),
+                blocking_claim: ClaimId(1),
+                outcome: Outcome::TextualConflict,
+            },
+            EventKind::DenialVerified {
+                shadow_claim: ClaimId(2),
+                blocking_claim: ClaimId(1),
+                outcome: Outcome::Clean,
+            },
+            EventKind::AssumptionChallenged {
+                claim: ClaimId(4),
+                assumption: assumption(),
+                by: agent("a"),
+                their_commit: CommitId("c".into()),
+            },
+            EventKind::AssumptionVerified {
+                claim: ClaimId(4),
+                assumption: assumption(),
+                outcome: Outcome::TextualConflict,
+            },
+            EventKind::VerificationDropped {
+                claim: ClaimId(4),
+                assumption: assumption(),
+                reason: ReleaseReason::Agent,
+            },
+            EventKind::Merged {
+                claim: ClaimId(1),
+                head: CommitId("abc".into()),
+                unverified: unverified.clone(),
+                untried_shadows: Vec::new(),
+            },
+            EventKind::ReviewRequested {
+                claim: ClaimId(1),
+                reasons: Vec::new(),
+            },
+            EventKind::BaseMoved {
+                head: CommitId("abc".into()),
+                by: agent("a"),
+                notified: many_agents.clone(),
+            },
+            EventKind::RaceDecided {
+                race: RaceId(1),
+                winner: None,
+                ranking: Vec::new(),
+            },
+            EventKind::ReplayMerged {
+                agent: agent("a"),
+                fork_commit: CommitId("c".into()),
+                outcome: Outcome::TextualConflict,
+            },
+        ]);
+    }
+    kinds
+}
+
+#[test]
+fn r37_every_counter_adds_up_across_pages_of_different_sizes() {
+    let (first, second) = (every_counted_kind(2), every_counted_kind(3));
+    let log: Vec<Event> = first
+        .into_iter()
+        .chain(second)
+        .enumerate()
+        .map(|(seq, kind)| event(seq as u64, kind))
+        .collect();
+    let page_len = 2 * 12;
+    let mut tally = SummaryTally::default();
+    for page in log.chunks(page_len) {
+        tally.add_page(page);
+    }
+    let whole = Summary::from_events(&log);
+    assert_eq!(tally.summary(), whole);
+
+    let counters = as_json(&whole);
+    let Value::Object(counters) = counters else {
+        panic!("a summary is an object");
+    };
+    for (name, value) in counters {
+        if name != "precision" {
+            assert!(value.as_u64().unwrap() > 0, "{name} is not exercised");
+        }
+    }
 }
