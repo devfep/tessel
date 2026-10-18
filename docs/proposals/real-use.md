@@ -158,6 +158,34 @@ Adapters do only I/O.
 - Today's alarm runs six steps that each persist; the host folds expiry, recovery and dispatch into
   one batch per wake.
 
+**Calls** (frozen on 18 October 2026, from the GitHub spike, `docs/proposals/github-spike.md`;
+a change needs Felix's approval). A `Call` is a durable job finished by reconciliation, not a
+request held open:
+
+- The outstanding call (its dispatch id, request and deadline) is persisted in the batch that
+  creates it, and `Call` is emitted only after that batch commits (rule 5 applies to calls).
+- Requests: `Prepare` (the lander fetches, verifies the commit, rebases deterministically and
+  checks coverage and gate paths, then returns the head; no repo code runs), `Test` (the local test
+  runner in Phase 1; the repository's CI on a candidate pull request in Phase 2), `Land` (a
+  compare-and-swap of main from the base to the journaled head), `Trial` (a verification),
+  `ReadHead` (main's head and, in advisory mode, which submitted commits are its ancestors) and
+  `Reconcile` (for a dispatch id: is its journaled head an ancestor of main, and where is main).
+- Answers: a typed outcome; a typed refusal (a rule, a conflict, uncovered files, failed tests);
+  or `Unknown`, meaning the call may or may not have taken effect. GitHub answers a stale
+  `beforeOid` with a generic "Something went wrong" error that cannot be told apart from a
+  transient one, and a reply can be lost after a push; both are `Unknown`, as is `CallLost`. The
+  host answers `Unknown` with `Reconcile` for the same dispatch id and counts nothing as a
+  failure.
+- Deadlines are persisted per call. `Test` and `Trial` deadlines allow full CI runs, from seconds
+  to many minutes, set from the repository's configured CI limit plus a margin; the other calls
+  take seconds. An expired deadline starts `Reconcile`; only a reconcile after the deadline that
+  finds no landing counts as one infrastructure failure (correctness requirement 5).
+- `Land` and `Reconcile` decide landing by ancestry of the journaled head (requirement 6), never
+  by main being equal to it.
+- An answer for any dispatch id but the one in flight changes nothing (I7).
+- Landing needs contents write only: the spike landed with an installation token narrowed to that
+  one permission. Pull requests write is used only by `Test`, to open candidate pull requests.
+
 **Components of `tessel-server`** (one binary, Rust):
 
 - The host, one task per repo, on SQLite.
@@ -188,7 +216,8 @@ merges work too.
 ## The GitHub adapter
 
 1. **Least privilege.** The lander App has contents and pull requests write, checks and actions
-   read, and metadata, installed on the target repository only. No App has `administration`.
+   read, and metadata, installed on the target repository only. No App has `administration`. The
+   token for a landing is narrowed to contents write when it is minted.
 2. **Forks are provisioned by a human** once, as a pool of private organisation forks, with
    `tessel admin forks provision N` under that person's credentials: an App can create forks only
    with access to every repository in the organisation. Leases reset fork branches rather than
@@ -222,7 +251,9 @@ merges work too.
 run on a fork pull request's head satisfy ruleset B for a direct `updateRefs` of that commit; does
 `updateRefs` refuse a stale `beforeOid` with the App as ruleset A's bypass actor; how long checks
 and webhooks take; and so whether landing is one request or a durable job finished by
-reconciliation. The host's `Call` design is frozen only after it.
+reconciliation. Answered on 18 October 2026 (`docs/proposals/github-spike.md`): yes, yes but
+with a generic error, 9 to 14 s for a trivial check, and a durable job. The host's `Call`
+(Architecture, "Calls") is frozen from those answers.
 
 ## Evidence
 
@@ -369,7 +400,8 @@ Sizes are rough person-weeks for one maintainer working with agents.
    `VerificationDropped`. Done: property tests showing that a stale answer changes nothing, that no
    verification compares main with itself, and that verifications run under continuous merges.
 
-**Phase 1: portable host, `tessel-server` and the Rust lander (about 10 to 12 weeks).**
+**Phase 1: portable host, `tessel-server` and the Rust lander (about 10 to 12 weeks).** Planned
+in milestones in `docs/proposals/phase-1.md`.
 1. Move `runtime.rs` into the host step for step; its rules become named tests; the CLI end-to-end
    suite passes against it.
 2. Intended changes, one commit each: persist retry, exact replay, durable call deadlines with
