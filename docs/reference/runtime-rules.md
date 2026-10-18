@@ -22,8 +22,9 @@ into the portable host, so none may be lost on the way: the move is checked agai
 - **Tests** are names as `cargo test -p tessel-coordinator -- --list` prints them (without the
   trailing `: test`). A `now` row fails the check if one of them is missing. The `r<N>_` tests
   are in `tests/runtime_rules.rs`; the rest are unit tests in `src/`.
-- **Functions** lists the `fn`s of `runtime.rs` the row covers. The two `fetch`es (the Worker's at line 105 and the Durable Object's at 205) share one name, so a row naming `fetch` covers both. The check fails if a `fn` of
-  `runtime.rs` is in no row.
+- **Functions** lists the `fn`s of `runtime.rs` the row covers. The two `fetch`es (the Worker's at
+  line 105 and the Durable Object's at 205) share one name, so a row naming `fetch` covers both.
+  The check fails if a `fn` of `runtime.rs` is in no row.
 
 ## Rules
 
