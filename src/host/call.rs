@@ -158,7 +158,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::protocol::{Mode, Scope};
+    use crate::protocol::{Mode, Scope, SymbolId};
 
     fn commit() -> impl Strategy<Value = CommitId> {
         "[0-9a-f]{1,40}".prop_map(CommitId)
@@ -168,15 +168,26 @@ mod tests {
         "[a-z0-9-]{1,12}".prop_map(AgentId)
     }
 
+    fn mode() -> impl Strategy<Value = Mode> {
+        prop_oneof![
+            Just(Mode::Depend),
+            Just(Mode::EditBody),
+            Just(Mode::EditSignature),
+            Just(Mode::Create),
+        ]
+    }
+
     fn scope() -> impl Strategy<Value = ScopeClaim> {
-        ("[a-z/._]{0,12}", any::<bool>()).prop_map(|(path, dir)| ScopeClaim {
-            scope: if dir {
-                Scope::Dir { path }
-            } else {
-                Scope::File { path }
-            },
-            mode: Mode::EditBody,
-        })
+        let path = "[a-z/._]{0,12}";
+        let scope = prop_oneof![
+            path.prop_map(|path| Scope::Dir { path }),
+            path.prop_map(|path| Scope::File { path }),
+            (path, "[a-z:]{1,12}").prop_map(|(path, qualified_name)| Scope::Symbol(SymbolId {
+                path,
+                qualified_name
+            })),
+        ];
+        (scope, mode()).prop_map(|(scope, mode)| ScopeClaim { scope, mode })
     }
 
     fn request() -> impl Strategy<Value = Request> {
