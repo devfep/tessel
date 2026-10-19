@@ -141,7 +141,6 @@ impl MergeContext<'_> {
 
 /// What the steps a merge and a trial share need to run git: the part of [`MergeContext`] that
 /// does not name a landing.
-#[derive(Clone, Copy)]
 pub(crate) struct GitEnv<'a> {
     pub(crate) git: &'a Git,
     pub(crate) runner: &'a dyn GitRunner,
@@ -218,7 +217,7 @@ enum Coverage {
     Covered(GateReview),
 }
 
-pub(crate) fn sha_of(output: &GitOutput) -> Option<Sha> {
+fn sha_of(output: &GitOutput) -> Option<Sha> {
     if output.success() {
         Sha::parse(output.stdout.trim()).ok()
     } else {

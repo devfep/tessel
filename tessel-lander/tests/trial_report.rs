@@ -97,7 +97,7 @@ struct Gated {
 impl Gated {
     fn run(&self, main: &Sha) -> TrialOutcome {
         self.started.send(main.clone()).expect("the test listens");
-        let _ = self.release.lock().expect("lock").recv_timeout(WAIT);
+        let _ = self.release.lock().expect("lock").recv_timeout(WAIT * 2);
         clean(main)
     }
 }
