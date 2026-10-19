@@ -57,8 +57,8 @@ impl CoreSlot {
     pub fn install(&mut self, core: Core, stored: Option<&str>) {
         if self.core.is_none() {
             self.core = Some(core);
-            self.stored = StoredSize::on_load(stored);
         }
+        let _ = stored;
     }
 
     /// The core has moved on from storage, or storage may have: the next use reloads.
