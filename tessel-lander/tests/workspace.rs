@@ -192,7 +192,12 @@ fn a_destination_that_cannot_be_inspected_is_refused_before_anything_runs() {
     fs::create_dir(&closed).expect("dir");
     fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).expect("close dir");
 
-    let result = clone_main(&git, &support::AlwaysOk, &sources, &closed.join("workspace"));
+    let result = clone_main(
+        &git,
+        &support::AlwaysOk,
+        &sources,
+        &closed.join("workspace"),
+    );
 
     fs::set_permissions(&closed, fs::Permissions::from_mode(0o700)).expect("reopen dir");
     let error = result.expect_err("cannot inspect");
