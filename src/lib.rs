@@ -5,6 +5,7 @@
 //! native build never needs the `worker` crate or the signing primitives.
 
 pub mod coordinator;
+pub mod host;
 pub mod merge;
 pub mod protocol;
 pub mod shell;

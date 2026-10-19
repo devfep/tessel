@@ -55,6 +55,14 @@ async fn adopts_the_grant_behind(frame: &str) -> Result<(Fake, Agent)> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_settled_daemon_has_sent_a_hello_on_each_of_its_two_sockets() -> Result<()> {
+    let (fake, a1) = world().await?;
+    a1.start_settled("count hellos").await?;
+    assert_eq!(hellos(&fake), 2, "working socket and event-log read");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unknown_event_kind_in_the_replay_does_not_hide_the_events_after_it() -> Result<()> {
     let frame =
         r#"{"type":"event","event":{"seq":0,"at_ms":1,"run":"r","event":"from_the_future"}}"#;
@@ -73,7 +81,7 @@ async fn a_known_kind_with_a_payload_this_daemon_cannot_parse_fails_the_read() -
     // claim_released at seq 3 without its fields: skipping it would leave the released claim 1
     // looking live, so the read must fail and nothing be adopted.
     let (fake, a1) = world().await?;
-    a1.start("released claim")?;
+    a1.start_settled("released claim").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     assert_eq!(a1.held_claims()?, 0);
@@ -102,7 +110,7 @@ async fn a_known_kind_with_a_payload_this_daemon_cannot_parse_fails_the_read() -
 
 async fn live_frame_with_bad_payload_drops_the_socket(frame: &str) -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("bad payload")?;
+    a1.start_settled("bad payload").await?;
     let before = hellos(&fake);
     fake.send_raw("a1", frame);
     eventually(SHORT, || Ok((hellos(&fake) > before).then_some(()))).await?;
@@ -124,7 +132,7 @@ async fn a_live_lease_expired_with_a_bad_payload_drops_the_socket() -> Result<()
 async fn an_unknown_message_type_on_the_live_socket_is_skipped_and_the_next_one_applied(
 ) -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("future message")?;
+    a1.start_settled("future message").await?;
     let before = hellos(&fake);
     fake.send_raw(
         "a1",
@@ -164,7 +172,7 @@ async fn an_unknown_message_type_on_the_live_socket_is_skipped_and_the_next_one_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_live_frame_that_is_not_json_still_ends_the_connection() -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("garbage")?;
+    a1.start_settled("garbage").await?;
     let before = hellos(&fake);
     fake.send_raw("a1", "this is not json");
     eventually(SHORT, || Ok((hellos(&fake) > before).then_some(()))).await?;
@@ -175,7 +183,7 @@ async fn a_live_frame_that_is_not_json_still_ends_the_connection() -> Result<()>
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_skipped_live_message_stays_counted_across_a_reconnect() -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("future message, then a reconnect")?;
+    a1.start_settled("future message, then a reconnect").await?;
     fake.send_raw("a1", r#"{"type":"from_the_future"}"#);
     eventually(SHORT, || Ok((skipped(&a1)? == 1).then_some(()))).await?;
     let before = hellos(&fake);
@@ -193,7 +201,7 @@ async fn a_skipped_live_message_stays_counted_across_a_reconnect() -> Result<()>
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_event_skipped_live_and_again_in_the_replay_is_counted_once() -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("seen twice")?;
+    a1.start_settled("seen twice").await?;
     let frame =
         r#"{"type":"event","event":{"seq":3,"at_ms":1,"run":"r","event":"from_the_future"}}"#;
     fake.send_raw("a1", frame);
@@ -216,7 +224,7 @@ async fn an_event_skipped_live_and_again_in_the_replay_is_counted_once() -> Resu
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_live_skip_at_or_below_the_last_read_seq_is_not_counted_again() -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("late duplicate")?;
+    a1.start_settled("late duplicate").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     let before = hellos(&fake);
     fake.drop_connections();

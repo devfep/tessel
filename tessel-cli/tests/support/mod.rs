@@ -843,6 +843,27 @@ impl Agent {
         Ok(())
     }
 
+    /// Starts the daemon, then waits until its first event-log read has completed and it is
+    /// online. `start` returns once the working socket is welcomed; the daemon then opens a second
+    /// connection whose own `Hello` reads the log. The `(complete)` line is logged only after the
+    /// coordinator answered that `Hello` and the read reached its marker, so from then on every
+    /// further hello at the coordinator is a redial. A truncated read logs a different line and
+    /// does not prove the `Hello` was handled.
+    pub async fn start_settled(&self, intent: &str) -> Result<()> {
+        self.start(intent)?;
+        let log = self.root().join(".tessel/daemon.log");
+        eventually(Duration::from_secs(8), || {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            let online = self.status()?["state"]["connection"] == "online";
+            let read = text
+                .lines()
+                .any(|l| l.contains("event log read:") && l.contains("(complete)"));
+            Ok((read && online).then_some(()))
+        })
+        .await
+        .context("the first event-log read never completed with the daemon online")
+    }
+
     /// The hook JSON Claude Code would send for `tool` editing `path`.
     pub fn hook(&self, tool: &str, key: &str, path: &str) -> Result<Done> {
         let root = self.root().display().to_string();
