@@ -150,6 +150,12 @@ passes; the host types round-trip; the lander git tests pass.
   daemon's event-log read has sent its own `Hello`, so they can pass without a redial. Use the
   settle helper from P1-FLAKE-REPLAY-HELLO. Done: each check fails when the redial it claims is
   removed.
+- [ ] **P1-FAKE-HELLO-LOST** — from the P1-HELLO-FALSE-PASS review: with a 1.5 s delay at the
+  top of `snapshot_task`, the fake coordinator (`tessel-cli/tests/support/mod.rs`) sometimes does
+  not count a log read's `Hello` (5 hellos before a third drop in some runs, 6 in others). Find
+  whether the fake drops it or the daemon never sends it; `replay_unknown`'s
+  `a_settled_daemon_has_sent_a_hello_on_each_of_its_two_sockets` (exactly two) could flake on it.
+  Done: the cause named, and a test that pins it.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
