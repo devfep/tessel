@@ -1625,7 +1625,6 @@ fn host_a_verification_marker_is_stored_before_its_call_and_its_outcome_before_a
 }
 
 #[test]
-#[ignore = "COORD-WAKE-WHILE-VERIFYING: fixed in the next commit"]
 fn host_a_wake_while_a_verification_is_in_flight_is_pending_and_in_the_future() {
     let (mut kit, sock, _) = trial_outstanding();
     kit.send(sock, &claim(9, "late.rs", "s"));

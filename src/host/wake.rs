@@ -4,7 +4,9 @@
 //! head read, then sets the next wake, each step its own batch. The Durable Object awaits the
 //! steward inside the alarm, so the steps after a call run only once it is answered. The host
 //! keeps that: the wake issues its call and suspends, and resumes on `Replied` or `CallLost`.
-//! While it is suspended another `Wake` only sets the wake again (the watchdog).
+//! While it is suspended another `Wake` expires the lapsed leases, if any, and sets the wake
+//! again, which is the watchdog once nothing else is due. Setting it without the expiry would leave an overdue
+//! lease due at once, and the wake would fire again and again until the call is answered.
 
 use crate::host::calls;
 use crate::host::core_slot::{ApplyError, Prepared, Waits};
@@ -26,25 +28,27 @@ pub enum WakeStep {
     HeadRead,
     /// Set the next wake and end the wake.
     Finish,
-    /// Set the next wake, leaving a wake that is suspended at its call where it is.
-    Rearm,
+    /// What a wake does while another is suspended at its call: expire the lapsed leases, then
+    /// set the wake. The suspended wake resumes when its call is answered.
+    Lapse,
 }
 
 impl Host {
-    /// The wake is due. A wake suspended at its call is not run again: the new one only sets the
-    /// wake.
+    /// The wake is due. A wake suspended at its call is not run again.
     pub(super) fn woken(&mut self, out: &mut Vec<Output>) {
-        if self.calls.is_empty() {
-            self.waking = true;
-            self.run(Job::Wake(WakeStep::Expiry), out);
+        self.waking = true;
+        let step = if self.calls.is_empty() {
+            WakeStep::Expiry
         } else {
-            self.run(Job::Wake(WakeStep::Rearm), out);
-        }
+            WakeStep::Lapse
+        };
+        self.run(Job::Wake(step), out);
     }
 
     pub(super) fn run_wake(&mut self, step: WakeStep, out: &mut Vec<Output>) {
         match step {
-            WakeStep::Expiry => self.expire_step(out),
+            WakeStep::Expiry => self.expire_step(WakeStep::RecoverMerge, out),
+            WakeStep::Lapse => self.lapse_step(out),
             WakeStep::RecoverMerge => self.recover_merge_step(out),
             WakeStep::RecoverVerification => self.recover_verification_step(out),
             WakeStep::Merge => self.merge_step(out),
@@ -54,17 +58,25 @@ impl Host {
                 self.waking = false;
                 self.set_wake(out);
             }
-            WakeStep::Rearm => self.set_wake(out),
         }
     }
 
-    fn expire_step(&mut self, out: &mut Vec<Output>) {
+    fn expire_step(&mut self, next: WakeStep, out: &mut Vec<Output>) {
         let (waits, now_ms) = (self.waits(), self.now_ms);
         let prepared = self
             .slot
             .apply(Work::Plain, waits, now_ms, |core| core.expire(now_ms));
-        let then = Some(Job::Wake(WakeStep::RecoverMerge));
+        let then = Some(Job::Wake(next));
         self.commit_unsent("expire leases", prepared, Vec::new(), then, out);
+    }
+
+    /// Nothing is written when no lease is due (R28).
+    fn lapse_step(&mut self, out: &mut Vec<Output>) {
+        if self.slot.has_due_expiry(self.now_ms) {
+            self.expire_step(WakeStep::Finish, out);
+        } else {
+            self.run(Job::Wake(WakeStep::Finish), out);
+        }
     }
 
     /// A merge in flight that no call here waits for was cut off by a restart (R24).

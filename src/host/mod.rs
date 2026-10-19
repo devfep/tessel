@@ -10,7 +10,7 @@
 //! outstanding, as they do while the steward is being called.
 //!
 //! The wake. A wake issues its call and suspends; while a call is outstanding another `Wake`
-//! only sets the wake again. See `wake.rs`.
+//! only expires lapsed leases and sets the wake again. See `wake.rs`.
 
 mod batch;
 pub mod call;
