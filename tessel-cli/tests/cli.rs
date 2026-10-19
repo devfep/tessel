@@ -2009,16 +2009,7 @@ async fn a_replay_frame_that_is_not_an_event_envelope_still_fails_the_read() -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unknown_event_on_the_live_socket_is_ignored_and_the_connection_stays() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("future event live")?;
-    // The event-log reader's socket sends its own hello, so count hellos only once its first read
-    // is over: from then on every further hello is a redial.
-    eventually(SHORT, || {
-        Ok((daemon_log(&a1)?.contains("(complete)")
-            && a1.status()?["state"]["connection"] == "online")
-            .then_some(()))
-    })
-    .await
-    .context("the first event-log read never completed with the daemon online")?;
+    a1.start_settled("future event live").await?;
     let before = hellos(&fake, "a1");
     fake.send_raw("a1", &unknown_event(99));
     eventually(SHORT, || {
