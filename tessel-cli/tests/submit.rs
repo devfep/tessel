@@ -373,7 +373,7 @@ async fn a_second_submit_of_the_same_claim_is_refused_locally() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_stays_submitted_across_a_reconnect() -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("submit, then lose the socket")?;
+    a1.start_settled("submit, then lose the socket").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     commit_file(&a1, "src/a.rs", "pub fn a() { 1; }\n", "change a")?;
     assert_eq!(a1.tessel(&["submit", "--evidence", "ok"])?.code, 0);
@@ -391,7 +391,7 @@ async fn a_claim_stays_submitted_across_a_reconnect() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_submission_that_arrived_unseen_is_marked_submitted_after_a_reconnect() -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("reply lost")?;
+    a1.start_settled("reply lost").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     let sha = commit_file(&a1, "src/a.rs", "pub fn a() { 1; }\n", "change a")?;
     let claim = first_claim(&a1)?;
@@ -711,7 +711,7 @@ async fn a_rename_and_a_delete_fit_one_claim_and_submit_end_to_end() -> Result<(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reconnect_does_not_hide_an_earlier_uncovered_commit() -> Result<()> {
     let (fake, a1) = world().await?;
-    a1.start("reconnect")?;
+    a1.start_settled("reconnect").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     commit_file(
         &a1,
