@@ -8,26 +8,32 @@
 //! input runs: it is queued and applied once the operation is answered, as the Durable Object's
 //! input gate does (R42). A `Call` is not a storage operation: inputs run while one is
 //! outstanding, as they do while the steward is being called.
+//!
+//! The wake. A wake issues its call and suspends; while a call is outstanding another `Wake`
+//! only sets the wake again. See `wake.rs`.
 
 mod batch;
 pub mod call;
+mod calls;
 mod core_slot;
 mod sockets;
 pub mod testkit;
+mod wake;
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, VecDeque};
 
-#[cfg(test)]
-use crate::coordinator::{Coordinator as Core, Effect};
+use crate::coordinator::HeadRead;
 use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
 use crate::shell::{self, Action, Session, Target, Work};
 use batch::{Committed, Discarded, Held, Pending};
 use call::{Call, CallAnswer, CallId, Request};
+use calls::AnswerJob;
 use core_slot::{Applied, ApplyError, CoreSlot, Prepared, Waits};
 use sockets::{Sockets, WithdrawJob, CLOSE_POLICY_VIOLATION, IDENTITY_MISMATCH_REASON};
+use wake::WakeStep;
 
 /// A client connection, named by the adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -87,6 +93,27 @@ pub enum Input {
     CallLost { now_ms: u64, call: CallId },
 }
 
+impl Input {
+    /// When the input was observed.
+    fn now_ms(&self) -> u64 {
+        match self {
+            Input::Opened { now_ms, .. }
+            | Input::Frame { now_ms, .. }
+            | Input::Binary { now_ms, .. }
+            | Input::Closed { now_ms, .. }
+            | Input::SendFailed { now_ms, .. }
+            | Input::Wake { now_ms }
+            | Input::TrunkPoked { now_ms }
+            | Input::Loaded { now_ms, .. }
+            | Input::ReplayPage { now_ms, .. }
+            | Input::Committed { now_ms, .. }
+            | Input::CommitFailed { now_ms, .. }
+            | Input::Replied { now_ms, .. }
+            | Input::CallLost { now_ms, .. } => *now_ms,
+        }
+    }
+}
+
 /// Something the adapter must do.
 #[derive(Debug, Clone)]
 pub enum Output {
@@ -138,10 +165,6 @@ pub struct HostConfig {
     pub sensitive: Option<String>,
 }
 
-/// The write that stores the marker of a call before it goes out.
-#[cfg(test)]
-type MarkerStep = Box<dyn FnOnce(&mut Core) -> Vec<Effect>>;
-
 /// A client message to handle: the expiry step that precedes it runs as its own write first.
 struct CallJob {
     now_ms: u64,
@@ -151,29 +174,13 @@ struct CallJob {
     session: Session,
 }
 
-/// The answer of a call, to be stored once the core is loaded. What an answer does to the core
-/// (R21 to R27) moves with the wake (P1-MOVE-WAKE), which will match on the `Request` of the
-/// `Call` the table holds and read the `DispatchId` from it. Until then the answer applies
-/// nothing: the call leaves the table, the wake is recomputed without it and that is stored.
-struct AnswerJob {
-    now_ms: u64,
-}
-
-/// Starts a call as the wake will: the marker is stored, then the call goes out.
-#[cfg(test)]
-struct StartJob {
-    now_ms: u64,
-    call: Call,
-    marker: MarkerStep,
-}
-
 /// Work that needs the core loaded.
 enum Job {
     Call(Box<CallJob>),
     Answer(AnswerJob),
     Withdraw(WithdrawJob),
-    #[cfg(test)]
-    Start(StartJob),
+    Wake(WakeStep),
+    Poke,
 }
 
 impl Job {
@@ -181,9 +188,15 @@ impl Job {
     fn origin(&self) -> Option<(SocketId, u64)> {
         match self {
             Job::Call(call) => Some((call.sock, call.now_ms)),
-            Job::Answer(_) | Job::Withdraw(_) => None,
-            #[cfg(test)]
-            Job::Start(_) => None,
+            Job::Answer(_) | Job::Withdraw(_) | Job::Wake(_) | Job::Poke => None,
+        }
+    }
+
+    /// Whether the job is a step of a wake, which a failure ends (R41).
+    fn is_wake(&self) -> bool {
+        match self {
+            Job::Answer(_) | Job::Wake(_) => true,
+            Job::Call(_) | Job::Withdraw(_) | Job::Poke => false,
         }
     }
 }
@@ -205,7 +218,19 @@ pub struct Host {
     gate: Gate,
     queue: VecDeque<Input>,
     calls: HashMap<CallId, Call>,
+    /// The head read the one outstanding `ReadHead` call was made against.
+    reading: Option<HeadRead>,
+    /// A wake is between two of its steps: not suspended at a call and not over.
+    waking: bool,
+    /// The time of the input being handled.
+    now_ms: u64,
     next_batch: u64,
+    next_call: u64,
+}
+
+/// The wake to ask the adapter for: the core's, never before the next millisecond (R35).
+fn wake_at_ms(next_wake_ms: Option<u64>, now_ms: u64) -> Option<u64> {
+    shell::alarm_at_ms(next_wake_ms, now_ms).map(|at| at as u64)
 }
 
 /// Whether `input` answers the storage operation that closes the gate, so it is never queued.
@@ -246,7 +271,11 @@ impl Host {
             gate: Gate::Open,
             queue: VecDeque::new(),
             calls: HashMap::new(),
+            reading: None,
+            waking: false,
+            now_ms: 0,
             next_batch: 0,
+            next_call: 1,
         }
     }
 
@@ -280,6 +309,7 @@ impl Host {
     }
 
     fn handle(&mut self, input: Input, out: &mut Vec<Output>) {
+        self.now_ms = input.now_ms();
         match input {
             Input::Opened { sock, verified, .. } => out.push(self.sockets.open(sock, verified)),
             Input::Frame { now_ms, sock, text } => self.frame(now_ms, sock, &text, out),
@@ -290,13 +320,12 @@ impl Host {
             Input::Loaded { stored, .. } => self.loaded(stored.as_deref(), out),
             Input::Committed { now_ms, batch } => self.committed(now_ms, batch, out),
             Input::CommitFailed { now_ms, batch } => self.commit_failed(now_ms, batch, out),
-            Input::Replied { now_ms, call, .. } | Input::CallLost { now_ms, call } => {
-                self.answered(now_ms, call, out);
-            }
+            Input::Replied { call, answer, .. } => self.answered(call, answer, out),
+            Input::CallLost { call, .. } => self.answered(call, CallAnswer::Unknown, out),
             Input::Closed { now_ms, sock } => self.closed(now_ms, sock, out),
             Input::SendFailed { now_ms, sock } => self.send_failed(now_ms, sock, out),
-            Input::Wake { .. } => self.unmoved("a wake", out),
-            Input::TrunkPoked { .. } => self.unmoved("a trunk poke", out),
+            Input::Wake { .. } => self.woken(out),
+            Input::TrunkPoked { .. } => self.run(Job::Poke, out),
             Input::ReplayPage { .. } => self.unmoved("a replay page", out),
         }
     }
@@ -382,12 +411,16 @@ impl Host {
             Job::Call(call) => self.run_call(*call, out),
             Job::Answer(answer) => self.run_answer(answer, out),
             Job::Withdraw(withdraw) => self.run_withdraw(withdraw, out),
-            #[cfg(test)]
-            Job::Start(start) => self.run_start(start, out),
+            Job::Wake(step) => self.run_wake(step, out),
+            Job::Poke => self.run_poke(out),
         }
     }
 
     fn loaded(&mut self, stored: Option<&str>, out: &mut Vec<Output>) {
+        if self.is_poke_awaiting_load() && Self::is_unknown_repo(stored) {
+            self.gate = Gate::Open;
+            return;
+        }
         let mut reports = Vec::new();
         let built = core_slot::build_core(&self.config, stored, &mut reports);
         for line in reports {
@@ -406,6 +439,9 @@ impl Host {
                 out.push(self.failure("load state", &e.to_string()));
                 let origin = abandoned.as_ref().and_then(Job::origin);
                 self.close_for_error(origin, out);
+                if abandoned.as_ref().is_some_and(Job::is_wake) {
+                    self.wake_failed(out);
+                }
                 return;
             }
         };
@@ -466,47 +502,11 @@ impl Host {
         }
     }
 
-    fn answered(&mut self, now_ms: u64, call: CallId, out: &mut Vec<Output>) {
-        if self.calls.remove(&call).is_none() {
-            out.push(self.failure("apply call answer", "the host waits on no such call"));
-            return;
-        }
-        self.run(Job::Answer(AnswerJob { now_ms }), out);
-    }
-
-    fn run_answer(&mut self, job: AnswerJob, out: &mut Vec<Output>) {
-        let waits = self.waits();
-        let prepared = self
-            .slot
-            .apply(Work::Plain, waits, job.now_ms, |_| Vec::new());
-        self.commit_unsent("apply call answer", prepared, Vec::new(), None, out);
-    }
-
-    #[cfg(test)]
-    fn run_start(&mut self, job: StartJob, out: &mut Vec<Output>) {
-        let StartJob {
-            now_ms,
-            call,
-            marker,
-        } = job;
-        let waits = self.waits();
-        let prepared = self.slot.apply(Work::Plain, waits, now_ms, marker);
-        self.commit_unsent("start call", prepared, vec![call], None, out);
-    }
-
-    /// Start a call as the wake will: store `marker`, then hand out `call` once it is stored.
-    #[cfg(test)]
-    fn begin_call(&mut self, job: StartJob) -> Vec<Output> {
-        assert!(self.gate_is_open(), "begin_call runs only on an open gate");
-        let mut out = Vec::new();
-        self.run(Job::Start(job), &mut out);
-        out
-    }
-
-    /// Commit the result of a step that has no sender to refuse (an expiry, an answer, a
-    /// start). `Work::Plain` is never refused for size, so the `Refused` branch is the
-    /// equivalent of R43 and cannot be reached today; if it is, it is an error to log. A step
-    /// that fails abandons the client call that waited for it, which closes its socket (R10).
+    /// Commit the result of a step that has no sender to refuse (a wake step, an answer, an
+    /// expiry, a withdrawal, a poke). Every such step is `Work::Plain`, which is never refused
+    /// for size (R43 is dropped), so the `Refused` branch is not reached; it is an error to log
+    /// if it ever is. A step that fails abandons the client call that waited for it, which
+    /// closes its socket (R10), and ends the wake it belongs to (R41).
     fn commit_unsent(
         &mut self,
         operation: &str,
@@ -528,6 +528,9 @@ impl Host {
         out.push(failure);
         let origin = then.as_ref().and_then(Job::origin);
         self.close_for_error(origin, out);
+        if self.waking {
+            self.wake_failed(out);
+        }
     }
 
     /// Hand the adapter one commit and close the gate until it answers.
@@ -594,6 +597,9 @@ impl Host {
         let waiting = discarded.then.as_ref().and_then(Job::origin);
         let origin = discarded.reply_to.map(|sock| (sock, now_ms)).or(waiting);
         self.close_for_error(origin, out);
+        if self.waking {
+            self.wake_failed(out);
+        }
     }
 
     /// Bind the socket if the core welcomed it, deliver, reschedule even if delivery failed,
@@ -615,11 +621,26 @@ impl Host {
                 None => out.push(self.failure("deliver", "a message has no open socket to go to")),
             }
         }
-        let at_ms = shell::alarm_at_ms(held.next_wake_ms, now_ms).map(|at| at as u64);
+        let at_ms = wake_at_ms(held.next_wake_ms, now_ms);
         out.push(Output::SetWake { at_ms });
         for call in held.calls {
+            self.waking = false;
             self.calls.insert(call.id, call.clone());
             out.push(Output::Call(call));
+        }
+    }
+
+    fn new_call_id(&mut self) -> CallId {
+        let id = CallId(self.next_call);
+        self.next_call += 1;
+        id
+    }
+
+    /// Whether the job waiting for the core is a trunk poke, which a repo with no state drops.
+    fn is_poke_awaiting_load(&self) -> bool {
+        match &self.gate {
+            Gate::Loading(Job::Poke) => true,
+            Gate::Loading(_) | Gate::Open | Gate::Committing(_) => false,
         }
     }
 }

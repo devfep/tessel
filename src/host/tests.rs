@@ -4,16 +4,19 @@
 
 use serde_json::{json, Value};
 
+use super::batch::{Held, Pending};
 use super::call::{Call, CallAnswer, CallId, DispatchId, Request};
+use super::call::{Refusal, TrialResult};
 use super::testkit::Testkit;
-use super::{BatchId, HostConfig, Input, MarkerStep, Output, SocketId, StartJob};
+use super::wake;
+use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::merge::{MergeOutcome, MERGE_WATCHDOG_MS};
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Fence, Intent,
     Mode, OnConflict, RequestId, Scope, ScopeClaim, ServerMsg,
 };
-use crate::shell::{self, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
+use crate::shell::{self, Outbound, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
 
 const NOW_MS: u64 = 1_000;
 
@@ -98,43 +101,32 @@ fn granted(kit: &Testkit, sock: SocketId) -> (ClaimId, Fence) {
     panic!("no grant in {:?}", kit.received(sock));
 }
 
+/// The answer of a merge that landed `new` on top of `old`.
+fn landed() -> CallAnswer {
+    CallAnswer::Prepared {
+        base: CommitId("old".into()),
+        head: CommitId("new".into()),
+    }
+}
+
 fn state(kit: &Testkit) -> Value {
     serde_json::from_str(kit.stored_state().expect("a stored state")).unwrap()
 }
 
-fn call_with(id: u64, request: Request) -> Call {
-    Call {
-        id: CallId(id),
-        dispatch_id: DispatchId(id),
-        request,
-        deadline_ms: 0,
-    }
-}
-
-fn read_head(id: u64) -> Call {
-    call_with(
-        id,
-        Request::ReadHead {
-            submitted: Vec::new(),
-        },
-    )
-}
-
-/// Store `marker`'s result and hand out `call`, as the wake does for a merge.
-fn start(kit: &mut Testkit, call: Call, marker: MarkerStep) {
-    let now_ms = kit.now_ms();
-    let job = StartJob {
-        now_ms,
-        call,
-        marker,
-    };
-    let outputs = kit.host.begin_call(job);
-    kit.execute(outputs);
+/// Run the wake that is due now until it waits for a call or ends.
+fn wake(kit: &mut Testkit) {
+    kit.wake_now();
     kit.settle();
 }
 
-fn start_plain(kit: &mut Testkit, call: Call) {
-    start(kit, call, Box::new(|_| Vec::new()));
+/// A wake suspended at a head read: a poke is counted and the wake asks for the head.
+fn head_read_outstanding(kit: &mut Testkit) -> Call {
+    kit.poke();
+    kit.settle();
+    wake(kit);
+    let call = kit.calls().last().expect("the wake asked for the head");
+    assert!(matches!(call.request, Request::ReadHead { .. }), "{call:?}");
+    call.clone()
 }
 
 /// The stored core of a repo with enough 10 KB claims to be at least `at_least` bytes.
@@ -261,37 +253,10 @@ fn host_a_load_that_finishes_second_keeps_the_core_already_loaded() {
 #[test]
 fn host_the_wake_is_computed_after_each_step_with_this_instances_waits() {
     let mut kit = kit();
-    let sock = welcomed(&mut kit, "a1");
-    kit.send(sock, &claim(1, "x.rs", "s"));
-    kit.settle();
-    let (claim_id, fence) = granted(&kit, sock);
-    let submit = ClientMsg::Submit {
-        req: RequestId(2),
-        claim: claim_id,
-        fence,
-        fork_commit: CommitId("ab".repeat(20)),
-        touched: vec![edit_file("x.rs")],
-        decisions: DecisionRecord {
-            evidence: vec!["tests passed".into()],
-            ..DecisionRecord::default()
-        },
-    };
-    kit.send(sock, &submit);
-    kit.settle();
+    let (sock, _, _) = submitted(&mut kit);
     assert_eq!(kit.wake(), Some(kit.now_ms() + 1), "the merge is due now");
 
-    let now_ms = kit.now_ms();
-    let prepare = Request::Prepare {
-        claim: claim_id,
-        agent: AgentId("a1".to_string()),
-        fork_commit: CommitId("ab".repeat(20)),
-        scopes: Vec::new(),
-    };
-    let marker: MarkerStep = Box::new(move |core| {
-        core.begin_merge(now_ms).expect("the merge is dispatched");
-        Vec::new()
-    });
-    start(&mut kit, call_with(1, prepare), marker);
+    wake(&mut kit);
     assert_eq!(kit.calls().len(), 1);
 
     kit.send(sock, &ClientMsg::Heartbeat);
@@ -302,11 +267,11 @@ fn host_the_wake_is_computed_after_each_step_with_this_instances_waits() {
         "a merge waiting here leaves only the watchdog"
     );
 
-    kit.reply(CallId(1), CallAnswer::Tested);
+    kit.reply(CallId(1), landed());
     kit.settle();
-    assert_eq!(
+    assert_ne!(
         kit.wake(),
-        Some(kit.now_ms() + 1),
+        Some(kit.now_ms() + MERGE_WATCHDOG_MS),
         "the answered call no longer holds the wake back"
     );
 }
@@ -375,12 +340,13 @@ fn host_the_soft_limit_judges_growth_against_the_size_last_written() {
 fn host_the_core_is_reloaded_after_a_steward_call_before_the_answer_is_applied() {
     let mut kit = kit();
     welcomed(&mut kit, "a1");
-    start_plain(&mut kit, read_head(1));
+    let call = head_read_outstanding(&mut kit);
 
     kit.fail_next_commit();
-    start_plain(&mut kit, read_head(2));
+    kit.poke();
+    kit.settle();
     let mark = kit.history().len();
-    kit.reply(CallId(1), CallAnswer::Unknown);
+    kit.reply(call.id, CallAnswer::Unknown);
     assert_eq!(
         labels_since(&kit, mark),
         ["Load"],
@@ -389,8 +355,8 @@ fn host_the_core_is_reloaded_after_a_steward_call_before_the_answer_is_applied()
     kit.settle();
     assert_eq!(
         labels_since(&kit, mark),
-        ["Load", "Commit", "SetWake"],
-        "then the answer is applied and stored"
+        ["Load", "Log", "Commit", "SetWake", "SetWake"],
+        "then the answer is applied and stored, a head that is not one is logged, the wake ends"
     );
     assert!(
         !kit.logs().iter().any(|line| line.contains("not loaded")),
@@ -550,13 +516,24 @@ fn host_a_failed_commit_drops_the_core_and_sends_nothing() {
     );
 }
 
-/// The labels the host produces when a batch stores a step with these effects, with a1 connected
-/// and no socket for "ghost". The step also starts a call, which goes out after the batch.
-fn start_with(effects: Vec<Effect>) -> (Testkit, SocketId, Vec<&'static str>) {
+/// Release a stored batch with these outbound messages and no sender, with a1 connected and no
+/// socket for "ghost", and say what the host produced.
+fn release_with(outbound: Vec<Outbound>) -> (Testkit, SocketId, Vec<&'static str>) {
     let mut kit = kit();
     let sock = welcomed(&mut kit, "a1");
     let mark = kit.history().len();
-    start(&mut kit, read_head(1), Box::new(move |_| effects));
+    let held = Held {
+        outbound,
+        events: Vec::new(),
+        reply_to: None,
+        bind: None,
+        next_wake_ms: None,
+        calls: Vec::new(),
+    };
+    let committed = Pending::new(BatchId(99), Vec::new(), held, None).commit();
+    let mut out = Vec::new();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.execute(out);
     let labels = labels_since(&kit, mark);
     (kit, sock, labels)
 }
@@ -569,14 +546,14 @@ fn welcome(lease_ms: u64) -> ServerMsg {
     }
 }
 
-fn mixed_effects() -> Vec<Effect> {
+fn mixed_outbound() -> Vec<Outbound> {
     vec![
-        Effect::Reply(welcome(1)),
-        Effect::Notify {
+        Outbound::Reply(welcome(1)),
+        Outbound::Notify {
             agent: AgentId("ghost".to_string()),
             msg: welcome(2),
         },
-        Effect::Notify {
+        Outbound::Notify {
             agent: AgentId("a1".to_string()),
             msg: welcome(77),
         },
@@ -585,8 +562,8 @@ fn mixed_effects() -> Vec<Effect> {
 
 #[test]
 fn host_settle_delivers_then_reschedules_even_when_delivery_failed() {
-    let (kit, sock, labels) = start_with(mixed_effects());
-    assert_eq!(labels, ["Commit", "Log", "Send", "SetWake", "Call"]);
+    let (kit, sock, labels) = release_with(mixed_outbound());
+    assert_eq!(labels, ["Log", "Send", "SetWake"]);
     assert!(
         matches!(
             kit.received(sock).last(),
@@ -598,7 +575,7 @@ fn host_settle_delivers_then_reschedules_even_when_delivery_failed() {
 
 #[test]
 fn host_only_a_failed_send_to_the_sender_is_an_error() {
-    let (kit, sock, labels) = start_with(mixed_effects());
+    let (kit, sock, labels) = release_with(mixed_outbound());
     assert_eq!(labels.iter().filter(|label| **label == "Log").count(), 1);
     assert!(kit.logs().last().unwrap().contains("deliver failed"));
     let welcomes = kit
@@ -649,7 +626,7 @@ fn host_a_frame_during_an_outstanding_commit_is_applied_only_after_committed() {
 fn host_a_frame_during_an_outstanding_call_is_applied_at_once() {
     let mut kit = kit();
     let sock = welcomed(&mut kit, "a1");
-    start_plain(&mut kit, read_head(1));
+    head_read_outstanding(&mut kit);
     assert_eq!(kit.calls().len(), 1, "a call is outstanding");
 
     let mark = kit.history().len();
@@ -665,20 +642,24 @@ fn host_a_frame_during_an_outstanding_call_is_applied_at_once() {
 fn host_inputs_queue_behind_a_commit_not_behind_a_call() {
     let mut kit = kit();
     let sock = welcomed(&mut kit, "a1");
-    start_plain(&mut kit, read_head(1));
+    let call = head_read_outstanding(&mut kit);
 
     let mark = kit.history().len();
     kit.send(sock, &ClientMsg::Heartbeat);
     kit.send(sock, &ClientMsg::Heartbeat);
     assert_eq!(labels_since(&kit, mark), ["Commit"], "one commit at a time");
-    kit.reply(CallId(1), CallAnswer::Tested);
+    kit.reply(call.id, CallAnswer::Unknown);
     assert_eq!(
         labels_since(&kit, mark),
         ["Commit"],
         "an answer waits behind a commit as any input does"
     );
     kit.settle();
-    assert_eq!(count(&kit, "Commit"), 5, "every input ran, in order");
+    let commits = labels_since(&kit, mark)
+        .iter()
+        .filter(|l| **l == "Commit")
+        .count();
+    assert_eq!(commits, 3, "every input ran, in order");
 }
 
 fn senders_since(kit: &Testkit, mark: usize) -> Vec<SocketId> {
@@ -716,12 +697,17 @@ fn host_inputs_the_host_does_not_serve_yet_are_logged_not_dropped_silently() {
     welcomed(&mut kit, "a1");
     let now_ms = kit.now_ms();
     let mark = kit.history().len();
-    kit.input(Input::Wake { now_ms });
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: SocketId(0),
+        events: Vec::new(),
+        done: true,
+    });
     assert_eq!(labels_since(&kit, mark), ["Log"]);
     let line = kit.logs().last().unwrap();
     assert!(line.contains("repo-1"), "{line}");
     assert!(
-        line.contains("a wake is not served by this host yet"),
+        line.contains("a replay page is not served by this host yet"),
         "{line}"
     );
 }
@@ -751,17 +737,22 @@ fn a_commit_answer_for_an_earlier_batch_is_ignored() {
 #[test]
 fn host_a_failed_commit_of_a_batch_holding_a_call_hands_out_nothing() {
     let mut kit = kit();
-    welcomed(&mut kit, "a1");
-    let mark = kit.history().len();
+    submitted(&mut kit);
+    kit.wake_now();
     kit.fail_next_commit();
-    start_plain(&mut kit, read_head(1));
+    let mark = kit.history().len();
+    kit.settle();
     assert_eq!(
         labels_since(&kit, mark),
-        ["Commit", "Log"],
-        "no Call and no SetWake"
+        ["SetWake", "Commit", "Log", "SetWake"],
+        "the expiry is stored; the marker's batch fails and hands out no Call"
     );
     assert!(kit.calls().is_empty());
-    kit.reply(CallId(1), CallAnswer::Tested);
+    assert!(
+        !state(&kit)["merge_in_flight"].is_object(),
+        "no marker is stored"
+    );
+    kit.reply(CallId(1), landed());
     assert!(kit.logs().last().unwrap().contains("no such call"));
 }
 
@@ -815,9 +806,9 @@ fn submit_in(core: &mut Core, who: &str, (claim, fence): (ClaimId, Fence), path:
     }
 }
 
-/// A stored core in which a1's claim on b.rs assumes a.rs, a2's edit of a.rs has merged and the
-/// verification of the assumption is queued.
-fn core_json_with_a_queued_verification() -> String {
+/// A core in which a1's claim on b.rs assumes a.rs and a2's edit of a.rs is submitted and due to
+/// merge. Landing it queues the verification of the assumption.
+fn core_with_a_challenger_submitted() -> (Core, (ClaimId, Fence)) {
     let reviewers = shell::reviewers_or_none(Some("felix"), |_| {});
     let mut core = shell::load_core(None, Some("test"), None, reviewers, Vec::new()).unwrap();
     let assumption = Assumption {
@@ -829,6 +820,13 @@ fn core_json_with_a_queued_verification() -> String {
     grant_in(&mut core, "a1", "b.rs", vec![assumption]);
     let challenger = grant_in(&mut core, "a2", "a.rs", Vec::new());
     submit_in(&mut core, "a2", challenger, "a.rs");
+    (core, challenger)
+}
+
+/// A stored core in which a2's edit of a.rs has merged and the verification of a1's assumption is
+/// queued.
+fn core_json_with_a_queued_verification() -> String {
+    let (mut core, challenger) = core_with_a_challenger_submitted();
     core.begin_merge(NOW_MS)
         .expect("the challenger is due to merge");
     let landed = MergeOutcome::Merged {
@@ -853,20 +851,9 @@ fn host_a_trial_counts_as_this_instance_verifying() {
         "the verification is due now"
     );
 
-    let now_ms = kit.now_ms();
-    let trial = Request::Trial {
-        agent: AgentId("a1".to_string()),
-        commit: None,
-        before: CommitId("old".into()),
-        main: CommitId("new".into()),
-    };
-    let marker: MarkerStep = Box::new(move |core| {
-        core.begin_verification(now_ms)
-            .expect("the verification is dispatched");
-        Vec::new()
-    });
-    start(&mut kit, call_with(1, trial), marker);
+    wake(&mut kit);
     assert_eq!(kit.calls().len(), 1);
+    assert!(matches!(kit.calls()[0].request, Request::Trial { .. }));
 
     kit.send(sock, &ClientMsg::Heartbeat);
     kit.settle();
@@ -926,54 +913,81 @@ fn submitted(kit: &mut Testkit) -> (SocketId, ClaimId, CommitId) {
     (sock, claim_id, fork_commit)
 }
 
-fn merge_marker(now_ms: u64) -> MarkerStep {
-    Box::new(move |core| {
-        core.begin_merge(now_ms).expect("the merge is dispatched");
-        Vec::new()
-    })
-}
-
 #[test]
 fn host_only_a_merge_call_holds_the_merge_wake_back() {
     let mut kit = kit();
-    let (sock, _, _) = submitted(&mut kit);
-    let now_ms = kit.now_ms();
-    start(&mut kit, read_head(1), merge_marker(now_ms));
-
-    kit.send(sock, &ClientMsg::Heartbeat);
-    kit.settle();
+    let wait = |kit: &mut Testkit, request: Request| {
+        kit.host.calls.clear();
+        let call = Call {
+            id: CallId(1),
+            dispatch_id: DispatchId(1),
+            request,
+            deadline_ms: 0,
+        };
+        kit.host.calls.insert(call.id, call);
+        let waits = kit.host.waits();
+        (waits.merging, waits.verifying)
+    };
+    let head = Request::ReadHead {
+        submitted: Vec::new(),
+    };
+    let reconcile = Request::Reconcile {
+        head: CommitId("a".into()),
+    };
+    let (base, head_commit) = (CommitId("a".into()), CommitId("b".into()));
+    let test = Request::Test {
+        base: base.clone(),
+        head: head_commit.clone(),
+    };
+    let land = Request::Land {
+        base,
+        head: head_commit,
+    };
+    let trial = Request::Trial {
+        agent: AgentId("a1".to_string()),
+        commit: None,
+        before: CommitId("a".into()),
+        main: CommitId("b".into()),
+    };
+    let prepare = Request::Prepare {
+        claim: ClaimId(1),
+        agent: AgentId("a1".to_string()),
+        fork_commit: CommitId("a".into()),
+        scopes: Vec::new(),
+    };
     assert_eq!(
-        kit.wake(),
-        Some(kit.now_ms() + 1),
-        "a head read is not the merge, so the stored marker is recovered at once"
+        wait(&mut kit, head),
+        (false, false),
+        "a head read waits for no merge"
     );
+    assert_eq!(wait(&mut kit, reconcile), (false, false));
+    assert_eq!(wait(&mut kit, prepare), (true, false));
+    assert_eq!(wait(&mut kit, test), (true, false));
+    assert_eq!(wait(&mut kit, land), (true, false));
+    assert_eq!(wait(&mut kit, trial), (false, true));
+    kit.host.calls.clear();
+    let none = kit.host.waits();
+    assert_eq!((none.merging, none.verifying), (false, false));
 }
 
 #[test]
 fn host_a_lost_call_leaves_the_table_and_no_longer_holds_the_wake_back() {
     let mut kit = kit();
-    let (sock, claim_id, fork_commit) = submitted(&mut kit);
-    let now_ms = kit.now_ms();
-    let prepare = Request::Prepare {
-        claim: claim_id,
-        agent: AgentId("a1".to_string()),
-        fork_commit,
-        scopes: Vec::new(),
-    };
-    start(&mut kit, call_with(1, prepare), merge_marker(now_ms));
+    let (sock, _, _) = submitted(&mut kit);
+    wake(&mut kit);
     kit.send(sock, &ClientMsg::Heartbeat);
     kit.settle();
     assert_eq!(kit.wake(), Some(kit.now_ms() + MERGE_WATCHDOG_MS));
 
-    let lost = Input::CallLost {
-        now_ms: kit.now_ms(),
-        call: CallId(1),
-    };
-    kit.input(lost);
+    kit.lose(CallId(1));
     kit.settle();
-    assert_eq!(kit.wake(), Some(kit.now_ms() + 1), "the wait is over");
+    assert_ne!(
+        kit.wake(),
+        Some(kit.now_ms() + MERGE_WATCHDOG_MS),
+        "the wait is over"
+    );
 
-    kit.reply(CallId(1), CallAnswer::Tested);
+    kit.reply(CallId(1), CallAnswer::Unknown);
     assert!(kit.logs().last().unwrap().contains("no such call"));
 }
 
@@ -1396,4 +1410,634 @@ fn host_a_failed_withdrawal_is_logged_and_closes_nothing_and_sends_nothing() {
     assert!(line.contains("persist state and events failed"), "{line}");
     assert_eq!(kit.received(a2).len(), received);
     assert!(queued(&kit, "a2"), "nothing was stored");
+}
+
+// ---------- The wake and the calls it issues (R20 to R27, R38, R41, R43, R47) ----------
+
+/// The in-flight marker of the merge, if the stored core holds one.
+fn merge_marker_stored(kit: &Testkit) -> bool {
+    state(kit)["merge_in_flight"].is_object()
+}
+
+fn infra_failures(kit: &Testkit, claim: &str) -> u64 {
+    state(kit)["claims"][claim]["work"]["infra_failures"]
+        .as_u64()
+        .expect("the claim holds its work")
+}
+
+fn setwakes_since(kit: &Testkit, mark: usize) -> Vec<Option<u64>> {
+    let mut wakes = Vec::new();
+    for output in &kit.history()[mark..] {
+        if let Output::SetWake { at_ms } = output {
+            wakes.push(*at_ms);
+        }
+    }
+    wakes
+}
+
+/// The stored core state of every commit the host handed out, in order.
+fn committed_states(kit: &Testkit) -> Vec<Value> {
+    let mut states = Vec::new();
+    for output in kit.history() {
+        let Output::Commit { entries, .. } = output else {
+            continue;
+        };
+        for (key, json) in entries {
+            if key == shell::STATE_KEY {
+                states.push(serde_json::from_str(json).unwrap());
+            }
+        }
+    }
+    states
+}
+
+fn lease_of(state: &Value, claim: &str) -> bool {
+    state["claims"][claim].is_object()
+}
+
+#[test]
+fn host_a_wake_runs_its_steps_in_order_each_as_its_own_write() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    let other = welcomed(&mut kit, "a2");
+    kit.send(other, &claim(1, "y.rs", "s"));
+    kit.settle();
+    wake(&mut kit);
+    assert_eq!(kit.calls().len(), 1, "the merge is out");
+    kit.restart();
+    kit.advance(shell::LEASE_MS + 1);
+    let before = committed_states(&kit).len();
+
+    wake(&mut kit);
+    let states = committed_states(&kit);
+    assert_eq!(states.len() - before, 2, "expiry, then merge recovery");
+    let (expiry, recovery) = (&states[before], &states[before + 1]);
+    assert!(
+        !lease_of(expiry, "2"),
+        "the first write expires the lapsed lease"
+    );
+    assert!(
+        expiry["merge_in_flight"].is_object(),
+        "the cut-off merge is not touched yet"
+    );
+    assert!(
+        recovery["merge_in_flight"].is_null(),
+        "the second write recovers it"
+    );
+    assert_eq!(
+        recovery["claims"]["1"]["work"]["infra_failures"],
+        json!(1),
+        "the cut-off counts as an attempt"
+    );
+    assert_eq!(
+        kit.calls().len(),
+        1,
+        "it is not dispatched again: it is in backoff"
+    );
+}
+
+#[test]
+fn host_a_wake_that_dispatched_a_merge_runs_its_verification_step_only_after_replied() {
+    let mut kit = kit();
+    let (core, _) = core_with_a_challenger_submitted();
+    kit.seed("core", serde_json::to_string(&core).unwrap());
+    welcomed(&mut kit, "a3");
+
+    wake(&mut kit);
+    assert_eq!(kit.calls().len(), 1, "one call: the merge");
+    assert!(matches!(kit.calls()[0].request, Request::Prepare { .. }));
+    let mark = kit.history().len();
+    kit.reply(CallId(1), landed());
+    kit.settle();
+    assert_eq!(kit.calls().len(), 2, "the landing queued a verification");
+    assert!(
+        matches!(kit.calls()[1].request, Request::Trial { .. }),
+        "the same wake dispatches it once the merge is answered: {:?}",
+        kit.calls()
+    );
+    assert_eq!(
+        labels_since(&kit, mark)
+            .iter()
+            .filter(|l| **l == "Commit")
+            .count(),
+        2,
+        "the outcome is one write and the verification's marker another"
+    );
+}
+
+#[test]
+fn host_a_merge_marker_is_stored_before_its_call_and_its_outcome_before_anyone_is_told() {
+    let mut kit = kit();
+    let (sock, _, _) = submitted(&mut kit);
+    kit.wake_now();
+    let mut stored_before_the_call = false;
+    while kit.calls().is_empty() {
+        stored_before_the_call |= merge_marker_stored(&kit);
+        assert!(kit.deliver_next(), "the host asks for nothing more");
+    }
+    assert!(
+        stored_before_the_call,
+        "the marker is stored before the call goes out"
+    );
+
+    let told = kit.received(sock).len();
+    kit.reply(CallId(1), landed());
+    assert!(!merge_marker_stored(&kit), "the outcome is stored");
+    assert_eq!(kit.received(sock).len(), told, "and nobody is told yet");
+    kit.settle();
+    assert!(
+        matches!(kit.received(sock).last(), Some(ServerMsg::Merged { .. })),
+        "{:?}",
+        kit.received(sock)
+    );
+}
+
+#[test]
+fn host_a_wake_while_a_call_is_outstanding_dispatches_nothing_and_sets_the_watchdog() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let mark = kit.history().len();
+
+    kit.wake_now();
+    assert_eq!(labels_since(&kit, mark), ["SetWake"]);
+    assert_eq!(kit.wake(), Some(kit.now_ms() + MERGE_WATCHDOG_MS));
+    assert_eq!(kit.calls().len(), 1, "no second dispatch");
+}
+
+/// The state of a repo whose verification is queued and a1 holds a claim: a wake dispatches the
+/// trial.
+fn trial_outstanding() -> (Testkit, SocketId, Call) {
+    let mut kit = Testkit::new(HostConfig {
+        reviewers: Some("felix".to_string()),
+        ..config()
+    });
+    kit.seed("core", core_json_with_a_queued_verification());
+    let sock = welcomed(&mut kit, "a1");
+    wake(&mut kit);
+    let call = kit.calls().last().expect("the trial is out").clone();
+    assert!(matches!(call.request, Request::Trial { .. }));
+    (kit, sock, call)
+}
+
+#[test]
+fn host_a_verification_marker_is_stored_before_its_call_and_its_outcome_before_anyone_is_told() {
+    let mut kit = Testkit::new(HostConfig {
+        reviewers: Some("felix".to_string()),
+        ..config()
+    });
+    kit.seed("core", core_json_with_a_queued_verification());
+    let sock = welcomed(&mut kit, "a1");
+    kit.wake_now();
+    let mut stored_before_the_call = false;
+    while kit.calls().is_empty() {
+        stored_before_the_call |= state(&kit)["verification_in_flight"].is_object();
+        assert!(kit.deliver_next(), "the host asks for nothing more");
+    }
+    assert!(
+        stored_before_the_call,
+        "the marker is stored before the call goes out"
+    );
+
+    let told = kit.received(sock).len();
+    let mark = kit.history().len();
+    let broken = CallAnswer::Trialled {
+        before: Some(TrialResult::Clean),
+        after: Some(TrialResult::TestsFailed),
+    };
+    kit.reply(CallId(1), broken);
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Commit"],
+        "nothing is delivered or scheduled before the outcome commits"
+    );
+    assert!(
+        state(&kit)["verification_in_flight"].is_null(),
+        "the outcome is stored"
+    );
+    kit.settle();
+    assert_eq!(kit.received(sock).len(), told);
+    assert_eq!(
+        count(&kit, "Call"),
+        1,
+        "the verification is not dispatched again"
+    );
+}
+
+#[test]
+#[ignore = "COORD-WAKE-WHILE-VERIFYING: fixed in the next commit"]
+fn host_a_wake_while_a_verification_is_in_flight_is_pending_and_in_the_future() {
+    let (mut kit, sock, _) = trial_outstanding();
+    kit.send(sock, &claim(9, "late.rs", "s"));
+    kit.settle();
+    for _ in 0..3 {
+        let at = kit.wake().expect("a wake is pending");
+        assert!(at > kit.now_ms(), "the wake is in the future");
+        kit.advance(at - kit.now_ms());
+        kit.wake_now();
+        kit.settle();
+        if kit.wake() == Some(kit.now_ms() + MERGE_WATCHDOG_MS) {
+            return;
+        }
+    }
+    panic!(
+        "the wake kept firing while the verification waited: {:?}",
+        kit.wake()
+    );
+}
+
+#[test]
+fn host_a_poke_for_an_unknown_repo_stores_nothing() {
+    let mut kit = kit();
+    kit.poke();
+    assert_eq!(labels_since(&kit, 0), ["Load"]);
+    kit.settle();
+    assert_eq!(
+        labels_since(&kit, 0),
+        ["Load"],
+        "nothing is stored or scheduled"
+    );
+    assert_eq!(kit.stored_state(), None);
+    assert_eq!(kit.wake(), None);
+    assert!(kit.logs().is_empty());
+
+    let sock = welcomed(&mut kit, "a1");
+    kit.poke();
+    kit.settle();
+    assert_eq!(
+        state(&kit)["head_pokes"],
+        json!(1),
+        "a repo with state counts it"
+    );
+    assert_eq!(
+        kit.wake(),
+        Some(kit.now_ms() + 1),
+        "and the head read is due"
+    );
+    assert!(kit.received(sock).len() == 1);
+}
+
+#[test]
+fn host_a_head_read_runs_only_when_offered_and_is_stored_before_anyone_is_told() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    wake(&mut kit);
+    assert!(kit.calls().is_empty(), "no poke, no head read");
+    assert_eq!(kit.wake(), None);
+
+    let call = head_read_outstanding(&mut kit);
+    assert_eq!(
+        call.request,
+        Request::ReadHead {
+            submitted: Vec::new()
+        }
+    );
+    assert_eq!(state(&kit)["head"], json!("abc"));
+    let mark = kit.history().len();
+    let moved = CallAnswer::Head {
+        main: Some(CommitId("new".into())),
+        landed: Vec::new(),
+    };
+    kit.reply(call.id, moved);
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Commit"],
+        "the answer is stored first"
+    );
+    assert_eq!(state(&kit)["head"], json!("new"));
+    kit.settle();
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Commit", "SetWake", "SetWake"],
+        "then the wake is set, and the wake ends"
+    );
+    assert_eq!(kit.wake(), None, "main moved and nothing else is due");
+}
+
+#[test]
+fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
+    let ends_in_none: [(&str, Option<CallAnswer>); 5] = [
+        ("a failed call", Some(CallAnswer::Unknown)),
+        ("a timeout", None),
+        (
+            "a head of none",
+            Some(CallAnswer::Head {
+                main: None,
+                landed: Vec::new(),
+            }),
+        ),
+        (
+            "a refusal",
+            Some(CallAnswer::Refused {
+                refusal: Refusal::CommitNotInFork,
+            }),
+        ),
+        ("another answer", Some(CallAnswer::Tested)),
+    ];
+    for (what, answer) in ends_in_none {
+        let mut kit = kit();
+        welcomed(&mut kit, "a1");
+        let call = head_read_outstanding(&mut kit);
+        match answer {
+            Some(answer) => kit.reply(call.id, answer),
+            None => kit.lose(call.id),
+        }
+        kit.settle();
+        let line = kit
+            .logs()
+            .last()
+            .unwrap_or_else(|| panic!("{what} is logged"));
+        assert!(
+            line.contains("steward head call failed: no head in the answer"),
+            "{what}: {line}"
+        );
+        assert_eq!(state(&kit)["head"], json!("abc"), "{what} moves nothing");
+        assert_eq!(state(&kit)["head_tried"], json!(1), "{what} is tried");
+        assert_eq!(kit.wake(), None, "{what} is no reason to wake");
+    }
+}
+
+#[test]
+fn host_a_marker_with_no_call_waiting_is_a_cut_off() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    assert!(merge_marker_stored(&kit));
+
+    kit.restart();
+    wake(&mut kit);
+    assert!(!merge_marker_stored(&kit), "the cut-off is recovered");
+    assert_eq!(infra_failures(&kit, "1"), 1, "and counted as an attempt");
+    assert_eq!(
+        kit.calls().len(),
+        1,
+        "nothing is dispatched: the claim is in backoff"
+    );
+}
+
+#[test]
+fn host_a_verification_marker_with_no_call_waiting_is_a_cut_off() {
+    let (mut kit, _, _) = trial_outstanding();
+    assert!(state(&kit)["verification_in_flight"].is_object());
+
+    kit.restart();
+    wake(&mut kit);
+    let state = state(&kit);
+    assert!(
+        state["verification_in_flight"].is_null(),
+        "the cut-off is recovered"
+    );
+    assert_eq!(
+        state["verifications"][0]["infra_failures"],
+        json!(1),
+        "and counted"
+    );
+    assert_eq!(kit.calls().len(), 1, "the retry waits for its backoff");
+}
+
+#[test]
+fn host_a_marker_with_a_call_waiting_is_not_a_cut_off() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    kit.wake_now();
+    kit.settle();
+    assert!(merge_marker_stored(&kit), "the merge is still running");
+    assert_eq!(infra_failures(&kit, "1"), 0);
+}
+
+#[test]
+fn host_a_failed_or_timed_out_steward_call_is_service_unavailable() {
+    let unusable: [(&str, Option<CallAnswer>); 4] = [
+        ("a failed call", Some(CallAnswer::Unknown)),
+        ("a timeout", None),
+        ("an answer of another kind", Some(CallAnswer::Tested)),
+        (
+            "a stale landing",
+            Some(CallAnswer::Landed {
+                head: CommitId("new".into()),
+            }),
+        ),
+    ];
+    for (what, answer) in unusable {
+        let mut kit = kit();
+        submitted(&mut kit);
+        wake(&mut kit);
+        match answer {
+            Some(answer) => kit.reply(CallId(1), answer),
+            None => kit.lose(CallId(1)),
+        }
+        kit.settle();
+        assert_eq!(infra_failures(&kit, "1"), 1, "{what} is infrastructure");
+        assert!(
+            state(&kit)["claims"]["1"].is_object(),
+            "{what} rejects nothing"
+        );
+        let line = kit.logs().last().unwrap();
+        assert!(
+            line.contains("steward merge call failed: no usable answer"),
+            "{what}: {line}"
+        );
+    }
+
+    let (mut kit, _, call) = trial_outstanding();
+    kit.reply(call.id, CallAnswer::Unknown);
+    kit.settle();
+    let state = state(&kit);
+    assert_eq!(
+        state["verifications"][0]["infra_failures"],
+        json!(1),
+        "a trial too"
+    );
+    let line = kit.logs().last().unwrap();
+    assert!(
+        line.contains("steward trial call failed: no usable answer"),
+        "{line}"
+    );
+}
+
+#[test]
+fn host_a_refusal_is_a_fact_about_the_work_not_the_service() {
+    let mut kit = kit();
+    let (sock, _, _) = submitted(&mut kit);
+    wake(&mut kit);
+    let conflict = Refusal::Conflict {
+        files: vec!["x.rs".to_string()],
+    };
+    kit.reply(CallId(1), CallAnswer::Refused { refusal: conflict });
+    kit.settle();
+    assert!(
+        state(&kit)["claims"]["1"]["work"].is_null(),
+        "the submission is rejected, not retried"
+    );
+    assert!(
+        matches!(
+            kit.received(sock).last(),
+            Some(ServerMsg::SubmitRejected { .. })
+        ),
+        "{:?}",
+        kit.received(sock)
+    );
+}
+
+#[test]
+fn host_a_head_call_waits_30_seconds_and_a_steward_call_13_minutes() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let merge = kit.calls().last().unwrap().clone();
+    assert_eq!(merge.deadline_ms, kit.now_ms() + 780_000);
+
+    let (kit, _, trial) = trial_outstanding();
+    assert_eq!(trial.deadline_ms, kit.now_ms() + 780_000);
+
+    let mut kit = self::kit();
+    welcomed(&mut kit, "a1");
+    let head = head_read_outstanding(&mut kit);
+    assert_eq!(head.deadline_ms, kit.now_ms() + 30_000);
+}
+
+#[test]
+fn host_calls_are_numbered_in_the_order_they_are_issued() {
+    let mut kit = kit();
+    let (core, _) = core_with_a_challenger_submitted();
+    kit.seed("core", serde_json::to_string(&core).unwrap());
+    welcomed(&mut kit, "a3");
+    wake(&mut kit);
+    kit.reply(CallId(1), landed());
+    kit.settle();
+    let ids: Vec<CallId> = kit.calls().iter().map(|call| call.id).collect();
+    assert_eq!(ids, [CallId(1), CallId(2)]);
+    let dispatches: Vec<DispatchId> = kit.calls().iter().map(|call| call.dispatch_id).collect();
+    assert_eq!(
+        dispatches,
+        [DispatchId(1), DispatchId(2)],
+        "the core's dispatch ids"
+    );
+}
+
+#[test]
+fn host_a_failed_step_leaves_one_future_wake() {
+    // A commit fails: the core is dropped and the wake is set again after the retry delay.
+    let mut kit = kit();
+    submitted(&mut kit);
+    kit.wake_now();
+    kit.fail_next_commit();
+    let mark = kit.history().len();
+    kit.settle();
+    let retry = kit.now_ms() + wake::RETRY_MS;
+    assert_eq!(setwakes_since(&kit, mark).last(), Some(&Some(retry)));
+    assert_eq!(kit.wake(), Some(retry));
+    assert!(kit.calls().is_empty());
+
+    kit.advance(wake::RETRY_MS);
+    wake(&mut kit);
+    assert_eq!(
+        kit.calls().len(),
+        1,
+        "the retried wake dispatches the merge"
+    );
+
+    // A load fails: nothing else is set.
+    let mut kit = self::kit();
+    kit.seed("core", r#"{"claims":"garbled""#.to_string());
+    let mark = kit.history().len();
+    wake(&mut kit);
+    let retry = kit.now_ms() + wake::RETRY_MS;
+    assert_eq!(
+        setwakes_since(&kit, mark),
+        [Some(retry)],
+        "one wake, in the future"
+    );
+
+    // The commit of an answer fails: the marker stays, and the retry recovers it as a cut-off.
+    let mut kit = self::kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    kit.fail_next_commit();
+    kit.reply(CallId(1), landed());
+    let mark = kit.history().len();
+    kit.settle();
+    let retry = kit.now_ms() + wake::RETRY_MS;
+    assert_eq!(setwakes_since(&kit, mark), [Some(retry)]);
+    assert!(merge_marker_stored(&kit));
+    kit.advance(wake::RETRY_MS);
+    wake(&mut kit);
+    assert_eq!(
+        infra_failures(&kit, "1"),
+        1,
+        "the lost outcome counts as an attempt"
+    );
+
+    // A wake that only sets the wake, while a call is out, fails to load.
+    let mut kit = self::kit();
+    welcomed(&mut kit, "a1");
+    head_read_outstanding(&mut kit);
+    kit.fail_next_commit();
+    kit.poke();
+    kit.settle();
+    kit.seed("core", r#"{"claims":"garbled""#.to_string());
+    let mark = kit.history().len();
+    kit.wake_now();
+    kit.settle();
+    let retry = kit.now_ms() + wake::RETRY_MS;
+    assert_eq!(setwakes_since(&kit, mark), [Some(retry)]);
+}
+
+#[test]
+fn host_a_restarted_host_starts_with_nothing_awaited_and_reloads_on_first_use() {
+    let mut kit = kit();
+    let (sock, _, _) = submitted(&mut kit);
+    wake(&mut kit);
+    assert_eq!(kit.calls().len(), 1);
+
+    kit.restart();
+    let mark = kit.history().len();
+    kit.reply(CallId(1), landed());
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Log"],
+        "the old call is not awaited"
+    );
+    assert!(kit.logs().last().unwrap().contains("no such call"));
+    assert!(merge_marker_stored(&kit));
+
+    kit.wake_now();
+    assert_eq!(
+        labels_since(&kit, mark)[1..],
+        ["Load"],
+        "the first use loads the core"
+    );
+    kit.settle();
+    assert!(
+        !merge_marker_stored(&kit),
+        "the marker is a cut-off of the old process"
+    );
+    assert_eq!(infra_failures(&kit, "1"), 1);
+    assert_eq!(kit.received(sock).len(), 3, "and nobody was told it merged");
+}
+
+#[test]
+fn host_an_answer_for_another_dispatch_changes_nothing() {
+    let mut kit = kit();
+    let (sock, _, _) = submitted(&mut kit);
+    wake(&mut kit);
+    kit.fail_next_commit();
+    kit.poke();
+    kit.settle();
+
+    let mut moved = state(&kit);
+    moved["merge_in_flight"]["dispatch"] = json!(99);
+    kit.seed("core", moved.to_string());
+    let told = kit.received(sock).len();
+    kit.reply(CallId(1), landed());
+    kit.settle();
+    let after = state(&kit);
+    assert_eq!(
+        after["merge_in_flight"]["dispatch"],
+        json!(99),
+        "the dispatch in flight stays"
+    );
+    assert!(after["claims"]["1"].is_object(), "the claim did not land");
+    assert_eq!(kit.received(sock).len(), told);
 }
