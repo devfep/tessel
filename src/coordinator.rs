@@ -1880,6 +1880,32 @@ mod tests {
         claim_with(c, who, intent("test work"), scopes)
     }
 
+    #[test]
+    fn a_message_sent_to_the_wrong_family_handler_is_refused_and_changes_nothing() {
+        let mut c = Coordinator::new(Config {
+            run: RunId("test".into()),
+            lease_ms: 30_000,
+            shadow_enabled: false,
+        })
+        .unwrap();
+        let before = serde_json::to_string(&c).unwrap();
+        let lifecycle_gets = ClientMsg::JoinRace {
+            req: RequestId(4),
+            race: RaceId(1),
+        };
+        let collective_gets = ClientMsg::Heartbeat;
+        for effects in [
+            c.handle_lifecycle(&agent("a1"), lifecycle_gets, NOW),
+            c.handle_collective(&agent("a1"), collective_gets, NOW),
+        ] {
+            let [Effect::Reply(ServerMsg::Error { req, code, .. })] = &effects[..] else {
+                panic!("expected one Error reply, got {effects:?}");
+            };
+            assert_eq!((*req, *code), (None, ErrorCode::Malformed));
+        }
+        assert_eq!(serde_json::to_string(&c).unwrap(), before);
+    }
+
     fn replies(effects: &[Effect]) -> Vec<&ServerMsg> {
         let mut out = Vec::new();
         for effect in effects {
