@@ -24,7 +24,7 @@ const SHORT: Duration = Duration::from_secs(8);
 async fn claimed(lease_ms: u64) -> Result<(Fake, Agent)> {
     let fake = Fake::start(lease_ms, &[("a1", TOK1)]).await?;
     let a1 = Agent::new(&fake, "a1", TOK1)?;
-    a1.start("long job")?;
+    a1.start_settled("long job").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     Ok((fake, a1))
 }
