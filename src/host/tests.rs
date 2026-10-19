@@ -1539,6 +1539,11 @@ fn host_a_merge_marker_is_stored_before_its_call_and_its_outcome_before_anyone_i
         stored_before_the_call,
         "the marker is stored before the call goes out"
     );
+    assert_eq!(
+        kit.wake(),
+        Some(kit.now_ms() + MERGE_WATCHDOG_MS),
+        "the batch that stored the marker counts its call"
+    );
 
     let told = kit.received(sock).len();
     kit.reply(CallId(1), landed());
@@ -1550,6 +1555,7 @@ fn host_a_merge_marker_is_stored_before_its_call_and_its_outcome_before_anyone_i
         "{:?}",
         kit.received(sock)
     );
+    assert!(kit.logs().is_empty(), "{:?}", kit.logs());
 }
 
 #[test]
@@ -1598,6 +1604,11 @@ fn host_a_verification_marker_is_stored_before_its_call_and_its_outcome_before_a
         stored_before_the_call,
         "the marker is stored before the call goes out"
     );
+    assert_eq!(
+        kit.wake(),
+        Some(kit.now_ms() + shell::LEASE_MS),
+        "the batch that stored the marker counts its call: the next lease expiry comes first"
+    );
 
     let told = kit.received(sock).len();
     let mark = kit.history().len();
@@ -1622,6 +1633,7 @@ fn host_a_verification_marker_is_stored_before_its_call_and_its_outcome_before_a
         1,
         "the verification is not dispatched again"
     );
+    assert!(kit.logs().is_empty(), "{:?}", kit.logs());
 }
 
 #[test]
@@ -1703,6 +1715,7 @@ fn host_a_head_read_runs_only_when_offered_and_is_stored_before_anyone_is_told()
         ["Commit"],
         "the answer is stored first"
     );
+    assert!(kit.logs().is_empty(), "a head is not a failure");
     assert_eq!(state(&kit)["head"], json!("new"));
     kit.settle();
     assert_eq!(
@@ -1936,6 +1949,15 @@ fn host_a_failed_step_leaves_one_future_wake() {
         1,
         "the retried wake dispatches the merge"
     );
+
+    // A client call whose load fails sets no wake: only a wake's failure does.
+    let mut kit = self::kit();
+    kit.seed("core", r#"{"claims":"garbled""#.to_string());
+    let sock = kit.open("a1");
+    let mark = kit.history().len();
+    kit.send(sock, &hello("a1"));
+    kit.settle();
+    assert_eq!(setwakes_since(&kit, mark), []);
 
     // A load fails: nothing else is set.
     let mut kit = self::kit();
