@@ -1,0 +1,373 @@
+//! The git invocations of a merge, as data: argv plus a fixed environment. Nothing here runs a
+//! command; [`crate::run::run`] does. Every value is an argv element or an environment value,
+//! never shell text.
+//!
+//! # Why repo code cannot run
+//!
+//! - Hooks: `core.hooksPath` names an empty directory the lander owns.
+//! - Filters, merge drivers, textconv, external diff: each needs a `filter.*`, `merge.*.driver`,
+//!   `diff.*.textconv` or `diff.external` setting. None exists: system and global config are off,
+//!   `HOME` is an empty directory, and the only workspace is a fresh clone, whose local config
+//!   holds no such setting (a repo's `.gitattributes` can name a driver but cannot define one).
+//!   The diff commands also pass `--no-ext-diff` and `--no-textconv`.
+//! - Aliases: only builtin subcommands are invoked, and git never lets an alias shadow a builtin.
+//! - `core.fsmonitor` is off, so no repo-named monitor program runs.
+//! - Ambient environment: the command's environment is exactly `GitCommand::env`, so inherited
+//!   `GIT_*` variables, `GIT_EXTERNAL_DIFF` and the like are never seen.
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use crate::types::{is_safe_branch_name, Sha};
+
+pub const MAIN_BRANCH: &str = "main";
+pub const COMMITTER_NAME: &str = "Tessel Lander";
+pub const COMMITTER_EMAIL: &str = "lander@tessel.invalid";
+/// Every replayed commit gets this committer date, so a retried rebase yields the same ids.
+pub const COMMITTER_DATE: &str = "2026-01-01T00:00:00Z";
+/// Git's POST buffer for a push: the gateway's body limit, so git sends no probe request.
+pub const MAX_PUSH_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
+const CLONE_TIMEOUT: Duration = Duration::from_secs(60);
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCAL_TIMEOUT: Duration = Duration::from_secs(6);
+const REBASE_TIMEOUT: Duration = Duration::from_secs(30);
+const PUSH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// One git invocation. `argv[0]` is `git`; the environment is the whole environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCommand {
+    pub argv: Vec<OsString>,
+    pub env: BTreeMap<String, OsString>,
+    pub timeout: Duration,
+}
+
+/// Where the merge runs and what it reads. `fork_branch` is the fork's default branch.
+#[derive(Debug, Clone)]
+pub struct MergeSources {
+    pub workspace: PathBuf,
+    pub main_remote: String,
+    pub fork_remote: String,
+    pub fork_branch: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CommandError {
+    #[error("refusing to use the unsafe fork branch name {name:?}")]
+    UnsafeForkBranch { name: String },
+    #[error("cannot create {path} for the git environment: {source}")]
+    CreateDir { path: PathBuf, source: io::Error },
+}
+
+/// The fixed environment of every git command and the builders for the merge's commands.
+#[derive(Debug, Clone)]
+pub struct Git {
+    home: PathBuf,
+    hooks_dir: PathBuf,
+    path: OsString,
+}
+
+impl Git {
+    /// Uses `home` as `HOME` and `hooks_dir` as `core.hooksPath`; both must be empty directories
+    /// that exist when a command runs. `PATH` is the only variable taken from the process, so
+    /// git finds its own helpers.
+    pub fn new(home: PathBuf, hooks_dir: PathBuf) -> Git {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        Git {
+            home,
+            hooks_dir,
+            path,
+        }
+    }
+
+    /// Creates empty `home` and `hooks` directories under `root` and uses them.
+    pub fn create_in(root: &Path) -> Result<Git, CommandError> {
+        let home = root.join("home");
+        let hooks_dir = root.join("hooks");
+        for dir in [&home, &hooks_dir] {
+            fs::create_dir_all(dir).map_err(|source| CommandError::CreateDir {
+                path: dir.clone(),
+                source,
+            })?;
+        }
+        Ok(Git::new(home, hooks_dir))
+    }
+
+    /// Settings applied to every command, as `GIT_CONFIG_COUNT` entries. They outrank repo config.
+    fn config(&self) -> [(&'static str, OsString); 4] {
+        [
+            ("core.hooksPath", self.hooks_dir.clone().into_os_string()),
+            ("transfer.fsckObjects", "true".into()),
+            ("core.fsmonitor", "false".into()),
+            ("core.attributesFile", "/dev/null".into()),
+        ]
+    }
+
+    /// The environment of every git command: no user config, no prompt, no editor.
+    pub fn env(&self) -> BTreeMap<String, OsString> {
+        let mut env = BTreeMap::new();
+        env.insert("PATH".to_owned(), self.path.clone());
+        env.insert("HOME".to_owned(), self.home.clone().into_os_string());
+        env.insert("GIT_CONFIG_GLOBAL".to_owned(), "/dev/null".into());
+        env.insert("GIT_CONFIG_NOSYSTEM".to_owned(), "1".into());
+        env.insert("GIT_ATTR_NOSYSTEM".to_owned(), "1".into());
+        env.insert("GIT_TERMINAL_PROMPT".to_owned(), "0".into());
+        env.insert("GIT_EDITOR".to_owned(), "true".into());
+        env.insert("LC_ALL".to_owned(), "C".into());
+        let settings = self.config();
+        env.insert(
+            "GIT_CONFIG_COUNT".to_owned(),
+            settings.len().to_string().into(),
+        );
+        for (index, (key, value)) in settings.into_iter().enumerate() {
+            env.insert(format!("GIT_CONFIG_KEY_{index}"), key.into());
+            env.insert(format!("GIT_CONFIG_VALUE_{index}"), value);
+        }
+        env
+    }
+
+    fn command(&self, args: &[&str], timeout: Duration) -> GitCommand {
+        let mut argv = vec![OsString::from("git")];
+        argv.extend(args.iter().map(OsString::from));
+        GitCommand {
+            argv,
+            env: self.env(),
+            timeout,
+        }
+    }
+
+    fn local(&self, workspace: &Path, args: &[&str], timeout: Duration) -> GitCommand {
+        let mut command = self.command(&[], timeout);
+        command.argv.push("-C".into());
+        command.argv.push(workspace.into());
+        command.argv.extend(args.iter().map(OsString::from));
+        command
+    }
+
+    /// Clones main with its full history (the rebase needs the merge-base).
+    pub fn clone_command(&self, sources: &MergeSources) -> GitCommand {
+        let mut command = self.command(
+            &[
+                "clone",
+                "--no-tags",
+                &format!("--branch={MAIN_BRANCH}"),
+                "--",
+            ],
+            CLONE_TIMEOUT,
+        );
+        command.argv.push((&sources.main_remote).into());
+        command
+            .argv
+            .push(sources.workspace.clone().into_os_string());
+        command
+    }
+
+    /// Fetches only the fork's default branch, into `refs/remotes/fork/<branch>`.
+    pub fn fetch_fork_command(&self, sources: &MergeSources) -> Result<GitCommand, CommandError> {
+        let branch = &sources.fork_branch;
+        let reference = fork_ref(branch)?;
+        Ok(self.local(
+            &sources.workspace,
+            &[
+                "fetch",
+                "--no-tags",
+                "--",
+                &sources.fork_remote,
+                &format!("+refs/heads/{branch}:{reference}"),
+            ],
+            FETCH_TIMEOUT,
+        ))
+    }
+
+    /// Resolves main as cloned. Stdout is the sha.
+    pub fn base_command(&self, workspace: &Path) -> GitCommand {
+        let reference = format!("refs/remotes/origin/{MAIN_BRANCH}^{{commit}}");
+        self.local(
+            workspace,
+            &["rev-parse", "--verify", &reference],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Exit 0 when `main` is a commit on main's history as cloned.
+    pub fn on_main_command(&self, workspace: &Path, main: &Sha) -> GitCommand {
+        let reference = format!("refs/remotes/origin/{MAIN_BRANCH}");
+        self.local(
+            workspace,
+            &["merge-base", "--is-ancestor", main.as_str(), &reference],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Exit 0 when the commit object was fetched, 1 when it was not.
+    pub fn commit_exists_command(&self, workspace: &Path, commit: &Sha) -> GitCommand {
+        let object = format!("{commit}^{{commit}}");
+        self.local(
+            workspace,
+            &["rev-parse", "--verify", "--quiet", &object],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Exit 0 when the commit is reachable from the fork's default branch, 1 when it is not.
+    pub fn reachable_command(
+        &self,
+        sources: &MergeSources,
+        commit: &Sha,
+    ) -> Result<GitCommand, CommandError> {
+        let reference = fork_ref(&sources.fork_branch)?;
+        Ok(self.local(
+            &sources.workspace,
+            &["merge-base", "--is-ancestor", commit.as_str(), &reference],
+            LOCAL_TIMEOUT,
+        ))
+    }
+
+    /// Stdout is the merge-base of main and the commit.
+    pub fn merge_base_command(&self, workspace: &Path, base: &Sha, commit: &Sha) -> GitCommand {
+        self.local(
+            workspace,
+            &["merge-base", base.as_str(), commit.as_str()],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Replays `merge_base..commit` onto `base` with a fixed committer; leaves HEAD at the result.
+    /// Author name, email and date stay those of the replayed commits.
+    pub fn rebase_command(
+        &self,
+        workspace: &Path,
+        base: &Sha,
+        merge_base: &Sha,
+        commit: &Sha,
+    ) -> GitCommand {
+        let mut command = self.local(
+            workspace,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "rebase",
+                "--onto",
+                base.as_str(),
+                merge_base.as_str(),
+                commit.as_str(),
+            ],
+            REBASE_TIMEOUT,
+        );
+        command
+            .env
+            .insert("GIT_COMMITTER_NAME".to_owned(), COMMITTER_NAME.into());
+        command
+            .env
+            .insert("GIT_COMMITTER_EMAIL".to_owned(), COMMITTER_EMAIL.into());
+        command
+            .env
+            .insert("GIT_COMMITTER_DATE".to_owned(), COMMITTER_DATE.into());
+        command
+    }
+
+    /// Stdout is the NUL-separated repo paths that are unmerged after a stopped rebase.
+    pub fn conflicts_command(&self, workspace: &Path) -> GitCommand {
+        self.local(
+            workspace,
+            &["diff", "--name-only", "--diff-filter=U", "-z"],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Stdout is the NUL-separated `git diff --name-status` records of `base..head`, with renames
+    /// detected. `-z` keeps paths unquoted; they are untrusted data and are never put in a
+    /// command.
+    pub fn changed_files_command(&self, workspace: &Path, base: &Sha, head: &Sha) -> GitCommand {
+        let range = format!("{base}..{head}");
+        self.local(
+            workspace,
+            &[
+                "diff",
+                "--name-status",
+                "-z",
+                "-M",
+                "--no-ext-diff",
+                &range,
+                "--",
+            ],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Stdout is the patch of `base..head` for a person to read: renames detected, no colour, and
+    /// no external diff or text conversion program. Pass the merge-base as `base` to see only what
+    /// the commit adds.
+    pub fn diff_command(&self, workspace: &Path, base: &Sha, head: &Sha) -> GitCommand {
+        let range = format!("{base}..{head}");
+        self.local(
+            workspace,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "-M",
+                &range,
+                "--",
+            ],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Stdout is the content of `path` in `commit` (exit non-zero when it is not there).
+    pub fn show_file_command(&self, workspace: &Path, commit: &Sha, path: &str) -> GitCommand {
+        let object = format!("{commit}:{path}");
+        self.local(workspace, &["show", &object], LOCAL_TIMEOUT)
+    }
+
+    /// Stdout is the sha HEAD points at.
+    pub fn head_command(&self, workspace: &Path) -> GitCommand {
+        self.local(
+            workspace,
+            &["rev-parse", "--verify", "HEAD^{commit}"],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Pushes `head` to main only if main is still `base`. Never forces: `head` descends from
+    /// `base`, and the lease names the sha that was read at the start.
+    pub fn push_command(&self, sources: &MergeSources, base: &Sha, head: &Sha) -> GitCommand {
+        self.local(
+            &sources.workspace,
+            &[
+                "-c",
+                &format!("http.postBuffer={MAX_PUSH_BODY_BYTES}"),
+                "push",
+                "--porcelain",
+                &format!("--force-with-lease=refs/heads/{MAIN_BRANCH}:{base}"),
+                "--",
+                &sources.main_remote,
+                &format!("{head}:refs/heads/{MAIN_BRANCH}"),
+            ],
+            PUSH_TIMEOUT,
+        )
+    }
+}
+
+fn fork_ref(branch: &str) -> Result<String, CommandError> {
+    if !is_safe_branch_name(branch) {
+        return Err(CommandError::UnsafeForkBranch {
+            name: branch.to_owned(),
+        });
+    }
+    Ok(format!("refs/remotes/fork/{branch}"))
+}
+
+/// Splits `git diff -z` output into paths. Paths are untrusted data.
+pub fn parse_nul_separated(stdout: &str) -> Vec<String> {
+    stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
