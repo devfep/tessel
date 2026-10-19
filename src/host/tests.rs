@@ -1419,10 +1419,11 @@ fn merge_marker_stored(kit: &Testkit) -> bool {
     state(kit)["merge_in_flight"].is_object()
 }
 
+/// The infrastructure failures counted against the claim's submission, 0 once it has none.
 fn infra_failures(kit: &Testkit, claim: &str) -> u64 {
     state(kit)["claims"][claim]["work"]["infra_failures"]
         .as_u64()
-        .expect("the claim holds its work")
+        .unwrap_or(0)
 }
 
 fn setwakes_since(kit: &Testkit, mark: usize) -> Vec<Option<u64>> {
