@@ -219,8 +219,11 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   average near 170 from another project on this Mac: `tessel-lander/tests/run.rs` grandchild and
   zombie timeout tests and two `tessel-cli` lease and heartbeat tests failed once and passed on
   rerun. Same class as P0-FLAKE-WALLCLOCK: replace the wall-clock bounds with signals or the
-  daemon clock seam; never add retries. Done: each test passes with its timing bound removed or
-  made explicit, shown on a CI runner.
+  daemon clock seam; never add retries. Seen since, each once at a load average of 110 to 113 and
+  passing on rerun: `tessel-cli` `heartbeats_keep_a_claim_alive_past_its_lease` (`tests/cli.rs`
+  348) and `a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for` (`tests/githook.rs`
+  410), and three tests in `tessel-swarm/tests/reconnect.rs`. Done: each test passes with its
+  timing bound removed or made explicit, shown on a CI runner.
 - [ ] **SERVER-CONFLICT-NAMES** — M4, with `tessel-server`'s merge response. From the
   P1-LANDER-ISOLATION review: `Conflict.files` (merge and trial) carries fork-chosen file names
   raw, with no cap or total. The steward does not cap them either (`merge-steps.ts` 144-146), and
