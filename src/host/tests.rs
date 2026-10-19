@@ -1381,3 +1381,19 @@ fn host_a_socket_whose_send_failed_is_closed_once_and_its_agent_withdrawn() {
     assert!(line.contains("handle send failure failed"), "{line}");
     assert!(line.contains("the socket is not open"), "{line}");
 }
+
+#[test]
+fn host_a_failed_withdrawal_is_logged_and_closes_and_sends_nothing() {
+    let mut kit = kit();
+    let (_, a2) = a2_waits_behind_a1(&mut kit);
+    let received = kit.received(a2).len();
+    let mark = kit.history().len();
+    kit.fail_next_commit();
+    kit.close(a2);
+    kit.settle();
+    assert_eq!(labels_since(&kit, mark), ["Commit", "Log"]);
+    let line = kit.logs().last().unwrap();
+    assert!(line.contains("persist state and events failed"), "{line}");
+    assert_eq!(kit.received(a2).len(), received);
+    assert!(queued(&kit, "a2"), "nothing was stored");
+}
