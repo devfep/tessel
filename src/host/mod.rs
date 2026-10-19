@@ -4,10 +4,13 @@
 //! and the socket table of `src/runtime.rs` (see `docs/reference/runtime-rules.md`). Frozen design:
 //! `docs/proposals/real-use.md`, Architecture.
 //!
-//! The input gate. While a storage operation is outstanding (a `Load` or a `Commit`) no other
-//! input runs: it is queued and applied once the operation is answered, as the Durable Object's
-//! input gate does (R42). A `Call` is not a storage operation: inputs run while one is
-//! outstanding, as they do while the steward is being called.
+//! The input gate. While a storage operation is outstanding (a `Load`, a `Commit` or a replay's
+//! `ReadEvents`) no other input runs: it is queued and applied once the operation is answered, as
+//! the Durable Object's input gate does (R42). A `Call` is not a storage operation: inputs run
+//! while one is outstanding, as they do while the steward is being called.
+//!
+//! The replay. A `Watch` reads the stored log a page at a time and holds the gate for all of it,
+//! so the repo stalls while a replay runs. See `replay.rs`.
 //!
 //! The wake. A wake issues its call and suspends; while a call is outstanding another `Wake`
 //! only sets the wake again. See `wake.rs`.
@@ -16,6 +19,7 @@ mod batch;
 pub mod call;
 mod calls;
 mod core_slot;
+mod replay;
 mod sockets;
 pub mod testkit;
 mod wake;
@@ -32,6 +36,7 @@ use batch::{Committed, Discarded, Held, Pending};
 use call::{Call, CallAnswer, CallId, Request};
 use calls::AnswerJob;
 use core_slot::{Applied, ApplyError, CoreSlot, Prepared, Waits};
+use replay::Replay;
 use sockets::{Sockets, WithdrawJob, CLOSE_POLICY_VIOLATION, IDENTITY_MISMATCH_REASON};
 use wake::WakeStep;
 
@@ -208,6 +213,8 @@ enum Gate {
     Loading(Job),
     /// `Output::Commit` is out; its sends wait for `Committed`.
     Committing(Box<Pending>),
+    /// `Output::ReadEvents` is out; the watch waits for its page.
+    Replaying(Replay),
 }
 
 /// The step machine of the call path. One per repo; it never reads a clock or does I/O.
@@ -236,7 +243,10 @@ fn wake_at_ms(next_wake_ms: Option<u64>, now_ms: u64) -> Option<u64> {
 /// Whether `input` answers the storage operation that closes the gate, so it is never queued.
 fn answers_storage(input: &Input) -> bool {
     match input {
-        Input::Loaded { .. } | Input::Committed { .. } | Input::CommitFailed { .. } => true,
+        Input::Loaded { .. }
+        | Input::ReplayPage { .. }
+        | Input::Committed { .. }
+        | Input::CommitFailed { .. } => true,
         Input::Opened { .. }
         | Input::Frame { .. }
         | Input::Binary { .. }
@@ -244,7 +254,6 @@ fn answers_storage(input: &Input) -> bool {
         | Input::SendFailed { .. }
         | Input::Wake { .. }
         | Input::TrunkPoked { .. }
-        | Input::ReplayPage { .. }
         | Input::Replied { .. }
         | Input::CallLost { .. } => false,
     }
@@ -295,7 +304,7 @@ impl Host {
     fn gate_is_open(&self) -> bool {
         match self.gate {
             Gate::Open => true,
-            Gate::Loading(_) | Gate::Committing(_) => false,
+            Gate::Loading(_) | Gate::Committing(_) | Gate::Replaying(_) => false,
         }
     }
 
@@ -326,17 +335,10 @@ impl Host {
             Input::SendFailed { now_ms, sock } => self.send_failed(now_ms, sock, out),
             Input::Wake { .. } => self.woken(out),
             Input::TrunkPoked { .. } => self.run(Job::Poke, out),
-            Input::ReplayPage { .. } => self.unmoved("a replay page", out),
+            Input::ReplayPage {
+                sock, events, done, ..
+            } => self.replayed(sock, events, done, out),
         }
-    }
-
-    fn unmoved(&self, what: &str, out: &mut Vec<Output>) {
-        out.push(Output::Log {
-            line: format!(
-                "coordinator {}: {what} is not served by this host yet",
-                self.config.repo
-            ),
-        });
     }
 
     fn failure(&self, operation: &str, cause: &str) -> Output {
@@ -396,7 +398,7 @@ impl Host {
                 let code = CLOSE_POLICY_VIOLATION;
                 self.close_and_withdraw(now_ms, sock, code, IDENTITY_MISMATCH_REASON, out);
             }
-            Action::Watch { .. } => self.unmoved("a watch", out),
+            Action::Watch { from_seq } => self.watch(sock, session, from_seq, out),
         }
     }
 
@@ -431,7 +433,7 @@ impl Host {
             Err(e) => {
                 let abandoned = match std::mem::replace(&mut self.gate, Gate::Open) {
                     Gate::Loading(job) => Some(job),
-                    other @ (Gate::Open | Gate::Committing(_)) => {
+                    other @ (Gate::Open | Gate::Committing(_) | Gate::Replaying(_)) => {
                         self.gate = other;
                         None
                     }
@@ -448,7 +450,7 @@ impl Host {
         self.slot.install(core, stored);
         match std::mem::replace(&mut self.gate, Gate::Open) {
             Gate::Loading(job) => self.run(job, out),
-            Gate::Committing(pending) => self.gate = Gate::Committing(pending),
+            other @ (Gate::Committing(_) | Gate::Replaying(_)) => self.gate = other,
             Gate::Open => {}
         }
     }
@@ -555,7 +557,7 @@ impl Host {
     fn take_pending(&mut self, batch: BatchId) -> Option<Pending> {
         match std::mem::replace(&mut self.gate, Gate::Open) {
             Gate::Committing(pending) if pending.id() == batch => Some(*pending),
-            other @ (Gate::Open | Gate::Loading(_) | Gate::Committing(_)) => {
+            other @ (Gate::Open | Gate::Loading(_) | Gate::Committing(_) | Gate::Replaying(_)) => {
                 self.gate = other;
                 None
             }
@@ -640,7 +642,7 @@ impl Host {
     fn is_poke_awaiting_load(&self) -> bool {
         match &self.gate {
             Gate::Loading(Job::Poke) => true,
-            Gate::Loading(_) | Gate::Open | Gate::Committing(_) => false,
+            Gate::Loading(_) | Gate::Open | Gate::Committing(_) | Gate::Replaying(_) => false,
         }
     }
 }
