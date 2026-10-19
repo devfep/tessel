@@ -1383,7 +1383,7 @@ fn host_a_socket_whose_send_failed_is_closed_once_and_its_agent_withdrawn() {
 }
 
 #[test]
-fn host_a_failed_withdrawal_is_logged_and_closes_and_sends_nothing() {
+fn host_a_failed_withdrawal_is_logged_and_closes_nothing_and_sends_nothing() {
     let mut kit = kit();
     let (_, a2) = a2_waits_behind_a1(&mut kit);
     let received = kit.received(a2).len();
