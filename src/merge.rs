@@ -1629,4 +1629,90 @@ Error: nope
         let colored = tests_failed_reason("a\u{1b}[1;31mb\u{1b}[0m\tc\n", "");
         assert_eq!(quoted_lines(&colored), ["ab c"]);
     }
+
+    fn record(claim: u64, summary: &str) -> MergeRecord {
+        MergeRecord {
+            claim: ClaimId(claim),
+            intent: Intent {
+                summary: summary.into(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            decisions: None,
+            review: None,
+        }
+    }
+
+    #[test]
+    fn merge_records_are_equal_only_when_everything_sent_to_the_steward_is() {
+        assert_eq!(record(1, "s"), record(1, "s"));
+
+        let with_decisions = MergeRecord {
+            decisions: Some(DecisionRecord::default()),
+            ..record(1, "s")
+        };
+        let not_held = MergeRecord {
+            review: Some(None),
+            ..record(1, "s")
+        };
+        let held = MergeRecord {
+            review: Some(Some(ReviewRecord {
+                reasons: Vec::new(),
+                decision: None,
+            })),
+            ..record(1, "s")
+        };
+        for (name, other) in [
+            ("another claim", record(2, "s")),
+            ("another intent", record(1, "t")),
+            ("decisions supplied", with_decisions),
+            ("review not held", not_held.clone()),
+            ("review held", held.clone()),
+        ] {
+            assert_ne!(record(1, "s"), other, "{name}");
+        }
+        assert_ne!(not_held, held, "not held differs from held");
+    }
+
+    /// A line whose JSON quoting, with the label, is `extra` characters past
+    /// `REASON_OUTPUT_MAX_CHARS`.
+    fn line_filling_the_quote_budget(extra: usize) -> String {
+        let label = REASON_OUTPUT_LABEL.chars().count();
+        let json_overhead = r#"[""]"#.len();
+        "x".repeat(REASON_OUTPUT_MAX_CHARS - label - json_overhead + extra)
+    }
+
+    #[test]
+    fn quoted_output_keeps_what_exactly_fills_the_budget_and_drops_one_char_more() {
+        let exact = line_filling_the_quote_budget(0);
+        let quoted = quoted_output(std::slice::from_ref(&exact)).expect("fits exactly");
+        assert_eq!(
+            REASON_OUTPUT_LABEL.chars().count() + quoted.chars().count(),
+            REASON_OUTPUT_MAX_CHARS
+        );
+        let over = line_filling_the_quote_budget(1);
+        assert_eq!(quoted_output(&[over]), None);
+    }
+
+    #[test]
+    fn an_indented_failures_list_ends_at_the_next_unindented_line() {
+        let stdout = "failures:\n    tests::a\ntest result: FAILED. 0 passed; 1 failed\n";
+        assert_eq!(failure_lines(stdout, ""), ["tests::a"]);
+    }
+
+    #[test]
+    fn a_blank_indented_line_ends_the_failures_list() {
+        let stdout = "failures:\n    tests::a\n    \n    not a test\n";
+        assert_eq!(failure_lines(stdout, ""), ["tests::a"]);
+    }
+
+    #[test]
+    fn an_error_line_that_is_not_a_failed_targets_header_is_not_a_marker() {
+        let stdout = "error: could not compile `x`\nsecond line\nthird line\n";
+        assert_eq!(
+            failure_lines(stdout, ""),
+            ["error: could not compile `x`", "second line", "third line"],
+            "no failure recognised, so the last lines are quoted"
+        );
+    }
 }

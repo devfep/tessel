@@ -1880,6 +1880,32 @@ mod tests {
         claim_with(c, who, intent("test work"), scopes)
     }
 
+    #[test]
+    fn a_message_sent_to_the_wrong_family_handler_is_refused_and_changes_nothing() {
+        let mut c = Coordinator::new(Config {
+            run: RunId("test".into()),
+            lease_ms: 30_000,
+            shadow_enabled: false,
+        })
+        .unwrap();
+        let before = serde_json::to_string(&c).unwrap();
+        let lifecycle_gets = ClientMsg::JoinRace {
+            req: RequestId(4),
+            race: RaceId(1),
+        };
+        let collective_gets = ClientMsg::Heartbeat;
+        for effects in [
+            c.handle_lifecycle(&agent("a1"), lifecycle_gets, NOW),
+            c.handle_collective(&agent("a1"), collective_gets, NOW),
+        ] {
+            let [Effect::Reply(ServerMsg::Error { req, code, .. })] = &effects[..] else {
+                panic!("expected one Error reply, got {effects:?}");
+            };
+            assert_eq!((*req, *code), (None, ErrorCode::Malformed));
+        }
+        assert_eq!(serde_json::to_string(&c).unwrap(), before);
+    }
+
     fn replies(effects: &[Effect]) -> Vec<&ServerMsg> {
         let mut out = Vec::new();
         for effect in effects {
@@ -3220,6 +3246,37 @@ mod tests {
             panic!("expected one notice, got {effects:?}");
         };
         assert_eq!(head_of(granted), Some("abc"));
+    }
+
+    #[test]
+    fn a_waiter_stays_behind_an_earlier_waiter_whose_wider_scope_covers_its_own() {
+        let mut c = coordinator();
+        grant(&mut c, "h1", vec![sc(file("src/a.rs"), Mode::EditBody)]);
+        let (b_claim, b_fence) = grant(&mut c, "h2", vec![sc(file("src/b.rs"), Mode::EditBody)]);
+        assert_queued(
+            &wait_for(&mut c, "wide", 4, vec![sc(dir("src"), Mode::EditBody)]),
+            4,
+            1,
+        );
+        assert_queued(
+            &wait_for(
+                &mut c,
+                "narrow",
+                5,
+                vec![sc(file("src/b.rs"), Mode::EditBody)],
+            ),
+            5,
+            2,
+        );
+
+        let effects = release(&mut c, "h2", b_claim, b_fence);
+
+        assert!(
+            granted_notices(&effects).is_empty(),
+            "the narrow request jumped the queue: {effects:?}"
+        );
+        assert!(c.has_queued_request(&agent("wide")));
+        assert!(c.has_queued_request(&agent("narrow")));
     }
 
     #[test]
