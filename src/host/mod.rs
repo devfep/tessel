@@ -304,7 +304,8 @@ impl Host {
     fn gate_is_open(&self) -> bool {
         match self.gate {
             Gate::Open => true,
-            Gate::Loading(_) | Gate::Committing(_) | Gate::Replaying(_) => false,
+            Gate::Loading(_) | Gate::Committing(_) => false,
+            Gate::Replaying(_) => true,
         }
     }
 
