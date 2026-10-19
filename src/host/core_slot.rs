@@ -55,9 +55,9 @@ impl CoreSlot {
     /// Keep `core`, built from `stored`, unless a core is already loaded: a load that finishes
     /// second changes nothing, and the stored size is set on the first load only (R15, R50).
     pub fn install(&mut self, core: Core, stored: Option<&str>) {
+        self.stored = StoredSize::on_load(stored);
         if self.core.is_none() {
             self.core = Some(core);
-            self.stored = StoredSize::on_load(stored);
         }
     }
 
