@@ -5,7 +5,7 @@
 //! # Why repo code cannot run
 //!
 //! - Hooks: `core.hooksPath` names an empty directory the lander owns.
-//! - Filters, merge drivers, textconv, external diff, `core.sshCommand`: each needs a setting in a
+//! - Filters, merge drivers, textconv, external diff: each needs a setting in a
 //!   config file. System and global config are off and `HOME` is an empty directory. **Repo-local
 //!   config is not neutralised**: git runs a `filter.*` or `merge.*.driver` it finds in
 //!   `.git/config`. So every command except `clone` takes a [`Workspace`], a type only the clone
@@ -15,8 +15,10 @@
 //!   here takes a bare path where it needs one.
 //!   The diff commands also pass `--no-ext-diff` and `--no-textconv`.
 //! - Aliases: only builtin subcommands are invoked, and git never lets an alias shadow a builtin.
-//! - `core.fsmonitor` is off and `core.hooksPath` is fixed, both by env config that outranks
-//!   repo config.
+//! - `core.fsmonitor` is off, `core.hooksPath` is fixed, `core.sshCommand` is plain `ssh` and the
+//!   credential helper list is reset, all by env config that outranks repo config. This is
+//!   hardening, not a fix for repo code that runs in a workspace (see
+//!   [`crate::merge::MergePorts::run_package_step`]).
 //! - Transports: `protocol.allow=never` with an allowlist (https, ssh, file), so `ext::` and
 //!   plain `http`/`git` remotes are refused.
 //! - Ambient environment: the command's environment is exactly `GitCommand::env`, so inherited
@@ -186,6 +188,8 @@ impl Git {
             ("transfer.fsckObjects", "true".into()),
             ("core.fsmonitor", "false".into()),
             ("core.attributesFile", "/dev/null".into()),
+            ("core.sshCommand", "ssh".into()),
+            ("credential.helper", "".into()),
             ("protocol.allow", "never".into()),
             ("protocol.https.allow", "always".into()),
             ("protocol.ssh.allow", "always".into()),

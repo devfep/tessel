@@ -9,12 +9,16 @@
 
 mod support;
 
+use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use tempfile::TempDir;
-use tessel_lander::git::Git;
+use tessel_lander::git::{Git, GitCommand};
 use tessel_lander::run::{run, SystemRunner};
 use tessel_lander::workspace::{clone_main, Workspace};
 
@@ -100,6 +104,9 @@ fn setup() -> (
 fn nothing_the_source_repos_config_names_runs_in_the_cloned_workspace() {
     let (scratch, source, markers_dir, git, (m, a, b)) = setup();
     let workspace = clone_source(&git, &source, &scratch.path().join("workspace"));
+    // Same bytes, new modification time, as in the control: a clean filter in the workspace
+    // would run, so no marker proves there is none.
+    fs::write(workspace.path().join("conflict.txt"), "main\n").expect("touch");
 
     let rebase = run(&git.rebase_command(&workspace, &m, &a, &b)).expect("rebase runs");
     assert!(
@@ -145,6 +152,76 @@ fn control_the_same_config_does_run_a_filter_and_a_merge_driver_in_the_source_re
             "{neutralised} ran: {ran:?}"
         );
     }
+}
+
+/// A command of the lander's fixed environment in `workspace`, which is not one of the merge's
+/// commands: it exists to see what git does with config planted in the workspace.
+fn probe(git: &Git, workspace: &Workspace, args: &[&str]) -> GitCommand {
+    let mut argv = vec![OsString::from("git"), "-C".into(), workspace.path().into()];
+    argv.extend(args.iter().map(OsString::from));
+    GitCommand {
+        argv,
+        env: git.env(),
+        timeout: Duration::from_secs(10),
+    }
+}
+
+fn plant_in_workspace(workspace: &Workspace, key: &str, value: &str) {
+    fixture_git(workspace.path(), &["config", key, value]);
+}
+
+#[test]
+fn an_ssh_command_planted_in_the_workspace_config_is_not_run_by_a_fetch() {
+    let (scratch, source, markers_dir, git, _ids) = setup();
+    let workspace = clone_source(&git, &source, &scratch.path().join("workspace"));
+    let marker = markers_dir.join("ssh-in-workspace");
+    plant_in_workspace(
+        &workspace,
+        "core.sshCommand",
+        &format!("touch '{}'; false", marker.display()),
+    );
+
+    let fetch = run(&probe(
+        &git,
+        &workspace,
+        &["ls-remote", "--", "ssh://127.0.0.1:9/repository.git"],
+    ))
+    .expect("ls-remote runs");
+
+    assert!(!fetch.success(), "nothing listens on port 9");
+    assert!(!marker.exists(), "the planted ssh command ran");
+}
+
+#[test]
+fn a_credential_helper_planted_in_the_workspace_config_is_not_asked_for_a_credential() {
+    let (scratch, source, markers_dir, git, _ids) = setup();
+    let workspace = clone_source(&git, &source, &scratch.path().join("workspace"));
+    let marker = markers_dir.join("credential-helper");
+    plant_in_workspace(
+        &workspace,
+        "credential.helper",
+        &format!("!touch '{}'; cat >/dev/null", marker.display()),
+    );
+    let ask = probe(&git, &workspace, &["credential", "fill"]);
+    let mut child = Command::new(&ask.argv[0])
+        .args(&ask.argv[1..])
+        .env_clear()
+        .envs(&ask.env)
+        .env("GIT_ASKPASS", "true")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("git credential runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"protocol=https\nhost=git.example.invalid\n\n")
+        .expect("request");
+    child.wait().expect("git credential ends");
+
+    assert!(!marker.exists(), "the planted credential helper ran");
 }
 
 #[test]

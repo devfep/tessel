@@ -275,6 +275,8 @@ fn every_command_runs_with_no_user_config_empty_hooks_fsck_and_no_prompt() {
         ("transfer.fsckObjects", "true"),
         ("core.fsmonitor", "false"),
         ("core.attributesFile", "/dev/null"),
+        ("core.sshCommand", "ssh"),
+        ("credential.helper", ""),
         ("protocol.allow", "never"),
         ("protocol.https.allow", "always"),
         ("protocol.ssh.allow", "always"),
