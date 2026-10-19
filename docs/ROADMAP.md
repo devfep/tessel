@@ -224,6 +224,15 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   348) and `a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for` (`tests/githook.rs`
   410), and three tests in `tessel-swarm/tests/reconnect.rs`. Done: each test passes with its
   timing bound removed or made explicit, shown on a CI runner.
+- [ ] **HOST-MERGE-STANDIN** — M3, with P1-CORE-STAGED-LANDING; its adapter half is M4's. From
+  the P1-MOVE-WAKE review: until the staged landing, a merge is one `Prepare` call that stands for
+  the steward's whole `/merge`, and the host reads `Prepared { base, head }` as merged
+  (`src/host/calls.rs`). An adapter that gave `Prepare` its frozen meaning (rebase, no landing)
+  would make the core report merges that never landed (rule 6). The frozen `Prepare` also has no
+  field for the merge record `runtime.rs` sends today (`merge::request_body`: the claim's intent,
+  decision record and review), so the steward's evidence record would lack them. Done: the
+  staged landing removes the stand-in, or M4's adapter maps `Prepare` to `/merge` with a test;
+  and the record reaches the lander, by a route Felix approves if it changes `Call`.
 - [ ] **HOST-CALL-DEADLINE-BACKSTOP** — M4, with the adapter's call deadlines. From the
   P1-MOVE-WAKE review: while a call is out, each `Wake` re-arms the watchdog, so a merge stalls
   if the adapter never answers or sends `CallLost`. The host knows each call's `deadline_ms`.
