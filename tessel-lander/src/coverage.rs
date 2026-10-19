@@ -14,6 +14,9 @@ use std::collections::HashSet;
 use serde_json::Value;
 use tessel_coordinator::protocol::{Mode, Scope, ScopeClaim};
 
+/// Most paths a refusal names; the rest are counted, not listed.
+pub const MAX_REPORTED_FILES: usize = 50;
+
 /// A change to one path that needs a claim in a mode that permits `mode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requirement {
