@@ -12,7 +12,6 @@ mod support;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -22,20 +21,17 @@ use tessel_lander::git::{Git, GitCommand};
 use tessel_lander::run::{run, SystemRunner};
 use tessel_lander::workspace::{clone_main, Workspace};
 
-use support::{cloned, conflicting_fixture, failed_clone, fixture_git, sources_for};
-
-fn script(path: &Path, body: &str) {
-    fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
-}
+use support::{
+    cloned, conflicting_fixture, failed_clone, file_names, fixture_git, sources_for, write_script,
+};
 
 /// Plants every repo-code hook in `source`'s own config. Markers are files in `markers`.
 fn plant(source: &Path, markers: &Path) {
     let touch = |name: &str| format!("touch '{}'", markers.join(name).display());
     let hook = source.join(".git").join("hooks").join("post-checkout");
-    script(&hook, &touch("hook"));
+    write_script(&hook, &touch("hook"));
     let fsmonitor = markers.join("fsmonitor.sh");
-    script(&fsmonitor, &touch("fsmonitor"));
+    write_script(&fsmonitor, &touch("fsmonitor"));
     for (key, value) in [
         (
             "filter.evil.clean",
@@ -63,12 +59,8 @@ fn plant(source: &Path, markers: &Path) {
 }
 
 fn markers(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(dir)
-        .expect("read markers")
-        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
-        .filter(|n| n != "fsmonitor.sh")
-        .collect();
-    names.sort();
+    let mut names = file_names(dir);
+    names.retain(|name| name != "fsmonitor.sh");
     names
 }
 

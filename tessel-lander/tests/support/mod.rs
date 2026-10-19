@@ -13,6 +13,7 @@
 pub mod repos;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -131,4 +132,21 @@ pub fn conflicting_fixture(repo: &Path) -> (Sha, Sha, Sha) {
     fixture_git(repo, &["checkout", "--quiet", "main"]);
     let m = commit_file(repo, "conflict.txt", "main\n");
     (m, a, b)
+}
+
+/// Writes an executable `sh` script, making its directory if needed.
+pub fn write_script(path: &Path, body: &str) {
+    fs::create_dir_all(path.parent().expect("parent")).expect("script dir");
+    fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+/// The sorted names in `dir`: where planted code leaves a marker file when it runs.
+pub fn file_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .expect("read markers")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
 }
