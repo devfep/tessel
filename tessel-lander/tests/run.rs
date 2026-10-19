@@ -165,61 +165,88 @@ fn a_grandchild_holding_the_pipe_cannot_outlast_the_timeout() {
     );
 }
 
+/// Kills the process whose pid is in the file when dropped, so a failing test leaves no `sleep`.
+struct KillOnDrop(std::path::PathBuf);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Ok(pid) = std::fs::read_to_string(&self.0) {
+            std::process::Command::new("kill")
+                .args(["-9", pid.trim()])
+                .output()
+                .ok();
+        }
+    }
+}
+
+fn alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .output()
+        .expect("kill runs")
+        .status
+        .success()
+}
+
+/// Waits up to five seconds for the process to be gone (a zombie still answers `kill -0`).
+fn assert_gone(pid_file: &std::path::Path) {
+    let pid = std::fs::read_to_string(pid_file).expect("pid written");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(pid.trim()) {
+        assert!(
+            Instant::now() < deadline,
+            "process {} still exists",
+            pid.trim()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn a_timeout_kills_the_whole_process_group_not_only_the_command() {
     let scratch = tempfile::TempDir::new().expect("tempdir");
     let pid_file = scratch.path().join("grandchild.pid");
+    let _cleanup = KillOnDrop(pid_file.clone());
     let mut probe = sh(&format!(
         "sleep 30 & echo $! > '{}'; sleep 30",
         pid_file.display()
     ));
     probe.timeout = Duration::from_millis(500);
     run(&probe).expect_err("times out");
-    let pid = std::fs::read_to_string(&pid_file).expect("pid written");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let alive = std::process::Command::new("kill")
-            .args(["-0", pid.trim()])
-            .output()
-            .expect("kill runs")
-            .status
-            .success();
-        if !alive {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "grandchild {} still running",
-            pid.trim()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert_gone(&pid_file);
 }
 
 #[test]
 fn a_background_process_is_killed_when_the_command_finishes_normally() {
     let scratch = tempfile::TempDir::new().expect("tempdir");
     let pid_file = scratch.path().join("grandchild.pid");
+    let _cleanup = KillOnDrop(pid_file.clone());
     let script = format!(
         "sleep 30 >/dev/null 2>&1 & echo $! > '{}'",
         pid_file.display()
     );
     let output = run(&sh(&script)).expect("finishes");
     assert!(output.success());
-    let pid = std::fs::read_to_string(&pid_file).expect("pid written");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while std::process::Command::new("kill")
-        .args(["-0", pid.trim()])
-        .output()
-        .expect("kill runs")
-        .status
-        .success()
-    {
-        assert!(
-            Instant::now() < deadline,
-            "grandchild {} still running",
-            pid.trim()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert_gone(&pid_file);
+}
+
+#[test]
+fn a_timed_out_command_is_reaped_not_left_a_zombie() {
+    let scratch = tempfile::TempDir::new().expect("tempdir");
+    let pid_file = scratch.path().join("command.pid");
+    let _cleanup = KillOnDrop(pid_file.clone());
+    let mut probe = sh(&format!(
+        "echo $$ > '{}'; exec sleep 30",
+        pid_file.display()
+    ));
+    probe.timeout = Duration::from_millis(300);
+    let started = Instant::now();
+    let error = run(&probe).expect_err("times out");
+    assert!(matches!(error, RunError::TimedOut { .. }), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_gone(&pid_file);
 }

@@ -18,7 +18,6 @@ use crate::git::GitCommand;
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-const REAP_WAIT: Duration = Duration::from_secs(2);
 
 /// What a finished command wrote. Non-UTF-8 bytes (file names are untrusted) become U+FFFD.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +90,7 @@ pub fn run(command: &GitCommand) -> Result<GitOutput, RunError> {
             command: description.clone(),
             source,
         })?;
+    let group = child.id();
     let (sender, receiver) = mpsc::channel();
     let started = spawn_reader("stdout", child.stdout.take(), &sender)
         .and_then(|()| spawn_reader("stderr", child.stderr.take(), &sender));
@@ -99,21 +99,13 @@ pub fn run(command: &GitCommand) -> Result<GitOutput, RunError> {
         .map_err(|()| RunError::ReaderLost {
             command: description.clone(),
         })
-        .and_then(|()| {
-            supervise(
-                &mut child,
-                &receiver,
-                deadline,
-                command.timeout,
-                &description,
-            )
-        });
-    kill_group(&child);
+        .and_then(|()| supervise(child, &receiver, deadline, command.timeout, &description));
+    kill_group(group);
     outcome
 }
 
 fn supervise(
-    child: &mut Child,
+    child: Child,
     receiver: &Receiver<StreamResult>,
     deadline: Instant,
     timeout: Duration,
@@ -144,8 +136,10 @@ fn timed_out(description: &str, timeout: Duration) -> RunError {
     }
 }
 
+/// Polls until the child exits or `deadline` passes. On the deadline the group is killed and the
+/// child is handed to a thread that reaps it, so it is never left a zombie and `run` does not wait.
 fn wait_until(
-    child: &mut Child,
+    mut child: Child,
     deadline: Instant,
     timeout: Duration,
     description: &str,
@@ -159,20 +153,10 @@ fn wait_until(
             return Ok(status.code());
         }
         if Instant::now() >= deadline {
-            kill_group(child);
-            reap(child);
+            kill_group(child.id());
+            thread::spawn(move || child.wait());
             return Err(timed_out(description, timeout));
         }
-        thread::sleep(POLL_INTERVAL);
-    }
-}
-
-/// Waits briefly for a killed child to be gone, so it is not left a zombie. Gives up after
-/// [`REAP_WAIT`] rather than hang on a child that did not die.
-fn reap(child: &mut Child) {
-    let deadline = Instant::now() + REAP_WAIT;
-    // A wait error means there is nothing left to reap.
-    while child.try_wait().is_ok_and(|status| status.is_none()) && Instant::now() < deadline {
         thread::sleep(POLL_INTERVAL);
     }
 }
@@ -246,9 +230,9 @@ fn finish(bytes: &[u8], stream: &'static str, description: &str) -> Result<Strin
     Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// Kills every process in the child's group. The child leads its own group (`process_group(0)`).
-fn kill_group(child: &Child) {
-    let Ok(group) = i32::try_from(child.id()) else {
+/// Kills every process in the group `group`, the pid of the child that leads it. The child leads its own group (`process_group(0)`).
+fn kill_group(group: u32) {
+    let Ok(group) = i32::try_from(group) else {
         return;
     };
     // SAFETY: `killpg` takes two integers and touches no memory. The group was created for this
