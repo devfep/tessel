@@ -5,17 +5,25 @@
 //! # Why repo code cannot run
 //!
 //! - Hooks: `core.hooksPath` names an empty directory the lander owns.
-//! - Filters, merge drivers, textconv, external diff, `core.sshCommand`: each needs a setting in a
+//! - Filters, merge drivers, textconv, external diff: each needs a setting in a
 //!   config file. System and global config are off and `HOME` is an empty directory. **Repo-local
 //!   config is not neutralised**: git runs a `filter.*` or `merge.*.driver` it finds in
-//!   `.git/config`. So every command except `clone` must run in a workspace that
-//!   [`Git::clone_command`] created, whose local config git writes itself and which holds no
-//!   such setting (`git clone` copies no config from the source; a repo's `.gitattributes` can
-//!   name a driver but cannot define one). Never point these builders at any other repository.
+//!   `.git/config`. So every command except `clone` takes a [`Workspace`], a type only the clone
+//!   step ([`crate::workspace::clone_main`]) can make: a directory git itself created, whose
+//!   local config git wrote and which holds no such setting (`git clone` copies no config from
+//!   the source; a repo's `.gitattributes` can name a driver but cannot define one). No builder
+//!   here takes a bare path where it needs one.
 //!   The diff commands also pass `--no-ext-diff` and `--no-textconv`.
+//! - Repository discovery: every command that takes a [`Workspace`] sets `GIT_DIR` and
+//!   `GIT_WORK_TREE` to it, so git never searches the parent directories and a workspace with no
+//!   `.git` of its own fails instead of finding another repository's config. (Env, not
+//!   `--git-dir`, to keep the argv the steward's tests pin; not `GIT_CEILING_DIRECTORIES`, which
+//!   only bounds the search and leaves discovery on.)
 //! - Aliases: only builtin subcommands are invoked, and git never lets an alias shadow a builtin.
-//! - `core.fsmonitor` is off and `core.hooksPath` is fixed, both by env config that outranks
-//!   repo config.
+//! - `core.fsmonitor` is off, `core.hooksPath` is fixed, `core.sshCommand` is plain `ssh` and the
+//!   credential helper list is reset, all by env config that outranks repo config. This is
+//!   hardening, not a fix for repo code that runs in a workspace (see
+//!   [`crate::merge::MergePorts::run_package_step`]).
 //! - Transports: `protocol.allow=never` with an allowlist (https, ssh, file), so `ext::` and
 //!   plain `http`/`git` remotes are refused.
 //! - Ambient environment: the command's environment is exactly `GitCommand::env`, so inherited
@@ -30,6 +38,7 @@ use std::time::Duration;
 
 use crate::run::{run, RunError};
 use crate::types::{is_safe_branch_name, Sha};
+use crate::workspace::Workspace;
 
 pub const MAIN_BRANCH: &str = "main";
 pub const COMMITTER_NAME: &str = "Tessel Lander";
@@ -41,7 +50,10 @@ pub const MAX_PUSH_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
 const CLONE_TIMEOUT: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-const LOCAL_TIMEOUT: Duration = Duration::from_secs(6);
+/// The timeout of the quick local commands (base, verify, merge-base, diff, head, show).
+pub const LOCAL_TIMEOUT: Duration = Duration::from_secs(6);
+/// Upper bound on the quick local git commands of one merge; the time budget is sized from it.
+pub const LOCAL_GIT_COMMANDS_MAX: usize = 8;
 const REBASE_TIMEOUT: Duration = Duration::from_secs(30);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -53,13 +65,10 @@ pub struct GitCommand {
     pub timeout: Duration,
 }
 
-/// Where the merge runs and what it reads. `fork_branch` is the fork's default branch.
-///
-/// `workspace` must be the directory [`Git::clone_command`] clones into, and no other: its local
-/// config is the one git wrote, free of filters and drivers (see the module docs).
+/// What a merge reads. `fork_branch` is the fork's default branch. Where it runs is a
+/// [`Workspace`], which only the clone step makes.
 #[derive(Debug, Clone)]
 pub struct MergeSources {
-    pub workspace: PathBuf,
     pub main_remote: String,
     pub fork_remote: String,
     pub fork_branch: String,
@@ -110,6 +119,16 @@ pub fn ensure_supported_git(version_output: &str) -> Result<(), CommandError> {
 }
 
 /// The fixed environment of every git command and the builders for the merge's commands.
+///
+/// A builder that runs in a repository takes a [`Workspace`], never a path:
+///
+/// ```compile_fail,E0308
+/// use std::path::Path;
+/// use tessel_lander::git::Git;
+///
+/// let git = Git::new("/lander/home".into(), "/lander/hooks".into());
+/// let _ = git.base_command(Path::new("/a/repository/with/its/own/config"));
+/// ```
 #[derive(Debug, Clone)]
 pub struct Git {
     home: PathBuf,
@@ -174,6 +193,8 @@ impl Git {
             ("transfer.fsckObjects", "true".into()),
             ("core.fsmonitor", "false".into()),
             ("core.attributesFile", "/dev/null".into()),
+            ("core.sshCommand", "ssh".into()),
+            ("credential.helper", "".into()),
             ("protocol.allow", "never".into()),
             ("protocol.https.allow", "always".into()),
             ("protocol.ssh.allow", "always".into()),
@@ -214,16 +235,27 @@ impl Git {
         }
     }
 
-    fn local(&self, workspace: &Path, args: &[&str], timeout: Duration) -> GitCommand {
+    fn local(&self, workspace: &Workspace, args: &[&str], timeout: Duration) -> GitCommand {
         let mut command = self.command(&[], timeout);
         command.argv.push("-C".into());
-        command.argv.push(workspace.into());
+        command.argv.push(workspace.path().into());
+        // Without these git searches the parent directories for a repository, so a workspace
+        // with no `.git` of its own (an empty directory inside another repository) would run
+        // that repository's config.
+        command
+            .env
+            .insert("GIT_DIR".to_owned(), workspace.path().join(".git").into());
+        command
+            .env
+            .insert("GIT_WORK_TREE".to_owned(), workspace.path().into());
         command.argv.extend(args.iter().map(OsString::from));
         command
     }
 
-    /// Clones main with its full history (the rebase needs the merge-base).
-    pub fn clone_command(&self, sources: &MergeSources) -> GitCommand {
+    /// Clones main with its full history (the rebase needs the merge-base) into `destination`,
+    /// which git refuses unless it is missing or empty. [`crate::workspace::clone_main`] runs it
+    /// and makes the [`Workspace`].
+    pub fn clone_command(&self, sources: &MergeSources, destination: &Path) -> GitCommand {
         let mut command = self.command(
             &[
                 "clone",
@@ -234,18 +266,20 @@ impl Git {
             CLONE_TIMEOUT,
         );
         command.argv.push((&sources.main_remote).into());
-        command
-            .argv
-            .push(sources.workspace.clone().into_os_string());
+        command.argv.push(destination.into());
         command
     }
 
     /// Fetches only the fork's default branch, into `refs/remotes/fork/<branch>`.
-    pub fn fetch_fork_command(&self, sources: &MergeSources) -> Result<GitCommand, CommandError> {
+    pub fn fetch_fork_command(
+        &self,
+        workspace: &Workspace,
+        sources: &MergeSources,
+    ) -> Result<GitCommand, CommandError> {
         let branch = &sources.fork_branch;
         let reference = fork_ref(branch)?;
         Ok(self.local(
-            &sources.workspace,
+            workspace,
             &[
                 "fetch",
                 "--no-tags",
@@ -258,7 +292,7 @@ impl Git {
     }
 
     /// Resolves main as cloned. Stdout is the sha.
-    pub fn base_command(&self, workspace: &Path) -> GitCommand {
+    pub fn base_command(&self, workspace: &Workspace) -> GitCommand {
         let reference = format!("refs/remotes/origin/{MAIN_BRANCH}^{{commit}}");
         self.local(
             workspace,
@@ -268,7 +302,7 @@ impl Git {
     }
 
     /// Exit 0 when `main` is a commit on main's history as cloned.
-    pub fn on_main_command(&self, workspace: &Path, main: &Sha) -> GitCommand {
+    pub fn on_main_command(&self, workspace: &Workspace, main: &Sha) -> GitCommand {
         let reference = format!("refs/remotes/origin/{MAIN_BRANCH}");
         self.local(
             workspace,
@@ -278,7 +312,7 @@ impl Git {
     }
 
     /// Exit 0 when the commit object was fetched, 1 when it was not.
-    pub fn commit_exists_command(&self, workspace: &Path, commit: &Sha) -> GitCommand {
+    pub fn commit_exists_command(&self, workspace: &Workspace, commit: &Sha) -> GitCommand {
         let object = format!("{commit}^{{commit}}");
         self.local(
             workspace,
@@ -290,19 +324,25 @@ impl Git {
     /// Exit 0 when the commit is reachable from the fork's default branch, 1 when it is not.
     pub fn reachable_command(
         &self,
+        workspace: &Workspace,
         sources: &MergeSources,
         commit: &Sha,
     ) -> Result<GitCommand, CommandError> {
         let reference = fork_ref(&sources.fork_branch)?;
         Ok(self.local(
-            &sources.workspace,
+            workspace,
             &["merge-base", "--is-ancestor", commit.as_str(), &reference],
             LOCAL_TIMEOUT,
         ))
     }
 
     /// Stdout is the merge-base of main and the commit.
-    pub fn merge_base_command(&self, workspace: &Path, base: &Sha, commit: &Sha) -> GitCommand {
+    pub fn merge_base_command(
+        &self,
+        workspace: &Workspace,
+        base: &Sha,
+        commit: &Sha,
+    ) -> GitCommand {
         self.local(
             workspace,
             &["merge-base", base.as_str(), commit.as_str()],
@@ -314,7 +354,7 @@ impl Git {
     /// Author name, email and date stay those of the replayed commits.
     pub fn rebase_command(
         &self,
-        workspace: &Path,
+        workspace: &Workspace,
         base: &Sha,
         merge_base: &Sha,
         commit: &Sha,
@@ -345,7 +385,7 @@ impl Git {
     }
 
     /// Stdout is the NUL-separated repo paths that are unmerged after a stopped rebase.
-    pub fn conflicts_command(&self, workspace: &Path) -> GitCommand {
+    pub fn conflicts_command(&self, workspace: &Workspace) -> GitCommand {
         self.local(
             workspace,
             &["diff", "--name-only", "--diff-filter=U", "-z"],
@@ -356,7 +396,12 @@ impl Git {
     /// Stdout is the NUL-separated `git diff --name-status` records of `base..head`, with renames
     /// detected. `-z` keeps paths unquoted; they are untrusted data and are never put in a
     /// command.
-    pub fn changed_files_command(&self, workspace: &Path, base: &Sha, head: &Sha) -> GitCommand {
+    pub fn changed_files_command(
+        &self,
+        workspace: &Workspace,
+        base: &Sha,
+        head: &Sha,
+    ) -> GitCommand {
         let range = format!("{base}..{head}");
         self.local(
             workspace,
@@ -376,7 +421,7 @@ impl Git {
     /// Stdout is the patch of `base..head` for a person to read: renames detected, no colour, and
     /// no external diff or text conversion program. Pass the merge-base as `base` to see only what
     /// the commit adds.
-    pub fn diff_command(&self, workspace: &Path, base: &Sha, head: &Sha) -> GitCommand {
+    pub fn diff_command(&self, workspace: &Workspace, base: &Sha, head: &Sha) -> GitCommand {
         let range = format!("{base}..{head}");
         self.local(
             workspace,
@@ -394,13 +439,13 @@ impl Git {
     }
 
     /// Stdout is the content of `path` in `commit` (exit non-zero when it is not there).
-    pub fn show_file_command(&self, workspace: &Path, commit: &Sha, path: &str) -> GitCommand {
+    pub fn show_file_command(&self, workspace: &Workspace, commit: &Sha, path: &str) -> GitCommand {
         let object = format!("{commit}:{path}");
         self.local(workspace, &["show", &object], LOCAL_TIMEOUT)
     }
 
     /// Stdout is the sha HEAD points at.
-    pub fn head_command(&self, workspace: &Path) -> GitCommand {
+    pub fn head_command(&self, workspace: &Workspace) -> GitCommand {
         self.local(
             workspace,
             &["rev-parse", "--verify", "HEAD^{commit}"],
@@ -410,9 +455,15 @@ impl Git {
 
     /// Pushes `head` to main only if main is still `base`. Never forces: `head` descends from
     /// `base`, and the lease names the sha that was read at the start.
-    pub fn push_command(&self, sources: &MergeSources, base: &Sha, head: &Sha) -> GitCommand {
+    pub fn push_command(
+        &self,
+        workspace: &Workspace,
+        sources: &MergeSources,
+        base: &Sha,
+        head: &Sha,
+    ) -> GitCommand {
         self.local(
-            &sources.workspace,
+            workspace,
             &[
                 "-c",
                 &format!("http.postBuffer={MAX_PUSH_BODY_BYTES}"),

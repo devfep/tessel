@@ -9,9 +9,10 @@ use std::fs;
 
 use tempfile::TempDir;
 use tessel_lander::git::Git;
-use tessel_lander::run::run;
+use tessel_lander::run::{run, SystemRunner};
+use tessel_lander::workspace::clone_main;
 
-use support::{fixture, fixture_git};
+use support::{cloned, fixture, fixture_git, sources_for};
 
 /// The head after replaying the fixture's feature commit onto its advanced main, written down so
 /// that a committer name, email or date taken from anywhere else changes it.
@@ -52,13 +53,24 @@ fn the_rebased_head_is_a_known_id_whatever_the_callers_environment_says() {
     }
 
     let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
-    let rebase = run(&git.rebase_command(&repo, &m, &a, &b)).expect("rebase runs");
+    let remote = repo.display().to_string();
+    let sources = sources_for(&remote, &remote, "feature");
+    let workspace = cloned(
+        clone_main(
+            &git,
+            &SystemRunner,
+            &sources,
+            &scratch.path().join("workspace"),
+        )
+        .expect("clone runs"),
+    );
+    let rebase = run(&git.rebase_command(&workspace, &m, &a, &b)).expect("rebase runs");
     assert!(rebase.success(), "rebase: {}", rebase.stderr);
-    let head = run(&git.head_command(&repo)).expect("head runs");
+    let head = run(&git.head_command(&workspace)).expect("head runs");
     assert_eq!(head.stdout.trim(), REBASED_HEAD);
 
     let line = fixture_git(
-        &repo,
+        workspace.path(),
         &["log", "-1", "--format=%an|%ae|%aI|%cn|%ce|%cI", "HEAD"],
     );
     assert_eq!(

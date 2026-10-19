@@ -10,11 +10,61 @@
     reason = "a failed expect is a failed test; the helpers are not #[test] functions"
 )]
 
+pub mod repos;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use tessel_lander::git::{Git, GitCommand, MergeSources};
+use tessel_lander::run::{GitOutput, GitRunner, RunError};
 use tessel_lander::types::Sha;
+use tessel_lander::workspace::{clone_main, CloneOutcome, Workspace};
+
+/// A runner for which every command succeeds without running anything.
+pub struct AlwaysOk;
+
+impl GitRunner for AlwaysOk {
+    fn run(&self, _command: &GitCommand) -> Result<GitOutput, RunError> {
+        Ok(GitOutput {
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+        })
+    }
+}
+
+pub fn sources_for(main_remote: &str, fork_remote: &str, fork_branch: &str) -> MergeSources {
+    MergeSources {
+        main_remote: main_remote.to_owned(),
+        fork_remote: fork_remote.to_owned(),
+        fork_branch: fork_branch.to_owned(),
+    }
+}
+
+/// A workspace at `path` through the clone step with a runner that runs nothing, for tests of
+/// the command builders. The directory does not exist.
+pub fn workspace_at(path: &str) -> Workspace {
+    let git = Git::new("/lander/home".into(), "/lander/hooks".into());
+    let sources = sources_for("https://git.example/demo.git", "", "main");
+    cloned(clone_main(&git, &AlwaysOk, &sources, Path::new(path)).expect("clone step runs"))
+}
+
+pub fn cloned(outcome: CloneOutcome) -> Workspace {
+    match outcome {
+        CloneOutcome::Cloned(workspace) => workspace,
+        CloneOutcome::Failed(output) => unreachable!("the clone failed: {}", output.stderr),
+    }
+}
+
+pub fn failed_clone(outcome: CloneOutcome) -> GitOutput {
+    match outcome {
+        CloneOutcome::Failed(output) => output,
+        CloneOutcome::Cloned(workspace) => {
+            unreachable!("the clone made {}", workspace.path().display())
+        }
+    }
+}
 
 /// Runs git in `repo` with its own cleared environment and returns trimmed stdout.
 pub fn fixture_git(repo: &Path, args: &[&str]) -> String {

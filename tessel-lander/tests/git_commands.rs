@@ -8,11 +8,16 @@
 
 use std::path::{Path, PathBuf};
 
+mod support;
+
 use tessel_lander::git::{
     ensure_supported_git, parse_nul_separated, CommandError, Git, GitCommand, MergeSources,
     COMMITTER_DATE, COMMITTER_EMAIL, COMMITTER_NAME, MAX_PUSH_BODY_BYTES,
 };
 use tessel_lander::types::{is_safe_branch_name, Sha};
+use tessel_lander::workspace::Workspace;
+
+use support::workspace_at;
 
 fn sha(character: char) -> Sha {
     Sha::parse(&character.to_string().repeat(40)).expect("test sha")
@@ -27,11 +32,14 @@ fn git() -> Git {
 
 fn sources() -> MergeSources {
     MergeSources {
-        workspace: PathBuf::from("/workspace"),
         main_remote: "https://git.example/tessel/demo.git".to_owned(),
         fork_remote: "https://git.example/tessel/demo--a1.git".to_owned(),
         fork_branch: "main".to_owned(),
     }
+}
+
+fn workspace() -> Workspace {
+    workspace_at("/workspace")
 }
 
 fn argv(command: &GitCommand) -> Vec<String> {
@@ -73,7 +81,8 @@ fn config_of(command: &GitCommand) -> Vec<(String, String)> {
 #[test]
 fn clones_main_with_dashdash_before_the_remote_so_it_cannot_be_read_as_an_option() {
     let sources = sources();
-    let argv = argv(&git().clone_command(&sources));
+    let argv = argv(&git().clone_command(&sources, Path::new("/workspace")));
+    assert_eq!(argv.last().map(String::as_str), Some("/workspace"));
     assert!(position(&argv, "--") < position(&argv, &sources.main_remote));
     assert!(argv.contains(&"--branch=main".to_owned()));
 }
@@ -81,7 +90,11 @@ fn clones_main_with_dashdash_before_the_remote_so_it_cannot_be_read_as_an_option
 #[test]
 fn fetches_only_the_forks_default_branch_into_refs_remotes_fork() {
     let sources = sources();
-    let argv = argv(&git().fetch_fork_command(&sources).expect("safe branch"));
+    let argv = argv(
+        &git()
+            .fetch_fork_command(&workspace(), &sources)
+            .expect("safe branch"),
+    );
     assert_eq!(
         argv[argv.len() - 2..],
         [
@@ -98,11 +111,11 @@ fn refuses_a_fork_branch_name_that_is_not_safe_in_a_refspec() {
         ..sources()
     };
     let fetch = git()
-        .fetch_fork_command(&hostile)
+        .fetch_fork_command(&workspace(), &hostile)
         .expect_err("hostile branch");
     assert!(fetch.to_string().contains("unsafe fork branch"), "{fetch}");
     let reachable = git()
-        .reachable_command(&hostile, &sha('a'))
+        .reachable_command(&workspace(), &hostile, &sha('a'))
         .expect_err("hostile branch");
     assert!(
         reachable.to_string().contains("unsafe fork branch"),
@@ -113,7 +126,7 @@ fn refuses_a_fork_branch_name_that_is_not_safe_in_a_refspec() {
 #[test]
 fn passes_a_commit_as_one_argv_element_never_inside_shell_text() {
     let command = git()
-        .reachable_command(&sources(), &sha('a'))
+        .reachable_command(&workspace(), &sources(), &sha('a'))
         .expect("safe branch");
     assert_eq!(
         argv(&command),
@@ -131,7 +144,7 @@ fn passes_a_commit_as_one_argv_element_never_inside_shell_text() {
 
 #[test]
 fn rebases_with_a_fixed_committer_identity_and_date_and_no_hooks_or_signing() {
-    let command = git().rebase_command(Path::new("/workspace"), &sha('b'), &sha('c'), &sha('d'));
+    let command = git().rebase_command(&workspace(), &sha('b'), &sha('c'), &sha('d'));
     assert_eq!(
         env_value(&command, "GIT_COMMITTER_NAME").as_deref(),
         Some(COMMITTER_NAME)
@@ -165,7 +178,7 @@ fn rebases_with_a_fixed_committer_identity_and_date_and_no_hooks_or_signing() {
 
 #[test]
 fn sizes_gits_post_buffer_to_the_gateways_body_limit_so_git_sends_no_probe_request() {
-    let argv = argv(&git().push_command(&sources(), &sha('b'), &sha('e')));
+    let argv = argv(&git().push_command(&workspace(), &sources(), &sha('b'), &sha('e')));
     assert_eq!(MAX_PUSH_BODY_BYTES, 16_777_216);
     let flag = position(&argv, "http.postBuffer=16777216");
     assert_eq!(argv[flag - 1], "-c");
@@ -175,7 +188,7 @@ fn sizes_gits_post_buffer_to_the_gateways_body_limit_so_git_sends_no_probe_reque
 #[test]
 fn pushes_with_a_lease_on_the_sha_main_had_when_it_was_cloned_and_never_forces() {
     let sources = sources();
-    let argv = argv(&git().push_command(&sources, &sha('b'), &sha('e')));
+    let argv = argv(&git().push_command(&workspace(), &sources, &sha('b'), &sha('e')));
     assert!(argv.contains(&format!(
         "--force-with-lease=refs/heads/main:{}",
         "b".repeat(40)
@@ -195,9 +208,10 @@ fn pushes_with_a_lease_on_the_sha_main_had_when_it_was_cloned_and_never_forces()
 #[test]
 fn runs_every_local_command_against_the_workspace_not_the_current_directory() {
     let git = git();
-    let base = argv(&git.base_command(Path::new("/w")));
+    let w = workspace_at("/w");
+    let base = argv(&git.base_command(&w));
     assert_eq!(base[..3], ["git", "-C", "/w"]);
-    let conflicts = argv(&git.conflicts_command(Path::new("/w")));
+    let conflicts = argv(&git.conflicts_command(&w));
     assert_eq!(conflicts[..3], ["git", "-C", "/w"]);
 }
 
@@ -216,7 +230,7 @@ fn parse_nul_separated_returns_no_paths_for_empty_output() {
 
 #[test]
 fn diff_command_diffs_the_merge_base_against_the_commit_with_no_repo_named_program() {
-    let command = git().diff_command(Path::new("/workspace"), &sha('a'), &sha('b'));
+    let command = git().diff_command(&workspace(), &sha('a'), &sha('b'));
     assert_eq!(
         argv(&command),
         [
@@ -236,7 +250,7 @@ fn diff_command_diffs_the_merge_base_against_the_commit_with_no_repo_named_progr
 
 #[test]
 fn every_command_runs_with_no_user_config_empty_hooks_fsck_and_no_prompt() {
-    let command = git().head_command(Path::new("/w"));
+    let command = git().head_command(&workspace_at("/w"));
     assert_eq!(
         env_value(&command, "GIT_CONFIG_NOSYSTEM").as_deref(),
         Some("1")
@@ -261,6 +275,8 @@ fn every_command_runs_with_no_user_config_empty_hooks_fsck_and_no_prompt() {
         ("transfer.fsckObjects", "true"),
         ("core.fsmonitor", "false"),
         ("core.attributesFile", "/dev/null"),
+        ("core.sshCommand", "ssh"),
+        ("credential.helper", ""),
         ("protocol.allow", "never"),
         ("protocol.https.allow", "always"),
         ("protocol.ssh.allow", "always"),
@@ -275,7 +291,7 @@ fn every_command_runs_with_no_user_config_empty_hooks_fsck_and_no_prompt() {
 
 #[test]
 fn only_the_rebase_sets_a_committer() {
-    let head = git().head_command(Path::new("/w"));
+    let head = git().head_command(&workspace_at("/w"));
     assert!(head
         .env
         .keys()
@@ -285,7 +301,7 @@ fn only_the_rebase_sets_a_committer() {
 #[test]
 fn builds_the_remaining_local_commands_against_the_workspace_with_one_element_per_value() {
     let git = git();
-    let w = Path::new("/w");
+    let w = &workspace_at("/w");
     let (a, b) = (sha('a'), sha('b'));
     let (a40, b40) = ("a".repeat(40), "b".repeat(40));
     assert_eq!(
@@ -366,7 +382,7 @@ fn builds_the_remaining_local_commands_against_the_workspace_with_one_element_pe
 
 #[test]
 fn a_path_with_shell_metacharacters_stays_one_argv_element() {
-    let command = git().show_file_command(Path::new("/w"), &sha('a'), "x; touch y $(z)\n");
+    let command = git().show_file_command(&workspace_at("/w"), &sha('a'), "x; touch y $(z)\n");
     let last = command.argv.last().expect("argv");
     assert_eq!(
         last.to_string_lossy(),
