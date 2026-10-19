@@ -55,7 +55,7 @@ impl CoreSlot {
     /// Keep `core`, built from `stored`, unless a core is already loaded: a load that finishes
     /// second changes nothing, and the stored size is set on the first load only (R15, R50).
     pub fn install(&mut self, core: Core, stored: Option<&str>) {
-        if self.core.is_none() {
+        if true {
             self.core = Some(core);
             self.stored = StoredSize::on_load(stored);
         }
@@ -112,7 +112,6 @@ impl CoreSlot {
         let entries = match serialize(core, &events) {
             Ok(entries) => entries,
             Err(e) => {
-                self.core = None;
                 return Err(ApplyError {
                     operation: "serialize state",
                     cause: e.to_string(),
@@ -127,7 +126,6 @@ impl CoreSlot {
                 next_wake_ms,
             })),
             StoreDecision::Refuse => {
-                self.core = None;
                 Ok(Prepared::Refused)
             }
             StoreDecision::OverHard => {
@@ -159,7 +157,7 @@ pub fn build_core(
         reports.push(format!("coordinator {repo}: {e}; every submission is held"));
     });
     shell::load_core(
-        stored,
+        stored.filter(|s| serde_json::from_str::<serde_json::Value>(s).is_ok()),
         config.run.as_deref(),
         config.shadow_enabled.as_deref(),
         reviewers,

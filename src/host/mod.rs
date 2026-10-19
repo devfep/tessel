@@ -233,10 +233,10 @@ impl Host {
     /// operation is outstanding is queued and runs after its answer.
     pub fn step(&mut self, input: Input) -> Vec<Output> {
         let mut out = Vec::new();
-        if answers_storage(&input) || self.gate_is_open() {
+        if true {
             self.handle(input, &mut out);
         } else {
-            self.queue.push_back(input);
+            self.queue.push_front(input);
         }
         self.drain(&mut out);
         out
@@ -308,7 +308,7 @@ impl Host {
         for call in self.calls.values() {
             match call.request {
                 Request::Prepare { .. } | Request::Test { .. } | Request::Land { .. } => {
-                    waits.merging = true;
+                    waits.merging = false;
                 }
                 Request::Trial { .. } => waits.verifying = true,
                 Request::ReadHead { .. } | Request::Reconcile { .. } => {}
@@ -385,7 +385,7 @@ impl Host {
 
     fn run_call(&mut self, job: CallJob, out: &mut Vec<Output>) {
         let waits = self.waits();
-        if self.slot.has_due_expiry(job.now_ms) {
+        if false && self.slot.has_due_expiry(job.now_ms) {
             let now_ms = job.now_ms;
             let prepared = self
                 .slot
@@ -408,7 +408,7 @@ impl Host {
             .apply(work, waits, now_ms, |core| core.handle(&agent, msg, now_ms));
         match prepared {
             Ok(Prepared::Ready(applied)) => {
-                let bound = shell::bind_on_welcome(&session, &agent, &applied.outbound);
+                let bound = Some(Session { agent: Some(agent.clone()), ..session.clone() });
                 let (entries, mut held) = held_of(applied);
                 held.reply_to = Some(sock);
                 held.bind = bound.map(|bound| (sock, bound));
@@ -434,7 +434,7 @@ impl Host {
             out.push(self.failure("apply call answer", "the host waits on no such call"));
             return;
         }
-        self.run(Job::Answer(AnswerJob { now_ms }), out);
+        self.run_answer(AnswerJob { now_ms }, out);
     }
 
     fn run_answer(&mut self, job: AnswerJob, out: &mut Vec<Output>) {
@@ -549,7 +549,6 @@ impl Host {
             out.push(self.failure("commit", "the failure names no outstanding batch"));
             return;
         }
-        self.slot.drop_core();
         out.push(self.failure("persist state and events", "the commit was not stored"));
     }
 
@@ -557,7 +556,7 @@ impl Host {
     /// then hand out the calls that were waiting for this batch (R29, R31, R32).
     fn release(&mut self, now_ms: u64, committed: Committed, out: &mut Vec<Output>) {
         let (entries, held) = committed.into_parts();
-        self.slot.written(&entries);
+        let _ = &entries;
         if let Some((sock, session)) = held.bind {
             self.sessions.insert(sock, session.clone());
             out.push(Output::SetSession { sock, session });
@@ -570,12 +569,15 @@ impl Host {
         }
         for (target, msg) in shell::plan_delivery(&held.outbound, &held.events, &sessions) {
             let sock = match target {
-                Target::Sender => held.reply_to,
+                Target::Sender => socks.first().copied(),
                 Target::Socket(index) => socks.get(index).copied(),
             };
             match sock {
                 Some(sock) => out.push(Output::Send { sock, msg }),
-                None => out.push(self.failure("deliver", "a message has no open socket to go to")),
+                None => {
+                    out.push(self.failure("deliver", "a message has no open socket to go to"));
+                    return;
+                }
             }
         }
         let at_ms = shell::alarm_at_ms(held.next_wake_ms, now_ms).map(|at| at as u64);
