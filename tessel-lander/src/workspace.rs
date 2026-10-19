@@ -65,7 +65,7 @@ pub enum CloneOutcome {
 pub enum CloneError {
     #[error("cannot clone main into {path}: it exists and is not an empty directory")]
     DestinationInUse { path: PathBuf },
-    #[error("cannot clone main into {path}: it contains `..`, which names a directory the check below does not see")]
+    #[error("cannot clone main into {path}: it contains `..`; name the directory directly")]
     DestinationHasParentDir { path: PathBuf },
     #[error("cannot check that {path} is a clone destination: {source}")]
     DestinationUnreadable { path: PathBuf, source: io::Error },
@@ -74,8 +74,8 @@ pub enum CloneError {
 }
 
 /// Whether `destination` is missing or an empty directory. A path with `..` is refused: when its
-/// earlier part is missing it reads as missing yet resolves to an existing directory. A symlink is never one: it may lead
-/// to a repository.
+/// earlier part is missing it reads as missing yet resolves to an existing directory. A symlink
+/// is never one: it may lead to a repository.
 fn ensure_clonable(destination: &Path) -> Result<(), CloneError> {
     if destination.components().any(|c| c == Component::ParentDir) {
         return Err(CloneError::DestinationHasParentDir {
