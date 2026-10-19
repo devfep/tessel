@@ -357,7 +357,7 @@ async fn heartbeats_keep_a_claim_alive_past_its_lease() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_daemon_reconnects_and_keeps_its_claims() -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
-    a1.start("steady work")?;
+    a1.start_settled("steady work").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     let before = hellos(&fake, "a1");
     fake.drop_connections();
@@ -371,9 +371,9 @@ async fn the_daemon_reconnects_and_keeps_its_claims() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queued_wait_is_recorded_as_withdrawn_when_the_socket_drops() -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
-    a1.start("hold it")?;
+    a1.start_settled("hold it").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    a2.start("need it")?;
+    a2.start_settled("need it").await?;
     assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
     let (before1, before2) = (hellos(&fake, "a1"), hellos(&fake, "a2"));
     fake.drop_connections();
@@ -1662,7 +1662,7 @@ async fn a_release_lost_with_the_socket_is_sent_again() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_the_coordinator_no_longer_holds_is_forgotten() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("lost it")?;
+    a1.start_settled("lost it").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     let status = a1.status()?;
     let claim = status["state"]["claims"][0]["claim"]
@@ -1691,7 +1691,7 @@ async fn a_claim_the_coordinator_no_longer_holds_is_forgotten() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_nobody_here_asked_for_is_adopted_and_can_be_released() -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
-    a1.start("restarted")?;
+    a1.start_settled("restarted").await?;
     fake.act(
         "a1",
         ClientMsg::Claim {
@@ -1822,7 +1822,7 @@ async fn the_hook_resolves_symlinks_before_judging_a_path() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reconnect_says_hello_with_the_current_head() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("moving on")?;
+    a1.start_settled("moving on").await?;
     std::fs::write(a1.root().join("src/c.rs"), "pub fn c() {}\n")?;
     git(&a1.root(), &["add", "src/c.rs"])?;
     git(&a1.root(), &["commit", "-q", "-m", "second"])?;
@@ -1850,7 +1850,7 @@ async fn a_reconnect_says_hello_with_the_current_head() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("short job")?;
+    a1.start_settled("short job").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1878,7 +1878,7 @@ async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released()
 async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_the_next_read(
 ) -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
-    a1.start("unlucky twice")?;
+    a1.start_settled("unlucky twice").await?;
     fake.cut_replay(1);
     fake.lose_next("a1", Lose::ClaimReply);
     let refused = a1.tessel(&["claim", "src/a.rs"])?;
@@ -1905,7 +1905,7 @@ async fn a_wait_queued_while_the_log_is_read_survives_the_read_connection_closin
     let (fake, a1, a2) = world(30_000).await?;
     a1.start("holder")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    a2.start("waiter")?;
+    a2.start_settled("waiter").await?;
     let before = hellos(&fake, "a2");
     fake.drop_connections();
     back_online(&fake, &a2, before).await?;
@@ -1951,7 +1951,7 @@ fn daemon_log(agent: &Agent) -> Result<String> {
 async fn an_event_of_an_unknown_kind_in_the_replay_is_skipped_and_the_read_still_completes(
 ) -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("future event in the log")?;
+    a1.start_settled("future event in the log").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     // The log is: connected (0), the read socket's connect (1), granted (2). Seq 0 reaches the
     // daemon as a kind it does not know.
@@ -1985,7 +1985,7 @@ async fn an_event_of_an_unknown_kind_in_the_replay_is_skipped_and_the_read_still
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_replay_frame_that_is_not_an_event_envelope_still_fails_the_read() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("garbage in the log")?;
+    a1.start_settled("garbage in the log").await?;
     for frame in ["this is not json", r#"{"n":1}"#, "[]"] {
         fake.replace_in_replay(0, frame);
         let before = hellos(&fake, "a1");
@@ -2051,7 +2051,7 @@ async fn an_unknown_event_on_the_live_socket_is_ignored_and_the_connection_stays
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_live_frame_that_is_not_json_still_drops_the_socket() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("garbage live")?;
+    a1.start_settled("garbage live").await?;
     let before = hellos(&fake, "a1");
     fake.send_raw("a1", "this is not json");
     back_online(&fake, &a1, before).await?;
@@ -2067,7 +2067,7 @@ async fn a_live_frame_that_is_not_json_still_drops_the_socket() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_the_working_socket_closes_the_log_read() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("watched")?;
+    a1.start_settled("watched").await?;
     // A read that never reaches its marker stays open until its time limit.
     fake.stall_live_events(true);
     let before = hellos(&fake, "a1");
@@ -2250,7 +2250,7 @@ async fn a_request_that_arrives_while_a_claim_is_in_flight_waits_and_amends_it()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_amend_reply_is_repaired_after_the_reconnect() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("lost amend")?;
+    a1.start_settled("lost amend").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     let before = hellos(&fake, "a1");
     fake.lose_next("a1", Lose::ClaimReply);
@@ -2505,7 +2505,7 @@ async fn stop_gives_up_confirming_within_the_clients_patience() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_merge_that_lands_while_the_socket_is_down_still_moves_the_base() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("merged while away")?;
+    a1.start_settled("merged while away").await?;
     let pinned = a1.status()?["state"]["start_base"].clone();
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     commit_in(&a1, "src/a.rs", "pub fn a() { 1; }\n")?;
@@ -2564,7 +2564,7 @@ async fn a_damaged_state_file_refuses_to_start_and_a_missing_one_does_not() -> R
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_merged_commit_outside_this_work_never_moves_the_base() -> Result<()> {
     let (fake, a1, _a2) = world(30_000).await?;
-    a1.start("unrelated merge")?;
+    a1.start_settled("unrelated merge").await?;
     let pinned = a1.status()?["state"]["start_base"].clone();
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     // A commit on an unrelated history, which is not a descendant of the pinned base.
