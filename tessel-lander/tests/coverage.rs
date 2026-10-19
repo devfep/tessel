@@ -320,7 +320,10 @@ fn reads_the_scopes_the_coordinator_sends_symbol_scopes_flattened_by_serde() {
     let sent = json!([
         { "scope": { "kind": "dir", "path": "" }, "mode": "depend" },
         { "scope": { "kind": "file", "path": "a.ts" }, "mode": "edit_body" },
-        { "scope": { "kind": "symbol", "path": "a.ts", "qualified_name": "m::f" }, "mode": "create" },
+        {
+            "scope": { "kind": "symbol", "path": "a.ts", "qualified_name": "m::f" },
+            "mode": "create"
+        },
     ]);
     let scopes = parse_scopes(&sent).expect("valid");
     assert_eq!(

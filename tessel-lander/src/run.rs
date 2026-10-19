@@ -230,7 +230,8 @@ fn finish(bytes: &[u8], stream: &'static str, description: &str) -> Result<Strin
     Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// Kills every process in the group `group`, the pid of the child that leads it. The child leads its own group (`process_group(0)`).
+/// Kills every process in the group `group`, the pid of the child that leads it. The child leads
+/// its own group (`process_group(0)`).
 fn kill_group(group: u32) {
     let Ok(group) = i32::try_from(group) else {
         return;

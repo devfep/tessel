@@ -25,7 +25,9 @@ pub struct Requirement {
 pub enum NameStatusError {
     #[error("unknown status {status:?} in `git diff --name-status` output {input:?}")]
     UnknownStatus { status: String, input: String },
-    #[error("missing or empty path after status {status:?} in `git diff --name-status` output {input:?}")]
+    #[error(
+        "missing or empty path after status {status:?} in `git diff --name-status` output {input:?}"
+    )]
     MissingPath { status: String, input: String },
 }
 

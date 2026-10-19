@@ -165,11 +165,16 @@ fn a_grandchild_holding_the_pipe_cannot_outlast_the_timeout() {
     );
 }
 
-/// Kills the process whose pid is in the file when dropped, so a failing test leaves no `sleep`.
+/// Kills the process whose pid is in the file when dropped during a panic, so a failing test
+/// leaves no `sleep`.
 struct KillOnDrop(std::path::PathBuf);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
+        // Only a failing test can leave the process running; after a pass its pid may be reused.
+        if !std::thread::panicking() {
+            return;
+        }
         if let Ok(pid) = std::fs::read_to_string(&self.0) {
             std::process::Command::new("kill")
                 .args(["-9", pid.trim()])
