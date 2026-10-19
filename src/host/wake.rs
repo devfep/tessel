@@ -73,7 +73,7 @@ impl Host {
     /// Nothing is written when no lease is due (R28).
     fn lapse_step(&mut self, out: &mut Vec<Output>) {
         if self.slot.has_due_expiry(self.now_ms) {
-            self.expire_step(WakeStep::Finish, out);
+            self.run(Job::Wake(WakeStep::Finish), out);
         } else {
             self.run(Job::Wake(WakeStep::Finish), out);
         }
