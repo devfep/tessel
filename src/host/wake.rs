@@ -130,7 +130,8 @@ impl Host {
             return;
         };
         let call = calls::merge_call(self.new_call_id(), &dispatch, now_ms);
-        self.commit_unsent("start merge", prepared, vec![call], None, out);
+        let then = Some(Job::Wake(WakeStep::Verification));
+        self.commit_unsent("start merge", prepared, vec![call], then, out);
     }
 
     /// Dispatch the next verification the core offers, if one is due (R25).
