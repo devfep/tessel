@@ -34,7 +34,7 @@ pub fn merge_call(id: CallId, dispatch: &MergeDispatch, now_ms: u64) -> Call {
             fork_commit: dispatch.fork_commit.clone(),
             scopes: dispatch.scopes.clone(),
         },
-        deadline_ms: now_ms.saturating_add(HEAD_CALL_TIMEOUT_MS),
+        deadline_ms: now_ms.saturating_add(STEWARD_CALL_TIMEOUT_MS),
     }
 }
 
@@ -87,8 +87,8 @@ pub fn merge_outcome_of(answer: &CallAnswer) -> MergeOutcome {
         | CallAnswer::Landed { .. }
         | CallAnswer::Trialled { .. }
         | CallAnswer::Head { .. }
-        | CallAnswer::Reconciled { .. } => MergeOutcome::ServiceUnavailable,
-        CallAnswer::Unknown => MergeOutcome::Refused,
+        | CallAnswer::Reconciled { .. }
+        | CallAnswer::Unknown => MergeOutcome::ServiceUnavailable,
     }
 }
 
@@ -153,8 +153,8 @@ pub fn head_of(answer: &CallAnswer) -> Option<CommitId> {
         | CallAnswer::Landed { .. }
         | CallAnswer::Trialled { .. }
         | CallAnswer::Reconciled { .. }
-        | CallAnswer::Refused { .. } => None,
-        CallAnswer::Unknown => Some(CommitId("x".to_string())),
+        | CallAnswer::Refused { .. }
+        | CallAnswer::Unknown => None,
     }
 }
 
@@ -217,7 +217,7 @@ impl Host {
                     out.push(self.failure("steward head call", "no head in the answer"));
                 }
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
-                    core.trunk_read(&read, None, now_ms)
+                    core.trunk_read(&read, head, now_ms)
                 });
                 ("apply trunk head", prepared)
             }

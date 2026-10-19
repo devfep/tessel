@@ -66,8 +66,8 @@ impl Host {
         let prepared = self
             .slot
             .apply(Work::Plain, waits, now_ms, |core| core.expire(now_ms));
-        drop(prepared);
-        self.run(Job::Wake(next), out);
+        let then = Some(Job::Wake(next));
+        self.commit_unsent("expire leases", prepared, Vec::new(), then, out);
     }
 
     /// Nothing is written when no lease is due (R28).
@@ -152,7 +152,6 @@ impl Host {
             return;
         };
         let call = calls::trial_call(self.new_call_id(), &dispatch, now_ms);
-        out.push(Output::Call(call.clone()));
         self.commit_unsent("start verification", prepared, vec![call], None, out);
     }
 
@@ -214,6 +213,6 @@ impl Host {
 
     /// Whether a poke is for a repo with no stored state, which it must not create.
     pub(super) fn is_unknown_repo(stored: Option<&str>) -> bool {
-        shell::poke_reply(stored) != PokeReply::UnknownRepo
+        shell::poke_reply(stored) == PokeReply::UnknownRepo
     }
 }
