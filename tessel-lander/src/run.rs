@@ -136,8 +136,9 @@ fn timed_out(description: &str, timeout: Duration) -> RunError {
     }
 }
 
-/// Polls until the child exits or `deadline` passes. On the deadline the group is killed and the
-/// child is handed to a thread that reaps it, so it is never left a zombie and `run` does not wait.
+/// Polls until the child exits or `deadline` passes. On the deadline the child is handed to a
+/// thread that reaps it once the caller has killed its group, so it is never left a zombie and
+/// `run` does not wait.
 fn wait_until(
     mut child: Child,
     deadline: Instant,
@@ -153,7 +154,6 @@ fn wait_until(
             return Ok(status.code());
         }
         if Instant::now() >= deadline {
-            kill_group(child.id());
             thread::spawn(move || child.wait());
             return Err(timed_out(description, timeout));
         }
