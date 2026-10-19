@@ -26,6 +26,7 @@ pub struct Client {
 
 pub struct Testkit {
     pub host: Host,
+    config: HostConfig,
     now_ms: u64,
     store: BTreeMap<String, String>,
     answers: VecDeque<Input>,
@@ -41,7 +42,8 @@ pub struct Testkit {
 impl Testkit {
     pub fn new(config: HostConfig) -> Self {
         Self {
-            host: Host::new(config),
+            host: Host::new(config.clone()),
+            config,
             now_ms: 1_000,
             store: BTreeMap::new(),
             answers: VecDeque::new(),
@@ -123,6 +125,31 @@ impl Testkit {
     pub fn close(&mut self, sock: SocketId) {
         let now_ms = self.now_ms;
         self.input(Input::Closed { now_ms, sock });
+    }
+
+    /// The wake is due now.
+    pub fn wake_now(&mut self) {
+        let now_ms = self.now_ms;
+        self.input(Input::Wake { now_ms });
+    }
+
+    /// The steward poked the trunk.
+    pub fn poke(&mut self) {
+        let now_ms = self.now_ms;
+        self.input(Input::TrunkPoked { now_ms });
+    }
+
+    /// The adapter lost `call` before an answer.
+    pub fn lose(&mut self, call: CallId) {
+        let now_ms = self.now_ms;
+        self.input(Input::CallLost { now_ms, call });
+    }
+
+    /// The process restarts over the same store: a new host that remembers nothing, and no
+    /// answer the old one waited for. The wake the platform holds stays.
+    pub fn restart(&mut self) {
+        self.host = Host::new(self.config.clone());
+        self.answers.clear();
     }
 
     /// The call `call` was answered.

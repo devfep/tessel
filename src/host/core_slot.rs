@@ -4,7 +4,7 @@
 //! drops the core whenever the core has moved on from storage and the step's result will not be
 //! stored (rule 5 of `src/runtime.rs`: the next call reloads).
 
-use crate::coordinator::{Coordinator as Core, Effect};
+use crate::coordinator::{Coordinator as Core, Effect, HeadRead};
 use crate::host::HostConfig;
 use crate::protocol::{AgentId, Event};
 use crate::shell::{self, LoadError, Outbound, StoreDecision, StoredSize, Work};
@@ -70,6 +70,29 @@ impl CoreSlot {
         self.core
             .as_ref()
             .is_some_and(|core| core.has_due_expiry(now_ms))
+    }
+
+    pub fn has_merge_in_flight(&self) -> bool {
+        self.core
+            .as_ref()
+            .is_some_and(|core| core.has_merge_in_flight())
+    }
+
+    pub fn has_verification_in_flight(&self) -> bool {
+        self.core
+            .as_ref()
+            .is_some_and(|core| core.has_verification_in_flight())
+    }
+
+    /// The head read the core offers, if any (R22).
+    pub fn begin_head_read(&self) -> Option<HeadRead> {
+        self.core.as_ref().and_then(|core| core.begin_head_read())
+    }
+
+    /// The wake the core wants, with this instance's waits (R16).
+    pub fn next_wake_ms(&self, waits: Waits, now_ms: u64) -> Option<u64> {
+        let core = self.core.as_ref()?;
+        core.next_wake_ms(waits.merging, waits.verifying, now_ms)
     }
 
     pub fn has_queued_request(&self, agent: &AgentId) -> bool {
