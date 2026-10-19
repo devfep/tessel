@@ -263,7 +263,12 @@ today (R24). From P1-CORE-RECONCILE (M3), a marker found on `Loaded` is reconcil
   rebase with none as `git_failed`; the coverage check on the rebased range with no external diff
   drivers and at most 50 names reported. Then the 11 `runMerge` tests of
   `merge-git.integration.test.ts` (6 merge, 5 coverage) and the 3 of
-  `gate-trunk.integration.test.ts`, against real git.
+  `gate-trunk.integration.test.ts`, against real git. Git commands that read a repository's own
+  config run only in a `Workspace`, a type that only the lander's clone step can produce, so a
+  filter, merge driver or hook in that config can never run (rule 4; P1-LANDER-GIT's review
+  showed an in-place rebase runs them and a fresh clone does not). Decided by Felix on
+  19 October. Done also: no public function takes a repository path where it needs a
+  `Workspace`, and a test that a `Workspace` cannot be built outside the clone step.
 - [ ] **P1-LANDER-TRIAL** — Lane B. Files: `tessel-lander/**`. `run_trial` and the two-sided
   report (baseline, then the new main) ported, with the test step behind a trait the runner
   implements in M4. Done: the 6 `runTrial` and 3 `reportTrial` tests of
