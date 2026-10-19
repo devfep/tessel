@@ -272,8 +272,8 @@ fn resolve_existing(path: &Path) -> io::Result<PathBuf> {
 
 /// Makes the tree the repo's tests run in: a second clone of `workspace`, at `head`, into
 /// `destination`. The same checks as [`clone_main`] apply to the destination (missing or an empty
-/// directory, absolute, no `..`, not a symlink), and it may not lie inside `workspace` (compared after
-/// resolving symlinks). The clone
+/// directory, absolute, no `..`, not a symlink), and it may not lie inside `workspace` (compared
+/// after resolving symlinks). The clone
 /// copies objects instead of linking them, so nothing written there reaches the workspace's
 /// object store. It runs no repo code and needs no credential. The caller owns `destination` and
 /// removes it; the lander does not.
