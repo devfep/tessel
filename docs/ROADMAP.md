@@ -156,6 +156,12 @@ passes; the host types round-trip; the lander git tests pass.
   whether the fake drops it or the daemon never sends it; `replay_unknown`'s
   `a_settled_daemon_has_sent_a_hello_on_each_of_its_two_sockets` (exactly two) could flake on it.
   Done: the cause named, and a test that pins it.
+- [ ] **P1-MUTANTS-PROPTEST-ONLY** — from #42's nightly (39189028810): `waiters_conflict`
+  (`src/coordinator.rs`, `||` → `&&`) was missed in one full run and caught in two, because its
+  only killer was `coordinator_matches_brute_force_model`, which finds it for some seeds. Any
+  mutant killed only by a proptest makes the nightly comparison fail at random. List the mutants
+  each proptest kills that no example test kills (a full mutants run with the proptests filtered
+  out, on CI), and give each an example test. Done: that run misses nothing outside the baseline.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
