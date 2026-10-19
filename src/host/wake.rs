@@ -132,7 +132,6 @@ impl Host {
             return;
         };
         let call = calls::merge_call(self.new_call_id(), &dispatch, now_ms);
-        out.push(Output::Call(call.clone()));
         self.commit_unsent("start merge", prepared, vec![call], None, out);
     }
 
