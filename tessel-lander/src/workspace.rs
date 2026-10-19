@@ -6,7 +6,9 @@
 //! git itself created the directory by cloning, so its config is the one git wrote. `git clone`
 //! refuses a destination that already holds anything, and [`clone_main`] checks the same before
 //! it calls the runner, so a runner that skips git cannot pass an existing repository off as a
-//! workspace.
+//! workspace. An empty directory inside another repository passes that check; git is then kept
+//! from finding the parent by `GIT_DIR` and `GIT_WORK_TREE` on every command that takes a
+//! workspace (see [`crate::git`]).
 
 use std::fs;
 use std::io;
