@@ -9,8 +9,8 @@
 use std::path::{Path, PathBuf};
 
 use tessel_lander::git::{
-    parse_nul_separated, Git, GitCommand, MergeSources, COMMITTER_DATE, COMMITTER_EMAIL,
-    COMMITTER_NAME, MAX_PUSH_BODY_BYTES,
+    ensure_supported_git, parse_nul_separated, CommandError, Git, GitCommand, MergeSources,
+    COMMITTER_DATE, COMMITTER_EMAIL, COMMITTER_NAME, MAX_PUSH_BODY_BYTES,
 };
 use tessel_lander::types::{is_safe_branch_name, Sha};
 
@@ -261,6 +261,10 @@ fn every_command_runs_with_no_user_config_empty_hooks_fsck_and_no_prompt() {
         ("transfer.fsckObjects", "true"),
         ("core.fsmonitor", "false"),
         ("core.attributesFile", "/dev/null"),
+        ("protocol.allow", "never"),
+        ("protocol.https.allow", "always"),
+        ("protocol.ssh.allow", "always"),
+        ("protocol.file.allow", "user"),
     ] {
         assert!(
             config.contains(&(expected.0.to_owned(), expected.1.to_owned())),
@@ -412,5 +416,66 @@ fn branch_names_are_safe_only_when_they_cannot_be_an_option_or_escape_a_ref() {
         &"a".repeat(129),
     ] {
         assert!(!is_safe_branch_name(bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn git_2_31_or_newer_is_accepted() {
+    for version in [
+        "git version 2.31.0",
+        "git version 2.56.0\n",
+        "git version 2.39.5 (Apple Git-154)",
+        "git version 2.100.0",
+        "git version 3.0.1",
+        "git version 10.2",
+    ] {
+        assert!(ensure_supported_git(version).is_ok(), "{version:?}");
+    }
+}
+
+#[test]
+fn older_or_unreadable_git_is_refused_naming_what_was_found() {
+    for version in [
+        "git version 2.30.9",
+        "git version 2.9.0",
+        "git version 1.99.0",
+        "git version 2",
+        "git version x.y",
+        "version 2.40.0",
+        "",
+    ] {
+        let error = ensure_supported_git(version).expect_err(version);
+        assert!(
+            matches!(error, CommandError::UnsupportedGit { .. }),
+            "{version:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("{:?}", version.trim())),
+            "{message}"
+        );
+        assert!(message.contains("2.31"), "{message}");
+    }
+}
+
+#[test]
+fn create_in_makes_empty_directories_and_checks_the_installed_git() {
+    let root = tempfile::TempDir::new().expect("tempdir");
+    let git = Git::create_in(root.path()).expect("fresh root");
+    assert!(root.path().join("home").is_dir());
+    assert!(root.path().join("hooks").is_dir());
+    git.check_version().expect("installed git is supported");
+    Git::create_in(root.path()).expect("existing empty directories are fine");
+}
+
+#[test]
+fn create_in_refuses_a_hooks_or_home_directory_that_holds_anything() {
+    for dir in ["hooks", "home"] {
+        let root = tempfile::TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(root.path().join(dir)).expect("dir");
+        std::fs::write(root.path().join(dir).join("pre-rebase"), "#!/bin/sh\n").expect("file");
+        let error = Git::create_in(root.path()).expect_err("not empty");
+        assert!(matches!(error, CommandError::NotEmpty { .. }), "{error}");
+        assert!(error.to_string().contains("pre-rebase"), "{error}");
     }
 }

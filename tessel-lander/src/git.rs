@@ -5,13 +5,19 @@
 //! # Why repo code cannot run
 //!
 //! - Hooks: `core.hooksPath` names an empty directory the lander owns.
-//! - Filters, merge drivers, textconv, external diff: each needs a `filter.*`, `merge.*.driver`,
-//!   `diff.*.textconv` or `diff.external` setting. None exists: system and global config are off,
-//!   `HOME` is an empty directory, and the only workspace is a fresh clone, whose local config
-//!   holds no such setting (a repo's `.gitattributes` can name a driver but cannot define one).
+//! - Filters, merge drivers, textconv, external diff, `core.sshCommand`: each needs a setting in a
+//!   config file. System and global config are off and `HOME` is an empty directory. **Repo-local
+//!   config is not neutralised**: git runs a `filter.*` or `merge.*.driver` it finds in
+//!   `.git/config`. So every command except `clone` must run in a workspace that
+//!   [`Git::clone_command`] created, whose local config git writes itself and which holds no
+//!   such setting (`git clone` copies no config from the source; a repo's `.gitattributes` can
+//!   name a driver but cannot define one). Never point these builders at any other repository.
 //!   The diff commands also pass `--no-ext-diff` and `--no-textconv`.
 //! - Aliases: only builtin subcommands are invoked, and git never lets an alias shadow a builtin.
-//! - `core.fsmonitor` is off, so no repo-named monitor program runs.
+//! - `core.fsmonitor` is off and `core.hooksPath` is fixed, both by env config that outranks
+//!   repo config.
+//! - Transports: `protocol.allow=never` with an allowlist (https, ssh, file), so `ext::` and
+//!   plain `http`/`git` remotes are refused.
 //! - Ambient environment: the command's environment is exactly `GitCommand::env`, so inherited
 //!   `GIT_*` variables, `GIT_EXTERNAL_DIFF` and the like are never seen.
 
@@ -22,6 +28,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::run::{run, RunError};
 use crate::types::{is_safe_branch_name, Sha};
 
 pub const MAIN_BRANCH: &str = "main";
@@ -47,6 +54,9 @@ pub struct GitCommand {
 }
 
 /// Where the merge runs and what it reads. `fork_branch` is the fork's default branch.
+///
+/// `workspace` must be the directory [`Git::clone_command`] clones into, and no other: its local
+/// config is the one git wrote, free of filters and drivers (see the module docs).
 #[derive(Debug, Clone)]
 pub struct MergeSources {
     pub workspace: PathBuf,
@@ -61,6 +71,42 @@ pub enum CommandError {
     UnsafeForkBranch { name: String },
     #[error("cannot create {path} for the git environment: {source}")]
     CreateDir { path: PathBuf, source: io::Error },
+    #[error("{path} must be an empty directory: it holds {entry:?}")]
+    NotEmpty { path: PathBuf, entry: OsString },
+    #[error("cannot read {path}: {source}")]
+    ReadDir { path: PathBuf, source: io::Error },
+    #[error("cannot check the git version: {source}")]
+    VersionCheck { source: RunError },
+    #[error(
+        "git reported {found:?}; need git {MIN_GIT_MAJOR}.{MIN_GIT_MINOR} or newer \
+         (older git ignores GIT_CONFIG_COUNT, which drops the fixed settings)"
+    )]
+    UnsupportedGit { found: String },
+}
+
+const MIN_GIT_MAJOR: u32 = 2;
+const MIN_GIT_MINOR: u32 = 31;
+
+/// Accepts the output of `git --version` when it names git 2.31 or newer.
+pub fn ensure_supported_git(version_output: &str) -> Result<(), CommandError> {
+    let unsupported = || CommandError::UnsupportedGit {
+        found: version_output.trim().to_owned(),
+    };
+    let numbers = version_output
+        .trim()
+        .strip_prefix("git version ")
+        .ok_or_else(unsupported)?;
+    let mut parts = numbers
+        .split(|c: char| !c.is_ascii_digit())
+        .map(str::parse::<u32>);
+    let (Some(Ok(major)), Some(Ok(minor))) = (parts.next(), parts.next()) else {
+        return Err(unsupported());
+    };
+    if (major, minor) >= (MIN_GIT_MAJOR, MIN_GIT_MINOR) {
+        Ok(())
+    } else {
+        Err(unsupported())
+    }
 }
 
 /// The fixed environment of every git command and the builders for the merge's commands.
@@ -84,7 +130,8 @@ impl Git {
         }
     }
 
-    /// Creates empty `home` and `hooks` directories under `root` and uses them.
+    /// Creates empty `home` and `hooks` directories under `root` and uses them. Fails if either
+    /// holds anything (a hook there would run) or if `git` is older than 2.31.
     pub fn create_in(root: &Path) -> Result<Git, CommandError> {
         let home = root.join("home");
         let hooks_dir = root.join("hooks");
@@ -93,17 +140,44 @@ impl Git {
                 path: dir.clone(),
                 source,
             })?;
+            let mut entries = fs::read_dir(dir).map_err(|source| CommandError::ReadDir {
+                path: dir.clone(),
+                source,
+            })?;
+            if let Some(entry) = entries.next() {
+                let entry = entry.map_err(|source| CommandError::ReadDir {
+                    path: dir.clone(),
+                    source,
+                })?;
+                return Err(CommandError::NotEmpty {
+                    path: dir.clone(),
+                    entry: entry.file_name(),
+                });
+            }
         }
-        Ok(Git::new(home, hooks_dir))
+        let git = Git::new(home, hooks_dir);
+        git.check_version()?;
+        Ok(git)
+    }
+
+    /// Runs `git --version` and requires 2.31 or newer.
+    pub fn check_version(&self) -> Result<(), CommandError> {
+        let output = run(&self.command(&["--version"], LOCAL_TIMEOUT))
+            .map_err(|source| CommandError::VersionCheck { source })?;
+        ensure_supported_git(&output.stdout)
     }
 
     /// Settings applied to every command, as `GIT_CONFIG_COUNT` entries. They outrank repo config.
-    fn config(&self) -> [(&'static str, OsString); 4] {
-        [
+    fn config(&self) -> Vec<(&'static str, OsString)> {
+        vec![
             ("core.hooksPath", self.hooks_dir.clone().into_os_string()),
             ("transfer.fsckObjects", "true".into()),
             ("core.fsmonitor", "false".into()),
             ("core.attributesFile", "/dev/null".into()),
+            ("protocol.allow", "never".into()),
+            ("protocol.https.allow", "always".into()),
+            ("protocol.ssh.allow", "always".into()),
+            ("protocol.file.allow", "user".into()),
         ]
     }
 
