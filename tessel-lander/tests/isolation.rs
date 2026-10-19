@@ -395,6 +395,26 @@ fn filters_and_diff_programs_a_forks_gitattributes_names_do_not_run_when_the_cha
 }
 
 #[test]
+fn a_host_wide_textconv_and_external_diff_do_not_run_in_the_diff_a_person_reads() {
+    let scene = Scene::new();
+    scene.plant_home_config();
+    let forked = fork_with_attributes(&scene, false);
+    let ready = ready(scene.prepare(&forked));
+    let diff = scene
+        .git
+        .diff_command(&ready.workspace, &ready.base, &ready.head);
+
+    // Here the home config is readable, so \`--no-ext-diff\` and \`--no-textconv\` are the only
+    // defence: the fork's \`diff=evil\` attribute reaches a textconv, and \`diff.external\` is
+    // set for every file.
+    let output = run(&without_setting(&diff, "GIT_CONFIG_GLOBAL")).expect("diff runs");
+
+    assert!(output.success(), "{}", output.stderr);
+    assert!(output.stdout.contains("+FORK"), "{}", output.stdout);
+    assert_eq!(scene.ran(), Vec::<String>::new());
+}
+
+#[test]
 fn control_with_the_home_config_readable_the_filter_runs_on_a_clean_change() {
     let scene = Scene::new();
     scene.plant_home_config();
