@@ -114,7 +114,7 @@ pub fn clone_main(
     let output = runner.run(&git.clone_command(sources, destination))?;
     if output.success() {
         Ok(CloneOutcome::Cloned(Workspace::new(
-            destination.to_path_buf(),
+            destination.clone(),
         )))
     } else {
         Ok(CloneOutcome::Failed(output))
