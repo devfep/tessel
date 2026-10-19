@@ -7,25 +7,22 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 22:00 EDT. Merged since the last rewrite: the roadmap update (`01e48ee`,
-#38) and P1-CI-NIGHTLY (`b3b6c52`, #39); CI on `main` is green at `b3b6c52`. Ruleset step 1 is
-done: "main: CI required" has seven required checks. Of M1's done-checks, the mutation job is
-required and green, the nightly run is green once (39179126464, after a re-run of one shard GitHub
-shut down), the rules check passes and the host types round-trip; the lander's git tests remain.
+**As of:** 2026-10-18 23:55 EDT. Merged since the last rewrite: P1-MUTANTS-SHRINK (`9a875fc`,
+#42), P1-HELLO-FALSE-PASS (`98cb8e3`, #43) and the roadmap update (`e694d53`, #44); CI on `main` is
+green at `e694d53`. The missed-mutants baseline is down to 15 lines. Of M1's done-checks, only
+the lander's git tests remain.
 **In flight:**
-- P1-LANDER-GIT (lane B, `.claude/worktrees/p1-lander-git`, from `b3b6c52`), dispatched 21:55.
-- P1-MUTANTS-SHRINK (lane A, `.claude/worktrees/p1-mutants-shrink`, #42, draft, CI green): 20 of
-  the 21 killed, confirmed by run 39180800843; `next_to_merge` `<` → `<=` is equivalent (ordinals
-  are never reused). Under review by a fresh reviewer (the first stopped answering). Next: merge
-  `main` and remove the 20 killed lines from the baseline.
-- P1-HELLO-FALSE-PASS (lane C, `.claude/worktrees/p1-hello-false-pass`, #43, draft, CI green):
-  under review. The lane's report never arrived; the reviewer verifies from the code alone.
-**Next:** M2 once M1 closes.
+- P1-LANDER-GIT (lane B, `.claude/worktrees/p1-lander-git`, #45, draft). Fix pass 1 closed the
+  first review (timeouts over output with a process-group kill, read errors as errors, git 2.31
+  or newer, a transport allowlist, a test that repository config cannot run code after a clone).
+  Its re-check found 7 missed mutants in that new code (the git version check and the reaping of
+  a killed child); fix pass 2 is under way, then a merge of `main` and the same reviewer.
+**Decided by Felix (19 October):** the merge port (P1-LANDER-MERGE) runs git that reads a
+repository's own config only in a `Workspace` that only the clone step can produce; written into
+its task text in `docs/proposals/phase-1.md`.
+**Next:** M2 once P1-LANDER-GIT merges.
 **Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
-(`docs/proposals/phase-1.md`); none blocks M1. Proposed from the P1-LANDER-GIT review: the merge
-port's task text (M2) should require a `Workspace` type that only the lander's clone step can
-produce, so git never runs where the repository's own config could start a filter, merge driver
-or hook (rule 4); P1-LANDER-GIT documents the rule and tests the clone path. Tearing down the spike
+(`docs/proposals/phase-1.md`); none blocks M1. Tearing down the spike
 sandbox needs `gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
@@ -140,19 +137,16 @@ passes; the host types round-trip; the lander git tests pass.
   socket whose `Hello` can reach the coordinator after `start` returns. Built: `start_settled`
   waits for the complete-read line; `liveness.rs` had the same race with a wider window and is
   fixed too; a test pins the two hellos.
-- [ ] **P1-MUTANTS-SHRINK** — from P1-CI-NIGHTLY's first full run (39176270373): the core has
-  33 missed mutants, now the baseline in `.cargo/mutants-missed-baseline.txt`. The 21 outside
-  `src/store.rs` (deleted in M3) are test gaps in code that stays: `src/coordinator/merging.rs`
-  (`merge_outcome` and `recover_merge` survive `||` → `&&`; `next_to_merge` survives `<` → `<=`),
-  `src/coordinator/racing.rs` (six), `src/merge.rs` (nine, among them `MergeRecord::eq` → `true`),
-  and one each in `src/coordinator.rs`, `src/protocol.rs` and `src/shell.rs`. Kill each with a
-  behaviour test or record why it is equivalent, and remove its baseline line. Lane A owns those
-  files until M3.
-- [ ] **P1-HELLO-FALSE-PASS** — from the P1-FLAKE-REPLAY-HELLO review: `hellos > before` checks
-  in `tessel-cli/tests/cli.rs` (~2077), `back_online` and `submit.rs` read `before` before the
-  daemon's event-log read has sent its own `Hello`, so they can pass without a redial. Use the
-  settle helper from P1-FLAKE-REPLAY-HELLO. Done: each check fails when the redial it claims is
-  removed.
+- [x] **P1-MUTANTS-SHRINK** (`9a875fc`, #42) — from P1-CI-NIGHTLY's first full run
+  (39176270373): of the 21 missed mutants outside `src/store.rs`, 18 are killed by behaviour tests
+  and 3 are equivalent (`next_to_merge` `<` → `<=`; `recover_merge` and `merge_outcome` `||` →
+  `&&`, which differ only in a state nothing can reach). The baseline keeps those 3 and the 12 in
+  `src/store.rs` (15 lines). The pull request's nightly also caught `waiters_conflict`, which
+  only a proptest had killed, for some seeds; an example test now kills it.
+- [x] **P1-HELLO-FALSE-PASS** (`98cb8e3`, #43) — from the P1-FLAKE-REPLAY-HELLO review: every
+  hello check across a dropped connection in `tessel-cli/tests/cli.rs` and `submit.rs` now starts
+  from a settled daemon, and the replay-frame loop waits for each failed read and its inbox notice
+  before the next round. Each check fails when the redial it claims is removed.
 - [ ] **P1-FAKE-HELLO-LOST** — from the P1-HELLO-FALSE-PASS review: with a 1.5 s delay at the
   top of `snapshot_task`, the fake coordinator (`tessel-cli/tests/support/mod.rs`) sometimes does
   not count a log read's `Hello` (5 hellos before a third drop in some runs, 6 in others). Find
