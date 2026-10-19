@@ -127,6 +127,25 @@ fn nothing_the_source_repos_config_names_runs_in_the_cloned_workspace() {
 }
 
 #[test]
+fn a_workspace_cloned_to_a_relative_destination_runs_commands() {
+    let (scratch, source, _markers, git, _ids) = setup();
+    let cwd = std::env::current_dir().expect("cwd");
+    let mut relative = PathBuf::new();
+    for _ in cwd.ancestors().skip(1) {
+        relative.push("..");
+    }
+    relative.push(scratch.path().strip_prefix("/").expect("absolute temp dir"));
+    relative.push("workspace");
+    assert!(relative.is_relative());
+
+    let workspace = clone_source(&git, &source, &relative);
+
+    assert!(workspace.path().is_absolute());
+    let head = run(&git.head_command(&workspace)).expect("head runs");
+    assert!(head.success(), "{}", head.stderr);
+}
+
+#[test]
 fn an_empty_directory_inside_another_repository_does_not_run_that_repositorys_config() {
     let scratch = TempDir::new().expect("tempdir");
     let repo = scratch.path().join("planted");
@@ -144,6 +163,11 @@ fn an_empty_directory_inside_another_repository_does_not_run_that_repositorys_co
     let rebase = run(&git.rebase_command(&workspace, &m, &a, &b)).expect("rebase runs");
 
     assert!(!rebase.success(), "git must not find the parent repository");
+    assert!(
+        rebase.stderr.contains("not a git repository"),
+        "{}",
+        rebase.stderr
+    );
     assert!(!marker.exists(), "the parent repository's merge driver ran");
 }
 
