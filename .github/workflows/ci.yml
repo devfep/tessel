@@ -157,7 +157,8 @@ jobs:
             exit 0
           fi
           code=0
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --package tessel-coordinator \
+          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" \
+            --package tessel-coordinator --package tessel-lander \
             --test-tool nextest --jobs 2 --shard "$SHARD" || code=$?
           case "$code" in
             0) ;;

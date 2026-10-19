@@ -72,8 +72,8 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: |
           code=0
-          cargo mutants --package tessel-coordinator --test-tool nextest --jobs 2 \
-            --shard "$SHARD" || code=$?
+          cargo mutants --package tessel-coordinator --package tessel-lander \
+            --test-tool nextest --jobs 2 --shard "$SHARD" || code=$?
           case "$code" in
             0 | 2 | 3) ;;
             *) echo "::error::cargo mutants exited $code (1 usage error, 4 baseline failed)."

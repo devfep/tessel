@@ -1500,6 +1500,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessel-lander"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tessel-coordinator",
+ "thiserror",
+]
+
+[[package]]
 name = "tessel-swarm"
 version = "0.1.0"
 dependencies = [
