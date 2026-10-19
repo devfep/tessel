@@ -7,20 +7,23 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-19 11:50 EDT. Merged since the last rewrite: P1-LANDER-MERGE (`70526c9`, #48)
-and P1-MOVE-CALLS (`febea36`, #49). The orchestrator's gate on `febea36` is green (1544 tests,
-clippy native, no-default-features and wasm32, fmt, named tests). The session that dispatched M2
-lost its network at 09:31 EDT during both fix passes; fresh lanes redid them from the reviews.
+**As of:** 2026-10-19 14:59 EDT. Merged since the last rewrite: the previous STATE (`ed280f0`,
+#50), P1-LANDER-TRIAL (`034f521`, #51) and P1-MOVE-SOCKETS (`90a4fac`, #52). The orchestrator's
+gate on `90a4fac` is green (1594 tests, clippy native, no-default-features and wasm32, fmt, named
+tests). GitHub Actions had an incident from about 11:45 to 12:30 EDT; queued runs finished after.
 **In flight:**
-- P1-MOVE-SOCKETS (lane A, `.claude/worktrees/p1-move-sockets`, from `febea36`). It also moves
-  the halves of R31 and R32 that P1-MOVE-CALLS left (a failed send to another socket closes it
-  with 1011; dead sockets are withdrawn). Ends with a plant commit (one mutant per rule, no
-  catch-all) and its revert.
-- P1-LANDER-TRIAL (lane B, `.claude/worktrees/p1-lander-trial`, from `febea36`).
-**Next:** lane A takes P1-MOVE-WAKE and P1-MOVE-REPLAY in that order, each after the previous one
-merges, then P1-CLI-ON-HOST; lane B takes P1-LANDER-ISOLATION, then P1-LANDER-AFTER-TESTS.
-P1-FAKE-HELLO-LOST is decided when P1-CLI-ON-HOST is dispatched, since that task replaces the
-fake's orchestration; P1-MUTANTS-PROPTEST-ONLY goes to lane B when it is free.
+- P1-MOVE-WAKE (lane A, `.claude/worktrees/p1-move-wake`, from `90a4fac`), with R43 and R47.
+  CI evidence in as many plant/revert pairs as it takes for each rule's test to fail at its own
+  assertion.
+- P1-LANDER-ISOLATION (lane B, `.claude/worktrees/p1-lander-isolation`, from `90a4fac`).
+**Next:** lane A takes P1-MOVE-REPLAY (with R46 and R50) after P1-MOVE-WAKE merges, then
+P1-CLI-ON-HOST; lane B takes P1-LANDER-AFTER-TESTS, then P1-FLAKE-UNDER-LOAD and
+P1-MUTANTS-PROPTEST-ONLY. P1-FAKE-HELLO-LOST is decided when P1-CLI-ON-HOST is dispatched, since
+that task replaces the fake's orchestration.
+**Question for Felix, M2's done-check:** it says no rules-list row is "after move", but R2-R5 and
+R49 are adapter rows the plan moves in M4 (`tessel-server`'s adapter), with no host input to
+carry them. Recommendation: M2's check covers the host rows; the adapter rows stay "after move"
+until M4 and are its done-check. Work continues on that reading.
 **Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
 (`docs/proposals/phase-1.md`). Decisions 1 (no `wrangler dev` captures) and 14 (the CLI's fake
 rebuilt on the host in M2) apply to M2: the move proceeds on them as recommended, and
@@ -177,15 +180,22 @@ green.
   plant `2ba1227` failed 15 new host tests on CI (run 39272015573); the tests it does not reach
   were shown red locally. R43 is unreachable (`Work::Plain` is never refused): whichever task
   moves it marks it "dropped" with that reason.
-- [ ] **P1-MOVE-SOCKETS** — lane A, after P1-MOVE-CALLS. Sessions and the socket table: rows
-  R6-R13.
+- [x] **P1-MOVE-SOCKETS** (`90a4fac`, #52) — lane A. Sessions and the socket table: rows R6-R13,
+  and the halves of R31 and R32 P1-MOVE-CALLS left. New host inputs `Input::Binary` and
+  `Input::SendFailed` (the proposal's input list had neither; only `Call` is frozen). A failed send
+  to the sender closes with reason "send failed", not "coordinator error", and dead sockets are
+  withdrawn on `SendFailed`, after queued inputs: both stated on the R31 and R32 rows. CI evidence
+  in two plants, so no rule's mutant stops another rule's test first (runs 39301356658 and
+  39301559065, each test checked at its own assertion line).
 - [ ] **P1-MOVE-WAKE** — lane A, after P1-MOVE-SOCKETS. The wake in today's order: rows R20-R27,
-  R38 and R41; decides COORD-WAKE-WHILE-VERIFYING. From the P1-MOVE-CALLS review: it adds the
+  R38 and R41, plus R43 (expected "dropped": unreachable) and R47 (a restart exposes R24's
+  cut-off); decides COORD-WAKE-WHILE-VERIFYING. From the P1-MOVE-CALLS review: it adds the
   match on `Request` that applies an answer to the core; removes the test-only `begin_call`,
   `StartJob`, `MarkerStep` and `Job::Start`; and computes the wake of the batch that stores a
   call's marker with that call counted (`runtime.rs` 664-668 forces `merging = true`).
 - [ ] **P1-MOVE-REPLAY** — lane A, after P1-MOVE-WAKE. `Watch` replay with other inputs queued:
-  row R36.
+  row R36. Also the two host rows no other M2 task names: R46 (errors name the repo and the
+  operation) and the first-load-only half of R50 (the stored size).
 - [ ] **P1-CLI-ON-HOST** — lane A, after the four above; needs decision 14. The CLI's fake
   coordinator rebuilt on the host, same test count.
 - [x] **P1-LANDER-MERGE** (`70526c9`, #48) — lane B. `prepare` and `land` ported from
@@ -193,7 +203,10 @@ green.
   `clone_main` refuses a destination that is in use, a symlink or contains `..`, and makes it
   absolute; every `&Workspace` command pins `GIT_DIR` and `GIT_WORK_TREE`; the fixed environment
   also pins `core.sshCommand` and resets `credential.helper`.
-- [ ] **P1-LANDER-TRIAL** — lane B, after P1-LANDER-MERGE. `run_trial` and the two-sided report.
+- [x] **P1-LANDER-TRIAL** (`034f521`, #51) — lane B. `run_trial` and the two-sided report; 33
+  steward cases ported. A trial clones its own `Workspace`, and read access is revoked before any
+  repo code runs on every path. `TrialPorts` has no push and no read-back (compile-fail
+  doctests). The sandbox half of `merge-trial-types.test.ts` is left to the M4 executor.
 - [ ] **P1-LANDER-ISOLATION** — lane B, after P1-LANDER-TRIAL. Hooks, filters, a malformed pack
   and control characters in a fork are refused or inert.
 - [ ] **P1-LANDER-AFTER-TESTS** — lane B, after P1-LANDER-ISOLATION; must land before M4's local
@@ -203,6 +216,12 @@ green.
   `http.proxy`, `include.path`, `remote.*.receivepack`. Options: the runner gets its own clone,
   or `land` compares a digest of `.git/config` taken at clone time. Done: a test that config
   planted after the clone changes nothing `land` does, failing without the fix.
+- [ ] **P1-FLAKE-UNDER-LOAD** — lane B when free. From the P1-LANDER-TRIAL review, at a load
+  average near 170 from another project on this Mac: `tessel-lander/tests/run.rs` grandchild and
+  zombie timeout tests and two `tessel-cli` lease and heartbeat tests failed once and passed on
+  rerun. Same class as P0-FLAKE-WALLCLOCK: replace the wall-clock bounds with signals or the
+  daemon clock seam; never add retries. Done: each test passes with its timing bound removed or
+  made explicit, shown on a CI runner.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
