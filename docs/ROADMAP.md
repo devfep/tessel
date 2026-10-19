@@ -224,6 +224,11 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   348) and `a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for` (`tests/githook.rs`
   410), and three tests in `tessel-swarm/tests/reconnect.rs`. Done: each test passes with its
   timing bound removed or made explicit, shown on a CI runner.
+- [ ] **HOST-CALL-DEADLINE-BACKSTOP** — M4, with the adapter's call deadlines. From the
+  P1-MOVE-WAKE review: while a call is out, each `Wake` re-arms the watchdog, so a merge stalls
+  if the adapter never answers or sends `CallLost`. The host knows each call's `deadline_ms`.
+  Done: a host test that a call past its deadline with no answer is treated as lost, or a
+  written reason that the adapter's deadline is enough.
 - [ ] **SERVER-CONFLICT-NAMES** — M4, with `tessel-server`'s merge response. From the
   P1-LANDER-ISOLATION review: `Conflict.files` (merge and trial) carries fork-chosen file names
   raw, with no cap or total. The steward does not cap them either (`merge-steps.ts` 144-146), and
