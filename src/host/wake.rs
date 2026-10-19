@@ -4,11 +4,21 @@
 //! head read, then sets the next wake, each step its own batch. The Durable Object awaits the
 //! steward inside the alarm, so the steps after a call run only once it is answered. The host
 //! keeps that: the wake issues its call and suspends, and resumes on `Replied` or `CallLost`.
-//! While it is suspended another `Wake` only sets the wake again (the watchdog).
+//!
+//! Cloudflare runs no second alarm while one is in progress, so nothing wakes during an awaited
+//! call but the watchdog. A `Wake` that arrives while a call is out therefore sets the watchdog
+//! and does nothing else: it expires no lease (R28 does, on a client message) and asks the core
+//! for no wake, which would be now while a head read or an overdue lease is due. What the
+//! runtime sets while it waits: for a merge, the wake of the marker's batch with the merge
+//! counted (the earlier of the next lease expiry and the watchdog); for a verification, the same
+//! with the verification counted and the head read; for a head read, whatever the step before
+//! it set. None of them fires before the call ends. The host sets the watchdog in all three
+//! cases, so that one wake is always pending, and the resumed wake sets the next one as usual.
 
 use crate::host::calls;
 use crate::host::core_slot::{ApplyError, Prepared, Waits};
 use crate::host::{wake_at_ms, Host, Job, Output};
+use crate::merge::MERGE_WATCHDOG_MS;
 use crate::shell::{self, PokeReply, Work};
 
 /// How long after a failed wake the next one is set: the first retry delay of a Durable Object
@@ -26,19 +36,20 @@ pub enum WakeStep {
     HeadRead,
     /// Set the next wake and end the wake.
     Finish,
-    /// Set the next wake, leaving a wake that is suspended at its call where it is.
-    Rearm,
 }
 
 impl Host {
-    /// The wake is due. A wake suspended at its call is not run again: the new one only sets the
-    /// wake.
+    /// The wake is due. A wake suspended at its call is not run again: the new one sets the
+    /// watchdog and does nothing else.
     pub(super) fn woken(&mut self, out: &mut Vec<Output>) {
         if self.calls.is_empty() {
             self.waking = true;
             self.run(Job::Wake(WakeStep::Expiry), out);
         } else {
-            self.run(Job::Wake(WakeStep::Rearm), out);
+            let watchdog = self.now_ms.saturating_add(MERGE_WATCHDOG_MS);
+            out.push(Output::SetWake {
+                at_ms: Some(watchdog),
+            });
         }
     }
 
@@ -54,7 +65,6 @@ impl Host {
                 self.waking = false;
                 self.set_wake(out);
             }
-            WakeStep::Rearm => self.set_wake(out),
         }
     }
 
@@ -144,8 +154,8 @@ impl Host {
     }
 
     /// A step that found nothing to dispatch stores nothing, and the wake goes on at `next`. An
-    /// error in it has already dropped the core, so `next` reloads it.
-    fn skip(
+    /// error in it ends the wake, as `?` does at runtime.
+    pub(super) fn skip(
         &mut self,
         prepared: Result<Prepared, ApplyError>,
         next: WakeStep,
@@ -153,6 +163,8 @@ impl Host {
     ) {
         if let Err(e) = prepared {
             out.push(self.failure(e.operation, &e.cause));
+            self.wake_failed(out);
+            return;
         }
         self.run(Job::Wake(next), out);
     }

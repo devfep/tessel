@@ -7,8 +7,9 @@ use serde_json::{json, Value};
 use super::batch::{Held, Pending};
 use super::call::{Call, CallAnswer, CallId, DispatchId, Request};
 use super::call::{Refusal, TrialResult};
+use super::core_slot::ApplyError;
 use super::testkit::Testkit;
-use super::wake;
+use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::merge::{MergeOutcome, MERGE_WATCHDOG_MS};
@@ -1504,7 +1505,13 @@ fn host_a_wake_that_dispatched_a_merge_runs_its_verification_step_only_after_rep
     kit.seed("core", serde_json::to_string(&core).unwrap());
     welcomed(&mut kit, "a3");
 
+    let before_the_wake = kit.history().len();
     wake(&mut kit);
+    assert_eq!(
+        labels_since(&kit, before_the_wake),
+        ["Commit", "SetWake", "Commit", "SetWake", "Call"],
+        "expiry, then the merge's marker and its call; the wake waits there"
+    );
     assert_eq!(kit.calls().len(), 1, "one call: the merge");
     assert!(matches!(kit.calls()[0].request, Request::Prepare { .. }));
     let mark = kit.history().len();
@@ -1637,26 +1644,49 @@ fn host_a_verification_marker_is_stored_before_its_call_and_its_outcome_before_a
     assert!(kit.logs().is_empty(), "{:?}", kit.logs());
 }
 
+/// Fire the wake five times, as the platform would while a call is out, and check that each time
+/// exactly one wake is set: the watchdog, in the future, never the next millisecond (I4).
+fn assert_a_wake_during_a_call_sets_only_the_watchdog(kit: &mut Testkit) {
+    for _ in 0..5 {
+        let mark = kit.history().len();
+        if let Some(at) = kit.wake() {
+            assert!(at > kit.now_ms(), "the pending wake is in the future");
+            kit.advance(at.saturating_sub(kit.now_ms()));
+        }
+        kit.wake_now();
+        kit.settle();
+        let watchdog = Some(kit.now_ms() + MERGE_WATCHDOG_MS);
+        assert_eq!(
+            setwakes_since(kit, mark),
+            [watchdog],
+            "one wake: the watchdog"
+        );
+        assert_eq!(labels_since(kit, mark), ["SetWake"], "and nothing else");
+    }
+}
+
 #[test]
-#[ignore = "COORD-WAKE-WHILE-VERIFYING: fixed in the next commit"]
 fn host_a_wake_while_a_verification_is_in_flight_is_pending_and_in_the_future() {
     let (mut kit, sock, _) = trial_outstanding();
     kit.send(sock, &claim(9, "late.rs", "s"));
     kit.settle();
-    for _ in 0..3 {
-        let at = kit.wake().expect("a wake is pending");
-        assert!(at > kit.now_ms(), "the wake is in the future");
-        kit.advance(at - kit.now_ms());
-        kit.wake_now();
-        kit.settle();
-        if kit.wake() == Some(kit.now_ms() + MERGE_WATCHDOG_MS) {
-            return;
-        }
-    }
-    panic!(
-        "the wake kept firing while the verification waited: {:?}",
-        kit.wake()
-    );
+    assert_a_wake_during_a_call_sets_only_the_watchdog(&mut kit);
+}
+
+#[test]
+fn host_a_wake_while_a_head_read_is_out_is_pending_and_in_the_future() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    head_read_outstanding(&mut kit);
+    assert_a_wake_during_a_call_sets_only_the_watchdog(&mut kit);
+}
+
+#[test]
+fn host_a_wake_while_a_trial_is_out_and_a_poke_is_pending_is_pending_and_in_the_future() {
+    let (mut kit, _, _) = trial_outstanding();
+    kit.poke();
+    kit.settle();
+    assert_a_wake_during_a_call_sets_only_the_watchdog(&mut kit);
 }
 
 #[test]
@@ -1991,20 +2021,6 @@ fn host_a_failed_step_leaves_one_future_wake() {
         1,
         "the lost outcome counts as an attempt"
     );
-
-    // A wake that only sets the wake, while a call is out, fails to load.
-    let mut kit = self::kit();
-    welcomed(&mut kit, "a1");
-    head_read_outstanding(&mut kit);
-    kit.fail_next_commit();
-    kit.poke();
-    kit.settle();
-    kit.seed("core", r#"{"claims":"garbled""#.to_string());
-    let mark = kit.history().len();
-    kit.wake_now();
-    kit.settle();
-    let retry = kit.now_ms() + wake::RETRY_MS;
-    assert_eq!(setwakes_since(&kit, mark), [Some(retry)]);
 }
 
 #[test]
@@ -2093,4 +2109,52 @@ fn host_a_poke_for_a_known_repo_is_counted_after_a_restart() {
         json!(1),
         "the stored state makes it known"
     );
+}
+
+/// A client step whose commit fails while a call is out: no wake has failed, so none is retried.
+fn assert_a_failed_client_commit_sets_no_retry_wake(kit: &mut Testkit) {
+    let mark = kit.history().len();
+    kit.fail_next_commit();
+    kit.poke();
+    kit.settle();
+    assert_eq!(setwakes_since(kit, mark), [], "no retry wake is set");
+}
+
+#[test]
+fn host_a_failed_client_commit_while_a_merge_is_out_does_not_fail_the_wake() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    assert_a_failed_client_commit_sets_no_retry_wake(&mut kit);
+}
+
+#[test]
+fn host_a_failed_client_commit_while_a_head_read_is_out_does_not_fail_the_wake() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    head_read_outstanding(&mut kit);
+    assert_a_failed_client_commit_sets_no_retry_wake(&mut kit);
+}
+
+#[test]
+fn host_a_failing_step_that_dispatches_nothing_stops_the_wake() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    kit.host.waking = true;
+    kit.host.now_ms = kit.now_ms();
+    let failed = Err(ApplyError {
+        operation: "apply",
+        cause: "core is not loaded".to_string(),
+    });
+    let mark = kit.history().len();
+    let mut out = Vec::new();
+    kit.host.skip(failed, WakeStep::Verification, &mut out);
+    kit.execute(out);
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Log", "SetWake"],
+        "the wake goes no further"
+    );
+    assert_eq!(kit.wake(), Some(kit.now_ms() + wake::RETRY_MS));
+    assert!(!kit.host.waking);
 }
