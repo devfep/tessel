@@ -45,6 +45,21 @@ pub fn is_timed_out(exit_code: i32) -> bool {
     TIMED_OUT_EXIT_CODES.contains(&exit_code)
 }
 
+/// Why a step stopped the run before it reached a verdict, when the port knows and the repo does
+/// not. A fixed value, never repo text. A step that ran out of time is `timed_out`, not a reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepReason {
+    /// The repo declares dependencies and has no `tessel.toml` on main.
+    Dependencies,
+    /// The repo declares dependencies and its `tessel.toml` on main is not acceptable.
+    Config,
+    /// The dependency check did not complete.
+    Unknown,
+    /// An install command of a `tessel.toml` exited non-zero (a changed lockfile, or a
+    /// dependency missing from the image).
+    InstallFailed,
+}
+
 /// What a package step reported. Its output is untrusted data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepOutcome {
@@ -54,6 +69,8 @@ pub struct StepOutcome {
     pub stderr: String,
     /// True only for the test step with exit code 0: installing is never test evidence.
     pub passed: bool,
+    /// Set by the port when it knows why the step stopped the run; the merge carries it.
+    pub reason: Option<StepReason>,
     /// Set by the merge when the step ran out of time or was killed.
     pub timed_out: bool,
     /// The lander's own clock around the step, when measured.
@@ -69,6 +86,7 @@ impl StepOutcome {
             stdout: stdout.to_owned(),
             stderr: stderr.to_owned(),
             passed: step == PackageStep::Test && exit_code == 0,
+            reason: None,
             timed_out: false,
             wall_ms: None,
         }

@@ -299,10 +299,17 @@ fn review_gate(
         }
         MergePolicy::Admin => {}
     }
-    let file = ctx.run(
+    let show = ctx.runner.run(
         &ctx.git
             .show_file_command(workspace, &head, TESSEL_TOML_PATH),
-    )?;
+    );
+    let file = match show {
+        Ok(file) => file,
+        Err(RunError::OutputTooLarge { .. }) => {
+            return Ok(Coverage::Refused(MergeOutcome::GateInvalid { base, head }));
+        }
+        Err(error) => return Err(error.into()),
+    };
     if !file.success() || parse_gate_config(&file.stdout).is_err() {
         return Ok(Coverage::Refused(MergeOutcome::GateInvalid { base, head }));
     }

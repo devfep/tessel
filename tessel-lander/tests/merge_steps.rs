@@ -23,7 +23,7 @@ use tessel_lander::merge::{
     MergePorts, MergeRequest, Prepared, PushUpdate,
 };
 use tessel_lander::outcome::{
-    EvidenceResult, GateStep, LandedMerge, MergeOutcome, PackageStep, StepOutcome,
+    EvidenceResult, GateStep, LandedMerge, MergeOutcome, PackageStep, StepOutcome, StepReason,
 };
 use tessel_lander::run::{GitOutput, GitRunner, RunError};
 use tessel_lander::types::Sha;
@@ -208,6 +208,8 @@ struct Plan {
     git: HashMap<GitStep, Reply>,
     install: i32,
     test: i32,
+    /// Outcomes the port reports as they are, instead of building one from the exit code.
+    reported: Vec<StepOutcome>,
     test_wall_ms: Option<u64>,
     revoked_reads: bool,
     main_after_push: Option<Sha>,
@@ -221,6 +223,7 @@ impl Plan {
             git: HashMap::new(),
             install: 0,
             test: 0,
+            reported: Vec::new(),
             test_wall_ms: None,
             revoked_reads: true,
             main_after_push: Some(head()),
@@ -231,6 +234,11 @@ impl Plan {
 
     fn git(mut self, step: GitStep, reply: Reply) -> Plan {
         self.git.insert(step, reply);
+        self
+    }
+
+    fn reporting(mut self, outcome: StepOutcome) -> Plan {
+        self.reported.push(outcome);
         self
     }
 
@@ -349,6 +357,9 @@ impl MergePorts for Harness {
             PackageStep::Test => ("test", self.plan.test),
         };
         self.events.borrow_mut().push(format!("package:{label}"));
+        if let Some(reported) = self.plan.reported.iter().find(|r| r.step == step) {
+            return Ok(reported.clone());
+        }
         let mut outcome = StepOutcome::finished(step, exit_code, &format!("{label} out"), "");
         if step == PackageStep::Test {
             outcome.wall_ms = self.plan.test_wall_ms;
@@ -644,6 +655,46 @@ fn returns_the_capped_test_output_with_a_failed_test() {
 }
 
 #[test]
+fn carries_the_reason_a_step_gave_for_stopping_the_run() {
+    for reason in [
+        StepReason::Dependencies,
+        StepReason::Config,
+        StepReason::Unknown,
+        StepReason::InstallFailed,
+    ] {
+        let reported = StepOutcome {
+            reason: Some(reason),
+            ..step_outcome(PackageStep::Install, 1, false)
+        };
+        let harness = Harness::new(Plan::new().reporting(reported.clone()));
+        assert_eq!(
+            merge(&harness, &whole_repo()),
+            MergeOutcome::Install {
+                base: base(),
+                head: head(),
+                result: reported,
+            },
+            "{reason:?}"
+        );
+    }
+}
+
+#[test]
+fn a_test_step_that_timed_out_is_never_reported_as_passed_whatever_the_port_claimed() {
+    let reported = StepOutcome {
+        passed: true,
+        ..step_outcome(PackageStep::Test, 124, false)
+    };
+    let harness = Harness::new(Plan::new().reporting(reported));
+    let MergeOutcome::Timeout { result, .. } = merge(&harness, &whole_repo()) else {
+        unreachable!("the test step ran out of time");
+    };
+    assert!(result.timed_out);
+    assert!(!result.passed);
+    assert!(!harness.minted_write_access());
+}
+
+#[test]
 fn reports_a_test_step_that_timed_out_as_a_timeout_that_is_still_the_test_step() {
     for test in [124, 137] {
         let harness = Harness::new(Plan {
@@ -750,6 +801,23 @@ fn admin_refuses_a_head_file_that_is_invalid_oversized_or_deleted_running_nothin
         assert!(!harness.ran_package_step());
         assert!(!harness.minted_write_access());
     }
+}
+
+#[test]
+fn admin_refuses_a_head_file_too_large_to_read_whole_as_an_invalid_gate_not_an_error() {
+    let plan = Plan::new()
+        .changed(GATE_AND_CODE)
+        .git(GitStep::Show, fault(Fault::TooLarge));
+    let harness = Harness::new(plan);
+    assert_eq!(
+        admin(&harness, &whole_repo()),
+        MergeOutcome::GateInvalid {
+            base: base(),
+            head: head()
+        }
+    );
+    assert!(!harness.ran_package_step());
+    assert!(!harness.minted_write_access());
 }
 
 #[test]
