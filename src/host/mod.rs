@@ -285,7 +285,7 @@ impl Host {
             Input::Frame { now_ms, sock, text } => self.frame(now_ms, sock, &text, out),
             Input::Binary { sock, .. } => out.push(Output::Send {
                 sock,
-                msg: shell::malformed_reply(),
+                msg: shell::binary_rejection(),
             }),
             Input::Loaded { stored, .. } => self.loaded(stored.as_deref(), out),
             Input::Committed { now_ms, batch } => self.committed(now_ms, batch, out),
@@ -341,7 +341,7 @@ impl Host {
         let msg = match shell::parse_client_msg(text) {
             Ok(msg) => msg,
             Err(fault) => {
-                let msg = shell::malformed_reply();
+                let msg = fault.reply();
                 out.push(Output::Send { sock, msg });
                 return;
             }
@@ -592,7 +592,7 @@ impl Host {
         self.slot.drop_core();
         out.push(self.failure("persist state and events", "the commit was not stored"));
         let waiting = discarded.then.as_ref().and_then(Job::origin);
-        let origin = None.or(waiting);
+        let origin = discarded.reply_to.map(|sock| (sock, now_ms)).or(waiting);
         self.close_for_error(origin, out);
     }
 
