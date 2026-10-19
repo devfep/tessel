@@ -69,8 +69,34 @@ pub enum CloneError {
     DestinationHasParentDir { path: PathBuf },
     #[error("cannot check that {path} is a clone destination: {source}")]
     DestinationUnreadable { path: PathBuf, source: io::Error },
+    #[error("cannot write {path} in the clone of main, so it is not used: {source}")]
+    WriteAttributes { path: PathBuf, source: io::Error },
     #[error(transparent)]
     Run(#[from] RunError),
+}
+
+/// Attributes the clone's own `info/attributes` sets for every path. It outranks every
+/// `.gitattributes` in the tree, so a fork cannot pick a built-in merge driver: `merge=union`
+/// would splice both sides of a conflict into a clean merge. With `text` a conflict always stops
+/// the rebase. A repo's own built-in driver on
+/// main is overridden too, which can only add conflicts.
+const MERGE_ATTRIBUTES: &str = "* merge=text\n";
+
+/// Writes [`MERGE_ATTRIBUTES`] into the `.git` git made. A clone with no `.git` (a runner that
+/// ran nothing) has nothing to write into: every command pins `GIT_DIR` to it and fails.
+fn write_merge_attributes(destination: &Path) -> Result<(), CloneError> {
+    let git_dir = destination.join(".git");
+    if !git_dir.is_dir() {
+        return Ok(());
+    }
+    let info = git_dir.join("info");
+    let path = info.join("attributes");
+    let write = |source| CloneError::WriteAttributes {
+        path: path.clone(),
+        source,
+    };
+    fs::create_dir_all(&info).map_err(write)?;
+    fs::write(&path, MERGE_ATTRIBUTES).map_err(write)
 }
 
 /// Whether `destination` is missing or an empty directory. A path with `..` is refused: when its
@@ -121,6 +147,7 @@ pub fn clone_main(
     ensure_clonable(destination)?;
     let output = runner.run(&git.clone_command(sources, destination))?;
     if output.success() {
+        write_merge_attributes(destination)?;
         Ok(CloneOutcome::Cloned(Workspace::new(destination.clone())))
     } else {
         Ok(CloneOutcome::Failed(output))
