@@ -855,10 +855,10 @@ impl Agent {
         eventually(Duration::from_secs(8), || {
             let text = std::fs::read_to_string(&log).unwrap_or_default();
             let online = self.status()?["state"]["connection"] == "online";
-            Ok(
-                (text.contains("event log read:") && text.contains("(complete)") && online)
-                    .then_some(()),
-            )
+            let read = text
+                .lines()
+                .any(|l| l.contains("event log read:") && l.contains("(complete)"));
+            Ok((read && online).then_some(()))
         })
         .await
         .context("the first event-log read never completed with the daemon online")
