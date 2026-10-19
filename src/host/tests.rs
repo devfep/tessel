@@ -979,8 +979,8 @@ fn host_a_lost_call_leaves_the_table_and_no_longer_holds_the_wake_back() {
 
 // ---------- Sockets and sessions (R6 to R13, R31, R32) ----------
 
-/// A stored core over the hard limit that no expiry can bring under it: one claim, a1's, expires
-/// `LEASE_MS` after the testkit starts, and the claims that fill the state far outlive it.
+/// A stored core over the hard limit that no expiry can bring under it: the first claim, early's,
+/// expires `LEASE_MS` after the testkit starts, and the claims that fill the state far outlive it.
 fn core_json_over_the_hard_limit_with_one_lease_due() -> String {
     let mut core = shell::load_core(None, Some("test"), None, Vec::new(), Vec::new()).unwrap();
     core.handle(
@@ -988,15 +988,19 @@ fn core_json_over_the_hard_limit_with_one_lease_due() -> String {
         claim(1, "early.rs", "s"),
         NOW_MS,
     );
-    let later = NOW_MS + 1_000_000_000;
     let summary = "x".repeat(10_000);
     let mut made = 0;
-    while serde_json::to_string(&core).unwrap().len() <= HARD_ENTRY_BYTES {
+    while serde_json::to_string(&core).unwrap().len() <= HARD_ENTRY_BYTES + 20_000 {
         made += 1;
         let agent = AgentId(format!("filler-{made}"));
-        core.handle(&agent, claim(1, &format!("f{made}.rs"), &summary), later);
+        core.handle(&agent, claim(1, &format!("f{made}.rs"), &summary), NOW_MS);
     }
-    serde_json::to_string(&core).unwrap()
+    let mut stored = serde_json::to_value(&core).unwrap();
+    let claims = stored["claims"].as_object_mut().unwrap();
+    for (id, filler) in claims.iter_mut().filter(|(id, _)| id.as_str() != "1") {
+        filler["expires_at_ms"] = json!(4_000_000_000_000_u64);
+    }
+    stored.to_string()
 }
 
 fn waiting_claim(req: u64, paths: &[&str]) -> ClientMsg {
