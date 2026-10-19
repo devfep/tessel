@@ -91,6 +91,11 @@ impl Testkit {
         self.client(sock).send_fails = true;
     }
 
+    /// Sends to `sock` succeed again.
+    pub fn restore_sends_to(&mut self, sock: SocketId) {
+        self.client(sock).send_fails = false;
+    }
+
     /// Open a socket for `agent`, as the adapter does for a request it authenticated.
     pub fn open(&mut self, agent: &str) -> SocketId {
         let sock = SocketId(self.next_sock);
