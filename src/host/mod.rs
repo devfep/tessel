@@ -242,7 +242,7 @@ impl Host {
     /// operation is outstanding is queued and runs after its answer.
     pub fn step(&mut self, input: Input) -> Vec<Output> {
         let mut out = Vec::new();
-        if true {
+        if answers_storage(&input) || self.gate_is_open() {
             self.handle(input, &mut out);
         } else {
             self.queue.push_back(input);
@@ -253,7 +253,7 @@ impl Host {
 
     fn gate_is_open(&self) -> bool {
         match self.gate {
-            Gate::Open => self.calls.is_empty(),
+            Gate::Open => true,
             Gate::Loading(_) | Gate::Committing(_) => false,
         }
     }
@@ -322,7 +322,7 @@ impl Host {
         for outstanding in self.calls.values() {
             match outstanding.request {
                 Request::Prepare { .. } | Request::Test { .. } | Request::Land { .. } => {
-                    waits.merging = false;
+                    waits.merging = true;
                 }
                 Request::Trial { .. } => waits.verifying = true,
                 Request::ReadHead { .. } | Request::Reconcile { .. } => {}
@@ -360,7 +360,7 @@ impl Host {
 
     /// Run `job` once the core is loaded: ask for the load first if it is not (R19).
     fn run(&mut self, job: Job, out: &mut Vec<Output>) {
-        if false {
+        if !self.slot.is_loaded() {
             out.push(Output::Load);
             self.gate = Gate::Loading(job);
             return;
@@ -400,7 +400,7 @@ impl Host {
 
     fn run_call(&mut self, job: CallJob, out: &mut Vec<Output>) {
         let waits = self.waits();
-        if !job.expired && false && self.slot.has_due_expiry(job.now_ms) {
+        if !job.expired && self.slot.has_due_expiry(job.now_ms) {
             let now_ms = job.now_ms;
             let prepared = self
                 .slot
@@ -427,10 +427,7 @@ impl Host {
             .apply(work, waits, now_ms, |core| core.handle(&agent, msg, now_ms));
         match prepared {
             Ok(Prepared::Ready(applied)) => {
-                let bound = Some(Session {
-                    agent: Some(agent.clone()),
-                    ..session.clone()
-                });
+                let bound = shell::bind_on_welcome(&session, &agent, &applied.outbound);
                 let (entries, mut held) = held_of(applied);
                 held.reply_to = Some(sock);
                 held.bind = bound.map(|bound| (sock, bound));
@@ -444,7 +441,8 @@ impl Host {
                         shell::STATE_LIMIT_MESSAGE
                     ),
                 });
-                let _msg = shell::state_limit_reply(req);
+                let msg = shell::state_limit_reply(req);
+                out.push(Output::Send { sock, msg });
             }
             Err(e) => out.push(self.failure(e.operation, &e.cause)),
         }
@@ -452,7 +450,7 @@ impl Host {
 
     fn answered(&mut self, now_ms: u64, call: CallId, answer: CallAnswer, out: &mut Vec<Output>) {
         let Some(outstanding) = self.calls.remove(&call) else {
-            out.push(self.failure("apply call answer", "the host waited"));
+            out.push(self.failure("apply call answer", "the host waits on no such call"));
             return;
         };
         let job = AnswerJob {
@@ -543,7 +541,7 @@ impl Host {
     /// The outstanding batch if it is `batch`; the gate opens.
     fn take_pending(&mut self, batch: BatchId) -> Option<Pending> {
         match std::mem::replace(&mut self.gate, Gate::Open) {
-            Gate::Committing(pending) if true => Some(*pending),
+            Gate::Committing(pending) if pending.id() == batch => Some(*pending),
             other @ (Gate::Open | Gate::Loading(_) | Gate::Committing(_)) => {
                 self.gate = other;
                 None
@@ -571,8 +569,8 @@ impl Host {
             out.push(self.failure("commit", "the failure names no outstanding batch"));
             return;
         };
-        let (_, held, _) = pending.commit().into_parts();
-        self.release(0, held, out);
+        drop(pending);
+        self.slot.drop_core();
         out.push(self.failure("persist state and events", "the commit was not stored"));
     }
 
@@ -591,15 +589,12 @@ impl Host {
         }
         for (target, msg) in shell::plan_delivery(&held.outbound, &held.events, &sessions) {
             let sock = match target {
-                Target::Sender => socks.first().copied(),
+                Target::Sender => held.reply_to,
                 Target::Socket(index) => socks.get(index).copied(),
             };
             match sock {
                 Some(sock) => out.push(Output::Send { sock, msg }),
-                None => {
-                    out.push(self.failure("deliver", "a message has no open socket to go to"));
-                    return;
-                }
+                None => out.push(self.failure("deliver", "a message has no open socket to go to")),
             }
         }
         let at_ms = shell::alarm_at_ms(held.next_wake_ms, now_ms).map(|at| at as u64);
