@@ -21,6 +21,7 @@ use tessel_lander::outcome::{
 use tessel_lander::run::SystemRunner;
 use tessel_lander::trial::{run_trial, TrialContext, TrialPorts};
 use tessel_lander::types::Sha;
+use tessel_lander::workspace::TestTree;
 
 use super::{commit_file, fixture_git};
 
@@ -116,13 +117,18 @@ impl Repos {
         scopes: &[ScopeClaim],
         policy: MergePolicy,
     ) -> Result<MergeOutcome, MergeError> {
-        let (sources, pinned, clone_dir) =
-            (self.sources(), self.main_head(), self.next_clone_dir());
+        let (sources, pinned, clone_dir, test_dir) = (
+            self.sources(),
+            self.main_head(),
+            self.next_clone_dir(),
+            self.next_clone_dir(),
+        );
         let ctx = MergeContext {
             git: &self.git,
             runner: &SystemRunner,
             sources: &sources,
             clone_dir: &clone_dir,
+            test_dir: &test_dir,
             pinned_main: &pinned,
         };
         let request = MergeRequest {
@@ -143,7 +149,7 @@ impl Repos {
             sources: &sources,
             clone_dir: &clone_dir,
         };
-        run_trial(&ctx, &ShellTests { tree: &clone_dir }, main, commit)
+        run_trial(&ctx, &ShellTests, main, commit)
     }
 
     /// Like [`Repos::merge`], but only `prepare`.
@@ -154,13 +160,18 @@ impl Repos {
         scopes: &[ScopeClaim],
         policy: MergePolicy,
     ) -> Result<Prepared, MergeError> {
-        let (sources, pinned, clone_dir) =
-            (self.sources(), self.main_head(), self.next_clone_dir());
+        let (sources, pinned, clone_dir, test_dir) = (
+            self.sources(),
+            self.main_head(),
+            self.next_clone_dir(),
+            self.next_clone_dir(),
+        );
         let ctx = MergeContext {
             git: &self.git,
             runner: &SystemRunner,
             sources: &sources,
             clone_dir: &clone_dir,
+            test_dir: &test_dir,
             pinned_main: &pinned,
         };
         let request = MergeRequest {
@@ -225,7 +236,11 @@ impl MergePorts for LocalPorts<'_> {
         true
     }
 
-    fn run_package_step(&self, step: PackageStep) -> Result<StepOutcome, BoundaryError> {
+    fn run_package_step(
+        &self,
+        step: PackageStep,
+        _tree: &TestTree,
+    ) -> Result<StepOutcome, BoundaryError> {
         self.log.borrow_mut().push(format!("{step:?}"));
         Ok(StepOutcome::finished(step, 0, "", ""))
     }
@@ -258,22 +273,24 @@ impl MergePorts for LocalPorts<'_> {
 }
 
 /// Trial ports whose install step passes and whose test step runs `sh test.sh` in the tree.
-struct ShellTests<'a> {
-    tree: &'a Path,
-}
+struct ShellTests;
 
-impl TrialPorts for ShellTests<'_> {
+impl TrialPorts for ShellTests {
     fn revoke_read_access(&self) -> bool {
         true
     }
 
-    fn run_package_step(&self, step: PackageStep) -> Result<StepOutcome, BoundaryError> {
+    fn run_package_step(
+        &self,
+        step: PackageStep,
+        tree: &TestTree,
+    ) -> Result<StepOutcome, BoundaryError> {
         if step == PackageStep::Install {
             return Ok(StepOutcome::finished(step, 0, "", ""));
         }
         let status = Command::new("sh")
             .arg("test.sh")
-            .current_dir(self.tree)
+            .current_dir(tree.path())
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .status()

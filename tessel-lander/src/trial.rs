@@ -31,7 +31,7 @@ use crate::merge::{
 use crate::outcome::{PackageStep, StepOutcome, TrialOutcome, TrialReport};
 use crate::run::GitRunner;
 use crate::types::Sha;
-use crate::workspace::CloneOutcome;
+use crate::workspace::{CloneOutcome, TestTree, Workspace};
 
 /// What a trial needs from the platform: the read credentials and the sandbox that runs the
 /// repo's tests. It has no way to push and no way to mint a write credential, so [`run_trial`]
@@ -57,10 +57,14 @@ pub trait TrialPorts {
     /// Revokes the read credentials of main and of the fork. Must not panic; `false` on failure.
     fn revoke_read_access(&self) -> bool;
 
-    /// Runs the install step or the test step on the rebased tree of the trial's clone. No
-    /// credential is live. The clone is the trial's own and is dropped with it: no landing
-    /// pushes from it.
-    fn run_package_step(&self, step: PackageStep) -> Result<StepOutcome, BoundaryError>;
+    /// Runs the install step or the test step in `tree`, the rebased tree of the trial's clone.
+    /// No credential is live. The clone is the trial's own: nothing runs git in it or pushes from
+    /// it afterwards. The lander does not remove `tree`.
+    fn run_package_step(
+        &self,
+        step: PackageStep,
+        tree: &TestTree,
+    ) -> Result<StepOutcome, BoundaryError>;
 }
 
 /// Where a trial runs.
@@ -101,7 +105,7 @@ pub fn run_trial(
     }
     match rebase_onto_main(&env, &workspace, main, commit)? {
         Rebase::Stopped(halt) => Ok(stopped(halt, main, commit)),
-        Rebase::Rebased(head) => test_rebased(ports, main, head, commit),
+        Rebase::Rebased(head) => test_rebased(ports, workspace, main, head, commit),
     }
 }
 
@@ -119,6 +123,7 @@ fn stopped(halt: Halt, base: &Sha, commit: &Sha) -> TrialOutcome {
 
 fn test_rebased(
     ports: &impl TrialPorts,
+    workspace: Workspace,
     base: &Sha,
     head: Sha,
     commit: &Sha,
@@ -127,7 +132,8 @@ fn test_rebased(
     if head == base {
         return Ok(TrialOutcome::NothingToTest { base, commit });
     }
-    let (tested, _steps) = install_then_test(&|step| ports.run_package_step(step))?;
+    let tree = TestTree::from_workspace(workspace);
+    let (tested, _steps) = install_then_test(&|step| ports.run_package_step(step, &tree))?;
     Ok(if tested.timed_out {
         TrialOutcome::Timeout {
             base,

@@ -22,7 +22,8 @@
 //! - Aliases: only builtin subcommands are invoked, and git never lets an alias shadow a builtin.
 //! - `core.fsmonitor` is off, `core.hooksPath` is fixed, `core.sshCommand` is plain `ssh` and the
 //!   credential helper list is reset, all by env config that outranks repo config. This is
-//!   hardening, not a fix for repo code that runs in a workspace (see
+//!   hardening, not a fix for repo code that runs in a workspace, which is why the repo's tests
+//!   run in a [`crate::workspace::TestTree`] and never in one (see
 //!   [`crate::merge::MergePorts::run_package_step`]).
 //! - Transports: `protocol.allow=never` with an allowlist (https, ssh, file), so `ext::` and
 //!   plain `http`/`git` remotes are refused.
@@ -55,6 +56,7 @@ pub const LOCAL_TIMEOUT: Duration = Duration::from_secs(6);
 /// Upper bound on the quick local git commands of one merge; the time budget is sized from it.
 pub const LOCAL_GIT_COMMANDS_MAX: usize = 8;
 const REBASE_TIMEOUT: Duration = Duration::from_secs(30);
+const TEST_TREE_TIMEOUT: Duration = Duration::from_secs(30);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One git invocation. `argv[0]` is `git`; the environment is the whole environment.
@@ -266,6 +268,20 @@ impl Git {
             CLONE_TIMEOUT,
         );
         command.argv.push((&sources.main_remote).into());
+        command.argv.push(destination.into());
+        command
+    }
+
+    /// Clones the workspace, whose HEAD is the rebased head, into `destination`, which git refuses
+    /// unless it is missing or empty. Objects are copied, not hard-linked, so nothing written in
+    /// the new tree reaches the workspace. [`crate::workspace::clone_test_tree`] runs it and makes
+    /// the [`crate::workspace::TestTree`].
+    pub fn clone_test_tree_command(&self, workspace: &Workspace, destination: &Path) -> GitCommand {
+        let mut command = self.command(
+            &["clone", "--no-tags", "--no-hardlinks", "--"],
+            TEST_TREE_TIMEOUT,
+        );
+        command.argv.push(workspace.path().into());
         command.argv.push(destination.into());
         command
     }
