@@ -42,7 +42,7 @@ use crate::outcome::{
 };
 use crate::run::{GitOutput, GitRunner, RunError};
 use crate::types::Sha;
-use crate::workspace::{clone_main, CloneOutcome, Workspace};
+use crate::workspace::{clone_main, CloneError, CloneOutcome, Workspace};
 
 /// The one update the write credential may be used for: main from `base` to `head`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +65,8 @@ pub enum MergeError {
     Command(#[from] CommandError),
     #[error(transparent)]
     Run(#[from] RunError),
+    #[error(transparent)]
+    Clone(#[from] CloneError),
     #[error(
         "the read credentials could not be revoked, so no repo code was run; \
          revoke them before retrying"

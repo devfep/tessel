@@ -27,6 +27,7 @@ use tessel_lander::outcome::{
 };
 use tessel_lander::run::{GitOutput, GitRunner, RunError};
 use tessel_lander::types::Sha;
+use tessel_lander::workspace::CloneError;
 
 fn sha(character: char) -> Sha {
     Sha::parse(&character.to_string().repeat(40)).expect("test sha")
@@ -1354,7 +1355,10 @@ fn a_clone_that_cannot_run_still_revokes_the_read_tokens_and_runs_nothing_after(
     let harness = Harness::new(Plan::new().git(GitStep::Clone, fault(Fault::ExecFailed)));
     let error = merge_with(&harness, &whole_repo(), MergePolicy::Submission)
         .expect_err("the clone could not run");
-    assert!(matches!(error, MergeError::Run(_)), "{error}");
+    assert!(
+        matches!(error, MergeError::Clone(CloneError::Run(_))),
+        "{error}"
+    );
     assert_eq!(harness.events(), strings(&["git:clone", "revoke-reads"]));
 }
 

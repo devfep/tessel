@@ -4,9 +4,12 @@
 //! hook that runs repo code (`tests/repo_code.rs` shows an in-place rebase running them). A
 //! [`Workspace`] is therefore never a path the caller names: [`clone_main`] makes one only when
 //! git itself created the directory by cloning, so its config is the one git wrote. `git clone`
-//! refuses a destination that already holds anything, so an existing repository cannot be
-//! passed off as a workspace.
+//! refuses a destination that already holds anything, and [`clone_main`] checks the same before
+//! it calls the runner, so a runner that skips git cannot pass an existing repository off as a
+//! workspace.
 
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::git::{Git, MergeSources};
@@ -56,14 +59,50 @@ pub enum CloneOutcome {
     Failed(GitOutput),
 }
 
-/// Clones main into `destination`, which must be missing or an empty directory, and returns the
-/// workspace only if git exited 0.
+#[derive(Debug, thiserror::Error)]
+pub enum CloneError {
+    #[error("cannot clone main into {path}: it exists and is not an empty directory")]
+    DestinationInUse { path: PathBuf },
+    #[error("cannot check that {path} is a clone destination: {source}")]
+    DestinationUnreadable { path: PathBuf, source: io::Error },
+    #[error(transparent)]
+    Run(#[from] RunError),
+}
+
+/// Whether `destination` is missing or an empty directory. A symlink is never one: it may lead
+/// to a repository.
+fn ensure_clonable(destination: &Path) -> Result<(), CloneError> {
+    let unreadable = |source| CloneError::DestinationUnreadable {
+        path: destination.to_path_buf(),
+        source,
+    };
+    let in_use = || CloneError::DestinationInUse {
+        path: destination.to_path_buf(),
+    };
+    let metadata = match fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(unreadable(error)),
+    };
+    if !metadata.is_dir() {
+        return Err(in_use());
+    }
+    let mut entries = fs::read_dir(destination).map_err(unreadable)?;
+    match entries.next() {
+        None => Ok(()),
+        Some(_) => Err(in_use()),
+    }
+}
+
+/// Clones main into `destination`, which must be missing or an empty directory (checked here,
+/// not left to git), and returns the workspace only if git exited 0.
 pub fn clone_main(
     git: &Git,
     runner: &dyn GitRunner,
     sources: &MergeSources,
     destination: &Path,
-) -> Result<CloneOutcome, RunError> {
+) -> Result<CloneOutcome, CloneError> {
+    ensure_clonable(destination)?;
     let output = runner.run(&git.clone_command(sources, destination))?;
     if output.success() {
         Ok(CloneOutcome::Cloned(Workspace::new(
