@@ -87,9 +87,9 @@ below, the rest in outline, re-planned at each milestone boundary.
 | Milestone | Weeks | Contents | Done-check (CI) |
 |---|---|---|---|
 | M1. Guardrails and the host's types | 1-2 | Mutation check per pull request; nightly job; `runtime.rs` rules list with in-place tests; the host's `Input`, `Output` and `Call` types; lander git layer | Mutation job required and green; nightly green once; rules check passes; host types round-trip; lander git tests pass |
-| M2. The move | 3-5 | `runtime.rs` moved step for step into `src/host/`, quirks included; the CLI's fake coordinator rebuilt on the host; lander `prepare`, `land` and `trial` ported | No rules-list row left "after move"; CLI suite green on the host; ported steward tests green |
+| M2. The move | 3-5 | `runtime.rs` moved step for step into `src/host/`, quirks included; the CLI's fake coordinator rebuilt on the host; lander `prepare`, `land` and `trial` ported | No host row of the rules list left "after move"; CLI suite green on the host; ported steward tests green |
 | M3. Simulator and the staged landing | 6-8 | Cloudflare Rust glue deleted first (P1-DROP-WORKER); simulator in two tasks, I1-I12 checkers, failpoints; the core's landing split into `Prepare`, journaled head, `Test`, `Land`; `Unknown` and `Reconcile`; ancestry read-back; persist retry; one batch per wake | Simulator lane required and green; each behaviour change flips its named test |
-| M4. Host changes and `tessel-server` | 8-10 | Exact replay, half-lease persistence, two carried-over tasks; axum, one task per repo, SQLite store, store lock, `state_version` and migrations, protocol range; Ed25519 identity and token minting; local test runner | Adapter suite green; each host change flips its named test |
+| M4. Host changes and `tessel-server` | 8-10 | Exact replay, half-lease persistence, two carried-over tasks; axum, one task per repo, SQLite store, store lock, `state_version` and migrations, protocol range; Ed25519 identity and token minting; local test runner | Adapter suite green; no rules-list row left "after move" (the adapter rows R2-R5 and R49 each "now" with its named test); each host change flips its named test |
 | M5. Lander behind the server; advisory mode | 10-11 | Lander and runner as separate binaries over a local authenticated channel; evidence records; metrics, logs, trace id; swarm local target rebuilt on the server; advisory head sync; reviewers on the server; hosted dogfood server | End-to-end landing on a local git remote; advisory end-to-end test; metrics contract test; `tessel review` approves through the server |
 | M6. Dogfood, then delete | 11-12 | Five merged pull requests of this repo in advisory mode, one redeploy with a claim held across it; the TypeScript steward deleted; ruleset changed in the same step | Phase done-check above |
 
@@ -279,8 +279,10 @@ today (R24). From P1-CORE-RECONCILE (M3), a marker found on `Loaded` is reconcil
   characters. Done: tests that each is refused or inert, each failing when the matching part of
   the fixed git environment is removed.
 
-M2's done-check: no rules-list row is "after move"; `cargo test --workspace` green with the CLI
-suite on the host; the wasm lane still green (`runtime.rs` unchanged).
+M2's done-check: no host row of the rules list is "after move"; `cargo test --workspace` green
+with the CLI suite on the host; the wasm lane still green (`runtime.rs` unchanged). The adapter
+rows (R2 to R5 and R49, "adapter (M4)") stay "after move" until M4, whose done-check makes each
+"now" with its named adapter test (Felix, 19 October).
 
 ## M3 to M6, in outline
 
@@ -581,7 +583,7 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
 | Risk | Mitigation |
 |---|---|
 | The move drops a rule nobody wrote down | every `fn` of `runtime.rs` in the rules list, input-gate and alarm-retry rules included; CLI suite on the host; planted mutants of moved rules must fail a test |
-| `runtime.rs` is deleted at the start of M3, before the staged landing | M2's done-check leaves no rule without a host test; the code stays readable at `6efe835`; decision 13 |
+| `runtime.rs` is deleted at the start of M3, before the staged landing | M2's done-check leaves no host rule without a host test; the adapter rules (R2-R5, R49) have no code to protect once `runtime.rs` is gone and are M4's done-check; the code stays readable at `6efe835`; decision 13 |
 | A simulator checker passes without checking anything | each checker has a planted-bug test that must fail |
 | A seed does not reproduce | each seed runs twice with transcripts compared; wall-clock calls banned in `src/host` and `src/sim` |
 | The lander port drifts from the steward's behaviour | the steward's 47 unit tests and real-git cases are ported first and are the lander's done-checks; the TypeScript stays as reference until M6 |
@@ -644,8 +646,10 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
     `Prepare`, `Test` and `Land` onto the steward's one-call `/merge`, which is a compatibility
     shim, untested because `runtime.rs` has no tests. The Durable Object is no fallback either:
     nothing is deployed (the instance was deleted on 17 October), and it could land nothing
-    without the steward on Cloudflare. After M2's done-check, every rule of `runtime.rs` has a
-    host test, and the code stays readable at `6efe835`. What the later gate protects, the
+    without the steward on Cloudflare. After M2's done-check, every host rule of `runtime.rs` has a
+    host test; the adapter rules (R2-R5, R49) are written down with their named M4 tests and have
+    no code to protect until the adapter exists; and the code stays readable at `6efe835`.
+    What the later gate protects, the
     lander's reference and its CI check, is the TypeScript steward, which stays until M6. This
     matches `PLAN.md`'s decision 2 ("removed as soon as the portable host replaces it") and keeps
     the phase order. It is reversible: P1-DROP-WORKER is one pull request that `git revert`
