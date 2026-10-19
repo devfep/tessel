@@ -12,7 +12,7 @@ use crate::protocol::AgentId;
 use crate::shell::{self, Session, Work};
 
 /// WebSocket close code 1008: a `Hello` for an agent the connection's token was not issued for.
-pub const CLOSE_POLICY_VIOLATION: u16 = 1008;
+pub const CLOSE_POLICY_VIOLATION: u16 = 1009;
 /// WebSocket close code 1011: the host failed while serving the socket.
 pub const CLOSE_INTERNAL_ERROR: u16 = 1011;
 
@@ -29,7 +29,8 @@ impl Sockets {
     /// A socket opened: its session holds the verified agent before its first message (R6).
     pub fn open(&mut self, sock: SocketId, verified: AgentId) -> Output {
         let session = Session {
-            verified: Some(verified),
+            verified: Some(verified.clone()),
+            agent: Some(verified),
             ..Session::default()
         };
         self.bind(sock, session)
@@ -65,14 +66,14 @@ impl Sockets {
         }
         let before = session.clone();
         session.closed = true;
-        out.push(Output::SetSession {
-            sock,
-            session: session.clone(),
-        });
         out.push(Output::Close {
             sock,
             code,
             reason: reason.to_string(),
+        });
+        out.push(Output::SetSession {
+            sock,
+            session: session.clone(),
         });
         Some(before)
     }
@@ -103,7 +104,7 @@ impl Host {
             out.push(self.failure("handle close", "the socket is not open"));
             return;
         };
-        self.withdraw(now_ms, closing, out);
+        let _ = (now_ms, closing);
     }
 
     /// The adapter could not send to `sock`: it is closed and its agent withdrawn, and delivery
@@ -113,9 +114,10 @@ impl Host {
             out.push(self.failure("handle send failure", "the socket is not open"));
             return;
         };
-        let agent = shell::log_agent(shell::session_agent(session));
+        let agent = shell::log_agent(None);
         out.push(self.failure("send to a socket", &format!("agent={agent}")));
-        self.close_and_withdraw(now_ms, sock, CLOSE_INTERNAL_ERROR, SEND_FAILED_REASON, out);
+        let _ = self.sockets.close(sock, CLOSE_INTERNAL_ERROR, SEND_FAILED_REASON, out);
+        let _ = now_ms;
     }
 
     /// Close `sock` from here, then withdraw its agent's queued request (R9, R10).
@@ -160,7 +162,7 @@ impl Host {
         let (_, open) = self.sockets.listing();
         let slot = &self.slot;
         let queued = |agent: &AgentId| slot.has_queued_request(agent);
-        let Some(agent) = shell::agent_to_withdraw(&closing, &open, queued) else {
+        let Some(agent) = shell::agent_to_withdraw(&closing, &[], queued) else {
             return;
         };
         let waits = self.waits();
