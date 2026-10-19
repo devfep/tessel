@@ -7,19 +7,18 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-19 14:59 EDT. Merged since the last rewrite: the previous STATE (`ed280f0`,
-#50), P1-LANDER-TRIAL (`034f521`, #51) and P1-MOVE-SOCKETS (`90a4fac`, #52). The orchestrator's
-gate on `90a4fac` is green (1594 tests, clippy native, no-default-features and wasm32, fmt, named
-tests). GitHub Actions had an incident from about 11:45 to 12:30 EDT; queued runs finished after.
+**As of:** 2026-10-19 19:00 EDT. Merged since the last rewrite: the previous STATE (`69ba64b`,
+#53), P1-MOVE-WAKE (`35202e7`, #56), P1-LANDER-ISOLATION (`bda5a49`, #54) and three follow-ups
+with the flakes seen under load (`6c0e1af`, #55). The orchestrator's gate on `6c0e1af`
+is green (1648 tests, clippy native, no-default-features build and clippy, wasm32, fmt, named
+tests).
 **In flight:**
-- P1-MOVE-WAKE (lane A, `.claude/worktrees/p1-move-wake`, from `90a4fac`), with R43 and R47.
-  CI evidence in as many plant/revert pairs as it takes for each rule's test to fail at its own
-  assertion.
-- P1-LANDER-ISOLATION (lane B, `.claude/worktrees/p1-lander-isolation`, from `90a4fac`).
-**Next:** lane A takes P1-MOVE-REPLAY (with R46 and R50) after P1-MOVE-WAKE merges, then
-P1-CLI-ON-HOST; lane B takes P1-LANDER-AFTER-TESTS, then P1-FLAKE-UNDER-LOAD and
-P1-MUTANTS-PROPTEST-ONLY. P1-FAKE-HELLO-LOST is decided when P1-CLI-ON-HOST is dispatched, since
-that task replaces the fake's orchestration.
+- P1-MOVE-REPLAY (lane A, `.claude/worktrees/p1-move-replay`, from `6c0e1af`), with R46 and R50.
+  Done when no host row of the rules list is "after move", leaving only R2-R5 and R49.
+- P1-LANDER-AFTER-TESTS (lane B, `.claude/worktrees/p1-lander-after-tests`, from `6c0e1af`).
+**Next:** lane A takes P1-CLI-ON-HOST after P1-MOVE-REPLAY merges, once decision 14 is made;
+lane B takes P1-FLAKE-UNDER-LOAD, then P1-MUTANTS-PROPTEST-ONLY. P1-FAKE-HELLO-LOST is decided
+when P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
 The adapter rows R2-R5 and R49 stay "after move" until M4, whose done-check makes each "now" with
 its named adapter test; with `runtime.rs` deleted in M3 they have no code to protect meanwhile.
@@ -186,12 +185,14 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   withdrawn on `SendFailed`, after queued inputs: both stated on the R31 and R32 rows. CI evidence
   in two plants, so no rule's mutant stops another rule's test first (runs 39301356658 and
   39301559065, each test checked at its own assertion line).
-- [ ] **P1-MOVE-WAKE** — lane A, after P1-MOVE-SOCKETS. The wake in today's order: rows R20-R27,
-  R38 and R41, plus R43 (expected "dropped": unreachable) and R47 (a restart exposes R24's
-  cut-off); decides COORD-WAKE-WHILE-VERIFYING. From the P1-MOVE-CALLS review: it adds the
-  match on `Request` that applies an answer to the core; removes the test-only `begin_call`,
-  `StartJob`, `MarkerStep` and `Job::Start`; and computes the wake of the batch that stores a
-  call's marker with that call counted (`runtime.rs` 664-668 forces `merging = true`).
+- [x] **P1-MOVE-WAKE** (`35202e7`, #56) — lane A. The wake, its calls and the trunk poke:
+  rows R20-R27, R38, R41 and R47 are "now"; R43 is "dropped" (every step with no sender is
+  `Work::Plain`, never refused). A wake issues its call and returns; `Replied` or `CallLost`
+  resumes it at the next step, and answers are applied through a match on the call's `Request`.
+  Decides COORD-WAKE-WHILE-VERIFYING: while any call is out, a `Wake` only re-arms the watchdog,
+  as today. The test-only `begin_call`, `StartJob`, `MarkerStep` and `Job::Start` are gone. A
+  merge is one `Prepare` call standing for the steward's `/merge` until M3 (HOST-MERGE-STANDIN).
+  CI evidence in six plants, each rule's test checked at its own assertion line.
 - [ ] **P1-MOVE-REPLAY** — lane A, after P1-MOVE-WAKE. `Watch` replay with other inputs queued:
   row R36. Also the two host rows no other M2 task names: R46 (errors name the repo and the
   operation) and the first-load-only half of R50 (the stored size).
@@ -206,15 +207,23 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   steward cases ported. A trial clones its own `Workspace`, and read access is revoked before any
   repo code runs on every path. `TrialPorts` has no push and no read-back (compile-fail
   doctests). The sandbox half of `merge-trial-types.test.ts` is left to the M4 executor.
-- [ ] **P1-LANDER-ISOLATION** — lane B, after P1-LANDER-TRIAL. Hooks, filters, a malformed pack
-  and control characters in a fork are refused or inert.
+- [x] **P1-LANDER-ISOLATION** (`bda5a49`, #54) — lane B. 19 real-git tests that hooks, filters,
+  drivers, diff programs, malformed objects and control characters in a fork are refused or inert.
+  The tests found that a fork could name git's built-in `union` driver and land a conflict as
+  merged: `clone_main` now writes `* merge=text` to `info/attributes`. Declared difference: a
+  repository's own built-in driver on main is overridden too, which only adds conflicts. If a
+  repository needs its own `merge=union`, `GIT_ATTR_SOURCE=<base>` (git 2.42, above the 2.31
+  floor) would honour main's attributes and ignore the fork's.
 - [ ] **P1-LANDER-AFTER-TESTS** — lane B, after P1-LANDER-ISOLATION; must land before M4's local
   test runner. From the P1-LANDER-MERGE review: the package step must not run in the `Workspace`,
   and nothing enforces it. Repo code run there could write `.git/config` settings that `land`'s
   push follows with the write credential live: `url.*.insteadOf` and `pushInsteadOf`,
-  `http.proxy`, `include.path`, `remote.*.receivepack`. Options: the runner gets its own clone,
-  or `land` compares a digest of `.git/config` taken at clone time. Done: a test that config
-  planted after the clone changes nothing `land` does, failing without the fix.
+  `http.proxy`, `include.path`, `remote.*.receivepack`; it could also move refs or rewrite
+  objects. Chosen approach: the package step gets a separate clone of the rebased head, as a
+  `TestTree` type it cannot turn into a `Workspace`, and `land` pushes from the untouched
+  `Workspace`. A digest of `.git/config` was rejected: it covers config only. Done: a test that
+  hostile config, refs and attributes planted by the package step change nothing `land` does,
+  failing when the step is handed the `Workspace`.
 - [ ] **P1-FLAKE-UNDER-LOAD** — lane B when free. From the P1-LANDER-TRIAL review, at a load
   average near 170 from another project on this Mac: `tessel-lander/tests/run.rs` grandchild and
   zombie timeout tests and two `tessel-cli` lease and heartbeat tests failed once and passed on
@@ -245,8 +254,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   Done: before any agent or log sees them, the names are capped at 50 with a total and quoted
   (rule 3), with a test using control characters.
 
-Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
-COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
+Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT and COORD-UNDELIVERED-GRANT
+(see "Carried-over tasks" in the plan). COORD-WAKE-WHILE-VERIFYING was decided by P1-MOVE-WAKE.
 
 ## Carried over from the contest build
 
@@ -263,10 +272,11 @@ Kept, and scheduled where they fit:
   claim held until its lease lapses. Phase 1, in the host (send failure handling).
 - [x] **COORD-APPLY-LOADED** — already done before Phase 0 (`apply_loaded` reloads the core before
   applying a steward outcome, `src/runtime.rs`); the contest roadmap had left the box open.
-- [ ] **COORD-WAKE-WHILE-VERIFYING** — from the P0-MQ-PROPTEST review: `runtime.rs` (~661)
-  calls `next_wake_ms(true, false, ..)` even while this instance is verifying, which looks like an
-  immediate-alarm loop during a verification. Phase 1: a host test (I4, "the wake is in the
-  future") pins it when the orchestration moves.
+- [x] **COORD-WAKE-WHILE-VERIFYING** (`35202e7`, #56) — from the P0-MQ-PROPTEST review:
+  `runtime.rs` (~661) calls `next_wake_ms(true, false, ..)` even while this instance is
+  verifying, which looks like an immediate-alarm loop during a verification. Decided by
+  P1-MOVE-WAKE: while any call is out, a `Wake` only re-arms the watchdog, pinned by I4 host
+  tests that the wake is in the future.
 - [x] **REVIEW-SENSITIVE** — already done before Phase 0 (`ae62618`: submissions touching paths in
   the `SENSITIVE` variable are held); the contest roadmap had left the box open.
 - [ ] **REVIEW-NOTE** — a reviewer's note never reaches the agent. Needs a design (untrusted text,
