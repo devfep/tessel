@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use super::batch::{Held, Pending};
 use super::call::{Call, CallAnswer, CallId, DispatchId, Request};
 use super::call::{Refusal, TrialResult};
-use super::core_slot::{ApplyError, CoreSlot, Prepared, Waits};
+use super::core_slot::{ApplyError, Prepared};
 use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
@@ -17,7 +17,7 @@ use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
     Fence, Intent, Mode, OnConflict, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
 };
-use crate::shell::{self, Outbound, Work, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
+use crate::shell::{self, Outbound, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
 
 const NOW_MS: u64 = 1_000;
 
@@ -2530,6 +2530,11 @@ fn the_error_paths() -> Vec<Scenario> {
             kit.settle();
             kit
         }),
+    ]
+}
+
+fn the_call_and_commit_error_paths() -> Vec<Scenario> {
+    vec![
         ("commit", || {
             let mut kit = kit();
             let now_ms = kit.now_ms();
@@ -2598,7 +2603,8 @@ fn the_error_paths() -> Vec<Scenario> {
 
 #[test]
 fn host_an_error_names_the_repo_and_the_failed_operation() {
-    for (operation, scenario) in the_error_paths() {
+    let paths = the_error_paths();
+    for (operation, scenario) in paths.into_iter().chain(the_call_and_commit_error_paths()) {
         let kit = scenario();
         let named = format!("coordinator repo-1: {operation} failed: ");
         let lines = kit.logs();
@@ -2642,24 +2648,64 @@ fn host_a_refusal_and_a_bad_deployment_list_name_the_repo() {
 
 #[test]
 fn host_the_stored_size_is_set_on_the_first_load_only() {
-    let mut json = core_json_of_size(SOFT_ENTRY_BYTES + 3_000);
-    json.push_str(&" ".repeat(100_000));
-    let first = shell::load_core(Some(&json), None, None, Vec::new(), Vec::new()).unwrap();
-    let second = shell::load_core(None, Some("test"), None, Vec::new(), Vec::new()).unwrap();
-    let waits = Waits {
-        merging: false,
-        verifying: false,
-    };
-    let agent = AgentId("a1".to_string());
-    let mut slot = CoreSlot::default();
-    slot.install(first, Some(&json));
-    slot.install(second, None);
-
-    let prepared = slot.apply(Work::Content, waits, NOW_MS, |core| {
-        core.handle(&agent, claim(1, "a.rs", "small"), NOW_MS)
+    let mut kit = kit();
+    kit.seed("core", core_json_of_size(SOFT_ENTRY_BYTES - 30_000));
+    let sock = welcomed(&mut kit, "a1");
+    let mut padded = kit.stored_state().expect("a stored state").to_string();
+    padded.push_str(&" ".repeat(400_000));
+    let now_ms = kit.now_ms();
+    kit.input(Input::Loaded {
+        now_ms,
+        stored: Some(padded),
     });
+    kit.settle();
+
+    kit.send(sock, &claim(7, "big.rs", &"y".repeat(60_000)));
+    let ServerMsg::Error { message, .. } = kit.received(sock).last().unwrap() else {
+        panic!("the claim is refused");
+    };
+    assert_eq!(
+        message, STATE_LIMIT_MESSAGE,
+        "the size is the one written, not the padded one a second load read"
+    );
+}
+
+#[test]
+fn host_a_failed_send_during_a_replay_ends_it_unmarked_and_closes_the_socket() {
+    let mut kit = kit();
+    seed_log(&mut kit, 250);
+    let watcher = kit.open("w");
+    let other = kit.open("a2");
+    kit.fail_sends_to(watcher);
+    let mark = kit.history().len();
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(other, &hello("a2"));
+    kit.settle();
+
+    assert_eq!(
+        reads_since(&kit, mark).len(),
+        2,
+        "no page is read after the failure"
+    );
+    assert_eq!(
+        kit.logs().len(),
+        1,
+        "one line, not one per event: {:?}",
+        kit.logs()
+    );
     assert!(
-        matches!(prepared, Ok(Prepared::Ready(_))),
-        "the size is the first load's, which is larger than the state after a small claim"
+        kit.logs()[0].contains("send to a socket failed"),
+        "{:?}",
+        kit.logs()
+    );
+    assert_eq!(close_of(&kit, watcher), Some((1011, "send failed")));
+    assert_eq!(
+        kit.session(watcher).unwrap().watch_from,
+        None,
+        "never marked"
+    );
+    assert!(
+        kit.received(other).iter().any(is_welcome),
+        "the queued hello runs once the replay ends"
     );
 }

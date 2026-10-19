@@ -8,7 +8,7 @@
 //!
 //! The repo stalls while a replay runs. Replaying exactly without the stall is M4's.
 
-use crate::host::{Gate, Host, Output, SocketId};
+use crate::host::{Gate, Host, Input, Output, SocketId};
 use crate::protocol::{Event, ServerMsg};
 use crate::shell::{self, ReplayStep, Session};
 
@@ -54,6 +54,10 @@ impl Host {
         done: bool,
         out: &mut Vec<Output>,
     ) {
+        if self.abandoned_read == Some(sock) {
+            self.abandoned_read = None;
+            return;
+        }
         let replay = match std::mem::replace(&mut self.gate, Gate::Open) {
             Gate::Replaying(replay) if replay.sock == sock => replay,
             other @ (Gate::Open | Gate::Loading(_) | Gate::Committing(_) | Gate::Replaying(_)) => {
@@ -77,6 +81,32 @@ impl Host {
             }
             ReplayStep::Next { .. } | ReplayStep::Done => self.mark_watcher(replay, out),
         }
+    }
+
+    /// Whether `input` is the failure of a send to the socket being replayed. It runs at once
+    /// instead of queueing, so the replay stops at the first failed send, as `send(..)?` does at
+    /// runtime, instead of reading the whole log to a dead socket.
+    pub(super) fn fails_replay(&self, input: &Input) -> bool {
+        let Gate::Replaying(replay) = &self.gate else {
+            return false;
+        };
+        let Input::SendFailed { sock, .. } = input else {
+            return false;
+        };
+        replay.sock == *sock
+    }
+
+    /// End the replay of `sock` without marking it a watcher and reopen the gate. Its next read
+    /// is still out; the page that answers it is dropped.
+    pub(super) fn abandon_replay(&mut self, sock: SocketId) {
+        let Gate::Replaying(replay) = &self.gate else {
+            return;
+        };
+        if replay.sock != sock {
+            return;
+        }
+        self.gate = Gate::Open;
+        self.abandoned_read = Some(sock);
     }
 
     fn mark_watcher(&mut self, replay: Replay, out: &mut Vec<Output>) {

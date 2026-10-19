@@ -107,13 +107,19 @@ impl Host {
     }
 
     /// The adapter could not send to `sock`: it is closed and its agent withdrawn, and delivery
-    /// to the other sockets was never interrupted (R31, R32).
+    /// to the other sockets was never interrupted (R31, R32). A replay of `sock` ends here. A
+    /// socket already closed is not reported again: a page of sends to a dead socket fails once
+    /// per send.
     pub(super) fn send_failed(&mut self, now_ms: u64, sock: SocketId, out: &mut Vec<Output>) {
         let Some(session) = self.sockets.session(sock) else {
             out.push(self.failure("handle send failure", "the socket is not open"));
             return;
         };
+        if session.closed {
+            return;
+        }
         let agent = shell::log_agent(shell::session_agent(session));
+        self.abandon_replay(sock);
         out.push(self.failure("send to a socket", &format!("agent={agent}")));
         self.close_and_withdraw(now_ms, sock, CLOSE_INTERNAL_ERROR, SEND_FAILED_REASON, out);
     }

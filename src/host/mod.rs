@@ -141,7 +141,9 @@ pub enum Output {
         reason: String,
     },
     /// Read up to `limit` stored events from `from_seq` for `sock`'s replay; the answer is
-    /// `Input::ReplayPage`.
+    /// `Input::ReplayPage`. No input reports a failed read, so the adapter must always answer:
+    /// with `done: true` (and no events) on a failed read or a closed socket. Without an answer
+    /// the gate never reopens, as with `Load` and `Commit`.
     ReadEvents {
         sock: SocketId,
         from_seq: u64,
@@ -227,6 +229,9 @@ pub struct Host {
     calls: HashMap<CallId, Call>,
     /// The head read the one outstanding `ReadHead` call was made against.
     reading: Option<HeadRead>,
+    /// The socket whose replay a failed send ended while its next read was out: that page is
+    /// dropped when it arrives.
+    abandoned_read: Option<SocketId>,
     /// A wake is between two of its steps: not suspended at a call and not over.
     waking: bool,
     /// The time of the input being handled.
@@ -281,6 +286,7 @@ impl Host {
             queue: VecDeque::new(),
             calls: HashMap::new(),
             reading: None,
+            abandoned_read: None,
             waking: false,
             now_ms: 0,
             next_batch: 0,
@@ -292,7 +298,7 @@ impl Host {
     /// operation is outstanding is queued and runs after its answer.
     pub fn step(&mut self, input: Input) -> Vec<Output> {
         let mut out = Vec::new();
-        if answers_storage(&input) || self.gate_is_open() {
+        if answers_storage(&input) || self.gate_is_open() || self.fails_replay(&input) {
             self.handle(input, &mut out);
         } else {
             self.queue.push_back(input);
