@@ -10,6 +10,8 @@
     reason = "a failed expect is a failed test; the helpers are not #[test] functions"
 )]
 
+pub mod repos;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
