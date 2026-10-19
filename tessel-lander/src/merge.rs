@@ -129,6 +129,48 @@ impl MergeContext<'_> {
     fn run(&self, command: &crate::git::GitCommand) -> Result<GitOutput, MergeError> {
         Ok(self.runner.run(command)?)
     }
+
+    fn env(&self) -> GitEnv<'_> {
+        GitEnv {
+            git: self.git,
+            runner: self.runner,
+            sources: self.sources,
+        }
+    }
+}
+
+/// What the steps a merge and a trial share need to run git: the part of [`MergeContext`] that
+/// does not name a landing.
+pub(crate) struct GitEnv<'a> {
+    pub(crate) git: &'a Git,
+    pub(crate) runner: &'a dyn GitRunner,
+    pub(crate) sources: &'a MergeSources,
+}
+
+impl GitEnv<'_> {
+    pub(crate) fn run(&self, command: &crate::git::GitCommand) -> Result<GitOutput, MergeError> {
+        Ok(self.runner.run(command)?)
+    }
+}
+
+/// Why verifying the commit or replaying it onto main stopped, before any repo code ran.
+pub(crate) enum Halt {
+    CommitNotInFork,
+    Conflict { files: Vec<String> },
+    GitFailed(GitOutput),
+}
+
+impl Halt {
+    fn into_merge_outcome(self, base: &Sha) -> MergeOutcome {
+        match self {
+            Halt::CommitNotInFork => MergeOutcome::CommitNotInFork,
+            Halt::Conflict { files } => MergeOutcome::Conflict {
+                base: base.clone(),
+                files,
+            },
+            Halt::GitFailed(result) => MergeOutcome::GitFailed { result },
+        }
+    }
 }
 
 /// The submitted commit and the claim it is judged against.
@@ -165,9 +207,9 @@ pub enum Prepared {
     Done(MergeOutcome),
 }
 
-enum Rebase {
+pub(crate) enum Rebase {
     Rebased(Sha),
-    Stopped(MergeOutcome),
+    Stopped(Halt),
 }
 
 enum Coverage {
@@ -187,12 +229,12 @@ fn exited_with(output: &GitOutput, code: i32) -> bool {
     output.exit_code == Some(code)
 }
 
-fn clone_and_fetch(ctx: &MergeContext<'_>) -> Result<CloneOutcome, MergeError> {
-    let workspace = match clone_main(ctx.git, ctx.runner, ctx.sources, ctx.clone_dir)? {
+fn clone_and_fetch(env: &GitEnv<'_>, clone_dir: &Path) -> Result<CloneOutcome, MergeError> {
+    let workspace = match clone_main(env.git, env.runner, env.sources, clone_dir)? {
         CloneOutcome::Cloned(workspace) => workspace,
         failed @ CloneOutcome::Failed(_) => return Ok(failed),
     };
-    let fetch = ctx.run(&ctx.git.fetch_fork_command(&workspace, ctx.sources)?)?;
+    let fetch = env.run(&env.git.fetch_fork_command(&workspace, env.sources)?)?;
     Ok(if fetch.success() {
         CloneOutcome::Cloned(workspace)
     } else {
@@ -202,12 +244,13 @@ fn clone_and_fetch(ctx: &MergeContext<'_>) -> Result<CloneOutcome, MergeError> {
 
 /// Runs the clone and fetch, then revokes the read credentials whether they returned or failed,
 /// so a credential is never live once repo code could run.
-fn fetch_then_revoke(
-    ctx: &MergeContext<'_>,
-    ports: &impl MergePorts,
+pub(crate) fn fetch_then_revoke(
+    env: &GitEnv<'_>,
+    clone_dir: &Path,
+    revoke_read_access: impl FnOnce() -> bool,
 ) -> Result<CloneOutcome, MergeError> {
-    let fetched = clone_and_fetch(ctx);
-    let revoked = ports.revoke_read_access();
+    let fetched = clone_and_fetch(env, clone_dir);
+    let revoked = revoke_read_access();
     let fetched = fetched?;
     if revoked {
         Ok(fetched)
@@ -217,64 +260,59 @@ fn fetch_then_revoke(
 }
 
 /// Checks that the commit exists in the fetched fork and is reachable from its default branch.
-fn verify_commit(
-    ctx: &MergeContext<'_>,
+pub(crate) fn verify_commit(
+    env: &GitEnv<'_>,
     workspace: &Workspace,
     commit: &Sha,
-) -> Result<Option<MergeOutcome>, MergeError> {
-    let exists = ctx.run(&ctx.git.commit_exists_command(workspace, commit))?;
+) -> Result<Option<Halt>, MergeError> {
+    let exists = env.run(&env.git.commit_exists_command(workspace, commit))?;
     if exited_with(&exists, 1) {
-        return Ok(Some(MergeOutcome::CommitNotInFork));
+        return Ok(Some(Halt::CommitNotInFork));
     }
     if !exists.success() {
-        return Ok(Some(MergeOutcome::GitFailed { result: exists }));
+        return Ok(Some(Halt::GitFailed(exists)));
     }
-    let reachable = ctx.run(&ctx.git.reachable_command(workspace, ctx.sources, commit)?)?;
+    let reachable = env.run(&env.git.reachable_command(workspace, env.sources, commit)?)?;
     if exited_with(&reachable, 1) {
-        return Ok(Some(MergeOutcome::CommitNotInFork));
+        return Ok(Some(Halt::CommitNotInFork));
     }
     Ok(if reachable.success() {
         None
     } else {
-        Some(MergeOutcome::GitFailed { result: reachable })
+        Some(Halt::GitFailed(reachable))
     })
 }
 
-fn rebase_onto_main(
-    ctx: &MergeContext<'_>,
+/// Replays `merge-base..commit` onto `base` and reads the new head. A stopped rebase with
+/// unmerged paths is a conflict; any other failure is not.
+pub(crate) fn rebase_onto_main(
+    env: &GitEnv<'_>,
     workspace: &Workspace,
     base: &Sha,
     commit: &Sha,
 ) -> Result<Rebase, MergeError> {
-    let merge_base_output = ctx.run(&ctx.git.merge_base_command(workspace, base, commit))?;
+    let merge_base_output = env.run(&env.git.merge_base_command(workspace, base, commit))?;
     let Some(merge_base) = sha_of(&merge_base_output) else {
-        return Ok(Rebase::Stopped(MergeOutcome::GitFailed {
-            result: merge_base_output,
-        }));
+        return Ok(Rebase::Stopped(Halt::GitFailed(merge_base_output)));
     };
-    let rebase = ctx.run(&ctx.git.rebase_command(workspace, base, &merge_base, commit))?;
+    let rebase = env.run(&env.git.rebase_command(workspace, base, &merge_base, commit))?;
     if !rebase.success() {
-        let conflicts = ctx.run(&ctx.git.conflicts_command(workspace))?;
+        let conflicts = env.run(&env.git.conflicts_command(workspace))?;
         let files = if conflicts.success() {
             parse_nul_separated(&conflicts.stdout)
         } else {
             Vec::new()
         };
         return Ok(Rebase::Stopped(if files.is_empty() {
-            MergeOutcome::GitFailed { result: rebase }
+            Halt::GitFailed(rebase)
         } else {
-            MergeOutcome::Conflict {
-                base: base.clone(),
-                files,
-            }
+            Halt::Conflict { files }
         }));
     }
-    let head_output = ctx.run(&ctx.git.head_command(workspace))?;
+    let head_output = env.run(&env.git.head_command(workspace))?;
     Ok(match sha_of(&head_output) {
         Some(head) => Rebase::Rebased(head),
-        None => Rebase::Stopped(MergeOutcome::GitFailed {
-            result: head_output,
-        }),
+        None => Rebase::Stopped(Halt::GitFailed(head_output)),
     })
 }
 
@@ -378,7 +416,8 @@ pub fn prepare(
     ports: &impl MergePorts,
     request: &MergeRequest<'_>,
 ) -> Result<Prepared, MergeError> {
-    let workspace = match fetch_then_revoke(ctx, ports)? {
+    let env = ctx.env();
+    let workspace = match fetch_then_revoke(&env, ctx.clone_dir, || ports.revoke_read_access())? {
         CloneOutcome::Cloned(workspace) => workspace,
         CloneOutcome::Failed(result) => {
             return Ok(Prepared::Done(MergeOutcome::Clone { result }));
@@ -396,12 +435,12 @@ pub fn prepare(
             actual: base,
         }));
     }
-    if let Some(unverified) = verify_commit(ctx, &workspace, request.commit)? {
-        return Ok(Prepared::Done(unverified));
+    if let Some(halt) = verify_commit(&env, &workspace, request.commit)? {
+        return Ok(Prepared::Done(halt.into_merge_outcome(&base)));
     }
-    let head = match rebase_onto_main(ctx, &workspace, &base, request.commit)? {
+    let head = match rebase_onto_main(&env, &workspace, &base, request.commit)? {
         Rebase::Rebased(head) => head,
-        Rebase::Stopped(outcome) => return Ok(Prepared::Done(outcome)),
+        Rebase::Stopped(halt) => return Ok(Prepared::Done(halt.into_merge_outcome(&base))),
     };
     if head == base {
         return Ok(Prepared::Done(MergeOutcome::AlreadyMerged { base }));
@@ -450,12 +489,14 @@ pub fn land(
     Ok(outcome)
 }
 
+pub(crate) type StepRunner<'a> = &'a dyn Fn(PackageStep) -> Result<StepOutcome, BoundaryError>;
+
 fn run_step(
-    ports: &impl MergePorts,
+    run_package_step: StepRunner<'_>,
     step: PackageStep,
     gate: &mut Vec<GateStep>,
 ) -> Result<StepOutcome, MergeError> {
-    let outcome = ports.run_package_step(step)?;
+    let outcome = run_package_step(step)?;
     gate.push(GateStep {
         step: outcome.step,
         exit_code: outcome.exit_code,
@@ -469,9 +510,11 @@ fn run_step(
 /// cannot have their dependencies are not test evidence. A step that ran out of time or was
 /// killed is returned with `timed_out` and keeps its own `step`. Returns the outcome that ended
 /// the run, and the steps as they ran.
-fn install_then_test(ports: &impl MergePorts) -> Result<(StepOutcome, Vec<GateStep>), MergeError> {
+pub(crate) fn install_then_test(
+    run_package_step: StepRunner<'_>,
+) -> Result<(StepOutcome, Vec<GateStep>), MergeError> {
     let mut gate = Vec::new();
-    let install = run_step(ports, PackageStep::Install, &mut gate)?;
+    let install = run_step(run_package_step, PackageStep::Install, &mut gate)?;
     if install.exit_code != 0 {
         let timed_out = is_timed_out(install.exit_code);
         return Ok((
@@ -482,7 +525,7 @@ fn install_then_test(ports: &impl MergePorts) -> Result<(StepOutcome, Vec<GateSt
             gate,
         ));
     }
-    let test = run_step(ports, PackageStep::Test, &mut gate)?;
+    let test = run_step(run_package_step, PackageStep::Test, &mut gate)?;
     let timed_out = is_timed_out(test.exit_code);
     Ok((
         StepOutcome {
@@ -547,7 +590,7 @@ pub fn run_merge(
         }
         GateReview::TrunkTests => {}
     }
-    let (tested, steps) = install_then_test(ports)?;
+    let (tested, steps) = install_then_test(&|step| ports.run_package_step(step))?;
     if tested.timed_out {
         return Ok(MergeOutcome::Timeout {
             base,

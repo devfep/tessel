@@ -2,9 +2,11 @@
 //! merge that act on them. A merge's remotes are plain paths, which `protocol.file.allow=user`
 //! lets git read.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tempfile::TempDir;
 use tessel_coordinator::protocol::{Mode, Scope, ScopeClaim};
@@ -13,8 +15,11 @@ use tessel_lander::merge::{
     prepare, run_merge, BoundaryError, MergeContext, MergeError, MergePolicy, MergePorts,
     MergeRequest, Prepared, PushUpdate,
 };
-use tessel_lander::outcome::{EvidenceResult, LandedMerge, MergeOutcome, PackageStep, StepOutcome};
+use tessel_lander::outcome::{
+    EvidenceResult, LandedMerge, MergeOutcome, PackageStep, StepOutcome, TrialOutcome,
+};
 use tessel_lander::run::SystemRunner;
+use tessel_lander::trial::{run_trial, TrialContext, TrialPorts};
 use tessel_lander::types::Sha;
 
 use super::{commit_file, fixture_git};
@@ -25,7 +30,7 @@ pub struct Repos {
     pub fork: PathBuf,
     pub work: PathBuf,
     git: Git,
-    runs: Cell<u32>,
+    runs: AtomicU32,
 }
 
 impl Repos {
@@ -53,7 +58,7 @@ impl Repos {
             fork,
             work,
             git,
-            runs: Cell::new(0),
+            runs: AtomicU32::new(0),
         };
         repos.commit("a.txt", "one\ntwo\nthree\n");
         repos.push(&repos.main);
@@ -99,10 +104,8 @@ impl Repos {
     }
 
     fn next_clone_dir(&self) -> PathBuf {
-        self.runs.set(self.runs.get() + 1);
-        self.scratch
-            .path()
-            .join(format!("workspace-{}", self.runs.get()))
+        let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+        self.scratch.path().join(format!("workspace-{run}"))
     }
 
     /// Runs the merge of `commit` with main pinned at where it is now.
@@ -128,6 +131,19 @@ impl Repos {
             policy,
         };
         run_merge(&ctx, ports, &request)
+    }
+
+    /// One trial of `commit` on main at `main`, in a clone of its own. Its "tests" run the
+    /// `test.sh` of the rebased work tree.
+    pub fn trial(&self, main: &Sha, commit: &Sha) -> Result<TrialOutcome, MergeError> {
+        let (sources, clone_dir) = (self.sources(), self.next_clone_dir());
+        let ctx = TrialContext {
+            git: &self.git,
+            runner: &SystemRunner,
+            sources: &sources,
+            clone_dir: &clone_dir,
+        };
+        run_trial(&ctx, &ShellTests { tree: &clone_dir }, main, commit)
     }
 
     /// Like [`Repos::merge`], but only `prepare`.
@@ -238,5 +254,38 @@ impl MergePorts for LocalPorts<'_> {
         EvidenceResult::NotWritten {
             reason: "no record repo in this test".to_owned(),
         }
+    }
+}
+
+/// Trial ports whose install step passes and whose test step runs `sh test.sh` in the tree.
+struct ShellTests<'a> {
+    tree: &'a Path,
+}
+
+impl TrialPorts for ShellTests<'_> {
+    fn revoke_read_access(&self) -> bool {
+        true
+    }
+
+    fn run_package_step(&self, step: PackageStep) -> Result<StepOutcome, BoundaryError> {
+        if step == PackageStep::Install {
+            return Ok(StepOutcome::finished(step, 0, "", ""));
+        }
+        let status = Command::new("sh")
+            .arg("test.sh")
+            .current_dir(self.tree)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .status()
+            .map_err(|error| BoundaryError {
+                operation: "run_package_step",
+                message: error.to_string(),
+            })?;
+        Ok(StepOutcome::finished(
+            step,
+            status.code().unwrap_or(1),
+            "",
+            "",
+        ))
     }
 }

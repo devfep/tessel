@@ -188,3 +188,83 @@ pub enum MergeOutcome {
         result: GitOutput,
     },
 }
+
+/// The result of one trial, ported from the steward's `TrialOutcome`: `commit` replayed onto main
+/// at `base`, tested, and nothing else. A trial never pushes and never holds a write credential.
+/// Exactly one variant.
+///
+/// Evidence (CLAUDE.md rule 6):
+/// - `Clean`: the rebased `head` passed the repo's install step and tests.
+/// - `Conflict`: replaying the commit onto `base` stopped with these files unmerged.
+/// - `TestsFailed`: the repo's tests ran on the rebased `head` and did not exit 0. A step that
+///   timed out or was killed is `Timeout`, not this.
+///
+/// Not evidence about the code, but true statements about this attempt:
+/// - `NothingToTest`: replaying the commit left main unchanged, so there is nothing of the
+///   commit's to test. Running main's own tests would blame the commit for main.
+/// - `CommitNotInFork`: the commit is not reachable from the fork's default branch.
+/// - `MainUnreachable`: `main` is not on main's history, so there is no such state of main to try
+///   the commit on. Asking again cannot change it.
+///
+/// Infrastructure (the attempt did not finish): `Clone`, `GitFailed`, `Install` and `Timeout`.
+///
+/// Every `stdout` and `stderr` in a result is untrusted data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrialOutcome {
+    Clean {
+        base: Sha,
+        head: Sha,
+        commit: Sha,
+    },
+    Conflict {
+        base: Sha,
+        commit: Sha,
+        files: Vec<String>,
+    },
+    TestsFailed {
+        base: Sha,
+        head: Sha,
+        commit: Sha,
+        result: StepOutcome,
+    },
+    NothingToTest {
+        base: Sha,
+        commit: Sha,
+    },
+    CommitNotInFork,
+    MainUnreachable {
+        main: Sha,
+    },
+    /// Cloning main or fetching the fork failed.
+    Clone {
+        result: GitOutput,
+    },
+    /// A local git step failed in a way that is not a conflict.
+    GitFailed {
+        result: GitOutput,
+    },
+    Install {
+        base: Sha,
+        head: Sha,
+        commit: Sha,
+        result: StepOutcome,
+    },
+    Timeout {
+        base: Sha,
+        head: Sha,
+        commit: Sha,
+        result: StepOutcome,
+    },
+}
+
+/// What a trial request reports: the commit tried on main at `before`, the baseline, then on main
+/// at `main`. Each is its own trial in its own clone, so nothing one run leaves behind can reach
+/// the other.
+/// - Both ran: `before` and `after` are their outcomes.
+/// - `before` was not `Clean`: `after` is `None`. The work was already failing on the baseline, or
+///   the trial could not run, so a second run would say nothing about the merge that moved main.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrialReport {
+    pub before: TrialOutcome,
+    pub after: Option<TrialOutcome>,
+}

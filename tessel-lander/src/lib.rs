@@ -14,5 +14,6 @@ pub mod git;
 pub mod merge;
 pub mod outcome;
 pub mod run;
+pub mod trial;
 pub mod types;
 pub mod workspace;
