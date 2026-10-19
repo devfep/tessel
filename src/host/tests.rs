@@ -997,7 +997,7 @@ fn core_json_over_the_hard_limit_with_one_lease_due() -> String {
     }
     let mut stored = serde_json::to_value(&core).unwrap();
     let claims = stored["claims"].as_object_mut().unwrap();
-    for (id, filler) in claims.iter_mut().filter(|(id, _)| id.as_str() != "1") {
+    for (_, filler) in claims.iter_mut().filter(|(id, _)| id.as_str() != "1") {
         filler["expires_at_ms"] = json!(4_000_000_000_000_u64);
     }
     stored.to_string()
