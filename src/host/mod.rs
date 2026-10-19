@@ -624,6 +624,7 @@ impl Host {
         let at_ms = wake_at_ms(held.next_wake_ms, now_ms);
         out.push(Output::SetWake { at_ms });
         for call in held.calls {
+            self.waking = false;
             self.calls.insert(call.id, call.clone());
             out.push(Output::Call(call));
         }

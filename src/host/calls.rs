@@ -170,7 +170,6 @@ impl Host {
     pub(super) fn answered(&mut self, id: CallId, answer: CallAnswer, out: &mut Vec<Output>) {
         let Some(call) = self.calls.remove(&id) else {
             out.push(self.failure("apply call answer", "the host waits on no such call"));
-            self.run(Job::Wake(WakeStep::Finish), out);
             return;
         };
         self.waking = true;
