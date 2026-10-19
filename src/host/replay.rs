@@ -93,7 +93,7 @@ impl Host {
         let Input::SendFailed { sock, .. } = input else {
             return false;
         };
-        replay.sock == *sock && replay.from_seq == u64::MAX
+        replay.sock == *sock
     }
 
     /// End the replay of `sock` without marking it a watcher and reopen the gate. Its next read
