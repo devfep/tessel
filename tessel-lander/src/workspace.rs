@@ -78,12 +78,14 @@ pub enum CloneError {
 /// Attributes the clone's own `info/attributes` sets for every path. It outranks every
 /// `.gitattributes` in the tree, so a fork cannot pick a built-in merge driver: `merge=union`
 /// would splice both sides of a conflict into a clean merge. With `text` a conflict always stops
-/// the rebase. A repo's own built-in driver on
-/// main is overridden too, which can only add conflicts.
+/// the rebase. A repo's own built-in driver on main is overridden too, which can only add
+/// conflicts.
 const MERGE_ATTRIBUTES: &str = "* merge=text\n";
 
-/// Writes [`MERGE_ATTRIBUTES`] into the `.git` git made. A clone with no `.git` (a runner that
-/// ran nothing) has nothing to write into: every command pins `GIT_DIR` to it and fails.
+/// Writes [`MERGE_ATTRIBUTES`] into the `.git` directory git made. A real `git clone` into an
+/// empty directory always makes one: the argv has no `--separate-git-dir` and the clone's
+/// environment has no `GIT_DIR`. The skip exists for test runners that run no git, which leave
+/// no `.git`; the runner is trusted to run the command it is handed (see [`Workspace`]).
 fn write_merge_attributes(destination: &Path) -> Result<(), CloneError> {
     let git_dir = destination.join(".git");
     if !git_dir.is_dir() {

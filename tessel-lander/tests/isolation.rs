@@ -25,7 +25,7 @@ use tessel_lander::git::{Git, GitCommand};
 use tessel_lander::merge::{
     prepare, MergeContext, MergeError, MergePolicy, MergeRequest, Prepared,
 };
-use tessel_lander::outcome::MergeOutcome;
+use tessel_lander::outcome::{MergeOutcome, TrialOutcome};
 use tessel_lander::run::{run, GitOutput, GitRunner, RunError};
 use tessel_lander::types::Sha;
 use tessel_lander::workspace::CloneError;
@@ -404,8 +404,8 @@ fn a_host_wide_textconv_and_external_diff_do_not_run_in_the_diff_a_person_reads(
         .git
         .diff_command(&ready.workspace, &ready.base, &ready.head);
 
-    // Here the home config is readable, so \`--no-ext-diff\` and \`--no-textconv\` are the only
-    // defence: the fork's \`diff=evil\` attribute reaches a textconv, and \`diff.external\` is
+    // Here the home config is readable, so `--no-ext-diff` and `--no-textconv` are the only
+    // defence: the fork's `diff=evil` attribute reaches a textconv, and `diff.external` is
     // set for every file.
     let output = run(&without_setting(&diff, "GIT_CONFIG_GLOBAL")).expect("diff runs");
 
@@ -465,6 +465,27 @@ fn a_fork_naming_a_builtin_merge_driver_cannot_turn_a_conflict_into_a_merge() {
         );
         assert_eq!(scene.repos.main_head(), main_before);
     }
+}
+
+#[test]
+fn a_fork_naming_a_builtin_merge_driver_is_a_conflict_in_a_trial_too() {
+    let scene = Scene::new();
+    let forked = fork_with_builtin_driver(&scene, "union");
+    let main_now = scene.repos.main_head();
+
+    let outcome = scene
+        .repos
+        .trial(&main_now, &forked)
+        .expect("the trial finishes");
+
+    assert_eq!(
+        outcome,
+        TrialOutcome::Conflict {
+            base: main_now,
+            commit: forked,
+            files: vec!["a.txt".to_owned()],
+        }
+    );
 }
 
 #[test]

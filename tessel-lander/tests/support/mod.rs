@@ -137,15 +137,7 @@ pub fn conflicting_fixture(repo: &Path) -> (Sha, Sha, Sha) {
 /// Writes an executable `sh` script, making its directory if needed.
 pub fn write_script(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().expect("parent")).expect("script dir");
-    fs::write(
-        path,
-        format!(
-            "#!/bin/sh
-{body}
-"
-        ),
-    )
-    .expect("write script");
+    fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
