@@ -33,6 +33,15 @@ pub struct Pending {
     then: Option<Job>,
 }
 
+/// What a batch that was not stored leaves behind. Nothing it held is sent, but whoever waited
+/// for it is told by the host (R10).
+pub struct Discarded {
+    /// The socket whose message the batch stored.
+    pub reply_to: Option<SocketId>,
+    /// The step that was to run once the batch was stored.
+    pub then: Option<Job>,
+}
+
 /// A batch that is stored. Only `Pending::commit` builds one.
 pub struct Committed {
     entries: Vec<(String, String)>,
@@ -63,6 +72,14 @@ impl Pending {
         Committed {
             entries: self.entries,
             held: self.held,
+            then: self.then,
+        }
+    }
+
+    /// The batch is not stored: drop what it held.
+    pub fn discard(self) -> Discarded {
+        Discarded {
+            reply_to: self.held.reply_to,
             then: self.then,
         }
     }

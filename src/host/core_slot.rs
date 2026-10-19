@@ -6,7 +6,7 @@
 
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::host::HostConfig;
-use crate::protocol::Event;
+use crate::protocol::{AgentId, Event};
 use crate::shell::{self, LoadError, Outbound, StoreDecision, StoredSize, Work};
 
 /// What this instance is waiting on, for the wake the core computes (R16).
@@ -70,6 +70,12 @@ impl CoreSlot {
         self.core
             .as_ref()
             .is_some_and(|core| core.has_due_expiry(now_ms))
+    }
+
+    pub fn has_queued_request(&self, agent: &AgentId) -> bool {
+        self.core
+            .as_ref()
+            .is_some_and(|core| core.has_queued_request(agent))
     }
 
     /// The size of the stored state after `entries` were written (R50).

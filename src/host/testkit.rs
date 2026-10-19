@@ -21,6 +21,7 @@ pub struct Client {
     pub received: Vec<ServerMsg>,
     pub session: Option<Session>,
     pub closed: Option<(u16, String)>,
+    send_fails: bool,
 }
 
 pub struct Testkit {
@@ -82,6 +83,12 @@ impl Testkit {
         self.fail_next_commit = true;
     }
 
+    /// Every later send to `sock` fails: the adapter answers `Input::SendFailed` and the client
+    /// receives nothing.
+    pub fn fail_sends_to(&mut self, sock: SocketId) {
+        self.client(sock).send_fails = true;
+    }
+
     /// Open a socket for `agent`, as the adapter does for a request it authenticated.
     pub fn open(&mut self, agent: &str) -> SocketId {
         let sock = SocketId(self.next_sock);
@@ -105,6 +112,17 @@ impl Testkit {
     pub fn send_text(&mut self, sock: SocketId, text: String) {
         let now_ms = self.now_ms;
         self.input(Input::Frame { now_ms, sock, text });
+    }
+
+    pub fn send_binary(&mut self, sock: SocketId) {
+        let now_ms = self.now_ms;
+        self.input(Input::Binary { now_ms, sock });
+    }
+
+    /// The peer closed `sock`, or it failed.
+    pub fn close(&mut self, sock: SocketId) {
+        let now_ms = self.now_ms;
+        self.input(Input::Closed { now_ms, sock });
     }
 
     /// The call `call` was answered.
@@ -163,7 +181,14 @@ impl Testkit {
                     self.store.extend(entries);
                     self.answers.push_back(Input::Committed { now_ms, batch });
                 }
-                Output::Send { sock, msg } => self.client(sock).received.push(msg),
+                Output::Send { sock, msg } => {
+                    let client = self.client(sock);
+                    if client.send_fails {
+                        self.answers.push_back(Input::SendFailed { now_ms, sock });
+                    } else {
+                        client.received.push(msg);
+                    }
+                }
                 Output::SetSession { sock, session } => self.client(sock).session = Some(session),
                 Output::Close { sock, code, reason } => {
                     self.client(sock).closed = Some((code, reason));
@@ -184,6 +209,11 @@ impl Testkit {
         self.clients
             .get(&sock)
             .map_or(&[], |client| client.received.as_slice())
+    }
+
+    /// The close code and reason the host gave `sock`, if it closed it.
+    pub fn closed(&self, sock: SocketId) -> Option<&(u16, String)> {
+        self.clients.get(&sock)?.closed.as_ref()
     }
 
     pub fn session(&self, sock: SocketId) -> Option<&Session> {

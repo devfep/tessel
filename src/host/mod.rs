@@ -1,7 +1,7 @@
 //! The sans-IO host: what goes into the step machine and what comes out of it. Adapters do only
 //! I/O: they turn what happens (a socket opens, a commit finishes, a call is answered) into an
 //! `Input` and carry out each `Output`. `Host::step` is the step machine; it moves the call path
-//! of `src/runtime.rs` (see `docs/reference/runtime-rules.md`). Frozen design:
+//! and the socket table of `src/runtime.rs` (see `docs/reference/runtime-rules.md`). Frozen design:
 //! `docs/proposals/real-use.md`, Architecture.
 //!
 //! The input gate. While a storage operation is outstanding (a `Load` or a `Commit`) no other
@@ -12,20 +12,22 @@
 mod batch;
 pub mod call;
 mod core_slot;
+mod sockets;
 pub mod testkit;
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 #[cfg(test)]
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
 use crate::shell::{self, Action, Session, Target, Work};
-use batch::{Committed, Held, Pending};
+use batch::{Committed, Discarded, Held, Pending};
 use call::{Call, CallAnswer, CallId, Request};
 use core_slot::{Applied, ApplyError, CoreSlot, Prepared, Waits};
+use sockets::{Sockets, WithdrawJob, CLOSE_POLICY_VIOLATION, IDENTITY_MISMATCH_REASON};
 
 /// A client connection, named by the adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -52,8 +54,12 @@ pub enum Input {
         sock: SocketId,
         text: String,
     },
+    /// A binary frame arrived on `sock`.
+    Binary { now_ms: u64, sock: SocketId },
     /// `sock` closed, cleanly or not.
     Closed { now_ms: u64, sock: SocketId },
+    /// The adapter could not send a message to `sock`.
+    SendFailed { now_ms: u64, sock: SocketId },
     /// The wake set by `Output::SetWake` is due.
     Wake { now_ms: u64 },
     /// Main may have moved; the host reads the head when it can.
@@ -165,8 +171,21 @@ struct StartJob {
 enum Job {
     Call(Box<CallJob>),
     Answer(AnswerJob),
+    Withdraw(WithdrawJob),
     #[cfg(test)]
     Start(StartJob),
+}
+
+impl Job {
+    /// The socket whose message the job handles, and the time it was observed.
+    fn origin(&self) -> Option<(SocketId, u64)> {
+        match self {
+            Job::Call(call) => Some((call.sock, call.now_ms)),
+            Job::Answer(_) | Job::Withdraw(_) => None,
+            #[cfg(test)]
+            Job::Start(_) => None,
+        }
+    }
 }
 
 /// The input gate: a storage operation outstanding.
@@ -182,7 +201,7 @@ enum Gate {
 pub struct Host {
     config: HostConfig,
     slot: CoreSlot,
-    sessions: BTreeMap<SocketId, Session>,
+    sockets: Sockets,
     gate: Gate,
     queue: VecDeque<Input>,
     calls: HashMap<CallId, Call>,
@@ -195,7 +214,9 @@ fn answers_storage(input: &Input) -> bool {
         Input::Loaded { .. } | Input::Committed { .. } | Input::CommitFailed { .. } => true,
         Input::Opened { .. }
         | Input::Frame { .. }
+        | Input::Binary { .. }
         | Input::Closed { .. }
+        | Input::SendFailed { .. }
         | Input::Wake { .. }
         | Input::TrunkPoked { .. }
         | Input::ReplayPage { .. }
@@ -221,7 +242,7 @@ impl Host {
         Self {
             config,
             slot: CoreSlot::default(),
-            sessions: BTreeMap::new(),
+            sockets: Sockets::default(),
             gate: Gate::Open,
             queue: VecDeque::new(),
             calls: HashMap::new(),
@@ -260,21 +281,20 @@ impl Host {
 
     fn handle(&mut self, input: Input, out: &mut Vec<Output>) {
         match input {
-            Input::Opened { sock, verified, .. } => {
-                let session = Session {
-                    verified: Some(verified),
-                    ..Session::default()
-                };
-                self.sessions.insert(sock, session);
-            }
+            Input::Opened { sock, verified, .. } => out.push(self.sockets.open(sock, verified)),
             Input::Frame { now_ms, sock, text } => self.frame(now_ms, sock, &text, out),
+            Input::Binary { sock, .. } => out.push(Output::Send {
+                sock,
+                msg: shell::binary_rejection(),
+            }),
             Input::Loaded { stored, .. } => self.loaded(stored.as_deref(), out),
             Input::Committed { now_ms, batch } => self.committed(now_ms, batch, out),
-            Input::CommitFailed { batch, .. } => self.commit_failed(batch, out),
+            Input::CommitFailed { now_ms, batch } => self.commit_failed(now_ms, batch, out),
             Input::Replied { now_ms, call, .. } | Input::CallLost { now_ms, call } => {
                 self.answered(now_ms, call, out);
             }
-            Input::Closed { .. } => self.unmoved("a socket closing", out),
+            Input::Closed { now_ms, sock } => self.closed(now_ms, sock, out),
+            Input::SendFailed { now_ms, sock } => self.send_failed(now_ms, sock, out),
             Input::Wake { .. } => self.unmoved("a wake", out),
             Input::TrunkPoked { .. } => self.unmoved("a trunk poke", out),
             Input::ReplayPage { .. } => self.unmoved("a replay page", out),
@@ -318,11 +338,15 @@ impl Host {
     }
 
     fn frame(&mut self, now_ms: u64, sock: SocketId, text: &str, out: &mut Vec<Output>) {
-        let Ok(msg) = shell::parse_client_msg(text) else {
-            self.unmoved("a malformed frame", out);
-            return;
+        let msg = match shell::parse_client_msg(text) {
+            Ok(msg) => msg,
+            Err(fault) => {
+                let msg = fault.reply();
+                out.push(Output::Send { sock, msg });
+                return;
+            }
         };
-        let Some(session) = self.sessions.get(&sock).cloned() else {
+        let Some(session) = self.sockets.session(sock).cloned() else {
             out.push(self.failure("handle frame", "the socket is not open"));
             return;
         };
@@ -337,9 +361,13 @@ impl Host {
                 };
                 self.run(Job::Call(Box::new(job)), out);
             }
-            Action::Reject(_) | Action::RejectAndClose(_) | Action::Watch { .. } => {
-                self.unmoved("a frame the host refuses or replays", out);
+            Action::Reject(msg) => out.push(Output::Send { sock, msg }),
+            Action::RejectAndClose(msg) => {
+                out.push(Output::Send { sock, msg });
+                let code = CLOSE_POLICY_VIOLATION;
+                self.close_and_withdraw(now_ms, sock, code, IDENTITY_MISMATCH_REASON, out);
             }
+            Action::Watch { .. } => self.unmoved("a watch", out),
         }
     }
 
@@ -353,6 +381,7 @@ impl Host {
         match job {
             Job::Call(call) => self.run_call(*call, out),
             Job::Answer(answer) => self.run_answer(answer, out),
+            Job::Withdraw(withdraw) => self.run_withdraw(withdraw, out),
             #[cfg(test)]
             Job::Start(start) => self.run_start(start, out),
         }
@@ -367,11 +396,16 @@ impl Host {
         let core = match built {
             Ok(core) => core,
             Err(e) => {
-                match self.gate {
-                    Gate::Loading(_) => self.gate = Gate::Open,
-                    Gate::Open | Gate::Committing(_) => {}
-                }
+                let abandoned = match std::mem::replace(&mut self.gate, Gate::Open) {
+                    Gate::Loading(job) => Some(job),
+                    other @ (Gate::Open | Gate::Committing(_)) => {
+                        self.gate = other;
+                        None
+                    }
+                };
                 out.push(self.failure("load state", &e.to_string()));
+                let origin = abandoned.as_ref().and_then(Job::origin);
+                self.close_for_error(origin, out);
                 return;
             }
         };
@@ -425,7 +459,10 @@ impl Host {
                 let msg = shell::state_limit_reply(req);
                 out.push(Output::Send { sock, msg });
             }
-            Err(e) => out.push(self.failure(e.operation, &e.cause)),
+            Err(e) => {
+                out.push(self.failure(e.operation, &e.cause));
+                self.close_for_error(Some((sock, now_ms)), out);
+            }
         }
     }
 
@@ -468,7 +505,8 @@ impl Host {
 
     /// Commit the result of a step that has no sender to refuse (an expiry, an answer, a
     /// start). `Work::Plain` is never refused for size, so the `Refused` branch is the
-    /// equivalent of R43 and cannot be reached today; if it is, it is an error to log.
+    /// equivalent of R43 and cannot be reached today; if it is, it is an error to log. A step
+    /// that fails abandons the client call that waited for it, which closes its socket (R10).
     fn commit_unsent(
         &mut self,
         operation: &str,
@@ -477,17 +515,19 @@ impl Host {
         then: Option<Job>,
         out: &mut Vec<Output>,
     ) {
-        match prepared {
+        let failure = match prepared {
             Ok(Prepared::Ready(applied)) => {
                 let (entries, mut held) = held_of(applied);
                 held.calls = calls;
                 self.start_commit(entries, held, then, out);
+                return;
             }
-            Ok(Prepared::Refused) => {
-                out.push(self.failure(operation, shell::STATE_LIMIT_MESSAGE));
-            }
-            Err(e) => out.push(self.failure(e.operation, &e.cause)),
-        }
+            Ok(Prepared::Refused) => self.failure(operation, shell::STATE_LIMIT_MESSAGE),
+            Err(e) => self.failure(e.operation, &e.cause),
+        };
+        out.push(failure);
+        let origin = then.as_ref().and_then(Job::origin);
+        self.close_for_error(origin, out);
     }
 
     /// Hand the adapter one commit and close the gate until it answers.
@@ -526,8 +566,8 @@ impl Host {
 
     /// Drop the outstanding batch if it is `batch`. The failure path never holds a `Pending`, so
     /// it cannot build a `Committed`.
-    fn discard_pending(&mut self, batch: BatchId) -> bool {
-        self.take_pending(batch).is_some()
+    fn discard_pending(&mut self, batch: BatchId) -> Option<Discarded> {
+        self.take_pending(batch).map(Pending::discard)
     }
 
     fn committed(&mut self, now_ms: u64, batch: BatchId, out: &mut Vec<Output>) {
@@ -543,14 +583,17 @@ impl Host {
     }
 
     /// The batch is not stored: nothing it held is sent, and the core is ahead of storage, so it
-    /// is dropped (R30).
-    fn commit_failed(&mut self, batch: BatchId, out: &mut Vec<Output>) {
-        if !self.discard_pending(batch) {
+    /// is dropped (R30). The client whose message it stored is told by closing its socket (R10).
+    fn commit_failed(&mut self, now_ms: u64, batch: BatchId, out: &mut Vec<Output>) {
+        let Some(discarded) = self.discard_pending(batch) else {
             out.push(self.failure("commit", "the failure names no outstanding batch"));
             return;
-        }
+        };
         self.slot.drop_core();
         out.push(self.failure("persist state and events", "the commit was not stored"));
+        let waiting = discarded.then.as_ref().and_then(Job::origin);
+        let origin = discarded.reply_to.map(|sock| (sock, now_ms)).or(waiting);
+        self.close_for_error(origin, out);
     }
 
     /// Bind the socket if the core welcomed it, deliver, reschedule even if delivery failed,
@@ -559,15 +602,9 @@ impl Host {
         let (entries, held) = committed.into_parts();
         self.slot.written(&entries);
         if let Some((sock, session)) = held.bind {
-            self.sessions.insert(sock, session.clone());
-            out.push(Output::SetSession { sock, session });
+            out.push(self.sockets.bind(sock, session));
         }
-        let mut socks = Vec::with_capacity(self.sessions.len());
-        let mut sessions = Vec::with_capacity(self.sessions.len());
-        for (sock, session) in &self.sessions {
-            socks.push(*sock);
-            sessions.push(session.clone());
-        }
+        let (socks, sessions) = self.sockets.listing();
         for (target, msg) in shell::plan_delivery(&held.outbound, &held.events, &sessions) {
             let sock = match target {
                 Target::Sender => held.reply_to,
