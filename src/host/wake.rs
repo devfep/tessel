@@ -82,7 +82,7 @@ impl Host {
     /// A merge in flight that no call here waits for was cut off by a restart (R24).
     fn recover_merge_step(&mut self, out: &mut Vec<Output>) {
         let in_flight = self.slot.has_merge_in_flight();
-        if !shell::merge_cut_off(true, in_flight) {
+        if !shell::merge_cut_off(self.waits().merging, in_flight) {
             self.run(Job::Wake(WakeStep::RecoverVerification), out);
             return;
         }
@@ -96,7 +96,7 @@ impl Host {
 
     fn recover_verification_step(&mut self, out: &mut Vec<Output>) {
         let in_flight = self.slot.has_verification_in_flight();
-        if !shell::merge_cut_off(true, in_flight) {
+        if !shell::merge_cut_off(self.waits().verifying, in_flight) {
             self.run(Job::Wake(WakeStep::Merge), out);
             return;
         }
@@ -119,6 +119,7 @@ impl Host {
     fn merge_step(&mut self, out: &mut Vec<Output>) {
         let now_ms = self.now_ms;
         let waits = Waits {
+            merging: true,
             ..self.waits()
         };
         let mut dispatch = None;
@@ -196,7 +197,9 @@ impl Host {
     /// is set after a delay, as the runtime retries an alarm that returned an error (R41).
     pub(super) fn wake_failed(&mut self, out: &mut Vec<Output>) {
         self.waking = false;
-        let _ = out;
+        out.push(Output::SetWake {
+            at_ms: Some(self.now_ms.saturating_add(RETRY_MS)),
+        });
     }
 
     /// A trunk poke counts for a repo with stored state, and stores nothing for any other (R21).

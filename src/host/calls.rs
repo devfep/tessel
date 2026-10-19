@@ -21,7 +21,7 @@ use crate::protocol::CommitId;
 use crate::shell::Work;
 
 /// How long a head read waits: one ref, not a test run (R38).
-pub const HEAD_CALL_TIMEOUT_MS: u64 = 60_000;
+pub const HEAD_CALL_TIMEOUT_MS: u64 = 30_000;
 
 /// A merge, as the `Prepare` call that stands for it.
 pub fn merge_call(id: CallId, dispatch: &MergeDispatch, now_ms: u64) -> Call {
