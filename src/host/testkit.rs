@@ -148,7 +148,8 @@ impl Testkit {
     /// The process restarts over the same store: a new host that remembers nothing, and no
     /// answer the old one waited for. The wake the platform holds stays.
     pub fn restart(&mut self) {
-
+        self.host = Host::new(self.config.clone());
+        self.answers.clear();
     }
 
     /// The call `call` was answered.
