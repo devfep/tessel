@@ -97,13 +97,19 @@ fn ensure_clonable(destination: &Path) -> Result<(), CloneError> {
 }
 
 /// Clones main into `destination`, which must be missing or an empty directory (checked here,
-/// not left to git), and returns the workspace only if git exited 0.
+/// not left to git), and returns the workspace only if git exited 0. The workspace holds the
+/// absolute path: git resolves a relative `GIT_DIR` after `-C`.
 pub fn clone_main(
     git: &Git,
     runner: &dyn GitRunner,
     sources: &MergeSources,
     destination: &Path,
 ) -> Result<CloneOutcome, CloneError> {
+    let destination =
+        &std::path::absolute(destination).map_err(|source| CloneError::DestinationUnreadable {
+            path: destination.to_path_buf(),
+            source,
+        })?;
     ensure_clonable(destination)?;
     let output = runner.run(&git.clone_command(sources, destination))?;
     if output.success() {
