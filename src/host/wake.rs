@@ -46,10 +46,7 @@ impl Host {
             self.waking = true;
             self.run(Job::Wake(WakeStep::Expiry), out);
         } else {
-            let watchdog = self.now_ms.saturating_add(MERGE_WATCHDOG_MS);
-            out.push(Output::SetWake {
-                at_ms: Some(watchdog),
-            });
+            self.run(Job::Wake(WakeStep::Finish), out);
         }
     }
 
@@ -163,8 +160,6 @@ impl Host {
     ) {
         if let Err(e) = prepared {
             out.push(self.failure(e.operation, &e.cause));
-            self.wake_failed(out);
-            return;
         }
         self.run(Job::Wake(next), out);
     }
@@ -179,7 +174,6 @@ impl Host {
         let call = calls::head_call(self.new_call_id(), self.now_ms);
         self.reading = Some(read);
         self.calls.insert(call.id, call.clone());
-        self.waking = false;
         out.push(Output::Call(call));
     }
 
