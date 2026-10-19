@@ -285,7 +285,7 @@ impl Host {
             Input::Frame { now_ms, sock, text } => self.frame(now_ms, sock, &text, out),
             Input::Binary { sock, .. } => out.push(Output::Send {
                 sock,
-                msg: shell::binary_rejection(),
+                msg: shell::malformed_reply(),
             }),
             Input::Loaded { stored, .. } => self.loaded(stored.as_deref(), out),
             Input::Committed { now_ms, batch } => self.committed(now_ms, batch, out),
@@ -341,7 +341,7 @@ impl Host {
         let msg = match shell::parse_client_msg(text) {
             Ok(msg) => msg,
             Err(fault) => {
-                let msg = fault.reply();
+                let msg = shell::malformed_reply();
                 out.push(Output::Send { sock, msg });
                 return;
             }
