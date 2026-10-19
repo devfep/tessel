@@ -115,12 +115,7 @@ impl Host {
             return;
         };
         let agent = shell::log_agent(shell::session_agent(session));
-        let closed = self.sockets.session(sock).is_some_and(|session| session.closed);
-        let abandoned = !closed && self.abandon_replay(sock);
-        if !abandoned && self.absorb_replay_failure(sock) {
-            return;
-        }
-        if closed {
+        if !self.abandon_replay(sock) && self.absorb_replay_failure(sock) {
             return;
         }
         out.push(self.failure("send to a socket", &format!("agent={agent}")));
