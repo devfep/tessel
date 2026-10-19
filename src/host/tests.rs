@@ -165,7 +165,7 @@ fn host_a_load_builds_the_core_from_the_stored_state_and_the_deployment() {
         ..config()
     });
     welcomed(&mut fresh, "a1");
-    assert_eq!(label(&fresh.history()[0]), "Load", "the first call loads");
+    assert_eq!(label(&fresh.history()[1]), "Load", "the first call loads");
     let created = state(&fresh);
     assert_eq!(created["config"]["run"], json!("fresh"));
     assert_eq!(created["reviewers"], json!(["ana"]));
@@ -374,12 +374,11 @@ fn host_the_soft_limit_judges_growth_against_the_size_last_written() {
 #[test]
 fn host_the_core_is_reloaded_after_a_steward_call_before_the_answer_is_applied() {
     let mut kit = kit();
-    let sock = welcomed(&mut kit, "a1");
+    welcomed(&mut kit, "a1");
     start_plain(&mut kit, read_head(1));
 
     kit.fail_next_commit();
-    kit.send(sock, &ClientMsg::Heartbeat);
-    kit.settle();
+    start_plain(&mut kit, read_head(2));
     let mark = kit.history().len();
     kit.reply(CallId(1), CallAnswer::Unknown);
     assert_eq!(
@@ -489,14 +488,24 @@ fn host_a_client_call_persists_then_binds_then_settles() {
     let mut kit = kit();
     let sock = kit.open("a1");
     kit.send(sock, &hello("a1"));
-    assert_eq!(labels_since(&kit, 0), ["Load"]);
+    assert_eq!(labels_since(&kit, 0), ["SetSession", "Load"]);
     kit.deliver_next();
-    assert_eq!(labels_since(&kit, 0), ["Load", "Commit"]);
-    assert!(kit.session(sock).is_none() && kit.received(sock).is_empty());
+    assert_eq!(labels_since(&kit, 0), ["SetSession", "Load", "Commit"]);
+    assert!(kit
+        .session(sock)
+        .is_some_and(|session| session.agent.is_none()));
+    assert!(kit.received(sock).is_empty());
     kit.deliver_next();
     assert_eq!(
         labels_since(&kit, 0),
-        ["Load", "Commit", "SetSession", "Send", "SetWake"],
+        [
+            "SetSession",
+            "Load",
+            "Commit",
+            "SetSession",
+            "Send",
+            "SetWake"
+        ],
         "persist, then bind, then settle with the sender"
     );
     assert_eq!(
@@ -525,6 +534,7 @@ fn host_a_failed_commit_drops_the_core_and_sends_nothing() {
     kit.fail_next_commit();
     kit.send(sock, &claim(1, "x.rs", "s"));
     kit.settle();
+    assert_eq!(kit.closed(sock).map(|(code, _)| *code), Some(1011));
     assert_eq!(kit.received(sock).len(), received, "nothing is sent");
     assert_eq!(kit.stored_state(), Some(before.as_str()));
     assert!(kit
@@ -533,12 +543,10 @@ fn host_a_failed_commit_drops_the_core_and_sends_nothing() {
         .unwrap()
         .contains("persist state and events failed"));
 
-    let mark = kit.history().len();
-    kit.send(sock, &ClientMsg::Heartbeat);
     assert_eq!(
-        labels_since(&kit, mark),
-        ["Load"],
-        "the core is reloaded from storage"
+        count(&kit, "Load"),
+        2,
+        "the core is reloaded from storage, for the withdrawal of the closed socket"
     );
 }
 
@@ -705,15 +713,15 @@ fn host_queued_frames_run_in_the_order_they_arrived() {
 #[test]
 fn host_inputs_the_host_does_not_serve_yet_are_logged_not_dropped_silently() {
     let mut kit = kit();
-    let sock = welcomed(&mut kit, "a1");
+    welcomed(&mut kit, "a1");
     let now_ms = kit.now_ms();
     let mark = kit.history().len();
-    kit.input(Input::Closed { now_ms, sock });
+    kit.input(Input::Wake { now_ms });
     assert_eq!(labels_since(&kit, mark), ["Log"]);
     let line = kit.logs().last().unwrap();
     assert!(line.contains("repo-1"), "{line}");
     assert!(
-        line.contains("a socket closing is not served by this host yet"),
+        line.contains("a wake is not served by this host yet"),
         "{line}"
     );
 }
@@ -967,4 +975,405 @@ fn host_a_lost_call_leaves_the_table_and_no_longer_holds_the_wake_back() {
 
     kit.reply(CallId(1), CallAnswer::Tested);
     assert!(kit.logs().last().unwrap().contains("no such call"));
+}
+
+// ---------- Sockets and sessions (R6 to R13, R31, R32) ----------
+
+/// A stored core over the hard limit that no expiry can bring under it: one claim, a1's, expires
+/// `LEASE_MS` after the testkit starts, and the claims that fill the state far outlive it.
+fn core_json_over_the_hard_limit_with_one_lease_due() -> String {
+    let mut core = shell::load_core(None, Some("test"), None, Vec::new(), Vec::new()).unwrap();
+    core.handle(
+        &AgentId("early".to_string()),
+        claim(1, "early.rs", "s"),
+        NOW_MS,
+    );
+    let later = NOW_MS + 1_000_000_000;
+    let summary = "x".repeat(10_000);
+    let mut made = 0;
+    while serde_json::to_string(&core).unwrap().len() <= HARD_ENTRY_BYTES {
+        made += 1;
+        let agent = AgentId(format!("filler-{made}"));
+        core.handle(&agent, claim(1, &format!("f{made}.rs"), &summary), later);
+    }
+    serde_json::to_string(&core).unwrap()
+}
+
+fn waiting_claim(req: u64, paths: &[&str]) -> ClientMsg {
+    ClientMsg::Claim {
+        req: RequestId(req),
+        intent: Intent {
+            summary: "s".to_string(),
+            task_ref: None,
+            assumptions: Vec::new(),
+        },
+        scopes: paths.iter().map(|path| edit_file(path)).collect(),
+        on_conflict: OnConflict::Wait,
+    }
+}
+
+/// Whether the stored core has a queued request of `agent`.
+fn queued(kit: &Testkit, agent: &str) -> bool {
+    let stored = kit.stored_state();
+    let core = shell::load_core(stored, Some("test"), None, Vec::new(), Vec::new()).unwrap();
+    core.has_queued_request(&AgentId(agent.to_string()))
+}
+
+/// a1 holds x.rs and a2 waits behind it. Returns their sockets.
+fn a2_waits_behind_a1(kit: &mut Testkit) -> (SocketId, SocketId) {
+    let a1 = welcomed(kit, "a1");
+    kit.send(a1, &claim(1, "x.rs", "s"));
+    let a2 = welcomed(kit, "a2");
+    kit.send(a2, &waiting_claim(2, &["x.rs"]));
+    kit.settle();
+    assert!(queued(kit, "a2"), "a2 waits");
+    (a1, a2)
+}
+
+fn release_of(kit: &Testkit, sock: SocketId) -> ClientMsg {
+    let (claim, fence) = granted(kit, sock);
+    ClientMsg::Release {
+        claim,
+        fence,
+        req: None,
+    }
+}
+
+fn error_of(msg: &ServerMsg) -> (Option<RequestId>, ErrorCode, &str) {
+    let ServerMsg::Error { req, code, message } = msg else {
+        panic!("expected an error, got {msg:?}");
+    };
+    (*req, *code, message)
+}
+
+fn close_of(kit: &Testkit, sock: SocketId) -> Option<(u16, &str)> {
+    kit.closed(sock)
+        .map(|(code, reason)| (*code, reason.as_str()))
+}
+
+#[test]
+fn host_an_opened_socket_holds_its_verified_agent_before_its_first_frame() {
+    let mut kit = kit();
+    let sock = kit.open("a1");
+    assert_eq!(labels_since(&kit, 0), ["SetSession"]);
+    let session = kit.session(sock).expect("the session is recorded at once");
+    assert_eq!(session.verified, Some(AgentId("a1".to_string())));
+    assert_eq!(session.agent, None, "nothing is bound before a welcome");
+    assert!(!session.closed);
+}
+
+#[test]
+fn host_a_binary_frame_is_answered_and_the_socket_stays_open() {
+    let mut kit = kit();
+    let sock = welcomed(&mut kit, "a1");
+    let mark = kit.history().len();
+    kit.send_binary(sock);
+    assert_eq!(labels_since(&kit, mark), ["Send"]);
+    let (req, code, message) = error_of(kit.received(sock).last().unwrap());
+    assert_eq!(req, None);
+    assert_eq!(code, ErrorCode::Malformed);
+    assert_eq!(message, "binary frames are not supported");
+    assert!(kit.closed(sock).is_none());
+
+    kit.send(sock, &claim(1, "x.rs", "s"));
+    kit.settle();
+    granted(&kit, sock);
+}
+
+#[test]
+fn host_a_malformed_or_oversized_frame_gets_a_fault_reply_and_nothing_else() {
+    let mut kit = kit();
+    let sock = welcomed(&mut kit, "a1");
+    let mark = kit.history().len();
+    kit.send_text(sock, r#"{"type":"secret-text""#.to_string());
+    assert_eq!(labels_since(&kit, mark), ["Send"]);
+    let (req, code, message) = error_of(kit.received(sock).last().unwrap());
+    assert_eq!((req, code), (None, ErrorCode::Malformed));
+    assert_eq!(message, "not a valid message", "the input is not echoed");
+
+    let mark = kit.history().len();
+    kit.send_text(sock, "y".repeat(shell::MAX_FRAME_BYTES + 1));
+    assert_eq!(labels_since(&kit, mark), ["Send"]);
+    let (req, code, message) = error_of(kit.received(sock).last().unwrap());
+    assert_eq!((req, code), (None, ErrorCode::Malformed));
+    assert_eq!(message, "frame is larger than 65536 bytes");
+    assert!(kit.closed(sock).is_none());
+}
+
+#[test]
+fn host_a_frame_before_hello_is_refused_with_no_hello() {
+    let mut kit = kit();
+    let sock = kit.open("a1");
+    let mark = kit.history().len();
+    kit.send(sock, &claim(5, "x.rs", "s"));
+    assert_eq!(labels_since(&kit, mark), ["Send"], "the core is not called");
+    let (req, code, _) = error_of(kit.received(sock).last().unwrap());
+    assert_eq!((req, code), (Some(RequestId(5)), ErrorCode::NoHello));
+    assert!(kit.closed(sock).is_none());
+}
+
+#[test]
+fn host_a_hello_for_another_agent_closes_1008_and_withdraws() {
+    let mut kit = kit();
+    let (_, a2) = a2_waits_behind_a1(&mut kit);
+    let mark = kit.history().len();
+    kit.send(a2, &hello("b"));
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Send", "SetSession", "Close", "Commit"],
+        "the reply, the close, then the withdrawal is stored"
+    );
+    let (_, code, _) = error_of(kit.received(a2).last().unwrap());
+    assert_eq!(code, ErrorCode::NotOwner);
+    assert_eq!(close_of(&kit, a2), Some((1008, "identity mismatch")));
+    kit.settle();
+    assert!(
+        !queued(&kit, "a2"),
+        "the bound agent's request is withdrawn"
+    );
+}
+
+#[test]
+fn host_an_error_handling_a_frame_closes_1011_and_withdraws() {
+    let mut kit = kit();
+    let (_, a2) = a2_waits_behind_a1(&mut kit);
+    let received = kit.received(a2).len();
+    kit.fail_next_commit();
+    kit.send(a2, &ClientMsg::Heartbeat);
+    kit.settle();
+    assert_eq!(close_of(&kit, a2), Some((1011, "coordinator error")));
+    assert_eq!(kit.received(a2).len(), received, "nothing else is sent");
+    assert!(
+        !queued(&kit, "a2"),
+        "the closed socket's request is withdrawn"
+    );
+}
+
+#[test]
+fn an_error_loading_the_state_closes_the_sender_with_1011() {
+    let mut kit = kit();
+    kit.seed("core", r#"{"claims":"intent-text""#.to_string());
+    let sock = kit.open("a1");
+    kit.send(sock, &hello("a1"));
+    kit.settle();
+    assert_eq!(close_of(&kit, sock), Some((1011, "coordinator error")));
+}
+
+#[test]
+fn an_error_applying_a_call_closes_the_sender_with_1011() {
+    let mut kit = kit();
+    kit.seed("core", core_json_of_size(HARD_ENTRY_BYTES + 1));
+    let sock = kit.open("a1");
+    kit.send(sock, &hello("a1"));
+    kit.settle();
+    assert_eq!(close_of(&kit, sock), Some((1011, "coordinator error")));
+}
+
+#[test]
+fn an_error_in_the_expiry_before_a_call_closes_the_sender_with_1011() {
+    let mut over = kit();
+    over.seed("core", core_json_over_the_hard_limit_with_one_lease_due());
+    over.advance(shell::LEASE_MS + 1);
+    let sock = over.open("a1");
+    over.send(sock, &hello("a1"));
+    over.settle();
+    assert!(over.logs().join("\n").contains("store state failed"));
+    assert_eq!(close_of(&over, sock), Some((1011, "coordinator error")));
+
+    let mut failed = kit();
+    let first = welcomed(&mut failed, "a1");
+    failed.send(first, &claim(1, "x.rs", "s"));
+    failed.settle();
+    failed.advance(shell::LEASE_MS + 1);
+    let second = failed.open("a2");
+    failed.fail_next_commit();
+    failed.send(second, &hello("a2"));
+    failed.settle();
+    assert_eq!(close_of(&failed, second), Some((1011, "coordinator error")));
+    assert!(failed.received(second).is_empty());
+}
+
+#[test]
+fn host_a_closed_or_failed_socket_withdraws_its_agents() {
+    let mut kit = kit();
+    let (a1, a2) = a2_waits_behind_a1(&mut kit);
+    let mark = kit.history().len();
+    kit.close(a2);
+    assert_eq!(labels_since(&kit, mark), ["Commit"]);
+    kit.settle();
+    assert!(!queued(&kit, "a2"));
+
+    let mark = kit.history().len();
+    kit.close(a1);
+    assert!(
+        labels_since(&kit, mark).is_empty(),
+        "an agent with no queued request is not withdrawn, so nothing is stored"
+    );
+
+    let mut idle = Testkit::new(config());
+    let unbound = idle.open("a1");
+    idle.close(unbound);
+    assert_eq!(
+        count(&idle, "Load"),
+        0,
+        "a socket that never said hello loads nothing"
+    );
+
+    kit.close(SocketId(99));
+    let line = kit.logs().last().unwrap();
+    assert!(line.contains("handle close failed"), "{line}");
+    assert!(line.contains("the socket is not open"), "{line}");
+}
+
+#[test]
+fn host_a_socket_closed_by_the_host_is_marked_closed_before_it_is_closed() {
+    let mut kit = kit();
+    let (_, a2) = a2_waits_behind_a1(&mut kit);
+    let twin = welcomed(&mut kit, "a2");
+    let mark = kit.history().len();
+    kit.fail_next_commit();
+    kit.send(a2, &ClientMsg::Heartbeat);
+    kit.settle();
+
+    let history = &kit.history()[mark..];
+    let close = history
+        .iter()
+        .position(|output| matches!(output, Output::Close { sock, .. } if *sock == a2))
+        .expect("the host closed the socket");
+    let Output::SetSession { sock, session } = &history[close - 1] else {
+        panic!(
+            "the session is recorded just before the close: {:?}",
+            history[close - 1]
+        );
+    };
+    assert_eq!((*sock, session.closed), (a2, true));
+    assert!(kit.session(a2).is_some_and(|session| session.closed));
+    assert!(
+        queued(&kit, "a2"),
+        "the twin socket is open and shields the agent"
+    );
+
+    kit.close(twin);
+    kit.settle();
+    assert!(
+        !queued(&kit, "a2"),
+        "the socket the host closed is still listed but shields nobody"
+    );
+}
+
+#[test]
+fn host_only_an_agent_with_no_other_open_socket_and_a_queued_request_is_withdrawn() {
+    let mut kit = kit();
+    let (_, a2) = a2_waits_behind_a1(&mut kit);
+    let twin = welcomed(&mut kit, "a2");
+
+    let mark = kit.history().len();
+    kit.close(a2);
+    assert!(
+        labels_since(&kit, mark).is_empty(),
+        "another open socket of a2 shields it: nothing is stored"
+    );
+    assert!(queued(&kit, "a2"));
+
+    kit.close(twin);
+    kit.settle();
+    assert!(
+        !queued(&kit, "a2"),
+        "the last socket of a2 took its request with it"
+    );
+}
+
+#[test]
+fn host_a_withdrawal_is_applied_persisted_then_settled() {
+    let mut kit = kit();
+    let a1 = welcomed(&mut kit, "a1");
+    kit.send(a1, &claim(1, "x.rs", "s"));
+    let e1 = welcomed(&mut kit, "e1");
+    kit.send(e1, &claim(1, "y.rs", "s"));
+    let b = welcomed(&mut kit, "b");
+    kit.send(b, &waiting_claim(2, &["y.rs", "x.rs"]));
+    let c = welcomed(&mut kit, "c");
+    kit.send(c, &waiting_claim(3, &["x.rs"]));
+    kit.settle();
+    kit.send(a1, &release_of(&kit, a1));
+    kit.settle();
+    assert!(
+        queued(&kit, "b") && queued(&kit, "c"),
+        "b waits on e1, c behind b"
+    );
+
+    let received = kit.received(c).len();
+    let mark = kit.history().len();
+    kit.close(b);
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Commit"],
+        "applied, then persisted"
+    );
+    assert!(
+        kit.received(c).len() == received,
+        "nothing is sent before the commit"
+    );
+    kit.deliver_next();
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Commit", "Send", "SetWake"],
+        "then settled"
+    );
+    assert!(matches!(
+        kit.received(c).last(),
+        Some(ServerMsg::Granted { .. })
+    ));
+}
+
+#[test]
+fn host_a_failed_send_to_another_socket_closes_it_1011_and_delivery_goes_on() {
+    let mut kit = kit();
+    let (a1, a2) = a2_waits_behind_a1(&mut kit);
+    let twin = welcomed(&mut kit, "a2");
+    kit.fail_sends_to(twin);
+    kit.send(a1, &release_of(&kit, a1));
+    kit.settle();
+
+    assert!(matches!(
+        kit.received(a2).last(),
+        Some(ServerMsg::Granted { .. })
+    ));
+    assert_eq!(close_of(&kit, twin), Some((1011, "send failed")));
+    assert!(kit.closed(a2).is_none() && kit.closed(a1).is_none());
+    let logs = kit.logs().join("\n");
+    assert!(logs.contains("send to a socket failed: agent=a2"), "{logs}");
+}
+
+#[test]
+fn host_a_socket_whose_send_failed_is_closed_once_and_its_agent_withdrawn() {
+    let mut kit = kit();
+    let a1 = welcomed(&mut kit, "a1");
+    kit.send(a1, &claim(1, "x.rs", "s"));
+    let a2 = welcomed(&mut kit, "a2");
+    kit.fail_sends_to(a2);
+    kit.send(a2, &waiting_claim(2, &["x.rs"]));
+    kit.settle();
+    assert_eq!(close_of(&kit, a2), Some((1011, "send failed")));
+    assert!(
+        !queued(&kit, "a2"),
+        "the dead socket's request is withdrawn"
+    );
+
+    let closes = count(&kit, "Close");
+    let now_ms = kit.now_ms();
+    kit.input(Input::SendFailed { now_ms, sock: a2 });
+    assert_eq!(
+        count(&kit, "Close"),
+        closes,
+        "a closed socket is not closed twice"
+    );
+
+    kit.input(Input::SendFailed {
+        now_ms,
+        sock: SocketId(99),
+    });
+    let line = kit.logs().last().unwrap();
+    assert!(line.contains("handle send failure failed"), "{line}");
+    assert!(line.contains("the socket is not open"), "{line}");
 }
