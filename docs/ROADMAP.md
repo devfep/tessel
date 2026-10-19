@@ -20,10 +20,9 @@ tests). GitHub Actions had an incident from about 11:45 to 12:30 EDT; queued run
 P1-CLI-ON-HOST; lane B takes P1-LANDER-AFTER-TESTS, then P1-FLAKE-UNDER-LOAD and
 P1-MUTANTS-PROPTEST-ONLY. P1-FAKE-HELLO-LOST is decided when P1-CLI-ON-HOST is dispatched, since
 that task replaces the fake's orchestration.
-**Question for Felix, M2's done-check:** it says no rules-list row is "after move", but R2-R5 and
-R49 are adapter rows the plan moves in M4 (`tessel-server`'s adapter), with no host input to
-carry them. Recommendation: M2's check covers the host rows; the adapter rows stay "after move"
-until M4 and are its done-check. Work continues on that reading.
+**Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
+The adapter rows R2-R5 and R49 stay "after move" until M4, whose done-check makes each "now" with
+its named adapter test; with `runtime.rs` deleted in M3 they have no code to protect meanwhile.
 **Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
 (`docs/proposals/phase-1.md`). Decisions 1 (no `wrangler dev` captures) and 14 (the CLI's fake
 rebuilt on the host in M2) apply to M2: the move proceeds on them as recommended, and
@@ -170,9 +169,9 @@ passes; the host types round-trip; the lander git tests pass.
 
 ### M2. The move
 
-Done when: no rules-list row is "after move"; `cargo test --workspace` is green with the CLI suite
-on the host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward tests are
-green.
+Done when: no host row of the rules list is "after move" (the adapter rows R2-R5 and R49 are
+M4's, decided by Felix on 19 October); `cargo test --workspace` is green with the CLI suite on the
+host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward tests are green.
 
 - [x] **P1-MOVE-CALLS** (`febea36`, #49) — lane A. The call path moved into `src/host/` with its
   test driver (`testkit.rs`): rows R14-R19, R28-R32 and R42. Outstanding calls are a table of
