@@ -868,3 +868,103 @@ fn host_a_trial_counts_as_this_instance_verifying() {
         "a verification waiting here leaves only the watchdog, behind the next lease expiry"
     );
 }
+
+#[test]
+fn host_an_open_queued_behind_a_commit_does_not_strand_the_frame_after_it() {
+    let mut kit = kit();
+    let first = welcomed(&mut kit, "a1");
+    kit.send(first, &claim(1, "x.rs", "s"));
+    let second = kit.open("a2");
+    kit.send(second, &hello("a2"));
+    assert!(kit.received(second).is_empty(), "both wait for the commit");
+    kit.settle();
+    assert!(matches!(
+        kit.received(second).first(),
+        Some(ServerMsg::Welcome { .. })
+    ));
+}
+
+#[test]
+fn a_frame_on_a_socket_the_host_does_not_know_is_logged() {
+    let mut kit = kit();
+    let mark = kit.history().len();
+    kit.send(SocketId(99), &ClientMsg::Heartbeat);
+    assert_eq!(labels_since(&kit, mark), ["Log"]);
+    let line = kit.logs().last().unwrap();
+    assert!(line.contains("handle frame failed"), "{line}");
+    assert!(line.contains("the socket is not open"), "{line}");
+}
+
+/// A claim of a1 on x.rs, submitted and waiting to merge.
+fn submitted(kit: &mut Testkit) -> (SocketId, ClaimId, CommitId) {
+    let sock = welcomed(kit, "a1");
+    kit.send(sock, &claim(1, "x.rs", "s"));
+    kit.settle();
+    let (claim_id, fence) = granted(kit, sock);
+    let fork_commit = CommitId("ab".repeat(20));
+    let submit = ClientMsg::Submit {
+        req: RequestId(2),
+        claim: claim_id,
+        fence,
+        fork_commit: fork_commit.clone(),
+        touched: vec![edit_file("x.rs")],
+        decisions: DecisionRecord {
+            evidence: vec!["tests passed".into()],
+            ..DecisionRecord::default()
+        },
+    };
+    kit.send(sock, &submit);
+    kit.settle();
+    (sock, claim_id, fork_commit)
+}
+
+fn merge_marker(now_ms: u64) -> MarkerStep {
+    Box::new(move |core| {
+        core.begin_merge(now_ms).expect("the merge is dispatched");
+        Vec::new()
+    })
+}
+
+#[test]
+fn host_only_a_merge_call_holds_the_merge_wake_back() {
+    let mut kit = kit();
+    let (sock, _, _) = submitted(&mut kit);
+    let now_ms = kit.now_ms();
+    start(&mut kit, read_head(1), merge_marker(now_ms));
+
+    kit.send(sock, &ClientMsg::Heartbeat);
+    kit.settle();
+    assert_eq!(
+        kit.wake(),
+        Some(kit.now_ms() + 1),
+        "a head read is not the merge, so the stored marker is recovered at once"
+    );
+}
+
+#[test]
+fn host_a_lost_call_leaves_the_table_and_no_longer_holds_the_wake_back() {
+    let mut kit = kit();
+    let (sock, claim_id, fork_commit) = submitted(&mut kit);
+    let now_ms = kit.now_ms();
+    let prepare = Request::Prepare {
+        claim: claim_id,
+        agent: AgentId("a1".to_string()),
+        fork_commit,
+        scopes: Vec::new(),
+    };
+    start(&mut kit, call_with(1, prepare), merge_marker(now_ms));
+    kit.send(sock, &ClientMsg::Heartbeat);
+    kit.settle();
+    assert_eq!(kit.wake(), Some(kit.now_ms() + MERGE_WATCHDOG_MS));
+
+    let lost = Input::CallLost {
+        now_ms: kit.now_ms(),
+        call: CallId(1),
+    };
+    kit.input(lost);
+    kit.settle();
+    assert_eq!(kit.wake(), Some(kit.now_ms() + 1), "the wait is over");
+
+    kit.reply(CallId(1), CallAnswer::Tested);
+    assert!(kit.logs().last().unwrap().contains("no such call"));
+}
