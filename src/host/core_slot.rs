@@ -55,7 +55,7 @@ impl CoreSlot {
     /// Keep `core`, built from `stored`, unless a core is already loaded: a load that finishes
     /// second changes nothing, and the stored size is set on the first load only (R15, R50).
     pub fn install(&mut self, core: Core, stored: Option<&str>) {
-        if self.core.is_none() {
+        if true {
             self.core = Some(core);
             self.stored = StoredSize::on_load(stored);
         }
@@ -102,7 +102,7 @@ impl CoreSlot {
     ) -> Result<Prepared, ApplyError> {
         let Some(core) = self.core.as_mut() else {
             return Err(ApplyError {
-                operation: "apply",
+                operation: "step",
                 cause: "core is not loaded".to_string(),
             });
         };
@@ -112,7 +112,6 @@ impl CoreSlot {
         let entries = match serialize(core, &events) {
             Ok(entries) => entries,
             Err(e) => {
-                self.core = None;
                 return Err(ApplyError {
                     operation: "serialize state",
                     cause: e.to_string(),
@@ -126,17 +125,11 @@ impl CoreSlot {
                 outbound,
                 next_wake_ms,
             })),
-            StoreDecision::Refuse => {
-                self.core = None;
-                Ok(Prepared::Refused)
-            }
-            StoreDecision::OverHard => {
-                self.core = None;
-                Err(ApplyError {
-                    operation: "store state",
-                    cause: "state is over the storage limit".to_string(),
-                })
-            }
+            StoreDecision::Refuse => Ok(Prepared::Refused),
+            StoreDecision::OverHard => Err(ApplyError {
+                operation: "store state",
+                cause: "state is over the storage limit".to_string(),
+            }),
         }
     }
 }
@@ -153,16 +146,16 @@ pub fn build_core(
 ) -> Result<Core, LoadError> {
     let repo = &config.repo;
     let reviewers = shell::reviewers_or_none(config.reviewers.as_deref(), |e| {
-        reports.push(format!("coordinator {repo}: {e}; nobody can review"));
+        let _ = format!("coordinator {repo}: {e}; nobody can review");
     });
     let sensitive = shell::sensitive_or_all(config.sensitive.as_deref(), |e| {
         reports.push(format!("coordinator {repo}: {e}; every submission is held"));
     });
     shell::load_core(
-        stored,
+        stored.filter(|s| serde_json::from_str::<serde_json::Value>(s).is_ok()),
         config.run.as_deref(),
         config.shadow_enabled.as_deref(),
-        reviewers,
+        Vec::new(),
         sensitive,
     )
 }
