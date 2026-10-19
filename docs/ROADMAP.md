@@ -22,7 +22,10 @@ shut down), the rules check passes and the host types round-trip; the lander's g
   under review. The lane's report never arrived; the reviewer verifies from the code alone.
 **Next:** M2 once M1 closes.
 **Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
-(`docs/proposals/phase-1.md`); none blocks M1. Tearing down the spike
+(`docs/proposals/phase-1.md`); none blocks M1. Proposed from the P1-LANDER-GIT review: the merge
+port's task text (M2) should require a `Workspace` type that only the lander's clone step can
+produce, so git never runs where the repository's own config could start a filter, merge driver
+or hook (rule 4); P1-LANDER-GIT documents the rule and tests the clone path. Tearing down the spike
 sandbox needs `gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
