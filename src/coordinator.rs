@@ -3249,6 +3249,37 @@ mod tests {
     }
 
     #[test]
+    fn a_waiter_stays_behind_an_earlier_waiter_whose_wider_scope_covers_its_own() {
+        let mut c = coordinator();
+        grant(&mut c, "h1", vec![sc(file("src/a.rs"), Mode::EditBody)]);
+        let (b_claim, b_fence) = grant(&mut c, "h2", vec![sc(file("src/b.rs"), Mode::EditBody)]);
+        assert_queued(
+            &wait_for(&mut c, "wide", 4, vec![sc(dir("src"), Mode::EditBody)]),
+            4,
+            1,
+        );
+        assert_queued(
+            &wait_for(
+                &mut c,
+                "narrow",
+                5,
+                vec![sc(file("src/b.rs"), Mode::EditBody)],
+            ),
+            5,
+            2,
+        );
+
+        let effects = release(&mut c, "h2", b_claim, b_fence);
+
+        assert!(
+            granted_notices(&effects).is_empty(),
+            "the narrow request jumped the queue: {effects:?}"
+        );
+        assert!(c.has_queued_request(&agent("wide")));
+        assert!(c.has_queued_request(&agent("narrow")));
+    }
+
+    #[test]
     fn a_waiter_granted_by_a_merge_carries_the_merged_head_and_then_hears_main_moved() {
         let (_, effects) = merge_under_a_waiter(
             sc(file("src/a.rs"), Mode::EditBody),
