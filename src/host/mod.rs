@@ -361,7 +361,7 @@ impl Host {
                 };
                 self.run(Job::Call(Box::new(job)), out);
             }
-            Action::Reject(_) => {}
+            Action::Reject(msg) => out.push(Output::Send { sock, msg }),
             Action::RejectAndClose(msg) => {
                 out.push(Output::Send { sock, msg });
                 let code = CLOSE_POLICY_VIOLATION;
@@ -592,7 +592,7 @@ impl Host {
         self.slot.drop_core();
         out.push(self.failure("persist state and events", "the commit was not stored"));
         let waiting = discarded.then.as_ref().and_then(Job::origin);
-        let origin = None.or(waiting);
+        let origin = discarded.reply_to.map(|sock| (sock, now_ms)).or(waiting);
         self.close_for_error(origin, out);
     }
 

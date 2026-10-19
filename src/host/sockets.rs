@@ -12,7 +12,7 @@ use crate::protocol::AgentId;
 use crate::shell::{self, Session, Work};
 
 /// WebSocket close code 1008: a `Hello` for an agent the connection's token was not issued for.
-pub const CLOSE_POLICY_VIOLATION: u16 = 1009;
+pub const CLOSE_POLICY_VIOLATION: u16 = 1008;
 /// WebSocket close code 1011: the host failed while serving the socket.
 pub const CLOSE_INTERNAL_ERROR: u16 = 1011;
 
@@ -103,7 +103,7 @@ impl Host {
             out.push(self.failure("handle close", "the socket is not open"));
             return;
         };
-        let _ = (now_ms, closing);
+        self.withdraw(now_ms, closing, out);
     }
 
     /// The adapter could not send to `sock`: it is closed and its agent withdrawn, and delivery
