@@ -253,9 +253,10 @@ today (R24). From P1-CORE-RECONCILE (M3), a marker found on `Loaded` is reconcil
   a git remote reached by path or URL, then a read-back of main). The read-back keeps the
   steward's equality rule in this task, so the ported tests pass unchanged; ancestry is the
   intended change P1-LANDER-ANCESTRY. Done, ported one for one: the 53 tests of
-  `merge-steps.test.ts` (44 `it` and 9 `it.each` rows, each row its own case), with a fake git runner,
-  among them the step order and token lifetimes (no credential is live while repo code runs; the
-  write token is minted only after the tests and revoked when the push ends or throws); the
+  `merge-steps.test.ts` (44 `it` and 9 `it.each` rows, each row its own case), with a fake
+  git runner, among them the step order and token lifetimes (no credential is live while repo
+  code runs; the write token is minted only after the tests and revoked when the push ends or
+  throws); the
   outcome read back from main, never taken from the push's exit code (4 cases); `main_moved`
   checked before the commit is verified or rebased; `already_merged`; `gate_changed`,
   `gate_invalid` and `gate_only` under the admin policy; at most `LOCAL_GIT_COMMANDS_MAX` local
