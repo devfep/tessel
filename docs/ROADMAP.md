@@ -221,6 +221,12 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   rerun. Same class as P0-FLAKE-WALLCLOCK: replace the wall-clock bounds with signals or the
   daemon clock seam; never add retries. Done: each test passes with its timing bound removed or
   made explicit, shown on a CI runner.
+- [ ] **SERVER-CONFLICT-NAMES** — M4, with `tessel-server`'s merge response. From the
+  P1-LANDER-ISOLATION review: `Conflict.files` (merge and trial) carries fork-chosen file names
+  raw, with no cap or total. The steward does not cap them either (`merge-steps.ts` 144-146), and
+  the core reads only their count (`src/merge.rs` 264-267), so nothing reaches an agent today.
+  Done: before any agent or log sees them, the names are capped at 50 with a total and quoted
+  (rule 3), with a test using control characters.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
