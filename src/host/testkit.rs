@@ -12,6 +12,9 @@ use crate::host::{Host, HostConfig, Input, Output, SocketId};
 use crate::protocol::{AgentId, ClientMsg, ServerMsg};
 use crate::shell::{Session, STATE_KEY};
 
+/// The most answers `settle` delivers: far more than any test needs.
+const SETTLE_LIMIT: usize = 1_000;
+
 /// What one client has been given.
 #[derive(Debug, Default)]
 pub struct Client {
@@ -129,9 +132,15 @@ impl Testkit {
         true
     }
 
-    /// Deliver answers until the host is waiting for none.
+    /// Deliver answers until the host is waiting for none. A host that keeps asking (a load that
+    /// never sticks, say) fails the test after `SETTLE_LIMIT` answers instead of hanging it.
     pub fn settle(&mut self) {
-        while self.deliver_next() {}
+        for _ in 0..SETTLE_LIMIT {
+            if !self.deliver_next() {
+                return;
+            }
+        }
+        panic!("the host still waits for the adapter after {SETTLE_LIMIT} answers");
     }
 
     /// Carry out `outputs` as an adapter would, recording them.

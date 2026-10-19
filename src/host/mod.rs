@@ -19,10 +19,11 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
+#[cfg(test)]
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
 use crate::shell::{self, Action, Session, Target, Work};
-use batch::{Held, Pending, StartedCall};
+use batch::{Committed, Held, Pending};
 use call::{Call, CallAnswer, CallId, Request};
 use core_slot::{Applied, ApplyError, CoreSlot, Prepared, Waits};
 
@@ -131,19 +132,9 @@ pub struct HostConfig {
     pub sensitive: Option<String>,
 }
 
-/// What to do with the answer of a call: apply it to the core. It runs on a core freshly loaded
-/// if the one the call started from was dropped meanwhile (R19).
-pub type AnswerStep = Box<dyn FnOnce(&mut Core, CallAnswer, u64) -> Vec<Effect>>;
-
 /// The write that stores the marker of a call before it goes out.
 #[cfg(test)]
 type MarkerStep = Box<dyn FnOnce(&mut Core) -> Vec<Effect>>;
-
-/// A call the adapter has and has not answered. Memory only (R24, R47).
-struct Outstanding {
-    request: Request,
-    on_answer: AnswerStep,
-}
 
 /// A client message to handle: the expiry step that precedes it runs as its own write first.
 struct CallJob {
@@ -152,13 +143,14 @@ struct CallJob {
     agent: AgentId,
     msg: ClientMsg,
     session: Session,
-    expired: bool,
 }
 
+/// The answer of a call, to be stored once the core is loaded. What an answer does to the core
+/// (R21 to R27) moves with the wake (P1-MOVE-WAKE), which will match on the `Request` of the
+/// `Call` the table holds and read the `DispatchId` from it. Until then the answer applies
+/// nothing: the call leaves the table, the wake is recomputed without it and that is stored.
 struct AnswerJob {
     now_ms: u64,
-    on_answer: AnswerStep,
-    answer: CallAnswer,
 }
 
 /// Starts a call as the wake will: the marker is stored, then the call goes out.
@@ -166,7 +158,6 @@ struct AnswerJob {
 struct StartJob {
     now_ms: u64,
     call: Call,
-    on_answer: AnswerStep,
     marker: MarkerStep,
 }
 
@@ -194,7 +185,7 @@ pub struct Host {
     sessions: BTreeMap<SocketId, Session>,
     gate: Gate,
     queue: VecDeque<Input>,
-    calls: HashMap<CallId, Outstanding>,
+    calls: HashMap<CallId, Call>,
     next_batch: u64,
 }
 
@@ -280,13 +271,8 @@ impl Host {
             Input::Loaded { stored, .. } => self.loaded(stored.as_deref(), out),
             Input::Committed { now_ms, batch } => self.committed(now_ms, batch, out),
             Input::CommitFailed { batch, .. } => self.commit_failed(batch, out),
-            Input::Replied {
-                now_ms,
-                call,
-                answer,
-            } => self.answered(now_ms, call, answer, out),
-            Input::CallLost { now_ms, call } => {
-                self.answered(now_ms, call, CallAnswer::Unknown, out);
+            Input::Replied { now_ms, call, .. } | Input::CallLost { now_ms, call } => {
+                self.answered(now_ms, call, out);
             }
             Input::Closed { .. } => self.unmoved("a socket closing", out),
             Input::Wake { .. } => self.unmoved("a wake", out),
@@ -319,8 +305,8 @@ impl Host {
             merging: false,
             verifying: false,
         };
-        for outstanding in self.calls.values() {
-            match outstanding.request {
+        for call in self.calls.values() {
+            match call.request {
                 Request::Prepare { .. } | Request::Test { .. } | Request::Land { .. } => {
                     waits.merging = true;
                 }
@@ -348,7 +334,6 @@ impl Host {
                     agent,
                     msg,
                     session,
-                    expired: false,
                 };
                 self.run(Job::Call(Box::new(job)), out);
             }
@@ -400,15 +385,12 @@ impl Host {
 
     fn run_call(&mut self, job: CallJob, out: &mut Vec<Output>) {
         let waits = self.waits();
-        if !job.expired && self.slot.has_due_expiry(job.now_ms) {
+        if self.slot.has_due_expiry(job.now_ms) {
             let now_ms = job.now_ms;
             let prepared = self
                 .slot
                 .apply(Work::Plain, waits, now_ms, |core| core.expire(now_ms));
-            let then = Job::Call(Box::new(CallJob {
-                expired: true,
-                ..job
-            }));
+            let then = Job::Call(Box::new(job));
             self.commit_unsent("expire leases", prepared, Vec::new(), Some(then), out);
             return;
         }
@@ -418,7 +400,6 @@ impl Host {
             agent,
             msg,
             session,
-            ..
         } = job;
         let req = shell::req_of(&msg);
         let work = shell::work_of(&msg);
@@ -448,29 +429,19 @@ impl Host {
         }
     }
 
-    fn answered(&mut self, now_ms: u64, call: CallId, answer: CallAnswer, out: &mut Vec<Output>) {
-        let Some(outstanding) = self.calls.remove(&call) else {
+    fn answered(&mut self, now_ms: u64, call: CallId, out: &mut Vec<Output>) {
+        if self.calls.remove(&call).is_none() {
             out.push(self.failure("apply call answer", "the host waits on no such call"));
             return;
-        };
-        let job = AnswerJob {
-            now_ms,
-            on_answer: outstanding.on_answer,
-            answer,
-        };
-        self.run(Job::Answer(job), out);
+        }
+        self.run(Job::Answer(AnswerJob { now_ms }), out);
     }
 
     fn run_answer(&mut self, job: AnswerJob, out: &mut Vec<Output>) {
-        let AnswerJob {
-            now_ms,
-            on_answer,
-            answer,
-        } = job;
         let waits = self.waits();
-        let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
-            on_answer(core, answer, now_ms)
-        });
+        let prepared = self
+            .slot
+            .apply(Work::Plain, waits, job.now_ms, |_| Vec::new());
         self.commit_unsent("apply call answer", prepared, Vec::new(), None, out);
     }
 
@@ -479,13 +450,11 @@ impl Host {
         let StartJob {
             now_ms,
             call,
-            on_answer,
             marker,
         } = job;
         let waits = self.waits();
         let prepared = self.slot.apply(Work::Plain, waits, now_ms, marker);
-        let started = StartedCall { call, on_answer };
-        self.commit_unsent("start call", prepared, vec![started], None, out);
+        self.commit_unsent("start call", prepared, vec![call], None, out);
     }
 
     /// Start a call as the wake will: store `marker`, then hand out `call` once it is stored.
@@ -498,12 +467,13 @@ impl Host {
     }
 
     /// Commit the result of a step that has no sender to refuse (an expiry, an answer, a
-    /// start): a refusal is an error to log.
+    /// start). `Work::Plain` is never refused for size, so the `Refused` branch is the
+    /// equivalent of R43 and cannot be reached today; if it is, it is an error to log.
     fn commit_unsent(
         &mut self,
         operation: &str,
         prepared: Result<Prepared, ApplyError>,
-        calls: Vec<StartedCall>,
+        calls: Vec<Call>,
         then: Option<Job>,
         out: &mut Vec<Output>,
     ) {
@@ -549,14 +519,24 @@ impl Host {
         }
     }
 
+    /// The stored batch, for the one `Input::Committed` that names it (C1).
+    fn take_committed(&mut self, batch: BatchId) -> Option<Committed> {
+        self.take_pending(batch).map(Pending::commit)
+    }
+
+    /// Drop the outstanding batch if it is `batch`. The failure path never holds a `Pending`, so
+    /// it cannot build a `Committed`.
+    fn discard_pending(&mut self, batch: BatchId) -> bool {
+        self.take_pending(batch).is_some()
+    }
+
     fn committed(&mut self, now_ms: u64, batch: BatchId, out: &mut Vec<Output>) {
-        let Some(pending) = self.take_pending(batch) else {
+        let Some(mut committed) = self.take_committed(batch) else {
             out.push(self.failure("commit", "the answer names no outstanding batch"));
             return;
         };
-        let (entries, held, then) = pending.commit().into_parts();
-        self.slot.written(&entries);
-        self.release(now_ms, held, out);
+        let then = committed.take_then();
+        self.release(now_ms, committed, out);
         if let Some(job) = then {
             self.run(job, out);
         }
@@ -565,18 +545,19 @@ impl Host {
     /// The batch is not stored: nothing it held is sent, and the core is ahead of storage, so it
     /// is dropped (R30).
     fn commit_failed(&mut self, batch: BatchId, out: &mut Vec<Output>) {
-        let Some(pending) = self.take_pending(batch) else {
+        if !self.discard_pending(batch) {
             out.push(self.failure("commit", "the failure names no outstanding batch"));
             return;
-        };
-        drop(pending);
+        }
         self.slot.drop_core();
         out.push(self.failure("persist state and events", "the commit was not stored"));
     }
 
     /// Bind the socket if the core welcomed it, deliver, reschedule even if delivery failed,
     /// then hand out the calls that were waiting for this batch (R29, R31, R32).
-    fn release(&mut self, now_ms: u64, held: Held, out: &mut Vec<Output>) {
+    fn release(&mut self, now_ms: u64, committed: Committed, out: &mut Vec<Output>) {
+        let (entries, held) = committed.into_parts();
+        self.slot.written(&entries);
         if let Some((sock, session)) = held.bind {
             self.sessions.insert(sock, session.clone());
             out.push(Output::SetSession { sock, session });
@@ -599,11 +580,8 @@ impl Host {
         }
         let at_ms = shell::alarm_at_ms(held.next_wake_ms, now_ms).map(|at| at as u64);
         out.push(Output::SetWake { at_ms });
-        for started in held.calls {
-            let StartedCall { call, on_answer } = started;
-            let request = call.request.clone();
-            self.calls
-                .insert(call.id, Outstanding { request, on_answer });
+        for call in held.calls {
+            self.calls.insert(call.id, call.clone());
             out.push(Output::Call(call));
         }
     }

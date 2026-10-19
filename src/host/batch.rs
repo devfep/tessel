@@ -1,22 +1,16 @@
 //! The one commit that may be outstanding, and everything held back until it is stored.
 //!
 //! Protocol invariant 4 (a fence is stored before its grant is sent): the sends, the session
-//! change, the wake and the calls of a step are in a `Held` inside a `Pending`. `Committed` is
-//! built only by `Pending::commit`, which the host calls only on `Input::Committed`, so nothing
-//! reaches an `Output` without a stored batch behind it (C1). A failed commit just drops the
-//! `Pending`.
+//! change, the wake and the calls of a step that was persisted are in a `Held` inside a
+//! `Pending`. `Committed` is built only by `Pending::commit`, and `Host::release` takes a
+//! `Committed`, so nothing a batch held reaches an `Output` without that batch stored (C1). A
+//! failed commit drops the `Pending`. A reply that persisted nothing, such as the refusal of a
+//! call over the soft limit, is sent at once, as `src/runtime.rs` does.
 
 use crate::host::call::Call;
-use crate::host::{AnswerStep, BatchId, Job, SocketId};
+use crate::host::{BatchId, Job, SocketId};
 use crate::protocol::Event;
 use crate::shell::{Outbound, Session};
-
-/// A call to hand to the adapter once the batch that persisted it has committed, with what to do
-/// with its answer.
-pub struct StartedCall {
-    pub call: Call,
-    pub on_answer: AnswerStep,
-}
 
 /// What a step produced besides its stored entries.
 pub struct Held {
@@ -27,7 +21,8 @@ pub struct Held {
     /// The session to record for a socket the core welcomed, after the persist.
     pub bind: Option<(SocketId, Session)>,
     pub next_wake_ms: Option<u64>,
-    pub calls: Vec<StartedCall>,
+    /// Calls to hand to the adapter once this batch has committed.
+    pub calls: Vec<Call>,
 }
 
 /// A batch handed to the adapter and not yet answered.
@@ -74,9 +69,13 @@ impl Pending {
 }
 
 impl Committed {
-    /// The entries that were stored, what the batch held, and the step of the same task that
-    /// waited for it.
-    pub fn into_parts(self) -> (Vec<(String, String)>, Held, Option<Job>) {
-        (self.entries, self.held, self.then)
+    /// The step of the same task that waited for this batch, taken once.
+    pub fn take_then(&mut self) -> Option<Job> {
+        self.then.take()
+    }
+
+    /// The entries that were stored and what the batch held.
+    pub fn into_parts(self) -> (Vec<(String, String)>, Held) {
+        (self.entries, self.held)
     }
 }
