@@ -345,7 +345,7 @@ impl Host {
         Output::Log {
             line: format!(
                 "coordinator {}: {operation} failed: {cause}",
-                ""
+                self.config.repo
             ),
         }
     }
