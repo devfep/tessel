@@ -18,6 +18,7 @@ use crate::git::GitCommand;
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const REAP_WAIT: Duration = Duration::from_secs(2);
 
 /// What a finished command wrote. Non-UTF-8 bytes (file names are untrusted) become U+FFFD.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,10 +160,19 @@ fn wait_until(
         }
         if Instant::now() >= deadline {
             kill_group(child);
-            // Already gone or not, the wait's own error carries nothing to act on.
-            child.wait().ok();
+            reap(child);
             return Err(timed_out(description, timeout));
         }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Waits briefly for a killed child to be gone, so it is not left a zombie. Gives up after
+/// [`REAP_WAIT`] rather than hang on a child that did not die.
+fn reap(child: &mut Child) {
+    let deadline = Instant::now() + REAP_WAIT;
+    // A wait error means there is nothing left to reap.
+    while child.try_wait().is_ok_and(|status| status.is_none()) && Instant::now() < deadline {
         thread::sleep(POLL_INTERVAL);
     }
 }
