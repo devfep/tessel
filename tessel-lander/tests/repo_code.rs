@@ -127,12 +127,39 @@ fn nothing_the_source_repos_config_names_runs_in_the_cloned_workspace() {
 }
 
 #[test]
+fn an_empty_directory_inside_another_repository_does_not_run_that_repositorys_config() {
+    let scratch = TempDir::new().expect("tempdir");
+    let repo = scratch.path().join("planted");
+    fs::create_dir(&repo).expect("planted dir");
+    let (m, a, b) = conflicting_fixture(&repo);
+    let marker = scratch.path().join("driver-ran");
+    let driver = format!("touch '{}'; exit 1", marker.display());
+    fixture_git(&repo, &["config", "merge.evil.driver", &driver]);
+    let inside = repo.join("inside");
+    fs::create_dir(&inside).expect("empty dir inside the repository");
+    let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
+    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let workspace = cloned(clone_main(&git, &support::AlwaysOk, &sources, &inside).expect("clone"));
+
+    let rebase = run(&git.rebase_command(&workspace, &m, &a, &b)).expect("rebase runs");
+
+    assert!(!rebase.success(), "git must not find the parent repository");
+    assert!(!marker.exists(), "the parent repository's merge driver ran");
+}
+
+#[test]
 fn control_the_same_config_does_run_a_filter_and_a_merge_driver_in_the_source_repo() {
     let (scratch, source, markers_dir, git, (m, a, b)) = setup();
     let workspace = clone_source(&git, &source, &scratch.path().join("workspace"));
     let mut command = git.rebase_command(&workspace, &m, &a, &b);
     assert_eq!(command.argv[1], "-C");
     command.argv[2] = source.clone().into_os_string();
+    command
+        .env
+        .insert("GIT_DIR".to_owned(), source.join(".git").into());
+    command
+        .env
+        .insert("GIT_WORK_TREE".to_owned(), source.clone().into());
     // Same bytes, new modification time: git re-reads the file to see that it is unchanged, which
     // runs the clean filter. Without this the filter runs only while the index is racily clean.
     fs::write(source.join("conflict.txt"), "main\n").expect("touch");

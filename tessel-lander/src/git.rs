@@ -14,6 +14,11 @@
 //!   the source; a repo's `.gitattributes` can name a driver but cannot define one). No builder
 //!   here takes a bare path where it needs one.
 //!   The diff commands also pass `--no-ext-diff` and `--no-textconv`.
+//! - Repository discovery: every command that takes a [`Workspace`] sets `GIT_DIR` and
+//!   `GIT_WORK_TREE` to it, so git never searches the parent directories and a workspace with no
+//!   `.git` of its own fails instead of finding another repository's config. (Env, not
+//!   `--git-dir`, to keep the argv the steward's tests pin; not `GIT_CEILING_DIRECTORIES`, which
+//!   only bounds the search and leaves discovery on.)
 //! - Aliases: only builtin subcommands are invoked, and git never lets an alias shadow a builtin.
 //! - `core.fsmonitor` is off, `core.hooksPath` is fixed, `core.sshCommand` is plain `ssh` and the
 //!   credential helper list is reset, all by env config that outranks repo config. This is
@@ -234,6 +239,15 @@ impl Git {
         let mut command = self.command(&[], timeout);
         command.argv.push("-C".into());
         command.argv.push(workspace.path().into());
+        // Without these git searches the parent directories for a repository, so a workspace
+        // with no `.git` of its own (an empty directory inside another repository) would run
+        // that repository's config.
+        command
+            .env
+            .insert("GIT_DIR".to_owned(), workspace.path().join(".git").into());
+        command
+            .env
+            .insert("GIT_WORK_TREE".to_owned(), workspace.path().into());
         command.argv.extend(args.iter().map(OsString::from));
         command
     }
