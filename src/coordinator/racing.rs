@@ -1595,6 +1595,18 @@ mod tests {
         assert_eq!(error_code(&late), ErrorCode::RaceClosed);
     }
 
+    #[test]
+    fn join_race_itself_refuses_a_join_at_the_deadline_before_the_race_is_judged() {
+        let mut c = core();
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
+        let before = state(&c);
+
+        let effects = c.join_race(&agent("a1"), RequestId(2), race, DEADLINE);
+
+        assert_eq!(error_code(&effects), ErrorCode::RaceClosed);
+        assert_eq!(state(&c), before);
+    }
+
     // ---- submitting and judging ----
 
     #[test]
