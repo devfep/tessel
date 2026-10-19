@@ -128,14 +128,10 @@ fn nothing_the_source_repos_config_names_runs_in_the_cloned_workspace() {
 
 #[test]
 fn a_workspace_cloned_to_a_relative_destination_runs_commands() {
-    let (scratch, source, _markers, git, _ids) = setup();
+    let (_scratch, source, _markers, git, _ids) = setup();
     let cwd = std::env::current_dir().expect("cwd");
-    let mut relative = PathBuf::new();
-    for _ in cwd.ancestors().skip(1) {
-        relative.push("..");
-    }
-    relative.push(scratch.path().strip_prefix("/").expect("absolute temp dir"));
-    relative.push("workspace");
+    let inside_cwd = TempDir::new_in(&cwd).expect("tempdir in the working directory");
+    let relative = PathBuf::from(inside_cwd.path().file_name().expect("name")).join("workspace");
     assert!(relative.is_relative());
 
     let workspace = clone_source(&git, &source, &relative);

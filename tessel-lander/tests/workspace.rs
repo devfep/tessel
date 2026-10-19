@@ -182,6 +182,29 @@ fn an_empty_directory_and_a_missing_path_are_accepted_by_a_runner_that_runs_noth
 }
 
 #[test]
+fn a_destination_with_parent_dir_components_is_refused_even_when_its_start_is_missing() {
+    let scratch = TempDir::new().expect("tempdir");
+    let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
+    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let repo = scratch.path().join("planted");
+    fs::create_dir(&repo).expect("planted dir");
+    fixture_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
+
+    let error = clone_main(
+        &git,
+        &support::AlwaysOk,
+        &sources,
+        &repo.join("missing").join(".."),
+    )
+    .expect_err("refused");
+
+    assert!(
+        matches!(error, CloneError::DestinationHasParentDir { .. }),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_destination_that_cannot_be_inspected_is_refused_before_anything_runs() {
     use std::os::unix::fs::PermissionsExt;
 
