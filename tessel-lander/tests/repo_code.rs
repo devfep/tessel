@@ -14,10 +14,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
-use tessel_lander::git::{Git, MergeSources};
-use tessel_lander::run::run;
+use tessel_lander::git::Git;
+use tessel_lander::run::{run, SystemRunner};
+use tessel_lander::workspace::{clone_main, Workspace};
 
-use support::{conflicting_fixture, fixture_git};
+use support::{cloned, conflicting_fixture, failed_clone, fixture_git, sources_for};
 
 fn script(path: &Path, body: &str) {
     fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
@@ -67,6 +68,12 @@ fn markers(dir: &Path) -> Vec<String> {
     names
 }
 
+fn clone_source(git: &Git, source: &Path, destination: &Path) -> Workspace {
+    let remote = source.display().to_string();
+    let sources = sources_for(&remote, &remote, "feature");
+    cloned(clone_main(git, &SystemRunner, &sources, destination).expect("clone runs"))
+}
+
 fn setup() -> (
     TempDir,
     PathBuf,
@@ -92,16 +99,8 @@ fn setup() -> (
 #[test]
 fn nothing_the_source_repos_config_names_runs_in_the_cloned_workspace() {
     let (scratch, source, markers_dir, git, (m, a, b)) = setup();
-    let workspace = scratch.path().join("workspace");
-    let sources = MergeSources {
-        workspace: workspace.clone(),
-        main_remote: source.display().to_string(),
-        fork_remote: source.display().to_string(),
-        fork_branch: "feature".to_owned(),
-    };
+    let workspace = clone_source(&git, &source, &scratch.path().join("workspace"));
 
-    let clone = run(&git.clone_command(&sources)).expect("clone runs");
-    assert!(clone.success(), "clone: {}", clone.stderr);
     let rebase = run(&git.rebase_command(&workspace, &m, &a, &b)).expect("rebase runs");
     assert!(
         !rebase.success(),
@@ -122,9 +121,16 @@ fn nothing_the_source_repos_config_names_runs_in_the_cloned_workspace() {
 
 #[test]
 fn control_the_same_config_does_run_a_filter_and_a_merge_driver_in_the_source_repo() {
-    let (_scratch, source, markers_dir, git, (m, a, b)) = setup();
+    let (scratch, source, markers_dir, git, (m, a, b)) = setup();
+    let workspace = clone_source(&git, &source, &scratch.path().join("workspace"));
+    let mut command = git.rebase_command(&workspace, &m, &a, &b);
+    assert_eq!(command.argv[1], "-C");
+    command.argv[2] = source.clone().into_os_string();
+    // Same bytes, new modification time: git re-reads the file to see that it is unchanged, which
+    // runs the clean filter. Without this the filter runs only while the index is racily clean.
+    fs::write(source.join("conflict.txt"), "main\n").expect("touch");
 
-    let rebase = run(&git.rebase_command(&source, &m, &a, &b)).expect("rebase runs");
+    let rebase = run(&command).expect("rebase runs");
 
     assert!(!rebase.success());
     let ran = markers(&markers_dir);
@@ -151,14 +157,11 @@ fn a_remote_that_names_a_command_or_a_plain_transport_is_refused() {
         ("http://127.0.0.1:9/repo.git".to_owned(), "http"),
         ("git://127.0.0.1:9/repo.git".to_owned(), "git"),
     ] {
-        let sources = MergeSources {
-            workspace: scratch.path().join(format!("workspace-{expected}")),
-            main_remote: remote,
-            fork_remote: String::new(),
-            fork_branch: "main".to_owned(),
-        };
-        let clone = run(&git.clone_command(&sources)).expect("clone runs");
-        assert!(!clone.success());
+        let sources = sources_for(&remote, "", "main");
+        let destination = scratch.path().join(format!("workspace-{expected}"));
+        let clone = failed_clone(
+            clone_main(&git, &SystemRunner, &sources, &destination).expect("clone runs"),
+        );
         assert!(
             clone
                 .stderr

@@ -64,6 +64,21 @@ pub enum RunError {
     ReaderLost { command: String },
 }
 
+/// Runs git commands for the merge. The lander uses [`SystemRunner`]; a test substitutes a fake.
+pub trait GitRunner {
+    fn run(&self, command: &GitCommand) -> Result<GitOutput, RunError>;
+}
+
+/// Runs each command as a child process with [`run`].
+#[derive(Debug, Clone, Copy)]
+pub struct SystemRunner;
+
+impl GitRunner for SystemRunner {
+    fn run(&self, command: &GitCommand) -> Result<GitOutput, RunError> {
+        run(command)
+    }
+}
+
 /// One reader's result: which stream, and its bytes or the read error.
 type StreamResult = (&'static str, io::Result<Vec<u8>>);
 

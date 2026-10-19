@@ -4,9 +4,11 @@
 //!
 //! The lander runs git but never repo code. Every command here runs with a cleared environment
 //! (see [`git::Git`]), so no user or system config, hook, editor, prompt or ambient `GIT_*`
-//! variable can reach it.
+//! variable can reach it, and git commands that read a repository's own config run only in a
+//! [`workspace::Workspace`], which only the clone step makes.
 
 pub mod coverage;
 pub mod git;
 pub mod run;
 pub mod types;
+pub mod workspace;
