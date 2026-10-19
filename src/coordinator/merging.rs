@@ -2224,4 +2224,15 @@ mod tests {
         assert_eq!(at, Some(NOW + 7 + MERGE_WATCHDOG_MS));
         const { assert!(MERGE_WATCHDOG_MS > crate::merge::STEWARD_CALL_TIMEOUT_MS) };
     }
+
+    #[test]
+    fn the_watchdog_of_a_merge_in_flight_fires_fourteen_minutes_after_the_call_starts() {
+        let mut c = core();
+        dispatched(&mut c, "a", "src/a.rs");
+        let fourteen_minutes = 14 * 60 * 1000;
+        assert_eq!(
+            c.next_merge_ms(true, NOW + 7),
+            Some(NOW + 7 + fourteen_minutes)
+        );
+    }
 }

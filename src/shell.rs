@@ -1993,6 +1993,15 @@ mod tests {
     }
 
     #[test]
+    fn the_frame_limit_is_64_kib() {
+        assert!(parse_client_msg(&padded_hello(65_536)).is_ok());
+        assert_eq!(
+            parse_client_msg(&padded_hello(65_537)).unwrap_err(),
+            FrameFault::TooLarge
+        );
+    }
+
+    #[test]
     fn a_frame_over_the_limit_is_malformed_even_if_it_would_parse() {
         let over = padded_hello(MAX_FRAME_BYTES + 1);
         let Err(fault) = parse_client_msg(&over) else {

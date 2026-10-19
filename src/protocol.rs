@@ -1071,6 +1071,8 @@ mod tests {
         );
         assert_eq!(file("main.rs").ancestors(), vec![dir("")]);
         assert!(root().ancestors().is_empty());
+        assert_eq!(dir("src/auth").ancestors(), vec![dir("src"), dir("")]);
+        assert_eq!(dir("src").ancestors(), vec![dir("")]);
     }
 
     /// With S = Depend and X = EditSignature, the generalised rule must

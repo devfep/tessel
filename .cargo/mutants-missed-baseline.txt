@@ -1,24 +1,6 @@
-src/coordinator.rs: replace misrouted -> Vec<Effect> with vec![]
 src/coordinator/merging.rs: replace < with <= in Coordinator::next_to_merge
 src/coordinator/merging.rs: replace || with && in Coordinator::merge_outcome
 src/coordinator/merging.rs: replace || with && in Coordinator::recover_merge
-src/coordinator/racing.rs: delete field scopes from struct ClaimRequest expression in Coordinator::open_race
-src/coordinator/racing.rs: replace * with +
-src/coordinator/racing.rs: replace * with +
-src/coordinator/racing.rs: replace > with >= in Coordinator::refuse_open
-src/coordinator/racing.rs: replace has_evidence -> bool with false
-src/coordinator/racing.rs: replace match guard race.deadline_ms <= now_ms with false in Coordinator::join_race
-src/merge.rs: replace && with || in FailureScan::read
-src/merge.rs: replace && with || in FailureScan::read
-src/merge.rs: replace * with +
-src/merge.rs: replace * with +
-src/merge.rs: replace * with /
-src/merge.rs: replace * with /
-src/merge.rs: replace + with *
-src/merge.rs: replace <impl PartialEq for MergeRecord>::eq -> bool with true
-src/merge.rs: replace > with >= in quoted_output
-src/protocol.rs: replace match guard path.is_empty() with true in Scope::ancestors
-src/shell.rs: replace * with +
 src/store.rs: replace Persisted::dispatch -> Option<&Dispatch> with None
 src/store.rs: replace Persisted::entries -> &[(String, String)] with Vec::leak(Vec::new())
 src/store.rs: replace Persisted::entries -> &[(String, String)] with Vec::leak(vec![("xyzzy".into(), "xyzzy".into())])

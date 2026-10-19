@@ -7,23 +7,25 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 20:35 EDT. Merged since the last rewrite: P1-HOST-TYPES (`9fd80cb`, #40)
-and P1-FLAKE-REPLAY-HELLO (`e283369`, #41); CI on `main` is green at both. Their worktrees and
-branches are reclaimed. Felix added "Slow lane, mutants on changed lines" to "main: CI required"
-(ruleset step 1; seven required checks, verified through the API).
+**As of:** 2026-10-18 22:00 EDT. Merged since the last rewrite: the roadmap update (`01e48ee`,
+#38) and P1-CI-NIGHTLY (`b3b6c52`, #39); CI on `main` is green at `b3b6c52`. Ruleset step 1 is
+done: "main: CI required" has seven required checks. Of M1's done-checks, the mutation job is
+required and green, the nightly run is green once (39179126464, after a re-run of one shard GitHub
+shut down), the rules check passes and the host types round-trip; the lander's git tests remain.
 **In flight:**
-- P1-CI-NIGHTLY (lane B, `.claude/worktrees/p1-ci-nightly`, #39, draft): reviewer's Yes at
-  `ced3a0d`, which seeds `.cargo/mutants-missed-baseline.txt` (33 lines) from run 39176270373.
-  Waiting on the pull request's second nightly run (39179126464); green takes #39 out of draft.
-- P1-MUTANTS-SHRINK (lane A, `.claude/worktrees/p1-mutants-shrink`, #42, draft): 20 of the 21
-  killed by new tests, `next_to_merge` `<` → `<=` argued equivalent. Under review; a
-  `Mutants on named files` run (39180800843) on the 21 positions confirms the kills. The
-  baseline lines come out after #39 merges.
-- P1-HELLO-FALSE-PASS (lane C, `.claude/worktrees/p1-hello-false-pass`, from `e283369`),
-  dispatched 20:30.
-**Next:** P1-LANDER-GIT (lane B) once P1-CI-NIGHTLY merges; then M2.
+- P1-LANDER-GIT (lane B, `.claude/worktrees/p1-lander-git`, from `b3b6c52`), dispatched 21:55.
+- P1-MUTANTS-SHRINK (lane A, `.claude/worktrees/p1-mutants-shrink`, #42, draft, CI green): 20 of
+  the 21 killed, confirmed by run 39180800843; `next_to_merge` `<` → `<=` is equivalent (ordinals
+  are never reused). Under review by a fresh reviewer (the first stopped answering). Next: merge
+  `main` and remove the 20 killed lines from the baseline.
+- P1-HELLO-FALSE-PASS (lane C, `.claude/worktrees/p1-hello-false-pass`, #43, draft, CI green):
+  under review. The lane's report never arrived; the reviewer verifies from the code alone.
+**Next:** M2 once M1 closes.
 **Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
-(`docs/proposals/phase-1.md`); none blocks M1. Tearing down the spike
+(`docs/proposals/phase-1.md`); none blocks M1. Proposed from the P1-LANDER-GIT review: the merge
+port's task text (M2) should require a `Workspace` type that only the lander's clone step can
+produce, so git never runs where the repository's own config could start a filter, merge driver
+or hook (rule 4); P1-LANDER-GIT documents the rule and tests the clone path. Tearing down the spike
 sandbox needs `gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
@@ -124,8 +126,9 @@ passes; the host types round-trip; the lander git tests pass.
   lines, sharded, with one aggregating required job; a `workflow_dispatch` run for unchanged files.
 - [x] **P1-RULES** (`0b6ff41`, #36) — lane A. Every rule in `src/runtime.rs` named, with its
   status ("now", "after move", "dropped") and a script that fails if a "now" row's test is missing.
-- [ ] **P1-CI-NIGHTLY** — lane B, after P1-CI-MUTANTS. Proptest at 10,000 cases and full
-  mutants nightly, compared with a baseline that only shrinks.
+- [x] **P1-CI-NIGHTLY** (`b3b6c52`, #39) — lane B, after P1-CI-MUTANTS. Proptest at 10,000
+  cases and full mutants nightly, compared with a baseline that only shrinks. The first full run
+  (39176270373: 904 mutants, shards 26-38 minutes) gave the 33-line baseline.
 - [x] **P1-HOST-TYPES** (`9fd80cb`, #40) — lane A, after P1-RULES. The host's `Input`,
   `Output`, `Call` and `CallAnswer` types, no behaviour. Where they differ from the frozen `Call`
   text (decision 12) is listed in #40's description; Felix merged it on 18 October.
@@ -150,6 +153,18 @@ passes; the host types round-trip; the lander git tests pass.
   daemon's event-log read has sent its own `Hello`, so they can pass without a redial. Use the
   settle helper from P1-FLAKE-REPLAY-HELLO. Done: each check fails when the redial it claims is
   removed.
+- [ ] **P1-FAKE-HELLO-LOST** — from the P1-HELLO-FALSE-PASS review: with a 1.5 s delay at the
+  top of `snapshot_task`, the fake coordinator (`tessel-cli/tests/support/mod.rs`) sometimes does
+  not count a log read's `Hello` (5 hellos before a third drop in some runs, 6 in others). Find
+  whether the fake drops it or the daemon never sends it; `replay_unknown`'s
+  `a_settled_daemon_has_sent_a_hello_on_each_of_its_two_sockets` (exactly two) could flake on it.
+  Done: the cause named, and a test that pins it.
+- [ ] **P1-MUTANTS-PROPTEST-ONLY** — from #42's nightly (39189028810): `waiters_conflict`
+  (`src/coordinator.rs`, `||` → `&&`) was missed in one full run and caught in two, because its
+  only killer was `coordinator_matches_brute_force_model`, which finds it for some seeds. Any
+  mutant killed only by a proptest makes the nightly comparison fail at random. List the mutants
+  each proptest kills that no example test kills (a full mutants run with the proptests filtered
+  out, on CI), and give each an example test. Done: that run misses nothing outside the baseline.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
