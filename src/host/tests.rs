@@ -12,7 +12,7 @@ use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
-use crate::merge::{MergeOutcome, MERGE_WATCHDOG_MS};
+use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Fence, Intent,
     Mode, OnConflict, RequestId, Scope, ScopeClaim, ServerMsg,
@@ -982,10 +982,10 @@ fn host_a_lost_call_leaves_the_table_and_no_longer_holds_the_wake_back() {
 
     kit.lose(CallId(1));
     kit.settle();
-    assert_ne!(
+    assert_eq!(
         kit.wake(),
-        Some(kit.now_ms() + MERGE_WATCHDOG_MS),
-        "the wait is over"
+        Some(kit.now_ms() + INFRA_BACKOFF_BASE_MS),
+        "the wait is over: the resumed wake sets the retry of the core"
     );
 
     kit.reply(CallId(1), CallAnswer::Unknown);
