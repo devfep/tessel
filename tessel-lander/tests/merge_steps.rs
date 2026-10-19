@@ -863,6 +863,19 @@ fn admin_judges_a_diff_of_only_tessel_toml_by_the_heads_file_alone_no_install_no
 }
 
 #[test]
+fn admin_judging_the_gate_file_alone_clones_no_test_tree() {
+    let harness = Harness::new(Plan::new().changed("M\0tessel.toml\0"));
+    admin(&harness, &whole_repo());
+    let clones = harness
+        .commands
+        .borrow()
+        .iter()
+        .filter(|c| git_step(c) == GitStep::Clone)
+        .count();
+    assert_eq!(clones, 1, "only the clone of main");
+}
+
+#[test]
 fn admin_records_a_merge_of_only_tessel_toml_with_no_gate_steps() {
     let harness = Harness::new(Plan::new().changed("M\0tessel.toml\0"));
     admin(&harness, &whole_repo());

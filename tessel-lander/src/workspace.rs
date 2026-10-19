@@ -55,13 +55,20 @@ impl Workspace {
 }
 
 /// The directory the repo's install and test steps run in. It is never a [`Workspace`]: `land`
-/// pushes from the workspace with the write credential live, and repo code could rewrite that
-/// clone's `.git/config` (`url.*.pushInsteadOf`, `http.proxy`, `include.path`), its refs, its
-/// objects or its `info/attributes`. The lander makes a tree with [`clone_test_tree`], a second
-/// clone of the rebased head, and gives a port nothing else to run repo code in.
+/// pushes from the workspace with the write credential live, and repo code run there could
+/// rewrite that clone's `.git/config` (`url.*.pushInsteadOf`, `remote.<url>.pushurl`,
+/// `include.path`), its refs, its objects or its `info/attributes`. The lander makes a tree with
+/// [`clone_test_tree`], a second clone of the rebased head, and gives a port nothing else to run
+/// repo code in.
+///
+/// What holds is the type: the port API cannot be handed the workspace, and nothing written inside
+/// the tree changes what `land` does. Code running as the same OS user can still write the
+/// workspace's files by path (the tree's `origin` and reflog name it); keeping it from them is the
+/// sandbox's job (M4).
 ///
 /// Neither a struct literal nor a constructor is available outside this crate, a tree cannot be
-/// copied, and a [`Workspace`] is not a tree:
+/// copied, and a [`Workspace`] is not a tree. Each snippet below fails to compile for the reason
+/// it shows:
 ///
 /// ```compile_fail,E0451
 /// use std::path::PathBuf;
@@ -81,7 +88,7 @@ impl Workspace {
 /// ```compile_fail,E0599
 /// use tessel_lander::workspace::TestTree;
 ///
-/// fn copy(tree: &TestTree) -> TestTree {
+/// fn copy(tree: TestTree) -> TestTree {
 ///     tree.clone()
 /// }
 /// ```
@@ -237,15 +244,44 @@ pub fn clone_main(
     }
 }
 
+/// `path` with symlinks resolved as far as it exists, and the part that does not exist as written.
+/// A missing destination may sit below a symlink to the workspace, or be spelled `/tmp/x` for
+/// `/private/tmp/x`; comparing the text of two paths would miss both.
+fn resolve_existing(path: &Path) -> io::Result<PathBuf> {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        match fs::canonicalize(existing) {
+            Ok(mut resolved) => {
+                for name in missing.iter().rev() {
+                    resolved.push(name);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                    return Err(error);
+                };
+                missing.push(name);
+                existing = parent;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Makes the tree the repo's tests run in: a second clone of `workspace`, at `head`, into
 /// `destination`. The same checks as [`clone_main`] apply to the destination (missing or an empty
-/// directory, absolute, no `..`, not a symlink), and it may not lie inside `workspace`. The clone
+/// directory, absolute, no `..`, not a symlink), and it may not lie inside `workspace` (compared after
+/// resolving symlinks). The clone
 /// copies objects instead of linking them, so nothing written there reaches the workspace's
 /// object store. It runs no repo code and needs no credential. The caller owns `destination` and
 /// removes it; the lander does not.
 ///
-/// Git writes this clone's config, so the tree starts with none of the workspace's settings;
-/// what the port does there afterwards cannot reach the workspace, which `land` pushes from.
+/// Git writes this clone's config, so the tree starts with none of the workspace's settings,
+/// and nothing written in the tree changes the workspace, which `land` pushes from. The clone
+/// still names the workspace (its `origin`, its reflog), so code that runs as the same OS user
+/// and writes there by path is the sandbox's to stop, not this function's.
 pub fn clone_test_tree(
     git: &Git,
     runner: &dyn GitRunner,
@@ -259,7 +295,13 @@ pub fn clone_test_tree(
             source,
         })?;
     ensure_clonable(destination)?;
-    if destination.starts_with(workspace.path()) {
+    let resolve = |path: &Path| {
+        resolve_existing(path).map_err(|source| CloneError::DestinationUnreadable {
+            path: path.to_path_buf(),
+            source,
+        })
+    };
+    if resolve(destination)?.starts_with(resolve(workspace.path())?) {
         return Err(CloneError::TestTreeInWorkspace {
             path: destination.clone(),
             workspace: workspace.path().to_path_buf(),
@@ -271,12 +313,12 @@ pub fn clone_test_tree(
     }
     let cloned = Workspace::new(destination.clone());
     let at_head = runner.run(&git.head_command(&cloned))?;
-    let Ok(actual) = Sha::parse(at_head.stdout.trim()) else {
-        return Ok(TestTreeOutcome::Failed(at_head));
-    };
     if !at_head.success() {
         return Ok(TestTreeOutcome::Failed(at_head));
     }
+    let Ok(actual) = Sha::parse(at_head.stdout.trim()) else {
+        return Ok(TestTreeOutcome::Failed(at_head));
+    };
     if actual != *head {
         return Err(CloneError::TestTreeNotAtHead {
             path: destination.clone(),

@@ -1,14 +1,14 @@
 //! The repo's install and test steps run in a tree of their own, never in the workspace that
 //! `land` pushes from (`docs/proposals/real-use.md`, security requirement 3). Repo code in the
 //! workspace could rewrite `.git/config` (`url.*.pushInsteadOf`, `include.path`,
-//! `remote.*.receivepack`), refs, objects or `info/attributes`, and the push would follow.
+//! `remote.<url>.pushurl`, `remote.<url>.receivepack`), refs, objects or `info/attributes`, and
+//! the push would follow. Main is a `file://` URL here, as a real remote is a URL: git reads
+//! `remote.<url>.*` for a push to a URL, but ignores it (with a warning) for a plain path.
 //!
 //! Each effect that can change what `land` does has a control: the same plant made in the
 //! workspace itself, where `land` is subverted. A control that stopped showing that would mean
-//! the test beside it no longer proves anything. A moved ref, rewritten attributes and
-//! `remote.origin.receivepack` change nothing `land` does today (it pushes to the URL, and git
-//! reads `receivepack` only for a push by remote name), so they are planted in the hostile run
-//! but have no control.
+//! the test beside it no longer proves anything. A moved ref and rewritten attributes change
+//! nothing `land` does today, so they are planted in the hostile run but have no control.
 
 #![expect(
     clippy::expect_used,
@@ -86,7 +86,14 @@ impl Scene {
     }
 
     fn main_remote(&self) -> String {
-        self.repos.main.display().to_string()
+        format!("file://{}", self.repos.main.display())
+    }
+
+    fn sources(&self) -> MergeSources {
+        MergeSources {
+            main_remote: self.main_remote(),
+            ..self.repos.sources()
+        }
     }
 
     fn context<'a>(
@@ -139,7 +146,20 @@ fn include_a_redirect(scene: &Scene, dir: &Path) {
 
 fn name_a_receive_pack(scene: &Scene, dir: &Path) {
     let program = scene.receive_pack.display().to_string();
-    config(dir, "remote.origin.receivepack", &program);
+    config(
+        dir,
+        &format!("remote.{}.receivepack", scene.main_remote()),
+        &program,
+    );
+}
+
+fn set_a_push_url(scene: &Scene, dir: &Path) {
+    let evil = scene.evil.display().to_string();
+    config(
+        dir,
+        &format!("remote.{}.pushurl", scene.main_remote()),
+        &evil,
+    );
 }
 
 fn wipe_objects(_scene: &Scene, dir: &Path) {
@@ -162,6 +182,7 @@ fn plant_everything(scene: &Scene, dir: &Path) {
     redirect_pushes(scene, dir);
     include_a_redirect(scene, dir);
     name_a_receive_pack(scene, dir);
+    set_a_push_url(scene, dir);
     move_a_ref(scene, dir);
     rewrite_attributes(scene, dir);
     wipe_objects(scene, dir);
@@ -241,7 +262,7 @@ impl TrialPorts for Ports<'_> {
 }
 
 fn merge(scene: &Scene, runner: &dyn GitRunner, ports: &Ports<'_>) -> MergeOutcome {
-    let sources = scene.repos.sources();
+    let sources = scene.sources();
     let ctx = scene.context(runner, &sources);
     let scopes = whole_repo();
     let request = MergeRequest {
@@ -255,7 +276,7 @@ fn merge(scene: &Scene, runner: &dyn GitRunner, ports: &Ports<'_>) -> MergeOutco
 /// Prepares the merge, lets `plant` act on the workspace, then lands: what a package step run in
 /// the workspace could do before `land`.
 fn land_after_planting(scene: &Scene, plant: fn(&Scene, &Path)) -> MergeOutcome {
-    let sources = scene.repos.sources();
+    let sources = scene.sources();
     let ctx = scene.context(&SystemRunner, &sources);
     let ports = Ports::new(scene, false);
     let scopes = whole_repo();
@@ -300,7 +321,7 @@ fn a_package_step_that_plants_config_refs_and_attributes_in_its_tree_changes_not
     let tree_config = fs::read_to_string(scene.test_dir.join(".git/config")).expect("tree config");
     assert!(tree_config.contains("pushInsteadOf"), "{tree_config}");
     let config = fs::read_to_string(scene.clone_dir.join(".git/config")).expect("config");
-    for planted in ["pushInsteadOf", "receivepack", "include"] {
+    for planted in ["pushInsteadOf", "pushurl", "receivepack", "include"] {
         assert!(!config.contains(planted), "{planted} reached the workspace");
     }
     let attributes = scene.clone_dir.join(".git/info/attributes");
@@ -337,6 +358,29 @@ fn control_an_included_redirect_planted_in_the_workspace_sends_the_push_elsewher
         "{outcome:?}"
     );
     assert_ne!(scene.evil_main(), scene.base.as_str());
+}
+
+#[test]
+fn control_a_push_url_planted_in_the_workspace_sends_the_push_elsewhere() {
+    let scene = Scene::new();
+
+    let outcome = land_after_planting(&scene, set_a_push_url);
+
+    assert!(
+        matches!(outcome, MergeOutcome::PushFailed { .. }),
+        "{outcome:?}"
+    );
+    assert_ne!(scene.evil_main(), scene.base.as_str());
+    assert_eq!(scene.repos.main_head(), scene.base);
+}
+
+#[test]
+fn control_a_receive_pack_planted_in_the_workspace_runs_when_land_pushes() {
+    let scene = Scene::new();
+
+    land_after_planting(&scene, name_a_receive_pack);
+
+    assert!(scene.receive_pack_ran());
 }
 
 #[test]
@@ -436,7 +480,7 @@ fn a_test_tree_that_cannot_be_cloned_ends_the_merge_before_any_repo_code_or_writ
 fn a_trial_runs_its_package_steps_in_its_own_clone_which_nothing_lands_from() {
     let scene = Scene::new();
     let ports = Ports::new(&scene, false);
-    let sources = scene.repos.sources();
+    let sources = scene.sources();
     let ctx = TrialContext {
         git: &scene.git,
         runner: &SystemRunner,
@@ -570,5 +614,43 @@ fn a_failed_clone_or_head_read_is_a_failed_outcome_with_the_git_output() {
             TestTreeOutcome::Failed(output) => assert_eq!(output.exit_code, Some(128)),
             TestTreeOutcome::Cloned(tree) => unreachable!("cloned {}", tree.path().display()),
         }
+    }
+}
+
+#[test]
+fn a_test_tree_below_a_symlink_to_the_workspace_is_refused() {
+    let scratch = TempDir::new().expect("tempdir");
+    let workspace_dir = scratch.path().join("ws");
+    fs::create_dir(&workspace_dir).expect("workspace dir");
+    let workspace = workspace_at(&workspace_dir.display().to_string());
+    let link = scratch.path().join("link");
+    std::os::unix::fs::symlink(&workspace_dir, &link).expect("symlink");
+
+    let error = clone_test_tree(
+        &lander_git(),
+        &support::AlwaysOk,
+        &workspace,
+        &sha('1'),
+        &link.join("tree"),
+    )
+    .expect_err("refused");
+
+    assert!(
+        matches!(error, CloneError::TestTreeInWorkspace { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_head_read_that_failed_is_a_failed_outcome_even_when_it_printed_the_head() {
+    let runner = Scripted {
+        clone_exit: 0,
+        head_exit: 128,
+        head_stdout: format!("{}\n", sha('1')),
+    };
+
+    match scripted_tree(&runner).expect("runs") {
+        TestTreeOutcome::Failed(output) => assert_eq!(output.exit_code, Some(128)),
+        TestTreeOutcome::Cloned(tree) => unreachable!("cloned {}", tree.path().display()),
     }
 }

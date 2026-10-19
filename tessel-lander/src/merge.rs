@@ -95,8 +95,11 @@ pub trait MergePorts {
 
     /// Runs the install step or the test step of the gate in `tree`, and nowhere else. No write
     /// credential is live. `tree` is a clone of the rebased head that [`run_merge`] made for this
-    /// merge; [`land`] pushes from a different clone, which repo code cannot reach through `tree`.
-    /// The lander does not remove `tree`.
+    /// merge; [`land`] pushes from a different clone. This API never hands the step the
+    /// [`Workspace`], and nothing the step writes inside `tree` changes what [`land`] does. It
+    /// does not stop code running as the same OS user from writing the workspace's files by
+    /// path (the tree's `origin` and reflog name it): that boundary is the sandbox's. The lander
+    /// does not remove `tree`.
     fn run_package_step(
         &self,
         step: PackageStep,
@@ -131,7 +134,7 @@ pub struct MergeContext<'a> {
     /// Where main is cloned: missing or empty.
     pub clone_dir: &'a Path,
     /// Where the repo's tests run: a second clone, of the rebased head. Missing or empty, and not
-    /// inside `clone_dir`.
+    /// inside `clone_dir`. The caller removes it; the lander does not.
     pub test_dir: &'a Path,
     /// The commit of main whose gate was read. The merge must be based on exactly this commit.
     pub pinned_main: &'a Sha,

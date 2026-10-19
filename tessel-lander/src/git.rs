@@ -277,10 +277,7 @@ impl Git {
     /// the new tree reaches the workspace. [`crate::workspace::clone_test_tree`] runs it and makes
     /// the [`crate::workspace::TestTree`].
     pub fn clone_test_tree_command(&self, workspace: &Workspace, destination: &Path) -> GitCommand {
-        let mut command = self.command(
-            &["clone", "--no-tags", "--no-hardlinks", "--"],
-            TEST_TREE_TIMEOUT,
-        );
+        let mut command = self.command(&["clone", "--no-hardlinks", "--"], TEST_TREE_TIMEOUT);
         command.argv.push(workspace.path().into());
         command.argv.push(destination.into());
         command
