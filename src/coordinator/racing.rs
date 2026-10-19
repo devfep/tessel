@@ -1536,6 +1536,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_race_may_stay_open_for_exactly_two_hours_and_five_criteria_may_rank_it() {
+        let two_hours = 7_200_000;
+        let five = vec![
+            Criterion::TestsPass,
+            Criterion::FirstSubmitted,
+            Criterion::HumanPick,
+            Criterion::TestsPass,
+            Criterion::FirstSubmitted,
+        ];
+        let mut c = core();
+        let msg = open_msg(vec![edit("a")], 2, NOW + two_hours, five);
+        let effects = c.handle(&agent("felix"), msg, NOW);
+        assert!(
+            matches!(replies(&effects)[..], [ServerMsg::RaceOpened { .. }]),
+            "{effects:?}"
+        );
+
+        let mut c = core();
+        let msg = open_msg(
+            vec![edit("a")],
+            2,
+            NOW + two_hours + 1,
+            vec![Criterion::TestsPass],
+        );
+        let effects = c.handle(&agent("felix"), msg, NOW);
+        assert_eq!(error_code(&effects), ErrorCode::Malformed);
+    }
+
+    #[test]
+    fn a_race_opened_with_repeated_scopes_holds_each_once() {
+        let mut c = core();
+        let msg = open_msg(
+            vec![edit("src/a.rs"), edit("src/a.rs")],
+            2,
+            DEADLINE,
+            vec![Criterion::TestsPass],
+        );
+        let effects = c.handle(&agent("felix"), msg, NOW);
+        let [EventKind::RaceOpened { scopes, .. }] = logged(&effects)[..] else {
+            panic!("expected RaceOpened, got {effects:?}");
+        };
+        assert_eq!(scopes, &vec![edit("src/a.rs")]);
+    }
+
+    #[test]
+    fn joining_at_the_deadline_is_too_late_and_one_ms_before_it_is_not() {
+        let mut c = core();
+        let race = open_for(&mut c, 2, vec![Criterion::FirstSubmitted]);
+        let on_time = join_effects(&mut c, "a1", race, DEADLINE - 1);
+        assert!(
+            matches!(replies(&on_time)[..], [ServerMsg::Granted { .. }]),
+            "{on_time:?}"
+        );
+
+        let late = join_effects(&mut c, "a2", race, DEADLINE);
+        assert_eq!(error_code(&late), ErrorCode::RaceClosed);
+    }
+
     // ---- submitting and judging ----
 
     #[test]
@@ -2306,6 +2365,26 @@ mod tests {
         assert!(notices(&approved, "a1").iter().any(|msg| matches!(msg,
             ServerMsg::Accepted { claim, queue_position: 1, .. } if *claim == one.0)));
         assert_eq!(c.begin_merge(NOW + 7).map(|d| d.claim), Some(one.0));
+    }
+
+    #[test]
+    fn evidence_in_the_entrys_decision_record_counts_for_the_review_gate() {
+        let mut c = core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_effects(&mut c, "a1", one, true, NOW + 1);
+
+        let unknown = TrialReport {
+            before: Some(TrialOutcome::Conflict {}),
+            after: None,
+        };
+        let effects = run_trials(&mut c, NOW + 3, &[("a1", unknown)]);
+        assert!(notices(&effects, "a1").iter().any(|msg| matches!(msg,
+            ServerMsg::Accepted { claim, .. } if *claim == one.0)));
+        assert!(!logged(&effects)
+            .iter()
+            .any(|k| matches!(k, EventKind::ReviewRequested { .. })));
+        assert_eq!(c.begin_merge(NOW + 4).map(|d| d.claim), Some(one.0));
     }
 
     #[test]
