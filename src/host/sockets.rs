@@ -29,8 +29,7 @@ impl Sockets {
     /// A socket opened: its session holds the verified agent before its first message (R6).
     pub fn open(&mut self, sock: SocketId, verified: AgentId) -> Output {
         let session = Session {
-            verified: Some(verified.clone()),
-            agent: Some(verified),
+            verified: Some(verified),
             ..Session::default()
         };
         self.bind(sock, session)
@@ -66,14 +65,14 @@ impl Sockets {
         }
         let before = session.clone();
         session.closed = true;
+        out.push(Output::SetSession {
+            sock,
+            session: session.clone(),
+        });
         out.push(Output::Close {
             sock,
             code,
             reason: reason.to_string(),
-        });
-        out.push(Output::SetSession {
-            sock,
-            session: session.clone(),
         });
         Some(before)
     }
@@ -114,10 +113,9 @@ impl Host {
             out.push(self.failure("handle send failure", "the socket is not open"));
             return;
         };
-        let agent = shell::log_agent(None);
+        let agent = shell::log_agent(shell::session_agent(session));
         out.push(self.failure("send to a socket", &format!("agent={agent}")));
-        let _ = self.sockets.close(sock, CLOSE_INTERNAL_ERROR, SEND_FAILED_REASON, out);
-        let _ = now_ms;
+        self.close_and_withdraw(now_ms, sock, CLOSE_INTERNAL_ERROR, SEND_FAILED_REASON, out);
     }
 
     /// Close `sock` from here, then withdraw its agent's queued request (R9, R10).
@@ -162,7 +160,7 @@ impl Host {
         let (_, open) = self.sockets.listing();
         let slot = &self.slot;
         let queued = |agent: &AgentId| slot.has_queued_request(agent);
-        let Some(agent) = shell::agent_to_withdraw(&closing, &[], queued) else {
+        let Some(agent) = shell::agent_to_withdraw(&closing, &open, queued) else {
             return;
         };
         let waits = self.waits();
