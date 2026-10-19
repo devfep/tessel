@@ -1941,6 +1941,14 @@ fn unknown_event(seq: u64) -> String {
     serde_json::json!({ "type": "event", "event": event }).to_string()
 }
 
+fn notice_count(agent: &Agent) -> Result<usize> {
+    let inbox = agent.tessel(&["inbox", "--all"])?;
+    Ok(inbox
+        .stdout
+        .matches("could not read the coordinator's event log")
+        .count())
+}
+
 fn daemon_log(agent: &Agent) -> Result<String> {
     Ok(std::fs::read_to_string(
         agent.root().join(".tessel/daemon.log"),
@@ -1992,16 +2000,22 @@ async fn a_replay_frame_that_is_not_an_event_envelope_still_fails_the_read() -> 
         let failed_reads = daemon_log(&a1)?
             .matches("cannot read the event log")
             .count();
+        let notices = notice_count(&a1)?;
         fake.drop_connections();
         back_online(&fake, &a1, before).await?;
         eventually(SHORT, || {
             let log = daemon_log(&a1)?;
-            Ok((log.matches("cannot read the event log").count() > failed_reads).then_some(()))
+            let logged = log.matches("cannot read the event log").count() > failed_reads;
+            Ok((logged && notice_count(&a1)? > notices).then_some(()))
         })
         .await
         .with_context(|| frame.to_string())?;
         let log = daemon_log(&a1)?;
-        assert!(log.contains("unreadable message"), "{frame}: {log}");
+        let newest = log
+            .lines()
+            .rfind(|line| line.contains("cannot read the event log"))
+            .unwrap_or_default();
+        assert!(newest.contains("unreadable message"), "{frame}: {log}");
     }
     Ok(())
 }
