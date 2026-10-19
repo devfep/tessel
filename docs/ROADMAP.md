@@ -7,16 +7,24 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 evening. Phase 0 is done (P0-UNVERIFIABLE-LANDING `9777496`, #32). The
-Phase 1 plan merged (`a7ae3b7`, #33), which freezes the host's `Call` design (decision 12). The
-six CI jobs are required on `main` by the ruleset "main: CI required".
-**Dispatched:** P1-CI-MUTANTS (lane B) and P1-RULES (lane A), together, as the plan orders.
-**Next:** P1-CI-NIGHTLY (lane B) after P1-CI-MUTANTS; P1-HOST-TYPES (lane A) after P1-RULES;
-P1-LANDER-GIT (lane B) once the CI tasks merge.
+**As of:** 2026-10-18 20:35 EDT. Merged since the last rewrite: P1-HOST-TYPES (`9fd80cb`, #40)
+and P1-FLAKE-REPLAY-HELLO (`e283369`, #41); CI on `main` is green at both. Their worktrees and
+branches are reclaimed. Felix added "Slow lane, mutants on changed lines" to "main: CI required"
+(ruleset step 1; seven required checks, verified through the API).
+**In flight:**
+- P1-CI-NIGHTLY (lane B, `.claude/worktrees/p1-ci-nightly`, #39, draft): reviewer's Yes at
+  `ced3a0d`, which seeds `.cargo/mutants-missed-baseline.txt` (33 lines) from run 39176270373.
+  Waiting on the pull request's second nightly run (39179126464); green takes #39 out of draft.
+- P1-MUTANTS-SHRINK (lane A, `.claude/worktrees/p1-mutants-shrink`, #42, draft): 20 of the 21
+  killed by new tests, `next_to_merge` `<` → `<=` argued equivalent. Under review; a
+  `Mutants on named files` run (39180800843) on the 21 positions confirms the kills. The
+  baseline lines come out after #39 merges.
+- P1-HELLO-FALSE-PASS (lane C, `.claude/worktrees/p1-hello-false-pass`, from `e283369`),
+  dispatched 20:30.
+**Next:** P1-LANDER-GIT (lane B) once P1-CI-NIGHTLY merges; then M2.
 **Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
-(`docs/proposals/phase-1.md`); none blocks M1. Ruleset step 1 (add "Slow lane, mutants on
-changed lines") after P1-CI-MUTANTS merges. Tearing down the spike sandbox needs `gh auth refresh
--s delete_repo`; it costs nothing and can stay until Phase 2.
+(`docs/proposals/phase-1.md`); none blocks M1. Tearing down the spike
+sandbox needs `gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
 requests; open the second after the first merges.
@@ -112,16 +120,36 @@ planned to task level; M3-M6 are re-planned at each milestone boundary.
 Done when: the mutation job is required and green; the nightly run is green once; the rules check
 passes; the host types round-trip; the lander git tests pass.
 
-- [ ] **P1-CI-MUTANTS** — lane B. Per-pull-request mutation check on changed lines, sharded, with
-  one aggregating required job; a `workflow_dispatch` run for unchanged files.
-- [ ] **P1-RULES** — lane A. Every rule in `src/runtime.rs` named, with its status ("now",
-  "after move", "dropped") and a script that fails if a "now" row's test is missing.
+- [x] **P1-CI-MUTANTS** (`1e48ff4`, #35) — lane B. Per-pull-request mutation check on changed
+  lines, sharded, with one aggregating required job; a `workflow_dispatch` run for unchanged files.
+- [x] **P1-RULES** (`0b6ff41`, #36) — lane A. Every rule in `src/runtime.rs` named, with its
+  status ("now", "after move", "dropped") and a script that fails if a "now" row's test is missing.
 - [ ] **P1-CI-NIGHTLY** — lane B, after P1-CI-MUTANTS. Proptest at 10,000 cases and full
   mutants nightly, compared with a baseline that only shrinks.
-- [ ] **P1-HOST-TYPES** — lane A, after P1-RULES. The host's `Input`, `Output`, `Call` and
-  `CallAnswer` types, no behaviour.
+- [x] **P1-HOST-TYPES** (`9fd80cb`, #40) — lane A, after P1-RULES. The host's `Input`,
+  `Output`, `Call` and `CallAnswer` types, no behaviour. Where they differ from the frozen `Call`
+  text (decision 12) is listed in #40's description; Felix merged it on 18 October.
 - [ ] **P1-LANDER-GIT** — lane B, after the CI tasks. The lander's git layer and coverage check
   ported from the steward, with a deterministic rebase.
+- [x] **P1-FLAKE-REPLAY-HELLO** (`e283369`, #41) — found on `main`: the slow lane failed on
+  #34's merge (run 39165527090, a docs-only change) at `tessel-cli/tests/replay_unknown.rs:146`,
+  "the socket was dropped and redialled". Cause: the daemon's event-log read opens a second
+  socket whose `Hello` can reach the coordinator after `start` returns. Built: `start_settled`
+  waits for the complete-read line; `liveness.rs` had the same race with a wider window and is
+  fixed too; a test pins the two hellos.
+- [ ] **P1-MUTANTS-SHRINK** — from P1-CI-NIGHTLY's first full run (39176270373): the core has
+  33 missed mutants, now the baseline in `.cargo/mutants-missed-baseline.txt`. The 21 outside
+  `src/store.rs` (deleted in M3) are test gaps in code that stays: `src/coordinator/merging.rs`
+  (`merge_outcome` and `recover_merge` survive `||` → `&&`; `next_to_merge` survives `<` → `<=`),
+  `src/coordinator/racing.rs` (six), `src/merge.rs` (nine, among them `MergeRecord::eq` → `true`),
+  and one each in `src/coordinator.rs`, `src/protocol.rs` and `src/shell.rs`. Kill each with a
+  behaviour test or record why it is equivalent, and remove its baseline line. Lane A owns those
+  files until M3.
+- [ ] **P1-HELLO-FALSE-PASS** — from the P1-FLAKE-REPLAY-HELLO review: `hellos > before` checks
+  in `tessel-cli/tests/cli.rs` (~2077), `back_online` and `submit.rs` read `before` before the
+  daemon's event-log read has sent its own `Hello`, so they can pass without a redial. Use the
+  settle helper from P1-FLAKE-REPLAY-HELLO. Done: each check fails when the redial it claims is
+  removed.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
