@@ -17,26 +17,33 @@ mod support;
 
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use tessel_lander::coverage::{parse_name_status, NameStatusError};
 use tessel_lander::git::{Git, GitCommand};
-use tessel_lander::merge::{prepare, MergeContext, MergePolicy, MergeRequest, Prepared};
+use tessel_lander::merge::{
+    prepare, MergeContext, MergeError, MergePolicy, MergeRequest, Prepared,
+};
 use tessel_lander::outcome::MergeOutcome;
 use tessel_lander::run::{run, GitOutput, GitRunner, RunError};
 use tessel_lander::types::Sha;
+use tessel_lander::workspace::CloneError;
 
-use support::fixture_git;
 use support::repos::{file_scope, whole_repo, LocalPorts, Repos};
+use support::{file_names, fixture_git, write_script};
 
 /// Strips one setting from every command it runs: an environment variable, or an entry of the
 /// `GIT_CONFIG_COUNT` list by its key. After a successful clone it plants `hooks` into the
-/// clone's own `.git/hooks`, which is where a hook from git's template directory would sit.
+/// clone's own `.git/hooks`, which is where a hook from git's template directory would sit, and
+/// runs `after_clone` on the clone (before the lander has written to it) and `after_fetch` on
+/// the workspace once the fork is fetched (after).
+#[derive(Default)]
 struct Tamper<'a> {
     without: Option<&'a str>,
     hooks: Option<&'a Path>,
+    after_clone: Option<fn(&Path)>,
+    after_fetch: Option<fn(&Path)>,
 }
 
 fn without_setting(command: &GitCommand, setting: &str) -> GitCommand {
@@ -70,6 +77,16 @@ fn without_setting(command: &GitCommand, setting: &str) -> GitCommand {
     stripped
 }
 
+fn delete_attributes(clone: &Path) {
+    fs::remove_file(clone.join(".git/info/attributes")).expect("the lander wrote it");
+}
+
+fn block_attributes(clone: &Path) {
+    let info = clone.join(".git/info");
+    fs::remove_dir_all(&info).expect("git made info");
+    fs::write(&info, "a file where a directory goes").expect("block info");
+}
+
 const HOOKS: [&str; 4] = [
     "pre-rebase",
     "post-checkout",
@@ -86,12 +103,6 @@ fn plant_hooks(clone: &Path, markers: &Path) {
     }
 }
 
-fn write_script(path: &Path, body: &str) {
-    fs::create_dir_all(path.parent().expect("parent")).expect("script dir");
-    fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write script");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
-}
-
 impl GitRunner for Tamper<'_> {
     fn run(&self, command: &GitCommand) -> Result<GitOutput, RunError> {
         let output = match self.without {
@@ -99,11 +110,18 @@ impl GitRunner for Tamper<'_> {
             None => run(command)?,
         };
         let is_clone = command.argv.get(1).is_some_and(|arg| arg == "clone");
-        if let (Some(markers), true, true) = (self.hooks, is_clone, output.success()) {
-            plant_hooks(
-                Path::new(command.argv.last().expect("destination")),
-                markers,
-            );
+        if is_clone && output.success() {
+            let clone = Path::new(command.argv.last().expect("destination"));
+            if let Some(markers) = self.hooks {
+                plant_hooks(clone, markers);
+            }
+            if let Some(after_clone) = self.after_clone {
+                after_clone(clone);
+            }
+        }
+        let is_fetch = command.argv.get(3).is_some_and(|arg| arg == "fetch");
+        if let (Some(after_fetch), true, true) = (self.after_fetch, is_fetch, output.success()) {
+            after_fetch(Path::new(&command.argv[2]));
         }
         Ok(output)
     }
@@ -160,15 +178,20 @@ impl Scene {
     }
 
     fn ran(&self) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(&self.markers)
-            .expect("read markers")
-            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
+        file_names(&self.markers)
     }
 
     fn prepare_with(&self, runner: &dyn GitRunner, commit: &Sha, name: &str) -> Prepared {
+        self.try_prepare_with(runner, commit, name)
+            .expect("prepare finishes")
+    }
+
+    fn try_prepare_with(
+        &self,
+        runner: &dyn GitRunner,
+        commit: &Sha,
+        name: &str,
+    ) -> Result<Prepared, MergeError> {
         let sources = self.repos.sources();
         let pinned = self.repos.main_head();
         let clone_dir = self.repos.scratch.path().join(name);
@@ -185,18 +208,11 @@ impl Scene {
             scopes: &scopes,
             policy: MergePolicy::Submission,
         };
-        prepare(&ctx, &LocalPorts::new(&self.repos), &request).expect("prepare finishes")
+        prepare(&ctx, &LocalPorts::new(&self.repos), &request)
     }
 
     fn prepare(&self, commit: &Sha) -> Prepared {
-        self.prepare_with(
-            &Tamper {
-                without: None,
-                hooks: None,
-            },
-            commit,
-            "workspace",
-        )
+        self.prepare_with(&Tamper::default(), commit, "workspace")
     }
 }
 
@@ -256,6 +272,7 @@ fn hooks_in_the_clones_own_hooks_directory_and_committed_in_the_fork_do_not_run(
     let runner = Tamper {
         without: None,
         hooks: Some(&scene.markers),
+        ..Tamper::default()
     };
 
     let prepared = scene.prepare_with(&runner, &forked, "workspace");
@@ -274,6 +291,7 @@ fn control_without_core_hooks_path_the_hooks_in_the_clone_run() {
     let runner = Tamper {
         without: Some("core.hooksPath"),
         hooks: Some(&scene.markers),
+        ..Tamper::default()
     };
 
     ready(scene.prepare_with(&runner, &forked, "workspace"));
@@ -309,19 +327,9 @@ fn fork_with_attributes(scene: &Scene, conflict: bool) -> Sha {
     repos.push(&repos.fork);
     repos.reset_to(base.as_str());
     if conflict {
-        repos.commit(
-            "a.txt",
-            "one
-MAIN
-three
-",
-        );
+        repos.commit("a.txt", "one\nMAIN\nthree\n");
     } else {
-        repos.commit(
-            "main-only.txt",
-            "main moved on
-",
-        );
+        repos.commit("main-only.txt", "main moved on\n");
     }
     repos.push(&repos.main);
     forked
@@ -335,9 +343,10 @@ fn filters_and_drivers_a_forks_gitattributes_names_are_not_defined_so_nothing_ru
 
     let outcome = done(scene.prepare(&forked));
 
-    // Inert: the attributes name `evil`, and only a config file can define it. The fork's config
-    // is never fetched, the clone's was written by git, and the host's home config is off
-    // (`GIT_CONFIG_GLOBAL=/dev/null`), so the driver has no command to run.
+    // Inert: the attributes name `evil`, and only a config file can define a driver of that
+    // name. The fork's config is never fetched, the clone's was written by git, and the host's
+    // home config is off (`GIT_CONFIG_GLOBAL=/dev/null`), so `evil` has no command to run. The
+    // built-in drivers need no config; the tests on `info/attributes` cover those.
     assert!(matches!(outcome, MergeOutcome::Conflict { ref files, .. } if *files == ["a.txt"]));
     assert_eq!(scene.ran(), Vec::<String>::new());
 }
@@ -350,6 +359,8 @@ fn control_with_the_home_config_readable_the_filter_and_the_merge_driver_run() {
     let runner = Tamper {
         without: Some("GIT_CONFIG_GLOBAL"),
         hooks: None,
+        after_fetch: Some(delete_attributes),
+        ..Tamper::default()
     };
 
     let outcome = done(scene.prepare_with(&runner, &forked, "workspace"));
@@ -391,6 +402,7 @@ fn control_with_the_home_config_readable_the_filter_runs_on_a_clean_change() {
     let runner = Tamper {
         without: Some("GIT_CONFIG_GLOBAL"),
         hooks: None,
+        ..Tamper::default()
     };
 
     ready(scene.prepare_with(&runner, &forked, "workspace"));
@@ -399,6 +411,76 @@ fn control_with_the_home_config_readable_the_filter_runs_on_a_clean_change() {
     assert!(
         ran.iter().any(|name| name.starts_with("filter-")),
         "{ran:?}"
+    );
+}
+
+/// The fork's `.gitattributes` names git's built-in `driver` for every file, and a commit after it
+/// edits `a.txt` where main does too.
+fn fork_with_builtin_driver(scene: &Scene, driver: &str) -> Sha {
+    let repos = &scene.repos;
+    let base = repos.head();
+    repos.commit(".gitattributes", &format!("* merge={driver}\n"));
+    let forked = repos.commit("a.txt", "one\nFORK\nthree\n");
+    repos.push(&repos.fork);
+    repos.reset_to(base.as_str());
+    repos.commit("a.txt", "one\nMAIN\nthree\n");
+    repos.push(&repos.main);
+    forked
+}
+
+#[test]
+fn a_fork_naming_a_builtin_merge_driver_cannot_turn_a_conflict_into_a_merge() {
+    for driver in ["union", "binary"] {
+        let scene = Scene::new();
+        let forked = fork_with_builtin_driver(&scene, driver);
+        let main_before = scene.repos.main_head();
+
+        let outcome = done(scene.prepare(&forked));
+
+        // Inert: `info/attributes` in the clone sets `merge=text` for every path and outranks
+        // the tree's `.gitattributes`, so the conflict stops the rebase.
+        assert!(
+            matches!(outcome, MergeOutcome::Conflict { ref files, .. } if *files == ["a.txt"]),
+            "{driver}: {outcome:?}"
+        );
+        assert_eq!(scene.repos.main_head(), main_before);
+    }
+}
+
+#[test]
+fn control_without_info_attributes_the_union_driver_splices_both_sides() {
+    let scene = Scene::new();
+    let forked = fork_with_builtin_driver(&scene, "union");
+    let runner = Tamper {
+        after_fetch: Some(delete_attributes),
+        ..Tamper::default()
+    };
+
+    let ready = ready(scene.prepare_with(&runner, &forked, "workspace"));
+
+    let spliced = fs::read_to_string(ready.workspace.path().join("a.txt")).expect("a.txt");
+    assert!(
+        spliced.contains("MAIN") && spliced.contains("FORK"),
+        "{spliced}"
+    );
+}
+
+#[test]
+fn a_clone_whose_info_attributes_cannot_be_written_is_an_error_not_a_workspace() {
+    let scene = Scene::new();
+    let forked = fork_with_builtin_driver(&scene, "union");
+    let runner = Tamper {
+        after_clone: Some(block_attributes),
+        ..Tamper::default()
+    };
+
+    let error = scene
+        .try_prepare_with(&runner, &forked, "workspace")
+        .expect_err("no workspace without the attributes");
+
+    assert!(
+        matches!(error, MergeError::Clone(CloneError::WriteAttributes { .. })),
+        "{error}"
     );
 }
 
@@ -493,6 +575,7 @@ fn control_without_transfer_fsck_objects_the_dot_git_tree_entry_is_fetched() {
     let runner = Tamper {
         without: Some("transfer.fsckObjects"),
         hooks: None,
+        ..Tamper::default()
     };
 
     let outcome = scene.prepare_with(&runner, &planted, "workspace");
@@ -502,6 +585,46 @@ fn control_without_transfer_fsck_objects_the_dot_git_tree_entry_is_fetched() {
         Prepared::Done(outcome) => !matches!(outcome, MergeOutcome::Clone { .. }),
     };
     assert!(reached_the_clone, "{outcome:?}");
+}
+
+/// A `.gitmodules` whose submodule url starts with `-`, which a later `git submodule` would read
+/// as an option. It is an ordinary file to every check but fsck's `gitmodulesUrl`.
+fn fork_with_an_option_as_a_submodule_url(scene: &Scene) -> Sha {
+    let repos = &scene.repos;
+    let forked = repos.commit(
+        ".gitmodules",
+        "[submodule \"x\"]\n\tpath = x\n\turl = --upload-pack=touch-a-file\n",
+    );
+    repos.push(&repos.fork);
+    repos.reset_to("HEAD~1");
+    forked
+}
+
+#[test]
+fn a_fork_whose_gitmodules_url_is_an_option_is_refused_by_fsck_and_only_by_fsck() {
+    let scene = Scene::new();
+    let forked = fork_with_an_option_as_a_submodule_url(&scene);
+
+    let outcome = done(scene.prepare(&forked));
+
+    let MergeOutcome::Clone { result } = outcome else {
+        unreachable!("{outcome:?}")
+    };
+    assert!(result.stderr.contains("gitmodulesUrl"), "{}", result.stderr);
+}
+
+#[test]
+fn control_without_transfer_fsck_objects_the_option_url_gitmodules_is_fetched() {
+    let scene = Scene::new();
+    let forked = fork_with_an_option_as_a_submodule_url(&scene);
+    let runner = Tamper {
+        without: Some("transfer.fsckObjects"),
+        ..Tamper::default()
+    };
+
+    let prepared = scene.prepare_with(&runner, &forked, "workspace");
+
+    ready(prepared);
 }
 
 #[test]
