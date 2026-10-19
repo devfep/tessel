@@ -1989,14 +1989,14 @@ async fn a_replay_frame_that_is_not_an_event_envelope_still_fails_the_read() -> 
     for frame in ["this is not json", r#"{"n":1}"#, "[]"] {
         fake.replace_in_replay(0, frame);
         let before = hellos(&fake, "a1");
+        let failed_reads = daemon_log(&a1)?
+            .matches("cannot read the event log")
+            .count();
         fake.drop_connections();
         back_online(&fake, &a1, before).await?;
         eventually(SHORT, || {
-            Ok(a1
-                .tessel(&["inbox", "--all"])?
-                .stdout
-                .contains("could not read the coordinator's event log")
-                .then_some(()))
+            let log = daemon_log(&a1)?;
+            Ok((log.matches("cannot read the event log").count() > failed_reads).then_some(()))
         })
         .await
         .with_context(|| frame.to_string())?;
