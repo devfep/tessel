@@ -2063,3 +2063,33 @@ fn host_an_answer_for_another_dispatch_changes_nothing() {
     assert!(after["claims"]["1"].is_object(), "the claim did not land");
     assert_eq!(kit.received(sock).len(), told);
 }
+
+#[test]
+fn host_a_wake_with_nothing_in_flight_recovers_nothing() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    let mark = kit.history().len();
+    wake(&mut kit);
+    let commits = labels_since(&kit, mark)
+        .iter()
+        .filter(|l| **l == "Commit")
+        .count();
+    assert_eq!(
+        commits, 1,
+        "only the expiry is written: no marker, no recovery"
+    );
+}
+
+#[test]
+fn host_a_poke_for_a_known_repo_is_counted_after_a_restart() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    kit.restart();
+    kit.poke();
+    kit.settle();
+    assert_eq!(
+        state(&kit)["head_pokes"],
+        json!(1),
+        "the stored state makes it known"
+    );
+}
