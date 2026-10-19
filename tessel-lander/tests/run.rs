@@ -10,7 +10,10 @@ use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
 use tessel_lander::git::GitCommand;
-use tessel_lander::run::{run, RunError, MAX_OUTPUT_BYTES};
+use tessel_lander::run::{run, RunError};
+
+/// 16 MiB, written out so a change to the limit is a change to this test.
+const LIMIT: usize = 16_777_216;
 
 fn command(argv: &[&str], env: &[(&str, &str)], timeout: Duration) -> GitCommand {
     GitCommand {
@@ -89,30 +92,26 @@ fn a_command_that_finishes_within_its_timeout_is_not_killed() {
 
 #[test]
 fn output_of_exactly_the_limit_is_kept() {
-    let output = run(&sh(&format!("head -c {MAX_OUTPUT_BYTES} /dev/zero"))).expect("at the limit");
-    assert_eq!(output.stdout.len(), MAX_OUTPUT_BYTES);
+    let output = run(&sh(&format!("head -c {LIMIT} /dev/zero"))).expect("at the limit");
+    assert_eq!(output.stdout.len(), LIMIT);
 }
 
 #[test]
 fn output_past_the_limit_is_an_error_not_a_truncated_result() {
-    let error = run(&sh(&format!("head -c {} /dev/zero", MAX_OUTPUT_BYTES + 1)))
-        .expect_err("over the limit");
+    let error = run(&sh(&format!("head -c {} /dev/zero", LIMIT + 1))).expect_err("over the limit");
     assert!(
         matches!(
             error,
             RunError::OutputTooLarge {
                 stream: "stdout",
-                limit: MAX_OUTPUT_BYTES,
+                limit: LIMIT,
                 ..
             }
         ),
         "{error}"
     );
-    let error = run(&sh(&format!(
-        "head -c {} /dev/zero >&2",
-        MAX_OUTPUT_BYTES + 1
-    )))
-    .expect_err("over the limit");
+    let error =
+        run(&sh(&format!("head -c {} /dev/zero >&2", LIMIT + 1))).expect_err("over the limit");
     assert!(
         matches!(
             error,
@@ -150,4 +149,77 @@ fn a_program_that_does_not_exist_is_a_spawn_error_naming_the_command() {
 fn an_empty_argv_is_a_spawn_error() {
     let error = run(&command(&[], &[], Duration::from_secs(5))).expect_err("nothing to run");
     assert!(matches!(error, RunError::Spawn { .. }));
+}
+
+#[test]
+fn a_grandchild_holding_the_pipe_cannot_outlast_the_timeout() {
+    let mut probe = sh("sleep 4 & exit 0");
+    probe.timeout = Duration::from_secs(1);
+    let started = Instant::now();
+    let error = run(&probe).expect_err("the pipe stays open");
+    assert!(matches!(error, RunError::TimedOut { .. }), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_timeout_kills_the_whole_process_group_not_only_the_command() {
+    let scratch = tempfile::TempDir::new().expect("tempdir");
+    let pid_file = scratch.path().join("grandchild.pid");
+    let mut probe = sh(&format!(
+        "sleep 30 & echo $! > '{}'; sleep 30",
+        pid_file.display()
+    ));
+    probe.timeout = Duration::from_millis(500);
+    run(&probe).expect_err("times out");
+    let pid = std::fs::read_to_string(&pid_file).expect("pid written");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .output()
+            .expect("kill runs")
+            .status
+            .success();
+        if !alive {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "grandchild {} still running",
+            pid.trim()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_background_process_is_killed_when_the_command_finishes_normally() {
+    let scratch = tempfile::TempDir::new().expect("tempdir");
+    let pid_file = scratch.path().join("grandchild.pid");
+    let script = format!(
+        "sleep 30 >/dev/null 2>&1 & echo $! > '{}'",
+        pid_file.display()
+    );
+    let output = run(&sh(&script)).expect("finishes");
+    assert!(output.success());
+    let pid = std::fs::read_to_string(&pid_file).expect("pid written");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .output()
+        .expect("kill runs")
+        .status
+        .success()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "grandchild {} still running",
+            pid.trim()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

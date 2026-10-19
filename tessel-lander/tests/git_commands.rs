@@ -166,7 +166,8 @@ fn rebases_with_a_fixed_committer_identity_and_date_and_no_hooks_or_signing() {
 #[test]
 fn sizes_gits_post_buffer_to_the_gateways_body_limit_so_git_sends_no_probe_request() {
     let argv = argv(&git().push_command(&sources(), &sha('b'), &sha('e')));
-    let flag = position(&argv, &format!("http.postBuffer={MAX_PUSH_BODY_BYTES}"));
+    assert_eq!(MAX_PUSH_BODY_BYTES, 16_777_216);
+    let flag = position(&argv, "http.postBuffer=16777216");
     assert_eq!(argv[flag - 1], "-c");
     assert!(flag < position(&argv, "push"));
 }
