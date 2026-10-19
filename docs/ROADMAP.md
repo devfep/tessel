@@ -140,6 +140,19 @@ passes; the host types round-trip; the lander git tests pass.
   passed on #36's merge. Find why a hello can arrive after `before` is read and assert on a signal
   that cannot race; never add retries. Done: the cause named in the report, and a test that pins
   it.
+- [ ] **P1-MUTANTS-SHRINK** — from P1-CI-NIGHTLY's first full run (39176270373): the core has
+  33 missed mutants, now the baseline in `.cargo/mutants-missed-baseline.txt`. The 21 outside
+  `src/store.rs` (deleted in M3) are test gaps in code that stays: `src/coordinator/merging.rs`
+  (`merge_outcome` and `recover_merge` survive `||` → `&&`; `next_to_merge` survives `<` → `<=`),
+  `src/coordinator/racing.rs` (six), `src/merge.rs` (nine, among them `MergeRecord::eq` → `true`),
+  and one each in `src/coordinator.rs`, `src/protocol.rs` and `src/shell.rs`. Kill each with a
+  behaviour test or record why it is equivalent, and remove its baseline line. Lane A owns those
+  files until M3.
+- [ ] **P1-HELLO-FALSE-PASS** — from the P1-FLAKE-REPLAY-HELLO review: `hellos > before` checks
+  in `tessel-cli/tests/cli.rs` (~2077), `back_online` and `submit.rs` read `before` before the
+  daemon's event-log read has sent its own `Hello`, so they can pass without a redial. Use the
+  settle helper from P1-FLAKE-REPLAY-HELLO. Done: each check fails when the redial it claims is
+  removed.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
