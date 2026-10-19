@@ -6,6 +6,7 @@
 //! (see [`git::Git`]), so no user or system config, hook, editor, prompt or ambient `GIT_*`
 //! variable can reach it.
 
+pub mod coverage;
 pub mod git;
 pub mod run;
 pub mod types;
