@@ -7,23 +7,25 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-18 23:55 EDT. Merged since the last rewrite: P1-MUTANTS-SHRINK (`9a875fc`,
-#42), P1-HELLO-FALSE-PASS (`98cb8e3`, #43) and the roadmap update (`e694d53`, #44); CI on `main` is
-green at `e694d53`. The missed-mutants baseline is down to 15 lines. Of M1's done-checks, only
-the lander's git tests remain.
+**As of:** 2026-10-19 07:20 EDT. Merged since the last rewrite: the clone-only `Workspace`
+decision (`f4f94f0`, #46) and P1-LANDER-GIT (`e520463`, #45). M1 is done: the mutation job is
+required and green, the nightly has run green, the rules check passes, the host types round-trip
+and the lander's git tests pass. M2 is dispatched.
 **In flight:**
-- P1-LANDER-GIT (lane B, `.claude/worktrees/p1-lander-git`, #45, draft). Fix pass 1 closed the
-  first review (timeouts over output with a process-group kill, read errors as errors, git 2.31
-  or newer, a transport allowlist, a test that repository config cannot run code after a clone).
-  Its re-check found 7 missed mutants in that new code (the git version check and the reaping of
-  a killed child); fix pass 2 is under way, then a merge of `main` and the same reviewer.
-**Decided by Felix (19 October):** the merge port (P1-LANDER-MERGE) runs git that reads a
-repository's own config only in a `Workspace` that only the clone step can produce; written into
-its task text in `docs/proposals/phase-1.md`.
-**Next:** M2 once P1-LANDER-GIT merges.
+- P1-MOVE-CALLS (lane A, `.claude/worktrees/p1-move-calls`, from `e520463`). The task ends with a
+  commit that plants one mutant per moved rule and a commit that reverts it; the orchestrator
+  pushes the plant first for the red CI run the done-check links.
+- P1-LANDER-MERGE (lane B, `.claude/worktrees/p1-lander-merge`, from `e520463`), with the
+  clone-only `Workspace` type.
+**Next:** lane A takes P1-MOVE-SOCKETS, P1-MOVE-WAKE and P1-MOVE-REPLAY in that order, each after
+the previous one merges, then P1-CLI-ON-HOST; lane B takes P1-LANDER-TRIAL, then
+P1-LANDER-ISOLATION. P1-FAKE-HELLO-LOST is decided when P1-CLI-ON-HOST is dispatched, since that
+task replaces the fake's orchestration; P1-MUTANTS-PROPTEST-ONLY goes to lane B when it is free.
 **Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
-(`docs/proposals/phase-1.md`); none blocks M1. Tearing down the spike
-sandbox needs `gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
+(`docs/proposals/phase-1.md`). Decisions 1 (no `wrangler dev` captures) and 14 (the CLI's fake
+rebuilt on the host in M2) apply to M2: the move proceeds on them as recommended, and
+P1-CLI-ON-HOST needs decision 14 before it is dispatched. Tearing down the spike sandbox needs
+`gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
 requests; open the second after the first merges.
@@ -114,7 +116,7 @@ The plan, its milestones M1-M6, lanes and file ownership are in `docs/proposals/
 task's full text (files, what, done-check) is there; this list tracks status. M1 and M2 are
 planned to task level; M3-M6 are re-planned at each milestone boundary.
 
-### M1. Guardrails and the host's types
+### M1. Guardrails and the host's types (done 19 October)
 
 Done when: the mutation job is required and green; the nightly run is green once; the rules check
 passes; the host types round-trip; the lander git tests pass.
@@ -129,8 +131,11 @@ passes; the host types round-trip; the lander git tests pass.
 - [x] **P1-HOST-TYPES** (`9fd80cb`, #40) — lane A, after P1-RULES. The host's `Input`,
   `Output`, `Call` and `CallAnswer` types, no behaviour. Where they differ from the frozen `Call`
   text (decision 12) is listed in #40's description; Felix merged it on 18 October.
-- [ ] **P1-LANDER-GIT** — lane B, after the CI tasks. The lander's git layer and coverage check
-  ported from the steward, with a deterministic rebase.
+- [x] **P1-LANDER-GIT** (`e520463`, #45) — lane B, after the CI tasks. The lander's git layer
+  and coverage check ported from the steward, with a deterministic rebase. Git runs with a cleared
+  environment and fixed config; repository config is not neutralised, so a test shows a filter
+  and merge driver run in an in-place rebase and not after a clone, which led to the clone-only
+  `Workspace` (#46).
 - [x] **P1-FLAKE-REPLAY-HELLO** (`e283369`, #41) — found on `main`: the slow lane failed on
   #34's merge (run 39165527090, a docs-only change) at `tessel-cli/tests/replay_unknown.rs:146`,
   "the socket was dropped and redialled". Cause: the daemon's event-log read opens a second
@@ -159,6 +164,28 @@ passes; the host types round-trip; the lander git tests pass.
   mutant killed only by a proptest makes the nightly comparison fail at random. List the mutants
   each proptest kills that no example test kills (a full mutants run with the proptests filtered
   out, on CI), and give each an example test. Done: that run misses nothing outside the baseline.
+
+### M2. The move
+
+Done when: no rules-list row is "after move"; `cargo test --workspace` is green with the CLI suite
+on the host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward tests are
+green.
+
+- [ ] **P1-MOVE-CALLS** — lane A. The call path moved into `src/host/` with its test driver
+  (`testkit.rs`): rows R14-R19, R28-R32 and R42.
+- [ ] **P1-MOVE-SOCKETS** — lane A, after P1-MOVE-CALLS. Sessions and the socket table: rows
+  R6-R13.
+- [ ] **P1-MOVE-WAKE** — lane A, after P1-MOVE-SOCKETS. The wake in today's order: rows R20-R27,
+  R38 and R41; decides COORD-WAKE-WHILE-VERIFYING.
+- [ ] **P1-MOVE-REPLAY** — lane A, after P1-MOVE-WAKE. `Watch` replay with other inputs queued:
+  row R36.
+- [ ] **P1-CLI-ON-HOST** — lane A, after the four above; needs decision 14. The CLI's fake
+  coordinator rebuilt on the host, same test count.
+- [ ] **P1-LANDER-MERGE** — lane B. `prepare` and `land` ported from `merge-steps.ts`, with the
+  clone-only `Workspace` type; 47 unit and 14 real-git tests ported.
+- [ ] **P1-LANDER-TRIAL** — lane B, after P1-LANDER-MERGE. `run_trial` and the two-sided report.
+- [ ] **P1-LANDER-ISOLATION** — lane B, after P1-LANDER-TRIAL. Hooks, filters, a malformed pack
+  and control characters in a fork are refused or inert.
 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT, COORD-UNDELIVERED-GRANT and
 COORD-WAKE-WHILE-VERIFYING (see "Carried-over tasks" in the plan).
