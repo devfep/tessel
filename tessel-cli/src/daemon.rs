@@ -246,6 +246,9 @@ struct PendingClaim {
     amend: Option<ClaimId>,
     /// The `--assume` statements sent with the request; the held claim keeps them for the note.
     assumptions: Vec<String>,
+    /// Claims released here while the request was on the way. A grant for one of them is not
+    /// held: the release already reached the coordinator.
+    released_meanwhile: Vec<ClaimId>,
     replies: Vec<oneshot::Sender<Reply>>,
 }
 
@@ -951,6 +954,19 @@ impl Daemon {
         race: Option<tessel_coordinator::protocol::RaceId>,
         at_risk: Vec<tessel_coordinator::protocol::HeldAssumption>,
     ) {
+        if pending.released_meanwhile.contains(&claim) {
+            let message = format!(
+                "claim {} was released here before its grant arrived; the release reached the \
+                 coordinator, so the claim is not held. Claim again to get it back",
+                claim.0
+            );
+            if pending.queued {
+                self.state.queued = None;
+                self.persist();
+            }
+            answer(pending.replies, &refused(None, &message));
+            return;
+        }
         let lease = self.state.lease_ms.unwrap_or(0);
         let amended = pending.amend.is_some();
         let held = if let Some(target) = pending.amend {
@@ -1803,6 +1819,7 @@ impl Daemon {
                 queued: false,
                 amend: None,
                 assumptions: assumptions.to_vec(),
+                released_meanwhile: Vec::new(),
                 replies: vec![reply],
             },
         );
@@ -1851,6 +1868,7 @@ impl Daemon {
                 queued: false,
                 amend: Some(claim),
                 assumptions: Vec::new(),
+                released_meanwhile: Vec::new(),
                 replies: vec![reply],
             },
         );
@@ -1896,6 +1914,7 @@ impl Daemon {
                 queued: false,
                 amend: None,
                 assumptions: Vec::new(),
+                released_meanwhile: Vec::new(),
                 replies: vec![reply],
             },
         );
@@ -1937,6 +1956,9 @@ impl Daemon {
         for held in targets {
             self.send_release(&held);
             self.state.claims.retain(|other| other.claim != held.claim);
+            for pending in self.pending.values_mut() {
+                pending.released_meanwhile.push(held.claim);
+            }
             released.push(held.claim);
         }
         self.persist();
@@ -2672,6 +2694,16 @@ mod tests {
         });
     }
 
+    /// Like `go_online`, with the receiving end kept so that sending does not fail.
+    fn go_online_listening(daemon: &mut Daemon) -> mpsc::UnboundedReceiver<Outgoing> {
+        let (out, out_rx) = mpsc::unbounded_channel();
+        daemon.conn = Some(Conn {
+            out,
+            task: tokio::spawn(async {}),
+        });
+        out_rx
+    }
+
     #[tokio::test]
     async fn an_adopted_claim_keeps_the_review_flag_the_log_showed() {
         let dir = tempfile::tempdir().unwrap();
@@ -3148,6 +3180,7 @@ mod tests {
             queued: false,
             amend: None,
             assumptions: Vec::new(),
+            released_meanwhile: Vec::new(),
             replies: Vec::new(),
         }
     }
@@ -3174,6 +3207,66 @@ mod tests {
 
         assert_eq!(daemon.state.coordinator_head.as_deref(), Some(HEAD_B));
         assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_B));
+    }
+
+    fn adopted_by_the_first_log_read(daemon: &mut Daemon) {
+        let server = ServerClaim {
+            fence: Fence(9),
+            scopes: Vec::new(),
+            race: None,
+            submitted: false,
+            submitted_commit: None,
+            awaiting_review: false,
+            assumptions: Vec::new(),
+        };
+        daemon.adopt(ClaimId(9), server);
+    }
+
+    #[tokio::test]
+    async fn a_grant_for_a_claim_released_in_the_meantime_is_not_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let _wire = go_online_listening(&mut daemon);
+        let (tx, mut rx) = oneshot::channel();
+        daemon.pending.insert(
+            5,
+            PendingClaim {
+                replies: vec![tx],
+                ..pending_claim()
+            },
+        );
+        adopted_by_the_first_log_read(&mut daemon);
+
+        let released = daemon.release(Some(ClaimId(9)));
+        daemon.on_server_msg(granted_json(None));
+
+        assert!(matches!(released, Reply::Released { claims, .. } if claims == [ClaimId(9)]));
+        assert!(daemon
+            .state
+            .claims
+            .iter()
+            .all(|held| held.claim != ClaimId(9)));
+        let Ok(Reply::Claim {
+            outcome: ClaimOutcome::Refused { message, .. },
+        }) = rx.try_recv()
+        else {
+            panic!("the waiting `tessel claim` was not refused");
+        };
+        assert!(message.contains("claim 9 was released here"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_grant_is_held_when_only_another_claim_was_released_in_the_meantime() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let _wire = go_online_listening(&mut daemon);
+        daemon.pending.insert(5, pending_claim());
+
+        daemon.release(Some(ClaimId(1)));
+        daemon.on_server_msg(granted_json(None));
+
+        let held: Vec<u64> = daemon.state.claims.iter().map(|h| h.claim.0).collect();
+        assert_eq!(held, vec![2, 9]);
     }
 
     #[test]
