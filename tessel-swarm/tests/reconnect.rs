@@ -155,9 +155,11 @@ async fn wait_until_unless_released(
         if ready(&events) {
             return Ok(());
         }
-        let released = events.iter().find_map(|e| match &e.kind {
-            EventKind::ClaimReleased { claim, reason } => Some((claim.0, format!("{reason:?}"))),
-            _ => None,
+        let released = events.iter().find_map(|e| {
+            let EventKind::ClaimReleased { claim, reason } = &e.kind else {
+                return None;
+            };
+            Some((claim.0, format!("{reason:?}")))
         });
         if let Some((claim, reason)) = released {
             return Err(format!(
@@ -220,11 +222,14 @@ fn claim_lapsed(events: &[Event], claim: ClaimId) -> bool {
 
 /// Whether a claim granted to `agent` ended because its lease ran out.
 fn grant_lapsed(events: &[Event], agent: &str) -> bool {
-    events.iter().any(|e| match &e.kind {
-        EventKind::ClaimGranted {
+    events.iter().any(|e| {
+        let EventKind::ClaimGranted {
             agent: a, claim, ..
-        } if a.0 == agent => claim_lapsed(events, *claim),
-        _ => false,
+        } = &e.kind
+        else {
+            return false;
+        };
+        a.0 == agent && claim_lapsed(events, *claim)
     })
 }
 
@@ -585,9 +590,12 @@ async fn a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_s
         }));
     })
     .await;
-    if let Err(why) = lifted.unwrap().await.unwrap() {
-        panic!("{why}; the agent's result: {:?}", run.result.results);
-    }
+    let lifted = lifted.unwrap().await.unwrap();
+    assert!(
+        lifted.is_ok(),
+        "{lifted:?}; the agent's result: {:?}",
+        run.result.results
+    );
     let r = &run.result.results[0];
     assert_eq!(r.result, Resolution::Merged, "{r:?}");
     assert_eq!(r.reconnects, 1, "{r:?}");
