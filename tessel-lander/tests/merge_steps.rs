@@ -27,7 +27,7 @@ use tessel_lander::outcome::{
 };
 use tessel_lander::run::{GitOutput, GitRunner, RunError};
 use tessel_lander::types::Sha;
-use tessel_lander::workspace::CloneError;
+use tessel_lander::workspace::{CloneError, TestTree};
 
 fn sha(character: char) -> Sha {
     Sha::parse(&character.to_string().repeat(40)).expect("test sha")
@@ -351,7 +351,11 @@ impl MergePorts for Harness {
         self.plan.revoked_reads
     }
 
-    fn run_package_step(&self, step: PackageStep) -> Result<StepOutcome, BoundaryError> {
+    fn run_package_step(
+        &self,
+        step: PackageStep,
+        _tree: &TestTree,
+    ) -> Result<StepOutcome, BoundaryError> {
         let (label, exit_code) = match step {
             PackageStep::Install => ("install", self.plan.install),
             PackageStep::Test => ("test", self.plan.test),
@@ -417,6 +421,7 @@ fn context<'a>(
         runner: harness,
         sources,
         clone_dir: Path::new("/workspace"),
+        test_dir: Path::new("/test-tree"),
         pinned_main: commit_pin,
     }
 }
@@ -487,6 +492,8 @@ fn fetches_revokes_the_reads_verifies_rebases_tests_then_mints_and_revokes_the_w
             "git:rebase",
             "git:head",
             "git:changed",
+            "git:clone",
+            "git:head",
             "package:install",
             "package:test",
             &format!("mint-write {} {}", base(), head()),
@@ -853,6 +860,19 @@ fn admin_judges_a_diff_of_only_tessel_toml_by_the_heads_file_alone_no_install_no
     ));
     assert!(!harness.ran_package_step());
     assert!(harness.minted_write_access());
+}
+
+#[test]
+fn admin_judging_the_gate_file_alone_clones_no_test_tree() {
+    let harness = Harness::new(Plan::new().changed("M\0tessel.toml\0"));
+    admin(&harness, &whole_repo());
+    let clones = harness
+        .commands
+        .borrow()
+        .iter()
+        .filter(|c| git_step(c) == GitStep::Clone)
+        .count();
+    assert_eq!(clones, 1, "only the clone of main");
 }
 
 #[test]
@@ -1484,7 +1504,11 @@ fn a_package_step_that_cannot_run_is_an_error_and_mints_no_write_access() {
         fn revoke_read_access(&self) -> bool {
             self.0.revoke_read_access()
         }
-        fn run_package_step(&self, _step: PackageStep) -> Result<StepOutcome, BoundaryError> {
+        fn run_package_step(
+            &self,
+            _step: PackageStep,
+            _tree: &TestTree,
+        ) -> Result<StepOutcome, BoundaryError> {
             Err(BoundaryError {
                 operation: "run_package_step",
                 message: "the sandbox is gone".to_owned(),
@@ -1512,6 +1536,7 @@ fn a_package_step_that_cannot_run_is_an_error_and_mints_no_write_access() {
         runner: &broken,
         sources: &sources,
         clone_dir: Path::new("/workspace"),
+        test_dir: Path::new("/test-tree"),
         pinned_main: &pin,
     };
     let scopes = whole_repo();

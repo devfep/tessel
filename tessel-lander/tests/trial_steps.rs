@@ -23,6 +23,7 @@ use tessel_lander::outcome::{PackageStep, StepOutcome, TrialOutcome};
 use tessel_lander::run::{GitOutput, GitRunner, RunError};
 use tessel_lander::trial::{run_trial, TrialContext, TrialPorts};
 use tessel_lander::types::Sha;
+use tessel_lander::workspace::TestTree;
 
 fn sha(character: char) -> Sha {
     Sha::parse(&character.to_string().repeat(40)).expect("test sha")
@@ -232,7 +233,11 @@ impl TrialPorts for Harness {
         self.revoked_reads
     }
 
-    fn run_package_step(&self, step: PackageStep) -> Result<StepOutcome, BoundaryError> {
+    fn run_package_step(
+        &self,
+        step: PackageStep,
+        _tree: &TestTree,
+    ) -> Result<StepOutcome, BoundaryError> {
         let (label, exit_code) = match step {
             PackageStep::Install => ("install", self.install),
             PackageStep::Test => ("test", self.test),

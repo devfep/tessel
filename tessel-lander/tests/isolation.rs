@@ -195,11 +195,13 @@ impl Scene {
         let sources = self.repos.sources();
         let pinned = self.repos.main_head();
         let clone_dir = self.repos.scratch.path().join(name);
+        let test_dir = self.repos.scratch.path().join(format!("{name}-test-tree"));
         let ctx = MergeContext {
             git: &self.git,
             runner,
             sources: &sources,
             clone_dir: &clone_dir,
+            test_dir: &test_dir,
             pinned_main: &pinned,
         };
         let scopes = whole_repo();

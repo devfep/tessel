@@ -13,7 +13,9 @@
 //! 3. Rebase `merge-base..commit` onto main with a fixed committer.
 //! 4. Check that the claim covers every file the rebased range changes (invariant 11) and what
 //!    the range does to `tessel.toml`. This is file level; see [`crate::coverage`].
-//! 5. Run the dependency check and the tests. No credential is live.
+//! 5. Clone the rebased head into a test tree of its own, then run the dependency check and the
+//!    tests there. No credential is live, and repo code never sees the workspace that step 6
+//!    pushes from.
 //! 6. Only if the tests passed: mint the write credential, push with a lease on the cloned main,
 //!    revoke it.
 //! 7. Decide the outcome from a read of main, never from the push's exit code: repo code ran and
@@ -42,7 +44,9 @@ use crate::outcome::{
 };
 use crate::run::{GitOutput, GitRunner, RunError};
 use crate::types::Sha;
-use crate::workspace::{clone_main, CloneError, CloneOutcome, Workspace};
+use crate::workspace::{
+    clone_main, clone_test_tree, CloneError, CloneOutcome, TestTree, TestTreeOutcome, Workspace,
+};
 
 /// The one update the write credential may be used for: main from `base` to `head`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,10 +93,18 @@ pub trait MergePorts {
     /// Revokes the read credentials of main and of the fork. Must not panic; `false` on failure.
     fn revoke_read_access(&self) -> bool;
 
-    /// Runs the install step or the test step of the gate. No write credential is live. It must
-    /// not run in a [`Workspace`] directory: [`land`] pushes from there afterwards, and repo code
-    /// could have rewritten that clone's config.
-    fn run_package_step(&self, step: PackageStep) -> Result<StepOutcome, BoundaryError>;
+    /// Runs the install step or the test step of the gate in `tree`, and nowhere else. No write
+    /// credential is live. `tree` is a clone of the rebased head that [`run_merge`] made for this
+    /// merge; [`land`] pushes from a different clone. This API never hands the step the
+    /// [`Workspace`], and nothing the step writes inside `tree` changes what [`land`] does. It
+    /// does not stop code running as the same OS user from writing the workspace's files by
+    /// path (the tree's `origin` and reflog name it): that boundary is the sandbox's. The lander
+    /// does not remove `tree`.
+    fn run_package_step(
+        &self,
+        step: PackageStep,
+        tree: &TestTree,
+    ) -> Result<StepOutcome, BoundaryError>;
 
     /// Mints the write credential for main, lets `use_access` push exactly `update`, and revokes
     /// the credential when `use_access` ends, whether it returned an error or not. Called only
@@ -121,6 +133,9 @@ pub struct MergeContext<'a> {
     pub sources: &'a MergeSources,
     /// Where main is cloned: missing or empty.
     pub clone_dir: &'a Path,
+    /// Where the repo's tests run: a second clone, of the rebased head. Missing or empty, and not
+    /// inside `clone_dir`. The caller removes it; the lander does not.
+    pub test_dir: &'a Path,
     /// The commit of main whose gate was read. The merge must be based on exactly this commit.
     pub pinned_main: &'a Sha,
 }
@@ -590,7 +605,11 @@ pub fn run_merge(
         }
         GateReview::TrunkTests => {}
     }
-    let (tested, steps) = install_then_test(&|step| ports.run_package_step(step))?;
+    let tree = match clone_test_tree(ctx.git, ctx.runner, &workspace, &head, ctx.test_dir)? {
+        TestTreeOutcome::Cloned(tree) => tree,
+        TestTreeOutcome::Failed(result) => return Ok(MergeOutcome::GitFailed { result }),
+    };
+    let (tested, steps) = install_then_test(&|step| ports.run_package_step(step, &tree))?;
     if tested.timed_out {
         return Ok(MergeOutcome::Timeout {
             base,
