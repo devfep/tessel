@@ -2769,6 +2769,13 @@ fn host_a_watch_on_a_closed_socket_stops_at_the_first_failed_send() {
         2,
         "no page is read after the failure"
     );
+    assert!(
+        kit.logs()
+            .iter()
+            .all(|line| !line.contains("replay events failed")),
+        "the page still out when the replay ended is dropped silently: {:?}",
+        kit.logs().last()
+    );
     assert_failed_sends_logged(&kit, shell::REPLAY_PAGE);
     assert_eq!(kit.session(sock).unwrap().watch_from, None, "never marked");
 }
