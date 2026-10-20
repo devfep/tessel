@@ -88,12 +88,10 @@ jobs:
           # bound fails its test instead of exhausting the runner. Builds are not capped. This is a
           # safety net, not a guarantee: the baseline passes under 3 GiB per test process, the
           # per-process peak is unmeasured so the cap is not lowered, and 3 GiB x 4 test threads
-          # x 2 jobs is more than the runner's 16 GB if two runaways overlap. Core dumps are off
-          # so an aborted runaway can exit at once.
+          # x 2 jobs is more than the runner's 16 GB if two runaways overlap.
           cat > "$RUNNER_TEMP/cap-memory.sh" <<'CAP'
           #!/usr/bin/env bash
           set -euo pipefail
-          ulimit -c 0
           ulimit -v 3145728
           exec "$@"
           CAP
