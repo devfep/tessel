@@ -1131,9 +1131,9 @@ async fn an_agent_whose_own_checks_fail_reports_the_failure_not_the_noise_around
     let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
         unreachable!("the local target has a local remote");
     };
-    // The red test logs far more than the note may hold before it throws, and a passing test is named
-    // with as much after it, so a cap that is too large lets noise in and neither the head nor the tail
-    // of the output holds the failure.
+    // The red test logs far more than the note may hold before it throws, and a passing test is
+    // named with as much after it, so a cap that is too large lets noise in and neither the head
+    // nor the tail of the output holds the failure.
     std::fs::write(
         trunk.join("test/red.test.ts"),
         "import { test } from \"node:test\";\n\
@@ -1180,7 +1180,8 @@ async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
         trunk.join("test/slow.test.ts"),
         format!(
             "import {{ test }} from \"node:test\";\n\
-             test(\"slow\", async () => {{ await new Promise((done) => setTimeout(done, {})); }});\n",
+             test(\"slow\", async () => {{\n\
+             await new Promise((done) => setTimeout(done, {}));\n}});\n",
             lease_ms * 3 / 2
         ),
     )
