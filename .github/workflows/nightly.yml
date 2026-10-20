@@ -4,6 +4,14 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      test_filter:
+        description: >-
+          nextest filterset every mutants shard passes to the test tool (nextest -E). Empty runs
+          every test.
+        required: false
+        default: ""
+        type: string
   pull_request:
     paths:
       - .github/workflows/nightly.yml
@@ -70,10 +78,35 @@ jobs:
       - name: Mutants on the core
         env:
           SHARD: ${{ matrix.shard }}
+          TEST_FILTER: ${{ inputs.test_filter }}
         run: |
+          filter_args=()
+          if [ -n "$TEST_FILTER" ]; then
+            filter_args=(-- -E "$TEST_FILTER")
+          fi
+          # Cap the address space of every test process, so a mutant that allocates without
+          # bound fails its test instead of exhausting the runner. Builds are not capped. This is a
+          # safety net, not a guarantee: the baseline passes under 3 GiB per test process, the
+          # per-process peak is unmeasured so the cap is not lowered, and 3 GiB x 4 test threads
+          # x 2 jobs is more than the runner's 16 GB if two runaways overlap.
+          cat > "$RUNNER_TEMP/cap-memory.sh" <<'CAP'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          ulimit -v 3145728
+          exec "$@"
+          CAP
+          chmod +x "$RUNNER_TEMP/cap-memory.sh"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$RUNNER_TEMP/cap-memory.sh"
+          df -h / | tee "$RUNNER_TEMP/resources.log"
+          (while sleep 120; do
+            { date -u +%T; df -h / | tail -1; free -m | sed -n 2p; } \
+              | tee -a "$RUNNER_TEMP/resources.log"
+          done) &
+          monitor=$!
+          trap 'kill "$monitor"' EXIT
           code=0
           cargo mutants --package tessel-coordinator --package tessel-lander \
-            --test-tool nextest --jobs 2 --shard "$SHARD" || code=$?
+            --test-tool nextest --jobs 2 --shard "$SHARD" "${filter_args[@]}" || code=$?
           case "$code" in
             0 | 2 | 3) ;;
             *) echo "::error::cargo mutants exited $code (1 usage error, 4 baseline failed)."
@@ -84,6 +117,17 @@ jobs:
             cat mutants.out/timeout.txt
           fi
           cp mutants.out/missed.txt "$RUNNER_TEMP/missed.txt"
+          df -h / | tee -a "$RUNNER_TEMP/resources.log"
+      - name: Upload mutants.out
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mutants-out-${{ strategy.job-index }}
+          path: |
+            mutants.out
+            ${{ runner.temp }}/resources.log
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Upload missed mutants
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:

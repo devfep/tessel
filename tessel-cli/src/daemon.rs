@@ -928,6 +928,21 @@ impl Daemon {
         self.persist();
     }
 
+    /// Records a granted claim. A log read that finished between the coordinator's grant and its
+    /// arrival here has already adopted the claim; the grant, being the answer to this agent's own
+    /// request, replaces that copy (its lease, scopes and assumptions) rather than adding a second.
+    fn replace_or_push(&mut self, held: HeldClaim) {
+        match self
+            .state
+            .claims
+            .iter_mut()
+            .find(|existing| existing.claim == held.claim)
+        {
+            Some(existing) => *existing = held,
+            None => self.state.claims.push(held),
+        }
+    }
+
     fn on_granted(
         &mut self,
         pending: PendingClaim,
@@ -957,7 +972,7 @@ impl Daemon {
                 awaiting_review: false,
                 assumptions: pending.assumptions,
             };
-            self.state.claims.push(held.clone());
+            self.replace_or_push(held.clone());
             held
         };
         self.fresh.insert(claim);

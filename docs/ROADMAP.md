@@ -7,17 +7,22 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-20 06:10 EDT. Merged since the last rewrite: the previous STATE (`1f52cc7`,
-#57), P1-MOVE-REPLAY (`148b187`, #58) and P1-LANDER-AFTER-TESTS (`716aca5`, #59). The
-orchestrator's gate on `716aca5` is green (1686 tests, clippy native, no-default-features build
-and clippy, wasm32, fmt, named tests). No host row of the rules list is "after move": only the
-adapter rows R2-R5 and R49 are, which are M4's. M2's done-check now waits on P1-CLI-ON-HOST.
+**As of:** 2026-10-20 13:00 EDT. Merged since the last rewrite: the previous STATE (`53d799e`,
+#60) and P1-FLAKE-UNDER-LOAD (`fe7ac16`, #62). The orchestrator's gate on `fe7ac16` is green
+(1686 tests, all seven steps). M2's done-check waits on P1-CLI-ON-HOST.
+**The nightly is broken on main:** since 20 October, shard 0 of the full mutants run ends with
+"The runner has received a shutdown signal" (scheduled run 39393491358; last green 39225162697
+on 19 October). The cause is the mutant `src/protocol.rs:168` `parent_dir -> "xyzzy"`, which makes
+`Scope::ancestors` grow until the runner runs out of memory. P1-MUTANTS-PROPTEST-ONLY (#61)
+caps each test process's memory so the shard completes; until it merges, expect the scheduled
+nightly to fail.
 **In flight:**
-- P1-MUTANTS-PROPTEST-ONLY (lane A, `.claude/worktrees/p1-mutants-proptest-only`, from
-  `716aca5`). Phase 1 adds a test filter to the nightly's manual run so the orchestrator can run
-  the full mutants with the proptests filtered out; phase 2 adds an example test per mutant only
-  a proptest kills.
-- P1-FLAKE-UNDER-LOAD (lane B, `.claude/worktrees/p1-flake-under-load`, from `716aca5`).
+- P1-MUTANTS-PROPTEST-ONLY (lane A, `.claude/worktrees/p1-mutants-proptest-only`, #61), fix
+  pass 1: one proptest the filter missed, and the nightly's memory cap. The filtered run on
+  `a162b31` missed only the baseline; it is repeated on the final head with every proptest out.
+- CLI-DUPLICATE-ADOPTED-CLAIM (lane B, #64, ready to merge).
+- SWARM-AGENT-CHECKS-UNDER-LOAD (lane B, `.claude/worktrees/swarm-agent-checks`, from `fe7ac16`).
+**Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 **Next:** lane A takes P1-CLI-ON-HOST once decision 14 is made. P1-FAKE-HELLO-LOST is decided
 when P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
@@ -227,15 +232,49 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   does, and each subverts `land` when planted in the workspace (controls). It does not stop
   hostile code run as the same OS user, which can find the workspace by path: that is
   M4-SANDBOX-WORKSPACE.
-- [ ] **P1-FLAKE-UNDER-LOAD** — lane B when free. From the P1-LANDER-TRIAL review, at a load
-  average near 170 from another project on this Mac: `tessel-lander/tests/run.rs` grandchild and
-  zombie timeout tests and two `tessel-cli` lease and heartbeat tests failed once and passed on
-  rerun. Same class as P0-FLAKE-WALLCLOCK: replace the wall-clock bounds with signals or the
-  daemon clock seam; never add retries. Seen since, each once at a load average of 110 to 113 and
-  passing on rerun: `tessel-cli` `heartbeats_keep_a_claim_alive_past_its_lease` (`tests/cli.rs`
-  348) and `a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for` (`tests/githook.rs`
-  410), and three tests in `tessel-swarm/tests/reconnect.rs`. Done: each test passes with its
-  timing bound removed or made explicit, shown on a CI runner.
+- [x] **P1-FLAKE-UNDER-LOAD** (`fe7ac16`, #62) — lane B. The lander runner's timeout tests,
+  the CLI lease and heartbeat tests and the swarm reconnect tests no longer depend on the
+  scheduler: the fake coordinator's clock can be frozen and advanced, a `pre-receive` hook holds
+  the shadow agent's push instead of a 250 ms delay, and waits end at once on the cause (a release
+  or a lapse of the waiter's own claim) instead of running to their bound. One real-time bound
+  stays, explicit: `a_healthy_link_is_kept_and_the_local_expiry_follows_the_heartbeats` keeps its
+  3 s lease, because the daemon's pong silence limit runs on the daemon's own clock. Two recorded
+  failures have no cause found; both tests now fail fast with the cause printed, filed below.
+- [ ] **CLI-GITHOOK-FIRST-COMMIT** — lane B. From P1-FLAKE-UNDER-LOAD: in
+  `tessel-cli/tests/githook.rs`, `a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for`
+  once had the hook refuse `src/c.rs (create)` right after `tessel claim` exited 0, under heavy
+  load. Not reproduced with a 2.5 s delay in the replay. Candidates: the hook's 5 s
+  `STATUS_TIMEOUT` (`tessel-cli/src/githook.rs`), or a claim made right after `tessel start` (the
+  test now waits for the daemon to settle, which may hide the race: reproduce with plain
+  `start`). Done: the cause named, and a test that fails on it and passes with the fix.
+  Not reproduced (20 October). Ruled out: an acknowledgement before the state write or a stale
+  status (the state is written before the reply, and `Status` runs on the same daemon loop); the
+  5 s `STATUS_TIMEOUT` (it fails with "daemon does not answer", not an uncovered refusal);
+  reconcile forgetting the claim (that needs the claim ended in the log and not fresh); a
+  housekeeping lapse (only while the link is down, and a fresh claim expires 30 s out); a grant
+  racing the first log read (it held the claim twice, CLI-DUPLICATE-ADOPTED-CLAIM, which adds
+  coverage and cannot refuse). Unproven: a reconnect clearing `fresh`. Blocked on a reproduction.
+- [ ] **CLI-DUPLICATE-ADOPTED-CLAIM** — lane B, #64. Found by CLI-GITHOOK-FIRST-COMMIT: a claim
+  granted while the daemon's first log read is in flight is adopted from the log, then pushed again
+  by `on_granted`, so it is held twice. Agents saw a second claim instead of an amend, `tessel
+  submit` failing with "several claims (1, 1, 2)" and a release sent twice. Done: `on_granted`
+  replaces an entry with the same claim id, with a test that fails without it.
+- [ ] **CLI-RECONCILE-INFLIGHT-NOTICE** — lane B, after #64. From the #64 review: the
+  "Reconciled" notice (`tessel-cli/src/daemon.rs` ~1232) tells the agent that its own claim, still
+  on the way, has no request behind it and that `tessel release <id>` drops it; an agent that
+  follows it gives up the claim it just got. Done: the scopes of requests still on the way are part
+  of `reconcile::Local`, a match is not adopted or reported, with a test of the notice.
+- [ ] **CLI-RELEASE-BEFORE-GRANT** — lane B, after #64. From the #64 review: a `tessel release`
+  between the adoption and the `Granted` removes the claim, and `on_granted` then adds it back,
+  held locally after the agent released it. Older than #64. Done: a test of that ordering, and the
+  late grant not re-adding a released claim.
+- [ ] **SWARM-AGENT-CHECKS-UNDER-LOAD** — lane B. From P1-FLAKE-UNDER-LOAD: in
+  `tessel-swarm/tests/reconnect.rs` an agent released its claim without submitting, under heavy
+  load; the same log comes from the agent's own checks (`node --test`) failing. Why they fail under
+  load is unknown, and it may be a product bug. The checks note carries no output of the failing
+  run. Also: the `UNHEARD_LEASE_MS` comment still says the wait could match the holder's lapse,
+  which is no longer true. Done: the failing run's output kept in the note, the cause named, and a
+  test for it.
 - [ ] **HOST-MERGE-STANDIN** — M3, with P1-CORE-STAGED-LANDING; its adapter half is M4's. From
   the P1-MOVE-WAKE review: until the staged landing, a merge is one `Prepare` call that stands for
   the steward's whole `/merge`, and the host reads `Prepared { base, head }` as merged
