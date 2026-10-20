@@ -249,6 +249,9 @@ struct PendingClaim {
     /// Claims released here while the request was on the way. A grant for one of them is not
     /// held: the release already reached the coordinator.
     released_meanwhile: Vec<ClaimId>,
+    /// A live claim in the event log that this request is expected to be answered with, found
+    /// before the grant arrived. A reply that names another claim, or none, leaves it unexplained.
+    awaited: Option<(ClaimId, ServerClaim)>,
     replies: Vec<oneshot::Sender<Reply>>,
 }
 
@@ -804,7 +807,9 @@ impl Daemon {
                     self.persist();
                 }
                 match self.pending.remove(&req.0) {
-                    Some(pending) => {
+                    Some(mut pending) => {
+                        let awaited = pending.awaited.take();
+                        self.settle_awaited(awaited, Some(claim));
                         self.on_granted(pending, claim, fence, race, at_risk.clone());
                     }
                     None => self.unexpected("grant for an unknown request", &msg),
@@ -816,7 +821,9 @@ impl Daemon {
                     conflicts: conflicts.clone(),
                 };
                 self.notify(NoticeKind::Denied, "claim denied", Some(msg));
-                if let Some(pending) = self.pending.remove(&req.0) {
+                if let Some(mut pending) = self.pending.remove(&req.0) {
+                    let awaited = pending.awaited.take();
+                    self.settle_awaited(awaited, None);
                     answer(
                         pending.replies,
                         &Reply::Claim {
@@ -946,6 +953,65 @@ impl Daemon {
         }
     }
 
+    /// A request that was waiting for a claim the log showed has been answered. If the reply is
+    /// not a grant of that claim, nothing else explains it, so it is tracked and reported.
+    fn settle_awaited(
+        &mut self,
+        awaited: Option<(ClaimId, ServerClaim)>,
+        granted: Option<ClaimId>,
+    ) {
+        let Some((claim, server)) = awaited else {
+            return;
+        };
+        if granted == Some(claim) || self.state.claims.iter().any(|held| held.claim == claim) {
+            return;
+        }
+        self.adopt_unexplained(claim, server);
+        self.persist();
+    }
+
+    fn adopt_unexplained(&mut self, claim: ClaimId, server: ServerClaim) {
+        self.adopt(claim, server);
+        let note = format!(
+            "the coordinator holds claim {} for this agent and no request here explains it; \
+             it is now tracked, and `tessel release {}` drops it",
+            claim.0, claim.0
+        );
+        self.notify(NoticeKind::Reconciled, &note, None);
+    }
+
+    /// Answers a grant for a claim this agent released while its request was on the way. A new
+    /// claim's release was sent with the logged fence, which is the grant's, so nothing more is
+    /// sent. An amend moved the fence before the release arrived and the coordinator refuses a
+    /// release with the old one, so the release is sent again with the grant's fence.
+    fn refuse_released_grant(
+        &mut self,
+        pending: PendingClaim,
+        claim: ClaimId,
+        fence: tessel_coordinator::protocol::Fence,
+    ) {
+        if pending.queued {
+            self.state.queued = None;
+            self.persist();
+        }
+        let message = if pending.amend.is_some() {
+            self.release_by_id(claim, fence);
+            format!(
+                "claim {} was released here while an amend of it was on the way; the amend was \
+                 granted, so its release was sent again with the new fence. Claim again to get \
+                 it back",
+                claim.0
+            )
+        } else {
+            format!(
+                "claim {} was released here before its grant arrived; its release was sent when \
+                 it was released, and the claim is not held here. Claim again to get it back",
+                claim.0
+            )
+        };
+        answer(pending.replies, &refused(None, &message));
+    }
+
     fn on_granted(
         &mut self,
         pending: PendingClaim,
@@ -955,16 +1021,7 @@ impl Daemon {
         at_risk: Vec<tessel_coordinator::protocol::HeldAssumption>,
     ) {
         if pending.released_meanwhile.contains(&claim) {
-            let message = format!(
-                "claim {} was released here before its grant arrived; the release reached the \
-                 coordinator, so the claim is not held. Claim again to get it back",
-                claim.0
-            );
-            if pending.queued {
-                self.state.queued = None;
-                self.persist();
-            }
-            answer(pending.replies, &refused(None, &message));
+            self.refuse_released_grant(pending, claim, fence);
             return;
         }
         let lease = self.state.lease_ms.unwrap_or(0);
@@ -1106,12 +1163,12 @@ impl Daemon {
             live.len()
         ));
         let scopes: Vec<Vec<ScopeClaim>> = lost.iter().map(|p| p.scopes.clone()).collect();
-        let in_flight: Vec<Vec<ScopeClaim>> = self
+        let (in_flight_keys, in_flight): (Vec<u64>, Vec<Vec<ScopeClaim>>) = self
             .pending
-            .values()
-            .filter(|pending| pending.amend.is_none())
-            .map(|pending| pending.scopes.clone())
-            .collect();
+            .iter()
+            .filter(|(_, pending)| pending.amend.is_none())
+            .map(|(key, pending)| (*key, pending.scopes.clone()))
+            .unzip();
         let local = Local {
             claims: &self.state.claims,
             fresh: &self.fresh,
@@ -1122,7 +1179,7 @@ impl Daemon {
         };
         let plan = reconcile::plan(&local, &live, &events);
         if complete {
-            self.apply_plan(plan, lost);
+            self.apply_plan(plan, lost, &in_flight_keys);
             return;
         }
         self.notify(
@@ -1137,7 +1194,7 @@ impl Daemon {
         for pending in lost {
             answer(pending.replies, &refused(None, message));
         }
-        self.apply_plan(plan, Vec::new());
+        self.apply_plan(plan, Vec::new(), &in_flight_keys);
     }
 
     /// Moves the diff base forward to the newest of this agent's submissions that the log shows
@@ -1203,7 +1260,7 @@ impl Daemon {
         }
     }
 
-    fn apply_plan(&mut self, plan: Plan, lost: Vec<PendingClaim>) {
+    fn apply_plan(&mut self, plan: Plan, lost: Vec<PendingClaim>, in_flight_keys: &[u64]) {
         let Plan {
             forget,
             refresh,
@@ -1251,35 +1308,24 @@ impl Daemon {
                 answer(pending.replies, &Reply::Claim { outcome });
             }
         }
-        for claim in await_reply {
+        for (index, claim, server) in await_reply {
             self.log(&format!(
                 "claim {} in the event log answers a request still on the way; its reply will \
                  track it",
                 claim.0
             ));
+            if let Some(pending) = in_flight_keys
+                .get(index)
+                .and_then(|key| self.pending.get_mut(key))
+            {
+                pending.awaited = Some((claim, server));
+            }
         }
         for (claim, server) in adopt {
-            self.adopt(claim, server);
-            let note = format!(
-                "the coordinator holds claim {} for this agent and no request here explains it; \
-                 it is now tracked, and `tessel release {}` drops it",
-                claim.0, claim.0
-            );
-            self.notify(NoticeKind::Reconciled, &note, None);
+            self.adopt_unexplained(claim, server);
         }
         for (claim, fence) in release_again {
-            let held = HeldClaim {
-                claim,
-                fence,
-                expires_at_ms: 0,
-                race: None,
-                scopes: Vec::new(),
-                submitted: false,
-                submitted_commit: None,
-                awaiting_review: false,
-                assumptions: Vec::new(),
-            };
-            self.send_release(&held);
+            self.release_by_id(claim, fence);
             let note = format!(
                 "a release of claim {} was lost with the connection; sent it again",
                 claim.0
@@ -1578,7 +1624,9 @@ impl Daemon {
         msg: &ServerMsg,
     ) {
         if let Some(req) = req {
-            if let Some(pending) = self.pending.remove(&req.0) {
+            if let Some(mut pending) = self.pending.remove(&req.0) {
+                let awaited = pending.awaited.take();
+                self.settle_awaited(awaited, None);
                 self.notify(
                     NoticeKind::Error,
                     "the coordinator refused a claim",
@@ -1820,6 +1868,7 @@ impl Daemon {
                 amend: None,
                 assumptions: assumptions.to_vec(),
                 released_meanwhile: Vec::new(),
+                awaited: None,
                 replies: vec![reply],
             },
         );
@@ -1869,6 +1918,7 @@ impl Daemon {
                 amend: Some(claim),
                 assumptions: Vec::new(),
                 released_meanwhile: Vec::new(),
+                awaited: None,
                 replies: vec![reply],
             },
         );
@@ -1915,6 +1965,7 @@ impl Daemon {
                 amend: None,
                 assumptions: Vec::new(),
                 released_meanwhile: Vec::new(),
+                awaited: None,
                 replies: vec![reply],
             },
         );
@@ -1966,6 +2017,21 @@ impl Daemon {
             claims: released,
             kept_submitted,
         }
+    }
+
+    fn release_by_id(&mut self, claim: ClaimId, fence: tessel_coordinator::protocol::Fence) {
+        let held = HeldClaim {
+            claim,
+            fence,
+            expires_at_ms: 0,
+            race: None,
+            scopes: Vec::new(),
+            submitted: false,
+            submitted_commit: None,
+            awaiting_review: false,
+            assumptions: Vec::new(),
+        };
+        self.send_release(&held);
     }
 
     fn send_release(&mut self, held: &HeldClaim) {
@@ -3181,6 +3247,7 @@ mod tests {
             amend: None,
             assumptions: Vec::new(),
             released_meanwhile: Vec::new(),
+            awaited: None,
             replies: Vec::new(),
         }
     }
@@ -3269,6 +3336,152 @@ mod tests {
 
         let held: Vec<u64> = daemon.state.claims.iter().map(|h| h.claim.0).collect();
         assert_eq!(held, vec![2, 9]);
+    }
+
+    fn sent_releases(wire: &mut mpsc::UnboundedReceiver<Outgoing>) -> Vec<(u64, u64)> {
+        let mut sent = Vec::new();
+        while let Ok(outgoing) = wire.try_recv() {
+            if let Outgoing::Msg(ClientMsg::Release { claim, fence, .. }) = outgoing {
+                sent.push((claim.0, fence.0));
+            }
+        }
+        sent
+    }
+
+    fn granted_for(claim: u64, fence: u64) -> ServerMsg {
+        serde_json::from_value(serde_json::json!({
+            "type": "granted", "req": 5, "claim": claim, "fence": fence,
+            "expires_at_ms": 0, "race": null,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_amend_granted_after_the_claim_was_released_sends_the_release_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let mut wire = go_online_listening(&mut daemon);
+        let (tx, mut rx) = oneshot::channel();
+        daemon.pending.insert(
+            5,
+            PendingClaim {
+                amend: Some(ClaimId(1)),
+                replies: vec![tx],
+                ..pending_claim()
+            },
+        );
+
+        daemon.release(Some(ClaimId(1)));
+        daemon.on_server_msg(granted_for(1, 4));
+
+        assert_eq!(sent_releases(&mut wire), vec![(1, 1), (1, 4)]);
+        let reply = rx.try_recv();
+        assert!(
+            matches!(
+                &reply,
+                Ok(Reply::Claim { outcome: ClaimOutcome::Refused { message, .. } })
+                    if message.contains("release was sent again with the new fence")
+            ),
+            "{reply:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_claim_granted_after_its_release_is_not_released_a_second_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let mut wire = go_online_listening(&mut daemon);
+        daemon.pending.insert(5, pending_claim());
+        adopted_by_the_first_log_read(&mut daemon);
+
+        daemon.release(Some(ClaimId(9)));
+        daemon.on_server_msg(granted_json(None));
+
+        assert_eq!(sent_releases(&mut wire), vec![(9, 9)]);
+    }
+
+    #[tokio::test]
+    async fn a_released_grant_ends_a_queued_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let _wire = go_online_listening(&mut daemon);
+        daemon.state.queued = Some(QueuedWait {
+            req: RequestId(5),
+            scopes: Vec::new(),
+            position: 1,
+        });
+        daemon.pending.insert(
+            5,
+            PendingClaim {
+                queued: true,
+                ..pending_claim()
+            },
+        );
+        adopted_by_the_first_log_read(&mut daemon);
+
+        daemon.release(Some(ClaimId(9)));
+        daemon.on_server_msg(granted_json(None));
+
+        assert_eq!(daemon.state.queued, None);
+    }
+
+    fn awaiting(claim: u64) -> PendingClaim {
+        let server = ServerClaim {
+            fence: Fence(claim),
+            scopes: Vec::new(),
+            race: None,
+            submitted: false,
+            submitted_commit: None,
+            awaiting_review: false,
+            assumptions: Vec::new(),
+        };
+        PendingClaim {
+            awaited: Some((ClaimId(claim), server)),
+            ..pending_claim()
+        }
+    }
+
+    fn held_ids(daemon: &Daemon) -> Vec<u64> {
+        daemon.state.claims.iter().map(|h| h.claim.0).collect()
+    }
+
+    #[tokio::test]
+    async fn a_grant_of_another_claim_leaves_the_awaited_one_reported_and_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.pending.insert(5, awaiting(7));
+
+        daemon.on_server_msg(granted_json(None));
+
+        assert_eq!(held_ids(&daemon), vec![1, 2, 7, 9]);
+        assert!(inbox(&daemon).contains("no request here explains it"));
+    }
+
+    #[tokio::test]
+    async fn a_grant_of_the_awaited_claim_is_held_once_and_not_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.pending.insert(5, awaiting(9));
+
+        daemon.on_server_msg(granted_json(None));
+
+        assert_eq!(held_ids(&daemon), vec![1, 2, 9]);
+        assert!(!inbox(&daemon).contains("no request here explains it"));
+    }
+
+    #[tokio::test]
+    async fn a_denied_request_leaves_the_awaited_claim_reported_and_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.pending.insert(5, awaiting(7));
+
+        daemon.on_server_msg(ServerMsg::Denied {
+            req: RequestId(5),
+            conflicts: Vec::new(),
+        });
+
+        assert_eq!(held_ids(&daemon), vec![1, 2, 7]);
+        assert!(inbox(&daemon).contains("no request here explains it"));
     }
 
     #[test]

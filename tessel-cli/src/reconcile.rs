@@ -241,7 +241,7 @@ pub struct Plan {
     pub answer_lost: Vec<(usize, ClaimId, ServerClaim)>,
     /// Live claims that match a request still on the way. They are neither adopted nor reported:
     /// the reply, when it arrives, carries the fence, race and assumptions the log cannot.
-    pub await_reply: Vec<ClaimId>,
+    pub await_reply: Vec<(usize, ClaimId, ServerClaim)>,
     /// Live claims this daemon tried to release before the socket dropped.
     pub release_again: Vec<(ClaimId, Fence)>,
     /// Live claims no local request explains. They are kept, because heartbeats keep them
@@ -318,7 +318,7 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
         match coming {
             Some((index, _)) => {
                 awaited.insert(index);
-                plan.await_reply.push(claim);
+                plan.await_reply.push((index, claim, server.clone()));
             }
             None => plan.adopt.push((claim, server.clone())),
         }
@@ -850,6 +850,13 @@ mod tests {
         assert!(plan.answer_lost.is_empty() && plan.release_again.is_empty());
     }
 
+    fn awaited_ids(plan: &Plan) -> Vec<(usize, ClaimId)> {
+        plan.await_reply
+            .iter()
+            .map(|(index, claim, _)| (*index, *claim))
+            .collect()
+    }
+
     fn plan_in_flight(in_flight: &[Vec<Sc>], events: &[Event], complete: bool) -> Plan {
         let live = live_claims(&AgentId("a1".into()), events);
         let none = HashSet::new();
@@ -868,9 +875,18 @@ mod tests {
     fn a_live_claim_matching_a_request_on_the_way_awaits_its_reply() {
         let events = vec![granted(0, "a1", 7, 9, "a.rs")];
         let plan = plan_in_flight(&[scopes("a.rs")], &events, true);
-        assert_eq!(plan.await_reply, vec![ClaimId(7)]);
+        assert_eq!(awaited_ids(&plan), vec![(0, ClaimId(7))]);
         assert_eq!(plan.adopt, []);
         assert!(plan.answer_lost.is_empty() && plan.release_again.is_empty());
+    }
+
+    #[test]
+    fn a_lost_request_that_named_a_scope_twice_still_gets_its_grant() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let twice = vec![scopes("a.rs")[0].clone(), scopes("a.rs")[0].clone()];
+        let plan = plan_for(&[], &events, &[twice], &[]);
+        assert_eq!(plan.answer_lost.len(), 1);
+        assert_eq!(plan.adopt, []);
     }
 
     #[test]
@@ -888,7 +904,7 @@ mod tests {
             granted(1, "a1", 8, 10, "a.rs"),
         ];
         let plan = plan_in_flight(&[scopes("a.rs")], &events, true);
-        assert_eq!(plan.await_reply, vec![ClaimId(8)]);
+        assert_eq!(awaited_ids(&plan), vec![(0, ClaimId(8))]);
         assert_eq!(plan.adopt.len(), 1);
         assert_eq!(plan.adopt[0].0, ClaimId(7));
     }

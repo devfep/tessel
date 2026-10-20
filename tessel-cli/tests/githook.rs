@@ -506,6 +506,51 @@ async fn a_claim_seen_in_the_log_before_its_grant_is_not_reported_as_unexplained
     Ok(())
 }
 
+/// An amend is granted after `tessel release` ran: the core applied the amend first, so the
+/// release, sent with the old fence, was refused. The daemon sends it again with the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_released_while_its_amend_is_on_the_way_ends_at_the_coordinator() -> Result<()> {
+    let (fake, a1) = started().await?;
+    let first = a1.tessel(&["claim", "src/a.rs"])?;
+    assert_eq!(first.code, 0, "{}", first.all());
+    fake.hold_next_claim_reply();
+    let events = |fake: &Fake, wanted: fn(&EventKind) -> bool| {
+        fake.events().iter().any(|event| wanted(&event.kind))
+    };
+    let amend = std::thread::scope(|scope| -> Result<Done> {
+        let amend = scope.spawn(|| a1.tessel(&["claim", "src/b.rs"]));
+        let landed = async {
+            eventually(Duration::from_secs(8), || {
+                Ok(
+                    events(&fake, |kind| matches!(kind, EventKind::ClaimAmended { .. }))
+                        .then_some(()),
+                )
+            })
+            .await
+        };
+        let landed =
+            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(landed));
+        let released = a1.tessel(&["release"])?;
+        assert_eq!(released.code, 0, "{}", released.all());
+        fake.release_held();
+        let amend = amend
+            .join()
+            .map_err(|_| anyhow::anyhow!("claim thread panicked"))?;
+        landed?;
+        amend
+    })?;
+    assert_ne!(amend.code, 0, "{}", amend.all());
+    eventually(Duration::from_secs(8), || {
+        Ok(events(&fake, |kind| {
+            matches!(kind, EventKind::ClaimReleased { .. })
+        })
+        .then_some(()))
+    })
+    .await?;
+    assert_eq!(a1.held_claims()?, 0);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stopped_worktree_is_not_guarded() -> Result<()> {
     let (_fake, a1) = started().await?;
