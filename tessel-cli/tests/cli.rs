@@ -17,10 +17,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use support::{eventually, eventually_every, git, Agent, Fake, Lose};
+use support::{eventually, eventually_every, git, Agent, Fake, Lose, LIVE_LEASE_MS};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, Criterion, ErrorCode, Fence, Intent, Mode, OnConflict,
-    RequestId, Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, ClientMsg, CommitId, Criterion, ErrorCode, EventKind, Fence, Intent, Mode,
+    OnConflict, ReleaseReason, RequestId, Scope, ScopeClaim, ServerMsg,
 };
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -315,9 +315,11 @@ async fn wait_queues_and_the_grant_arrives_after_the_holder_releases() -> Result
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn heartbeats_keep_a_claim_alive_past_its_lease() -> Result<()> {
-    // The lease is long against the load a busy machine puts on the daemon: a heartbeat every
-    // third of it, and a link given up on after one and a half heartbeats unanswered.
-    let (_fake, a1, a2) = world(3_000).await?;
+    // Heartbeats and expiry both run on the real clock, so the lease is `LIVE_LEASE_MS`; the waits
+    // for the clock to pass an expiry are bounded by three leases, which a passing run never
+    // reaches.
+    let clock_wait = Duration::from_millis(LIVE_LEASE_MS * 3);
+    let (_fake, a1, a2) = world(LIVE_LEASE_MS).await?;
     a1.start("long job")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     let mut mark = a1.status()?["state"]["claims"][0]["expires_at_ms"]
@@ -327,7 +329,7 @@ async fn heartbeats_keep_a_claim_alive_past_its_lease() -> Result<()> {
     // push it past that. One renewal alone would also come from a single early heartbeat.
     for round in 1..=2 {
         let lapsed = mark;
-        eventually(SHORT, || Ok((now_ms() > lapsed).then_some(())))
+        eventually(clock_wait, || Ok((now_ms() > lapsed).then_some(())))
             .await
             .with_context(|| format!("round {round}: the clock never passed the expiry"))?;
         mark = eventually(SHORT, || {
@@ -1586,14 +1588,44 @@ async fn hostile_text_from_the_coordinator_never_reaches_the_terminal_raw() -> R
     Ok(())
 }
 
+/// Lease of the tests that move the coordinator's clock instead of waiting: long, so that the real
+/// time they take can never end a lease.
+const CLOCK_LEASE_MS: u64 = 30_000;
+
+fn lease_expiries(fake: &Fake) -> usize {
+    fake.events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                EventKind::ClaimReleased {
+                    reason: ReleaseReason::LeaseExpired,
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_grant_after_a_wait_longer_than_the_lease_has_a_fresh_expiry() -> Result<()> {
-    let (_fake, a1, a2) = world(1500).await?;
+    let (fake, a1, a2) = world(CLOCK_LEASE_MS).await?;
     a1.start("long hold")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     a2.start("patient")?;
     assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
-    tokio::time::sleep(Duration::from_millis(1800)).await;
+    // The wait outlasts a lease at the coordinator, whose clock moves in two steps with a
+    // heartbeat of the holder's between them, as its daemon would have sent in that time.
+    let step = CLOCK_LEASE_MS * 2 / 3;
+    fake.advance_clock(step);
+    fake.act("a1", ClientMsg::Heartbeat);
+    fake.advance_clock(step);
+    fake.settle_expiry().await;
+    assert_eq!(
+        lease_expiries(&fake),
+        0,
+        "the holder's heartbeat kept its claim"
+    );
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(()))).await?;
     let status = a2.status()?;
@@ -1604,13 +1636,17 @@ async fn a_grant_after_a_wait_longer_than_the_lease_has_a_fresh_expiry() -> Resu
         expires > now_ms(),
         "expiry {expires} is already in the past"
     );
-    tokio::time::sleep(Duration::from_millis(2200)).await;
+    // The grant was made a lease and a third after the request. An expiry counted from the request
+    // would be over by now; one counted from the grant has a lease to run.
+    fake.advance_clock(step);
+    fake.settle_expiry().await;
     assert_eq!(
-        a2.held_claims()?,
-        1,
-        "{}",
+        lease_expiries(&fake),
+        0,
+        "the granted claim expired: {}",
         a2.tessel(&["inbox", "--all"])?.stdout
     );
+    assert_eq!(a2.held_claims()?, 1);
     Ok(())
 }
 
@@ -2478,11 +2514,17 @@ async fn stop_then_start_does_not_move_the_base_past_committed_work() -> Result<
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_crash_that_outlasts_the_lease_does_not_move_the_base_either() -> Result<()> {
-    let (fake, a1, _a2) = world(900).await?;
+    let (fake, a1, _a2) = world(CLOCK_LEASE_MS).await?;
     restart_then_submit_is_uncovered(&fake, &a1, async |agent| {
         kill_daemon(agent).await?;
         // The coordinator expires the claim, so nothing is adopted on the next start.
-        tokio::time::sleep(Duration::from_millis(1800)).await;
+        fake.advance_clock(CLOCK_LEASE_MS + 1);
+        fake.settle_expiry().await;
+        assert_eq!(
+            lease_expiries(&fake),
+            1,
+            "the dead daemon's claim should have expired"
+        );
         Ok(())
     })
     .await

@@ -24,6 +24,14 @@ use tokio_tungstenite::WebSocketStream;
 
 pub const REPO: &str = "demo";
 
+/// The lease of the tests that need heartbeats to arrive in real time. The daemon sends one every
+/// third of the lease and drops a link whose pong is a lease and a half of a heartbeat late; the
+/// coordinator drops a claim whose heartbeat is a whole lease late. Both clocks are real, so the
+/// only thing that fails such a test is a stall of the daemon or the coordinator longer than two
+/// thirds of the lease: 4 s here, where a 3 s lease tolerated 2 s. Tests that only need a lease
+/// to end use `Fake::advance_clock` and a 30 s lease instead.
+pub const LIVE_LEASE_MS: u64 = 6_000;
+
 pub fn now_ms() -> u64 {
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -62,6 +70,17 @@ struct Inner {
     hold_claim_reply: AtomicBool,
     held: Mutex<Vec<(u64, Vec<Outbound>)>>,
     lose: Mutex<Vec<(String, Lose)>>,
+    /// Milliseconds the coordinator clock runs ahead of the real one (`Fake::advance_clock`).
+    skew_ms: AtomicU64,
+    /// Completed passes of the lease-expiry loop, so a test can wait for one that saw a new clock.
+    expiry_passes: AtomicU64,
+}
+
+impl Inner {
+    /// The time the core is told, in milliseconds.
+    fn clock(&self) -> u64 {
+        now_ms() + self.skew_ms.load(Ordering::SeqCst)
+    }
 }
 
 /// A message to lose on its way, as a dropped network connection would.
@@ -105,7 +124,7 @@ impl Inner {
 
     /// Runs `msg` on the core as `agent`, outside any socket.
     fn act(&self, agent: &AgentId, msg: ClientMsg) {
-        let effects = lock(&self.core).handle(agent, msg, now_ms());
+        let effects = lock(&self.core).handle(agent, msg, self.clock());
         let (events, outbound) = shell::split_effects(effects);
         self.deliver(None, outbound);
         self.publish(events);
@@ -168,6 +187,8 @@ impl Fake {
             hold_claim_reply: AtomicBool::new(false),
             held: Mutex::new(Vec::new()),
             lose: Mutex::new(Vec::new()),
+            skew_ms: AtomicU64::new(0),
+            expiry_passes: AtomicU64::new(0),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
@@ -212,14 +233,14 @@ impl Fake {
     pub fn merge_next(&self) {
         let effects = {
             let mut core = lock(&self.inner.core);
-            let Some(dispatch) = core.begin_merge(now_ms()) else {
+            let Some(dispatch) = core.begin_merge(self.inner.clock()) else {
                 return;
             };
             let landed = MergeOutcome::Merged {
                 base: CommitId("b".repeat(40)),
                 head: CommitId("c".repeat(40)),
             };
-            core.merge_outcome(dispatch.id, &landed, now_ms())
+            core.merge_outcome(dispatch.id, &landed, self.inner.clock())
         };
         let (events, outbound) = shell::split_effects(effects);
         self.inner.deliver(None, outbound);
@@ -231,7 +252,7 @@ impl Fake {
     pub fn verify_next(&self, passed: bool) -> bool {
         let effects = {
             let mut core = lock(&self.inner.core);
-            let Some(dispatch) = core.begin_verification(now_ms()) else {
+            let Some(dispatch) = core.begin_verification(self.inner.clock()) else {
                 return false;
             };
             let outcome = if passed {
@@ -239,7 +260,11 @@ impl Fake {
             } else {
                 TrialOutcome::TestsFailed {}
             };
-            core.verification_outcome(dispatch.id, &TrialReport::stopped(outcome), now_ms())
+            core.verification_outcome(
+                dispatch.id,
+                &TrialReport::stopped(outcome),
+                self.inner.clock(),
+            )
         };
         let (events, outbound) = shell::split_effects(effects);
         self.inner.deliver(None, outbound);
@@ -342,6 +367,27 @@ impl Fake {
         self.inner.deliver(None, vec![notify]);
     }
 
+    /// Moves the coordinator's clock `ms` ahead of the real one, as if that long had passed
+    /// there. Leases expire on this clock; the daemons, which are real processes, keep the real
+    /// one. Follow it with `settle_expiry` before asserting on what expired.
+    pub fn advance_clock(&self, ms: u64) {
+        self.inner.skew_ms.fetch_add(ms, Ordering::SeqCst);
+    }
+
+    /// Waits until the lease-expiry loop has run twice since the call began: the first pass may
+    /// have started before the latest `advance_clock`, the second began after it.
+    pub async fn settle_expiry(&self) {
+        let target = self.inner.expiry_passes.load(Ordering::SeqCst) + 2;
+        while self.inner.expiry_passes.load(Ordering::SeqCst) < target {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// The coordinator's event log so far.
+    pub fn events(&self) -> Vec<Event> {
+        lock(&self.inner.events).clone()
+    }
+
     /// Every message `agent` has sent, in order.
     pub fn received(&self, agent: &str) -> Vec<ClientMsg> {
         let log = self
@@ -364,11 +410,12 @@ async fn expire_loop(inner: Arc<Inner>) {
                 .core
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            core.expire(now_ms())
+            core.expire(inner.clock())
         };
         let (events, outbound) = shell::split_effects(effects);
         inner.deliver(None, outbound);
         inner.publish(events);
+        inner.expiry_passes.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -592,7 +639,7 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                     .core
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                core.handle(&agent, msg, now_ms())
+                core.handle(&agent, msg, inner.clock())
             };
             let (events, mut outbound) = shell::split_effects(effects);
             if inner.review_first.load(Ordering::SeqCst) {
@@ -642,7 +689,7 @@ fn close_socket(inner: &Inner, id: u64, session: &Session) {
             .core
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        core.disconnect(agent, now_ms())
+        core.disconnect(agent, inner.clock())
     };
     let (events, outbound) = shell::split_effects(effects);
     inner.deliver(None, outbound);

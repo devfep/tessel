@@ -15,7 +15,7 @@ mod support;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use support::{eventually, now_ms, Agent, Fake};
+use support::{eventually, now_ms, Agent, Fake, LIVE_LEASE_MS};
 use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, ServerMsg};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -69,10 +69,17 @@ async fn a_silent_link_is_dropped_after_half_a_lease_and_the_daemon_reconnects()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_healthy_link_is_kept_and_the_local_expiry_follows_the_heartbeats() -> Result<()> {
-    let (fake, a1) = claimed(3_000).await?;
+    let (fake, a1) = claimed(LIVE_LEASE_MS).await?;
     let granted = expiry(&a1)?;
     let baseline = hellos(&fake);
-    tokio::time::sleep(Duration::from_millis(4_000)).await;
+    // Two answered heartbeats move the local expiry two heartbeat periods past the grant's. The
+    // wait ends when they have; three leases is the most a passing run could need.
+    let two_beats = LIVE_LEASE_MS * 2 / 3;
+    eventually(Duration::from_millis(LIVE_LEASE_MS * 3), || {
+        Ok((expiry(&a1)? > granted + two_beats).then_some(()))
+    })
+    .await
+    .context("answered heartbeats did not renew the local expiry")?;
     assert_eq!(
         hellos(&fake),
         baseline,
@@ -80,10 +87,6 @@ async fn a_healthy_link_is_kept_and_the_local_expiry_follows_the_heartbeats() ->
         a1.tessel_files().unwrap_or_default()
     );
     assert_eq!(a1.held_claims()?, 1);
-    assert!(
-        expiry(&a1)? > granted + 2_000,
-        "answered heartbeats did not renew the local expiry"
-    );
     Ok(())
 }
 
