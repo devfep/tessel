@@ -101,7 +101,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Inner {
-    async fn wait_for_log_reads(&self) {
+    async fn wait_if_log_read(&self, text: &str) {
+        if !matches!(shell::parse_client_msg(text), Ok(ClientMsg::Watch { .. })) {
+            return;
+        }
         loop {
             let released = self.watch_gate.notified();
             if !self.hold_watch.load(Ordering::SeqCst) {
@@ -573,9 +576,7 @@ async fn serve(
             }
             frame = socket.next(), if !deaf => match frame {
                 Some(Ok(Message::Text(text))) => {
-                    if matches!(shell::parse_client_msg(&text), Ok(ClientMsg::Watch { .. })) {
-                        inner.wait_for_log_reads().await;
-                    }
+                    inner.wait_if_log_read(&text).await;
                     if let Some(parsed) = handle_text(&inner, id, &mut session, &text) {
                         if parsed.close {
                             break;
