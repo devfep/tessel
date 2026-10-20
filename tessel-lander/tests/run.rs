@@ -15,6 +15,24 @@ use tessel_lander::run::{run, RunError};
 /// 16 MiB, written out so a change to the limit is a change to this test.
 const LIMIT: usize = 16_777_216;
 
+/// How long the processes that a timeout must cut off would otherwise run, and the timeout tests'
+/// only wall-clock bound: a run that returns in under half of it did not wait for them. The bound
+/// separates "returned at the deadline" from "waited for the process to end on its own", a gap of
+/// tens of seconds, so no scheduler delay on a loaded machine closes it. A passing run takes about
+/// its timeout, which is well under a second.
+const OUTLASTS: Duration = Duration::from_secs(60);
+
+/// The timeout of the tests that read a pid the command wrote: the shell must be scheduled and
+/// write it before the deadline, or the run kills it first and the test panics with "pid written".
+/// A passing test takes this long, since its command never ends on its own; the value is seconds
+/// past the milliseconds a shell needs, and only a machine that cannot start a shell for this long
+/// fails it.
+const STARTS_WITHIN: Duration = Duration::from_secs(5);
+
+fn returned_without_waiting(elapsed: Duration) -> bool {
+    elapsed < OUTLASTS / 2
+}
+
 fn command(argv: &[&str], env: &[(&str, &str)], timeout: Duration) -> GitCommand {
     GitCommand {
         argv: argv.iter().map(OsString::from).collect(),
@@ -67,7 +85,7 @@ fn a_signal_has_no_exit_code_and_is_not_success() {
 fn kills_a_command_that_outlives_its_timeout() {
     let started = Instant::now();
     let error = run(&command(
-        &["/bin/sleep", "20"],
+        &["/bin/sleep", &OUTLASTS.as_secs().to_string()],
         &[],
         Duration::from_millis(200),
     ))
@@ -76,7 +94,7 @@ fn kills_a_command_that_outlives_its_timeout() {
         matches!(error, RunError::TimedOut { seconds: 0, .. }),
         "{error}"
     );
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(returned_without_waiting(started.elapsed()));
 }
 
 #[test]
@@ -153,13 +171,13 @@ fn an_empty_argv_is_a_spawn_error() {
 
 #[test]
 fn a_grandchild_holding_the_pipe_cannot_outlast_the_timeout() {
-    let mut probe = sh("sleep 4 & exit 0");
+    let mut probe = sh(&format!("sleep {} & exit 0", OUTLASTS.as_secs()));
     probe.timeout = Duration::from_secs(1);
     let started = Instant::now();
     let error = run(&probe).expect_err("the pipe stays open");
     assert!(matches!(error, RunError::TimedOut { .. }), "{error}");
     assert!(
-        started.elapsed() < Duration::from_millis(2500),
+        returned_without_waiting(started.elapsed()),
         "{:?}",
         started.elapsed()
     );
@@ -193,10 +211,17 @@ fn alive(pid: &str) -> bool {
         .success()
 }
 
-/// Waits up to five seconds for the process to be gone (a zombie still answers `kill -0`).
+/// How long `assert_gone` polls before it calls a process stuck. The wait ends the moment the
+/// process is gone, so a passing test never pays it: it only decides how long a failing test
+/// takes to say so. It is long because the thing waited for is the kernel and the runner's reaper
+/// thread getting scheduled, and a loaded machine can delay both by seconds. It stays under
+/// `OUTLASTS`, so a process that was never killed cannot pass by ending on its own.
+const GONE_GUARD: Duration = Duration::from_secs(30);
+
+/// Waits until the process is gone (a zombie still answers `kill -0`), or `GONE_GUARD` passes.
 fn assert_gone(pid_file: &std::path::Path) {
     let pid = std::fs::read_to_string(pid_file).expect("pid written");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + GONE_GUARD;
     while alive(pid.trim()) {
         assert!(
             Instant::now() < deadline,
@@ -213,10 +238,11 @@ fn a_timeout_kills_the_whole_process_group_not_only_the_command() {
     let pid_file = scratch.path().join("grandchild.pid");
     let _cleanup = KillOnDrop(pid_file.clone());
     let mut probe = sh(&format!(
-        "sleep 30 & echo $! > '{}'; sleep 30",
+        "sleep {0} & echo $! > '{1}'; sleep {0}",
+        OUTLASTS.as_secs(),
         pid_file.display()
     ));
-    probe.timeout = Duration::from_millis(500);
+    probe.timeout = STARTS_WITHIN;
     run(&probe).expect_err("times out");
     assert_gone(&pid_file);
 }
@@ -227,7 +253,8 @@ fn a_background_process_is_killed_when_the_command_finishes_normally() {
     let pid_file = scratch.path().join("grandchild.pid");
     let _cleanup = KillOnDrop(pid_file.clone());
     let script = format!(
-        "sleep 30 >/dev/null 2>&1 & echo $! > '{}'",
+        "sleep {} >/dev/null 2>&1 & echo $! > '{}'",
+        OUTLASTS.as_secs(),
         pid_file.display()
     );
     let output = run(&sh(&script)).expect("finishes");
@@ -241,15 +268,16 @@ fn a_timed_out_command_is_reaped_not_left_a_zombie() {
     let pid_file = scratch.path().join("command.pid");
     let _cleanup = KillOnDrop(pid_file.clone());
     let mut probe = sh(&format!(
-        "echo $$ > '{}'; exec sleep 30",
-        pid_file.display()
+        "echo $$ > '{}'; exec sleep {}",
+        pid_file.display(),
+        OUTLASTS.as_secs()
     ));
-    probe.timeout = Duration::from_millis(300);
+    probe.timeout = STARTS_WITHIN;
     let started = Instant::now();
     let error = run(&probe).expect_err("times out");
     assert!(matches!(error, RunError::TimedOut { .. }), "{error}");
     assert!(
-        started.elapsed() < Duration::from_millis(1500),
+        returned_without_waiting(started.elapsed()),
         "{:?}",
         started.elapsed()
     );
