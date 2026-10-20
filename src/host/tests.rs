@@ -2707,6 +2707,13 @@ fn host_a_failed_send_during_a_replay_ends_it_unmarked_and_closes_the_socket() {
         2,
         "no page is read after the failure"
     );
+    assert!(
+        kit.logs()
+            .iter()
+            .all(|line| !line.contains("replay events failed")),
+        "the page still out when the replay ended is dropped silently: {:?}",
+        kit.logs().last()
+    );
     assert_failed_sends_logged(&kit, shell::REPLAY_PAGE);
     assert_eq!(count(&kit, "Close"), 1, "closed once");
     assert_eq!(close_of(&kit, watcher), Some((1011, "send failed")));
