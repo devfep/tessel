@@ -303,8 +303,9 @@ impl CheckRun {
 
 /// The part of a failed run's output worth keeping, at most `max_bytes` long, and what it is.
 /// The TAP reporter prints each `not ok` where it happens and nothing recaps them at the end, so
-/// the excerpt starts at the first `not ok` and ends with the `# pass` and `# fail` lines. A run
-/// with no `not ok` (a crash, a link failure) keeps the last `max_bytes` instead.
+/// the excerpt starts at the first `not ok` and ends with the last `# pass` and `# fail`
+/// lines, which are the reporter's own (a test's `console.log` prints as `# ...` too, earlier). A
+/// run with no `not ok` (a crash, a link failure) keeps the last `max_bytes` instead.
 fn excerpt(output: &str, max_bytes: usize) -> (&'static str, String) {
     let Some(first) = first_not_ok(output) else {
         return ("the last part", tail(output, max_bytes).to_string());
@@ -316,10 +317,11 @@ fn excerpt(output: &str, max_bytes: usize) -> (&'static str, String) {
             from_first.to_string(),
         );
     }
-    let summary: Vec<&str> = from_first
-        .lines()
-        .filter(|l| l.starts_with("# pass ") || l.starts_with("# fail "))
-        .collect();
+    let last = |prefix: &str| from_first.lines().rev().find(|l| l.starts_with(prefix));
+    let summary = [last("# pass "), last("# fail ")]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let summary = summary.join("\n");
     let budget = max_bytes.saturating_sub(summary.len() + 1);
     let mut end = budget.min(from_first.len());
@@ -477,6 +479,19 @@ mod tests {
     }
 
     #[test]
+    fn lines_a_test_logs_cannot_stand_in_for_the_reporters_summary() {
+        let logged = "# pass 99\n# fail 0\n".repeat(200);
+        let output = tap(&["ok 1 - a\n", "not ok 2 - b\n  error: 'boom'\n", &logged]);
+        let (_, text) = excerpt(&output, 200);
+        assert_eq!(text.len(), 200, "{text:?}");
+        assert!(
+            text.starts_with("not ok 2 - b\n  error: 'boom'\n"),
+            "{text:?}"
+        );
+        assert!(text.ends_with("\n# pass 8\n# fail 1"), "{text:?}");
+    }
+
+    #[test]
     fn an_excerpt_that_fits_is_everything_from_the_first_not_ok() {
         let output = tap(&["ok 1 - a\n", "  not ok 2 - nested\n"]);
         let (what, text) = excerpt(&output, 1000);
@@ -532,7 +547,7 @@ mod tests {
             "the output is escaped onto one line: {note}"
         );
         let unquoted: String = serde_json::from_str(quoted).unwrap();
-        assert!(unquoted.len() <= 300, "{}", unquoted.len());
+        assert_eq!(unquoted.len(), 300, "{unquoted:?}");
         assert!(unquoted.starts_with("not ok"), "{unquoted:?}");
         assert!(unquoted.contains("# fail 1"), "{unquoted:?}");
     }
