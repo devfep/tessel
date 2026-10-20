@@ -16,7 +16,7 @@ use tessel_coordinator::merge::{MergeOutcome, TrialOutcome, TrialReport};
 use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
@@ -60,6 +60,9 @@ struct Inner {
     stall_live: AtomicBool,
     review_first: AtomicBool,
     hold_claim_reply: AtomicBool,
+    /// Event-log readers' `Watch` frames wait here while `hold_log_reads` is on.
+    hold_watch: AtomicBool,
+    watch_gate: Notify,
     held: Mutex<Vec<(u64, Vec<Outbound>)>>,
     lose: Mutex<Vec<(String, Lose)>>,
     /// Milliseconds the coordinator clock runs ahead of the real one (`Fake::advance_clock`).
@@ -98,6 +101,16 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Inner {
+    async fn wait_for_log_reads(&self) {
+        loop {
+            let released = self.watch_gate.notified();
+            if !self.hold_watch.load(Ordering::SeqCst) {
+                return;
+            }
+            released.await;
+        }
+    }
+
     fn mark_muted(&self, id: u64) {
         if let Some(entry) = lock(&self.sockets).iter_mut().find(|s| s.id == id) {
             entry.muted = true;
@@ -182,6 +195,8 @@ impl Fake {
             stall_live: AtomicBool::new(false),
             review_first: AtomicBool::new(false),
             hold_claim_reply: AtomicBool::new(false),
+            hold_watch: AtomicBool::new(false),
+            watch_gate: Notify::new(),
             held: Mutex::new(Vec::new()),
             lose: Mutex::new(Vec::new()),
             skew_ms: AtomicU64::new(0),
@@ -200,6 +215,18 @@ impl Fake {
             kill,
             mute,
         })
+    }
+
+    /// Parks every `Watch` frame, and so the `Hello` queued behind it, until `release_log_reads`.
+    /// The daemon's event-log read then stays in flight while other sockets are served.
+    pub fn hold_log_reads(&self) {
+        self.inner.hold_watch.store(true, Ordering::SeqCst);
+    }
+
+    /// Lets the parked `Watch` frames, and every later one, through.
+    pub fn release_log_reads(&self) {
+        self.inner.hold_watch.store(false, Ordering::SeqCst);
+        self.inner.watch_gate.notify_waiters();
     }
 
     /// Keeps the reply to the next `Claim` or `Amend` back until `release_held`.
@@ -546,6 +573,9 @@ async fn serve(
             }
             frame = socket.next(), if !deaf => match frame {
                 Some(Ok(Message::Text(text))) => {
+                    if matches!(shell::parse_client_msg(&text), Ok(ClientMsg::Watch { .. })) {
+                        inner.wait_for_log_reads().await;
+                    }
                     if let Some(parsed) = handle_text(&inner, id, &mut session, &text) {
                         if parsed.close {
                             break;
