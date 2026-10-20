@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use support::{eventually, git, Agent, Done, Fake};
+use tessel_coordinator::protocol::EventKind;
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 
@@ -425,6 +426,58 @@ async fn a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for() -> R
     assert_ne!(done.code, 0, "{}", done.all());
     assert!(done.stderr.contains("src/c.rs (create)"), "{}", done.stderr);
     assert!(!done.stderr.contains("src/d.rs"), "{}", done.stderr);
+    Ok(())
+}
+
+/// The daemon's first event-log read can end between the coordinator granting a claim and the
+/// daemon receiving the grant: the claim is in the log before the daemon holds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grant_racing_the_first_log_read_leaves_one_entry_per_claim() -> Result<()> {
+    let (fake, a1) = world().await?;
+    install(&a1)?;
+    fake.hold_log_reads();
+    a1.start("edit things")?;
+    fake.hold_next_claim_reply();
+    let claim = std::thread::scope(|scope| -> Result<Done> {
+        let claim = scope.spawn(|| a1.tessel(&["claim", "src/c.rs", "--mode", "create"]));
+        let granted = |fake: &Fake| {
+            fake.events()
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::ClaimGranted { .. }))
+        };
+        let log = a1.root().join(".tessel/daemon.log");
+        let read = async {
+            eventually(Duration::from_secs(8), || Ok(granted(&fake).then_some(()))).await?;
+            fake.release_log_reads();
+            eventually(Duration::from_secs(8), || {
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                Ok(text.contains("1 live claims for this agent").then_some(()))
+            })
+            .await
+        };
+        let read = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(read));
+        fake.release_held();
+        let claim = claim
+            .join()
+            .map_err(|_| anyhow::anyhow!("claim thread panicked"))?;
+        read?;
+        claim
+    })?;
+    assert_eq!(claim.code, 0, "{}", claim.all());
+    assert_eq!(
+        a1.held_claims()?,
+        1,
+        "{}",
+        a1.tessel_files().unwrap_or_default()
+    );
+    let done = commit_file(&a1, "src/c.rs", "pub fn c() {}\n")?;
+    assert_eq!(
+        done.code,
+        0,
+        "{}\ndaemon files:\n{}",
+        done.all(),
+        a1.tessel_files().unwrap_or_default()
+    );
     Ok(())
 }
 
