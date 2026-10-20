@@ -1059,6 +1059,14 @@ mod tests {
     }
 
     #[test]
+    fn parent_dir_drops_the_last_segment_and_the_root_has_none() {
+        assert_eq!(parent_dir("a/b/c.rs"), "a/b");
+        assert_eq!(parent_dir("a/b"), "a");
+        assert_eq!(parent_dir("a"), "");
+        assert_eq!(parent_dir(""), "");
+    }
+
+    #[test]
     fn ancestors_walk_to_root() {
         assert_eq!(
             sym("src/auth/session.rs", "refresh").ancestors(),
