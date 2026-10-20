@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-20 10:30 EDT. Merged since the last rewrite: the previous STATE (`53d799e`,
+**As of:** 2026-10-20 13:00 EDT. Merged since the last rewrite: the previous STATE (`53d799e`,
 #60) and P1-FLAKE-UNDER-LOAD (`fe7ac16`, #62). The orchestrator's gate on `fe7ac16` is green
 (1686 tests, all seven steps). M2's done-check waits on P1-CLI-ON-HOST.
 **The nightly is broken on main:** since 20 October, shard 0 of the full mutants run ends with
@@ -20,7 +20,9 @@ nightly to fail.
 - P1-MUTANTS-PROPTEST-ONLY (lane A, `.claude/worktrees/p1-mutants-proptest-only`, #61), fix
   pass 1: one proptest the filter missed, and the nightly's memory cap. The filtered run on
   `a162b31` missed only the baseline; it is repeated on the final head with every proptest out.
-- CLI-GITHOOK-FIRST-COMMIT and SWARM-AGENT-CHECKS-UNDER-LOAD (lane B, in turn).
+- CLI-DUPLICATE-ADOPTED-CLAIM (lane B, #64, ready to merge).
+- SWARM-AGENT-CHECKS-UNDER-LOAD (lane B, `.claude/worktrees/swarm-agent-checks`, from `fe7ac16`).
+**Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 **Next:** lane A takes P1-CLI-ON-HOST once decision 14 is made. P1-FAKE-HELLO-LOST is decided
 when P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
@@ -245,6 +247,27 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   `STATUS_TIMEOUT` (`tessel-cli/src/githook.rs`), or a claim made right after `tessel start` (the
   test now waits for the daemon to settle, which may hide the race: reproduce with plain
   `start`). Done: the cause named, and a test that fails on it and passes with the fix.
+  Not reproduced (20 October). Ruled out: an acknowledgement before the state write or a stale
+  status (the state is written before the reply, and `Status` runs on the same daemon loop); the
+  5 s `STATUS_TIMEOUT` (it fails with "daemon does not answer", not an uncovered refusal);
+  reconcile forgetting the claim (that needs the claim ended in the log and not fresh); a
+  housekeeping lapse (only while the link is down, and a fresh claim expires 30 s out); a grant
+  racing the first log read (it held the claim twice, CLI-DUPLICATE-ADOPTED-CLAIM, which adds
+  coverage and cannot refuse). Unproven: a reconnect clearing `fresh`. Blocked on a reproduction.
+- [ ] **CLI-DUPLICATE-ADOPTED-CLAIM** — lane B, #64. Found by CLI-GITHOOK-FIRST-COMMIT: a claim
+  granted while the daemon's first log read is in flight is adopted from the log, then pushed again
+  by `on_granted`, so it is held twice. Agents saw a second claim instead of an amend, `tessel
+  submit` failing with "several claims (1, 1, 2)" and a release sent twice. Done: `on_granted`
+  replaces an entry with the same claim id, with a test that fails without it.
+- [ ] **CLI-RECONCILE-INFLIGHT-NOTICE** — lane B, after #64. From the #64 review: the
+  "Reconciled" notice (`tessel-cli/src/daemon.rs` ~1232) tells the agent that its own claim, still
+  on the way, has no request behind it and that `tessel release <id>` drops it; an agent that
+  follows it gives up the claim it just got. Done: the scopes of requests still on the way are part
+  of `reconcile::Local`, a match is not adopted or reported, with a test of the notice.
+- [ ] **CLI-RELEASE-BEFORE-GRANT** — lane B, after #64. From the #64 review: a `tessel release`
+  between the adoption and the `Granted` removes the claim, and `on_granted` then adds it back,
+  held locally after the agent released it. Older than #64. Done: a test of that ordering, and the
+  late grant not re-adding a released claim.
 - [ ] **SWARM-AGENT-CHECKS-UNDER-LOAD** — lane B. From P1-FLAKE-UNDER-LOAD: in
   `tessel-swarm/tests/reconnect.rs` an agent released its claim without submitting, under heavy
   load; the same log comes from the agent's own checks (`node --test`) failing. Why they fail under
