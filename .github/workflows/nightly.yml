@@ -4,6 +4,14 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      test_filter:
+        description: >-
+          nextest filterset every mutants shard passes to the test tool (nextest -E). Empty runs
+          every test.
+        required: false
+        default: ""
+        type: string
   pull_request:
     paths:
       - .github/workflows/nightly.yml
@@ -70,10 +78,15 @@ jobs:
       - name: Mutants on the core
         env:
           SHARD: ${{ matrix.shard }}
+          TEST_FILTER: ${{ inputs.test_filter }}
         run: |
+          filter_args=()
+          if [ -n "$TEST_FILTER" ]; then
+            filter_args=(-- -E "$TEST_FILTER")
+          fi
           code=0
           cargo mutants --package tessel-coordinator --package tessel-lander \
-            --test-tool nextest --jobs 2 --shard "$SHARD" || code=$?
+            --test-tool nextest --jobs 2 --shard "$SHARD" "${filter_args[@]}" || code=$?
           case "$code" in
             0 | 2 | 3) ;;
             *) echo "::error::cargo mutants exited $code (1 usage error, 4 baseline failed)."
