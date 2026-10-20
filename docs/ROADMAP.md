@@ -7,17 +7,18 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-19 19:00 EDT. Merged since the last rewrite: the previous STATE (`69ba64b`,
-#53), P1-MOVE-WAKE (`35202e7`, #56), P1-LANDER-ISOLATION (`bda5a49`, #54) and three follow-ups
-with the flakes seen under load (`6c0e1af`, #55). The orchestrator's gate on `6c0e1af`
-is green (1648 tests, clippy native, no-default-features build and clippy, wasm32, fmt, named
-tests).
+**As of:** 2026-10-20 06:10 EDT. Merged since the last rewrite: the previous STATE (`1f52cc7`,
+#57), P1-MOVE-REPLAY (`148b187`, #58) and P1-LANDER-AFTER-TESTS (`716aca5`, #59). The
+orchestrator's gate on `716aca5` is green (1686 tests, clippy native, no-default-features build
+and clippy, wasm32, fmt, named tests). No host row of the rules list is "after move": only the
+adapter rows R2-R5 and R49 are, which are M4's. M2's done-check now waits on P1-CLI-ON-HOST.
 **In flight:**
-- P1-MOVE-REPLAY (lane A, `.claude/worktrees/p1-move-replay`, from `6c0e1af`), with R46 and R50.
-  Done when no host row of the rules list is "after move", leaving only R2-R5 and R49.
-- P1-LANDER-AFTER-TESTS (lane B, `.claude/worktrees/p1-lander-after-tests`, from `6c0e1af`).
-**Next:** lane A takes P1-CLI-ON-HOST after P1-MOVE-REPLAY merges, once decision 14 is made;
-lane B takes P1-FLAKE-UNDER-LOAD, then P1-MUTANTS-PROPTEST-ONLY. P1-FAKE-HELLO-LOST is decided
+- P1-MUTANTS-PROPTEST-ONLY (lane A, `.claude/worktrees/p1-mutants-proptest-only`, from
+  `716aca5`). Phase 1 adds a test filter to the nightly's manual run so the orchestrator can run
+  the full mutants with the proptests filtered out; phase 2 adds an example test per mutant only
+  a proptest kills.
+- P1-FLAKE-UNDER-LOAD (lane B, `.claude/worktrees/p1-flake-under-load`, from `716aca5`).
+**Next:** lane A takes P1-CLI-ON-HOST once decision 14 is made. P1-FAKE-HELLO-LOST is decided
 when P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
 The adapter rows R2-R5 and R49 stay "after move" until M4, whose done-check makes each "now" with
@@ -193,9 +194,14 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   as today. The test-only `begin_call`, `StartJob`, `MarkerStep` and `Job::Start` are gone. A
   merge is one `Prepare` call standing for the steward's `/merge` until M3 (HOST-MERGE-STANDIN).
   CI evidence in six plants, each rule's test checked at its own assertion line.
-- [ ] **P1-MOVE-REPLAY** — lane A, after P1-MOVE-WAKE. `Watch` replay with other inputs queued:
-  row R36. Also the two host rows no other M2 task names: R46 (errors name the repo and the
-  operation) and the first-load-only half of R50 (the stored size).
+- [x] **P1-MOVE-REPLAY** (`148b187`, #58) — lane A. `Watch` replay (R36) with every other input
+  queued until it ends, R46 (errors name the repo and the failed operation) and R50 (the stored
+  size set on the first load only). A failed send to the replayed socket ends the replay at once,
+  unmarked, before the socket is closed and withdrawn. Two declared differences from
+  `runtime.rs`, in R36's row: one replay can log up to a page of failed-send lines, and a failing
+  last page marks the watcher before its socket is closed. The adapter must always answer
+  `ReadEvents`, or the gate stays shut. CI evidence in nine plants, each test checked at its own
+  assertion line.
 - [ ] **P1-CLI-ON-HOST** — lane A, after the four above; needs decision 14. The CLI's fake
   coordinator rebuilt on the host, same test count.
 - [x] **P1-LANDER-MERGE** (`70526c9`, #48) — lane B. `prepare` and `land` ported from
@@ -214,16 +220,13 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   repository's own built-in driver on main is overridden too, which only adds conflicts. If a
   repository needs its own `merge=union`, `GIT_ATTR_SOURCE=<base>` (git 2.42, above the 2.31
   floor) would honour main's attributes and ignore the fork's.
-- [ ] **P1-LANDER-AFTER-TESTS** — lane B, after P1-LANDER-ISOLATION; must land before M4's local
-  test runner. From the P1-LANDER-MERGE review: the package step must not run in the `Workspace`,
-  and nothing enforces it. Repo code run there could write `.git/config` settings that `land`'s
-  push follows with the write credential live: `url.*.insteadOf` and `pushInsteadOf`,
-  `http.proxy`, `include.path`, `remote.*.receivepack`; it could also move refs or rewrite
-  objects. Chosen approach: the package step gets a separate clone of the rebased head, as a
-  `TestTree` type it cannot turn into a `Workspace`, and `land` pushes from the untouched
-  `Workspace`. A digest of `.git/config` was rejected: it covers config only. Done: a test that
-  hostile config, refs and attributes planted by the package step change nothing `land` does,
-  failing when the step is handed the `Workspace`.
+- [x] **P1-LANDER-AFTER-TESTS** (`716aca5`, #59) — lane B. The package step runs in a
+  `TestTree`, a second clone of the rebased head that the port cannot turn into a `Workspace`;
+  `land` pushes from the untouched `Workspace`. A hostile step's `url.*.pushInsteadOf`,
+  `include.path`, `remote.<URL>.pushurl` and `.receivepack` in its tree change nothing `land`
+  does, and each subverts `land` when planted in the workspace (controls). It does not stop
+  hostile code run as the same OS user, which can find the workspace by path: that is
+  M4-SANDBOX-WORKSPACE.
 - [ ] **P1-FLAKE-UNDER-LOAD** — lane B when free. From the P1-LANDER-TRIAL review, at a load
   average near 170 from another project on this Mac: `tessel-lander/tests/run.rs` grandchild and
   zombie timeout tests and two `tessel-cli` lease and heartbeat tests failed once and passed on
@@ -247,6 +250,12 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   if the adapter never answers or sends `CallLost`. The host knows each call's `deadline_ms`.
   Done: a host test that a call past its deadline with no answer is treated as lost, or a
   written reason that the adapter's deadline is enough.
+- [ ] **M4-SANDBOX-WORKSPACE** — M4, with the local test runner's sandbox. From the
+  P1-LANDER-AFTER-TESTS review: the `TestTree` split stops the port API and accidental writes, not
+  hostile repo code run as the same OS user. The tree names the workspace path (`remote.origin.url`,
+  `.git/logs/HEAD`), so such code can write the workspace's `.git/config` directly. Done: the
+  sandbox denies the package step the workspace directory and kills its leftover processes
+  before `land`, with a test of each; `prepare` and `land` being public is weighed there too.
 - [ ] **SERVER-CONFLICT-NAMES** — M4, with `tessel-server`'s merge response. From the
   P1-LANDER-ISOLATION review: `Conflict.files` (merge and trial) carries fork-chosen file names
   raw, with no cap or total. The steward does not cap them either (`merge-steps.ts` 144-146), and
