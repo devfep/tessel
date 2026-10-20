@@ -7,21 +7,16 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-20 13:00 EDT. Merged since the last rewrite: the previous STATE (`53d799e`,
-#60) and P1-FLAKE-UNDER-LOAD (`fe7ac16`, #62). The orchestrator's gate on `fe7ac16` is green
-(1686 tests, all seven steps). M2's done-check waits on P1-CLI-ON-HOST.
-**The nightly is broken on main:** since 20 October, shard 0 of the full mutants run ends with
-"The runner has received a shutdown signal" (scheduled run 39393491358; last green 39225162697
-on 19 October). The cause is the mutant `src/protocol.rs:168` `parent_dir -> "xyzzy"`, which makes
-`Scope::ancestors` grow until the runner runs out of memory. P1-MUTANTS-PROPTEST-ONLY (#61)
-caps each test process's memory so the shard completes; until it merges, expect the scheduled
-nightly to fail.
+**As of:** 2026-10-20 17:00 EDT. Merged since the last rewrite: P1-MUTANTS-PROPTEST-ONLY
+(`4e68ed9`, #61), CLI-DUPLICATE-ADOPTED-CLAIM (`813e231`, #64) and the previous STATE (`995be2a`,
+#63). The orchestrator's gate on `995be2a` is green (1690 tests, all seven steps). The nightly's
+shard 0 no longer dies: #61 caps each test process's memory. M2's done-check waits on
+P1-CLI-ON-HOST.
 **In flight:**
-- P1-MUTANTS-PROPTEST-ONLY (lane A, `.claude/worktrees/p1-mutants-proptest-only`, #61), fix
-  pass 1: one proptest the filter missed, and the nightly's memory cap. The filtered run on
-  `a162b31` missed only the baseline; it is repeated on the final head with every proptest out.
-- CLI-DUPLICATE-ADOPTED-CLAIM (lane B, #64, ready to merge).
-- SWARM-AGENT-CHECKS-UNDER-LOAD (lane B, `.claude/worktrees/swarm-agent-checks`, from `fe7ac16`).
+- SWARM-AGENT-CHECKS-UNDER-LOAD (lane B, #65), fix pass 1: the checks note keeps the first
+  failing test, not only the tail of the output.
+- CLI-RECONCILE-INFLIGHT-NOTICE, then CLI-RELEASE-BEFORE-GRANT (lane A,
+  `.claude/worktrees/cli-reconcile-inflight`, from `995be2a`).
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 **Next:** lane A takes P1-CLI-ON-HOST once decision 14 is made. P1-FAKE-HELLO-LOST is decided
 when P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration.
@@ -165,12 +160,14 @@ passes; the host types round-trip; the lander git tests pass.
   whether the fake drops it or the daemon never sends it; `replay_unknown`'s
   `a_settled_daemon_has_sent_a_hello_on_each_of_its_two_sockets` (exactly two) could flake on it.
   Done: the cause named, and a test that pins it.
-- [ ] **P1-MUTANTS-PROPTEST-ONLY** — from #42's nightly (39189028810): `waiters_conflict`
-  (`src/coordinator.rs`, `||` → `&&`) was missed in one full run and caught in two, because its
-  only killer was `coordinator_matches_brute_force_model`, which finds it for some seeds. Any
-  mutant killed only by a proptest makes the nightly comparison fail at random. List the mutants
-  each proptest kills that no example test kills (a full mutants run with the proptests filtered
-  out, on CI), and give each an example test. Done: that run misses nothing outside the baseline.
+- [x] **P1-MUTANTS-PROPTEST-ONLY** (`4e68ed9`, #61) — lane A. A dispatched nightly takes a
+  nextest filter (`test_filter`); with all ten proptests filtered out, the full mutants run misses
+  nothing outside the baseline (run 39444984593). Two coordinator tests now pin the order of a
+  denial's conflicts, which only a proptest caught before (`Blocked::key`). The nightly's shard 0
+  had died on every run since 20 October: the mutant `parent_dir -> "xyzzy"` made
+  `Scope::ancestors` grow until the runner ran out of memory. Each test process is now capped at
+  3 GiB, so the runner survives and the mutant counts as a timeout; two runaways at once could
+  still exceed 16 GB, as the comment beside the cap says.
 
 ### M2. The move
 
@@ -254,20 +251,20 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   housekeeping lapse (only while the link is down, and a fresh claim expires 30 s out); a grant
   racing the first log read (it held the claim twice, CLI-DUPLICATE-ADOPTED-CLAIM, which adds
   coverage and cannot refuse). Unproven: a reconnect clearing `fresh`. Blocked on a reproduction.
-- [ ] **CLI-DUPLICATE-ADOPTED-CLAIM** — lane B, #64. Found by CLI-GITHOOK-FIRST-COMMIT: a claim
-  granted while the daemon's first log read is in flight is adopted from the log, then pushed again
-  by `on_granted`, so it is held twice. Agents saw a second claim instead of an amend, `tessel
-  submit` failing with "several claims (1, 1, 2)" and a release sent twice. Done: `on_granted`
-  replaces an entry with the same claim id, with a test that fails without it.
-- [ ] **CLI-RECONCILE-INFLIGHT-NOTICE** — lane B, after #64. From the #64 review: the
+- [x] **CLI-DUPLICATE-ADOPTED-CLAIM** (`813e231`, #64) — lane B. Found by
+  CLI-GITHOOK-FIRST-COMMIT: a claim granted while the daemon's first log read is in flight was
+  adopted from the log, then pushed again by `on_granted`, so it was held twice. Agents saw a
+  second claim instead of an amend, `tessel submit` failing with "several claims (1, 1, 2)" and a
+  release sent twice. `on_granted` now replaces an entry with the same claim id.
+- [ ] **CLI-RECONCILE-INFLIGHT-NOTICE** — lane A. From the #64 review: the
   "Reconciled" notice (`tessel-cli/src/daemon.rs` ~1232) tells the agent that its own claim, still
   on the way, has no request behind it and that `tessel release <id>` drops it; an agent that
   follows it gives up the claim it just got. Done: the scopes of requests still on the way are part
   of `reconcile::Local`, a match is not adopted or reported, with a test of the notice.
-- [ ] **CLI-RELEASE-BEFORE-GRANT** — lane B, after #64. From the #64 review: a `tessel release`
-  between the adoption and the `Granted` removes the claim, and `on_granted` then adds it back,
-  held locally after the agent released it. Older than #64. Done: a test of that ordering, and the
-  late grant not re-adding a released claim.
+- [ ] **CLI-RELEASE-BEFORE-GRANT** — lane A, with CLI-RECONCILE-INFLIGHT-NOTICE. From the #64
+  review: a `tessel release` between the adoption and the `Granted` removes the claim, and
+  `on_granted` then adds it back, held locally after the agent released it. Older than #64. Done:
+  a test of that ordering, and the late grant not re-adding a released claim.
 - [ ] **SWARM-AGENT-CHECKS-UNDER-LOAD** — lane B. From P1-FLAKE-UNDER-LOAD: in
   `tessel-swarm/tests/reconnect.rs` an agent released its claim without submitting, under heavy
   load; the same log comes from the agent's own checks (`node --test`) failing. Why they fail under
