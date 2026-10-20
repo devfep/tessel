@@ -1162,3 +1162,30 @@ async fn an_agent_whose_own_checks_fail_reports_the_tail_of_the_failing_run() {
     );
     server.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
+    // A test in main waits on a timer for one and a half leases, so the agent's checks outlast
+    // the lease with no simulated work around them and nothing but the heartbeat renews it.
+    let cfg = lease_config(Duration::from_millis(200), 0);
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&cfg, scratch.path(), 3000).await;
+    let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
+        unreachable!("the local target has a local remote");
+    };
+    std::fs::write(
+        trunk.join("test/slow.test.ts"),
+        "import { test } from \"node:test\";\n\
+         test(\"slow\", async () => { await new Promise((done) => setTimeout(done, 4500)); });\n",
+    )
+    .unwrap();
+    Git::new(&trunk).commit_all("Add a slow test").unwrap();
+    let agents = scratch.path().join("agents");
+    let result = on::run_on(&server.endpoint, &[body(1, "unitPrice")], &agents, &cfg)
+        .await
+        .unwrap();
+    let r = &result.results[0];
+    assert_eq!(r.result, Resolution::Merged, "{r:?}");
+    assert_eq!(lease_expired(&result.events), []);
+    server.shutdown().await;
+}

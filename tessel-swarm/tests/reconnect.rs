@@ -1037,9 +1037,10 @@ fn poison(trunk: &std::path::Path) {
 
 /// The lease in the test below. The holder of the task's scopes works for a second and renews its
 /// claim every `heartbeat_every` (100 ms); a lease only a few heartbeats long lapses under it when
-/// the machine stalls the agent for that long, and the lapse the test waits for would then be the
-/// holder's. The wait for the unheard grant's lease is on the log, so a longer lease costs only
-/// the seconds a passing run spends waiting.
+/// the machine stalls the agent for that long, and the holder's task would then end lapsed. The
+/// test waits for the lapse of the waiter's own grant (`grant_lapsed`), so the holder's lapse can
+/// no longer satisfy the wait; a longer lease only keeps the holder's task from ending that way.
+/// The wait is on the log, so it costs only the seconds a passing run spends waiting.
 const UNHEARD_LEASE_MS: u64 = 5_000;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
