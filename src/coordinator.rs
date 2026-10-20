@@ -2663,6 +2663,33 @@ mod tests {
     }
 
     #[test]
+    fn conflicts_follow_claim_id_not_the_order_the_lock_walk_finds_them() {
+        let mut c = coordinator();
+        let on_dir = sc(dir("src"), Mode::Depend);
+        let on_file = sc(file("src/a.rs"), Mode::Depend);
+        grant(&mut c, "a", vec![on_dir.clone()]);
+        grant(&mut c, "c", vec![on_file.clone()]);
+
+        let wanted = sc(file("src/a.rs"), Mode::EditSignature);
+        let conflicts = deny(&mut c, "b", vec![wanted]);
+        let held: Vec<ScopeClaim> = conflicts.iter().map(|x| x.held.clone()).collect();
+        assert_eq!(held, vec![on_dir, on_file]);
+    }
+
+    #[test]
+    fn conflicts_follow_the_held_scope_index_within_one_claim() {
+        let mut c = coordinator();
+        let on_dir = sc(dir("src"), Mode::Depend);
+        let on_file = sc(file("src/a.rs"), Mode::Depend);
+        grant(&mut c, "a", vec![on_dir.clone(), on_file.clone()]);
+
+        let wanted = sc(file("src/a.rs"), Mode::EditSignature);
+        let conflicts = deny(&mut c, "b", vec![wanted]);
+        let held: Vec<ScopeClaim> = conflicts.iter().map(|x| x.held.clone()).collect();
+        assert_eq!(held, vec![on_dir, on_file]);
+    }
+
+    #[test]
     fn holder_that_listed_a_scope_twice_blocks_with_one_conflict() {
         let mut c = coordinator();
         let held = sc(file("src/a.rs"), Mode::EditBody);
