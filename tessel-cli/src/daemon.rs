@@ -1090,10 +1090,17 @@ impl Daemon {
             live.len()
         ));
         let scopes: Vec<Vec<ScopeClaim>> = lost.iter().map(|p| p.scopes.clone()).collect();
+        let in_flight: Vec<Vec<ScopeClaim>> = self
+            .pending
+            .values()
+            .filter(|pending| pending.amend.is_none())
+            .map(|pending| pending.scopes.clone())
+            .collect();
         let local = Local {
             claims: &self.state.claims,
             fresh: &self.fresh,
             lost_requests: &scopes,
+            in_flight: &in_flight,
             lost_releases: &lost_releases,
             complete,
         };
@@ -1188,6 +1195,7 @@ impl Daemon {
             set_submitted,
             set_awaiting_review,
             answer_lost,
+            await_reply,
             release_again,
             adopt,
         } = plan;
@@ -1226,6 +1234,13 @@ impl Daemon {
                 };
                 answer(pending.replies, &Reply::Claim { outcome });
             }
+        }
+        for claim in await_reply {
+            self.log(&format!(
+                "claim {} in the event log answers a request still on the way; its reply will \
+                 track it",
+                claim.0
+            ));
         }
         for (claim, server) in adopt {
             self.adopt(claim, server);

@@ -208,6 +208,9 @@ pub struct Local<'a> {
     pub fresh: &'a HashSet<ClaimId>,
     /// Scopes of claim requests whose answer was lost with the socket.
     pub lost_requests: &'a [Vec<ScopeClaim>],
+    /// Scopes of claim requests sent on this connection and not yet answered: their `Granted`
+    /// is on the way.
+    pub in_flight: &'a [Vec<ScopeClaim>],
     /// Claims this daemon asked to release before the socket dropped.
     pub lost_releases: &'a HashSet<ClaimId>,
     /// Whether the log was read to its end marker. A truncated read can stop after a claim's
@@ -236,6 +239,9 @@ pub struct Plan {
     pub set_awaiting_review: Vec<(ClaimId, bool)>,
     /// Live claims that answer a request whose reply was lost: index into `lost_requests`.
     pub answer_lost: Vec<(usize, ClaimId, ServerClaim)>,
+    /// Live claims that match a request still on the way. They are neither adopted nor reported:
+    /// the reply, when it arrives, carries the fence, race and assumptions the log cannot.
+    pub await_reply: Vec<ClaimId>,
     /// Live claims this daemon tried to release before the socket dropped.
     pub release_again: Vec<(ClaimId, Fence)>,
     /// Live claims no local request explains. They are kept, because heartbeats keep them
@@ -283,6 +289,7 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
     }
     let known: HashSet<ClaimId> = local.claims.iter().map(|held| held.claim).collect();
     let mut answered = HashSet::new();
+    let mut awaited = HashSet::new();
     for (&id, server) in live
         .iter()
         .rev()
@@ -297,16 +304,38 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
             .lost_requests
             .iter()
             .enumerate()
-            .find(|(index, scopes)| !answered.contains(index) && **scopes == server.scopes);
-        match lost {
+            .find(|(index, scopes)| {
+                !answered.contains(index) && same_scopes(scopes, &server.scopes)
+            });
+        if let Some((index, _)) = lost {
+            answered.insert(index);
+            plan.answer_lost.push((index, claim, server.clone()));
+            continue;
+        }
+        let coming = local.in_flight.iter().enumerate().find(|(index, scopes)| {
+            !awaited.contains(index) && same_scopes(scopes, &server.scopes)
+        });
+        match coming {
             Some((index, _)) => {
-                answered.insert(index);
-                plan.answer_lost.push((index, claim, server.clone()));
+                awaited.insert(index);
+                plan.await_reply.push(claim);
             }
             None => plan.adopt.push((claim, server.clone())),
         }
     }
     plan
+}
+
+/// Whether a request's scopes are the ones the log shows. The coordinator drops exact repeats
+/// before it logs a grant, so a request that named a scope twice still matches.
+fn same_scopes(requested: &[ScopeClaim], logged: &[ScopeClaim]) -> bool {
+    let mut distinct: Vec<&ScopeClaim> = Vec::with_capacity(requested.len());
+    for scope in requested {
+        if !distinct.contains(&scope) {
+            distinct.push(scope);
+        }
+    }
+    distinct.len() == logged.len() && distinct.into_iter().eq(logged)
 }
 
 #[cfg(test)]
@@ -449,6 +478,7 @@ mod tests {
             claims: &claims,
             fresh: &fresh,
             lost_requests: &[],
+            in_flight: &[],
             lost_releases: &none,
             complete: true,
         };
@@ -665,6 +695,7 @@ mod tests {
             claims: &local,
             fresh: &fresh,
             lost_requests: &[],
+            in_flight: &[],
             lost_releases: &none,
             complete: true,
         };
@@ -706,6 +737,7 @@ mod tests {
             claims: local,
             fresh: &fresh,
             lost_requests,
+            in_flight: &[],
             lost_releases: &releases,
             complete: true,
         };
@@ -725,6 +757,7 @@ mod tests {
             claims: local,
             fresh: &fresh,
             lost_requests: lost,
+            in_flight: &[],
             lost_releases: &releases,
             complete: false,
         };
@@ -817,6 +850,79 @@ mod tests {
         assert!(plan.answer_lost.is_empty() && plan.release_again.is_empty());
     }
 
+    fn plan_in_flight(in_flight: &[Vec<Sc>], events: &[Event], complete: bool) -> Plan {
+        let live = live_claims(&AgentId("a1".into()), events);
+        let none = HashSet::new();
+        let local = Local {
+            claims: &[],
+            fresh: &none,
+            lost_requests: &[],
+            in_flight,
+            lost_releases: &none,
+            complete,
+        };
+        plan(&local, &live, events)
+    }
+
+    #[test]
+    fn a_live_claim_matching_a_request_on_the_way_awaits_its_reply() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let plan = plan_in_flight(&[scopes("a.rs")], &events, true);
+        assert_eq!(plan.await_reply, vec![ClaimId(7)]);
+        assert_eq!(plan.adopt, []);
+        assert!(plan.answer_lost.is_empty() && plan.release_again.is_empty());
+    }
+
+    #[test]
+    fn a_live_claim_matching_no_request_on_the_way_is_still_adopted() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let plan = plan_in_flight(&[scopes("other.rs")], &events, true);
+        assert_eq!(plan.await_reply, []);
+        assert_eq!(plan.adopt.len(), 1);
+    }
+
+    #[test]
+    fn one_request_on_the_way_explains_one_live_claim() {
+        let events = vec![
+            granted(0, "a1", 7, 9, "a.rs"),
+            granted(1, "a1", 8, 10, "a.rs"),
+        ];
+        let plan = plan_in_flight(&[scopes("a.rs")], &events, true);
+        assert_eq!(plan.await_reply, vec![ClaimId(8)]);
+        assert_eq!(plan.adopt.len(), 1);
+        assert_eq!(plan.adopt[0].0, ClaimId(7));
+    }
+
+    #[test]
+    fn a_truncated_read_does_not_set_a_claim_aside_for_a_reply() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let plan = plan_in_flight(&[scopes("a.rs")], &events, false);
+        assert_eq!(plan, Plan::default());
+    }
+
+    #[test]
+    fn scopes_are_the_same_when_only_exact_repeats_differ() {
+        let a = scopes("a.rs");
+        let twice = [a[0].clone(), a[0].clone()];
+        assert!(same_scopes(&twice, &a));
+        assert!(same_scopes(&a, &a));
+        assert!(!same_scopes(&a, &scopes("b.rs")));
+        assert!(!same_scopes(&a, &[]));
+    }
+
+    #[test]
+    fn the_same_scope_in_another_mode_is_not_the_same_scopes() {
+        let edit = scopes("a.rs");
+        let create = vec![Sc {
+            mode: Mode::Create,
+            ..edit[0].clone()
+        }];
+        assert!(!same_scopes(&edit, &create));
+        let both = [edit[0].clone(), create[0].clone()];
+        assert!(same_scopes(&both, &both));
+        assert!(!same_scopes(&both, &edit));
+    }
+
     #[test]
     fn only_a_logged_ending_makes_the_daemon_forget_a_claim() {
         let local = [held(1, 1, "a.rs"), held(2, 2, "b.rs")];
@@ -857,6 +963,7 @@ mod tests {
             claims: &local,
             fresh: &fresh,
             lost_requests: &[],
+            in_flight: &[],
             lost_releases: &none,
             complete: true,
         };
