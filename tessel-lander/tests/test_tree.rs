@@ -168,8 +168,10 @@ fn wipe_objects(_scene: &Scene, dir: &Path) {
     fs::create_dir(&objects).expect("recreate objects");
 }
 
+/// Points the tracking ref at a commit that is neither main nor the merged head.
 fn move_a_ref(_scene: &Scene, dir: &Path) {
-    fixture_git(dir, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+    let planted = fixture_git(dir, &["commit-tree", "HEAD^{tree}", "-m", "planted"]);
+    fixture_git(dir, &["update-ref", "refs/remotes/origin/main", &planted]);
 }
 
 fn rewrite_attributes(_scene: &Scene, dir: &Path) {
@@ -329,8 +331,17 @@ fn a_package_step_that_plants_config_refs_and_attributes_in_its_tree_changes_not
         fs::read_to_string(attributes).expect("attributes"),
         "* merge=text\n"
     );
+    // `land` names the sha and the lease itself and never reads this ref. Whether a push to a URL
+    // moves it to the head (git 2.56) or leaves it at main (2.50, 2.55) is git's business; what
+    // matters is that it is not the value the step planted in its own tree.
     let tracking = fixture_git(&scene.clone_dir, &["rev-parse", "refs/remotes/origin/main"]);
-    assert_eq!(tracking, head.as_str());
+    let planted_file = scene.test_dir.join(".git/refs/remotes/origin/main");
+    let planted = fs::read_to_string(planted_file).expect("planted ref");
+    assert_ne!(tracking, planted.trim());
+    assert!(
+        [scene.base.as_str(), head.as_str()].contains(&tracking.as_str()),
+        "{tracking}"
+    );
 }
 
 #[test]
