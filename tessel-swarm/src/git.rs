@@ -292,8 +292,8 @@ impl CheckRun {
     #[must_use]
     pub fn failure_note(&self, max_bytes: usize) -> String {
         format!(
-            "the agent's own checks failed on the checkout it edited; {}; the last {max_bytes} bytes \
-             of its output, quoted as data: {:?}",
+            "the agent's own checks failed on the checkout it edited; {}; the last {max_bytes} \
+             bytes of its output, quoted as data: {:?}",
             self.status,
             tail(&self.output, max_bytes)
         )
