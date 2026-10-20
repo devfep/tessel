@@ -665,3 +665,29 @@ fn a_head_read_that_failed_is_a_failed_outcome_even_when_it_printed_the_head() {
         TestTreeOutcome::Cloned(tree) => unreachable!("cloned {}", tree.path().display()),
     }
 }
+
+#[test]
+fn a_workspace_path_that_cannot_be_resolved_is_an_error_not_a_path_to_walk_past() {
+    let scratch = TempDir::new().expect("tempdir");
+    let parent = scratch.path().join("parent");
+    let workspace_dir = parent.join("ws");
+    fs::create_dir_all(&workspace_dir).expect("workspace dir");
+    let workspace = workspace_at(&workspace_dir.display().to_string());
+    fs::remove_dir_all(&parent).expect("remove parent");
+    fs::write(&parent, "a file where the workspace's parent was").expect("write file");
+
+    let error = clone_test_tree(
+        &lander_git(),
+        &support::AlwaysOk,
+        &workspace,
+        &sha('1'),
+        &scratch.path().join("tree"),
+    )
+    .expect_err("unresolvable");
+
+    let CloneError::DestinationUnreadable { path, source } = error else {
+        unreachable!("expected DestinationUnreadable: {error}");
+    };
+    assert_eq!(path, workspace_dir);
+    assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
+}
