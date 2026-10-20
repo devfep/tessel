@@ -1286,6 +1286,9 @@ async fn release(conn: &mut Conn, held: &Held) -> Result<()> {
     .await
 }
 
+/// How much of a failed run's output the result note keeps.
+const CHECKS_NOTE_BYTES: usize = 1500;
+
 /// Writes the edit, checks it the way a careful agent would, commits and pushes it to the fork.
 async fn commit_and_push(
     ctx: &Ctx,
@@ -1303,10 +1306,11 @@ async fn commit_and_push(
     );
     blocking(move || {
         git::write_tree(&repo.dir, &tree)?;
-        match git::run_checks(&repo.dir)? {
+        let run = git::run_checks_logged(&repo.dir)?;
+        match run.checks {
             Checks::Pass { .. } => {}
             Checks::BuildFailed | Checks::TestsFailed => {
-                anyhow::bail!("the agent's own checks failed on the checkout it edited");
+                anyhow::bail!("{}", run.failure_note(CHECKS_NOTE_BYTES));
             }
         }
         let sha = repo.commit_all(&intent)?;
