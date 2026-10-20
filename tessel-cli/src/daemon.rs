@@ -815,23 +815,7 @@ impl Daemon {
                     None => self.unexpected("grant for an unknown request", &msg),
                 }
             }
-            ServerMsg::Denied { req, conflicts } => {
-                let msg = ServerMsg::Denied {
-                    req,
-                    conflicts: conflicts.clone(),
-                };
-                self.notify(NoticeKind::Denied, "claim denied", Some(msg));
-                if let Some(mut pending) = self.pending.remove(&req.0) {
-                    let awaited = pending.awaited.take();
-                    self.settle_awaited(awaited, None);
-                    answer(
-                        pending.replies,
-                        &Reply::Claim {
-                            outcome: ClaimOutcome::Denied { conflicts },
-                        },
-                    );
-                }
-            }
+            ServerMsg::Denied { req, conflicts } => self.on_denied(req, conflicts),
             ServerMsg::Queued { req, position } => self.on_queued(req, position),
             ServerMsg::BaseMoved { ref head, .. } => {
                 self.state.coordinator_head = Some(head.0.clone());
@@ -1614,6 +1598,28 @@ impl Daemon {
                 reply,
             },
         );
+    }
+
+    fn on_denied(
+        &mut self,
+        req: RequestId,
+        conflicts: Vec<tessel_coordinator::protocol::Conflict>,
+    ) {
+        let msg = ServerMsg::Denied {
+            req,
+            conflicts: conflicts.clone(),
+        };
+        self.notify(NoticeKind::Denied, "claim denied", Some(msg));
+        if let Some(mut pending) = self.pending.remove(&req.0) {
+            let awaited = pending.awaited.take();
+            self.settle_awaited(awaited, None);
+            answer(
+                pending.replies,
+                &Reply::Claim {
+                    outcome: ClaimOutcome::Denied { conflicts },
+                },
+            );
+        }
     }
 
     fn on_error(
@@ -3481,6 +3487,75 @@ mod tests {
         });
 
         assert_eq!(held_ids(&daemon), vec![1, 2, 7]);
+        assert!(inbox(&daemon).contains("no request here explains it"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_leaves_the_awaited_claim_reported_and_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.pending.insert(5, awaiting(7));
+
+        daemon.on_server_msg(ServerMsg::Error {
+            req: Some(RequestId(5)),
+            code: ErrorCode::Malformed,
+            message: "no".to_string(),
+        });
+
+        assert_eq!(held_ids(&daemon), vec![1, 2, 7]);
+        assert!(inbox(&daemon).contains("no request here explains it"));
+    }
+
+    #[tokio::test]
+    async fn a_claim_found_by_the_log_read_is_tracked_when_the_reply_names_another() {
+        use tessel_coordinator::protocol::{Event, EventKind, Intent, Mode, RunId, Scope};
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let scopes = vec![ScopeClaim {
+            scope: Scope::File {
+                path: "a.rs".into(),
+            },
+            mode: Mode::EditBody,
+        }];
+        daemon.pending.insert(
+            5,
+            PendingClaim {
+                scopes: scopes.clone(),
+                ..pending_claim()
+            },
+        );
+        let orphan = Event {
+            seq: 0,
+            at_ms: 0,
+            run: RunId("r".into()),
+            kind: EventKind::ClaimGranted {
+                agent: AgentId("a1".into()),
+                claim: ClaimId(7),
+                fence: Fence(7),
+                scopes,
+                intent: Intent {
+                    summary: String::new(),
+                    task_ref: None,
+                    assumptions: Vec::new(),
+                },
+                race: None,
+                at_risk: Vec::new(),
+            },
+        };
+
+        daemon
+            .on_snapshot(Ok(LogRead {
+                events: vec![orphan],
+                complete: true,
+                unknown: Vec::new(),
+                last_seq: Some(0),
+            }))
+            .await;
+        assert_eq!(held_ids(&daemon), vec![1, 2], "left for the reply");
+        assert!(!inbox(&daemon).contains("no request here explains it"));
+        daemon.on_server_msg(granted_json(None));
+
+        assert_eq!(held_ids(&daemon), vec![1, 2, 7, 9]);
         assert!(inbox(&daemon).contains("no request here explains it"));
     }
 
