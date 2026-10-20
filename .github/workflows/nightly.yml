@@ -86,9 +86,10 @@ jobs:
           fi
           # Cap the address space of every test process, so a mutant that allocates without
           # bound fails its test instead of exhausting the runner. Builds are not capped. This is a
-          # safety net, not a guarantee: legitimate tests peak near 2.9 GB, so the cap cannot be
-          # lower, and 3 GiB x 4 test threads x 2 jobs is more than the runner's 16 GB if two
-          # runaways overlap. Core dumps are off so an aborted runaway exits at once.
+          # safety net, not a guarantee: the baseline passes under 3 GiB per test process, the
+          # per-process peak is unmeasured so the cap is not lowered, and 3 GiB x 4 test threads
+          # x 2 jobs is more than the runner's 16 GB if two runaways overlap. Core dumps are off
+          # so an aborted runaway can exit at once.
           cat > "$RUNNER_TEMP/cap-memory.sh" <<'CAP'
           #!/usr/bin/env bash
           set -euo pipefail
