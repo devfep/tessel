@@ -113,6 +113,7 @@ impl Host {
             return;
         }
         self.gate = Gate::Open;
+        self.abandoned_read = Some(sock);
     }
 
     fn mark_watcher(&mut self, replay: Replay, out: &mut Vec<Output>) {
