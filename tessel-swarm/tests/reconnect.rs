@@ -899,7 +899,12 @@ async fn a_shadow_agent_cut_before_it_submitted_goes_on_with_the_same_claim() {
         1,
         "no second claim for the task: {shadows:?}"
     );
-    assert_eq!(submissions_of(events, shadows[0].1), 1, "submitted once");
+    assert_eq!(
+        submissions_of(events, shadows[0].1),
+        1,
+        "submitted once; the agents' results: {:?}",
+        run.result.results
+    );
     assert_eq!(outcomes(&run.result), ["Merged", "Shadowed"]);
     let mine = run
         .result
