@@ -234,9 +234,6 @@ pub struct Host {
     /// asked, so the first page that names the socket is the one the ended replay left out, and
     /// a replay the socket starts afterwards gets its own pages.
     abandoned_read: Option<SocketId>,
-    /// The failures of the sends the ended replay's page had already handed to the adapter, which
-    /// are not logged again: at most one per send of that page after the first failure.
-    absorbed_failures: Option<(SocketId, usize)>,
     /// A wake is between two of its steps: not suspended at a call and not over.
     waking: bool,
     /// The time of the input being handled.
@@ -292,7 +289,6 @@ impl Host {
             calls: HashMap::new(),
             reading: None,
             abandoned_read: None,
-            absorbed_failures: None,
             waking: false,
             now_ms: 0,
             next_batch: 0,

@@ -2681,6 +2681,15 @@ fn host_the_stored_size_is_set_on_the_first_load_only() {
     );
 }
 
+/// Every failed send is logged (R31): one line for each of the `lines` sends of the page.
+fn assert_failed_sends_logged(kit: &Testkit, lines: usize) {
+    let logs = kit.logs();
+    assert_eq!(logs.len(), lines, "{logs:?}");
+    for line in logs {
+        assert!(line.contains("send to a socket failed"), "{line}");
+    }
+}
+
 #[test]
 fn host_a_failed_send_during_a_replay_ends_it_unmarked_and_closes_the_socket() {
     let mut kit = kit();
@@ -2698,17 +2707,8 @@ fn host_a_failed_send_during_a_replay_ends_it_unmarked_and_closes_the_socket() {
         2,
         "no page is read after the failure"
     );
-    assert_eq!(
-        kit.logs().len(),
-        1,
-        "one line, not one per event: {:?}",
-        kit.logs()
-    );
-    assert!(
-        kit.logs()[0].contains("send to a socket failed"),
-        "{:?}",
-        kit.logs()
-    );
+    assert_failed_sends_logged(&kit, shell::REPLAY_PAGE);
+    assert_eq!(count(&kit, "Close"), 1, "closed once");
     assert_eq!(close_of(&kit, watcher), Some((1011, "send failed")));
     assert_eq!(
         kit.session(watcher).unwrap().watch_from,
@@ -2762,12 +2762,7 @@ fn host_a_watch_on_a_closed_socket_stops_at_the_first_failed_send() {
         2,
         "no page is read after the failure"
     );
-    assert_eq!(kit.logs().len(), 1, "one line: {:?}", kit.logs());
-    assert!(
-        kit.logs()[0].contains("send to a socket failed"),
-        "{:?}",
-        kit.logs()
-    );
+    assert_failed_sends_logged(&kit, shell::REPLAY_PAGE);
     assert_eq!(kit.session(sock).unwrap().watch_from, None, "never marked");
 }
 
@@ -2812,4 +2807,34 @@ fn host_a_watch_started_again_after_a_failed_replay_gets_its_own_pages() {
     kit.settle();
     assert_eq!(event_seqs(kit.received(sock)).len(), 250);
     assert_eq!(kit.session(sock).unwrap().watch_from, Some(0));
+}
+
+#[test]
+fn host_a_failed_last_page_marks_the_watcher_before_its_socket_is_closed() {
+    let mut kit = kit();
+    seed_log(&mut kit, 30);
+    let watcher = kit.open("w");
+    kit.fail_sends_to(watcher);
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+
+    assert_eq!(
+        kit.session(watcher).unwrap().watch_from,
+        Some(0),
+        "marked first"
+    );
+    assert_eq!(close_of(&kit, watcher), Some((1011, "send failed")));
+    assert_eq!(count(&kit, "Close"), 1, "closed once");
+    assert_failed_sends_logged(&kit, 30);
+
+    let before = kit.history().len();
+    welcomed(&mut kit, "a2");
+    let to_watcher = kit.history()[before..]
+        .iter()
+        .filter(|output| matches!(output, Output::Send { sock, .. } if *sock == watcher))
+        .count();
+    assert_eq!(
+        to_watcher, 1,
+        "a closed watcher is still planned for until it is reported closed"
+    );
 }

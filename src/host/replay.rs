@@ -18,8 +18,6 @@ pub struct Replay {
     sock: SocketId,
     from_seq: u64,
     session: Session,
-    /// How many events the last page handed to the adapter.
-    sent: usize,
 }
 
 fn read_page(sock: SocketId, from_seq: u64) -> Output {
@@ -44,7 +42,6 @@ impl Host {
             sock,
             from_seq,
             session,
-            sent: 0,
         });
     }
 
@@ -61,7 +58,7 @@ impl Host {
             self.abandoned_read = None;
             return;
         }
-        let mut replay = match std::mem::replace(&mut self.gate, Gate::Open) {
+        let replay = match std::mem::replace(&mut self.gate, Gate::Open) {
             Gate::Replaying(replay) if replay.sock == sock => replay,
             other @ (Gate::Open | Gate::Loading(_) | Gate::Committing(_) | Gate::Replaying(_)) => {
                 self.gate = other;
@@ -80,7 +77,6 @@ impl Host {
         match shell::after_page(page_len, last_seq) {
             ReplayStep::Next { start_seq } if !done => {
                 out.push(read_page(sock, start_seq));
-                replay.sent = page_len;
                 self.gate = Gate::Replaying(replay);
             }
             ReplayStep::Next { .. } | ReplayStep::Done => self.mark_watcher(replay, out),
@@ -100,32 +96,24 @@ impl Host {
         replay.sock == *sock
     }
 
-    /// End the replay of `sock` without marking it a watcher and reopen the gate, and say
-    /// whether there was one. Its next read is still out; the page that answers it is dropped.
-    /// The rest of the page already handed to the adapter fails too, and those failures are
-    /// absorbed, so the replay ends with one log line, as `send(..)?` does at runtime.
-    pub(super) fn abandon_replay(&mut self, sock: SocketId) -> bool {
+    /// End the replay of `sock`, if it is the one running, without marking it a watcher, and
+    /// reopen the gate. Its next read is still out; the page that answers it is dropped.
+    ///
+    /// Unlike `send(..)?` at runtime, which stops at the first failed send and logs once, the
+    /// sends of the page already handed to the adapter may each fail, and each failure is
+    /// logged like any other failed send (R31): up to `REPLAY_PAGE` lines. When the last, short
+    /// page fails, the watcher is already marked when its failures arrive: the socket is then
+    /// closed and withdrawn, but stays in the table, and so in a live event's plan, until the
+    /// adapter reports it closed.
+    pub(super) fn abandon_replay(&mut self, sock: SocketId) {
         let Gate::Replaying(replay) = &self.gate else {
-            return false;
+            return;
         };
         if replay.sock != sock {
-            return false;
+            return;
         }
-        self.absorbed_failures = Some((sock, replay.sent.saturating_sub(1)));
         self.gate = Gate::Open;
         self.abandoned_read = Some(sock);
-        true
-    }
-
-    /// Whether this failed send is one of the ended replay's, which is not logged again.
-    pub(super) fn absorb_replay_failure(&mut self, sock: SocketId) -> bool {
-        match self.absorbed_failures {
-            Some((absorbing, left)) if absorbing == sock && left > 0 => {
-                self.absorbed_failures = Some((sock, left - 1));
-                true
-            }
-            Some(_) | None => false,
-        }
     }
 
     fn mark_watcher(&mut self, replay: Replay, out: &mut Vec<Output>) {
