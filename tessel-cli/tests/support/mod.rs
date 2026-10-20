@@ -62,6 +62,22 @@ struct Inner {
     hold_claim_reply: AtomicBool,
     held: Mutex<Vec<(u64, Vec<Outbound>)>>,
     lose: Mutex<Vec<(String, Lose)>>,
+    /// Milliseconds the coordinator clock runs ahead of the real one (`Fake::advance_clock`).
+    skew_ms: AtomicU64,
+    /// Completed passes of the lease-expiry loop, so a test can wait for one that saw a new clock.
+    expiry_passes: AtomicU64,
+    /// When `Fake::freeze_clock` stopped the coordinator clock; zero while it runs.
+    frozen_at_ms: AtomicU64,
+}
+
+impl Inner {
+    /// The time the core is told, in milliseconds: the real time, or the instant the clock was
+    /// frozen at, plus whatever `advance_clock` has added.
+    fn clock(&self) -> u64 {
+        let frozen = self.frozen_at_ms.load(Ordering::SeqCst);
+        let base = if frozen == 0 { now_ms() } else { frozen };
+        base + self.skew_ms.load(Ordering::SeqCst)
+    }
 }
 
 /// A message to lose on its way, as a dropped network connection would.
@@ -105,7 +121,7 @@ impl Inner {
 
     /// Runs `msg` on the core as `agent`, outside any socket.
     fn act(&self, agent: &AgentId, msg: ClientMsg) {
-        let effects = lock(&self.core).handle(agent, msg, now_ms());
+        let effects = lock(&self.core).handle(agent, msg, self.clock());
         let (events, outbound) = shell::split_effects(effects);
         self.deliver(None, outbound);
         self.publish(events);
@@ -168,6 +184,9 @@ impl Fake {
             hold_claim_reply: AtomicBool::new(false),
             held: Mutex::new(Vec::new()),
             lose: Mutex::new(Vec::new()),
+            skew_ms: AtomicU64::new(0),
+            expiry_passes: AtomicU64::new(0),
+            frozen_at_ms: AtomicU64::new(0),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
@@ -212,14 +231,14 @@ impl Fake {
     pub fn merge_next(&self) {
         let effects = {
             let mut core = lock(&self.inner.core);
-            let Some(dispatch) = core.begin_merge(now_ms()) else {
+            let Some(dispatch) = core.begin_merge(self.inner.clock()) else {
                 return;
             };
             let landed = MergeOutcome::Merged {
                 base: CommitId("b".repeat(40)),
                 head: CommitId("c".repeat(40)),
             };
-            core.merge_outcome(dispatch.id, &landed, now_ms())
+            core.merge_outcome(dispatch.id, &landed, self.inner.clock())
         };
         let (events, outbound) = shell::split_effects(effects);
         self.inner.deliver(None, outbound);
@@ -231,7 +250,7 @@ impl Fake {
     pub fn verify_next(&self, passed: bool) -> bool {
         let effects = {
             let mut core = lock(&self.inner.core);
-            let Some(dispatch) = core.begin_verification(now_ms()) else {
+            let Some(dispatch) = core.begin_verification(self.inner.clock()) else {
                 return false;
             };
             let outcome = if passed {
@@ -239,7 +258,11 @@ impl Fake {
             } else {
                 TrialOutcome::TestsFailed {}
             };
-            core.verification_outcome(dispatch.id, &TrialReport::stopped(outcome), now_ms())
+            core.verification_outcome(
+                dispatch.id,
+                &TrialReport::stopped(outcome),
+                self.inner.clock(),
+            )
         };
         let (events, outbound) = shell::split_effects(effects);
         self.inner.deliver(None, outbound);
@@ -342,6 +365,49 @@ impl Fake {
         self.inner.deliver(None, vec![notify]);
     }
 
+    /// Moves the coordinator's clock `ms` ahead of the real one, as if that long had passed
+    /// there. Leases expire on this clock; the daemons, which are real processes, keep the real
+    /// one. Follow it with `settle_expiry` before asserting on what expired.
+    pub fn advance_clock(&self, ms: u64) {
+        self.inner.skew_ms.fetch_add(ms, Ordering::SeqCst);
+    }
+
+    /// Stops the coordinator clock: from now on it moves only with `advance_clock`, so no lease
+    /// ends because the machine was slow. Call it before any claim is made.
+    pub fn freeze_clock(&self) {
+        self.inner.frozen_at_ms.store(now_ms(), Ordering::SeqCst);
+    }
+
+    /// Waits until the lease-expiry loop has run twice since the call began: the first pass may
+    /// have started before the latest `advance_clock`, the second began after it. Panics if the
+    /// loop does not run, which means its task died.
+    pub async fn settle_expiry(&self) {
+        // Passes come every 20 ms; this is only how long a dead loop takes to be noticed.
+        const LOOP_DEAD_AFTER: Duration = Duration::from_secs(30);
+        let target = self.inner.expiry_passes.load(Ordering::SeqCst) + 2;
+        let started = tokio::time::Instant::now();
+        while self.inner.expiry_passes.load(Ordering::SeqCst) < target {
+            assert!(
+                started.elapsed() < LOOP_DEAD_AFTER,
+                "the fake's lease-expiry loop made no pass in {LOOP_DEAD_AFTER:?}; its task died"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// How many heartbeats `agent` has sent.
+    pub fn heartbeats(&self, agent: &str) -> usize {
+        self.received(agent)
+            .iter()
+            .filter(|msg| matches!(msg, ClientMsg::Heartbeat))
+            .count()
+    }
+
+    /// The coordinator's event log so far.
+    pub fn events(&self) -> Vec<Event> {
+        lock(&self.inner.events).clone()
+    }
+
     /// Every message `agent` has sent, in order.
     pub fn received(&self, agent: &str) -> Vec<ClientMsg> {
         let log = self
@@ -364,11 +430,12 @@ async fn expire_loop(inner: Arc<Inner>) {
                 .core
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            core.expire(now_ms())
+            core.expire(inner.clock())
         };
         let (events, outbound) = shell::split_effects(effects);
         inner.deliver(None, outbound);
         inner.publish(events);
+        inner.expiry_passes.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -592,7 +659,7 @@ fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Opt
                     .core
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                core.handle(&agent, msg, now_ms())
+                core.handle(&agent, msg, inner.clock())
             };
             let (events, mut outbound) = shell::split_effects(effects);
             if inner.review_first.load(Ordering::SeqCst) {
@@ -642,7 +709,7 @@ fn close_socket(inner: &Inner, id: u64, session: &Session) {
             .core
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        core.disconnect(agent, now_ms())
+        core.disconnect(agent, inner.clock())
     };
     let (events, outbound) = shell::split_effects(effects);
     inner.deliver(None, outbound);

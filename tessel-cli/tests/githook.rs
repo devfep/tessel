@@ -40,7 +40,7 @@ async fn started() -> Result<(Fake, Agent)> {
     git(&a1.root(), &["add", "src/pair.rs"])?;
     git(&a1.root(), &["commit", "-q", "-m", "pair"])?;
     install(&a1)?;
-    a1.start("edit things")?;
+    a1.start_settled("edit things").await?;
     Ok((fake, a1))
 }
 
@@ -407,7 +407,13 @@ async fn a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for() -> R
         0
     );
     let done = commit_file(&a1, "src/c.rs", "pub fn c() {}\n")?;
-    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(
+        done.code,
+        0,
+        "{}\ndaemon files:\n{}",
+        done.all(),
+        a1.tessel_files().unwrap_or_default()
+    );
     let submitted = a1.tessel(&["submit", "--evidence", "tests passed"])?;
     assert_eq!(submitted.code, 0, "{}", submitted.all());
 
