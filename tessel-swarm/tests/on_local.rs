@@ -1121,3 +1121,44 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
     assert_eq!(result.summary.merges, 0);
     server.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_whose_own_checks_fail_reports_the_tail_of_the_failing_run() {
+    let tasks = [body(1, "unitPrice")];
+    let cfg = config(1, Policy::Wait, 0);
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&cfg, scratch.path(), local::LEASE_MS).await;
+    let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
+        unreachable!("the local target has a local remote");
+    };
+    std::fs::write(
+        trunk.join("test/red.test.ts"),
+        "import { test } from \"node:test\";\n\
+         test(\"red\", () => { throw new Error(\"the trunk is red\"); });\n",
+    )
+    .unwrap();
+    Git::new(&trunk).commit_all("Make main red").unwrap();
+    let agents = scratch.path().join("agents");
+    let result = on::run_on(&server.endpoint, &tasks, &agents, &cfg)
+        .await
+        .unwrap();
+    let r = &result.results[0];
+    assert_eq!(r.result, Resolution::Failed, "{r:?}");
+    let note = r.note.as_deref().unwrap();
+    assert!(
+        note.starts_with(
+            "the agent's own checks failed on the checkout it edited; exit status: 1;"
+        ),
+        "{note}"
+    );
+    assert!(
+        note.contains("quoted as data: \"") && note.contains("the trunk is red"),
+        "{note}"
+    );
+    assert!(
+        note.len() < 3_000,
+        "the tail is bounded: {} bytes",
+        note.len()
+    );
+    server.shutdown().await;
+}
