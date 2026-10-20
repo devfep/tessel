@@ -1123,7 +1123,7 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_whose_own_checks_fail_reports_the_tail_of_the_failing_run() {
+async fn an_agent_whose_own_checks_fail_reports_the_failure_not_the_noise_around_it() {
     let tasks = [body(1, "unitPrice")];
     let cfg = config(1, Policy::Wait, 0);
     let scratch = tempfile::tempdir().unwrap();
@@ -1131,10 +1131,15 @@ async fn an_agent_whose_own_checks_fail_reports_the_tail_of_the_failing_run() {
     let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
         unreachable!("the local target has a local remote");
     };
+    // The red test logs far more than the note may hold before it throws, and a passing test is named
+    // with as much after it, so a cap that is too large lets noise in and neither the head nor the tail
+    // of the output holds the failure.
     std::fs::write(
         trunk.join("test/red.test.ts"),
         "import { test } from \"node:test\";\n\
-         test(\"red\", () => { throw new Error(\"the trunk is red\"); });\n",
+         console.log(\"x\".repeat(4096));\n\
+         test(\"red\", () => { throw new Error(\"the trunk is red\"); });\n\
+         test(\"y\".repeat(4096), () => {});\n",
     )
     .unwrap();
     Git::new(&trunk).commit_all("Make main red").unwrap();
@@ -1145,21 +1150,18 @@ async fn an_agent_whose_own_checks_fail_reports_the_tail_of_the_failing_run() {
     let r = &result.results[0];
     assert_eq!(r.result, Resolution::Failed, "{r:?}");
     let note = r.note.as_deref().unwrap();
+    let (head, quoted) = note.split_once("quoted as data: ").unwrap();
     assert!(
-        note.starts_with(
+        head.starts_with(
             "the agent's own checks failed on the checkout it edited; exit status: 1;"
         ),
         "{note}"
     );
-    assert!(
-        note.contains("quoted as data: \"") && note.contains("the trunk is red"),
-        "{note}"
-    );
-    assert!(
-        note.len() < 3_000,
-        "the tail is bounded: {} bytes",
-        note.len()
-    );
+    let kept: String = serde_json::from_str(quoted).unwrap();
+    assert!(kept.len() <= 1500, "{} bytes", kept.len());
+    assert!(kept.starts_with("not ok"), "{kept}");
+    assert!(kept.contains("the trunk is red"), "{kept}");
+    assert!(kept.contains("# fail 1"), "{kept}");
     server.shutdown().await;
 }
 
@@ -1169,14 +1171,18 @@ async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
     // the lease with no simulated work around them and nothing but the heartbeat renews it.
     let cfg = lease_config(Duration::from_millis(200), 0);
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&cfg, scratch.path(), 3000).await;
+    let lease_ms = 3000;
+    let server = start_server(&cfg, scratch.path(), lease_ms).await;
     let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
         unreachable!("the local target has a local remote");
     };
     std::fs::write(
         trunk.join("test/slow.test.ts"),
-        "import { test } from \"node:test\";\n\
-         test(\"slow\", async () => { await new Promise((done) => setTimeout(done, 4500)); });\n",
+        format!(
+            "import {{ test }} from \"node:test\";\n\
+             test(\"slow\", async () => {{ await new Promise((done) => setTimeout(done, {})); }});\n",
+            lease_ms * 3 / 2
+        ),
     )
     .unwrap();
     Git::new(&trunk).commit_all("Add a slow test").unwrap();
@@ -1185,6 +1191,10 @@ async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
         .await
         .unwrap();
     let r = &result.results[0];
+    assert!(
+        r.work_ms > lease_ms,
+        "the checks outlasted the lease: {r:?}"
+    );
     assert_eq!(r.result, Resolution::Merged, "{r:?}");
     assert_eq!(lease_expired(&result.events), []);
     server.shutdown().await;
