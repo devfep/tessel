@@ -4,6 +4,7 @@
 
 #![expect(clippy::unwrap_used, reason = "test code")]
 
+use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -532,7 +533,9 @@ async fn a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_s
             cutter.refuse_new(vec![REVIEWER.to_string()]);
             let back = |events: &[Event]| connections_of(events, "a01") >= 3;
             wait_until("a01 connected a third time", &log, back).await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // The third connection is the one that reads the log, and the read ends at its own
+            // `AgentConnected`: nothing the reviewer logs from here on can be in what a01 read, so
+            // a01 hears the outcome live on its second connection however long it takes to look.
             cutter.refuse_new(Vec::new());
         }));
     })
@@ -672,10 +675,25 @@ async fn a_wait_that_a_reset_cut_short_is_counted_whole() {
         })
         .collect();
     assert_eq!(waiters.len(), 2, "{:?}", result.results);
+    let cut_at = result
+        .events
+        .iter()
+        .find(|e| matches!(e.kind, EventKind::Submitted { .. }))
+        .map(|e| e.at_ms)
+        .unwrap();
     for r in waiters {
+        let queued_at = result
+            .events
+            .iter()
+            .find(|e| queued_agent(&e.kind) == Some(r.agent.as_str()))
+            .map(|e| e.at_ms)
+            .unwrap();
+        // The coordinator's own timestamps give the wait before the cut, however long the holder
+        // took to get there.
         assert!(
-            r.waited_ms >= 3000,
-            "the wait before the reset is kept: {r:?}"
+            r.waited_ms >= cut_at - queued_at,
+            "the wait before the reset ({} ms) is kept: {r:?}",
+            cut_at - queued_at
         );
     }
     let outcomes: Vec<Resolution> = result.results.iter().map(|r| r.result).collect();
@@ -683,11 +701,55 @@ async fn a_wait_that_a_reset_cut_short_is_counted_whole() {
     run.server.shutdown().await;
 }
 
-/// How long after the log shows the claim shadowed the agent is cut. Nothing the agent does after
-/// reading its answer is visible to the cutter, so this is a delay: reading takes milliseconds and
-/// the submit path takes about a second (`work_ms`, checks, push), so 250 ms leaves a margin on
-/// both sides on a loaded machine.
-const CUT_DELAY: Duration = Duration::from_millis(250);
+/// Holds every push to an agent's fork, so that a test can cut an agent at a known point: after
+/// it has read its answer, edited and committed, and before it has submitted. A fork's
+/// `pre-receive` hook records that a push arrived, then waits for the gate to open. The wait is on
+/// the file that opening removes, not on a duration.
+struct PushGate {
+    dir: tempfile::TempDir,
+}
+
+impl PushGate {
+    fn install(server: &LocalServer) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("closed"), "").unwrap();
+        let tessel_swarm::endpoint::Remote::Local { forks, .. } = server.endpoint.remote.clone()
+        else {
+            unreachable!("the local target has a local remote");
+        };
+        for fork in std::fs::read_dir(forks).unwrap() {
+            let fork = fork.unwrap().path();
+            let name = fork.file_stem().unwrap().to_string_lossy().into_owned();
+            let gate = dir.path().display();
+            let script = format!(
+                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\n\
+                 while [ -e '{gate}/closed' ]; do sleep 0.02; done\n"
+            );
+            let hook = fork.join("hooks/pre-receive");
+            std::fs::write(&hook, script).unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Self { dir }
+    }
+
+    /// Waits until `agent` has pushed, which is when it can no longer be about to read its answer
+    /// and has not yet been able to submit.
+    async fn push_arrived(&self, agent: &str) {
+        let arrived = self.dir.path().join(format!("arrived-{agent}"));
+        let started = tokio::time::Instant::now();
+        while !arrived.exists() {
+            assert!(
+                started.elapsed() < WAIT,
+                "gave up after {WAIT:?} waiting for {agent} to push"
+            );
+            tokio::time::sleep(POLL).await;
+        }
+    }
+
+    fn open(&self) {
+        std::fs::remove_file(self.dir.path().join("closed")).unwrap();
+    }
+}
 
 /// Heartbeats too far apart to fire during a test: the shadow agent's first use of its connection
 /// after a cut is then its own request, which is what sends it through the log.
@@ -710,28 +772,31 @@ fn shadow_claims(events: &[Event]) -> Vec<(String, ClaimId)> {
     found
 }
 
-/// Closes the shadow agent's sockets `CUT_DELAY` after the log shows its claim shadowed: the
-/// answer was read, the work is under way and nothing is submitted. With `until_lapse` the agent
-/// is also turned away until the lease of its claim has run out. Returns the agent's name.
+/// Closes the shadow agent's sockets once the log shows its claim shadowed and it has pushed its
+/// work: the answer was read, the work is under way and nothing is submitted. The push is held
+/// until the sockets are closed. With `until_lapse` the agent is also turned away until the lease
+/// of its claim has run out. Returns the agent's name, and the gate, which has to outlive the run.
 fn cut_the_shadow_agent(
     server: &LocalServer,
     until_lapse: bool,
-) -> tokio::task::JoinHandle<String> {
+) -> tokio::task::JoinHandle<(String, PushGate)> {
     let (log, cutter) = (server.reader(), server.cutter());
+    let gate = PushGate::install(server);
     tokio::spawn(async move {
         let first_shadow = |events: &[Event]| shadow_claims(events).into_iter().next();
         let (agent, _) = wait_for("a shadowed claim", &log, first_shadow).await;
-        tokio::time::sleep(CUT_DELAY).await;
+        gate.push_arrived(&agent).await;
         if until_lapse {
             cutter.refuse_new(vec![agent.clone()]);
         }
         assert!(cutter.cut(&agent), "{agent} had an open socket");
+        gate.open();
         if until_lapse {
             let lapsed = |events: &[Event]| count(events, lease_expired) > 0;
             wait_until("the shadow claim's lease to run out", &log, lapsed).await;
             cutter.refuse_new(Vec::new());
         }
-        agent
+        (agent, gate)
     })
 }
 
@@ -761,7 +826,7 @@ async fn a_shadow_agent_cut_before_it_submitted_goes_on_with_the_same_claim() {
         cut = Some(cut_the_shadow_agent(server, false));
     })
     .await;
-    let agent = cut.unwrap().await.unwrap();
+    let (agent, _gate) = cut.unwrap().await.unwrap();
     let events = &run.result.events;
     let shadows = shadow_claims(events);
     assert_eq!(
@@ -815,7 +880,7 @@ async fn a_shadow_claim_that_lapsed_while_its_agent_was_gone_is_that_tasks_lapse
         cut = Some(cut_the_shadow_agent(server, true));
     })
     .await;
-    let agent = cut.unwrap().await.unwrap();
+    let (agent, _gate) = cut.unwrap().await.unwrap();
     let events = &run.result.events;
     let shadows = shadow_claims(events);
     assert_eq!(
@@ -905,6 +970,13 @@ fn poison(trunk: &std::path::Path) {
         .unwrap();
 }
 
+/// The lease in the test below. The holder of the task's scopes works for a second and renews its
+/// claim every `heartbeat_every` (100 ms); a lease only a few heartbeats long lapses under it when
+/// the machine stalls the agent for that long, and the lapse the test waits for would then be the
+/// holder's. The wait for the unheard grant's lease is on the log, so a longer lease costs only
+/// the seconds a passing run spends waiting.
+const UNHEARD_LEASE_MS: u64 = 5_000;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_granted_to_nobody_that_lapsed_before_the_agent_returned_is_lapsed() {
     // The coordinator closes the waiter's socket and keeps its request; the grant goes to nobody
@@ -912,7 +984,7 @@ async fn a_claim_granted_to_nobody_that_lapsed_before_the_agent_returned_is_laps
     let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
     let cfg = config(2, 1000, PATIENT);
     let scratch = tempfile::tempdir().unwrap();
-    let server = start(&cfg, scratch.path(), 600).await;
+    let server = start(&cfg, scratch.path(), UNHEARD_LEASE_MS).await;
     let (log, cutter) = (server.reader(), server.cutter());
     let cut = tokio::spawn(async move {
         let waiter = wait_for("a queued request", &log, first_waiter).await;
