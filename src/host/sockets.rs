@@ -114,9 +114,9 @@ impl Host {
             return;
         };
         let agent = shell::log_agent(shell::session_agent(session));
+        self.abandon_replay(sock);
         out.push(self.failure("send to a socket", &format!("agent={agent}")));
         self.close_and_withdraw(now_ms, sock, CLOSE_INTERNAL_ERROR, SEND_FAILED_REASON, out);
-        self.abandon_replay(sock);
     }
 
     /// Close `sock` from here, then withdraw its agent's queued request (R9, R10).
