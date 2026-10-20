@@ -3246,13 +3246,15 @@ mod tests {
             .claims
             .iter()
             .all(|held| held.claim != ClaimId(9)));
-        let Ok(Reply::Claim {
-            outcome: ClaimOutcome::Refused { message, .. },
-        }) = rx.try_recv()
-        else {
-            panic!("the waiting `tessel claim` was not refused");
-        };
-        assert!(message.contains("claim 9 was released here"), "{message}");
+        let reply = rx.try_recv();
+        assert!(
+            matches!(
+                &reply,
+                Ok(Reply::Claim { outcome: ClaimOutcome::Refused { message, .. } })
+                    if message.contains("claim 9 was released here")
+            ),
+            "{reply:?}"
+        );
     }
 
     #[tokio::test]
