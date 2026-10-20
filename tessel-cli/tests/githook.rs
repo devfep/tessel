@@ -429,16 +429,15 @@ async fn a_submitted_claim_no_longer_covers_the_work_it_was_submitted_for() -> R
     Ok(())
 }
 
-/// The daemon's first event-log read can end between the coordinator granting a claim and the
-/// daemon receiving the grant: the claim is in the log before the daemon holds it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_grant_racing_the_first_log_read_leaves_one_entry_per_claim() -> Result<()> {
-    let (fake, a1) = world().await?;
-    install(&a1)?;
+/// Claims `src/c.rs` so that the daemon's first event-log read ends between the coordinator
+/// granting the claim and the daemon receiving the grant: the claim is in the log before the
+/// daemon holds it.
+fn claim_while_the_first_log_read_runs(fake: &Fake, a1: &Agent) -> Result<Done> {
+    install(a1)?;
     fake.hold_log_reads();
     a1.start("edit things")?;
     fake.hold_next_claim_reply();
-    let claim = std::thread::scope(|scope| -> Result<Done> {
+    std::thread::scope(|scope| -> Result<Done> {
         let claim = scope.spawn(|| a1.tessel(&["claim", "src/c.rs", "--mode", "create"]));
         let granted = |fake: &Fake| {
             fake.events()
@@ -447,7 +446,7 @@ async fn a_grant_racing_the_first_log_read_leaves_one_entry_per_claim() -> Resul
         };
         let log = a1.root().join(".tessel/daemon.log");
         let read = async {
-            eventually(Duration::from_secs(8), || Ok(granted(&fake).then_some(()))).await?;
+            eventually(Duration::from_secs(8), || Ok(granted(fake).then_some(()))).await?;
             fake.release_log_reads();
             eventually(Duration::from_secs(8), || {
                 let text = std::fs::read_to_string(&log).unwrap_or_default();
@@ -462,7 +461,13 @@ async fn a_grant_racing_the_first_log_read_leaves_one_entry_per_claim() -> Resul
             .map_err(|_| anyhow::anyhow!("claim thread panicked"))?;
         read?;
         claim
-    })?;
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grant_racing_the_first_log_read_leaves_one_entry_per_claim() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = claim_while_the_first_log_read_runs(&fake, &a1)?;
     assert_eq!(claim.code, 0, "{}", claim.all());
     assert_eq!(
         a1.held_claims()?,
@@ -478,6 +483,71 @@ async fn a_grant_racing_the_first_log_read_leaves_one_entry_per_claim() -> Resul
         done.all(),
         a1.tessel_files().unwrap_or_default()
     );
+    Ok(())
+}
+
+/// The agent's own claim, seen in the log before its grant arrives, is not reported as one no
+/// request explains: the notice offers `tessel release <id>`, which would drop the claim the
+/// agent just got.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_seen_in_the_log_before_its_grant_is_not_reported_as_unexplained() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = claim_while_the_first_log_read_runs(&fake, &a1)?;
+    assert_eq!(claim.code, 0, "{}", claim.all());
+    assert_eq!(a1.held_claims()?, 1);
+    let inbox = a1.tessel(&["inbox", "--all"])?;
+    assert_eq!(inbox.code, 0, "{}", inbox.all());
+    assert!(
+        !inbox.stdout.contains("no request here explains"),
+        "{}",
+        inbox.stdout
+    );
+    assert!(!inbox.stdout.contains("tessel release"), "{}", inbox.stdout);
+    Ok(())
+}
+
+/// An amend is granted after `tessel release` ran: the core applied the amend first, so the
+/// release, sent with the old fence, was refused. The daemon sends it again with the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claim_released_while_its_amend_is_on_the_way_ends_at_the_coordinator() -> Result<()> {
+    let (fake, a1) = started().await?;
+    let first = a1.tessel(&["claim", "src/a.rs"])?;
+    assert_eq!(first.code, 0, "{}", first.all());
+    fake.hold_next_claim_reply();
+    let events = |fake: &Fake, wanted: fn(&EventKind) -> bool| {
+        fake.events().iter().any(|event| wanted(&event.kind))
+    };
+    let amend = std::thread::scope(|scope| -> Result<Done> {
+        let amend = scope.spawn(|| a1.tessel(&["claim", "src/b.rs"]));
+        let landed = async {
+            eventually(Duration::from_secs(8), || {
+                Ok(
+                    events(&fake, |kind| matches!(kind, EventKind::ClaimAmended { .. }))
+                        .then_some(()),
+                )
+            })
+            .await
+        };
+        let landed =
+            tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(landed));
+        let released = a1.tessel(&["release"])?;
+        assert_eq!(released.code, 0, "{}", released.all());
+        fake.release_held();
+        let amend = amend
+            .join()
+            .map_err(|_| anyhow::anyhow!("claim thread panicked"))?;
+        landed?;
+        amend
+    })?;
+    assert_ne!(amend.code, 0, "{}", amend.all());
+    eventually(Duration::from_secs(8), || {
+        Ok(events(&fake, |kind| {
+            matches!(kind, EventKind::ClaimReleased { .. })
+        })
+        .then_some(()))
+    })
+    .await?;
+    assert_eq!(a1.held_claims()?, 0);
     Ok(())
 }
 
