@@ -2852,3 +2852,26 @@ fn host_a_failed_last_page_marks_the_watcher_before_its_socket_is_closed() {
         "a closed watcher is still planned for until it is reported closed"
     );
 }
+
+#[test]
+fn host_a_replay_ends_before_the_failed_socket_is_withdrawn() {
+    let mut kit = kit();
+    let (_, a2) = a2_waits_behind_a1(&mut kit);
+    seed_log(&mut kit, 150);
+    kit.fail_sends_to(a2);
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+
+    assert!(
+        !queued(&kit, "a2"),
+        "the dead socket's request is withdrawn"
+    );
+    assert!(
+        kit.logs()
+            .iter()
+            .all(|line| !line.contains("replay events failed")),
+        "the page still out is dropped silently: {:?}",
+        kit.logs()
+    );
+    assert_eq!(kit.session(a2).unwrap().watch_from, None, "never marked");
+}
