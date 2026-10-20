@@ -15,11 +15,16 @@ mod support;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use support::{eventually, now_ms, Agent, Fake, LIVE_LEASE_MS};
+use support::{eventually, now_ms, Agent, Fake};
 use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, ServerMsg};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 const SHORT: Duration = Duration::from_secs(8);
+
+/// The lease of `a_healthy_link_is_kept...`. The daemon drops a link whose pong is half a lease
+/// late, by its own real clock, which a fake cannot freeze: a stall of the machine longer than
+/// 1.5 s fails the test. A longer lease would only move that figure.
+const HEALTHY_LEASE_MS: u64 = 3_000;
 
 async fn claimed(lease_ms: u64) -> Result<(Fake, Agent)> {
     let fake = Fake::start(lease_ms, &[("a1", TOK1)]).await?;
@@ -69,13 +74,13 @@ async fn a_silent_link_is_dropped_after_half_a_lease_and_the_daemon_reconnects()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_healthy_link_is_kept_and_the_local_expiry_follows_the_heartbeats() -> Result<()> {
-    let (fake, a1) = claimed(LIVE_LEASE_MS).await?;
+    let (fake, a1) = claimed(HEALTHY_LEASE_MS).await?;
     let granted = expiry(&a1)?;
     let baseline = hellos(&fake);
     // Two answered heartbeats move the local expiry two heartbeat periods past the grant's. The
     // wait ends when they have; three leases is the most a passing run could need.
-    let two_beats = LIVE_LEASE_MS * 2 / 3;
-    eventually(Duration::from_millis(LIVE_LEASE_MS * 3), || {
+    let two_beats = HEALTHY_LEASE_MS * 2 / 3;
+    eventually(Duration::from_millis(HEALTHY_LEASE_MS * 3), || {
         Ok((expiry(&a1)? > granted + two_beats).then_some(()))
     })
     .await

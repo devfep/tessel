@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use support::{eventually, eventually_every, git, Agent, Fake, Lose, LIVE_LEASE_MS};
+use support::{eventually, eventually_every, git, Agent, Fake, Lose};
 use tessel_coordinator::protocol::{
     AgentId, ClaimId, ClientMsg, CommitId, Criterion, ErrorCode, EventKind, Fence, Intent, Mode,
     OnConflict, ReleaseReason, RequestId, Scope, ScopeClaim, ServerMsg,
@@ -315,36 +315,33 @@ async fn wait_queues_and_the_grant_arrives_after_the_holder_releases() -> Result
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn heartbeats_keep_a_claim_alive_past_its_lease() -> Result<()> {
-    // Heartbeats and expiry both run on the real clock, so the lease is `LIVE_LEASE_MS`; the waits
-    // for the clock to pass an expiry are bounded by three leases, which a passing run never
-    // reaches.
-    let clock_wait = Duration::from_millis(LIVE_LEASE_MS * 3);
-    let (_fake, a1, a2) = world(LIVE_LEASE_MS).await?;
+    const LEASE_MS: u64 = 3_000;
+    // A passing run waits one heartbeat period (a third of the lease) per step; this only decides
+    // how long a daemon that sends none takes to be called dead.
+    const HEARTBEAT_WAIT: Duration = Duration::from_secs(60);
+    // The coordinator's clock is frozen and moves a third of a lease after each heartbeat it has
+    // received, so the claim lives on the heartbeats and never on how fast the machine is. Four
+    // steps are more than a lease: without renewal the claim would be gone after the third.
+    let (fake, a1, a2) = world(LEASE_MS).await?;
+    fake.freeze_clock();
     a1.start("long job")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
-    let mut mark = a1.status()?["state"]["claims"][0]["expires_at_ms"]
-        .as_u64()
-        .context("the agent holds no claim")?;
-    // Twice: let the expiry run out on the clock the coordinator also reads, then see heartbeats
-    // push it past that. One renewal alone would also come from a single early heartbeat.
-    for round in 1..=2 {
-        let lapsed = mark;
-        eventually(clock_wait, || Ok((now_ms() > lapsed).then_some(())))
-            .await
-            .with_context(|| format!("round {round}: the clock never passed the expiry"))?;
-        mark = eventually(SHORT, || {
-            let renewed = a1.status()?["state"]["claims"][0]["expires_at_ms"].as_u64();
-            Ok(renewed.filter(|&expires| expires > lapsed))
+    for step in 1..=4 {
+        let seen = fake.heartbeats("a1");
+        eventually(HEARTBEAT_WAIT, || {
+            Ok((fake.heartbeats("a1") > seen).then_some(()))
         })
         .await
-        .with_context(|| format!("round {round}: no heartbeat renewed the expiry past {lapsed}"))?;
+        .with_context(|| format!("step {step}: no further heartbeat reached the coordinator"))?;
+        fake.advance_clock(LEASE_MS / 3);
+        fake.settle_expiry().await;
+        assert_eq!(
+            lease_expiries(&fake),
+            0,
+            "step {step}: claim expired despite heartbeats: {}",
+            a1.tessel(&["inbox", "--all"])?.stdout
+        );
     }
-    assert_eq!(
-        a1.held_claims()?,
-        1,
-        "{}",
-        a1.tessel(&["inbox", "--all"])?.stdout
-    );
     a2.start("impatient")?;
     let denied = a2.tessel(&["claim", "src/a.rs"])?;
     assert_eq!(

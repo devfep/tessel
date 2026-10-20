@@ -24,14 +24,6 @@ use tokio_tungstenite::WebSocketStream;
 
 pub const REPO: &str = "demo";
 
-/// The lease of the tests that need heartbeats to arrive in real time. The daemon sends one every
-/// third of the lease and drops a link whose pong is a lease and a half of a heartbeat late; the
-/// coordinator drops a claim whose heartbeat is a whole lease late. Both clocks are real, so the
-/// only thing that fails such a test is a stall of the daemon or the coordinator longer than two
-/// thirds of the lease: 4 s here, where a 3 s lease tolerated 2 s. Tests that only need a lease
-/// to end use `Fake::advance_clock` and a 30 s lease instead.
-pub const LIVE_LEASE_MS: u64 = 6_000;
-
 pub fn now_ms() -> u64 {
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -74,12 +66,17 @@ struct Inner {
     skew_ms: AtomicU64,
     /// Completed passes of the lease-expiry loop, so a test can wait for one that saw a new clock.
     expiry_passes: AtomicU64,
+    /// When `Fake::freeze_clock` stopped the coordinator clock; zero while it runs.
+    frozen_at_ms: AtomicU64,
 }
 
 impl Inner {
-    /// The time the core is told, in milliseconds.
+    /// The time the core is told, in milliseconds: the real time, or the instant the clock was
+    /// frozen at, plus whatever `advance_clock` has added.
     fn clock(&self) -> u64 {
-        now_ms() + self.skew_ms.load(Ordering::SeqCst)
+        let frozen = self.frozen_at_ms.load(Ordering::SeqCst);
+        let base = if frozen == 0 { now_ms() } else { frozen };
+        base + self.skew_ms.load(Ordering::SeqCst)
     }
 }
 
@@ -189,6 +186,7 @@ impl Fake {
             lose: Mutex::new(Vec::new()),
             skew_ms: AtomicU64::new(0),
             expiry_passes: AtomicU64::new(0),
+            frozen_at_ms: AtomicU64::new(0),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
@@ -374,13 +372,35 @@ impl Fake {
         self.inner.skew_ms.fetch_add(ms, Ordering::SeqCst);
     }
 
+    /// Stops the coordinator clock: from now on it moves only with `advance_clock`, so no lease
+    /// ends because the machine was slow. Call it before any claim is made.
+    pub fn freeze_clock(&self) {
+        self.inner.frozen_at_ms.store(now_ms(), Ordering::SeqCst);
+    }
+
     /// Waits until the lease-expiry loop has run twice since the call began: the first pass may
-    /// have started before the latest `advance_clock`, the second began after it.
+    /// have started before the latest `advance_clock`, the second began after it. Panics if the
+    /// loop does not run, which means its task died.
     pub async fn settle_expiry(&self) {
+        // Passes come every 20 ms; this is only how long a dead loop takes to be noticed.
+        const LOOP_DEAD_AFTER: Duration = Duration::from_secs(30);
         let target = self.inner.expiry_passes.load(Ordering::SeqCst) + 2;
+        let started = tokio::time::Instant::now();
         while self.inner.expiry_passes.load(Ordering::SeqCst) < target {
+            assert!(
+                started.elapsed() < LOOP_DEAD_AFTER,
+                "the fake's lease-expiry loop made no pass in {LOOP_DEAD_AFTER:?}; its task died"
+            );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    /// How many heartbeats `agent` has sent.
+    pub fn heartbeats(&self, agent: &str) -> usize {
+        self.received(agent)
+            .iter()
+            .filter(|msg| matches!(msg, ClientMsg::Heartbeat))
+            .count()
     }
 
     /// The coordinator's event log so far.
