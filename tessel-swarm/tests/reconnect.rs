@@ -142,6 +142,40 @@ async fn wait_until(what: &str, log: &local::LogReader, ready: impl Fn(&[Event])
     wait_for(what, log, |events| ready(events).then_some(())).await;
 }
 
+/// Like `wait_until`, but ends with the reason when a claim is released first: the agent gave up
+/// before the thing waited for could happen, and waiting out `WAIT` would only hide why.
+async fn wait_until_unless_released(
+    what: &str,
+    log: &local::LogReader,
+    ready: impl Fn(&[Event]) -> bool,
+) -> Result<(), String> {
+    let started = tokio::time::Instant::now();
+    loop {
+        let events = log.events();
+        if ready(&events) {
+            return Ok(());
+        }
+        let released = events.iter().find_map(|e| match &e.kind {
+            EventKind::ClaimReleased { claim, reason } => Some((claim.0, format!("{reason:?}"))),
+            _ => None,
+        });
+        if let Some((claim, reason)) = released {
+            return Err(format!(
+                "claim {claim} was released ({reason}) before {what}; the log held {} events, the \
+                 last ones: {}",
+                events.len(),
+                log_tail(&events)
+            ));
+        }
+        assert!(
+            started.elapsed() < WAIT,
+            "gave up after {WAIT:?} waiting for {what}; the last events: {}",
+            log_tail(&events)
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
 /// What a run on a server left behind.
 struct Outcome {
     server: LocalServer,
@@ -173,14 +207,25 @@ fn count(events: &[Event], wanted: impl Fn(&EventKind) -> bool) -> usize {
     events.iter().filter(|e| wanted(&e.kind)).count()
 }
 
-fn lease_expired(kind: &EventKind) -> bool {
-    matches!(
-        kind,
-        EventKind::ClaimReleased {
-            reason: ReleaseReason::LeaseExpired,
-            ..
-        }
-    )
+/// Whether `claim` ended because its lease ran out. Another agent's lapse does not count.
+fn claim_lapsed(events: &[Event], claim: ClaimId) -> bool {
+    events.iter().any(|e| {
+        matches!(
+            &e.kind,
+            EventKind::ClaimReleased { claim: c, reason: ReleaseReason::LeaseExpired }
+                if *c == claim
+        )
+    })
+}
+
+/// Whether a claim granted to `agent` ended because its lease ran out.
+fn grant_lapsed(events: &[Event], agent: &str) -> bool {
+    events.iter().any(|e| match &e.kind {
+        EventKind::ClaimGranted {
+            agent: a, claim, ..
+        } if a.0 == agent => claim_lapsed(events, *claim),
+        _ => false,
+    })
 }
 
 fn connections_of(events: &[Event], who: &str) -> usize {
@@ -413,8 +458,8 @@ async fn a_claim_that_lapsed_while_the_agent_was_gone_is_that_tasks_lapsed_outco
         cutter.reset_on(granted, vec!["a01".to_string()]);
         let log = server.reader();
         lifted = Some(tokio::spawn(async move {
-            let lapsed = |events: &[Event]| count(events, lease_expired) > 0;
-            wait_until("the lease to run out", &log, lapsed).await;
+            let lapsed = |events: &[Event]| grant_lapsed(events, "a01");
+            wait_until("a01's lease to run out", &log, lapsed).await;
             cutter.refuse_new(Vec::new());
         }));
     })
@@ -524,12 +569,11 @@ async fn a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_s
             };
             let both =
                 |events: &[Event]| connections_of(events, "a01") >= 1 && requested(events) > 0;
-            wait_until(
-                "a01 connected and the submission held for review",
-                &log,
-                both,
-            )
-            .await;
+            let held = "a01 connected and the submission held for review";
+            if let Err(why) = wait_until_unless_released(held, &log, both).await {
+                cutter.refuse_new(Vec::new());
+                return Err(why);
+            }
             cutter.refuse_new(vec![REVIEWER.to_string()]);
             let back = |events: &[Event]| connections_of(events, "a01") >= 3;
             wait_until("a01 connected a third time", &log, back).await;
@@ -537,10 +581,13 @@ async fn a_submission_still_undecided_when_the_agent_returns_is_waited_for_not_s
             // `AgentConnected`: nothing the reviewer logs from here on can be in what a01 read, so
             // a01 hears the outcome live on its second connection however long it takes to look.
             cutter.refuse_new(Vec::new());
+            Ok(())
         }));
     })
     .await;
-    lifted.unwrap().await.unwrap();
+    if let Err(why) = lifted.unwrap().await.unwrap() {
+        panic!("{why}; the agent's result: {:?}", run.result.results);
+    }
     let r = &run.result.results[0];
     assert_eq!(r.result, Resolution::Merged, "{r:?}");
     assert_eq!(r.reconnects, 1, "{r:?}");
@@ -666,34 +713,40 @@ async fn a_wait_that_a_reset_cut_short_is_counted_whole() {
     })
     .await;
     let result = &run.result;
-    let waiters: Vec<_> = result
-        .results
-        .iter()
-        .filter(|r| {
-            let queued = |e: &Event| queued_agent(&e.kind) == Some(r.agent.as_str());
-            result.events.iter().any(queued)
-        })
-        .collect();
-    assert_eq!(waiters.len(), 2, "{:?}", result.results);
-    let cut_at = result
+    let cut = result
         .events
         .iter()
         .find(|e| matches!(e.kind, EventKind::Submitted { .. }))
-        .map(|e| e.at_ms)
         .unwrap();
-    for r in waiters {
-        let queued_at = result
-            .events
-            .iter()
-            .find(|e| queued_agent(&e.kind) == Some(r.agent.as_str()))
-            .map(|e| e.at_ms)
-            .unwrap();
+    // The waits the cut ended: queued before the cut, and not granted before it.
+    let mut cut_short = Vec::new();
+    for queued in result.events.iter().filter(|e| e.seq < cut.seq) {
+        let Some(agent) = queued_agent(&queued.kind) else {
+            continue;
+        };
+        let granted = |e: &Event| {
+            matches!(&e.kind, EventKind::ClaimGranted { agent: a, .. } if a.0 == agent)
+                && e.seq > queued.seq
+                && e.seq < cut.seq
+        };
+        if !result.events.iter().any(granted) {
+            cut_short.push((agent, cut.at_ms - queued.at_ms));
+        }
+    }
+    assert_eq!(cut_short.len(), 2, "{cut_short:?} {:?}", result.results);
+    for (agent, before_cut) in cut_short {
         // The coordinator's own timestamps give the wait before the cut, however long the holder
-        // took to get there.
+        // took to get there; an agent's tasks add up.
+        let waited: u64 = result
+            .results
+            .iter()
+            .filter(|r| r.agent == agent)
+            .map(|r| r.waited_ms)
+            .sum();
         assert!(
-            r.waited_ms >= cut_at - queued_at,
-            "the wait before the reset ({} ms) is kept: {r:?}",
-            cut_at - queued_at
+            waited >= before_cut,
+            "{agent}'s wait before the reset ({before_cut} ms) is kept: {:?}",
+            result.results
         );
     }
     let outcomes: Vec<Resolution> = result.results.iter().map(|r| r.result).collect();
@@ -721,9 +774,13 @@ impl PushGate {
             let fork = fork.unwrap().path();
             let name = fork.file_stem().unwrap().to_string_lossy().into_owned();
             let gate = dir.path().display();
+            // The hook gives up when the gate has been closed for `WAIT`, so a test binary that
+            // is killed leaves no hook waiting for ever.
+            let polls = WAIT.as_millis() / 20;
             let script = format!(
-                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\n\
-                 while [ -e '{gate}/closed' ]; do sleep 0.02; done\n"
+                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\nn=0\n\
+                 while [ -e '{gate}/closed' ] && [ \"$n\" -lt {polls} ]; do\n\
+                 sleep 0.02; n=$((n + 1)); done\n"
             );
             let hook = fork.join("hooks/pre-receive");
             std::fs::write(&hook, script).unwrap();
@@ -784,7 +841,7 @@ fn cut_the_shadow_agent(
     let gate = PushGate::install(server);
     tokio::spawn(async move {
         let first_shadow = |events: &[Event]| shadow_claims(events).into_iter().next();
-        let (agent, _) = wait_for("a shadowed claim", &log, first_shadow).await;
+        let (agent, claim) = wait_for("a shadowed claim", &log, first_shadow).await;
         gate.push_arrived(&agent).await;
         if until_lapse {
             cutter.refuse_new(vec![agent.clone()]);
@@ -792,7 +849,7 @@ fn cut_the_shadow_agent(
         assert!(cutter.cut(&agent), "{agent} had an open socket");
         gate.open();
         if until_lapse {
-            let lapsed = |events: &[Event]| count(events, lease_expired) > 0;
+            let lapsed = |events: &[Event]| claim_lapsed(events, claim);
             wait_until("the shadow claim's lease to run out", &log, lapsed).await;
             cutter.refuse_new(Vec::new());
         }
@@ -990,7 +1047,7 @@ async fn a_claim_granted_to_nobody_that_lapsed_before_the_agent_returned_is_laps
         let waiter = wait_for("a queued request", &log, first_waiter).await;
         cutter.refuse_new(vec![waiter.clone()]);
         assert!(cutter.cut(&waiter), "{waiter} had an open socket");
-        let lapsed = |events: &[Event]| count(events, lease_expired) > 0;
+        let lapsed = |events: &[Event]| grant_lapsed(events, &waiter);
         wait_until("the unheard grant's lease to run out", &log, lapsed).await;
         cutter.refuse_new(Vec::new());
         waiter
