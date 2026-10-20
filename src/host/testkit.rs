@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::host::call::{Call, CallAnswer, CallId};
 use crate::host::{Host, HostConfig, Input, Output, SocketId};
-use crate::protocol::{AgentId, ClientMsg, ServerMsg};
-use crate::shell::{Session, STATE_KEY};
+use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
+use crate::shell::{Session, EVENT_PREFIX, STATE_KEY};
 
 /// The most answers `settle` delivers: far more than any test needs.
 const SETTLE_LIMIT: usize = 1_000;
@@ -89,6 +89,11 @@ impl Testkit {
     /// receives nothing.
     pub fn fail_sends_to(&mut self, sock: SocketId) {
         self.client(sock).send_fails = true;
+    }
+
+    /// Sends to `sock` succeed again.
+    pub fn restore_sends_to(&mut self, sock: SocketId) {
+        self.client(sock).send_fails = false;
     }
 
     /// Open a socket for `agent`, as the adapter does for a request it authenticated.
@@ -223,9 +228,40 @@ impl Testkit {
                 Output::SetWake { at_ms } => self.wake = at_ms,
                 Output::Call(call) => self.calls.push(call),
                 Output::Log { line } => self.logs.push(line),
-                Output::ReadEvents { .. } | Output::Metric { .. } => {}
+                Output::ReadEvents {
+                    sock,
+                    from_seq,
+                    limit,
+                } => {
+                    let events = self.read_events(from_seq, limit);
+                    self.answers.push_back(Input::ReplayPage {
+                        now_ms,
+                        sock,
+                        events,
+                        done: false,
+                    });
+                }
+                Output::Metric { .. } => {}
             }
         }
+    }
+
+    /// Up to `limit` stored events with `seq >= from_seq`, in `seq` order, as the adapter reads
+    /// them.
+    fn read_events(&self, from_seq: u64, limit: usize) -> Vec<Event> {
+        let mut events = Vec::new();
+        for (key, json) in &self.store {
+            if !key.starts_with(EVENT_PREFIX) {
+                continue;
+            }
+            let event: Event = serde_json::from_str(json).expect("a stored event parses");
+            if event.seq >= from_seq {
+                events.push(event);
+            }
+        }
+        events.sort_by_key(|event| event.seq);
+        events.truncate(limit);
+        events
     }
 
     fn client(&mut self, sock: SocketId) -> &mut Client {

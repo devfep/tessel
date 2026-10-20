@@ -7,17 +7,17 @@ use serde_json::{json, Value};
 use super::batch::{Held, Pending};
 use super::call::{Call, CallAnswer, CallId, DispatchId, Request};
 use super::call::{Refusal, TrialResult};
-use super::core_slot::ApplyError;
+use super::core_slot::{ApplyError, CoreSlot, Prepared, Waits};
 use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
 use crate::protocol::{
-    AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Fence, Intent,
-    Mode, OnConflict, RequestId, Scope, ScopeClaim, ServerMsg,
+    AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
+    Fence, Intent, Mode, OnConflict, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
 };
-use crate::shell::{self, Outbound, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
+use crate::shell::{self, Outbound, Work, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
 
 const NOW_MS: u64 = 1_000;
 
@@ -693,27 +693,6 @@ fn host_queued_frames_run_in_the_order_they_arrived() {
 }
 
 #[test]
-fn host_inputs_the_host_does_not_serve_yet_are_logged_not_dropped_silently() {
-    let mut kit = kit();
-    welcomed(&mut kit, "a1");
-    let now_ms = kit.now_ms();
-    let mark = kit.history().len();
-    kit.input(Input::ReplayPage {
-        now_ms,
-        sock: SocketId(0),
-        events: Vec::new(),
-        done: true,
-    });
-    assert_eq!(labels_since(&kit, mark), ["Log"]);
-    let line = kit.logs().last().unwrap();
-    assert!(line.contains("repo-1"), "{line}");
-    assert!(
-        line.contains("a replay page is not served by this host yet"),
-        "{line}"
-    );
-}
-
-#[test]
 fn a_commit_answer_for_an_earlier_batch_is_ignored() {
     let mut kit = kit();
     let sock = welcomed(&mut kit, "a1");
@@ -1380,6 +1359,7 @@ fn host_a_socket_whose_send_failed_is_closed_once_and_its_agent_withdrawn() {
     );
 
     let closes = count(&kit, "Close");
+    let logged = kit.logs().len();
     let now_ms = kit.now_ms();
     kit.input(Input::SendFailed { now_ms, sock: a2 });
     assert_eq!(
@@ -1387,6 +1367,16 @@ fn host_a_socket_whose_send_failed_is_closed_once_and_its_agent_withdrawn() {
         closes,
         "a closed socket is not closed twice"
     );
+    assert_eq!(
+        kit.logs().len(),
+        logged + 1,
+        "every failed live send is logged"
+    );
+    assert!(kit
+        .logs()
+        .last()
+        .unwrap()
+        .contains("send to a socket failed"));
 
     kit.input(Input::SendFailed {
         now_ms,
@@ -2157,4 +2147,731 @@ fn host_a_failing_step_that_dispatches_nothing_stops_the_wake() {
     );
     assert_eq!(kit.wake(), Some(kit.now_ms() + wake::RETRY_MS));
     assert!(!kit.host.waking);
+}
+
+// ---------- The Watch replay (R36) ----------
+
+fn old_event(seq: u64) -> Event {
+    Event {
+        seq,
+        at_ms: 5,
+        run: RunId("r".to_string()),
+        kind: EventKind::AgentConnected {
+            agent: AgentId("old".to_string()),
+        },
+    }
+}
+
+/// Store a log of `total` events, `seq` 0 to `total - 1`, as the adapter would find it.
+fn seed_log(kit: &mut Testkit, total: u64) {
+    for seq in 0..total {
+        let json = serde_json::to_string(&old_event(seq)).unwrap();
+        kit.seed(&shell::event_key(seq), json);
+    }
+}
+
+fn event_seqs(msgs: &[ServerMsg]) -> Vec<u64> {
+    let mut seqs = Vec::new();
+    for msg in msgs {
+        if let ServerMsg::Event { event } = msg {
+            seqs.push(event.seq);
+        }
+    }
+    seqs
+}
+
+/// The `(from_seq, limit)` of each `ReadEvents` the host issued after `mark` outputs.
+fn reads_since(kit: &Testkit, mark: usize) -> Vec<(u64, usize)> {
+    let mut reads = Vec::new();
+    for output in &kit.history()[mark..] {
+        if let Output::ReadEvents {
+            from_seq, limit, ..
+        } = output
+        {
+            reads.push((*from_seq, *limit));
+        }
+    }
+    reads
+}
+
+fn is_welcome(msg: &ServerMsg) -> bool {
+    matches!(msg, ServerMsg::Welcome { .. })
+}
+
+#[test]
+fn host_a_hello_after_a_watch_is_answered_only_after_the_last_page() {
+    let mut kit = kit();
+    seed_log(&mut kit, 250);
+    let sock = kit.open("a1");
+    kit.send(sock, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(sock, &hello("a1"));
+    assert_eq!(count(&kit, "Load"), 0, "the hello waits for the replay");
+
+    kit.deliver_next();
+    kit.deliver_next();
+    assert_eq!(event_seqs(kit.received(sock)).len(), 200);
+    assert_eq!(count(&kit, "Load"), 0, "two pages are not the whole replay");
+    assert!(kit.received(sock).iter().all(|msg| !is_welcome(msg)));
+
+    kit.deliver_next();
+    assert_eq!(event_seqs(kit.received(sock)), (0..250).collect::<Vec<_>>());
+    assert_eq!(
+        count(&kit, "Load"),
+        1,
+        "the hello runs once the replay ends"
+    );
+    kit.settle();
+
+    let received = kit.received(sock);
+    let welcome = received.iter().position(is_welcome).expect("a welcome");
+    assert!(welcome >= 250, "the welcome follows every replayed event");
+    let live = event_seqs(&received[welcome..]);
+    assert_eq!(
+        live,
+        [0],
+        "the hello's own event is sent live, after the replay"
+    );
+}
+
+#[test]
+fn host_a_replay_reads_pages_from_the_start_and_ends_on_a_short_or_empty_page() {
+    let cases: [(u64, u64, &[u64]); 9] = [
+        (0, 0, &[0]),
+        (1, 0, &[0]),
+        (99, 0, &[0]),
+        (100, 0, &[0, 100]),
+        (101, 0, &[0, 100]),
+        (200, 0, &[0, 100, 200]),
+        (250, 0, &[0, 100, 200]),
+        (250, 150, &[150, 250]),
+        (250, 250, &[250]),
+    ];
+    for (total, from_seq, reads) in cases {
+        let mut kit = kit();
+        seed_log(&mut kit, total);
+        let sock = kit.open("w");
+        let mark = kit.history().len();
+        kit.send(sock, &ClientMsg::Watch { from_seq });
+        kit.settle();
+
+        let issued = reads_since(&kit, mark);
+        let starts: Vec<u64> = issued.iter().map(|(from, _)| *from).collect();
+        assert_eq!(starts, reads, "a log of {total} read from {from_seq}");
+        assert!(
+            issued.iter().all(|(_, limit)| *limit == shell::REPLAY_PAGE),
+            "a page is {} events: {issued:?}",
+            shell::REPLAY_PAGE
+        );
+        let wanted: Vec<u64> = (from_seq..total).collect();
+        assert_eq!(
+            event_seqs(kit.received(sock)),
+            wanted,
+            "a log of {total} read from {from_seq}, each event once"
+        );
+    }
+}
+
+#[test]
+fn host_a_watcher_is_marked_after_the_last_page_and_watches_once() {
+    let mut kit = kit();
+    seed_log(&mut kit, 250);
+    let sock = kit.open("w");
+    kit.send(sock, &ClientMsg::Watch { from_seq: 40 });
+    assert_eq!(kit.session(sock).unwrap().watch_from, None);
+    kit.deliver_next();
+    kit.deliver_next();
+    assert_eq!(
+        kit.session(sock).unwrap().watch_from,
+        None,
+        "not marked while pages remain"
+    );
+    kit.deliver_next();
+    assert_eq!(kit.session(sock).unwrap().watch_from, Some(40));
+    assert_eq!(reads_since(&kit, 0).len(), 3);
+
+    kit.send(sock, &ClientMsg::Watch { from_seq: 0 });
+    let (_, code, message) = error_of(kit.received(sock).last().unwrap());
+    assert_eq!(code, ErrorCode::Malformed);
+    assert_eq!(message, "this socket is already watching");
+    assert_eq!(reads_since(&kit, 0).len(), 3, "no second replay");
+}
+
+#[test]
+fn host_a_watch_start_is_clamped_and_live_events_below_it_are_not_sent() {
+    let mut kit = kit();
+    let huge = kit.open("huge");
+    let mark = kit.history().len();
+    kit.send(huge, &ClientMsg::Watch { from_seq: u64::MAX });
+    assert_eq!(reads_since(&kit, mark)[0].0, shell::MAX_SAFE_SEQ);
+    kit.settle();
+    assert_eq!(
+        kit.session(huge).unwrap().watch_from,
+        Some(shell::MAX_SAFE_SEQ)
+    );
+
+    let all = kit.open("all");
+    kit.send(all, &ClientMsg::Watch { from_seq: 0 });
+    let late = kit.open("late");
+    kit.send(late, &ClientMsg::Watch { from_seq: 2 });
+    kit.settle();
+    for name in ["a1", "a2", "a3"] {
+        welcomed(&mut kit, name);
+    }
+    assert_eq!(event_seqs(kit.received(all)), [0, 1, 2]);
+    assert_eq!(
+        event_seqs(kit.received(late)),
+        [2],
+        "below the start: not sent"
+    );
+    assert!(event_seqs(kit.received(huge)).is_empty());
+}
+
+#[test]
+fn host_no_other_input_runs_between_a_replays_first_read_and_its_mark() {
+    let mut kit = kit();
+    seed_log(&mut kit, 150);
+    let watcher = kit.open("w");
+    let other = kit.open("a2");
+    let mark = kit.history().len();
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(other, &hello("a2"));
+    kit.send_binary(other);
+    kit.wake_now();
+    kit.poke();
+    kit.close(other);
+    assert_eq!(labels_since(&kit, mark), ["ReadEvents"], "all five wait");
+
+    kit.deliver_next();
+    let sends = labels_since(&kit, mark)
+        .iter()
+        .filter(|l| **l == "Send")
+        .count();
+    assert_eq!(sends, 100);
+    assert_eq!(
+        labels_since(&kit, mark).last(),
+        Some(&"ReadEvents"),
+        "the first page asks for the second and nothing else ran"
+    );
+    assert!(kit.received(other).is_empty());
+
+    let before_last = kit.history().len();
+    kit.deliver_next();
+    let after = labels_since(&kit, before_last);
+    let mut expected = vec!["Send"; 50];
+    expected.extend(["SetSession", "Load"]);
+    assert_eq!(
+        after, expected,
+        "the queue runs once the mark is out; the hello loads first"
+    );
+    kit.settle();
+    assert!(
+        is_welcome(&kit.received(other)[0]),
+        "queued frames keep their order"
+    );
+}
+
+#[test]
+fn host_a_replay_page_nobody_waits_for_is_logged_and_changes_nothing() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    let now_ms = kit.now_ms();
+    let mark = kit.history().len();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: SocketId(0),
+        events: vec![old_event(0)],
+        done: true,
+    });
+    assert_eq!(labels_since(&kit, mark), ["Log"]);
+    let line = kit.logs().last().unwrap();
+    assert!(line.contains("repo-1"), "{line}");
+    assert!(
+        line.contains("replay events failed: no replay waits for this page"),
+        "{line}"
+    );
+
+    seed_log(&mut kit, 3);
+    let watcher = kit.open("w");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let mark = kit.history().len();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: SocketId(99),
+        events: vec![old_event(0)],
+        done: true,
+    });
+    assert_eq!(labels_since(&kit, mark), ["Log"], "another socket's page");
+    kit.settle();
+    assert_eq!(
+        event_seqs(kit.received(watcher)),
+        [0, 1, 2],
+        "the replay went on"
+    );
+    assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
+}
+
+#[test]
+fn host_a_page_the_adapter_calls_done_ends_the_replay() {
+    let mut kit = kit();
+    let sock = kit.open("w");
+    let now_ms = kit.now_ms();
+    let outputs = kit.host.step(Input::Frame {
+        now_ms,
+        sock,
+        text: serde_json::to_string(&ClientMsg::Watch { from_seq: 0 }).unwrap(),
+    });
+    assert!(matches!(outputs[0], Output::ReadEvents { from_seq: 0, .. }));
+    let full: Vec<Event> = (0..100).map(old_event).collect();
+    let mark = kit.history().len();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock,
+        events: full,
+        done: true,
+    });
+    assert!(reads_since(&kit, mark).is_empty(), "no page after done");
+    assert_eq!(kit.session(sock).unwrap().watch_from, Some(0));
+    assert_eq!(event_seqs(kit.received(sock)).len(), 100);
+}
+
+// ---------- Errors name the repo and the operation (R46) ----------
+
+type Scenario = (&'static str, fn() -> Testkit);
+
+fn steward_call(request: Request) -> Call {
+    Call {
+        id: CallId(41),
+        dispatch_id: DispatchId(1),
+        request,
+        deadline_ms: 0,
+    }
+}
+
+/// An answer to a call whose request the host has no state for: it stays in the table, so the
+/// answer reaches `run_answer`.
+fn answered_without_state(request: Request) -> Testkit {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    let call = steward_call(request);
+    let id = call.id;
+    kit.host.calls.insert(id, call);
+    kit.reply(id, CallAnswer::Unknown);
+    kit.settle();
+    kit
+}
+
+fn unknown_socket_input(input: fn(u64, SocketId) -> Input) -> Testkit {
+    let mut kit = kit();
+    let now_ms = kit.now_ms();
+    kit.input(input(now_ms, SocketId(99)));
+    kit
+}
+
+/// A step that cannot be stored because it is refused for size, which no step without a sender
+/// reaches today: `commit_unsent` must still say what failed.
+fn refused_expiry() -> Testkit {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    kit.host.now_ms = kit.now_ms();
+    let mut out = Vec::new();
+    kit.host.commit_unsent(
+        "expire leases",
+        Ok(Prepared::Refused),
+        Vec::new(),
+        None,
+        &mut out,
+    );
+    kit.execute(out);
+    kit
+}
+
+fn a_step_that_cannot_be_applied() -> Testkit {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    kit.host.waking = true;
+    kit.host.now_ms = kit.now_ms();
+    let failed = Err(ApplyError {
+        operation: "apply",
+        cause: "core is not loaded".to_string(),
+    });
+    let mut out = Vec::new();
+    kit.host.skip(failed, WakeStep::Verification, &mut out);
+    kit.execute(out);
+    kit
+}
+
+fn the_error_paths() -> Vec<Scenario> {
+    vec![
+        ("handle frame", || {
+            let mut kit = kit();
+            kit.send(SocketId(99), &ClientMsg::Heartbeat);
+            kit
+        }),
+        ("handle close", || {
+            unknown_socket_input(|now_ms, sock| Input::Closed { now_ms, sock })
+        }),
+        ("handle send failure", || {
+            unknown_socket_input(|now_ms, sock| Input::SendFailed { now_ms, sock })
+        }),
+        ("send to a socket", || {
+            let mut kit = kit();
+            let sock = welcomed(&mut kit, "a1");
+            kit.fail_sends_to(sock);
+            kit.send(sock, &claim(1, "x.rs", "s"));
+            kit.settle();
+            kit
+        }),
+        ("load state", || {
+            let mut kit = kit();
+            kit.seed("core", r#"{"claims":"intent-text""#.to_string());
+            welcomed(&mut kit, "a1");
+            kit
+        }),
+        ("store state", || {
+            let mut kit = kit();
+            kit.seed("core", core_json_of_size(HARD_ENTRY_BYTES + 1));
+            welcomed(&mut kit, "a1");
+            kit
+        }),
+        ("persist state and events", || {
+            let mut kit = kit();
+            let sock = kit.open("a1");
+            kit.fail_next_commit();
+            kit.send(sock, &hello("a1"));
+            kit.settle();
+            kit
+        }),
+    ]
+}
+
+fn the_call_and_commit_error_paths() -> Vec<Scenario> {
+    vec![
+        ("commit", || {
+            let mut kit = kit();
+            let now_ms = kit.now_ms();
+            kit.input(Input::Committed {
+                now_ms,
+                batch: BatchId(77),
+            });
+            kit.input(Input::CommitFailed {
+                now_ms,
+                batch: BatchId(77),
+            });
+            kit
+        }),
+        ("deliver", || release_with(mixed_outbound()).0),
+        ("apply call answer", || {
+            let mut kit = kit();
+            kit.reply(CallId(42), CallAnswer::Unknown);
+            kit
+        }),
+        ("apply call answer", || {
+            let head = CommitId("a".into());
+            answered_without_state(Request::Reconcile { head })
+        }),
+        ("apply trunk head", || {
+            answered_without_state(Request::ReadHead {
+                submitted: Vec::new(),
+            })
+        }),
+        ("steward head call", || {
+            let mut kit = kit();
+            welcomed(&mut kit, "a1");
+            let call = head_read_outstanding(&mut kit);
+            kit.reply(call.id, CallAnswer::Unknown);
+            kit.settle();
+            kit
+        }),
+        ("steward merge call", || {
+            let mut kit = kit();
+            submitted(&mut kit);
+            wake(&mut kit);
+            kit.reply(CallId(1), CallAnswer::Unknown);
+            kit.settle();
+            kit
+        }),
+        ("steward trial call", || {
+            let (mut kit, _, call) = trial_outstanding();
+            kit.reply(call.id, CallAnswer::Unknown);
+            kit.settle();
+            kit
+        }),
+        ("replay events", || {
+            let mut kit = kit();
+            let now_ms = kit.now_ms();
+            kit.input(Input::ReplayPage {
+                now_ms,
+                sock: SocketId(0),
+                events: Vec::new(),
+                done: true,
+            });
+            kit
+        }),
+        ("expire leases", refused_expiry),
+        ("apply", a_step_that_cannot_be_applied),
+    ]
+}
+
+#[test]
+fn host_an_error_names_the_repo_and_the_failed_operation() {
+    let paths = the_error_paths();
+    for (operation, scenario) in paths.into_iter().chain(the_call_and_commit_error_paths()) {
+        let kit = scenario();
+        let named = format!("coordinator repo-1: {operation} failed: ");
+        let lines = kit.logs();
+        assert!(
+            lines.iter().any(|line| line.starts_with(&named)),
+            "{operation}: no line starts {named:?} in {lines:?}"
+        );
+        for line in lines {
+            assert!(
+                line.starts_with("coordinator repo-1: "),
+                "{operation}: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn host_a_refusal_and_a_bad_deployment_list_name_the_repo() {
+    let mut soft = kit();
+    soft.seed("core", core_json_of_size(SOFT_ENTRY_BYTES - 30_000));
+    let sock = welcomed(&mut soft, "a1");
+    soft.send(sock, &claim(7, "big.rs", &"y".repeat(60_000)));
+    assert_eq!(
+        soft.logs(),
+        [format!("coordinator repo-1: {STATE_LIMIT_MESSAGE}")]
+    );
+
+    let mut bad = Testkit::new(HostConfig {
+        reviewers: Some("ana, not valid".to_string()),
+        sensitive: Some("a/, /abs".to_string()),
+        ..config()
+    });
+    welcomed(&mut bad, "a1");
+    assert_eq!(bad.logs().len(), 2);
+    for line in bad.logs() {
+        assert!(line.starts_with("coordinator repo-1: "), "{line}");
+    }
+}
+
+// ---------- The stored size (R50) ----------
+
+#[test]
+fn host_the_stored_size_is_set_on_the_first_load_only() {
+    let mut kit = kit();
+    kit.seed("core", core_json_of_size(SOFT_ENTRY_BYTES - 30_000));
+    let sock = welcomed(&mut kit, "a1");
+    let mut padded = kit.stored_state().expect("a stored state").to_string();
+    padded.push_str(&" ".repeat(400_000));
+    let now_ms = kit.now_ms();
+    kit.input(Input::Loaded {
+        now_ms,
+        stored: Some(padded),
+    });
+    kit.settle();
+
+    kit.send(sock, &claim(7, "big.rs", &"y".repeat(60_000)));
+    let ServerMsg::Error { message, .. } = kit.received(sock).last().unwrap() else {
+        panic!("the claim is refused");
+    };
+    assert_eq!(
+        message, STATE_LIMIT_MESSAGE,
+        "the size is the one written, not the padded one a second load read"
+    );
+}
+
+/// Every failed send is logged (R31): one line for each of the `lines` sends of the page.
+fn assert_failed_sends_logged(kit: &Testkit, lines: usize) {
+    let logs = kit.logs();
+    assert_eq!(logs.len(), lines, "{logs:?}");
+    for line in logs {
+        assert!(line.contains("send to a socket failed"), "{line}");
+    }
+}
+
+#[test]
+fn host_a_failed_send_during_a_replay_ends_it_unmarked_and_closes_the_socket() {
+    let mut kit = kit();
+    seed_log(&mut kit, 250);
+    let watcher = kit.open("w");
+    let other = kit.open("a2");
+    kit.fail_sends_to(watcher);
+    let mark = kit.history().len();
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(other, &hello("a2"));
+    kit.settle();
+
+    assert_eq!(
+        reads_since(&kit, mark).len(),
+        2,
+        "no page is read after the failure"
+    );
+    assert!(
+        kit.logs()
+            .iter()
+            .all(|line| !line.contains("replay events failed")),
+        "the page still out when the replay ended is dropped silently: {:?}",
+        kit.logs().last()
+    );
+    assert_failed_sends_logged(&kit, shell::REPLAY_PAGE);
+    assert_eq!(count(&kit, "Close"), 1, "closed once");
+    assert_eq!(close_of(&kit, watcher), Some((1011, "send failed")));
+    assert_eq!(
+        kit.session(watcher).unwrap().watch_from,
+        None,
+        "never marked"
+    );
+    assert!(
+        kit.received(other).iter().any(is_welcome),
+        "the queued hello runs once the replay ends"
+    );
+}
+
+#[test]
+fn host_a_core_slot_takes_its_stored_size_from_the_first_load_only() {
+    let mut json = core_json_of_size(SOFT_ENTRY_BYTES + 3_000);
+    json.push_str(&" ".repeat(100_000));
+    let first = shell::load_core(Some(&json), None, None, Vec::new(), Vec::new()).unwrap();
+    let second = shell::load_core(None, Some("test"), None, Vec::new(), Vec::new()).unwrap();
+    let waits = Waits {
+        merging: false,
+        verifying: false,
+    };
+    let agent = AgentId("a1".to_string());
+    let mut slot = CoreSlot::default();
+    slot.install(first, Some(&json));
+    slot.install(second, None);
+
+    let prepared = slot.apply(Work::Content, waits, NOW_MS, |core| {
+        core.handle(&agent, claim(1, "a.rs", "small"), NOW_MS)
+    });
+    assert!(
+        matches!(prepared, Ok(Prepared::Ready(_))),
+        "the size is the first load's, which is larger than the state after a small claim"
+    );
+}
+
+#[test]
+fn host_a_watch_on_a_closed_socket_stops_at_the_first_failed_send() {
+    let mut kit = kit();
+    seed_log(&mut kit, 250);
+    let sock = kit.open("a1");
+    kit.send(sock, &hello("someone-else"));
+    assert_eq!(close_of(&kit, sock), Some((1008, "identity mismatch")));
+    kit.fail_sends_to(sock);
+    let mark = kit.history().len();
+    kit.send(sock, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+
+    assert_eq!(
+        reads_since(&kit, mark).len(),
+        2,
+        "no page is read after the failure"
+    );
+    assert!(
+        kit.logs()
+            .iter()
+            .all(|line| !line.contains("replay events failed")),
+        "the page still out when the replay ended is dropped silently: {:?}",
+        kit.logs().last()
+    );
+    assert_failed_sends_logged(&kit, shell::REPLAY_PAGE);
+    assert_eq!(kit.session(sock).unwrap().watch_from, None, "never marked");
+}
+
+#[test]
+fn host_another_sockets_failed_send_waits_until_the_replay_ends() {
+    let mut kit = kit();
+    seed_log(&mut kit, 250);
+    let watcher = kit.open("w");
+    let other = welcomed(&mut kit, "a2");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let logged = kit.logs().len();
+    let now_ms = kit.now_ms();
+    kit.input(Input::SendFailed {
+        now_ms,
+        sock: other,
+    });
+    assert_eq!(kit.logs().len(), logged, "queued behind the replay");
+    assert!(kit.closed(other).is_none());
+
+    kit.settle();
+    assert_eq!(kit.logs().len(), logged + 1);
+    assert_eq!(close_of(&kit, other), Some((1011, "send failed")));
+    assert_eq!(
+        event_seqs(kit.received(watcher)).len(),
+        250,
+        "the replay was whole"
+    );
+}
+
+#[test]
+fn host_a_watch_started_again_after_a_failed_replay_gets_its_own_pages() {
+    let mut kit = kit();
+    seed_log(&mut kit, 250);
+    let sock = kit.open("w");
+    kit.fail_sends_to(sock);
+    kit.send(sock, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+    assert_eq!(kit.session(sock).unwrap().watch_from, None);
+
+    kit.restore_sends_to(sock);
+    kit.send(sock, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+    assert_eq!(event_seqs(kit.received(sock)).len(), 250);
+    assert_eq!(kit.session(sock).unwrap().watch_from, Some(0));
+}
+
+#[test]
+fn host_a_failed_last_page_marks_the_watcher_before_its_socket_is_closed() {
+    let mut kit = kit();
+    seed_log(&mut kit, 30);
+    let watcher = kit.open("w");
+    kit.fail_sends_to(watcher);
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+
+    assert_eq!(
+        kit.session(watcher).unwrap().watch_from,
+        Some(0),
+        "marked first"
+    );
+    assert_eq!(close_of(&kit, watcher), Some((1011, "send failed")));
+    assert_eq!(count(&kit, "Close"), 1, "closed once");
+    assert_failed_sends_logged(&kit, 30);
+
+    let before = kit.history().len();
+    welcomed(&mut kit, "a2");
+    let to_watcher = kit.history()[before..]
+        .iter()
+        .filter(|output| matches!(output, Output::Send { sock, .. } if *sock == watcher))
+        .count();
+    assert_eq!(
+        to_watcher, 1,
+        "a closed watcher is still planned for until it is reported closed"
+    );
+}
+
+#[test]
+fn host_a_replay_ends_before_the_failed_socket_is_withdrawn() {
+    let mut kit = kit();
+    let (_, a2) = a2_waits_behind_a1(&mut kit);
+    seed_log(&mut kit, 150);
+    kit.fail_sends_to(a2);
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+
+    assert!(
+        !queued(&kit, "a2"),
+        "the dead socket's request is withdrawn"
+    );
+    assert!(
+        kit.logs()
+            .iter()
+            .all(|line| !line.contains("replay events failed")),
+        "the page still out is dropped silently: {:?}",
+        kit.logs()
+    );
+    assert_eq!(kit.session(a2).unwrap().watch_from, None, "never marked");
 }
