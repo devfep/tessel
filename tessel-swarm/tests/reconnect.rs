@@ -774,10 +774,7 @@ impl PushGate {
     fn install(server: &LocalServer) -> Self {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("closed"), "").unwrap();
-        let tessel_swarm::endpoint::Remote::Local { forks, .. } = server.endpoint.remote.clone()
-        else {
-            unreachable!("the local target has a local remote");
-        };
+        let forks = server.endpoint.remote.forks.clone();
         for fork in std::fs::read_dir(forks).unwrap() {
             let fork = fork.unwrap().path();
             let name = fork.file_stem().unwrap().to_string_lossy().into_owned();
@@ -986,10 +983,7 @@ async fn a_rejection_that_lands_while_the_submitter_is_gone_is_found_and_its_cla
     let cfg = config(1, 0, PATIENT);
     let mut lifted = None;
     let run = run_with(&tasks, &cfg, local::LEASE_MS, |server| {
-        let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone()
-        else {
-            unreachable!("the local target has a local remote");
-        };
+        let trunk = server.endpoint.remote.trunk.clone();
         let change_main_then_cut = move |e: &Event| {
             let submitted = matches!(e.kind, EventKind::Submitted { .. });
             if submitted {

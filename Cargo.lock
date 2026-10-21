@@ -1205,7 +1205,6 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
- "rustls",
  "serde",
  "serde_json",
  "tempfile",

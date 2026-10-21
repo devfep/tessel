@@ -1,6 +1,6 @@
 //! Where the scripted agents connect and where their git goes: a coordinator socket, a token per
-//! agent, and a remote for the trunk and one fork per agent. The local target and the live target
-//! both produce one of these, so `on` mode does not know which it runs against.
+//! agent, and a remote for the trunk and one fork per agent. The local target produces one of
+//! these.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -31,21 +31,16 @@ impl fmt::Debug for Token {
     }
 }
 
+/// Directories on this machine: the trunk repo and a bare repo per agent fork.
 #[derive(Debug, Clone)]
-pub enum Remote {
-    /// Directories on this machine: the trunk repo and a bare repo per agent fork.
-    Local { trunk: PathBuf, forks: PathBuf },
-    /// Artifacts repos over HTTPS, each with its own token.
-    Live {
-        trunk_url: String,
-        trunk_token: Token,
-        forks: HashMap<String, (String, Token)>,
-    },
+pub struct Remote {
+    pub trunk: PathBuf,
+    pub forks: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 pub struct Endpoint {
-    /// `ws://` or `wss://` URL of the repo's socket on the coordinator.
+    /// `ws://` URL of the repo's socket on the coordinator.
     pub ws_url: String,
     /// Identity token by agent name, for the agents, the reviewer and the observer.
     pub tokens: HashMap<String, Token>,
@@ -71,21 +66,8 @@ impl Remote {
 
     /// Fetches the trunk's `main`, resets the working directory to it and returns its commit id.
     pub fn sync(&self, work: &Git) -> Result<String> {
-        match self {
-            Remote::Local { trunk, .. } => {
-                work.run(&["fetch", "-q", &trunk.to_string_lossy(), "main"])?;
-                work.run(&["reset", "-q", "--hard", "FETCH_HEAD"])?;
-            }
-            Remote::Live {
-                trunk_url,
-                trunk_token,
-                ..
-            } => {
-                let authed = Git::new(&work.dir).with_bearer(trunk_token.expose());
-                authed.run(&["fetch", "-q", trunk_url, "main"])?;
-                authed.run(&["reset", "-q", "--hard", "FETCH_HEAD"])?;
-            }
-        }
+        work.run(&["fetch", "-q", &self.trunk.to_string_lossy(), "main"])?;
+        work.run(&["reset", "-q", "--hard", "FETCH_HEAD"])?;
         work.run(&["rev-parse", "HEAD"])
     }
 
@@ -93,28 +75,16 @@ impl Remote {
     /// the remote answered with a server error or a lost connection (`Git::push`). Adds the
     /// repeats to `retries`.
     pub fn push(&self, work: &Git, agent: &str, retries: &AtomicU32) -> Result<()> {
-        match self {
-            Remote::Local { forks, .. } => {
-                let fork = forks.join(format!("{agent}.git"));
-                work.push(
-                    &[
-                        "-q",
-                        "--force",
-                        &fork.to_string_lossy(),
-                        "HEAD:refs/heads/main",
-                    ],
-                    retries,
-                )?;
-            }
-            Remote::Live { forks, .. } => {
-                let (url, token) = forks
-                    .get(agent)
-                    .ok_or_else(|| anyhow!("no fork for agent {agent}"))?;
-                let authed = Git::new(&work.dir).with_bearer(token.expose());
-                authed.push(&["-q", "--force", url, "HEAD:refs/heads/main"], retries)?;
-            }
-        }
-        Ok(())
+        let fork = self.forks.join(format!("{agent}.git"));
+        work.push(
+            &[
+                "-q",
+                "--force",
+                &fork.to_string_lossy(),
+                "HEAD:refs/heads/main",
+            ],
+            retries,
+        )
     }
 }
 
@@ -129,7 +99,7 @@ mod tests {
         let endpoint = Endpoint {
             ws_url: "ws://x".into(),
             tokens: HashMap::from([("a01".to_string(), token)]),
-            remote: Remote::Local {
+            remote: Remote {
                 trunk: "t".into(),
                 forks: "f".into(),
             },

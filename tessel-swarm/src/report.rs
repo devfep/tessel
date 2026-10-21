@@ -331,7 +331,7 @@ fn notes(policy: Policy, off: &OffResult, on: &OnResult) -> Vec<String> {
     notes
 }
 
-/// The side-by-side table. `target` is `local` or `live`: where the `on` run happened.
+/// The side-by-side table. `target` names where the `on` run happened.
 pub fn ab_markdown(
     header: &Header,
     target: &str,

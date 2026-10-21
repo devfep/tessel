@@ -109,10 +109,7 @@ async fn run_leased(
     let scratch = tempfile::tempdir().unwrap();
     let server = start_server(&config, scratch.path(), lease_ms).await;
     if let Some((after, hook)) = hook {
-        let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone()
-        else {
-            unreachable!("the local target has a local remote");
-        };
+        let trunk = server.endpoint.remote.trunk.clone();
         let log = server.reader();
         tokio::spawn(async move {
             while !log
@@ -148,11 +145,7 @@ async fn run(tasks: &[Task], config: OnConfig) -> Run {
 }
 
 fn trunk_of(run: &Run) -> PathBuf {
-    let tessel_swarm::endpoint::Remote::Local { trunk, .. } = run.server.endpoint.remote.clone()
-    else {
-        unreachable!("the local target has a local remote");
-    };
-    trunk
+    run.server.endpoint.remote.trunk.clone()
 }
 
 fn merged_claims(run: &Run) -> usize {
@@ -887,10 +880,7 @@ struct PushGate {
 impl PushGate {
     fn install(server: &LocalServer) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let tessel_swarm::endpoint::Remote::Local { forks, .. } = server.endpoint.remote.clone()
-        else {
-            unreachable!("the local target has a local remote");
-        };
+        let forks = server.endpoint.remote.forks.clone();
         for fork in std::fs::read_dir(forks).unwrap() {
             let fork = fork.unwrap().path();
             let name = fork.file_stem().unwrap().to_string_lossy().into_owned();
@@ -1412,9 +1402,7 @@ async fn an_agent_whose_own_checks_fail_reports_the_failure_not_the_noise_around
     let cfg = config(1, Policy::Wait, 0);
     let scratch = tempfile::tempdir().unwrap();
     let server = start_server(&cfg, scratch.path(), local::LEASE_MS).await;
-    let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
-        unreachable!("the local target has a local remote");
-    };
+    let trunk = server.endpoint.remote.trunk.clone();
     // The red test logs far more than the note may hold before it throws, and a passing test is
     // named with as much after it, so a cap that is too large lets noise in and neither the head
     // nor the tail of the output holds the failure.
@@ -1461,9 +1449,7 @@ async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
     let step_ms = lease_ms * 3 / 4;
     let server = start_server(&cfg, scratch.path(), lease_ms).await;
     server.freeze_clock();
-    let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
-        unreachable!("the local target has a local remote");
-    };
+    let trunk = server.endpoint.remote.trunk.clone();
     let signals = tempfile::tempdir().unwrap();
     let (started, release) = (
         signals.path().join("started"),
