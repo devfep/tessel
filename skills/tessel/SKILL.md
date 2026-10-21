@@ -153,17 +153,19 @@ unsupported file. If you claim by hand, add `create` when you add a symbol.
 ## Submitting
 
 ```
-git push <your fork> HEAD:main  # first: the commit must be on your fork <repo>--<agent>'s main
+git push <your fork> HEAD:main  # first: the commit must be on your fork's main
 tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
               [--rejected "<approach>::<reason>"] [--claim <id>] [--commit <sha>]
               [--transcript <file>]
 ```
 
-- **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. The lander
-  (the steward before it) fetches only the fork's default branch (`main`), so push to `main`
-  whatever your local branch is called. At least one `--evidence` is required (repeatable):
-  without it the work would be held for review. Evidence is self-reported: any non-empty text
-  satisfies the rule and nothing checks that the tests ran, so write only what you ran and saw.
+- **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. Your fork
+  is the one the server's `fork` template names for your agent (locally `<forks>/<agent>.git`). The
+  server's lander fetches only its `main`, so push to `main` whatever your local branch is called;
+  the runner then runs the trunk's test command on the rebased commit before main moves. At least
+  one `--evidence` is required (repeatable): without it the work would be held for review. Evidence
+  is self-reported: any non-empty text satisfies the rule and nothing checks that the tests ran, so
+  write only what you ran and saw.
 - **One claim must cover everything the commit changed.** The default is your only unsubmitted
   claim; else `--claim <id>`. `--commit` defaults to `HEAD`. The diff runs from the newest of the
   coordinator's head, your fork point and your start commit (`start` in `tessel status`; it moves
@@ -182,11 +184,9 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   and the token after `Bearer `), refuses an empty file or one over 4 MiB after redaction, and
   stores it as `transcripts/<claim>.md` on the local branch `tessel/transcript-<claim>` without
   touching your working tree or index; a branch of that name from an earlier submit is replaced.
-  The submission carries its SHA-256. The output says `push it with git push <fork>
-  tessel/transcript-<claim>`: push it before the merge's evidence step finishes, else the
-  record says the file could not be read and the merge still merges. The steward copied it when
-  its hash matched; the lander copies no transcript. The transcript is untrusted text, kept as
-  data.
+  The submission carries its SHA-256. The transcript stays in your repository: no evidence record
+  and no transcript copy exist yet (P1-EVIDENCE), so pushing the branch changes nothing. The
+  transcript is untrusted text, kept as data.
 - **Uncovered (exit 5)** prints the uncovered scopes and sends nothing. Claim the full set
   (release first if nothing is uncommitted) or drop the changes outside it.
 - **Accepted (exit 0)** prints the queue position (exit 7 if held for review instead). The result
