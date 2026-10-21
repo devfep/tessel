@@ -21,6 +21,8 @@ use tessel_coordinator::protocol::{
 };
 use tessel_server::config::{Config, RepositoryConfig};
 use tessel_server::id::RepoId;
+use tessel_server::identity::{self, Ed25519Verifier, Role, TokenRequest};
+use tessel_server::keys;
 use tessel_server::repo::{BoxFuture, CallPort, NoLander};
 use tessel_server::server::{self, Deps, RunningServer, StartError};
 use tessel_server::store::{Store, StoreError};
@@ -38,6 +40,7 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const WAIT: Duration = Duration::from_secs(5);
 const TOKEN_A1: &str = "token-for-a1-S3CRETvalue";
 const TOKEN_A2: &str = "token-for-a2";
+const TOKEN_LANDER: &str = "token-for-the-lander";
 const DEMO: &str = "/tenant/acme/repo/demo";
 
 /// The in-process stand-in for identity: a table from token to agent.
@@ -55,13 +58,18 @@ impl Verifier for Tokens {
 }
 
 fn tokens() -> Arc<dyn Verifier> {
-    Arc::new(Tokens(HashMap::from([(TOKEN_A1, "a1"), (TOKEN_A2, "a2")])))
+    Arc::new(Tokens(HashMap::from([
+        (TOKEN_A1, "a1"),
+        (TOKEN_A2, "a2"),
+        (TOKEN_LANDER, "lander"),
+    ])))
 }
 
 fn config(dir: &Path, repos: &[(&str, &str)]) -> Config {
     Config {
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         store_dir: dir.join("stores"),
+        identity: None,
         repositories: repos
             .iter()
             .map(|(tenant, name)| RepositoryConfig {
@@ -355,6 +363,50 @@ async fn adapter_logs_a_refusal_without_the_token() -> TestResult {
     );
     assert!(!text.contains(secret), "the token is never logged: {text}");
     server.stop().await;
+    logs_a_real_refusal_without_the_token(log).await
+}
+
+/// A token the real verifier refuses is logged by its reason and path, not by its text.
+async fn logs_a_real_refusal_without_the_token(log: &Captured) -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let keys = dir.path().join("keys");
+    keys::generate(&keys, "k1")?;
+    let key = keys::load_signing_key(&keys, "k1")?;
+    let verifier: Arc<dyn Verifier> = Arc::new(Ed25519Verifier::load(&keys, "tessel-test")?);
+    let elsewhere = TokenRequest {
+        kid: "k1",
+        audience: "tessel-test",
+        tenant: "acme",
+        repo: "real-refusal-log",
+        agent: "a1",
+        role: Role::Agent,
+        ttl_ms: 60_000,
+    };
+    let token = identity::mint(&key, &elsewhere, identity::now_ms())?;
+    let seed = std::fs::read_to_string(keys.join("k1.key"))?;
+    let repos = [("acme", "real-refusal-log"), ("acme", "other-repo")];
+    let server = start_with(dir.path(), &repos, Some(verifier), Arc::new(NoLander)).await?;
+    let path = "/tenant/acme/repo/other-repo";
+    assert_eq!(
+        refused_with(connect(server.local_addr(), path, Some(&token), &[]).await)?,
+        401
+    );
+    let text = String::from_utf8(log.0.lock().unwrap_or_else(PoisonError::into_inner).clone())?;
+    let ours: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("other-repo") && line.contains("refused"))
+        .collect();
+    assert!(
+        ours.iter()
+            .any(|line| line.contains("token is for another repository")),
+        "{ours:?}"
+    );
+    assert!(!text.contains(&token), "the token is never logged");
+    assert!(
+        !text.contains(seed.trim()),
+        "the secret seed is never logged"
+    );
+    server.stop().await;
     Ok(())
 }
 
@@ -515,11 +567,17 @@ async fn the_summary_counts_the_log_and_a_poke_is_dropped_until_the_repo_has_sta
     let server = start(dir.path()).await?;
     let addr = server.local_addr();
     let poke = format!("{DEMO}/trunk-moved");
-    assert_eq!(http(addr, "POST", &poke, Some(TOKEN_A1)).await?.status, 204);
+    assert_eq!(
+        http(addr, "POST", &poke, Some(TOKEN_LANDER)).await?.status,
+        204
+    );
     let mut socket = welcomed(addr, DEMO, TOKEN_A1, "a1").await?;
     send(&mut socket, &claim(1, "src/a.rs")).await?;
     expect(&mut socket).await?;
-    assert_eq!(http(addr, "POST", &poke, Some(TOKEN_A1)).await?.status, 202);
+    assert_eq!(
+        http(addr, "POST", &poke, Some(TOKEN_LANDER)).await?.status,
+        202
+    );
     let summary = http(addr, "GET", &format!("{DEMO}/summary"), Some(TOKEN_A1)).await?;
     assert_eq!(summary.status, 200);
     assert!(summary

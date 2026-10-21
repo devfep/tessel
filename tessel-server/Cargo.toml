@@ -23,6 +23,14 @@ axum = { version = "=0.8.9", default-features = false, features = ["http1", "tok
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 # The command line: `serve` now, and the subcommands the identity task adds.
 clap = { version = "=4.6.7", features = ["derive"] }
+# Request tokens are Ed25519 signatures: the server holds only public keys. Signing and verifying
+# need no random source (`rand_core` is off), and `zeroize` wipes a secret key when it drops.
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["zeroize"] }
+# base64url without padding, the token's text form. Already in the lockfile through the WebSocket
+# stack, so no second encoder is built.
+data-encoding = { version = "=2.11.1", default-features = false, features = ["std"] }
+# The operating system's random bytes for a new secret key; the one use of randomness here.
+getrandom = "=0.4.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 thiserror = "=2.0.21"

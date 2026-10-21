@@ -1,9 +1,9 @@
 # Configuration reference
 
 This page covers the settings in this tree. The Cloudflare Worker and its `wrangler.toml` are
-deleted; the local server, `tessel-server`, is M3's work in progress (P1-SERVER, P1-IDENTITY) and
-has no settings on this page yet. The steward (`tessel-steward/`) stays until M6 as the reference
-for the lander, so its settings are listed as they are in its own files.
+deleted; the local server, `tessel-server`, has its [own section](#server-tessel-server). The
+steward (`tessel-steward/`) stays until M6 as the reference for the lander, so its settings are
+listed as they are in its own files.
 
 Every setting Tessel reads, where it is set, its default, what it does, and the code that reads it.
 The code references were written against commit `9e363c1` and the `src/shell.rs` ones re-checked
@@ -11,9 +11,10 @@ after the Worker's deletion. A setting that is not on this page is not configura
 [Fixed limits](#fixed-limits) are constants in the code.
 
 Contents: [`tessel.toml`](#per-repository-tesseltoml-the-gate) ·
-[Host settings](#host-settings) · [Steward](#steward-tessel-stewardwranglerjsonc) ·
-[Agent and worktree](#agent-and-worktree) · [CLI commands and flags](#cli-commands-and-flags) ·
-[Fixed limits](#fixed-limits) · [What is pluggable](#what-is-pluggable)
+[Host settings](#host-settings) · [Server](#server-tessel-server) ·
+[Steward](#steward-tessel-stewardwranglerjsonc) · [Agent and worktree](#agent-and-worktree) ·
+[CLI commands and flags](#cli-commands-and-flags) · [Fixed limits](#fixed-limits) ·
+[What is pluggable](#what-is-pluggable)
 
 ## Per repository: `tessel.toml` (the gate)
 
@@ -174,6 +175,49 @@ A submission merges unattended unless one of these applies (`src/protocol.rs:694
 `--evidence` is self-reported. The coordinator accepts any non-empty evidence list
 (`src/coordinator.rs:1271`); the CLI drops blank entries (`tessel-cli/src/submit.rs:63-75`).
 Nothing checks that the tests ran.
+
+## Server: `tessel-server`
+
+`tessel-server serve --config <file>` reads one TOML file. An unknown key, in the file or in a
+table, makes it invalid, and an error names the file and the key.
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `listen` | socket address | required | Where the server listens, `127.0.0.1:7878` for example. |
+| `store_dir` | path | required | The directory of stores, one SQLite file per repository, and the lock that keeps a second server out. |
+| `[[repository]]` `tenant`, `name`, `run` | names | at least one | A repository this server serves, and the run its evidence log is named for. `tenant` and `name` are lowercase letters, digits and interior hyphens, at most 63 characters. |
+| `[identity]` `keys` | path | none | The directory of Ed25519 keys. |
+| `[identity]` `audience` | name | none | The `aud` a token must carry. |
+
+Without an `[identity]` table the server logs one warning at start and answers 401 on every
+authenticated route.
+
+### Identity
+
+A token is `<payload>.<signature>`, sent as `Authorization: Bearer <token>`. The payload is
+base64url, without padding, of the JSON `{"v":1,"kid":..,"aud":..,"tenant":..,"repo":..,
+"agent":..,"role":"agent"|"service","exp_ms":..}`. The signature is Ed25519 over the payload text
+as sent, made with the secret key of `kid`. The server checks, in this order, the size (at most
+1 KiB), the shape, the version, that `kid` is known, the signature, `aud`, `tenant`, `repo`, the
+agent name, the role and `exp_ms`. Every refusal is a 401 with the same body; the reason is
+logged and never carries the token.
+
+The key directory holds `<kid>.key`, the secret seed, written with mode 0600, and `<kid>.pub`. A
+`kid` is a lowercase name such as `2026-10`. The server loads every `.pub` file at start and
+never reads a `.key` file. To rotate, run `admin keygen` for a new `kid`, switch minting to it,
+restart, and remove the old `.pub` once its tokens have expired: until then both verify. A `kid`
+whose file is removed is refused after the next start. There is no deny-list: a token is valid
+until it expires or its `kid` is removed.
+
+`lander`, `runner` and `server` are reserved service names. A token for one has `role` `service`
+and is minted only with `--service`; a token for any other name has `role` `agent`; one that
+mixes the two is refused, when it is minted and when it is checked. `ws` and `summary` admit
+agents only. `trunk-moved` admits the `lander` only.
+
+| Command | Effect |
+|---|---|
+| `tessel-server admin keygen --config <file> --kid <kid>` | Writes `<kid>.key` and `<kid>.pub` into `[identity] keys`, creating the directory. Refuses to overwrite either file. |
+| `tessel-server admin token --config <file> --kid <kid> --tenant <t> --repo <r> --agent <a> [--ttl <duration>] [--service]` | Prints a token on standard output and nothing else, and never logs it. `--ttl` is `30m`, `12h` or `7d` and defaults to `24h`. |
 
 ## Steward: `tessel-steward/wrangler.jsonc`
 
