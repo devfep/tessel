@@ -6,9 +6,10 @@ overlaps another agent's work is refused before anything is written, with the ot
 and the moves still open. Finished work goes to the agent's own fork and is submitted; the lander
 rebases it, checks that the claim covered every change, and pushes `main` once the repository's
 CI has run the tests on it. Work merges with no human unless a rule flags it, and a flagged
-change says why. Tessel's first implementation ran on Cloudflare; that host is deleted. It is
-being rebuilt as a single server that works with GitHub and the team's own CI;
-[`PLAN.md`](PLAN.md) has the plan and its status.
+change says why. Tessel's first implementation ran on Cloudflare; that host is deleted.
+`tessel-server` replaces it as a single server meant to work with GitHub and the team's own CI;
+today it runs on one machine and does not land yet. [`PLAN.md`](PLAN.md) has the plan and its
+status.
 
 It is for you if you run several coding agents (Claude Code, an MCP client, your own scripts) on
 one repository at the same time, and you want their work to land without overwriting or breaking
@@ -42,14 +43,15 @@ an assumption nobody wrote down. Each is found after the work is done.
 ```
 
 Only the lander writes `main`. The core and the host are in `src/`, the lander in
-`tessel-lander/`, the CLI in `tessel-cli/`. `tessel-server`, the process that will serve the host,
-is M3's work in progress (P1-SERVER, P1-IDENTITY). [How Tessel works](docs/how-tessel-works.md)
+`tessel-lander/`, the CLI in `tessel-cli/`. `tessel-server` serves the host over WebSocket, with a
+SQLite file per repository and Ed25519 identity tokens. [How Tessel works](docs/how-tessel-works.md)
 explains each part, follows one conflict end to end with real CLI output, and defines every term.
 
 ## How it works, in six steps
 
-1. **Set up.** `tessel init` writes the worktree's config with the agent's identity token and
-   installs the Claude Code hooks and the git `pre-commit` and `pre-push` hooks.
+1. **Set up.** `tessel init` writes the worktree's config with the agent's identity token (the
+   server's operator mints it with `tessel-server admin token`) and installs the Claude Code hooks
+   and the git `pre-commit` and `pre-push` hooks.
 2. **Start.** `tessel start "<what this work is for>"` starts a daemon that connects to the
    repository's coordinator and sends heartbeats.
 3. **Claim.** Before an edit, the hook (or `tessel claim`) claims the smallest scope that covers
@@ -65,6 +67,10 @@ explains each part, follows one conflict end to end with real CLI output, and de
    again per file, and pushes `main` once the tests have passed: they run in the repository's CI,
    or in the local runner for a single trusted user, never in the lander. The claim is released
    and the next waiting agent is granted.
+
+`tessel-server` runs steps 1 to 5 today. Step 6 is not wired into it: the server has no lander yet
+(P1-SERVER-LANDING), so an approved submission is refused and the claim is active again. The swarm
+harness below runs step 6 with a local stand-in.
 
 ## See it run
 
@@ -83,10 +89,11 @@ contested function varies with timing, so your numbers can differ from run to ru
 ## Hosting today
 
 Nothing is deployed from this repository, and the Cloudflare Worker that used to host the
-coordinator is deleted. Phase 1 of [`PLAN.md`](PLAN.md) builds `tessel-server`. It serves claims,
-review and identity on one machine and does not land yet (P1-SERVER-LANDING). Also in the tree: the
-core and the portable host in `src/host/`, the lander in `tessel-lander/`, the CLI against a fake
-coordinator that drives the real host, and the swarm harness on 127.0.0.1.
+coordinator is deleted. `tessel-server` serves claims, review and identity on one machine and does
+not land yet (P1-SERVER-LANDING). `tessel-runner` runs a repository's test commands for one trusted
+user; nothing calls it yet. Also in the tree: the core and the portable host in `src/host/`, the
+lander in `tessel-lander/`, the CLI against a fake coordinator that drives the real host, and the
+swarm harness on 127.0.0.1.
 
 To run `tessel-server` for yourself, follow [`docs/local-setup.md`](docs/local-setup.md).
 

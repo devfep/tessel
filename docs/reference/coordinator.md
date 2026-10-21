@@ -1,9 +1,9 @@
 # Coordinator reference
 
 This describes the coordinator as it exists in this tree: the claim protocol, the core that decides
-it and the host that runs the core. The Cloudflare Worker that used to serve it is deleted. Its
-replacement, `tessel-server`, is M3's work in progress (P1-SERVER for the server, P1-IDENTITY for
-identity tokens); this page does not describe it. Read [`PLAN.md`](../../PLAN.md) for the plan.
+it, the host that runs the core and `tessel-server`, which serves the host. The Cloudflare Worker
+that used to serve it is deleted. The server does not land yet (P1-SERVER-LANDING). Read
+[`PLAN.md`](../../PLAN.md) for the plan.
 
 The coordinator speaks the claim protocol (`src/protocol.rs`) with each agent's `tessel` daemon
 over a WebSocket. Claims, fences, the wait queue, leases and the event log survive restarts: every
@@ -20,6 +20,8 @@ precedes the sends it carries). For what these terms mean, read
 | Core | `src/coordinator.rs`, `src/coordinator/` | The pure decisions: claims, fences, leases, queue, review, races, the merge queue. No I/O. |
 | Shell helpers | `src/shell.rs` | What can be decided without I/O: path routes, settings parsing, delivery plans, the summary tally. |
 | Host | `src/host/` | The sans-IO step machine around the core. Adapters turn what happens into an `Input` and carry out each `Output`. |
+| Server | `tessel-server/` | One host per repository, served over WebSocket on a SQLite file per repository, with Ed25519 identity tokens. [Local setup](../local-setup.md) runs it. |
+| Runner | `tessel-runner/` | Runs a repository's test commands for one trusted user. Nothing calls it yet. |
 | Lander | `tessel-lander/` | The merge path in Rust, ported from the steward. A library until the server calls it. |
 | CLI | `tessel-cli/` | The `tessel` binary and per-worktree daemon. Its tests run it against a fake coordinator that drives the real host. |
 | Swarm | `tessel-swarm/` | Scripted agents against the real core on 127.0.0.1. |
@@ -29,8 +31,8 @@ a host test, or an adapter test that the server's tasks write.
 
 ## The wire
 
-Nothing in this tree serves these routes until P1-SERVER merges; this part describes the protocol
-a host speaks, not something you can connect to today.
+`tessel-server` serves `/tenant/<tenant>/repo/<repo>/ws`, `/summary` and `/trunk-moved`. Each needs
+a bearer token ([local setup](../local-setup.md)); `trunk-moved` admits the `lander` service only.
 
 A socket opens for one agent of one repo. The adapter checks who the caller is before the host
 sees the socket: a `hello` for any other agent gets `not_owner` and the socket is closed. The
@@ -92,8 +94,9 @@ every new event as it is stored. A second `watch` on the same socket is refused 
 ## Host settings
 
 The host reads four settings when it builds the core (`HostConfig` in `src/host/mod.rs`). The
-names are those of the Worker's old variables; [Configuration](../configuration.md#host-settings)
-has the rules and failure behaviour.
+names are those of the Worker's old variables; `tessel-server` fills `run`, `reviewers` and
+`sensitive` from each `[[repository]]`. [Configuration](../configuration.md#host-settings) has the
+rules and failure behaviour.
 
 ## MCP server
 

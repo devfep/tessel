@@ -1,22 +1,22 @@
 # Rules of `src/runtime.rs`
 
 Every rule the Cloudflare Worker and Durable Object glue (`src/runtime.rs`, at base `6efe835`)
-enforces today, with where its decision lives and how it is pinned. Phase 1 moves these rules
-into the portable host, so none may be lost on the way: the move is checked against this table.
-`scripts/ci/check-named-tests.sh` reads it on every pull request.
+enforced, with where its decision lives now and how it is pinned. P1-DROP-WORKER deleted that file
+after the rules moved into the portable host and `tessel-server`; the move was checked against this
+table so none was lost. `scripts/ci/check-named-tests.sh` reads it on every pull request.
 
 ## How to read the table
 
-- **Lines** are lines of `src/runtime.rs` at the base.
+- **Lines** are lines of `src/runtime.rs` at the base commit; the file is deleted.
 - **Lives in** says where the decision is made: `shell` or the core (testable natively through the
-  public API), or `runtime.rs` only (testable only once the code is out of the Worker).
+  public API), or `runtime.rs` only (it could be tested only after it left the Worker).
 - **Status**:
   - `now`: the decision that lives in `shell` or the core is pinned by the tests listed. Where part
     of the rule lives in `runtime.rs` only, **Then** names the host or adapter test that pins that
     part after the move.
-  - `after move`: the rule lives in `runtime.rs` only. **Tests** names the host (M2) or adapter
-    (M3) test that will pin it. These names are proposals; the script does not check them, and
-    the move task that writes the test may rename it here.
+  - `after move`: the rule lived in `runtime.rs` only. **Tests** named the host (M2) or adapter
+    (M3) test that would pin it. The script checks only the `host_` or `adapter_` prefix. No row
+    has this status now.
   - `dropped`: no counterpart outside Cloudflare. **Tests** gives the reason, as `dropped:` and at
     least 30 characters of why. An `after move` name starts with `host_` or `adapter_`.
 - **Then** of an `after move` row ends with "carried by": the `Input`, `Output` or `Call` of
@@ -28,7 +28,8 @@ into the portable host, so none may be lost on the way: the move is checked agai
   `tessel-server/tests/`; the rest are unit tests in `src/`.
 - **Functions** lists the `fn`s of `runtime.rs` the row covers. The two `fetch`es (the Worker's at
   line 105 and the Durable Object's at 205) share one name, so a row naming `fetch` covers both.
-  The check fails if a `fn` of `runtime.rs` is in no row.
+  While `runtime.rs` exists the check fails if one of its `fn`s is in no row; the file is deleted,
+  so it checks nothing here now.
 
 ## Rules
 
