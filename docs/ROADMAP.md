@@ -18,15 +18,20 @@ branch `task-swarm-short-lease-tests` from `8768a8c`, dispatched 20:30; the two 
 tests it also names wait until P1-CLI-ON-HOST merges, since lane A is rebuilding that fake.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note.
-**Next:** reviews of both lanes, then the M2 done-check once P1-CLI-ON-HOST merges; then the M3
-re-plan (P1-DROP-WORKER first, decision 13), and the `cli.rs` half of SWARM-SHORT-LEASE-TESTS.
+**Next:** reviews of both lanes, then the M2 done-check once P1-CLI-ON-HOST merges; then M3 as
+re-ordered by decision 15 (P1-DROP-WORKER first, decision 13; then P1-SERVER and P1-IDENTITY in
+parallel), and the `cli.rs` half of SWARM-SHORT-LEASE-TESTS.
+**Decided by Felix (20 October), decision 15, local first:** M3 the local server, M4 its dogfood
+on this repository, M5 hardening, M6 team mode and the deletion; the first local release lands
+through the host's single `Prepare` call (`docs/proposals/phase-1.md`, decision 15; `PLAN.md`
+decision 6). Ruleset step 4 (Felix as bypass actor) is his, before M4's first landing.
 **Decided by Felix (20 October), decision 14:** the CLI's fake coordinator is rebuilt on the host
 in M2 (P1-CLI-ON-HOST), and the swarm's test host in M5, as recommended in
 `docs/proposals/phase-1.md`.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
 The adapter rows R2-R5 and R49 stay "after move" until M4, whose done-check makes each "now" with
 its named adapter test; with `runtime.rs` deleted in M3 they have no code to protect meanwhile.
-**Pending from Felix:** the plan's decisions 1-11 and 13 and proposed changes A-D
+**Pending from Felix:** the plan's decisions 1-11 and 13 and proposed changes A-D (B now M6)
 (`docs/proposals/phase-1.md`). Decision 1 (no `wrangler dev` captures) applies to M2: the move
 proceeds on it as recommended. Tearing down the spike sandbox needs
 `gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
@@ -118,7 +123,8 @@ load and flake checks run on CI runners.
 
 The plan, its milestones M1-M6, lanes and file ownership are in `docs/proposals/phase-1.md`. Each
 task's full text (files, what, done-check) is there; this list tracks status. M1 and M2 are
-planned to task level; M3-M6 are re-planned at each milestone boundary.
+planned to task level; M3-M6 are re-planned at each milestone boundary (re-ordered on 20 October,
+decision 15: local server, dogfood, hardening, team mode).
 
 ### M1. Guardrails and the host's types (done 19 October)
 
@@ -174,7 +180,8 @@ passes; the host types round-trip; the lander git tests pass.
 ### M2. The move
 
 Done when: no host row of the rules list is "after move" (the adapter rows R2-R5 and R49 are
-M4's, decided by Felix on 19 October); `cargo test --workspace` is green with the CLI suite on the
+M3's after decision 15, decided by Felix on 19 October); `cargo test --workspace` is green with
+the CLI suite on the
 host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward tests are green.
 
 - [x] **P1-MOVE-CALLS** (`febea36`, #49) — lane A. The call path moved into `src/host/` with its
@@ -196,7 +203,7 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   resumes it at the next step, and answers are applied through a match on the call's `Request`.
   Decides COORD-WAKE-WHILE-VERIFYING: while any call is out, a `Wake` only re-arms the watchdog,
   as today. The test-only `begin_call`, `StartJob`, `MarkerStep` and `Job::Start` are gone. A
-  merge is one `Prepare` call standing for the steward's `/merge` until M3 (HOST-MERGE-STANDIN).
+  merge is one `Prepare` call standing for the steward's `/merge` until M5 (HOST-MERGE-STANDIN).
   CI evidence in six plants, each rule's test checked at its own assertion line.
 - [x] **P1-MOVE-REPLAY** (`148b187`, #58) — lane A. `Watch` replay (R36) with every other input
   queued until it ends, R46 (errors name the repo and the failed operation) and R50 (the stored
@@ -216,7 +223,7 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
 - [x] **P1-LANDER-TRIAL** (`034f521`, #51) — lane B. `run_trial` and the two-sided report; 33
   steward cases ported. A trial clones its own `Workspace`, and read access is revoked before any
   repo code runs on every path. `TrialPorts` has no push and no read-back (compile-fail
-  doctests). The sandbox half of `merge-trial-types.test.ts` is left to the M4 executor.
+  doctests). The sandbox half of `merge-trial-types.test.ts` is left to the M3 runner.
 - [x] **P1-LANDER-ISOLATION** (`bda5a49`, #54) — lane B. 19 real-git tests that hooks, filters,
   drivers, diff programs, malformed objects and control characters in a fork are refused or inert.
   The tests found that a fork could name git's built-in `union` driver and land a conflict as
@@ -282,27 +289,30 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   load average near 90 (a 400 ms lease with an 80 ms heartbeat: a 400 ms stall lapses it), and two
   `tessel-cli/tests/cli.rs` lease tests at a load average near 120 (not yet named). Done: each bound
   removed or made explicit as in P1-FLAKE-UNDER-LOAD, never raised to pass, shown on CI.
-- [ ] **HOST-MERGE-STANDIN** — M3, with P1-CORE-STAGED-LANDING; its adapter half is M4's. From
+- [ ] **HOST-MERGE-STANDIN** — M5, with P1-CORE-STAGED-LANDING; its adapter half is M3's
+  (P1-SERVER-LANDING, decision 15). From
   the P1-MOVE-WAKE review: until the staged landing, a merge is one `Prepare` call that stands for
   the steward's whole `/merge`, and the host reads `Prepared { base, head }` as merged
   (`src/host/calls.rs`). An adapter that gave `Prepare` its frozen meaning (rebase, no landing)
   would make the core report merges that never landed (rule 6). The frozen `Prepare` also has no
   field for the merge record `runtime.rs` sends today (`merge::request_body`: the claim's intent,
   decision record and review), so the steward's evidence record would lack them. Done: the
-  staged landing removes the stand-in, or M4's adapter maps `Prepare` to `/merge` with a test;
+  staged landing removes the stand-in, or M3's adapter maps `Prepare` to the whole merge with a
+  test;
   and the record reaches the lander, by a route Felix approves if it changes `Call`.
-- [ ] **HOST-CALL-DEADLINE-BACKSTOP** — M4, with the adapter's call deadlines. From the
+- [ ] **HOST-CALL-DEADLINE-BACKSTOP** — M3, with the adapter's call deadlines. From the
   P1-MOVE-WAKE review: while a call is out, each `Wake` re-arms the watchdog, so a merge stalls
   if the adapter never answers or sends `CallLost`. The host knows each call's `deadline_ms`.
   Done: a host test that a call past its deadline with no answer is treated as lost, or a
   written reason that the adapter's deadline is enough.
-- [ ] **M4-SANDBOX-WORKSPACE** — M4, with the local test runner's sandbox. From the
+- [ ] **M4-SANDBOX-WORKSPACE** — M5 (named before decision 15), with the local test runner's
+  sandbox. From the
   P1-LANDER-AFTER-TESTS review: the `TestTree` split stops the port API and accidental writes, not
   hostile repo code run as the same OS user. The tree names the workspace path (`remote.origin.url`,
   `.git/logs/HEAD`), so such code can write the workspace's `.git/config` directly. Done: the
   sandbox denies the package step the workspace directory and kills its leftover processes
   before `land`, with a test of each; `prepare` and `land` being public is weighed there too.
-- [ ] **SERVER-CONFLICT-NAMES** — M4, with `tessel-server`'s merge response. From the
+- [ ] **SERVER-CONFLICT-NAMES** — M3, with `tessel-server`'s merge response. From the
   P1-LANDER-ISOLATION review: `Conflict.files` (merge and trial) carries fork-chosen file names
   raw, with no cap or total. The steward does not cap them either (`merge-steps.ts` 144-146), and
   the core reads only their count (`src/merge.rs` 264-267), so nothing reaches an agent today.
