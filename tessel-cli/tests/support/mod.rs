@@ -120,7 +120,6 @@ struct Inner {
     skip_seq: AtomicU64,
     raw_in_replay: Mutex<Option<(u64, String)>>,
     stall_live: AtomicBool,
-    review_first: AtomicBool,
     hold_claim_reply: AtomicBool,
     /// Event-log readers' `Watch` frames wait here while `hold_log_reads` is on.
     hold_watch: AtomicBool,
@@ -359,16 +358,13 @@ impl Inner {
         }
     }
 
-    /// The sends the handled frame caused to its own socket: the review notice first when
-    /// `review_before_accepted` is on, then delivered, kept or lost as the frame's origin says.
+    /// The sends the handled frame caused to its own socket, delivered, kept or lost as the
+    /// frame's origin says.
     fn finish_replies(&self, st: &mut State) {
         let Some(origin) = st.origin.take() else {
             return;
         };
-        let mut sends = std::mem::take(&mut st.origin_sends);
-        if self.review_first.load(Ordering::SeqCst) {
-            sends.sort_by_key(|msg| !matches!(msg, ServerMsg::ReviewRequired { .. }));
-        }
+        let sends = std::mem::take(&mut st.origin_sends);
         match origin.replies {
             Replies::Deliver => {
                 for msg in sends {
@@ -442,7 +438,7 @@ impl Inner {
         if let Action::Call { agent } = shell::decide(&session, &msg) {
             st.received.push((agent, msg));
         }
-        let kept = replies != Replies::Deliver || self.review_first.load(Ordering::SeqCst);
+        let kept = replies != Replies::Deliver;
         self.feed(st, frame, kept.then_some(Origin { sock, replies }));
         replies == Replies::Lose || st.sockets.get(&sock).is_some_and(|entry| entry.cut)
     }
@@ -668,7 +664,6 @@ impl Fake {
             skip_seq: AtomicU64::new(u64::MAX),
             raw_in_replay: Mutex::new(None),
             stall_live: AtomicBool::new(false),
-            review_first: AtomicBool::new(false),
             hold_claim_reply: AtomicBool::new(false),
             hold_watch: AtomicBool::new(false),
             watch_gate: Notify::new(),
@@ -727,16 +722,6 @@ impl Fake {
         );
         st.config.reviewers = Some(reviewers.join(","));
         st.host = Host::new(st.config.clone());
-    }
-
-    /// Makes the fake put a `ReviewRequired` reply ahead of any other reply to the same frame.
-    ///
-    /// Fake-only, and it pins nothing: the core answers a flagged submission with `ReviewRequired`
-    /// alone and sends `Accepted` when a reviewer approves it, so the frame has no other reply to
-    /// put it ahead of and nothing is reordered. A CLI test that turns this on passes with the
-    /// switch removed.
-    pub fn review_before_accepted(&self, on: bool) {
-        self.inner.review_first.store(on, Ordering::SeqCst);
     }
 
     /// Answers the merge the host has asked the steward for with a landing on main, as the

@@ -2506,11 +2506,17 @@ async fn a_lost_amend_reply_is_repaired_after_the_reconnect() -> Result<()> {
 
 // ---------- review reply order ----------
 
+/// The real core answers a flagged submission with `ReviewRequired` alone, and sends `Accepted`
+/// only when a reviewer approves it. The first decides the submit reply; the second reaches a
+/// daemon that has no submit pending and must clear the hold without calling it unexpected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn review_required_before_accepted_decides_the_reply_and_accepted_is_not_unexpected(
-) -> Result<()> {
-    let (fake, a1, _a2) = world(30_000).await?;
-    fake.review_before_accepted(true);
+async fn a_held_submission_replies_review_required_and_its_approval_is_not_unexpected() -> Result<()>
+{
+    let fake = Fake::start(30_000, &[("a1", TOK1), ("r1", TOK_R)]).await?;
+    fake.freeze_clock();
+    fake.set_reviewers(&["r1"]);
+    let a1 = Agent::new(&fake, "a1", TOK1)?;
+    let r1 = Agent::new(&fake, "r1", TOK_R)?;
     a1.start("review first")?;
     assert_eq!(
         a1.tessel(&["claim", "src/b.rs", "--mode", "edit-signature"])?
@@ -2522,6 +2528,20 @@ async fn review_required_before_accepted_decides_the_reply_and_accepted_is_not_u
     let done = a1.tessel(&["submit", "--evidence", "ok"])?;
     assert_eq!(done.code, 7, "{}", done.all());
     assert!(done.stdout.contains("review required"), "{}", done.stdout);
+    let held = &a1.status()?["state"]["claims"][0];
+    assert_eq!(held["submitted"], true);
+    assert_eq!(held["awaiting_review"], true);
+    let claim = held["claim"].as_u64().context("no claim id")?;
+
+    let approved = r1.tessel(&["review", &claim.to_string(), "--approve"])?;
+    assert_eq!(approved.code, 0, "{}", approved.all());
+    eventually(SHORT, || {
+        let status = a1.status()?;
+        let held = &status["state"]["claims"][0];
+        Ok((held["awaiting_review"] == false).then_some(()))
+    })
+    .await?;
+    assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
     let inbox = a1.tessel(&["inbox", "--all"])?;
     assert!(!inbox.stdout.contains("[unexpected]"), "{}", inbox.stdout);
     assert!(
@@ -2529,7 +2549,6 @@ async fn review_required_before_accepted_decides_the_reply_and_accepted_is_not_u
         "{}",
         inbox.stdout
     );
-    assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
     Ok(())
 }
 
