@@ -141,7 +141,8 @@ fn try_record_lock(file: &File) -> std::io::Result<RecordLock> {
     // and `l_len` is `SEEK_SET`, offset 0, length 0, which locks the whole file; only the lock
     // type is set below.
     let mut request: libc::flock = unsafe { std::mem::zeroed() };
-    request.l_type = libc::F_WRLCK;
+    request.l_type = libc::c_short::try_from(libc::F_WRLCK)
+        .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
     // SAFETY: `fcntl` with `F_SETLK` reads `request`, which is live for the call, and the
     // descriptor is open for as long as `file` is borrowed.
     let status = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw mut request) };
