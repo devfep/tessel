@@ -80,4 +80,11 @@ impl RunnerError {
             RunnerError::Unsupervised { .. } => 3,
         }
     }
+
+    pub(crate) fn unsupervised(what: &'static str, error: &io::Error) -> RunnerError {
+        RunnerError::Unsupervised {
+            what,
+            kind: error.kind(),
+        }
+    }
 }

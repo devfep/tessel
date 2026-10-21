@@ -47,3 +47,50 @@ pub fn own_config_text() -> String {
         effective_login().expect("the test user has a login")
     )
 }
+
+/// A tree to run in and a directory holding a stand-in `cargo` (and any other program a test
+/// names), put first on the `PATH` the runner gives its commands.
+pub struct Rig {
+    pub bin: tempfile::TempDir,
+    pub tree: tempfile::TempDir,
+}
+
+impl Rig {
+    /// A rig whose `cargo` is a shell script with the given body.
+    pub fn with_cargo(body: &str) -> Rig {
+        let rig = Rig {
+            bin: tempfile::tempdir().expect("bin dir"),
+            tree: tempfile::tempdir().expect("tree dir"),
+        };
+        rig.add_program("cargo", body);
+        rig
+    }
+
+    pub fn add_program(&self, name: &str, body: &str) {
+        let path = self.bin.path().join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write program");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("make executable");
+    }
+
+    pub fn path_value(&self) -> String {
+        format!("{}:/usr/bin:/bin", self.bin.path().display())
+    }
+
+    pub fn config(&self) -> RunnerConfig {
+        let mut config = config();
+        config.env = vec![
+            ("PATH".to_owned(), self.path_value()),
+            ("HOME".to_owned(), "/home-for-test".to_owned()),
+        ];
+        config
+    }
+
+    /// One `cargo test --workspace` in the tree.
+    pub fn request(&self) -> RunRequest {
+        request(self.tree.path(), "", &TEST_ARGV)
+    }
+
+    pub fn write_in_tree(&self, name: &str, text: &str) {
+        fs::write(self.tree.path().join(name), text).expect("write fixture");
+    }
+}
