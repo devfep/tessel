@@ -7,27 +7,28 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-21 18:10 EDT. Main at `01e3ce3` (#81 and #82 merged; the orchestrator's
-gate on `01e3ce3` is green, 1837 tests, all seven steps). M3 is seven tasks in: the Worker glue
-is gone, `tessel-server` serves the host over a WebSocket on SQLite with Ed25519 identity,
-reviewers and sensitive paths come from its config, `tessel-runner` runs a trunk's test commands
-for one trusted user, `tessel init` works against the local server, `docs/local-setup.md` takes
-one developer from keygen to `tessel review`, and the comments and docs describe the host, not
-the Worker. Nothing lands on main yet: P1-SERVER-LANDING (#84) waits for Felix.
-**Waiting on Felix:** #84, P1-SERVER-LANDING at `bc62d41` (thirteen commits on `01e3ce3`, 1887
-tests, CI green with the new landing job, the adversarial reviewer's "Yes" after two fix passes
-posted on it); Felix reviews it himself (`docs/proposals/phase-1.md`). Its worktree
-`.claude/worktrees/task-p1-server-landing` and lane stay until it merges. #83 (this STATE).
-**Decided by the orchestrator (21 October), pending Felix's veto:** SERVER-NOLANDER-MESSAGE goes
-in under design A (fixed refusal kinds, the host's text kept to the server log), the one
-recommended on 21 October 12:20; the lane makes it the last commit of its branch, so B (the text
-carried quoted and bounded to the agent) can still replace it before then.
+**As of:** 2026-10-21 18:55 EDT. Main at `9b2533f` (#83 and #84 merged; CI green at 1887 tests; the
+orchestrator's gate on `9b2533f` is green on six steps and red twice on the test step, each time one
+restart test of `tessel-server/tests/adapter.rs` refused by its own store lock right after a stop,
+green five times alone: SERVER-RESTART-TEST-FORK-RACE, in flight). M3 is eight tasks in and one from
+its done-check: `tessel-server` lands a submitted commit on a path remote through the lander and the
+runner, by compare-and-swap after the trunk's test command ran on it, and a CI job proves it end to
+end; a kill -9 mid-merge is recovered on restart. Left: the quickstart followed on CI from a clean
+checkout to a landed commit, and the CLI's and skills' steward-as-merger lines.
+**In flight (dispatched 21 October 18:40 from `9b2533f`):** lane A, P1-LOCAL-SETUP's second
+half, worktree `.claude/worktrees/task-p1-local-setup-2`, branch `task-p1-local-setup-2`.
+**In flight (dispatched 21 October 18:50 from `9b2533f`):** lane B,
+SERVER-RESTART-TEST-FORK-RACE, worktree `.claude/worktrees/task-server-lock-fork-race`, branch
+`task-server-lock-fork-race`.
+**Decided by the orchestrator (21 October), unopposed:** SERVER-NOLANDER-MESSAGE landed under
+design A (fixed refusal kinds, the host's text kept to the server log) in #84.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** after #84 merges, P1-LOCAL-SETUP's second half (lane A: the quickstart on CI to a
-landed commit, the CLI's steward-as-merger strings) and M3's done-check (every done-when item
-but `tessel review` through the server with a landing after it is covered by #84's tests).
+**Next:** M3's done-check on P1-LOCAL-SETUP's merge (no rules-list row "after move": true at
+`9b2533f`; the end-to-end landing on CI: #84's job; `tessel review` through the server: #80 and
+the quickstart; the kill -9 loop: #84's restart test), then the M4 re-plan (dogfood on this
+repository: the GitHub fork adapter, SERVER-FORK-CASE, ruleset step 4 before its first landing).
 **Decided by Felix (20 October), decision 15, local first:** M3 the local server, M4 its dogfood
 on this repository, M5 hardening, M6 team mode and the deletion; the first local release lands
 through the host's single `Prepare` call (`docs/proposals/phase-1.md`, decision 15; `PLAN.md`
@@ -347,8 +348,9 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   not time, so at a load near 50 the hook gave up after 256 s instead of 150 s. Done: both tests
   end on the cause under the frozen clock or state their real-time bound, and the loops wait by
   the clock.
-- [ ] **HOST-MERGE-STANDIN** — M5, with P1-CORE-STAGED-LANDING; its adapter half is M3's
-  (P1-SERVER-LANDING, decision 15). From
+- [ ] **HOST-MERGE-STANDIN** — M5, with P1-CORE-STAGED-LANDING; its adapter half is done
+  (P1-SERVER-LANDING, `9b2533f`: `Prepare` is the whole merge, with tests); the merge record
+  reaching the lander is open. From
   the P1-MOVE-WAKE review: until the staged landing, a merge is one `Prepare` call that stands for
   the steward's whole `/merge`, and the host reads `Prepared { base, head }` as merged
   (`src/host/calls.rs`). An adapter that gave `Prepare` its frozen meaning (rebase, no landing)
@@ -358,7 +360,9 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   staged landing removes the stand-in, or M3's adapter maps `Prepare` to the whole merge with a
   test;
   and the record reaches the lander, by a route Felix approves if it changes `Call`.
-- [ ] **HOST-CALL-DEADLINE-BACKSTOP** — M3, with the adapter's call deadlines. From the
+- [x] **HOST-CALL-DEADLINE-BACKSTOP** (`9b2533f`, #84) — the adapter bounds each call by its
+  `deadline_ms` and answers `Unknown` past it; `src/host/calls.rs` carries the written reason (a
+  crash takes the call with the host; R24 recovers on restart). From the
   P1-MOVE-WAKE review: while a call is out, each `Wake` re-arms the watchdog, so a merge stalls
   if the adapter never answers or sends `CallLost`. The host knows each call's `deadline_ms`.
   Done: a host test that a call past its deadline with no answer is treated as lost, or a
@@ -370,7 +374,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   `.git/logs/HEAD`), so such code can write the workspace's `.git/config` directly. Done: the
   sandbox denies the package step the workspace directory and kills its leftover processes
   before `land`, with a test of each; `prepare` and `land` being public is weighed there too.
-- [ ] **SERVER-CONFLICT-NAMES** — M3, with `tessel-server`'s merge response. From the
+- [x] **SERVER-CONFLICT-NAMES** (`9b2533f`, #84) — capped at 50, quoted, the real total carried
+  and read by the agent's reason. From the
   P1-LANDER-ISOLATION review: `Conflict.files` (merge and trial) carries fork-chosen file names
   raw, with no cap or total. The steward does not cap them either (`merge-steps.ts` 144-146), and
   the core reads only their count (`src/merge.rs` 264-267), so nothing reaches an agent today.
@@ -409,8 +414,7 @@ claims reconciled.
   call). R2-R5 and R49 are "now" with their adapter tests; 1672 to 1730 tests. Review mutants:
   eleven, each red under its named test. Not verified: the CLI against a real server, the kill -9
   loop, an old-release CLI binary, Linux beyond CI.
-- [ ] **SERVER-NOLANDER-MESSAGE** — lane B; in #84 (P1-SERVER-LANDING) under design A, reviewed
-  "Yes", waiting for Felix. From the P1-SERVER review:
+- [x] **SERVER-NOLANDER-MESSAGE** (`9b2533f`, #84) — lane B, design A. From the P1-SERVER review:
   `NoLander` answers `Refused { Rule { message } }`, and the core collapses every `Rule` refusal
   into `MergeOutcome::Refused` with the fixed text "the steward refused the request (fork missing
   or not a fork of this repo)", so the agent and the `SubmitRejected` event never see the real
@@ -418,6 +422,18 @@ claims reconciled.
   `RequiredCheck`, `ForkMissing`, `Other`); the agent sees one fixed reason per kind (rule 3, the
   fixed-form test extended); the host's message goes bounded and quoted to the server log only;
   `NoLander`'s reason names the missing lander, with an adapter test.
+- [ ] **SERVER-RESTART-TEST-FORK-RACE** — lane B; dispatched 21 October 18:50 from `9b2533f`.
+  From the orchestrator's gate on `9b2533f`: `tessel-server/tests/adapter.rs`
+  `a_restart_over_the_same_directory_keeps_the_claims` and then
+  `a_second_server_on_the_same_directory_is_refused_at_start` each failed once, reopening the
+  directory right after a stop, with the store `Locked` by the test's own pid (five reruns green
+  alone). Since #84 the same binary spawns git and the runner, and a
+  forked child holds the lock file's open description until it execs, so a restart reopening the
+  directory in that window is refused; `flock` is per description, not per process. A test
+  artefact, not a server bug (a real restart follows a process exit). Done: the restart tests
+  run in a binary that spawns no children, or the spawn and the reopen are serialised, with the
+  reason written where the lock is taken; preferred: a per-process `fcntl` record lock that a
+  fork child does not inherit, with a reproducing test.
 - [ ] **SERVER-FRAME-LIMIT-TESTS** — M5 hardening, with the next server task. From the P1-SERVER
   review: a frame over 64 KiB is refused by the host with a fixed `Malformed` error before parsing
   (`src/shell.rs`) and the socket stays open; one over 256 KiB fails inside axum and the socket
@@ -464,24 +480,23 @@ claims reconciled.
   that calls `setsid` escapes the runner's process-group kill and the output drain gives up on it
   after 500 ms; the owner check of the config is reachable only as root. Done: the sandbox the
   M4-SANDBOX-WORKSPACE row describes also bounds the runner's children, with a test.
-- [ ] **P1-SERVER-LANDING** — lane B; #84 at `bc62d41`, reviewed "Yes", waiting for Felix.
-  The adapter half of HOST-MERGE-STANDIN, with HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES
-  and SERVER-NOLANDER-MESSAGE. Built: `[[repository]] remote` and `fork` (a path or URL with
-  `{agent}` once; the name re-checked with the protocol's agent-name rule before substitution,
-  else refused as a missing fork), `[lander] work_dir` and `runner_config`; `Prepare` runs the
-  whole merge through the lander with the runner's library as the package step against a path
-  remote, main read back with the lander's fixed git environment, `Prepared` only when the head
-  is on main; `Test` and `Land` refused; `Trial`, `ReadHead` and `Reconcile` through the lander
-  and git on a blocking thread; each call bounded by its deadline (the written reason in
-  `src/host/calls.rs`: a crash takes the call with the host and R24 recovers on restart, which
-  needed a wake at task start for a repository with stored state); `Conflict.files` capped at
-  50, quoted, the real total carried (`total`, additive) and read by the agent's reason; a
-  `Prepared` whose head is its base read as already merged so a retry after a lost answer keeps
-  the dispatch main as its baseline; the landing feeds the trunk-moved poke; one adapter test
-  per outcome over a bare remote, a SIGKILL mid-merge with a restart that lands the claim once,
-  and the end-to-end landing job on CI (75 s). 1837 to 1887 tests; the review's mutants each
-  red, the one CI missed pinned by a boundary test. Left for rows below: case-folded fork
-  names, the unused `trunk-moved` route, a kill after the push.
+- [x] **P1-SERVER-LANDING** (`9b2533f`, #84) — lane B. The adapter half of HOST-MERGE-STANDIN,
+  with HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES and SERVER-NOLANDER-MESSAGE. Built:
+  `[[repository]] remote` and `fork` (a path or URL with `{agent}` once; the name re-checked with
+  the protocol's agent-name rule before substitution, else refused as a missing fork), `[lander]
+  work_dir` and `runner_config`; `Prepare` runs the whole merge through the lander with the
+  runner's library as the package step against a path remote, main read back with the lander's
+  fixed git environment, `Prepared` only when the head is on main; `Test` and `Land` refused;
+  `Trial`, `ReadHead` and `Reconcile` through the lander and git on a blocking thread; each call
+  bounded by its deadline (the written reason in `src/host/calls.rs`: a crash takes the call with
+  the host and R24 recovers on restart, which needed a wake at task start for a repository with
+  stored state); `Conflict.files` capped at 50, quoted, the real total carried (`total`, additive)
+  and read by the agent's reason; a `Prepared` whose head is its base read as already merged so a
+  retry after a lost answer keeps the dispatch main as its baseline; the landing feeds the
+  trunk-moved poke; one adapter test per outcome over a bare remote, a SIGKILL mid-merge with a
+  restart that lands the claim once, and the end-to-end landing job on CI (75 s). 1837 to 1887
+  tests; the review's mutants each red, the one CI missed pinned by a boundary test. Left for rows
+  below: case-folded fork names, the unused `trunk-moved` route, a kill after the push.
 - [ ] **SERVER-FORK-CASE** — M4, with the GitHub fork adapter. From the P1-SERVER-LANDING
   review: on a case-insensitive filesystem two agent names differing only by case share one
   fork (on this Mac a call as `A1` landed through `a1`'s fork), and GitHub logins fold case the
@@ -495,7 +510,8 @@ claims reconciled.
 - [ ] **SERVER-KILL-AFTER-PUSH-TEST** — M5 hardening, with the next server task. From the same
   review: `restart.rs` kills the server during the runner's command; a kill between the push
   and the answer is untested (it should end as already merged, counted once). Done: that test.
-- [ ] **P1-LOCAL-SETUP** — lane A. First half merged (`af595c5`, #80): `tessel init` against a
+- [ ] **P1-LOCAL-SETUP** — lane A; second half dispatched 21 October 18:40 from `9b2533f`.
+  First half merged (`af595c5`, #80): `tessel init` against a
   local server (`--steward`, the `curl` transport and `STEWARD_ADMIN_TOKEN` deleted; the token
   comes from the file or `TESSEL_TOKEN`, and the no-token error names the `tessel-server admin
   token` command), `[[repository]]` `reviewers` and `sensitive` validated at load and passed into
