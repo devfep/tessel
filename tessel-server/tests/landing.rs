@@ -355,18 +355,11 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
     }
     assert_eq!(runner.runs(), 0);
     let (sixty_four, longest) = ("a".repeat(64), "a".repeat(128));
-    let bad_name = refused(Refusal::Rule {
-        rule: RuleKind::ForkMissing,
-        message: BAD_AGENT_NAME_MESSAGE.to_string(),
-    });
-    for name in [
-        "A1",
-        "a_1",
-        "a.b",
-        "a1",
-        sixty_four.as_str(),
-        longest.as_str(),
-    ] {
+    // Valid names, none with a case twin among the forks (a case-insensitive filesystem would let
+    // `A1` reach `a1`'s fork): each reaches its own fork, which does not exist, so the call is
+    // infrastructure and not a bad name. `a1` has a fork and lands.
+    let missing_fork = ["B2", "a_1", "a.b", sixty_four.as_str(), longest.as_str()];
+    for name in missing_fork {
         let request = Request::Prepare {
             claim: ClaimId(1),
             agent: AgentId(name.to_string()),
@@ -374,8 +367,14 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
             scopes: whole_repo(),
         };
         let answer = ask(&landing, request, 60_000).await;
-        assert_ne!(answer, bad_name, "{name:?} is a valid agent name");
+        assert_eq!(
+            answer,
+            CallAnswer::Unknown,
+            "{name:?} is a valid name with no fork"
+        );
     }
+    let landed = prepare(&landing, &commit, whole_repo()).await;
+    assert!(prepared(&landed).is_ok(), "a1 has a fork: {landed:?}");
     Ok(())
 }
 
