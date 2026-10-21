@@ -246,7 +246,7 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 | **Review by exception** | A submission merges with no human unless a rule flags it: it changes a signature, touches a path in the sensitive list, threatens an assumption, or carries no evidence. Flagged work waits for a reviewer named in the reviewers list, who decides with `tessel review`. A reviewer can never decide their own submission. |
 | **Evidence** | The `--evidence` lines on a submit. Any non-empty line satisfies the rule. The coordinator does not check it: it is what the agent says it ran. |
 | **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the tests have passed in CI. It never runs repo code. Until M6 the TypeScript steward is the reference it was ported from. |
-| **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, `<repo>--<agent>`, on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from there. |
+| **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, the one the server's `fork` template names for it (locally `<forks>/<agent>.git`), on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from that `main`. |
 | **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). Until P1-SERVER-LANDING wires the lander in, nothing runs the gate here; the steward's gate, without one, runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
 
 ### Which modes conflict
