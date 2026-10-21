@@ -2037,7 +2037,11 @@ async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released()
         files.contains(&format!(
             "event log read: {kept} events (TRUNCATED), 1 live claims for this agent"
         )),
-        "the cut read did not show the grant without its release: {files}"
+        "the cut read did not show the grant without its release (kept {kept} of {:?}): {files}",
+        fake.events()
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         a1.held_claims()?,

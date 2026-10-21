@@ -1116,8 +1116,8 @@ async fn serve(
 
 /// Writes what the host already queued for the socket before the fake cuts it, then closes it,
 /// as a connection that drops after the events sent so far have been carried: the events of a cut
-/// replay arrive, and the end marker does not. The close is a frame, so that the peer's unread
-/// events are not lost to a reset.
+/// replay arrive, and the end marker does not. The close is a frame, and the peer's answer is
+/// awaited, so that its unread events are not lost to a reset.
 async fn flush_queued(
     socket: &mut WebSocketStream<TcpStream>,
     rx: &mut mpsc::UnboundedReceiver<Wire>,
@@ -1129,6 +1129,13 @@ async fn flush_queued(
         }
     }
     let _ = socket.close(None).await;
+    // The reader sends its `Hello` right behind its `Watch`. Closing with that frame unread makes
+    // the OS reset the connection, and a reset throws away the events the reader has not read yet,
+    // so the close handshake is finished before the socket is dropped.
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while socket.next().await.is_some() {}
+    })
+    .await;
 }
 
 /// Writes `wire`, followed by stray pongs when the link is one-way. False once the socket is to
