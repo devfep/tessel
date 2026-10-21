@@ -2510,8 +2510,7 @@ async fn a_lost_amend_reply_is_repaired_after_the_reconnect() -> Result<()> {
 /// only when a reviewer approves it. The first decides the submit reply; the second reaches a
 /// daemon that has no submit pending and must clear the hold without calling it unexpected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_held_submission_replies_review_required_and_its_approval_is_not_unexpected() -> Result<()>
-{
+async fn a_held_submission_replies_review_required_and_approval_is_expected() -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1), ("r1", TOK_R)]).await?;
     fake.freeze_clock();
     fake.set_reviewers(&["r1"]);
