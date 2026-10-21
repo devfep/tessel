@@ -6,8 +6,7 @@ license = "MIT"
 description = "Git command layer and coverage check for the Tessel lander"
 
 [dependencies]
-# Shared wire types and `Mode::permits`; without the `runtime` feature there is no `worker`.
-tessel-coordinator = { path = "..", default-features = false }
+tessel-coordinator = { path = ".." }
 # `killpg`: the runner kills the whole process group of a timed-out command.
 libc = "=0.2.190"
 serde_json = "=1.0.151"

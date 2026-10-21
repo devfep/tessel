@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use tessel_swarm::conn::{Reconnect, HEARTBEAT_EVERY};
 use tessel_swarm::demo;
-use tessel_swarm::endpoint::Remote;
 use tessel_swarm::guard::ScratchRepo;
 use tessel_swarm::local::{LocalServer, LocalSetup};
 use tessel_swarm::on::{self, OnConfig, OnResult, Policy, Resolution, REVIEWER};
@@ -109,9 +108,7 @@ async fn run_with_failing_pushes(failures: u32, message: &str) -> (OnResult, u32
     })
     .await
     .unwrap();
-    let Remote::Local { forks, .. } = server.endpoint.remote.clone() else {
-        unreachable!("the local target has a local remote");
-    };
+    let forks = server.endpoint.remote.forks.clone();
     let plan = forks.join(PLAN);
     std::fs::write(&plan, format!("{failures}\n{message}\n")).unwrap();
     let task = Task {

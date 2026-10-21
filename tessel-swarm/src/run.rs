@@ -6,8 +6,7 @@ use anyhow::{Context, Result};
 
 use crate::conn::{Reconnect, HEARTBEAT_EVERY};
 use crate::demo;
-use crate::guard::{check_coordinator, ScratchRepo};
-use crate::live::{self, LiveSetup, Steward};
+use crate::guard::ScratchRepo;
 use crate::local::{self, LocalServer, LocalSetup};
 use crate::off::{self, OffConfig, OffResult};
 use crate::on::{self, OnConfig, OnResult, Policy, REVIEWER};
@@ -101,39 +100,6 @@ pub async fn run_on_local(spec: &Spec, tasks: &[Task], repo: &ScratchRepo) -> Re
     result
 }
 
-pub async fn run_on_live(
-    spec: &Spec,
-    tasks: &[Task],
-    repo: &ScratchRepo,
-    steward: &Steward,
-    coordinator: &str,
-) -> Result<OnResult> {
-    let scratch = tempfile::tempdir().context("cannot create a scratch directory")?;
-    check_coordinator(coordinator)?;
-    let names = on::principals(spec.agents, spec.scripted_reviewer);
-    let agents = on::agent_names(spec.agents);
-    let base = demo::base_tree();
-    let seed_dir = scratch.path().join("setup");
-    let endpoint = tokio::task::block_in_place(|| {
-        live::provision(&LiveSetup {
-            steward,
-            coordinator,
-            repo,
-            scratch: &seed_dir,
-            base: &base,
-            agents: &agents,
-            names: &names,
-        })
-    })?;
-    on::run_on(
-        &endpoint,
-        tasks,
-        &scratch.path().join("agents"),
-        &spec.on_config(),
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,29 +114,6 @@ mod tests {
         );
         assert!(resolve_repo(Some("tessel-dogfood"), 1, 0).is_err());
         assert!(resolve_repo(Some("demo"), 1, 0).is_err());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_live_run_refuses_the_production_coordinator_before_touching_anything() {
-        let spec = Spec {
-            seed: 1,
-            tasks: 1,
-            overlap: 0.0,
-            agents: 1,
-            policy: Policy::Wait,
-            work_ms: 0,
-            task_timeout: Duration::from_secs(1),
-            max_denials: 1,
-            scripted_reviewer: true,
-        };
-        let repo = ScratchRepo::parse("swarm-x").unwrap();
-        let token = crate::endpoint::Token::new("t".into());
-        let steward = Steward::new("https://steward.invalid", token).unwrap();
-        let production = "wss://tessel-coordinator.devfep.workers.dev";
-        let error = run_on_live(&spec, &[], &repo, &steward, production).await;
-        assert!(error
-            .err()
-            .is_some_and(|e| e.to_string().contains("production coordinator")));
     }
 
     #[test]

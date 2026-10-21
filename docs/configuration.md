@@ -1,20 +1,24 @@
 # Configuration reference
 
-This page covers the Cloudflare host as it is today, which Phase 1 of [`PLAN.md`](../PLAN.md)
-replaces with `tessel-server`.
+This page covers the settings in this tree. The Cloudflare Worker and its `wrangler.toml` are
+deleted; the local server, `tessel-server`, is M3's work in progress (P1-SERVER, P1-IDENTITY) and
+has no settings on this page yet. The steward (`tessel-steward/`) stays until M6 as the reference
+for the lander, so its settings are listed as they are in its own files.
 
 Every setting Tessel reads, where it is set, its default, what it does, and the code that reads it.
-Values are checked against commit `9e363c1`. A setting that is not on this page is not
-configurable: the limits in [Fixed limits](#fixed-limits) are constants in the code.
+The code references were written against commit `9e363c1` and the `src/shell.rs` ones re-checked
+after the Worker's deletion. A setting that is not on this page is not configurable: the limits in
+[Fixed limits](#fixed-limits) are constants in the code.
 
 Contents: [`tessel.toml`](#per-repository-tesseltoml-the-gate) ·
-[Coordinator](#coordinator-wranglertoml) · [Steward](#steward-tessel-stewardwranglerjsonc) ·
+[Host settings](#host-settings) · [Steward](#steward-tessel-stewardwranglerjsonc) ·
 [Agent and worktree](#agent-and-worktree) · [CLI commands and flags](#cli-commands-and-flags) ·
 [Fixed limits](#fixed-limits) · [What is pluggable](#what-is-pluggable)
 
 ## Per repository: `tessel.toml` (the gate)
 
-The gate is the install and test commands the steward runs before it merges a submission. A
+The gate is the install and test commands run before a submission merges. The rules below are
+the steward's, which the lander ports. A
 repository declares it in `tessel.toml` at the root. The steward reads the file from the trunk
 commit a run is based on, never from the agent's fork (`tessel-steward/src/gate-plan.ts:39`).
 
@@ -126,26 +130,23 @@ dir = "tessel-steward"
 argv = ["pnpm", "test"]
 ```
 
-## Coordinator: `wrangler.toml`
+## Host settings
 
-The coordinator Worker reads these variables and one secret. Values below are those in the
-committed `wrangler.toml`; the `swarm` column is `[env.swarm]`, the second deployment used by the
-scripted swarm harness.
+The host reads four settings when it builds the core (`HostConfig`, `src/host/mod.rs`). They keep
+the names of the Worker's old variables. Whatever serves the host supplies them; no file in this
+tree does yet.
 
-| Name | Where | Default env | `swarm` env | If unset | Read | Effect |
-|---|---|---|---|---|---|---|
-| `RUN` | `[vars]` | `dogfood` | `swarm` | A repo with no stored state fails to load: "the RUN variable is missing or empty" | Only when a repo has no stored state | Run tag stamped on every event. A repo keeps the run it was created with (`src/shell.rs:235-238`). |
-| `SHADOW_ENABLED` | `[vars]` | `"false"` | `"true"` | `false` | Only when a repo has no stored state | Allows `on_conflict: shadow` claims. When `false`, such a claim is refused with `shadow_disabled` (`src/coordinator.rs:772`). Only exactly `"true"` or `"false"` is accepted (`src/shell.rs:227`). No `tessel` command sends shadow claims. |
-| `REVIEWERS` | `[vars]` | `felix,orchestrator` | `swarm-reviewer` | Nobody may review | Every load | Comma-separated agent ids allowed to decide a held submission. An id needs the agent-id form (`A-Z a-z 0-9 . _ -`, first a letter or digit, at most 128 bytes) (`src/shell.rs:148`). |
-| `SENSITIVE` | `[vars]` | six paths (see below) | `""` | No sensitive paths | Every load | Comma-separated path prefixes. A submission that touches a path starting with one is held for review (`src/protocol.rs:694-728`). |
-| `ALLOWED_REPO_PREFIX` | `[vars]` | not set | `swarm-` | Serves every repo | Every request | The Worker serves only repos whose name starts with it. Set it when deployments share a signing key (`src/shell.rs:222`, `src/runtime.rs:110`). |
-| `IDENTITY_SIGNING_KEY` | secret (`wrangler secret put`) | required | required | Every request is refused | Every request | HMAC key that verifies identity tokens. It must be the same value as the steward's (`src/identity.rs:11,43`, `src/runtime.rs:114`). |
-| `STEWARD` | `[[services]]` binding | `tessel-steward`, entrypoint `MergeService` | same | Merges, trials and head reads fail | Every call | The service binding through which the coordinator calls the steward (`wrangler.toml:27-30`, `src/runtime.rs:74,716`). Wrangler does not inherit it into `[env.swarm]`, which repeats it. |
+| Name | `HostConfig` field | If unset | Read | Effect |
+|---|---|---|---|---|
+| `RUN` | `run` | A repo with no stored state fails to load: "the RUN variable is missing or empty" | Only when a repo has no stored state | Run tag stamped on every event. A repo keeps the run it was created with (`src/shell.rs:235-238`). |
+| `SHADOW_ENABLED` | `shadow_enabled` | `false` | Only when a repo has no stored state | Allows `on_conflict: shadow` claims. When `false`, such a claim is refused with `shadow_disabled` (`src/coordinator.rs:772`). Only exactly `"true"` or `"false"` is accepted (`src/shell.rs:227`). No `tessel` command sends shadow claims. |
+| `REVIEWERS` | `reviewers` | Nobody may review | Every load | Comma-separated agent ids allowed to decide a held submission. An id needs the agent-id form (`A-Z a-z 0-9 . _ -`, first a letter or digit, at most 128 bytes) (`src/shell.rs:148`). |
+| `SENSITIVE` | `sensitive` | No sensitive paths | Every load | Comma-separated path prefixes. A submission that touches a path starting with one is held for review (`src/protocol.rs:694-728`). |
 
-Which load applies a setting (`src/runtime.rs:342-365`, `src/shell.rs:235-257`): `RUN` and
-`SHADOW_ENABLED` are fixed per repo when its state is first created. Changing them in
-`wrangler.toml` does not change an existing repo. `REVIEWERS` and `SENSITIVE` are applied each time
-the Durable Object loads, so a change takes effect for existing repos after the next deploy.
+`RUN` and `SHADOW_ENABLED` are fixed per repo when its state is first created. Changing them later
+does not change an existing repo. `REVIEWERS` and `SENSITIVE` are applied each time the host loads
+a repo (`src/shell.rs:235-257`, `src/host/core_slot.rs`), so a change takes effect for existing
+repos at their next load.
 
 ### Failure behaviour
 
@@ -157,9 +158,7 @@ the Durable Object loads, so a change takes effect for existing repos after the 
 | `RUN` missing or empty | A new repo fails to load. | `src/shell.rs:105` |
 
 `SENSITIVE` entries are plain prefixes with no globs. End a directory with `/`: `src/auth` also
-matches `src/authz.rs`. The committed value holds the file paths `src/protocol.rs`,
-`src/identity.rs`, `tessel.toml`, `wrangler.toml`, `tessel-steward/wrangler.jsonc` and
-`tessel-steward/src/access.ts`.
+matches `src/authz.rs`.
 
 ### What holds a submission for review
 
@@ -185,9 +184,9 @@ Nothing checks that the tests ran.
 | `DASHBOARD_VIEWERS` | `vars` | `*` | No account passes: every signed-in user gets 403 | Comma-separated emails allowed to open `/dashboard` and `/review`, compared case-insensitively. A `*` entry admits any email the Access policy lets sign in; `REVIEWER_EMAILS` still decides who may approve or reject (`src/access.ts:59-64,178`). |
 | `REVIEWER_EMAILS` | `vars` | one `email=agent` pair | Nobody may decide; viewing is unaffected | Comma-separated `email=agent` pairs. A person signed in as `email` approves or rejects on `/review` as `agent`. An entry that is not a pair with a valid agent id is dropped (`src/review-csrf.ts:10-23`, `src/review.ts:346`). |
 | `STEWARD_ADMIN_TOKEN` | secret | required | Every admin route answers 401 | Bearer token for the admin routes: create repo, fork, mint tokens, run tests, admin merge, mint identity (`src/index.ts:47-58,198-200`). |
-| `IDENTITY_SIGNING_KEY` | secret | required | Identity minting throws | Signs agent identity tokens. It must equal the coordinator's. It also signs the review page's anti-forgery tokens and the steward's own calls to the coordinator (`src/identity.ts:45`, `src/review.ts:94`, `src/coordinator-link.ts:16`). |
+| `IDENTITY_SIGNING_KEY` | secret | required | Identity minting throws | Signs agent identity tokens, the review page's anti-forgery tokens and the steward's own calls to the coordinator (`src/identity.ts:45`, `src/review.ts:94`, `src/coordinator-link.ts:16`). |
 
-The agent named in `REVIEWER_EMAILS` must also be in the coordinator's `REVIEWERS`. The steward does
+The agent named in `REVIEWER_EMAILS` must also be in the host's `REVIEWERS`. The steward does
 not check this. A decision for an agent that is not in `REVIEWERS` is refused by the coordinator
 with `not_owner` (`src/coordinator/merging.rs:201`).
 
@@ -200,7 +199,7 @@ Only the `/dashboard` and `/review` paths use Access. Every other route needs
 |---|---|---|
 | `containers[].images.tests` | `./Dockerfile` | Legacy gate. Node and `git`. |
 | `containers[].images.toolchain` | `./toolchain.Dockerfile`, `build_context: ".."` | Rust 1.98.0, Node 22.23.3, pnpm 12.8.1, `gcc`, `git`, `procps`, `time`, `tini`. Dependencies come from the committed lockfiles, so a lockfile change needs a rebuilt image before it can merge. |
-| `services[COORDINATOR]` | `tessel-coordinator` | The coordinator the steward calls and pokes. |
+| `services[COORDINATOR]` | `tessel-coordinator` | Names the Worker that served the coordinator. The Worker is deleted and nothing in the tree serves it, so the steward has no coordinator to call. |
 | `artifacts[ARTIFACTS]` | namespace `tessel` | The git host for trunks and forks. |
 | `queues.consumers` | `tessel-artifacts-events` | Push events; a push to a trunk's `main` makes the steward poke the coordinator (`src/trunk-poke.ts`). |
 
@@ -339,13 +338,12 @@ None of these is configurable.
 | Heartbeat interval | lease / 3 (10 s) | `tessel-cli/src/daemon.rs:806` |
 | Agent id and repo name | 1 to 128 bytes | `src/shell.rs:20`, `tessel-steward/src/identity.ts:8` |
 | Identity token lifetime | 24 h | `tessel-steward/src/identity.ts:2` |
-| Identity token size | 1024 bytes | `src/identity.rs:33` |
 | Fork write token lifetime | 1 h | `tessel-steward/src/index.ts:16` |
 | Read token (`/read-tokens`) | 10 min | `tessel-steward/src/index.ts:18` |
 | Review page anti-forgery token | 1 h | `tessel-steward/src/review-csrf.ts:4` |
 | WebSocket text frame | 64 KiB | `src/shell.rs:23` |
 | Scopes in one Claim, Amend or Submit | 256 | `src/coordinator.rs:1631` |
-| Stored state per repo | A client call that would grow the state past 1 MiB, or log one event over 1 MiB, is refused; nothing is stored above 2 MiB minus 64 KiB | `src/shell.rs:27,31,807-812` |
+| Stored state per repo | A client call that would grow the state past 1 MiB, or log one event over 1 MiB, is refused; nothing is stored above 2 MiB minus 64 KiB | `src/shell.rs:27,31`, `STATE_LIMIT_MESSAGE` |
 | Review note | 1024 bytes | `src/coordinator.rs:1628` |
 | Symbols of one file before the hook and `submit` claim the file instead | 4 | `tessel-cli/src/plan.rs:14` |
 | Steward call (one merge) | 13 min | `src/merge.rs:31`, `tessel-steward/src/step-budget.ts:6` |
@@ -363,9 +361,9 @@ None of these is configurable.
 | | Agents that speak MCP | `tessel mcp --root <worktree>` serves `tessel_start`, `tessel_claim`, `tessel_status`, `tessel_inbox`, `tessel_submit`, `tessel_release`, `tessel_review` over stdio (`tessel-cli/src/mcp.rs`). |
 | | Claude Code | `tessel hook install` writes `PreToolUse` (claims and blocks `Edit`, `MultiEdit`, `Write`, `NotebookEdit`), `PostToolUse`, `UserPromptSubmit`, `SessionStart` (inbox notices) and `Stop` hooks to `.claude/settings.local.json` (`tessel-cli/src/hook.rs:23-65`). |
 | | Any agent, through git | `tessel hook install --git` installs `pre-commit` and `pre-push` hooks that refuse changes outside unsubmitted claims (`tessel-cli/src/githook.rs`). |
-| Clients | Anything that speaks JSON over WebSocket | `GET /repo/<name>/ws` with `Authorization: Bearer <identity token>`, first message `{"type":"hello","agent":"…","base":"…"}`. The `agent` must be the token's agent. `GET /repo/<name>/summary` returns the evidence summary (`src/shell.rs:488-492`, `src/protocol.rs:459-466`). |
+| Clients | Anything that speaks JSON over WebSocket | A socket for one agent of one repo, first message `{"type":"hello","agent":"…","base":"…"}`. The `agent` must be the one the adapter verified. The summary route returns the evidence summary (`src/shell.rs:488-492`, `src/protocol.rs:459-466`). |
 | Languages for symbol claims | Rust (`.rs`), TypeScript (`.ts`, `.mts`, `.cts`), TSX (`.tsx`) | tree-sitter in the CLI (`tessel-cli/src/symbols.rs:55-63`). Every other file is claimed at file level. |
 | Test commands | `pnpm test`, `npm test`, `cargo test` with the listed flags | `tessel.toml`. See [Allowed commands](#allowed-commands). |
-| Not pluggable | Artifacts as the git host | The steward uses the Artifacts binding for trunks, forks and tokens. |
-| | The Workers runtime | The coordinator is a Durable Object, the steward a Worker with Containers. |
+| Not pluggable | Artifacts as the steward's git host | The steward uses the Artifacts binding for trunks, forks and tokens. It goes with the steward in M6. |
+| | The host's shape | The host is sans-IO: it takes `Input`s and returns `Output`s, and an adapter does the I/O. The adapters in this tree are the CLI's and the swarm's test hosts. |
 | | The CLI's platform | The CLI is Unix-only (`tessel-cli/src/init.rs:10` uses Unix file modes). |

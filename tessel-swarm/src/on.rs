@@ -1916,7 +1916,7 @@ mod tests {
             endpoint: Endpoint {
                 ws_url: String::new(),
                 tokens: std::collections::HashMap::new(),
-                remote: crate::endpoint::Remote::Local {
+                remote: crate::endpoint::Remote {
                     trunk: PathBuf::new(),
                     forks: PathBuf::new(),
                 },

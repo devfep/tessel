@@ -94,38 +94,17 @@ fn retry_transient(
     }
 }
 
-/// A git working directory plus the environment its commands run with. Secrets are replaced with
-/// `[redacted]` in any text this type returns.
+/// A git working directory.
 #[derive(Debug, Clone)]
 pub struct Git {
     pub dir: PathBuf,
-    env: Vec<(String, String)>,
-    secrets: Vec<String>,
 }
 
 impl Git {
     pub fn new(dir: &Path) -> Self {
         Self {
             dir: dir.to_path_buf(),
-            env: Vec::new(),
-            secrets: Vec::new(),
         }
-    }
-
-    /// Sends `Authorization: Bearer <token>` with every request this git makes. The token travels
-    /// in the environment, never in a URL or an argument.
-    #[must_use]
-    pub fn with_bearer(mut self, token: &str) -> Self {
-        self.env = vec![
-            ("GIT_CONFIG_COUNT".into(), "1".into()),
-            ("GIT_CONFIG_KEY_0".into(), "http.extraHeader".into()),
-            (
-                "GIT_CONFIG_VALUE_0".into(),
-                format!("Authorization: Bearer {token}"),
-            ),
-        ];
-        self.secrets.push(token.to_string());
-        self
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -149,16 +128,7 @@ impl Git {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_AUTHOR_DATE", COMMIT_DATE)
             .env("GIT_COMMITTER_DATE", COMMIT_DATE);
-        for (key, value) in &self.env {
-            cmd.env(key, value);
-        }
         cmd
-    }
-
-    fn scrub(&self, text: &str) -> String {
-        self.secrets.iter().fold(text.to_string(), |acc, secret| {
-            acc.replace(secret, "[redacted]")
-        })
     }
 
     /// Runs git and returns trimmed stdout. Fails on a non-zero exit with git's own message.
@@ -178,7 +148,7 @@ impl Git {
             .with_context(|| format!("cannot run git in {}", self.dir.display()))?;
         let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
         text.push_str(&String::from_utf8_lossy(&output.stderr));
-        Ok((output.status.success(), self.scrub(&text)))
+        Ok((output.status.success(), text))
     }
 
     /// Runs `git push` with `args` (after the word `push`). A server error or a lost connection
@@ -734,16 +704,5 @@ mod tests {
             .unwrap_err();
         assert!(format!("{error:#}").contains("push"), "{error:#}");
         assert_eq!(retries.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn output_never_contains_the_bearer_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let git = Git::new(dir.path()).with_bearer("s3cret-token");
-        git.run(&["init", "-q"]).unwrap();
-        let (_, listing) = git.attempt(&["config", "--list"]).unwrap();
-        assert!(listing.contains("extraheader"), "{listing}");
-        assert!(!listing.contains("s3cret-token"), "{listing}");
-        assert!(listing.contains("[redacted]"));
     }
 }
