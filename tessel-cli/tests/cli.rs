@@ -2014,9 +2014,14 @@ async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released()
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     eventually(SHORT, || Ok((claims_released(&fake) == 1).then_some(()))).await?;
-    // The log is: connected, connected, granted, released. Keep the first three: the read has
-    // the grant and not the release.
-    fake.cut_replay(Some(3));
+    // Keep everything before the release: the read has the grant and not the release, however
+    // many connections the log shows before it.
+    let kept = fake
+        .events()
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::ClaimReleased { .. }))
+        .context("the release is not in the log")?;
+    fake.cut_replay(Some(kept));
     let before = hellos(&fake, "a1");
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
@@ -2029,7 +2034,9 @@ async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released()
     .await?;
     let files = a1.tessel_files()?;
     assert!(
-        files.contains("event log read: 3 events (TRUNCATED), 1 live claims for this agent"),
+        files.contains(&format!(
+            "event log read: {kept} events (TRUNCATED), 1 live claims for this agent"
+        )),
         "the cut read did not show the grant without its release: {files}"
     );
     assert_eq!(
@@ -2045,8 +2052,8 @@ async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_t
 ) -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
     a1.start_settled("unlucky twice").await?;
-    // The log is: connected, connected. The grant the lost reply was for is left out.
-    fake.cut_replay(Some(2));
+    // Keep the log as it is now: the grant the lost reply is for comes after it and is left out.
+    fake.cut_replay(Some(fake.events().len()));
     fake.lose_next("a1", Lose::ClaimReply);
     let refused = a1.tessel(&["claim", "src/a.rs"])?;
     assert_eq!(refused.code, 1, "{}", refused.all());
