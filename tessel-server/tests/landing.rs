@@ -468,7 +468,7 @@ async fn a_call_past_its_deadline_is_given_up_its_clones_removed_and_it_never_pu
     let deadline = Instant::now() + Duration::from_secs(10);
     while !log_lines_with("landing-late")
         .iter()
-        .any(|l| l.contains("did not finish"))
+        .any(|l| l.contains("so main was not pushed"))
     {
         assert!(
             Instant::now() < deadline,
