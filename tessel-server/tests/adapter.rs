@@ -40,6 +40,7 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const WAIT: Duration = Duration::from_secs(5);
 const TOKEN_A1: &str = "token-for-a1-S3CRETvalue";
 const TOKEN_A2: &str = "token-for-a2";
+const TOKEN_A3: &str = "token-for-a3";
 const TOKEN_LANDER: &str = "token-for-the-lander";
 const DEMO: &str = "/tenant/acme/repo/demo";
 
@@ -61,6 +62,7 @@ fn tokens() -> Arc<dyn Verifier> {
     Arc::new(Tokens(HashMap::from([
         (TOKEN_A1, "a1"),
         (TOKEN_A2, "a2"),
+        (TOKEN_A3, "a3"),
         (TOKEN_LANDER, "lander"),
     ])))
 }
@@ -76,6 +78,8 @@ fn config(dir: &Path, repos: &[(&str, &str)]) -> Config {
                 tenant: (*tenant).to_string(),
                 name: (*name).to_string(),
                 run: "test".to_string(),
+                reviewers: Vec::new(),
+                sensitive: Vec::new(),
             })
             .collect(),
     }
@@ -769,6 +773,106 @@ async fn the_protocol_range_the_host_announces_reaches_the_client() -> TestResul
         return Err("no welcome".into());
     };
     assert_eq!(protocol_range, Some(ProtocolRange::current()));
+    server.stop().await;
+    Ok(())
+}
+
+const SENSITIVE_PATH: &str = "src/auth/token.rs";
+
+/// A server for acme/demo whose configuration lists `reviewers` and holds `src/auth/`.
+async fn start_reviewed(dir: &Path, reviewers: &[&str]) -> Result<RunningServer, StartError> {
+    let mut config = config(dir, &[("acme", "demo")]);
+    config.repositories[0].reviewers = reviewers.iter().map(|name| (*name).to_string()).collect();
+    config.repositories[0].sensitive = vec!["src/auth/".to_string()];
+    let deps = Deps {
+        verifier: Some(tokens()),
+        calls: Arc::new(NoLander),
+    };
+    server::start(&config, deps).await
+}
+
+/// a1 claims the sensitive path and submits with test evidence; the core holds it for review.
+async fn held_for_review(
+    addr: SocketAddr,
+) -> Result<(Socket, ClaimId), Box<dyn std::error::Error>> {
+    let mut submitter = welcomed(addr, DEMO, TOKEN_A1, "a1").await?;
+    send(&mut submitter, &claim(1, SENSITIVE_PATH)).await?;
+    let granted = expect(&mut submitter).await?;
+    let (claim_id, fence) = granted_claim(&granted)?;
+    let mut held = submit(claim_id, fence);
+    if let ClientMsg::Submit { touched, .. } = &mut held {
+        *touched = vec![edit(SENSITIVE_PATH)];
+    }
+    send(&mut submitter, &held).await?;
+    let reply = expect(&mut submitter).await?;
+    assert!(
+        matches!(reply, ServerMsg::ReviewRequired { claim, .. } if claim == claim_id),
+        "{reply:?}"
+    );
+    Ok((submitter, claim_id))
+}
+
+fn granted_claim(msg: &ServerMsg) -> Result<(ClaimId, Fence), Box<dyn std::error::Error>> {
+    granted(msg).ok_or_else(|| format!("expected a grant, got {msg:?}").into())
+}
+
+fn review(claim: ClaimId, approve: bool) -> ClientMsg {
+    ClientMsg::Review {
+        req: RequestId(9),
+        claim,
+        approve,
+        note: None,
+    }
+}
+
+#[tokio::test]
+async fn a_configured_reviewer_approves_a_held_submission_through_the_server() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let server = start_reviewed(dir.path(), &["a2"]).await?;
+    let addr = server.local_addr();
+    let (mut submitter, claim_id) = held_for_review(addr).await?;
+    let mut reviewer = welcomed(addr, DEMO, TOKEN_A2, "a2").await?;
+    send(&mut reviewer, &review(claim_id, true)).await?;
+    let accepted = expect(&mut submitter).await?;
+    assert!(
+        matches!(accepted, ServerMsg::Accepted { claim, .. } if claim == claim_id),
+        "{accepted:?}"
+    );
+    let mut decided = Vec::new();
+    for kind in events_of(dir.path(), "acme", "demo")? {
+        if let EventKind::ReviewDecided {
+            claim,
+            approve,
+            reviewer,
+            ..
+        } = kind
+        {
+            decided.push((claim, approve, reviewer));
+        }
+    }
+    assert_eq!(decided, [(claim_id, true, Some(AgentId("a2".to_string())))]);
+    server.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_name_not_in_the_configured_reviewers_is_refused() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let server = start_reviewed(dir.path(), &["a2"]).await?;
+    let addr = server.local_addr();
+    let (_submitter, claim_id) = held_for_review(addr).await?;
+    let mut outsider = welcomed(addr, DEMO, TOKEN_A3, "a3").await?;
+    send(&mut outsider, &review(claim_id, true)).await?;
+    let refusal = expect(&mut outsider).await?;
+    let ServerMsg::Error { message, .. } = &refusal else {
+        return Err(format!("expected a refusal, got {refusal:?}").into());
+    };
+    assert!(message.contains("configured reviewer"), "{message}");
+    let decided = events_of(dir.path(), "acme", "demo")?
+        .iter()
+        .filter(|kind| matches!(kind, EventKind::ReviewDecided { .. }))
+        .count();
+    assert_eq!(decided, 0, "the submission is still held");
     server.stop().await;
     Ok(())
 }

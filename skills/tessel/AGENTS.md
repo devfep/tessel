@@ -5,12 +5,13 @@ you edit it. A pre-edit hook enforces this; these rules keep you out of its way.
 
 ## Setup
 
-`tessel init --coordinator <wss://…> --repo <name> --agent <name>` does the steps below in one
-rerunnable command (token: kept from `.tessel/config.toml`, else `TESSEL_TOKEN`; the operator mints
-it and gives you that variable only; never hold `STEWARD_ADMIN_TOKEN`, which can mint a reviewer
-identity); then `tessel start`. Or by hand: set `TESSEL_COORDINATOR`, `TESSEL_REPO`,
-`TESSEL_AGENT` and `TESSEL_TOKEN` (or the same keys in `.tessel/config.toml`). The token is secret:
-never print, log or commit it. Then, once per worktree:
+`tessel init --coordinator <ws://… or wss://…> --repo <name> --agent <name>` does the steps below
+in one rerunnable command (token: kept from `.tessel/config.toml`, else `TESSEL_TOKEN`; the
+operator mints it with `tessel-server admin token` and gives you that variable only; never hold
+the server's key files, which can sign a reviewer's token); then `tessel start`. Or by hand: set
+`TESSEL_COORDINATOR`, `TESSEL_REPO`, `TESSEL_AGENT` and `TESSEL_TOKEN` (or the same keys in
+`.tessel/config.toml`). The token is secret: never print, log or commit it. Then, once per
+worktree:
 
     tessel hook install
     tessel start "<one line: what this work is for>"

@@ -1,5 +1,5 @@
 //! `tessel init` end to end: the real binary in a temp git repository, with no daemon and no
-//! network. The steward call is tested in `src/init.rs` with a fake transport.
+//! network.
 
 #![expect(
     clippy::panic_in_result_fn,
@@ -21,7 +21,6 @@ use support::{git, Agent, Done, Fake};
 
 const TOKEN: &str = "tok-init-S3CRETvalue";
 const OTHER_TOKEN: &str = "tok-other-S3CRETvalue";
-const ADMIN: &str = "admin-S3CRETvalue";
 const FLAGS: [&str; 6] = [
     "--coordinator",
     "wss://c.example.test",
@@ -37,8 +36,7 @@ async fn world() -> Result<(Fake, Agent)> {
     Ok((fake, agent))
 }
 
-/// `tessel init <args>` in the agent's repository with exactly the `TESSEL_*` and steward
-/// variables in `env`.
+/// `tessel init <args>` in the agent's repository with exactly the `TESSEL_*` variables in `env`.
 fn init(agent: &Agent, args: &[&str], env: &[(&str, &str)]) -> Result<Done> {
     init_in(&agent.root(), args, env)
 }
@@ -53,7 +51,6 @@ fn init_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Done> {
         .env_remove("TESSEL_REPO")
         .env_remove("TESSEL_AGENT")
         .env_remove("TESSEL_TOKEN")
-        .env_remove("STEWARD_ADMIN_TOKEN")
         .envs(env.iter().copied())
         .output()
         .context("cannot run tessel")?;
@@ -164,31 +161,18 @@ async fn a_rerun_keeps_everything_and_changes_no_file() -> Result<()> {
 }
 
 #[tokio::test]
-async fn no_token_anywhere_fails_with_both_ways_out_and_writes_nothing() -> Result<()> {
+async fn no_token_anywhere_fails_with_the_mint_instruction_and_writes_nothing() -> Result<()> {
     let (_fake, agent) = world().await?;
-    let done = init(&agent, &FLAGS, &[("STEWARD_ADMIN_TOKEN", ADMIN)])?;
+    let done = init(&agent, &FLAGS, &[])?;
     assert_ne!(done.code, 0, "{}", done.all());
     let shown = done.all();
     assert!(
-        shown.contains("TESSEL_TOKEN") && shown.contains("--steward"),
+        shown.contains("tessel-server admin token --config <file> --kid <kid> --tenant <t>"),
         "{shown}"
     );
-    assert!(
-        !shown.contains("art_v") && !shown.contains(ADMIN),
-        "{shown}"
-    );
+    assert!(shown.contains("--repo demo --agent a1"), "{shown}");
+    assert!(shown.contains("TESSEL_TOKEN"), "{shown}");
     assert!(!agent.root().join(".tessel").exists());
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_steward_without_the_admin_token_names_it() -> Result<()> {
-    let (_fake, agent) = world().await?;
-    let mut args = FLAGS.to_vec();
-    args.extend(["--steward", "https://steward.example.test"]);
-    let done = init(&agent, &args, &[])?;
-    assert_ne!(done.code, 0, "{}", done.all());
-    assert!(done.all().contains("STEWARD_ADMIN_TOKEN"), "{}", done.all());
     Ok(())
 }
 

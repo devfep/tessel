@@ -83,10 +83,12 @@ contested function varies with timing, so your numbers can differ from run to ru
 ## Hosting today
 
 Nothing is deployed from this repository, and the Cloudflare Worker that used to host the
-coordinator is deleted. Phase 1 of [`PLAN.md`](PLAN.md) builds `tessel-server`. Its first tasks in
-M3 are P1-SERVER and P1-IDENTITY; until they merge there is no server to run. What runs today is
-the core and the portable host in `src/host/`, the lander in `tessel-lander/`, the CLI against a
-fake coordinator that drives the real host, and the swarm harness on 127.0.0.1.
+coordinator is deleted. Phase 1 of [`PLAN.md`](PLAN.md) builds `tessel-server`. It serves claims,
+review and identity on one machine and does not land yet (P1-SERVER-LANDING). Also in the tree: the
+core and the portable host in `src/host/`, the lander in `tessel-lander/`, the CLI against a fake
+coordinator that drives the real host, and the swarm harness on 127.0.0.1.
+
+To run `tessel-server` for yourself, follow [`docs/local-setup.md`](docs/local-setup.md).
 
 ## Evidence
 

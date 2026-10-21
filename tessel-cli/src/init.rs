@@ -1,7 +1,7 @@
 //! `tessel init`: from nothing to a worktree ready for `tessel start`, safe to rerun.
 //!
 //! It resolves the identity (flag, then `.tessel/config.toml`, then the `TESSEL_*` environment),
-//! gets a token (kept, from `TESSEL_TOKEN`, or minted by the steward), writes the config file
+//! gets a token (kept in `.tessel/config.toml`, or from `TESSEL_TOKEN`), writes the config file
 //! with mode 0600, keeps `.tessel/` out of git, and installs the Claude Code and git hooks.
 //! The token never reaches the output: every error text passes through `Secrets::scrub`.
 
@@ -9,11 +9,10 @@ use std::fmt::Write as _;
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{anyhow, bail, Context};
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::config::Config;
 use crate::githook;
@@ -25,14 +24,12 @@ const ENV_COORDINATOR: &str = "TESSEL_COORDINATOR";
 const ENV_REPO: &str = "TESSEL_REPO";
 const ENV_AGENT: &str = "TESSEL_AGENT";
 const ENV_TOKEN: &str = "TESSEL_TOKEN";
-const ENV_ADMIN: &str = "STEWARD_ADMIN_TOKEN";
 
 /// A directory with no `.tessel/config.toml`, so `Config::load` applies its validation to the
 /// values handed over through the environment closure alone.
 const NO_CONFIG_DIR: &str = "/nonexistent-tessel-init";
 
 const EXCLUDE_LINE: &str = ".tessel/";
-const MAX_ERROR_CHARS: usize = 200;
 
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -49,61 +46,6 @@ pub struct Flags {
     /// This agent's name; else the file, else `TESSEL_AGENT`.
     #[arg(long)]
     pub agent: Option<String>,
-    /// Steward URL to mint a token from, using `STEWARD_ADMIN_TOKEN`, when no token is kept or
-    /// in `TESSEL_TOKEN`.
-    #[arg(long)]
-    pub steward: Option<String>,
-}
-
-/// What the steward answered: the HTTP status and the body text.
-pub struct Reply {
-    pub status: u16,
-    pub body: String,
-}
-
-/// How a POST reaches the steward. The one production implementation runs `curl`; tests answer
-/// from memory, because the gate runs with `curl` off the `PATH`.
-pub trait Transport {
-    /// POSTs `{}` to `url` with `Authorization: Bearer <bearer>`.
-    fn post(&self, url: &str, bearer: &str) -> anyhow::Result<Reply>;
-}
-
-/// Runs `curl` with its configuration on stdin, so the admin token is never in an argument list.
-pub struct Curl;
-
-impl Transport for Curl {
-    fn post(&self, url: &str, bearer: &str) -> anyhow::Result<Reply> {
-        let config = format!(
-            "url = \"{url}\"\nrequest = \"POST\"\nheader = \"Authorization: Bearer {bearer}\"\n\
-             header = \"Content-Type: application/json\"\ndata = \"{{}}\"\n"
-        );
-        let mut child = Command::new("curl")
-            .args(["-sS", "--max-time", "60", "-K", "-", "-w", "\n%{http_code}"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("cannot run curl; install it, or pass the token in TESSEL_TOKEN")?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("curl has no stdin"))?
-            .write_all(config.as_bytes())?;
-        let output = child.wait_with_output()?;
-        if !output.status.success() {
-            bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
-        }
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let (body, status) = text.rsplit_once('\n').unwrap_or(("", &text));
-        let status = status
-            .trim()
-            .parse()
-            .with_context(|| format!("curl reported the HTTP status {status:?}"))?;
-        Ok(Reply {
-            status,
-            body: body.to_string(),
-        })
-    }
 }
 
 /// Every secret this run holds, so no error text can carry one.
@@ -149,7 +91,6 @@ struct Names {
 enum TokenSource {
     Kept(String),
     FromEnv(String),
-    Mint { steward: String, admin: String },
 }
 
 struct Obtained {
@@ -158,30 +99,20 @@ struct Obtained {
 }
 
 /// Runs `tessel init` in the worktree containing `cwd` and returns the card to print.
-pub fn run(
-    cwd: &Path,
-    flags: &Flags,
-    env: Env<'_>,
-    transport: &dyn Transport,
-) -> anyhow::Result<String> {
+pub fn run(cwd: &Path, flags: &Flags, env: Env<'_>) -> anyhow::Result<String> {
     let worktree = Worktree::discover(cwd)?;
     let path = worktree.dir().join("config.toml");
     let existing = read_existing(&path)?;
     let mut secrets = Secrets::default();
-    for secret in [
-        existing.values.token.as_deref(),
-        env(ENV_TOKEN).as_deref(),
-        env(ENV_ADMIN).as_deref(),
-    ]
-    .into_iter()
-    .flatten()
+    for secret in [existing.values.token.as_deref(), env(ENV_TOKEN).as_deref()]
+        .into_iter()
+        .flatten()
     {
         secrets.add(secret);
     }
     let names = resolve_names(flags, &existing.values, env)?;
     validate(&names)?;
-    let source = token_source(flags, &existing.values, env, &names)?;
-    let obtained = obtain(source, &names, transport, &mut secrets)?;
+    let obtained = obtain(token_source(&existing.values, env, &names)?);
     let config_line = write_config(&path, &existing, &names, &obtained)
         .map_err(|e| anyhow!("{}", secrets.scrub(&format!("{e:#}"))))?;
     let ignore_line = ensure_ignored(&worktree.root)?;
@@ -276,12 +207,7 @@ fn resolve_names(flags: &Flags, file: &FileValues, env: Env<'_>) -> anyhow::Resu
     })
 }
 
-fn token_source(
-    flags: &Flags,
-    file: &FileValues,
-    env: Env<'_>,
-    names: &Names,
-) -> anyhow::Result<TokenSource> {
+fn token_source(file: &FileValues, env: Env<'_>, names: &Names) -> anyhow::Result<TokenSource> {
     // A token is bound to one repo and one agent, so it is kept only for the identity the file
     // implies: each key from the file, else the environment, as `Config::load` reads it.
     let file_repo = non_empty(file.repo.clone()).or_else(|| non_empty(env(ENV_REPO)));
@@ -289,7 +215,7 @@ fn token_source(
     let same_identity = file_repo.as_deref() == Some(names.repo.as_str())
         && file_agent.as_deref() == Some(names.agent.as_str());
     let mut dropped = String::new();
-    if let (Some(token), None) = (non_empty(file.token.clone()), &flags.steward) {
+    if let Some(token) = non_empty(file.token.clone()) {
         if same_identity {
             return Ok(TokenSource::Kept(token));
         }
@@ -304,164 +230,26 @@ fn token_source(
     if let Some(token) = non_empty(env(ENV_TOKEN)) {
         return Ok(TokenSource::FromEnv(token));
     }
-    let admin = non_empty(env(ENV_ADMIN));
-    match (&flags.steward, admin) {
-        (Some(steward), Some(admin)) => Ok(TokenSource::Mint {
-            steward: steward.clone(),
-            admin,
-        }),
-        (Some(_), None) => bail!(
-            "--steward needs {ENV_ADMIN} in the environment to mint a token; set it, or put an \
-             existing token in {ENV_TOKEN}"
-        ),
-        (None, _) => bail!(
-            "{dropped}no token: set {ENV_TOKEN}, or export {ENV_ADMIN} and pass --steward \
-             <https://…> so init mints one. By hand: \
-             curl -X POST -H \"Authorization: Bearer ${ENV_ADMIN}\" \
-             https://<steward>/repos/{}/agents/{}/identity, then put the `token` of the reply in \
-             {ENV_TOKEN}",
-            names.repo,
-            names.agent
-        ),
-    }
+    bail!(
+        "{dropped}no token: set {ENV_TOKEN} to a token minted for this repo and agent. The \
+         operator mints one with: tessel-server admin token --config <file> --kid <kid> \
+         --tenant <t> --repo {} --agent {}; hand the agent {ENV_TOKEN} only, never the keys",
+        names.repo,
+        names.agent
+    )
 }
 
-fn obtain(
-    source: TokenSource,
-    names: &Names,
-    transport: &dyn Transport,
-    secrets: &mut Secrets,
-) -> anyhow::Result<Obtained> {
+fn obtain(source: TokenSource) -> Obtained {
     match source {
-        TokenSource::Kept(token) => Ok(Obtained {
+        TokenSource::Kept(token) => Obtained {
             token,
             note: "token kept".into(),
-        }),
-        TokenSource::FromEnv(token) => Ok(Obtained {
+        },
+        TokenSource::FromEnv(token) => Obtained {
             token,
             note: format!("token from {ENV_TOKEN}"),
-        }),
-        TokenSource::Mint { steward, admin } => {
-            let minted = mint(&steward, &admin, names, transport, secrets)?;
-            let expires = minted.expires_at_ms.map_or_else(
-                || "expiry unknown".to_string(),
-                |ms| format!("expires {}", iso(ms)),
-            );
-            Ok(Obtained {
-                token: minted.token,
-                note: format!("token minted, {expires}"),
-            })
-        }
+        },
     }
-}
-
-struct Minted {
-    token: String,
-    expires_at_ms: Option<u64>,
-}
-
-fn steward_base(steward: &str) -> anyhow::Result<String> {
-    let base = steward.trim_end_matches('/');
-    if !(base.starts_with("https://") || is_local_http(base)) {
-        bail!(
-            "the steward URL must start with https:// (or http://localhost or http://127.0.0.1 \
-             for a dev server)"
-        );
-    }
-    if base
-        .chars()
-        .any(|c| c == '"' || c == '\\' || c.is_whitespace() || c.is_control())
-    {
-        bail!("the steward URL has a quote, a backslash, a space or a control character");
-    }
-    Ok(base.to_string())
-}
-
-/// Plain HTTP to this machine only: the admin token travels in the clear.
-fn is_local_http(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("http://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = match authority.rsplit_once(':') {
-        Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => host,
-        Some(_) | None => authority,
-    };
-    matches!(host, "localhost" | "127.0.0.1")
-}
-
-fn mint(
-    steward: &str,
-    admin: &str,
-    names: &Names,
-    transport: &dyn Transport,
-    secrets: &mut Secrets,
-) -> anyhow::Result<Minted> {
-    if admin
-        .chars()
-        .any(|c| c == '"' || c == '\\' || c.is_control())
-    {
-        bail!("{ENV_ADMIN} has a character that cannot go in a header");
-    }
-    let base = steward_base(steward)?;
-    let path = format!("/repos/{}/agents/{}/identity", names.repo, names.agent);
-    let reply = transport
-        .post(&format!("{base}{path}"), admin)
-        .map_err(|e| anyhow!("POST {path} failed: {}", secrets.scrub(&format!("{e:#}"))))?;
-    let body: Option<Value> = serde_json::from_str(&reply.body).ok();
-    if reply.status != 201 {
-        let detail = body
-            .as_ref()
-            .and_then(|v| v.get("error").and_then(Value::as_str))
-            .map(|text| {
-                escape(&secrets.scrub(text))
-                    .chars()
-                    .take(MAX_ERROR_CHARS)
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
-        bail!(
-            "POST {path} answered HTTP {} (expected 201): {detail}",
-            reply.status
-        );
-    }
-    let Some(body) = body else {
-        bail!("POST {path} did not answer with JSON");
-    };
-    let Some(token) = body
-        .get("token")
-        .and_then(Value::as_str)
-        .filter(|t| !t.is_empty())
-    else {
-        bail!("POST {path} answered without a token");
-    };
-    secrets.add(token);
-    Ok(Minted {
-        token: token.to_string(),
-        expires_at_ms: body.get("expires_at_ms").and_then(Value::as_u64),
-    })
-}
-
-/// `YYYY-MM-DDTHH:MMZ` (UTC) for a Unix time in milliseconds.
-fn iso(ms: u64) -> String {
-    let secs = ms / 1000;
-    let (days, rest) = (secs / 86_400, secs % 86_400);
-    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let day_of_era = shifted % 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let mp = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}Z",
-        rest / 3600,
-        rest % 3600 / 60
-    )
 }
 
 fn toml_string(value: &str) -> String {
@@ -674,47 +462,7 @@ fn card(names: &Names, lines: [String; 3], git_hooks: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-
     use super::*;
-
-    const ADMIN: &str = "admin-S3CRET";
-    const MINTED: &str = "art_v1.minted-S3CRET";
-    const STEWARD: &str = "https://steward.example.test";
-
-    struct Fake {
-        reply: Result<(u16, String), String>,
-        seen: RefCell<Vec<(String, String)>>,
-    }
-
-    impl Fake {
-        fn new(status: u16, body: &str) -> Self {
-            Self {
-                reply: Ok((status, body.to_string())),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-
-        fn failing(why: &str) -> Self {
-            Self {
-                reply: Err(why.to_string()),
-                seen: RefCell::new(Vec::new()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn post(&self, url: &str, bearer: &str) -> anyhow::Result<Reply> {
-            self.seen.borrow_mut().push((url.into(), bearer.into()));
-            match &self.reply {
-                Ok((status, body)) => Ok(Reply {
-                    status: *status,
-                    body: body.clone(),
-                }),
-                Err(why) => bail!("{why}"),
-            }
-        }
-    }
 
     fn names() -> Names {
         Names {
@@ -722,122 +470,6 @@ mod tests {
             repo: "demo".into(),
             agent: "a1".into(),
         }
-    }
-
-    fn mint_with(fake: &Fake) -> anyhow::Result<Minted> {
-        let mut secrets = Secrets::default();
-        secrets.add(ADMIN);
-        mint(STEWARD, ADMIN, &names(), fake, &mut secrets)
-    }
-
-    fn mint_error(fake: &Fake) -> String {
-        match mint_with(fake) {
-            Ok(_) => "minted".to_string(),
-            Err(e) => format!("{e:#}"),
-        }
-    }
-
-    #[test]
-    fn a_201_with_a_token_is_minted_with_the_admin_token_as_bearer() {
-        let fake = Fake::new(
-            201,
-            &format!(
-                "{{\"token\":\"{MINTED}\",\"agent\":\"a1\",\"repo\":\"demo\",\
-                 \"expires_at_ms\":1791601312074}}"
-            ),
-        );
-        let minted = mint_with(&fake).unwrap();
-        assert_eq!(minted.token, MINTED);
-        assert_eq!(minted.expires_at_ms, Some(1_791_601_312_074));
-        let seen = fake.seen.borrow();
-        assert_eq!(
-            seen.as_slice(),
-            [(
-                format!("{STEWARD}/repos/demo/agents/a1/identity"),
-                ADMIN.to_string()
-            )]
-        );
-    }
-
-    #[test]
-    fn a_401_reports_the_steward_error_without_the_admin_token() {
-        let fake = Fake::new(401, &format!("{{\"error\":\"bad token {ADMIN}\"}}"));
-        let text = mint_error(&fake);
-        assert!(text.contains("HTTP 401"), "{text}");
-        assert!(text.contains("bad token [redacted]"), "{text}");
-        assert!(!text.contains(ADMIN), "{text}");
-    }
-
-    #[test]
-    fn a_non_json_body_is_an_error() {
-        let text = mint_error(&Fake::new(201, "<html>oops</html>"));
-        assert!(text.contains("did not answer with JSON"), "{text}");
-    }
-
-    #[test]
-    fn a_non_json_refusal_still_reports_the_status() {
-        let text = mint_error(&Fake::new(502, "bad gateway"));
-        assert!(text.contains("HTTP 502"), "{text}");
-    }
-
-    #[test]
-    fn a_reply_without_a_token_is_an_error() {
-        let text = mint_error(&Fake::new(201, "{\"agent\":\"a1\"}"));
-        assert!(text.contains("without a token"), "{text}");
-        let text = mint_error(&Fake::new(201, "{\"token\":\"\"}"));
-        assert!(text.contains("without a token"), "{text}");
-    }
-
-    #[test]
-    fn a_transport_failure_is_scrubbed_of_the_admin_token() {
-        let text = mint_error(&Fake::failing(&format!("boom {ADMIN}")));
-        assert!(text.contains("boom [redacted]"), "{text}");
-        assert!(!text.contains(ADMIN), "{text}");
-    }
-
-    #[test]
-    fn a_plain_http_steward_is_refused_unless_it_is_this_machine() {
-        let mut secrets = Secrets::default();
-        for url in [
-            "http://steward.example.test",
-            "http://localhost.example",
-            "ftp://x",
-        ] {
-            let fake = Fake::new(201, "{}");
-            assert!(
-                mint(url, ADMIN, &names(), &fake, &mut secrets).is_err(),
-                "{url}"
-            );
-            assert!(fake.seen.borrow().is_empty(), "{url} was called");
-        }
-        let fake = Fake::new(201, "{\"token\":\"t\"}");
-        assert!(mint(
-            "http://127.0.0.1:8787/",
-            ADMIN,
-            &names(),
-            &fake,
-            &mut secrets
-        )
-        .is_ok());
-        assert_eq!(
-            fake.seen.borrow()[0].0,
-            "http://127.0.0.1:8787/repos/demo/agents/a1/identity"
-        );
-    }
-
-    #[test]
-    fn an_admin_token_with_a_quote_never_reaches_the_transport() {
-        let fake = Fake::new(201, "{}");
-        let mut secrets = Secrets::default();
-        assert!(mint(STEWARD, "a\"b", &names(), &fake, &mut secrets).is_err());
-        assert!(fake.seen.borrow().is_empty());
-    }
-
-    #[test]
-    fn the_expiry_prints_as_a_utc_time() {
-        assert_eq!(iso(0), "1970-01-01T00:00Z");
-        assert_eq!(iso(1_791_601_312_074), "2026-10-10T03:01Z");
-        assert_eq!(iso(951_782_400_000 + 60_000 * 61), "2000-02-29T01:01Z");
     }
 
     #[test]
@@ -865,22 +497,12 @@ mod tests {
                 .map(|(_, v)| (*v).to_string())
         }
     }
-
-    fn steward_flags() -> Flags {
-        Flags {
-            steward: Some(STEWARD.into()),
-            ..Flags::default()
-        }
-    }
-
     #[test]
-    fn the_file_token_is_kept_unless_a_steward_is_given() {
-        let env = env_of(&[(ENV_TOKEN, "from-env"), (ENV_ADMIN, "admin")]);
+    fn the_file_token_is_kept_over_the_environment_for_the_same_identity() {
+        let env = env_of(&[(ENV_TOKEN, "from-env")]);
         let file = file_with_token("from-file");
-        let kept = token_source(&Flags::default(), &file, &env, &names()).unwrap();
+        let kept = token_source(&file, &env, &names()).unwrap();
         assert!(matches!(kept, TokenSource::Kept(ref t) if t == "from-file"));
-        let steward = token_source(&steward_flags(), &file, &env, &names()).unwrap();
-        assert!(matches!(steward, TokenSource::FromEnv(ref t) if t == "from-env"));
     }
 
     #[test]
@@ -893,10 +515,7 @@ mod tests {
                 agent: agent.into(),
                 ..names()
             };
-            let kept = matches!(
-                token_source(&Flags::default(), &file, &env, &names),
-                Ok(TokenSource::Kept(_))
-            );
+            let kept = matches!(token_source(&file, &env, &names), Ok(TokenSource::Kept(_)));
             assert!(!kept, "{repo}/{agent}");
         }
     }
@@ -911,25 +530,17 @@ mod tests {
     }
 
     #[test]
-    fn a_steward_mints_only_when_nothing_else_has_a_token() {
-        let env = env_of(&[(ENV_ADMIN, "admin")]);
-        let source = token_source(&steward_flags(), &FileValues::default(), &env, &names());
-        assert!(matches!(source, Ok(TokenSource::Mint { .. })));
-    }
-
-    #[test]
-    fn no_token_anywhere_names_both_ways_out() {
-        let env = env_of(&[(ENV_ADMIN, "admin-S3CRET")]);
-        let text = match token_source(&Flags::default(), &FileValues::default(), &env, &names()) {
+    fn no_token_anywhere_tells_the_operator_how_to_mint_one() {
+        let text = match token_source(&FileValues::default(), &env_of(&[]), &names()) {
             Ok(_) => "no error".to_string(),
             Err(error) => error.to_string(),
         };
+        assert!(text.contains(ENV_TOKEN), "{text}");
         assert!(
-            text.contains(ENV_TOKEN) && text.contains("--steward"),
+            text.contains("tessel-server admin token --config <file> --kid <kid> --tenant <t>"),
             "{text}"
         );
-        assert!(text.contains("/repos/demo/agents/a1/identity"), "{text}");
-        assert!(!text.contains("admin-S3CRET"), "{text}");
+        assert!(text.contains("--repo demo --agent a1"), "{text}");
     }
 
     #[test]
@@ -971,46 +582,5 @@ mod tests {
             ),
             ("wss://env", "file-repo", "flag-agent")
         );
-    }
-
-    fn scratch_repo() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let status = Command::new("git")
-            .args(["init", "-q"])
-            .arg(dir.path())
-            .status()
-            .unwrap();
-        assert!(status.success());
-        dir
-    }
-
-    #[test]
-    fn a_minted_token_reaches_the_file_but_not_the_card() {
-        let dir = scratch_repo();
-        let fake = Fake::new(
-            201,
-            &format!("{{\"token\":\"{MINTED}\",\"expires_at_ms\":1791601312074}}"),
-        );
-        let flags = Flags {
-            coordinator: Some("wss://c.example.test".into()),
-            repo: Some("demo".into()),
-            agent: Some("a1".into()),
-            steward: Some(STEWARD.into()),
-        };
-        let env = env_of(&[(ENV_ADMIN, ADMIN)]);
-        let card = run(dir.path(), &flags, &env, &fake).unwrap();
-        assert!(
-            card.contains("token minted, expires 2026-10-10T03:01Z"),
-            "{card}"
-        );
-        assert!(!card.contains(MINTED) && !card.contains(ADMIN), "{card}");
-        let file = std::fs::read_to_string(dir.path().join(".tessel/config.toml")).unwrap();
-        assert!(file.contains(MINTED) && !file.contains(ADMIN), "{file}");
-        let again = run(dir.path(), &Flags::default(), &env, &fake).unwrap();
-        assert!(
-            again.contains("kept .tessel/config.toml (token kept)"),
-            "{again}"
-        );
-        assert_eq!(fake.seen.borrow().len(), 1, "a rerun must not mint again");
     }
 }

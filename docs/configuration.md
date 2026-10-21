@@ -168,7 +168,7 @@ A submission merges unattended unless one of these applies (`src/protocol.rs:694
 | Reason | Condition |
 |---|---|
 | `signature_change` | A touched scope is in `edit_signature` mode. |
-| `sensitive_path` | A touched path starts with a `SENSITIVE` entry. |
+| `sensitive_path` | A touched path starts with a `SENSITIVE` entry (`sensitive` in the server's `[[repository]]`). |
 | `threatens_assumptions` | The work threatens an assumption another agent declared. |
 | `no_test_evidence` | The submission carries no `--evidence`. |
 
@@ -186,6 +186,8 @@ table, makes it invalid, and an error names the file and the key.
 | `listen` | socket address | required | Where the server listens, `127.0.0.1:7878` for example. |
 | `store_dir` | path | required | The directory of stores, one SQLite file per repository, and the lock that keeps a second server out. |
 | `[[repository]]` `tenant`, `name`, `run` | names | at least one | A repository this server serves, and the run its evidence log is named for. `tenant` and `name` are lowercase letters, digits and interior hyphens, at most 63 characters. |
+| `[[repository]]` `reviewers` | array of agent names | `[]` | The agents that may approve or reject a held submission, which is what `tessel review` does. Empty: nobody may, and a held submission stays held. Each entry has the agent-name form (`A-Z a-z 0-9 . _ -`, first a letter or digit); a bad entry makes the file invalid and the error names the file, the repository and the key. Read as `REVIEWERS` above. |
+| `[[repository]]` `sensitive` | array of path prefixes | `[]` | A submission that touches a path starting with an entry is held for review. No globs; end a directory with `/`. A bad entry (empty, a leading `/`, a `..` segment, a `*`, a comma, a space at either end) makes the file invalid, naming the file, the repository and the key. Read as `SENSITIVE` above. |
 | `[identity]` `keys` | path | none | The directory of Ed25519 keys. |
 | `[identity]` `audience` | name | none | The `aud` a token must carry. |
 
@@ -260,8 +262,8 @@ in the worktree and from the environment (`tessel-cli/src/config.rs:77-123`).
 | `token` | `TESSEL_TOKEN` | The identity token for this repo and this agent. Secret. |
 
 The file allows only these four keys (`config.rs:67`). An empty value counts as unset. The file is
-mode `0600` (`init.rs:518`) and `tessel init` adds `.tessel/` to `.git/info/exclude`
-(`init.rs:568`). Never print, log or commit it.
+mode `0600` (`init.rs:306`) and `tessel init` adds `.tessel/` to `.git/info/exclude`
+(`init.rs:356`). Never print, log or commit it.
 
 ### Other environment variables
 
@@ -274,26 +276,29 @@ mode `0600` (`init.rs:518`) and `tessel init` adds `.tessel/` to `.git/info/excl
 
 | Command | Order, highest first |
 |---|---|
-| `tessel init` | Flag (`--coordinator`, `--repo`, `--agent`), then `.tessel/config.toml`, then `TESSEL_*` (`init.rs:248-253`). |
+| `tessel init` | Flag (`--coordinator`, `--repo`, `--agent`), then `.tessel/config.toml`, then `TESSEL_*` (`init.rs:179-186`). |
 | Every other command | `.tessel/config.toml`, then `TESSEL_*`, key by key (`config.rs:79-87`). They have no flags for these values. |
 
 ### `tessel init`
 
-`tessel init --coordinator <wss://…> --repo <name> --agent <name> [--steward <https://…>]` writes
-the config, the ignore rule, the Claude Code hooks and the git hooks. It is safe to rerun
-(`tessel-cli/src/init.rs:41-56,160-190`).
+`tessel init --coordinator <ws://… or wss://…> --repo <name> --agent <name>` writes the config, the
+ignore rule, the Claude Code hooks and the git hooks. It is safe to rerun
+(`tessel-cli/src/init.rs:36-49,102-125`).
 
-Where the token comes from, first match wins (`init.rs:279-340`):
+For a `tessel-server` on this machine, pass `--coordinator ws://127.0.0.1:7878/tenant/<tenant>`.
+The CLI appends `/repo/<repo>/ws` to it (`tessel-server/src/ws.rs:1-15`).
 
-1. The `token` already in `.tessel/config.toml`, when its repo and agent are the ones being set up
-   and `--steward` is not given.
+Where the token comes from, first match wins (`init.rs:210-240`):
+
+1. The `token` already in `.tessel/config.toml`, when its repo and agent are the ones being set up.
 2. `TESSEL_TOKEN`.
-3. With `--steward <url>`: a token minted from `POST <url>/repos/<repo>/agents/<agent>/identity`
-   using `STEWARD_ADMIN_TOKEN` from the environment. The URL must be `https://`, or
-   `http://localhost` or `http://127.0.0.1` for a dev server (`init.rs:365-390`).
 
-The operator mints the identity token and gives the agent only `TESSEL_TOKEN`. The admin token
-stays out of the agent's environment: with it an agent could mint a reviewer identity.
+With neither, `init` writes nothing and fails with the command that mints one:
+`tessel-server admin token --config <file> --kid <kid> --tenant <t> --repo <r> --agent <a>`
+(see [Identity](#identity)).
+
+The operator mints the identity token and gives the agent only `TESSEL_TOKEN`. The key files stay
+out of the agent's environment: with one an agent could sign a reviewer's token.
 
 ## CLI commands and flags
 
