@@ -279,3 +279,47 @@ fn a_fresh_store_has_the_schema_of_the_newest_fixture() -> TestResult {
     );
     Ok(())
 }
+
+/// A child between `fork` and `exec` holds a copy of every descriptor the parent had open. A
+/// lock that lives in an open file description (`flock`) then outlives the parent's own close, so
+/// a restart in that window is refused by the process's own pid. The child here sleeps in that
+/// window and the directory is reopened inside it.
+#[test]
+fn a_forked_child_before_exec_does_not_hold_the_directory() -> TestResult {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    const WINDOW_MICROS: libc::useconds_t = 300_000;
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().join("stores");
+    let first = StoreDir::open(&root)?;
+    let (mut forked, signal) = std::io::pipe()?;
+    let signal_fd = signal.as_raw_fd();
+    let spawner = std::thread::spawn(move || {
+        let mut command = std::process::Command::new("true");
+        // SAFETY: the closure runs between fork and exec and calls only `write` and `usleep`,
+        // which are async-signal-safe; it touches no memory the parent's other threads own.
+        unsafe {
+            command.pre_exec(move || {
+                libc::write(signal_fd, b"x".as_ptr().cast(), 1);
+                libc::usleep(WINDOW_MICROS);
+                Ok(())
+            });
+        }
+        let status = command.status();
+        drop(signal);
+        status
+    });
+    let mut byte = [0_u8; 1];
+    forked.read_exact(&mut byte)?;
+    drop(first);
+    let reopened = StoreDir::open(&root);
+    let status = spawner
+        .join()
+        .map_err(|_| "the spawning thread panicked")??;
+    assert!(status.success(), "the child ran: {status}");
+    reopened.map_err(|error| format!("the reopen inside the exec window failed: {error}"))?;
+    Ok(())
+}

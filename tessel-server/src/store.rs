@@ -8,19 +8,31 @@
 //! Durability (C1). The file is in WAL mode with `synchronous=FULL`, so a commit that returned is
 //! on disk. A commit is one transaction, and the adapter answers the host only after it returns.
 //!
-//! One writer (C2). The directory is locked with an advisory `flock` on `tessel-server.lock`,
-//! which holds the holder's pid. SQLite's own exclusive locking mode would also refuse a second
-//! writer, but it cannot say who holds the file, and it would lock out the read-only connections
-//! that serve the summary. `flock` is released by the operating system when the process dies, so
-//! a crash leaves no stale lock to clean up.
+//! One writer (C2). The directory is locked with a POSIX record lock (`fcntl` `F_SETLK`, a write
+//! lock over the whole file) on `tessel-server.lock`, which holds the holder's pid. SQLite's own
+//! exclusive locking mode would also refuse a second writer, but it cannot say who holds the
+//! file, and it would lock out the read-only connections that serve the summary. The operating
+//! system releases the lock when the process dies, so a crash leaves no stale lock to clean up.
+//!
+//! Why a record lock and not `flock`. `flock` locks the open file description, and `fork` gives a
+//! child a copy of every descriptor until it execs. A process that spawns a command while this
+//! one closes the store, a restart for example, would find the directory still locked by the
+//! child in that window, and refuse itself. A record lock belongs to the process and a fork child
+//! does not inherit it. It has two hazards, and the code answers both. It is per process, so a
+//! second `open` in this process would win the lock: `HELD` refuses it first, before the file is
+//! opened. And closing any descriptor of the file releases the lock: the file is opened once, only
+//! after `HELD` has agreed, and `Drop` closes it before it leaves `HELD`.
 //!
 //! State version (O1). `meta.state_version` says which shape the file has. `MIGRATIONS` is the
 //! chain from one shape to the next; a file with a version this build does not know is refused,
 //! never migrated down.
 
-use std::fs::{File, OpenOptions, TryLockError};
+use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use tessel_coordinator::protocol::Event;
@@ -93,11 +105,54 @@ pub enum StoreError {
     NotWal { path: String, mode: String },
 }
 
+/// The directories this process holds, by canonical path. A record lock does not tell one holder
+/// in a process from another, so this does.
+static HELD: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
+
 /// The directory of stores, held exclusively for as long as this value lives.
 #[derive(Debug)]
 pub struct StoreDir {
     root: PathBuf,
-    _lock: File,
+    held: PathBuf,
+    lock: Option<File>,
+}
+
+impl Drop for StoreDir {
+    fn drop(&mut self) {
+        // The descriptor closes first: it releases the record lock, and only then may another
+        // holder in this process take the directory.
+        drop(self.lock.take());
+        let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(set) = held.as_mut() {
+            set.remove(&self.held);
+        }
+    }
+}
+
+/// How `try_record_lock` ended.
+enum RecordLock {
+    Taken,
+    Held,
+}
+
+/// Take a write lock over the whole file without waiting.
+fn try_record_lock(file: &File) -> std::io::Result<RecordLock> {
+    // SAFETY: an all-zero `flock` is a valid value (zero integers). Zero in `l_whence`, `l_start`
+    // and `l_len` is `SEEK_SET`, offset 0, length 0, which locks the whole file; only the lock
+    // type is set below.
+    let mut request: libc::flock = unsafe { std::mem::zeroed() };
+    request.l_type = libc::F_WRLCK;
+    // SAFETY: `fcntl` with `F_SETLK` reads `request`, which is live for the call, and the
+    // descriptor is open for as long as `file` is borrowed.
+    let status = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw mut request) };
+    if status == 0 {
+        return Ok(RecordLock::Taken);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EACCES | libc::EAGAIN) => Ok(RecordLock::Held),
+        Some(_) | None => Err(error),
+    }
 }
 
 impl StoreDir {
@@ -107,7 +162,35 @@ impl StoreDir {
             path: root.display().to_string(),
             source,
         })?;
-        let lock_path = root.join(LOCK_FILE);
+        let held = root
+            .canonicalize()
+            .map_err(|source| StoreError::CreateDir {
+                path: root.display().to_string(),
+                source,
+            })?;
+        let lock_path = held.join(LOCK_FILE);
+        let locked = || StoreError::Locked {
+            dir: root.display().to_string(),
+            lock: lock_path.display().to_string(),
+            pid: std::process::id().to_string(),
+        };
+        let mut registry = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        let set = registry.get_or_insert_with(HashSet::new);
+        if set.contains(&held) {
+            return Err(locked());
+        }
+        let lock = Self::lock_file(root, &lock_path)?;
+        set.insert(held.clone());
+        Ok(Self {
+            root: root.to_path_buf(),
+            held,
+            lock: Some(lock),
+        })
+    }
+
+    /// Open the lock file once, take the record lock, and write this pid into it. The caller holds
+    /// `HELD`, so no other holder in this process has the file open.
+    fn lock_file(root: &Path, lock_path: &Path) -> Result<File, StoreError> {
         let lock_error = |source| StoreError::LockFile {
             path: lock_path.display().to_string(),
             source,
@@ -117,26 +200,22 @@ impl StoreDir {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&lock_path)
+            .open(lock_path)
             .map_err(lock_error)?;
-        match lock.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
+        match try_record_lock(&lock).map_err(lock_error)? {
+            RecordLock::Taken => {}
+            RecordLock::Held => {
                 return Err(StoreError::Locked {
                     dir: root.display().to_string(),
                     lock: lock_path.display().to_string(),
                     pid: holder_pid(&mut lock),
                 });
             }
-            Err(TryLockError::Error(source)) => return Err(lock_error(source)),
         }
         lock.set_len(0).map_err(lock_error)?;
         writeln!(lock, "{}", std::process::id()).map_err(lock_error)?;
         lock.sync_all().map_err(lock_error)?;
-        Ok(Self {
-            root: root.to_path_buf(),
-            _lock: lock,
-        })
+        Ok(lock)
     }
 
     /// The store file of `id`.
