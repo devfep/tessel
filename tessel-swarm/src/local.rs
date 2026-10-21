@@ -69,6 +69,10 @@ impl Clock {
     fn now(&self) -> u64 {
         self.frozen_at_ms.unwrap_or_else(now_ms) + self.skew_ms
     }
+
+    fn freeze(&mut self) {
+        self.frozen_at_ms = Some(now_ms());
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -376,7 +380,7 @@ impl LocalServer {
     /// Stops the coordinator's clock: from now on it moves only with `advance_clock`, so no lease
     /// ends because the machine was slow. Call it before any claim is made.
     pub fn freeze_clock(&self) {
-        lock(&self.hub.state).clock.frozen_at_ms = Some(now_ms());
+        lock(&self.hub.state).clock.freeze();
     }
 
     /// Moves the coordinator's clock forward by `ms`. Follow it with `settle_expiry` before
@@ -492,9 +496,8 @@ async fn verify_next(hub: &Hub, trunk: &Path, forks: &Path) {
         .await
         .unwrap_or_else(|_| TrialReport::stopped(TrialOutcome::GitFailed {}));
     let mut state = lock(&hub.state);
-    let effects = state
-        .core
-        .verification_outcome(dispatch.id, &report, now_ms());
+    let now = state.clock.now();
+    let effects = state.core.verification_outcome(dispatch.id, &report, now);
     let (events, outbound) = shell::split_effects(effects);
     state.flush(None, events, outbound);
 }
@@ -789,10 +792,10 @@ mod tests {
 
     #[test]
     fn a_frozen_clock_moves_only_when_advanced() {
-        let mut clock = Clock::default();
-        let real = now_ms();
-        assert!(clock.now() >= real, "an unfrozen clock follows real time");
-        clock.frozen_at_ms = Some(1_000);
+        let mut clock = Clock {
+            frozen_at_ms: Some(1_000),
+            ..Clock::default()
+        };
         assert_eq!(clock.now(), 1_000);
         clock.skew_ms += 300;
         clock.skew_ms += 450;
