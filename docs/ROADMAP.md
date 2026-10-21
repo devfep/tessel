@@ -7,24 +7,24 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-21 11:55 EDT. Main at `adcc7b6` (#75, #76 and #77 merged; the orchestrator's
-gate on `adcc7b6` is green, 1789 tests, all seven steps). M3 is four tasks in: the Worker glue is
-gone (P1-DROP-WORKER), `tessel-server` serves the host over a WebSocket on SQLite (P1-SERVER),
-Ed25519 identity and token minting are in (P1-IDENTITY), and the CLI suite runs on a frozen
-coordinator clock (CLI-LEASE-TESTS). No rules-list row is "after move": R1 became "now" with #76.
-Ruleset step 2 done by Felix 21 October (six required checks remain).
-**In flight (dispatched 21 October 11:50 from `adcc7b6`):** lane B, P1-RUNNER, worktree
-`.claude/worktrees/task-p1-runner`, branch `task-p1-runner`. Lane A, P1-LOCAL-SETUP first half
-(`tessel init` without `--steward`, reviewers in the server's config, the real CLI against a server
-with identity, `docs/local-setup.md`), worktree `.claude/worktrees/task-p1-local-setup`, branch
-`task-p1-local-setup`.
+**As of:** 2026-10-21 13:30 EDT. Main at `39feb6b` (#78, #79 and #80 merged; the orchestrator's
+gate on `39feb6b` is green, 1837 tests, all seven steps). M3 is six tasks in: the Worker glue is
+gone, `tessel-server` serves the host over a WebSocket on SQLite with Ed25519 identity, reviewers
+and sensitive paths come from its config, `tessel-runner` runs a trunk's test commands for one
+trusted user, `tessel init` works against the local server, and `docs/local-setup.md` takes one
+developer from keygen to `tessel review`. Nothing lands yet: P1-SERVER-LANDING is next.
+**In flight (dispatched 21 October 13:25 from `39feb6b`):** lane A, CORE-WORKER-COMMENT-SWEEP
+with CLI-REVIEW-ORDER-TEST, worktree `.claude/worktrees/task-worker-comment-sweep`, branch
+`task-worker-comment-sweep`.
+**Waiting on Felix:** the design of SERVER-NOLANDER-MESSAGE (A, fixed refusal kinds with the
+host's text kept to the server log, recommended; or B, the text carried quoted and bounded to the
+agent). P1-SERVER-LANDING's brief is drafted and goes to lane B on that answer.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** reviews of both lanes; then P1-SERVER-LANDING (lane B, Felix reviews) with
-HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES and SERVER-NOLANDER-MESSAGE (a core change;
-Felix approves its design first); then P1-LOCAL-SETUP's second half (the quickstart on CI to a
-landed commit) and M3's done-check.
+**Next:** P1-SERVER-LANDING (lane B, Felix reviews) with HOST-CALL-DEADLINE-BACKSTOP,
+SERVER-CONFLICT-NAMES and SERVER-NOLANDER-MESSAGE; then P1-LOCAL-SETUP's second half (the
+quickstart on CI to a landed commit) and M3's done-check.
 **Decided by Felix (20 October), decision 15, local first:** M3 the local server, M4 its dogfood
 on this repository, M5 hardening, M6 team mode and the deletion; the first local release lands
 through the host's single `Prepare` call (`docs/proposals/phase-1.md`, decision 15; `PLAN.md`
@@ -244,7 +244,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   any event), and `cut_replay` now keeps every event before the agent's release; the review
   reorder, the head-read answer and the replay page size are documented fake-only; `merge_next`
   is exhaustive; a timer-task panic fails the next call naming it. Fourteen plants each red.
-- [ ] **CLI-REVIEW-ORDER-TEST** — lane A, with the next CLI task. From CLI-LEASE-TESTS: the CLI
+- [ ] **CLI-REVIEW-ORDER-TEST** — lane A; dispatched 21 October 13:25 from `39feb6b` with
+  CORE-WORKER-COMMENT-SWEEP. From CLI-LEASE-TESTS: the CLI
   review-order test passes with its seam removed (the core replies `ReviewRequired` alone), so it
   pins nothing. Done: retired, or reworked to pin what the CLI does with `ReviewRequired`.
 - [x] **P1-LANDER-MERGE** (`70526c9`, #48) — lane B. `prepare` and `land` ported from
@@ -415,16 +416,18 @@ claims reconciled.
   (`src/shell.rs`) and the socket stays open; one over 256 KiB fails inside axum and the socket
   drops with no close frame. Neither is tested end to end. Done: an adapter test for each, and a
   decision whether the axum limit should answer with a close frame.
-- [ ] **CORE-WORKER-COMMENT-SWEEP** — lane A, with the next core task. Comments that still
+- [ ] **CORE-WORKER-COMMENT-SWEEP** — lane A; dispatched 21 October 13:25 from `39feb6b` with
+  CLI-REVIEW-ORDER-TEST. Comments that still
   describe the Worker or the Durable Object after P1-DROP-WORKER: `src/protocol.rs:1`,
   `src/coordinator.rs` (4, 520, 1780-1786, a live error string and its test near 2859),
   `src/merge.rs:1`, `src/trunk.rs:13`, `src/host/*`, `tessel-swarm/src/local.rs` (128, 177, 210,
   234), `tessel-swarm/src/on.rs:496`, `tessel-cli/src/daemon.rs` (669, 2269), `src/shell.rs` (29,
   46, 58, 134, 165, 198, 304, 477); `docs/reference/coordinator.md` "this part" wording,
-  `docs/how-tessel-works.md:241-243` "merge path tests" (now the test runner), the README's six
-  steps in the present tense. Also note: `keep_first`, `agents_to_withdraw`, `SummaryTally` and
-  the log-line helpers have no production caller (pinned by R13, R37, R40; the server should use
-  them), and the release profile's `opt-level = "s"` and `lto` came from the Worker starter.
+  `docs/reference/coordinator.md:32` ("nothing serves these routes until P1-SERVER merges"), the
+  README's six steps in the present tense. Also note: `keep_first`, `agents_to_withdraw`,
+  `SummaryTally` and the log-line helpers have no production caller (pinned by R13, R37, R40; the
+  server should use them), and the release profile's `opt-level = "s"` and `lto` came from the
+  Worker starter.
   Done: every line true of the tree, no behaviour change.
 - [x] **P1-IDENTITY** (`c2f00d2`, #76) — lane B. Ed25519 tokens `<payload>.<signature>` with
   `v`, `kid`, `aud`, `tenant`, `repo`, `agent`, `role` and `exp_ms`, the signature over the payload
@@ -439,24 +442,38 @@ claims reconciled.
   review mutants each red. Not verified: the real CLI against a server with `[identity]` (owed
   by P1-LOCAL-SETUP); the flip-any-byte proptest runs 24 of 256 cases. Key-file modes are Unix
   APIs, as the CLI and lander already use.
-- [ ] **P1-RUNNER** — lane B; dispatched 21 October 11:50 from `adcc7b6`. `tessel-runner`, its
-  own crate and binary: refuses to start unless `tessel-runner.toml` (0600, owned by the
-  effective user) names that user; takes one JSON request on stdin (the tree, the trunk's
-  `[[test]]` commands re-checked against the lander's grammar, a timeout) and answers one JSON
-  result convertible to the lander's `StepOutcome` (bounded output tails, the first failing test's
-  block quoted and bounded, a timeout that kills the process group); a fixed environment, no git,
-  no network, no sandbox (M5). P1-SERVER-LANDING spawns it or calls its library.
+- [x] **P1-RUNNER** (`39feb6b`, #79) — lane B. `tessel-runner`, its own crate and binary: refuses
+  to start unless `tessel-runner.toml` (a regular file opened without following links, owned by
+  the effective uid, mode 0600) names the effective user, resolved through `getpwuid_r`; takes one
+  JSON request on stdin (an absolute tree the user owns, the trunk's `[[test]]` commands re-checked
+  through the lander's `tessel.toml` parser, a timeout capped at a day) and answers one JSON
+  result convertible to the lander's `StepOutcome`: exit code, pass, timed out (only for the
+  runner's own kill), 256 KiB tails cut on a character boundary, the first failing test's block
+  from real cargo output bounded to 1,500 bytes. One deadline across the commands; at the timeout
+  the process group and then the leader are killed; a `setsid` grandchild can outlive it (the
+  no-sandbox limit, stated in the docs). Exit 0 ran, 2 refused, 3 not supervised. No git, no
+  network, no new dependencies. 1789 to 1843 tests; sixteen review mutants each red. Not verified:
+  root or another uid. The sandbox is RUNNER-SANDBOX (M5, with M4-SANDBOX-WORKSPACE).
+- [ ] **RUNNER-SANDBOX** — M5, with M4-SANDBOX-WORKSPACE. From the P1-RUNNER review: a command
+  that calls `setsid` escapes the runner's process-group kill and the output drain gives up on it
+  after 500 ms; the owner check of the config is reachable only as root. Done: the sandbox the
+  M4-SANDBOX-WORKSPACE row describes also bounds the runner's children, with a test.
 - [ ] **P1-SERVER-LANDING** — lane B, after P1-RUNNER; Felix reviews. The adapter half of
   HOST-MERGE-STANDIN, with HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES and
   SERVER-NOLANDER-MESSAGE.
-- [ ] **P1-LOCAL-SETUP** — lane A. First half dispatched 21 October 11:50 from `adcc7b6`:
-  `tessel init` against a local server (`--steward`, the `curl` transport and
-  `STEWARD_ADMIN_TOKEN` deleted; the token comes from the file or `TESSEL_TOKEN`, minted by
-  `tessel-server admin token`), reviewers in the server's repository config reaching
-  `HostConfig`, the real CLI against a server with `[identity]` (the test P1-IDENTITY left owed),
-  the skills and docs that taught `--steward` rewritten, and `docs/local-setup.md` up to
-  `tessel submit`. Second half, after P1-SERVER-LANDING: the quickstart followed on CI from a
-  clean checkout to a landed commit.
+- [ ] **P1-LOCAL-SETUP** — lane A. First half merged (`af595c5`, #80): `tessel init` against a
+  local server (`--steward`, the `curl` transport and `STEWARD_ADMIN_TOKEN` deleted; the token
+  comes from the file or `TESSEL_TOKEN`, and the no-token error names the `tessel-server admin
+  token` command), `[[repository]]` `reviewers` and `sensitive` validated at load and passed into
+  `HostConfig` (a configured reviewer approves a held submission through the server; a name not
+  configured is refused), the real CLI against an in-process server with `[identity]`
+  (`tessel-cli/tests/local_server.rs`; the token in no file but the 0600 config), the skills, README
+  and configuration docs rewritten, and `docs/local-setup.md` (59 lines, the server's keys outside
+  any checkout) walked by the lane and the reviewer; the page says what this build does after a
+  reviewer approves: the merge is refused and the claim reopens. 1789 to 1783 tests (15 steward
+  minting tests deleted, 9 added). Second half, after P1-SERVER-LANDING: the quickstart followed
+  on CI from a clean checkout to a landed commit, and the steward-as-merger wording in the CLI's
+  strings and the skills' merge-path lines rewritten.
 
 ## Carried over from the contest build
 
