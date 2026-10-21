@@ -665,8 +665,8 @@ impl Daemon {
     }
 
     /// Moves the local expiry only when a pong echoes the heartbeat, measured from when it was
-    /// written: the coordinator renewed no earlier than that. The runtime may answer pings itself,
-    /// so a pong proves delivery to the edge, not that the Durable Object persisted the renewal;
+    /// written: the coordinator renewed no earlier than that. The transport may answer pings
+    /// itself, so a pong proves delivery, not that the host persisted the renewal;
     /// a failed persist closes the socket, and the local expiry may then run ahead by at most one
     /// heartbeat interval.
     fn on_heartbeat_answered(&mut self, sent_ms: u64) {
@@ -2266,8 +2266,8 @@ pub(crate) async fn open_socket(config: &Config) -> Result<Socket, ConnectFailur
 
 /// Reads the whole event log on a short-lived second connection. `Watch { from_seq: 0 }`
 /// replays the log and then follows it live; the replay has no end of its own. So the read then
-/// sends `Hello`, which the coordinator handles after the replay is done (its Durable Object
-/// takes one message at a time while it reads storage; see `watch` in the Worker). Its `Welcome`
+/// sends `Hello`, which the coordinator handles after the replay is done (its host runs no other
+/// input while it reads storage; see the input gate in `src/host/mod.rs`). Its `Welcome`
 /// reply is sent before the events it caused, so the first event after the `Welcome` must be the
 /// `AgentConnected` that `Hello` logged: it comes after every event the replay held. Any other
 /// first event, a missing marker, a closed socket, `SNAPSHOT_LIMIT` or a gap in `seq` marks the

@@ -2,7 +2,7 @@
 //!
 //! Nothing here stores or sends: `apply` runs a step on the core and says what to store, and it
 //! drops the core whenever the core has moved on from storage and the step's result will not be
-//! stored (rule 5 of `src/runtime.rs`: the next call reloads).
+//! stored (the next call reloads).
 
 use crate::coordinator::{Coordinator as Core, Effect, HeadRead};
 use crate::host::HostConfig;

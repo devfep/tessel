@@ -10,7 +10,7 @@
 //! - A poke is a count, not a flag, so a poke that arrives while a read is awaiting the steward is
 //!   not lost: a read acknowledges only the pokes counted when it began (`head_synced`), and any
 //!   later poke leaves another read due.
-//! - The read is a compare-and-set. The Durable Object handles other events while it waits for the
+//! - The read is a compare-and-set. The host handles other inputs while it waits for the
 //!   steward, so `trunk_read` applies the answer only if no merge is in flight and `head` is still
 //!   what it was when the read began. Otherwise nothing changes and the read stays due, so the
 //!   next alarm reads again. A merge that is in flight is not waited for: its own landing sets

@@ -5,7 +5,7 @@
 //! - A `Notify` for an agent with no open socket is dropped. The core keeps the state that
 //!   matters (claims, queue); a reconnecting agent learns the rest from its next message.
 //! - Event keys are zero-padded so storage's key order is `seq` order.
-//! - Stored state and events are JSON strings, so their shape is serde's, not the JS bridge's.
+//! - Stored state and events are JSON strings, so their shape is serde's.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +15,8 @@ use crate::protocol::{AgentId, ClientMsg, ErrorCode, Event, RequestId, RunId, Se
 /// Lease length for every claim. A fixed value: nothing needs to tune it yet.
 pub const LEASE_MS: u64 = 30_000;
 
-/// The longest agent id a `Hello` may carry. A socket attachment holds at most 2 KiB, and the id
-/// is stored in it.
+/// The longest agent id a `Hello` may carry. The id is held in the socket's session and named in
+/// log lines.
 pub const MAX_AGENT_ID_BYTES: usize = 128;
 
 /// The longest text frame the shell parses. Larger frames are refused with `Malformed`.
@@ -26,12 +26,13 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// a client call may log.
 pub const SOFT_ENTRY_BYTES: usize = 1024 * 1024;
 
-/// The largest value stored in one entry. Durable Object storage rejects values over 2 MiB; the
+/// The largest value stored in one entry. It is set under the 2 MiB value limit of Durable Object
+/// storage, where the host first ran, and kept as the host's own bound for every store; the
 /// margin keeps the expiry that frees a repo from being rejected.
 pub const HARD_ENTRY_BYTES: usize = 2 * 1024 * 1024 - 64 * 1024;
 
-/// The largest integer a JavaScript number holds exactly. A socket attachment cannot store a
-/// larger `u64`, and no event will ever have a higher `seq`.
+/// The largest integer a JavaScript number holds exactly. The stored watch start is limited to
+/// it, and no event will ever have a higher `seq`.
 pub const MAX_SAFE_SEQ: u64 = (1 << 53) - 1;
 
 /// Storage key of the serialized core.
@@ -40,12 +41,12 @@ pub const STATE_KEY: &str = "core";
 /// Storage key prefix of the event log.
 pub const EVENT_PREFIX: &str = "ev:";
 
-/// What a socket remembers across hibernation, kept in its attachment.
+/// What the host remembers about one socket. Each change is reported as `Output::SetSession`; an
+/// adapter may keep it (the server keeps none).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
-    /// The agent the Worker verified at the upgrade, set before the first message. A `Hello` for
-    /// anyone else is refused. `None` (an attachment from before verification) refuses every
-    /// `Hello`.
+    /// The agent the adapter verified at the upgrade, set before the first message. A `Hello` for
+    /// anyone else is refused. `None` refuses every `Hello`.
     #[serde(default)]
     pub verified: Option<AgentId>,
     /// Set by the first `Hello` the core answered with `Welcome`.
@@ -55,8 +56,8 @@ pub struct Session {
     /// `None` means the socket is not watching.
     #[serde(default)]
     pub watch_from: Option<u64>,
-    /// Set when the Durable Object closed this socket itself. The runtime may still list a
-    /// closed socket as open, so a closed session shields no agent from a withdrawal.
+    /// Set when the host closed this socket itself. The adapter may still list a closed socket
+    /// as open, so a closed session shields no agent from a withdrawal.
     #[serde(default)]
     pub closed: bool,
 }
@@ -131,7 +132,7 @@ impl std::fmt::Display for LoadError {
     }
 }
 
-/// The one place the core's `Config` is assembled from the Worker's variables.
+/// The one place the core's `Config` is assembled from the host's settings.
 pub fn config_from_vars(run: Option<&str>, shadow: Option<&str>) -> Result<Config, LoadError> {
     let Some(run) = run.filter(|run| !run.is_empty()) else {
         return Err(LoadError::MissingRun);
@@ -162,7 +163,7 @@ pub fn parse_reviewers(reviewers: Option<&str>) -> Result<Vec<AgentId>, LoadErro
 
 /// The reviewers for a repo, failing closed: a bad `REVIEWERS` value is reported (the report never
 /// carries the value) and means nobody may review, so flagged work stays held (invariant 12). It
-/// must not stop the Durable Object from loading, which would stop every repo's leases and merges.
+/// must not stop the host from loading, which would stop the repo's leases and merges.
 pub fn reviewers_or_none(reviewers: Option<&str>, report: impl FnOnce(&LoadError)) -> Vec<AgentId> {
     parse_reviewers(reviewers).unwrap_or_else(|e| {
         report(&e);
@@ -195,7 +196,7 @@ pub fn parse_sensitive(sensitive: Option<&str>) -> Result<Vec<String>, LoadError
 
 /// The sensitive prefixes for a deployment, failing closed: a bad `SENSITIVE` value is reported
 /// (the report never carries the value) and holds every real submission, by using the empty prefix,
-/// which matches every path. It must not stop the Durable Object from loading.
+/// which matches every path. It must not stop the host from loading.
 pub fn sensitive_or_all(sensitive: Option<&str>, report: impl FnOnce(&LoadError)) -> Vec<String> {
     parse_sensitive(sensitive).unwrap_or_else(|e| {
         report(&e);
@@ -301,7 +302,7 @@ fn error_msg(code: ErrorCode, message: &str) -> ServerMsg {
 /// Decide what to do with `msg` on a socket in `session`.
 ///
 /// Before the socket is bound only `Hello` and `Watch` are served. A `Hello` must name the agent
-/// the Worker verified at the upgrade; any other is refused with `NotOwner` and the socket is
+/// the adapter verified at the upgrade; any other is refused with `NotOwner` and the socket is
 /// closed. On a bound socket a `Hello` is run as the bound agent.
 pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
     match msg {
@@ -346,7 +347,7 @@ pub fn decide(session: &Session, msg: &ClientMsg) -> Action {
     }
 }
 
-/// The stored watch start: `from_seq` limited to `MAX_SAFE_SEQ`, so the attachment can hold it.
+/// The stored watch start: `from_seq` limited to `MAX_SAFE_SEQ`.
 pub fn clamp_watch_from(from_seq: u64) -> u64 {
     from_seq.min(MAX_SAFE_SEQ)
 }
@@ -422,10 +423,11 @@ pub fn watcher_indexes(sessions: &[Session], seq: u64) -> Vec<usize> {
 /// The largest time a JavaScript `Date` can hold, in milliseconds since the epoch.
 pub const MAX_DATE_MS: f64 = 8.64e15;
 
-/// The absolute time the alarm should fire, in milliseconds since the epoch, or `None` to clear
-/// it. The core picks the earliest of a lease expiry, a merge dispatch and a verification. This is the one place
-/// the time is clamped: `setAlarm` refuses a time that is not after 0, so it is at least
-/// `now_ms + 1` (it fires at once), and at most the largest valid `Date`.
+/// The absolute time the wake should fire, in milliseconds since the epoch, or `None` to clear
+/// it. The core picks the earliest of a lease expiry, a merge dispatch and a verification. This is
+/// the one place the time is clamped: it is at least `now_ms + 1` (it fires at once), because the
+/// Durable Object alarm API this was written for refused a time that is not after 0, and at most
+/// the largest valid `Date`.
 pub fn alarm_at_ms(next_alarm_ms: Option<u64>, now_ms: u64) -> Option<f64> {
     let next = next_alarm_ms?.max(now_ms.saturating_add(1));
     Some((next as f64).min(MAX_DATE_MS))
@@ -474,7 +476,7 @@ pub fn after_page(page_len: usize, last_seq: Option<u64>) -> ReplayStep {
     }
 }
 
-/// What the Worker serves.
+/// What the server serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route<'a> {
     /// `/repo/<name>/ws`: the WebSocket upgrade.
@@ -811,7 +813,7 @@ pub fn agent_to_withdraw(
 }
 
 /// The agents whose queued request to withdraw when every socket in `closing` has gone away
-/// (the sockets the Durable Object closed itself, which may still be listed as open). `others`
+/// (the sockets the host closed itself, which the adapter may still list as open). `others`
 /// must exclude all of `closing`, so two dead sockets of one agent do not shield each other.
 /// Each agent appears once, in the order of `closing`.
 pub fn agents_to_withdraw(
@@ -831,7 +833,7 @@ pub fn agents_to_withdraw(
     agents
 }
 
-/// The agent a socket speaks for in logs: the one it said hello as, else the one the Worker
+/// The agent a socket speaks for in logs: the one it said hello as, else the one the adapter
 /// verified at the upgrade.
 pub fn session_agent(session: &Session) -> Option<&AgentId> {
     session.agent.as_ref().or(session.verified.as_ref())

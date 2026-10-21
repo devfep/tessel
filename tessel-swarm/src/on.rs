@@ -58,7 +58,7 @@ pub struct OnConfig {
     /// How often a skipped task may be denied before its agent gives up on it.
     pub max_denials: u32,
     /// Answer every submission held for review with an approval. On by default, for the local
-    /// target and the swarm coordinator, where it is the only reviewer.
+    /// coordinator, where it is the only reviewer.
     pub scripted_reviewer: bool,
     /// How an agent or the reviewer whose connection ends without being asked to reopens it.
     pub reconnect: Reconnect,
@@ -492,11 +492,11 @@ fn settled(results: Vec<TaskResult>, counts: &events::LogCounts) -> Vec<TaskResu
     results
 }
 
-/// Approves every submission held for review. It runs on the local target and on the swarm
-/// coordinator (live included), where it is the only reviewer. It ends when told to stop, so its
-/// errors surface. A connection that ends under it is reopened and the log is followed on from
-/// the last event it saw, so no held submission is missed and none is decided twice; if it cannot
-/// be reopened the error names the tries.
+/// Approves every submission held for review. It runs against the local coordinator, where it is
+/// the only reviewer. It ends when told to stop, so its errors surface. A connection that ends
+/// under it is reopened and the log is followed on from the last event it saw, so no held
+/// submission is missed and none is decided twice; if it cannot be reopened the error names the
+/// tries.
 async fn review_loop(ctx: Arc<Ctx>, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let token = ctx.endpoint.token_of(REVIEWER)?;
     let mut conn = Conn::open(&ctx.endpoint.ws_url, token)
