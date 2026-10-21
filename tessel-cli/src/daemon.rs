@@ -1484,7 +1484,7 @@ impl Daemon {
 
     /// The first of `Accepted` and `ReviewRequired` for a claim decides the submit reply; the
     /// second only reaches the inbox. The core sends `ReviewRequired` before `Accepted` and never
-    /// the other way round; the branch with no pending submit is reached through race promotion.
+    /// the other way round. On approval, `Accepted` finds no pending submit and clears the hold.
     fn on_accepted(&mut self, req: RequestId, claim: ClaimId, queue_position: u32) {
         let known = self.submits.get(&req.0).map(|pending| pending.claim);
         match known {
