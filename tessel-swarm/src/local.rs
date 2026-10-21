@@ -3,8 +3,8 @@
 //!
 //! `tessel-cli/tests/support/mod.rs` builds the same kind of fake for the CLI's tests, but it is
 //! test-only and tied to that crate's binary, so it cannot be linked from here. This one keeps
-//! the pattern (same `shell` functions, same core calls, replies before events as the Durable
-//! Object does) without the fault injection, except `Cutter`, which closes an agent's socket
+//! the pattern (same `shell` functions, same core calls, replies before events as the host
+//! does) without the fault injection, except `Cutter`, which closes an agent's socket
 //! from the coordinator's side. The steward differs on purpose: the CLI's fake
 //! always reports a merge, this one cherry-picks the submitted commit onto the trunk, runs the
 //! tests, and reports `Conflict` or `TestsFailed` when that is what happened.
@@ -47,7 +47,7 @@ use crate::endpoint::{Endpoint, Remote, Token};
 use crate::git::{self, Checks, Git};
 use crate::guard::ScratchRepo;
 
-/// The lease the local coordinator grants, the same as the swarm coordinator's.
+/// The lease the local coordinator grants.
 pub const LEASE_MS: u64 = 30_000;
 
 fn now_ms() -> u64 {
@@ -125,7 +125,7 @@ struct Hub {
 
 impl State {
     /// Sends `outbound`, then records and streams `events`: the reply first, then the events it
-    /// caused, as the Durable Object does.
+    /// caused, as the host does.
     fn flush(&mut self, origin: Option<u64>, events: Vec<Event>, outbound: Vec<Outbound>) {
         for item in outbound {
             match item {
@@ -174,7 +174,7 @@ impl State {
     }
 
     /// Ends every socket without a close frame and withdraws each agent's queued request at
-    /// once, as the Durable Object does when a socket closes. Returns how many sockets ended.
+    /// once, as the host does when a socket closes. Returns how many sockets ended.
     fn reset_sockets(&mut self) -> usize {
         let sockets = std::mem::take(&mut self.sockets);
         let mut agents: Vec<AgentId> = Vec::new();
@@ -207,7 +207,7 @@ pub struct LocalServer {
 #[derive(Clone)]
 pub struct LogReader(Arc<Hub>);
 
-/// Closes an agent's sockets from the coordinator's side, the way the Durable Object does when it
+/// Closes an agent's sockets from the coordinator's side, the way the host does when it
 /// closes a socket itself (a dispatch that failed, a send that failed): close code 1011, and the
 /// agent's queued request is not withdrawn, so a grant can still go to an agent nobody hears.
 #[derive(Clone)]
@@ -231,7 +231,7 @@ impl Cutter {
 
     /// Resets every socket at once, as the network does: no close frame, the connection just
     /// ends, for the agents, the reviewer and the watchers alike. Each agent's queued request is
-    /// withdrawn at once (logging `WaitWithdrawn`), as the Durable Object does when a socket
+    /// withdrawn at once (logging `WaitWithdrawn`), as the host does when a socket
     /// closes; claims stay under their lease. Returns how many sockets were reset.
     pub fn reset_all(&self) -> usize {
         lock(&self.0.state).reset_sockets()

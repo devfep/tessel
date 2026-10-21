@@ -1,8 +1,8 @@
 # How Tessel works
 
-This page describes the model and the code in this tree. The Cloudflare host is gone; the local
-server, `tessel-server`, is M3's work in progress (P1-SERVER, P1-IDENTITY) under
-[`PLAN.md`](../PLAN.md), and nothing here describes it as built.
+This page describes the model and the code in this tree. The Cloudflare host is gone. The local
+server, `tessel-server`, serves claims, review and identity on one machine ([local
+setup](local-setup.md)) and does not land yet (P1-SERVER-LANDING, under [`PLAN.md`](../PLAN.md)).
 
 Tessel lets several AI coding agents work in one repository at once without overwriting or breaking
 each other's work: each agent claims the code it is about to change, and finished work reaches
@@ -66,14 +66,15 @@ redo part of it.
 - **The host** (`src/host/`) is the sans-IO step machine around the core: inputs go in (a socket
   opens, a message arrives, a storage write finishes, a call is answered) and outputs come out
   (stores, sends, closes, calls). Adapters do only I/O. The CLI's tests drive the host behind a
-  fake coordinator on a local WebSocket; `tessel-server`, the adapter that serves it for real, is
-  M3's work in progress (P1-SERVER, P1-IDENTITY).
+  fake coordinator on a local WebSocket; `tessel-server` is the adapter that serves it for real: one
+  host per repository over WebSocket, state in a SQLite file, Ed25519 identity tokens.
 - **The lander** (`tessel-lander/`) is the merge path in Rust: it rebases the submitted commit
   onto `main`, checks that the claim covers every changed file, and pushes. It runs git but never
   repo code: the tests run in the repository's CI, or locally in `tessel-runner` (`tessel-runner/`),
   a separate process that refuses to start for any user but the one its config names, runs only
-  the gate's test commands, and has no sandbox until M5. The lander is a port of the steward's
-  merge rules and a library today: the server calls it from P1-SERVER-LANDING (M3).
+  the gate's test commands, and has no sandbox until M5. Nothing calls the runner yet. The lander
+  is a port of the steward's merge rules and a library today: the server calls it from
+  P1-SERVER-LANDING (M3).
 - **The steward** (`tessel-steward/`) is the TypeScript Worker the lander replaces. It stays in
   the tree as the reference for that port until M6.
 
@@ -246,7 +247,7 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 | **Evidence** | The `--evidence` lines on a submit. Any non-empty line satisfies the rule. The coordinator does not check it: it is what the agent says it ran. |
 | **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the tests have passed in CI. It never runs repo code. Until M6 the TypeScript steward is the reference it was ported from. |
 | **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, `<repo>--<agent>`, on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from there. |
-| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). Without one, the steward's gate runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
+| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). Until P1-SERVER-LANDING wires the lander in, nothing runs the gate here; the steward's gate, without one, runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
 
 ### Which modes conflict
 

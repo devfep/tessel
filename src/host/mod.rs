@@ -1,13 +1,13 @@
 //! The sans-IO host: what goes into the step machine and what comes out of it. Adapters do only
 //! I/O: they turn what happens (a socket opens, a commit finishes, a call is answered) into an
-//! `Input` and carry out each `Output`. `Host::step` is the step machine; it moves the call path
-//! and the socket table of `src/runtime.rs` (see `docs/reference/runtime-rules.md`). Frozen design:
+//! `Input` and carry out each `Output`. `Host::step` is the step machine; it holds the call path
+//! and the socket table of the deleted `src/runtime.rs`, whose rules
+//! `docs/reference/runtime-rules.md` lists with the test that pins each. Frozen design:
 //! `docs/proposals/real-use.md`, Architecture.
 //!
 //! The input gate. While a storage operation is outstanding (a `Load`, a `Commit` or a replay's
-//! `ReadEvents`) no other input runs: it is queued and applied once the operation is answered, as
-//! the Durable Object's input gate does (R42). A `Call` is not a storage operation: inputs run
-//! while one is outstanding, as they do while the steward is being called.
+//! `ReadEvents`) no other input runs: it is queued and applied once the operation is answered
+//! (R42). A `Call` is not a storage operation: inputs run while one is outstanding.
 //!
 //! The replay. A `Watch` reads the stored log a page at a time and holds the gate for all of it,
 //! so the repo stalls while a replay runs. See `replay.rs`.
@@ -160,7 +160,7 @@ pub enum Output {
 }
 
 /// The repo the host serves and the deployment settings it reads when it builds the core (the
-/// Worker's variables today). `run` and `shadow_enabled` matter only for a repo with nothing
+/// server's `[[repository]]` entry). `run` and `shadow_enabled` matter only for a repo with nothing
 /// stored; `reviewers`, `sensitive` and `protocol_range` are applied on every load.
 #[derive(Debug, Clone, Default)]
 pub struct HostConfig {

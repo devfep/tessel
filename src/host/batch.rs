@@ -5,7 +5,7 @@
 //! `Pending`. `Committed` is built only by `Pending::commit`, and `Host::release` takes a
 //! `Committed`, so nothing a batch held reaches an `Output` without that batch stored (C1). A
 //! failed commit drops the `Pending`. A reply that persisted nothing, such as the refusal of a
-//! call over the soft limit, is sent at once, as `src/runtime.rs` does.
+//! call over the soft limit, is sent at once.
 
 use crate::host::call::Call;
 use crate::host::{BatchId, Job, SocketId};

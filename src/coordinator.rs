@@ -1,7 +1,7 @@
 //! Pure coordinator core: a deterministic, in-memory state machine for claims.
 //!
-//! No clock, no randomness, no `worker` dependency: the caller passes `now_ms` and delivers the
-//! returned `Effect`s, so the whole thing is tested natively. The Durable Object wraps it.
+//! No clock and no randomness: the caller passes `now_ms` and delivers the returned `Effect`s, so
+//! the whole thing is tested natively. The host (`src/host`) wraps it.
 //!
 //! Decisions made here, beyond the protocol invariants:
 //! - An agent's own claims never conflict with each other.
@@ -324,12 +324,12 @@ impl Blocked {
 struct CoordinatorState {
     config: Config,
     /// Agents who may decide a flagged submission (invariant 12). Empty means nobody may, so
-    /// flagged work is held. A deployment setting: the shell sets it on every load.
+    /// flagged work is held. A deployment setting: the host sets it on every load.
     #[serde(default)]
     reviewers: Vec<AgentId>,
-    /// Path prefixes whose edits are held for review (`review_reasons`). Per deployment, not per
-    /// repo: every repo this Worker serves shares one list. A deployment setting: the shell sets it
-    /// on every load, so a stored state follows the variable.
+    /// Path prefixes whose edits are held for review (`review_reasons`). Per repository: the
+    /// server reads it from the repository's entry. A deployment setting: the host sets it on
+    /// every load, so a stored state follows the setting.
     #[serde(default)]
     sensitive: Vec<String>,
     /// Main's head as the coordinator knows it. The steward will own this later.
@@ -434,8 +434,9 @@ impl From<CoordinatorState> for Coordinator {
 }
 
 impl Coordinator {
-    /// Replace the agents who may review (invariant 12). They come from the Worker's `REVIEWERS`
-    /// variable and are applied on every load, so a stored state follows the deployment.
+    /// Replace the agents who may review (invariant 12). They come from the host's `reviewers`
+    /// setting (`HostConfig`) and are applied on every load, so a stored state follows the
+    /// deployment.
     pub fn set_reviewers(&mut self, reviewers: Vec<AgentId>) {
         self.state.reviewers = reviewers;
     }
@@ -454,9 +455,9 @@ impl Coordinator {
         self.state.verify_slot_after = merges.max(1);
     }
 
-    /// Replace the path prefixes that hold a submission for review. They come from the Worker's
-    /// `SENSITIVE` variable and are applied on every load. A directory entry ends in `/`, so
-    /// `src/auth/` does not also match `src/authz.rs`.
+    /// Replace the path prefixes that hold a submission for review. They come from the host's
+    /// `sensitive` setting (`HostConfig`) and are applied on every load. A directory entry ends in
+    /// `/`, so `src/auth/` does not also match `src/authz.rs`.
     pub fn set_sensitive(&mut self, sensitive: Vec<String>) {
         self.state.sensitive = sensitive;
     }
@@ -528,7 +529,7 @@ impl Coordinator {
     ///
     /// Each expiry removes the claim and its locks, which retires its fence, logs
     /// `ClaimReleased { LeaseExpired }` and notifies the owner. Waiters that the freed scopes
-    /// unblock are then granted. The Durable Object calls this from its alarm.
+    /// unblock are then granted. The host calls this from its wake.
     ///
     /// `now_ms` is clamped to the latest time the core has seen, as in `handle`.
     pub fn expire(&mut self, now_ms: u64) -> Vec<Effect> {
@@ -1789,13 +1790,13 @@ fn error(req: Option<RequestId>, code: ErrorCode, message: impl Into<String>) ->
     })
 }
 
-/// `Watch` is served by the Durable Object shell, which replays the stored log; the core keeps no
-/// events, so a `Watch` that reaches it is a shell bug.
+/// `Watch` is served by the host, which replays the stored log; the core keeps no events, so a
+/// `Watch` that reaches it is a host bug.
 fn watch_not_served() -> Vec<Effect> {
     vec![error(
         None,
         ErrorCode::Malformed,
-        "watch is served by the Durable Object shell and never reaches the core",
+        "watch is served by the host and never reaches the core",
     )]
 }
 
@@ -2869,10 +2870,7 @@ mod tests {
             panic!("expected Error for watch");
         };
         assert_eq!(*code, ErrorCode::Malformed);
-        assert!(
-            message.contains("served by the Durable Object shell"),
-            "{message}"
-        );
+        assert!(message.contains("served by the host"), "{message}");
         assert!(logged(&effects).is_empty());
         assert_eq!(state(&c), before);
     }

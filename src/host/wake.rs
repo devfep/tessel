@@ -1,19 +1,19 @@
 //! The wake (R20 to R22, R24, R25, R27, R41, and the trunk poke, R21).
 //!
 //! A wake runs expiry, merge recovery, verification recovery, one merge, one verification and the
-//! head read, then sets the next wake, each step its own batch. The Durable Object awaits the
-//! steward inside the alarm, so the steps after a call run only once it is answered. The host
-//! keeps that: the wake issues its call and suspends, and resumes on `Replied` or `CallLost`.
+//! head read, then sets the next wake, each step its own batch. The steps after a call run only
+//! once it is answered: the wake issues its call and suspends, and resumes on `Replied` or
+//! `CallLost`.
 //!
-//! Cloudflare runs no second alarm while one is in progress, so nothing wakes during an awaited
-//! call but the watchdog. A `Wake` that arrives while a call is out therefore sets the watchdog
-//! and does nothing else: it expires no lease (R28 does, on a client message) and asks the core
-//! for no wake, which would be now while a head read or an overdue lease is due. What the
-//! runtime sets while it waits: for a merge, the wake of the marker's batch with the merge
-//! counted (the earlier of the next lease expiry and the watchdog); for a verification, the same
-//! with the verification counted and the head read; for a head read, whatever the step before
-//! it set. None of them fires before the call ends. The host sets the watchdog in all three
-//! cases, so that one wake is always pending, and the resumed wake sets the next one as usual.
+//! The server's timer can fire while a call is out, since every committed batch resets the wake.
+//! A `Wake` that arrives then sets the watchdog and does nothing else: it expires no lease (R28
+//! does, on a client message) and asks the core for no wake, which would be now while a head read
+//! or an overdue lease is due. What the deleted Cloudflare runtime set while it waited: for a
+//! merge, the wake of the marker's batch with the merge counted (the earlier of the next lease
+//! expiry and the watchdog); for a verification, the same with the verification counted and the
+//! head read; for a head read, whatever the step before it set. On Cloudflare none of them fired
+//! before the call ended. The host sets the watchdog in all three cases, so that one wake is
+//! always pending, and the resumed wake sets the next one as usual.
 
 use crate::host::calls;
 use crate::host::core_slot::{ApplyError, Prepared, Waits};
@@ -21,8 +21,8 @@ use crate::host::{wake_at_ms, Host, Job, Output};
 use crate::merge::MERGE_WATCHDOG_MS;
 use crate::shell::{self, PokeReply, Work};
 
-/// How long after a failed wake the next one is set: the first retry delay of a Durable Object
-/// alarm that returned an error (R41, C9).
+/// How long after a failed wake the next one is set: the first retry delay Cloudflare gave a
+/// Durable Object alarm that returned an error (R41, C9), kept as the host's own.
 pub const RETRY_MS: u64 = 2_000;
 
 /// A step of the wake, in the order they run.
@@ -194,7 +194,7 @@ impl Host {
     }
 
     /// A step of the wake failed and the core has been dropped: the wake ends, and the next one
-    /// is set after a delay, as the runtime retries an alarm that returned an error (R41).
+    /// is set after `RETRY_MS` (R41).
     pub(super) fn wake_failed(&mut self, out: &mut Vec<Output>) {
         self.waking = false;
         out.push(Output::SetWake {

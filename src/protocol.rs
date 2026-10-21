@@ -1,5 +1,6 @@
-//! Tessel claim protocol between the agent CLI and the per-repo coordinator (Durable Object).
-//! Transport: JSON over WebSocket. Shared crate, compiled natively (CLI) and to wasm (Worker).
+//! Tessel claim protocol between the agent CLI and the per-repo coordinator.
+//! Transport: JSON over WebSocket. Shared crate, compiled natively into the CLI, the server and
+//! the lander.
 //!
 //! Coordinator invariants:
 //! 1. Claims are atomic: every scope granted, or none.

@@ -35,7 +35,7 @@ impl fmt::Debug for Token {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// `ws://` or `wss://` base URL of the coordinator Worker, without a trailing slash.
+    /// `ws://` or `wss://` base URL of the coordinator server, without a trailing slash.
     pub coordinator: String,
     pub repo: String,
     pub agent: String,

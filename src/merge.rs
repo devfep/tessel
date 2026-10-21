@@ -1,5 +1,5 @@
-//! What the coordinator asks of the steward and how it reads the answer. Pure: the Durable Object
-//! shell makes the call, this module decides what a response means.
+//! What the coordinator asks of the steward and how it reads the answer. Pure: the host makes the
+//! call, this module decides what a response means.
 //!
 //! The steward's `MergeOutcome` (tessel-steward/src/merge-types.ts) is the source of the shapes
 //! below. Free text in it (conflict file names, test output) is untrusted. Only counts and codes
@@ -24,9 +24,10 @@ pub const MAX_INFRA_RETRIES: u32 = 3;
 /// The wait before the first infrastructure retry. Each further retry waits three times longer.
 pub const INFRA_BACKOFF_BASE_MS: u64 = 10_000;
 
-/// How long the coordinator waits for the steward. It stays under the 15-minute wall-clock limit
-/// of an alarm. A merge that outlives it is retried: the steward answers `already_merged` if it
-/// did land.
+/// How long the coordinator waits for the steward. It was chosen to stay under the 15-minute
+/// wall-clock limit of a Durable Object alarm, where the coordinator first ran; nothing in this
+/// tree enforces that limit. A merge that outlives it is retried: the steward answers
+/// `already_merged` if it did land.
 ///
 /// The steward's step timeouts are one budget whose worst case, plus a margin for container start
 /// and teardown, stays under this value (`tessel-steward/src/step-budget.ts`; a steward test reads

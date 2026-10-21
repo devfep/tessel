@@ -134,8 +134,9 @@ argv = ["pnpm", "test"]
 ## Host settings
 
 The host reads four settings when it builds the core (`HostConfig`, `src/host/mod.rs`). They keep
-the names of the Worker's old variables. Whatever serves the host supplies them; no file in this
-tree does yet.
+the names of the Worker's old variables. `tessel-server` supplies `run`, `reviewers` and
+`sensitive` from each [`[[repository]]`](#server-tessel-server); it has no key for
+`shadow_enabled`, so it never enables shadow claims.
 
 | Name | `HostConfig` field | If unset | Read | Effect |
 |---|---|---|---|---|
@@ -225,7 +226,8 @@ agents only. `trunk-moved` admits the `lander` only.
 
 `tessel-runner [--config <file>]` runs a repository's test commands for one trusted user on their
 own machine. It reads one request as JSON on standard input and writes one result as JSON on
-standard output; the server starts one process per run, or calls the library. It runs no git and
+standard output; nothing calls it yet (P1-SERVER-LANDING will start one process per run or call
+the library). It runs no git and
 opens no network connection. The configuration file is `tessel-runner.toml` in the working
 directory unless `--config` names another. An unknown key makes it invalid.
 
@@ -407,9 +409,10 @@ What a held mode covers when submitting (`protocol.rs:196-210`): every mode cove
 | `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork. |
 | `--transcript <file>` | none | A session transcript. Redacted, at most 4 MiB, stored on the local branch `tessel/transcript-<claim>`; push that branch to your fork (`tessel-cli/src/transcript.rs`). |
 
-Push first: `git push <your fork> HEAD:main`. The steward fetches only the fork's default branch
-and needs the commit reachable from it (`tessel-steward/src/merge-commands.ts:55-62`,
-`merge-steps.ts:96-110,234`). The fork is `<repo>--<agent>` (`src/merge.rs:85`).
+Push first: `git push <your fork> HEAD:main`. The lander (nothing lands until P1-SERVER-LANDING;
+the steward before it) fetches only the fork's default branch and needs the commit reachable from
+it (`tessel-steward/src/merge-commands.ts:55-62`, `merge-steps.ts:96-110,234`). The fork is
+`<repo>--<agent>` (`src/merge.rs:85`).
 
 ### `tessel review <claim> --approve | --reject [--note "<reason>"]`
 
