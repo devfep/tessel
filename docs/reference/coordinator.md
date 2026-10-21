@@ -2,7 +2,7 @@
 
 This describes the coordinator as it exists in this tree: the claim protocol, the core that decides
 it, the host that runs the core and `tessel-server`, which serves the host. The Cloudflare Worker
-that used to serve it is deleted. The server does not land yet (P1-SERVER-LANDING). Read
+that used to serve it is deleted. The server lands for a repository that names a `remote`. Read
 [`PLAN.md`](../../PLAN.md) for the plan.
 
 The coordinator speaks the claim protocol (`src/protocol.rs`) with each agent's `tessel` daemon

@@ -10,15 +10,15 @@ and the claim is active again. A submission that touches a `sensitive` path wait
 first. The runner is not sandboxed until M5: a trunk's test command runs as you and can write
 to a path `remote`, so land only a repository whose tests you trust. Build with `cargo build -p
 tessel-server -p tessel-cli` and put `target/debug` on your `PATH`. Run the blocks below in order
-from one empty directory; `<server dir>` and `<remote>` are paths outside any checkout. CI runs
-this page as written (`tessel-server/ci/quickstart.sh`).
+from one empty directory; `<server dir>` and `<remote>` are absolute paths outside any checkout.
+CI runs this page as written (`tessel-server/ci/quickstart.sh`).
 
 ## The remote and the server
 
 A bare repository stands in for your remote; its trunk holds the gate and a crate to test. The
 server directory holds the private signing key and the runner's configuration (mode 0600, naming
-your user). Relative paths in `tessel-server.toml` read from it, and [every
-key](configuration.md#server-tessel-server) is documented. End the server with `kill %1`.
+your user). Relative paths in `tessel-server.toml` resolve from the directory the server runs in.
+[Every key](configuration.md#server-tessel-server) is documented. End the server with `kill %1`.
 
 ```
 git init --quiet --bare --initial-branch=main <remote>
