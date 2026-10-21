@@ -54,9 +54,17 @@ const RESERVED_SERVICES: [&str; 3] = [LANDER, "runner", "server"];
 
 const BEARER_PREFIX: &str = "Bearer ";
 
-/// Whether `name` is one of the reserved service names.
+/// Whether `name` is exactly one of the reserved service names.
 pub fn is_reserved_service(name: &str) -> bool {
     RESERVED_SERVICES.contains(&name)
+}
+
+/// Whether `name` equals a reserved service name ignoring case. No agent may have such a name,
+/// so `Lander` is refused like `lander`.
+pub fn is_reserved_lookalike(name: &str) -> bool {
+    RESERVED_SERVICES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
 }
 
 /// What a token's holder is: an agent working in a repository, or one of the server's services.
@@ -146,10 +154,11 @@ impl Claims {
         if !is_agent_id(&self.agent) {
             return Err(refuse("token names an invalid agent"));
         }
-        match (self.role, is_reserved_service(&self.agent)) {
-            (Role::Agent, false) | (Role::Service, true) => Ok(()),
-            (Role::Agent, true) => Err(refuse("an agent token names a reserved service")),
-            (Role::Service, false) => Err(refuse("a service token names no reserved service")),
+        let exact = is_reserved_service(&self.agent);
+        match (self.role, exact, is_reserved_lookalike(&self.agent)) {
+            (Role::Agent, _, false) | (Role::Service, true, _) => Ok(()),
+            (Role::Agent, _, true) => Err(refuse("an agent token names a reserved service")),
+            (Role::Service, false, _) => Err(refuse("a service token names no reserved service")),
         }
     }
 }
@@ -260,14 +269,18 @@ pub fn mint(
     if !is_agent_id(agent) {
         return Err(MintError::Agent);
     }
-    match (role, is_reserved_service(agent)) {
-        (Role::Agent, false) | (Role::Service, true) => {}
-        (Role::Agent, true) => {
+    match (
+        role,
+        is_reserved_service(agent),
+        is_reserved_lookalike(agent),
+    ) {
+        (Role::Agent, _, false) | (Role::Service, true, _) => {}
+        (Role::Agent, _, true) => {
             return Err(MintError::ReservedAgent {
                 name: agent.to_string(),
             })
         }
-        (Role::Service, false) => return Err(MintError::NotAService),
+        (Role::Service, false, _) => return Err(MintError::NotAService),
     }
     if ttl_ms == 0 {
         return Err(MintError::NoLifetime);
@@ -654,6 +667,40 @@ mod tests {
     }
 
     #[test]
+    fn a_name_equal_to_a_reserved_one_ignoring_case_is_refused_when_minted_and_when_checked() {
+        for name in ["Lander", "LANDER", "Runner", "SERVER"] {
+            let error = mint(&key(1), &request(name, Role::Agent, 1), NOW).unwrap_err();
+            assert!(matches!(error, MintError::ReservedAgent { .. }), "{name}");
+            let error = mint(&key(1), &request(name, Role::Service, 1), NOW).unwrap_err();
+            assert!(matches!(error, MintError::NotAService), "{name}");
+            for role in [Role::Agent, Role::Service] {
+                let mut forged = claims(name, EXP);
+                forged.role = role;
+                assert!(check(&signed(&key(1), &forged)).is_err(), "{name} {role:?}");
+            }
+        }
+        assert!(check(&signed(&key(1), &claims("lander2", EXP))).is_ok());
+    }
+
+    #[test]
+    fn a_token_signed_for_the_identity_key_is_refused_by_the_strict_check() {
+        let mut identity_point = [0_u8; 32];
+        identity_point[0] = 1;
+        let weak = VerifyingKey::from_bytes(&identity_point).unwrap();
+        let verifier = Ed25519Verifier {
+            audience: AUD.to_string(),
+            keys: BTreeMap::from([("k1".to_string(), weak)]),
+        };
+        let json = serde_json::to_vec(&claims("agent-1", EXP)).unwrap();
+        let payload = BASE64URL_NOPAD.encode(&json);
+        let mut signature = identity_point.to_vec();
+        signature.extend([0_u8; 32]);
+        let forged = format!("{payload}.{}", BASE64URL_NOPAD.encode(&signature));
+        let got = verifier.verify_at(&forged, &id(), NOW).unwrap_err().reason;
+        assert_eq!(got, "token signature is not valid");
+    }
+
+    #[test]
     fn two_kids_in_the_directory_verify_both_and_a_removed_one_is_refused_on_the_next_load() {
         let dir = tempfile::tempdir().unwrap();
         keys::generate(dir.path(), "old").unwrap();
@@ -687,7 +734,7 @@ mod tests {
             agent in "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
             exp_ms in 1_u64..(1 << 53),
         ) {
-            prop_assume!(!is_reserved_service(&agent));
+            prop_assume!(!is_reserved_lookalike(&agent));
             let token = signed(&key(1), &claims(&agent, exp_ms));
             let got = verifier(&[("k1", 1)]).verify_at(&token, &id(), exp_ms - 1);
             prop_assert_eq!(got, Ok(AgentId(agent)));
@@ -702,7 +749,7 @@ mod tests {
         fn flipping_any_one_byte_of_a_token_fails(
             agent in "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
         ) {
-            prop_assume!(!is_reserved_service(&agent));
+            prop_assume!(!is_reserved_lookalike(&agent));
             let token = signed(&key(1), &claims(&agent, EXP));
             for index in 0..token.len() {
                 let mut bytes = token.clone().into_bytes();

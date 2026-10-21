@@ -199,7 +199,7 @@ base64url, without padding, of the JSON `{"v":1,"kid":..,"aud":..,"tenant":..,"r
 "agent":..,"role":"agent"|"service","exp_ms":..}`. The signature is Ed25519 over the payload text
 as sent, made with the secret key of `kid`. The server checks, in this order, the size (at most
 1 KiB), the shape, the version, that `kid` is known, the signature, `aud`, `tenant`, `repo`, the
-agent name and `exp_ms`. Every refusal is a 401 with the same body; the reason is logged and
+agent name, the role and `exp_ms`. Every refusal is a 401 with the same body; the reason is logged and
 never carries the token.
 
 The key directory holds `<kid>.key`, the secret seed, written with mode 0600, and `<kid>.pub`. A

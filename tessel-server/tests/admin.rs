@@ -110,12 +110,9 @@ fn admin_token_prints_only_the_token() -> TestResult {
         !token.is_empty() && !token.contains(char::is_whitespace),
         "one token and nothing else: {stdout:?}"
     );
-    assert!(
-        !text(&minted.stderr).contains(token),
-        "the token is never logged"
-    );
+    assert_eq!(text(&minted.stderr), "", "a successful mint logs nothing");
     let seed = std::fs::read_to_string(dir.path().join("keys/k1.key"))?;
-    assert!(!stdout.contains(seed.trim()) && !text(&minted.stderr).contains(seed.trim()));
+    assert!(!stdout.contains(seed.trim()));
     let verifier = Ed25519Verifier::load(&dir.path().join("keys"), AUD)?;
     let repo = RepoId::new("acme", "demo")?;
     let agent = verifier.verify_at(token, &repo, identity::now_ms());

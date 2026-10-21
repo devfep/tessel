@@ -48,6 +48,10 @@ pub struct Refusal {
 
 /// The one port the routes need for identity: from the token a request presented, for the
 /// repository it asks for, to the agent it was issued to or a refusal.
+///
+/// The routes decide who they admit by the name returned: `lander`, `runner` and `server` are
+/// service names, and `ws` and `summary` refuse them. An implementation must therefore return
+/// a reserved name only for a token whose role is `service`, and never for an agent token.
 pub trait Verifier: Send + Sync + 'static {
     fn verify(&self, token: &str, repo: &RepoId) -> Result<AgentId, Refusal>;
 }

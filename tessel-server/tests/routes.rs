@@ -409,15 +409,7 @@ async fn adapter_a_trunk_poke_from_any_agent_but_the_lander_is_refused() -> Test
     let keys = key_dir(dir.path(), "keys", &["k1"])?;
     let server = start(dir.path(), &keys).await?;
     let path = format!("{DEMO}/trunk-moved");
-    let others = [
-        "a1",
-        "dashboard",
-        "Lander",
-        "lander2",
-        "steward",
-        "runner",
-        "server",
-    ];
+    let others = ["a1", "dashboard", "lander2", "steward", "runner", "server"];
     for who in others {
         let token = token_for(&keys, "demo", who)?;
         let reply = answer(server.local_addr(), "POST", &path, Some(&token)).await?;
@@ -648,6 +640,9 @@ async fn adapter_a_reserved_name_is_never_an_agent() -> TestResult {
         ("agent", "lander"),
         ("agent", "runner"),
         ("agent", "server"),
+        ("agent", "Lander"),
+        ("agent", "RUNNER"),
+        ("service", "Lander"),
         ("service", "a1"),
     ] {
         let token = forge(&keys, "k1", &claims_json(role, name))?;

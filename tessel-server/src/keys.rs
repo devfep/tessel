@@ -171,6 +171,12 @@ pub fn load_public_keys(dir: &Path) -> Result<BTreeMap<String, VerifyingKey>, Ke
             path: path.clone(),
             reason: "not an Ed25519 public key",
         })?;
+        if key.is_weak() {
+            return Err(KeyError::Format {
+                path,
+                reason: "a weak public key, which verifies forged signatures",
+            });
+        }
         keys.insert(kid.to_string(), key);
     }
     if keys.is_empty() {
@@ -262,6 +268,18 @@ mod tests {
             assert!(error.to_string().contains(name), "{name}: {error}");
             assert!(!error.to_string().contains(text) || text.is_empty());
         }
+    }
+
+    #[test]
+    fn a_weak_public_key_is_refused_at_load_naming_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut identity_point = [0_u8; 32];
+        identity_point[0] = 1;
+        let text = BASE64URL_NOPAD.encode(&identity_point);
+        std::fs::write(dir.path().join("weak.pub"), text).unwrap();
+        let error = load_public_keys(dir.path()).unwrap_err();
+        assert!(matches!(error, KeyError::Format { .. }), "{error}");
+        assert!(error.to_string().contains("weak.pub"), "{error}");
     }
 
     #[test]
