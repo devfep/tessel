@@ -32,7 +32,7 @@ use crate::id::RepoId;
 pub const STATE_VERSION: u32 = 1;
 
 /// The lock file in the store directory.
-pub const LOCK_FILE: &str = "tessel-server.lock";
+const LOCK_FILE: &str = "tessel-server.lock";
 
 /// How long a statement waits for a lock held by another connection of this process.
 const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -137,10 +137,6 @@ impl StoreDir {
             root: root.to_path_buf(),
             _lock: lock,
         })
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.root
     }
 
     /// The store file of `id`.

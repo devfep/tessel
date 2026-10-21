@@ -253,3 +253,29 @@ fn repositories_of_one_directory_get_files_of_their_own() -> TestResult {
     assert_ne!(stores.repo_file(&a), stores.repo_file(&b));
     Ok(())
 }
+
+/// The tables, indexes and their SQL, in a fixed order.
+fn schema_of(file: &Path) -> Result<Vec<(String, String, String)>, rusqlite::Error> {
+    let conn =
+        rusqlite::Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut read = conn
+        .prepare("SELECT type, name, coalesce(sql, '') FROM sqlite_master ORDER BY type, name")?;
+    let rows = read.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    rows.collect()
+}
+
+#[test]
+fn a_fresh_store_has_the_schema_of_the_newest_fixture() -> TestResult {
+    let (newest, _) = FIXTURES.last().ok_or("no fixture")?;
+    let dir = tempfile::tempdir()?;
+    let fresh = dir.path().join("fresh.sqlite");
+    drop(Store::open(&fresh)?);
+    let frozen = dir.path().join(newest);
+    std::fs::copy(fixture_dir().join(newest), &frozen)?;
+    assert_eq!(
+        schema_of(&fresh)?,
+        schema_of(&frozen)?,
+        "the schema changed without a new state version and a new fixture"
+    );
+    Ok(())
+}
