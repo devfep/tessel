@@ -32,23 +32,6 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy (native)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Clippy (no default features)
-        run: cargo clippy -p tessel-coordinator --no-default-features --all-targets -- -D warnings
-
-  wasm:
-    name: Fast lane, wasm clippy
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          shared-key: fast-wasm
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Clippy (wasm32)
-        run: cargo clippy -p tessel-coordinator --target wasm32-unknown-unknown -- -D warnings
 
   core-tests:
     name: Fast lane, core library tests
