@@ -4,7 +4,8 @@
 # - the table has rows, each with a known status (now, after move, dropped) and what that
 #   status needs: a "now" row names tests, an "after move" row names a host or adapter test, a
 #   "dropped" row gives a reason;
-# - every test a "now" row names is in `cargo test -p tessel-coordinator -p tessel-server -- --list`;
+# - every test a "now" row names is in the listing of `cargo test -p tessel-coordinator
+#   -p tessel-server -- --list`;
 # - every `fn` of src/runtime.rs (while that file exists) is in the Functions column of a row.
 #
 # Usage: scripts/ci/check-named-tests.sh [rules-file]
@@ -53,7 +54,7 @@ done < <(grep -E '^[[:space:]]*\|' "$rules" || true)
 listed=$(cd "$root" && cargo test -p tessel-coordinator -p tessel-server -- --list 2>&1 |
   sed -n 's/^\(.*\): test$/\1/p')
 [[ -n $listed ]] || {
-  echo "check-named-tests: 'cargo test -p tessel-coordinator -p tessel-server -- --list' listed no tests" >&2
+  echo "check-named-tests: the test listing of tessel-coordinator and tessel-server is empty" >&2
   exit 1
 }
 

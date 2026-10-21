@@ -3,7 +3,7 @@ name = "tessel-server"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "The Tessel coordinator server: one host per repository on SQLite, served over WebSocket"
+description = "The Tessel coordinator server: one host per repository, on SQLite"
 
 [lib]
 name = "tessel_server"
