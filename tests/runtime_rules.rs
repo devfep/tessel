@@ -435,13 +435,13 @@ fn r26_a_failed_or_unknown_steward_answer_is_service_unavailable_and_a_4xx_is_a_
     assert_eq!(
         MergeOutcome::from_response(404, landed),
         MergeOutcome::Refused {
-            kind: RuleKind::Other
+            kind: RuleKind::ForkMissing
         }
     );
     assert_eq!(
         MergeOutcome::from_response(499, ""),
         MergeOutcome::Refused {
-            kind: RuleKind::Other
+            kind: RuleKind::ForkMissing
         }
     );
 

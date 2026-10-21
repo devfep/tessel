@@ -874,6 +874,29 @@ mod tests {
         assert_eq!(queued.main, CommitId(MAIN2.into()));
     }
 
+    #[test]
+    fn a_prepared_answer_at_main_after_a_lost_answer_verifies_against_the_dispatch_main() {
+        use crate::host::call::CallAnswer;
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        c.begin_merge(due).expect("the retry is dispatched");
+        let at_main = CallAnswer::Prepared {
+            base: CommitId(MAIN2.into()),
+            head: CommitId(MAIN2.into()),
+        };
+        let outcome = crate::host::merge_outcome_of(&at_main);
+        c.merge_outcome(c.merge_flight_id(challenger), &outcome, due);
+
+        assert_eq!(pending(&c), 1, "the assumption is verified");
+        let queued = &c.state.verifications[0];
+        assert_eq!(
+            queued.before,
+            CommitId(MAIN.into()),
+            "against the dispatch main"
+        );
+        assert_eq!(queued.main, CommitId(MAIN2.into()));
+    }
+
     /// The trunk head moves to `head` while no merge is in flight, as a head read applies it.
     fn trunk_moves_to(c: &mut Coordinator, head: &str, now: u64) {
         c.trunk_moved(now);
@@ -2897,6 +2920,7 @@ mod tests {
         c.begin_merge(NOW).expect("a merge is due");
         let conflict = MergeOutcome::Conflict {
             files: vec!["src/a.rs".into()],
+            total: None,
         };
 
         let effects = c.merge_outcome(c.merge_flight_id(blocker), &conflict, NOW);

@@ -124,6 +124,7 @@ impl Answer {
             },
             Answer::Conflict => MergeOutcome::Conflict {
                 files: vec!["a.rs".into()],
+                total: None,
             },
             Answer::TestsFailed => MergeOutcome::TestsFailed {
                 result: StepExit {

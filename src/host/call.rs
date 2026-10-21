@@ -107,6 +107,9 @@ pub enum Refusal {
     /// Replaying the commit onto main stopped with these files unmerged.
     Conflict {
         files: Vec<String>,
+        /// How many files conflicted, when `files` was cut. Absent: `files` is all of them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
     },
     /// The rebased commit changes `total` files the claim does not cover (invariant 11).
     Uncovered {
@@ -263,7 +266,11 @@ mod tests {
 
     fn refusal() -> impl Strategy<Value = Refusal> {
         prop_oneof![
-            prop::collection::vec(".{0,12}", 0..3).prop_map(|files| Refusal::Conflict { files }),
+            (
+                prop::collection::vec(".{0,12}", 0..3),
+                prop::option::of(any::<u64>())
+            )
+                .prop_map(|(files, total)| Refusal::Conflict { files, total }),
             any::<u64>().prop_map(|total| Refusal::Uncovered { total }),
             Just(Refusal::GateChanged),
             (any::<i64>(), ".{0,40}", ".{0,40}").prop_map(|(exit_code, stdout, stderr)| {

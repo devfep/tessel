@@ -233,12 +233,13 @@ async fn a_conflict_is_refused_with_at_most_fifty_quoted_names() -> TestResult {
     let answer = prepare(&landing, &commit, whole_repo()).await;
 
     let CallAnswer::Refused {
-        refusal: Refusal::Conflict { files },
+        refusal: Refusal::Conflict { files, total },
     } = &answer
     else {
         return Err(format!("expected a conflict, got {answer:?}").into());
     };
     assert_eq!(files.len(), 50, "51 conflicting files, 50 names");
+    assert_eq!(*total, Some(51));
     assert!(
         files
             .iter()

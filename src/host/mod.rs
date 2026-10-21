@@ -18,6 +18,8 @@
 mod batch;
 pub mod call;
 mod calls;
+#[cfg(test)]
+pub(crate) use calls::merge_outcome_of;
 mod core_slot;
 mod replay;
 mod sockets;

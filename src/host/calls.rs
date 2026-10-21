@@ -91,6 +91,12 @@ pub fn resume_after(request: &Request) -> WakeStep {
 /// What the answer to a merge call means to the core.
 pub fn merge_outcome_of(answer: &CallAnswer) -> MergeOutcome {
     match answer {
+        // A head that is the base is a landing that added nothing to main: main already holds the
+        // work, as after a lost answer. The core lands that outcome at main, with the main the
+        // attempt was dispatched from as its `before` (`unanswered_from`), which `Merged` drops.
+        CallAnswer::Prepared { base, head } if base == head => {
+            MergeOutcome::AlreadyMerged { base: base.clone() }
+        }
         CallAnswer::Prepared { base, head } => MergeOutcome::Merged {
             base: base.clone(),
             head: head.clone(),
@@ -107,8 +113,9 @@ pub fn merge_outcome_of(answer: &CallAnswer) -> MergeOutcome {
 
 fn refusal_outcome(refusal: &Refusal) -> MergeOutcome {
     match refusal {
-        Refusal::Conflict { files } => MergeOutcome::Conflict {
+        Refusal::Conflict { files, total } => MergeOutcome::Conflict {
             files: files.clone(),
+            total: *total,
         },
         Refusal::Uncovered { total } => MergeOutcome::Uncovered { total: *total },
         Refusal::GateChanged => MergeOutcome::GateChanged {},
@@ -423,11 +430,13 @@ mod tests {
         );
         let conflict = refused(Refusal::Conflict {
             files: vec!["x.rs".to_string()],
+            total: Some(70),
         });
         assert_eq!(
             merge_outcome_of(&conflict),
             MergeOutcome::Conflict {
-                files: vec!["x.rs".to_string()]
+                files: vec!["x.rs".to_string()],
+                total: Some(70)
             }
         );
         assert_eq!(
@@ -614,6 +623,18 @@ mod tests {
         assert!(
             over.ends_with("\"..."),
             "one over is cut and marked: {over}"
+        );
+    }
+
+    #[test]
+    fn a_prepared_answer_whose_head_is_its_base_is_main_already_holding_the_work() {
+        let at_main = CallAnswer::Prepared {
+            base: commit("m"),
+            head: commit("m"),
+        };
+        assert_eq!(
+            merge_outcome_of(&at_main),
+            MergeOutcome::AlreadyMerged { base: commit("m") }
         );
     }
 

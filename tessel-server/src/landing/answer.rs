@@ -49,7 +49,8 @@ pub fn merge_answer(repo: &str, outcome: MergeOutcome, first_failure: Option<&st
             }
         }
         // The rebase left nothing to add: main already holds the work, as after a landing whose
-        // answer was lost. The core lands the claim at main, as it does for this outcome.
+        // answer was lost. A head equal to the base is how the host reads this as `AlreadyMerged`,
+        // so the core lands the claim at main with the main it dispatched from as its `before`.
         MergeOutcome::AlreadyMerged { base } => {
             tracing::info!(repo, %base, "main already holds the work");
             CallAnswer::Prepared {
@@ -67,6 +68,7 @@ pub fn merge_answer(repo: &str, outcome: MergeOutcome, first_failure: Option<&st
             );
             refused(Refusal::Conflict {
                 files: capped.names,
+                total: u64::try_from(capped.total).ok(),
             })
         }
         MergeOutcome::Uncovered { files, total, .. } => {
@@ -301,12 +303,13 @@ mod tests {
             None,
         );
         let CallAnswer::Refused {
-            refusal: Refusal::Conflict { files },
+            refusal: Refusal::Conflict { files, total },
         } = answer
         else {
             unreachable!("a conflict is a refusal: {answer:?}");
         };
         assert_eq!(files.len(), 50);
+        assert_eq!(total, Some(51), "the real total travels with the cut list");
         assert_eq!(files[0], r#""f\u{1b}0""#);
     }
 
