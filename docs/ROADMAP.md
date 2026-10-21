@@ -7,24 +7,22 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-21 00:35 EDT. Main at `e9df98c` (#70 and #71 merged; the orchestrator's
-gate on `e9df98c` is green, 1719 tests, all seven steps). M2 is done: no host row of the rules list
-is "after move" (R2-R5 and R49, adapter rows, are M3's), the CLI suite runs on the host, the wasm
-lane and the ported steward tests are green.
-**In flight (M3, dispatched 00:35):** lane B, P1-DROP-WORKER, worktree
-`.claude/worktrees/task-p1-drop-worker`, branch `task-p1-drop-worker` from `e9df98c` (decision 13;
-ruleset step 2 is Felix's, right before it merges, with no other pull request open, so lane A's pull
-request stays unpushed until then). Lane A, P1-SERVER, worktree `.claude/worktrees/task-p1-server`,
-branch `task-p1-server` from `e9df98c`; it also writes the named adapter tests for R2-R5 and R49 and
-flips those rows, leaving R1 to P1-IDENTITY. The `cli.rs` half of SWARM-SHORT-LEASE-TESTS waits for
-a free lane (two lanes build at once).
+**As of:** 2026-10-21 09:20 EDT. Main at `ade2d60` (#72, #73 and #74 merged; the orchestrator's
+gate on `ade2d60` is green, 1730 tests, all seven steps: test, clippy, build, fmt, named tests,
+actionlint, zizmor; the wasm and no-default-features steps are gone with the feature). M3 is two
+tasks in: the Worker glue is deleted (P1-DROP-WORKER) and `tessel-server` serves the host over a
+WebSocket on SQLite (P1-SERVER); R2-R5 and R49 are "now"; R1 is the last "after move" row.
+Ruleset step 2 done by Felix 21 October (six required checks remain).
+**In flight (dispatched 21 October 09:10 from `ade2d60`):** lane B, P1-IDENTITY, worktree
+`.claude/worktrees/task-p1-identity`, branch `task-p1-identity`. Lane A, CLI-LEASE-TESTS (the
+`cli.rs` half of SWARM-SHORT-LEASE-TESTS with CLI-FAKE-SEAM-GAPS), worktree
+`.claude/worktrees/task-cli-lease-tests`, branch `task-cli-lease-tests`.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** reviews of both lanes; then P1-IDENTITY and P1-RUNNER (lane B) and P1-LOCAL-SETUP's
-`tessel init` half (lane A), then P1-SERVER-LANDING (lane B, Felix reviews) with
-HOST-CALL-DEADLINE-BACKSTOP and SERVER-CONFLICT-NAMES; the `cli.rs` lease tests when a lane is
-free. The orchestrator changes the build protocol's wasm gate row when P1-DROP-WORKER merges.
+**Next:** reviews of both lanes; then P1-RUNNER (lane B), P1-LOCAL-SETUP (lane A), then
+P1-SERVER-LANDING (lane B, Felix reviews) with HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES
+and SERVER-NOLANDER-MESSAGE (a core change; Felix approves its design first).
 **Decided by Felix (20 October), decision 15, local first:** M3 the local server, M4 its dogfood
 on this repository, M5 hardening, M6 team mode and the deletion; the first local release lands
 through the host's single `Prepare` call (`docs/proposals/phase-1.md`, decision 15; `PLAN.md`
@@ -33,12 +31,12 @@ decision 6). Ruleset step 4 (Felix as bypass actor) is his, before M4's first la
 in M2 (P1-CLI-ON-HOST), and the swarm's test host in M5, as recommended in
 `docs/proposals/phase-1.md`.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
-The adapter rows R2-R5 and R49 stay "after move" until M4, whose done-check makes each "now" with
-its named adapter test; with `runtime.rs` deleted in M3 they have no code to protect meanwhile.
-**Pending from Felix:** the plan's decisions 1-11 and 13 and proposed changes A-D (B now M6)
-(`docs/proposals/phase-1.md`). Decision 1 (no `wrangler dev` captures) applies to M2: the move
-proceeds on it as recommended. Tearing down the spike sandbox needs
-`gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
+The adapter rows R2-R5 and R49 became "now" with P1-SERVER's named adapter tests; R1 does with
+P1-IDENTITY.
+**Pending from Felix:** the plan's decisions 1-11 and proposed changes A-D (B now M6)
+(`docs/proposals/phase-1.md`); decision 13 was carried out as recommended (P1-DROP-WORKER merged).
+Tearing down the spike sandbox needs `gh auth refresh -s delete_repo`; it costs nothing and can
+stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
 requests; open the second after the first merges.
@@ -230,7 +228,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   answer fails naming it. Plant `7fa59b8` (R29) was red on CI (run 39525193786: the core's R29 test
   and the first four `cli` tests) and its revert green (39525475588). Review mutants pinned twelve
   seams; six are pinned by no CLI test (CLI-FAKE-SEAM-GAPS below).
-- [ ] **CLI-FAKE-SEAM-GAPS** — lane A, with the `cli.rs` lease tests or the next CLI task. From
+- [ ] **CLI-FAKE-SEAM-GAPS** — lane A; dispatched 21 October 09:10 from `ade2d60` with the
+  `cli.rs` lease tests as CLI-LEASE-TESTS. From
   the P1-CLI-ON-HOST review: mutants of the fake survive the whole CLI suite for the wake timer
   (`advance_clock` not waking it), `act`'s close, a socket's close reaching the host (the old
   fake with its disconnect removed also passed 537 of 537), replay page truncation, the review
@@ -307,7 +306,9 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   shared directory or port. Not ruled out: memory or process pressure from many `node --test` runs,
   and a second writer in the checkout (two cuts within one heartbeat). Done: the cause named from
   the next failure's note, and a test for it.
-- [ ] **SWARM-SHORT-LEASE-TESTS** — lane B; swarm half merged (`e9df98c`, #71). Two more tests
+- [ ] **SWARM-SHORT-LEASE-TESTS** — lane B; swarm half merged (`e9df98c`, #71); the `cli.rs` half
+  dispatched 21 October 09:10 from `ade2d60` as CLI-LEASE-TESTS (lane A, with CLI-FAKE-SEAM-GAPS).
+  Two more tests
   failed once under load and passed on rerun, both after P1-FLAKE-UNDER-LOAD:
   `tessel-swarm/tests/on_local.rs` `a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive`
   gave `[Lapsed, Merged]` at a load average near 90 (a 400 ms lease with an 80 ms heartbeat: a 400
@@ -367,22 +368,56 @@ Done when (decision 15): no rules-list row is "after move"; an end-to-end landin
 the runner's command ran on it); `tessel review` approves through the server; a kill -9 loop with
 claims reconciled.
 
-- [ ] **P1-DROP-WORKER** — lane B, first (decision 13); dispatched 21 October 00:35 from `e9df98c`.
-  Deletes `src/runtime.rs`, `src/store.rs`, `src/identity.rs`, `wrangler.toml`, the `runtime`
-  feature and its dependencies, the `cdylib` type, the wasm job and the no-default-features step,
-  the `#[cfg(feature = "runtime")]` items of `src/shell.rs`, the swarm's live target; rewrites
-  `README.md`, `docs/how-tessel-works.md`, `docs/reference/coordinator.md`, `docs/configuration.md`
-  and proposes the `CLAUDE.md` lines; R1's row becomes an after-move adapter row. Ruleset step 2
-  (Felix) right before it merges, with no other pull request open.
-- [ ] **P1-SERVER** — lane A; dispatched 21 October 00:35 from `e9df98c`. `tessel-server serve`:
-  axum, one task per repo owning its host, rusqlite WAL with `synchronous=FULL`, an exclusive
-  store lock, `state_version` with fixtures, structured `(tenant, repo)` ids with a collision
-  property test, the protocol range in a new optional `Welcome` field with the CLI's warning. Two
-  ports for the tasks that follow: token verification (P1-IDENTITY) and call answering
-  (P1-SERVER-LANDING); `main.rs` wires no verifier (401 everywhere, logged once) and a "no lander
-  configured" refusal. Writes the named tests for R2-R5 and R49 and flips those rows.
-- [ ] **P1-IDENTITY** — lane B, after P1-DROP-WORKER. Ed25519 tokens, `tessel-server admin token`,
-  R1's adapter tests ported from the deleted `routes` cases.
+- [x] **P1-DROP-WORKER** (`38045c2`, #73) — lane B, first (decision 13). Deleted `src/runtime.rs`,
+  `src/store.rs`, `src/identity.rs`, `wrangler.toml`, `.cargo/mutants.toml`, the `runtime` feature
+  and the dependencies only it pulled (`worker`, `console_error_panic_hook`, `hmac`, `sha2`,
+  `base64`), the `cdylib` type, the wasm target and job and the no-default-features step, the
+  `#[cfg(feature = "runtime")]` items of `src/shell.rs` and the dead `repo_allowed` and
+  `needs_sessions` with them, the swarm's live target (`Remote` is a plain struct); 47 tests gone
+  (1719 to 1672). Rewrote `README.md`, `docs/how-tessel-works.md`, `docs/reference/coordinator.md`,
+  `docs/configuration.md` and three `CLAUDE.md` lines; R1's row became an after-move adapter row.
+  Ruleset step 2 done by Felix 21 October; the build protocol's Rust gate row lost its wasm clause.
+  Stale Worker comments outside the lane's files are CORE-WORKER-COMMENT-SWEEP.
+- [x] **P1-SERVER** (`ade2d60`, #74) — lane A. `tessel-server serve`: axum 0.8, one task per repo
+  owning its host with every input through one channel, rusqlite WAL with `synchronous=FULL` on
+  every connection, grants sent only after the batch's transaction commits (pinned by a test that
+  holds the store locked from a second connection), an advisory `flock` with the pid (a dead
+  holder's lock is taken over, a live one names itself), `state_version` 1 with a fixture and a
+  test that a fresh store's schema equals it, `(tenant, repo)` ids with a collision property test,
+  routes `/tenant/<tenant>/repo/<repo>/{ws,summary,trunk-moved}` reusing `parse_route`, the
+  protocol range in an optional `Welcome` field with the CLI's one warning. Two ports:
+  `Verifier` (none wired: 401 everywhere, logged once) and `CallPort` (`NoLander` refuses every
+  call). R2-R5 and R49 are "now" with their adapter tests; 1672 to 1730 tests. Review mutants:
+  eleven, each red under its named test. Not verified: the CLI against a real server, the kill -9
+  loop, an old-release CLI binary, Linux beyond CI.
+- [ ] **SERVER-NOLANDER-MESSAGE** — before P1-SERVER-LANDING; a core change, so Felix approves
+  the design first. From the P1-SERVER review: `NoLander` answers `Refused { Rule { message } }`,
+  and the core collapses every `Rule` refusal into `MergeOutcome::Refused` with the fixed text
+  "the steward refused the request (fork missing or not a fork of this repo)", so the agent and
+  the `SubmitRejected` event never see the real reason (rule 6). Done: a `Rule` refusal's message
+  reaches the agent bounded and quoted (rule 3), with a test, and `NoLander`'s text names the
+  missing lander.
+- [ ] **SERVER-FRAME-LIMIT-TESTS** — M5 hardening, with the next server task. From the P1-SERVER
+  review: a frame over 64 KiB is refused by the host with a fixed `Malformed` error before parsing
+  (`src/shell.rs`) and the socket stays open; one over 256 KiB fails inside axum and the socket
+  drops with no close frame. Neither is tested end to end. Done: an adapter test for each, and a
+  decision whether the axum limit should answer with a close frame.
+- [ ] **CORE-WORKER-COMMENT-SWEEP** — lane A, with the next core task. Comments that still
+  describe the Worker or the Durable Object after P1-DROP-WORKER: `src/protocol.rs:1`,
+  `src/coordinator.rs` (4, 520, 1780-1786, a live error string and its test near 2859),
+  `src/merge.rs:1`, `src/trunk.rs:13`, `src/host/*`, `tessel-swarm/src/local.rs` (128, 177, 210,
+  234), `tessel-swarm/src/on.rs:496`, `tessel-cli/src/daemon.rs` (669, 2269), `src/shell.rs` (29,
+  46, 58, 134, 165, 198, 304, 477); `docs/reference/coordinator.md` "this part" wording,
+  `docs/how-tessel-works.md:241-243` "merge path tests" (now the test runner), the README's six
+  steps in the present tense. Also note: `keep_first`, `agents_to_withdraw`, `SummaryTally` and
+  the log-line helpers have no production caller (pinned by R13, R37, R40; the server should use
+  them), and the release profile's `opt-level = "s"` and `lto` came from the Worker starter.
+  Done: every line true of the tree, no behaviour change.
+- [ ] **P1-IDENTITY** — lane B; dispatched 21 October 09:10 from `ade2d60`. Ed25519 tokens with
+  `kid`, `aud`, tenant and `role` claims and the reserved service names `lander`, `runner`,
+  `server`; `tessel-server admin keygen` and `admin token`; a `Verifier` on the `[identity]` config
+  (keys directory, audience; every `.pub` present verifies, so rotation overlaps); R1's refusals as
+  adapter tests ported one for one from the deleted `routes` cases, and R1 "now". No deny-list yet.
 - [ ] **P1-RUNNER** — lane B. The local test runner, single trusted user, on a `TestTree`.
 - [ ] **P1-SERVER-LANDING** — lane B, after P1-SERVER and P1-RUNNER; Felix reviews. The adapter
   half of HOST-MERGE-STANDIN, with HOST-CALL-DEADLINE-BACKSTOP and SERVER-CONFLICT-NAMES.
