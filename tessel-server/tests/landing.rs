@@ -20,7 +20,6 @@ use tessel_coordinator::host::call::{
 };
 use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, ClaimId, CommitId, Mode, Scope, ScopeClaim};
-use tessel_server::id::Name;
 use tessel_server::id::RepoId;
 use tessel_server::landing::{
     Landing, LandingError, LocalRunner, TestRunner, BAD_AGENT_NAME_MESSAGE, STAND_IN_MESSAGE,
@@ -316,19 +315,18 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
     let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
     let runner = passing();
     let landing = landing(&repos, "landing-names", runner.clone());
-    let too_long = "a".repeat(64);
-    for name in [
+    let too_long = "a".repeat(129);
+    let refused_names = [
         "..",
         "../a1",
         "a/b",
-        "A1",
-        "a_1",
-        "a.b",
-        "-a",
-        "a-",
+        "a\\b",
         "",
+        "-a",
+        ".a",
         too_long.as_str(),
-    ] {
+    ];
+    for name in refused_names {
         let agent = AgentId(name.to_string());
         let prepare = Request::Prepare {
             claim: ClaimId(1),
@@ -355,11 +353,28 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
         }
     }
     assert_eq!(runner.runs(), 0);
-    let sixty_three = "a".repeat(63);
-    assert!(
-        Name::parse(&sixty_three).is_ok(),
-        "63 characters is the longest name"
-    );
+    let (sixty_four, longest) = ("a".repeat(64), "a".repeat(128));
+    let bad_name = refused(Refusal::Rule {
+        rule: RuleKind::ForkMissing,
+        message: BAD_AGENT_NAME_MESSAGE.to_string(),
+    });
+    for name in [
+        "A1",
+        "a_1",
+        "a.b",
+        "a1",
+        sixty_four.as_str(),
+        longest.as_str(),
+    ] {
+        let request = Request::Prepare {
+            claim: ClaimId(1),
+            agent: AgentId(name.to_string()),
+            fork_commit: CommitId(commit.clone()),
+            scopes: whole_repo(),
+        };
+        let answer = ask(&landing, request, 60_000).await;
+        assert_ne!(answer, bad_name, "{name:?} is a valid agent name");
+    }
     Ok(())
 }
 

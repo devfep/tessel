@@ -28,13 +28,14 @@ use std::sync::Arc;
 use tessel_coordinator::host::call::{Call, CallAnswer, Refusal, Request};
 use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, CommitId, ScopeClaim};
+use tessel_coordinator::shell::is_agent_id;
 use tessel_lander::git::{CommandError, Git, MergeSources, MAIN_BRANCH};
 use tessel_lander::merge::{run_merge, MergeContext, MergePolicy, MergeRequest};
 use tessel_lander::run::SystemRunner;
 use tessel_lander::types::Sha;
 
 use crate::config::{LanderConfig, RepositoryConfig, FORK_AGENT_PLACEHOLDER};
-use crate::id::{Name, RepoId};
+use crate::id::RepoId;
 use crate::repo::{BoxFuture, CallPort};
 
 use answer::merge_answer;
@@ -62,7 +63,8 @@ pub enum LandingError {
 
 /// What a refusal says when an agent's name cannot name a fork.
 pub const BAD_AGENT_NAME_MESSAGE: &str =
-    "the agent name is not lowercase letters, digits and interior hyphens of at most 63 characters";
+    "the agent name is not letters, digits, '.', '_' and '-' of at most 128 bytes, \
+     starting with a letter or digit";
 
 /// What `Test` and `Land` are refused with: they are never asked while `Prepare` is the merge.
 pub const STAND_IN_MESSAGE: &str = "this lander runs the whole merge in the Prepare call; \
@@ -217,22 +219,20 @@ impl Inner {
         }
     }
 
-    /// The fork of `agent`. The name must pass the grammar of tenant and repository names, checked
-    /// here whatever the verifier did, so it can never be a path; any other name is a rule
-    /// refusal and no path is made.
+    /// The fork of `agent`. The name must pass the protocol's agent-name rule, the one the verifier
+    /// uses, checked here whatever the verifier did: it has no separator and no leading dot, so it
+    /// can never leave the fork's directory. Any other name is a rule refusal and no path is made.
     fn fork_of(&self, agent: &AgentId) -> Result<String, CallAnswer> {
-        match Name::parse(&agent.0) {
-            Ok(name) => Ok(self.fork.replace(FORK_AGENT_PLACEHOLDER, name.as_str())),
-            Err(error) => {
-                tracing::warn!(repo = %self.repo, %error, "an agent name is not a fork name");
-                Err(CallAnswer::Refused {
-                    refusal: Refusal::Rule {
-                        rule: RuleKind::ForkMissing,
-                        message: BAD_AGENT_NAME_MESSAGE.to_string(),
-                    },
-                })
-            }
+        if is_agent_id(&agent.0) {
+            return Ok(self.fork.replace(FORK_AGENT_PLACEHOLDER, &agent.0));
         }
+        tracing::warn!(repo = %self.repo, "an agent name is not a fork name");
+        Err(CallAnswer::Refused {
+            refusal: Refusal::Rule {
+                rule: RuleKind::ForkMissing,
+                message: BAD_AGENT_NAME_MESSAGE.to_string(),
+            },
+        })
     }
 
     fn ports<'a>(&'a self, work: &'a Work) -> Ports<'a> {
