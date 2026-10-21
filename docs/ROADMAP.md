@@ -7,26 +7,24 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-20 17:00 EDT. Merged since the last rewrite: P1-MUTANTS-PROPTEST-ONLY
-(`4e68ed9`, #61), CLI-DUPLICATE-ADOPTED-CLAIM (`813e231`, #64) and the previous STATE (`995be2a`,
-#63). The orchestrator's gate on `995be2a` is green (1690 tests, all seven steps). The nightly's
-shard 0 no longer dies: #61 caps each test process's memory. M2's done-check waits on
-P1-CLI-ON-HOST.
-**In flight:**
-- SWARM-AGENT-CHECKS-UNDER-LOAD (lane B, #65), fix pass 1: the checks note keeps the first
-  failing test, not only the tail of the output.
-- CLI-RECONCILE-INFLIGHT-NOTICE, then CLI-RELEASE-BEFORE-GRANT (lane A,
-  `.claude/worktrees/cli-reconcile-inflight`, from `995be2a`).
+**As of:** 2026-10-20 evening EDT. Merged since the last rewrite: SWARM-AGENT-CHECKS-UNDER-LOAD
+part 1 (`345b722`, #65), the previous STATE (`77e5678`, #66) and CLI-RECONCILE-INFLIGHT-NOTICE with
+CLI-RELEASE-BEFORE-GRANT (`fd91df2`, #67). The orchestrator's gate on `fd91df2` is green (1718
+tests, all seven steps). M2's done-check waits on P1-CLI-ON-HOST, the next task to dispatch.
+**In flight:** nothing; every lane and reviewer is stopped (account switch).
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
-**Next:** lane A takes P1-CLI-ON-HOST once decision 14 is made. P1-FAKE-HELLO-LOST is decided
-when P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration.
+**Next:** lane A takes P1-CLI-ON-HOST (decision 14 made). P1-FAKE-HELLO-LOST is decided when
+P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration. Lane B takes
+SWARM-SHORT-LEASE-TESTS.
+**Decided by Felix (20 October), decision 14:** the CLI's fake coordinator is rebuilt on the host
+in M2 (P1-CLI-ON-HOST), and the swarm's test host in M5, as recommended in
+`docs/proposals/phase-1.md`.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
 The adapter rows R2-R5 and R49 stay "after move" until M4, whose done-check makes each "now" with
 its named adapter test; with `runtime.rs` deleted in M3 they have no code to protect meanwhile.
-**Pending from Felix:** the plan's decisions 1-11, 13 and 14 and proposed changes A-D
-(`docs/proposals/phase-1.md`). Decisions 1 (no `wrangler dev` captures) and 14 (the CLI's fake
-rebuilt on the host in M2) apply to M2: the move proceeds on them as recommended, and
-P1-CLI-ON-HOST needs decision 14 before it is dispatched. Tearing down the spike sandbox needs
+**Pending from Felix:** the plan's decisions 1-11 and 13 and proposed changes A-D
+(`docs/proposals/phase-1.md`). Decision 1 (no `wrangler dev` captures) applies to M2: the move
+proceeds on it as recommended. Tearing down the spike sandbox needs
 `gh auth refresh -s delete_repo`; it costs nothing and can stay until Phase 2.
 **Stacked pull requests:** GitHub retargets a stacked pull request to `main` only when its base
 branch is deleted, so #26 merged into #25's branch and was reopened as #28. Stack no more pull
@@ -204,8 +202,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   last page marks the watcher before its socket is closed. The adapter must always answer
   `ReadEvents`, or the gate stays shut. CI evidence in nine plants, each test checked at its own
   assertion line.
-- [ ] **P1-CLI-ON-HOST** — lane A, after the four above; needs decision 14. The CLI's fake
-  coordinator rebuilt on the host, same test count.
+- [ ] **P1-CLI-ON-HOST** — lane A, after the four above; decision 14 made 20 October. The
+  CLI's fake coordinator rebuilt on the host, same test count.
 - [x] **P1-LANDER-MERGE** (`70526c9`, #48) — lane B. `prepare` and `land` ported from
   `merge-steps.ts`, with the clone-only `Workspace` type; 53 unit and 14 real-git tests ported.
   `clone_main` refuses a destination that is in use, a symlink or contains `..`, and makes it
@@ -256,22 +254,30 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   adopted from the log, then pushed again by `on_granted`, so it was held twice. Agents saw a
   second claim instead of an amend, `tessel submit` failing with "several claims (1, 1, 2)" and a
   release sent twice. `on_granted` now replaces an entry with the same claim id.
-- [ ] **CLI-RECONCILE-INFLIGHT-NOTICE** — lane A. From the #64 review: the
-  "Reconciled" notice (`tessel-cli/src/daemon.rs` ~1232) tells the agent that its own claim, still
-  on the way, has no request behind it and that `tessel release <id>` drops it; an agent that
-  follows it gives up the claim it just got. Done: the scopes of requests still on the way are part
-  of `reconcile::Local`, a match is not adopted or reported, with a test of the notice.
-- [ ] **CLI-RELEASE-BEFORE-GRANT** — lane A, with CLI-RECONCILE-INFLIGHT-NOTICE. From the #64
-  review: a `tessel release` between the adoption and the `Granted` removes the claim, and
-  `on_granted` then adds it back, held locally after the agent released it. Older than #64. Done:
-  a test of that ordering, and the late grant not re-adding a released claim.
-- [ ] **SWARM-AGENT-CHECKS-UNDER-LOAD** — lane B. From P1-FLAKE-UNDER-LOAD: in
-  `tessel-swarm/tests/reconnect.rs` an agent released its claim without submitting, under heavy
-  load; the same log comes from the agent's own checks (`node --test`) failing. Why they fail under
-  load is unknown, and it may be a product bug. The checks note carries no output of the failing
-  run. Also: the `UNHEARD_LEASE_MS` comment still says the wait could match the holder's lapse,
-  which is no longer true. Done: the failing run's output kept in the note, the cause named, and a
-  test for it.
+- [x] **CLI-RECONCILE-INFLIGHT-NOTICE** (`fd91df2`, #67) — lane A. A claim the first log read
+  finds granted while its request still waits for the reply is kept on that request and left for
+  the reply, not reported as unexplained with `tessel release` offered. If the reply is a grant of
+  another id, a denial or an error, the matched claim was an older one of this agent's with the
+  same scopes, and it is adopted with the usual notice.
+- [x] **CLI-RELEASE-BEFORE-GRANT** (`fd91df2`, #67) — lane A. A claim released while its request
+  waits is not held when the grant arrives. For an amend, whose grant carries a newer fence than
+  the release did, the daemon sends the release again with the grant's fence; before, the agent was
+  told the claim was released while the coordinator still held it.
+- [ ] **SWARM-AGENT-CHECKS-UNDER-LOAD** — lane B; part 1 merged (`345b722`, #65). From
+  P1-FLAKE-UNDER-LOAD: in `tessel-swarm/tests/reconnect.rs` an agent released its claim without
+  submitting, under heavy load. The same log fits the agent's own checks failing, any other
+  `commit_and_push` error, a denied amend and a lapsed lease. #65 makes the checks note carry the
+  first failing test and the reporter's pass/fail counts (quoted, at most 1,500 bytes), and the
+  shadow test print the agents' results. Ruled out: a timeout on the checks, fixture timing, a
+  shared directory or port. Not ruled out: memory or process pressure from many `node --test` runs,
+  and a second writer in the checkout (two cuts within one heartbeat). Done: the cause named from
+  the next failure's note, and a test for it.
+- [ ] **SWARM-SHORT-LEASE-TESTS** — lane B. Two more tests failed once under load and passed on
+  rerun, both after P1-FLAKE-UNDER-LOAD: `tessel-swarm/tests/on_local.rs`
+  `a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive` gave `[Lapsed, Merged]` at a
+  load average near 90 (a 400 ms lease with an 80 ms heartbeat: a 400 ms stall lapses it), and two
+  `tessel-cli/tests/cli.rs` lease tests at a load average near 120 (not yet named). Done: each bound
+  removed or made explicit as in P1-FLAKE-UNDER-LOAD, never raised to pass, shown on CI.
 - [ ] **HOST-MERGE-STANDIN** — M3, with P1-CORE-STAGED-LANDING; its adapter half is M4's. From
   the P1-MOVE-WAKE review: until the staged landing, a merge is one `Prepare` call that stands for
   the steward's whole `/merge`, and the host reads `Prepared { base, head }` as merged
