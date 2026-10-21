@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::protocol::{
     review_reasons, uncovered, AgentId, ClaimId, ClientMsg, CommitId, Conflict, DecisionRecord,
-    ErrorCode, Event, EventKind, Fence, HeldAssumption, Intent, Lock, OnConflict, RaceId,
-    ReleaseReason, RequestId, RunId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    ErrorCode, Event, EventKind, Fence, HeldAssumption, Intent, Lock, OnConflict, ProtocolRange,
+    RaceId, ReleaseReason, RequestId, RunId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +371,10 @@ struct CoordinatorState {
     /// one waits for it (`verifying`). Never stored: every load restores `VERIFY_SLOT_AFTER`.
     #[serde(skip, default = "verifying::default_slot_after")]
     verify_slot_after: u32,
+    /// The protocol versions this server speaks, announced in `Welcome`. A deployment setting:
+    /// never stored, and the host sets it on every load.
+    #[serde(skip, default = "ProtocolRange::current")]
+    protocol_range: ProtocolRange,
     /// Merges dispatched in a row while a verification was ready; reset when one is dispatched.
     #[serde(default)]
     merges_past_verification: u32,
@@ -436,6 +440,12 @@ impl Coordinator {
         self.state.reviewers = reviewers;
     }
 
+    /// Replace the protocol versions `Welcome` announces. They come from the host's settings and
+    /// are applied on every load.
+    pub fn set_protocol_range(&mut self, range: ProtocolRange) {
+        self.state.protocol_range = range;
+    }
+
     /// Replace how many merges may be dispatched in a row while a verification is ready before
     /// the next merge waits for the verification. At least 1: 0 is read as 1. For tests: a host
     /// setting is added when a deployment needs one.
@@ -477,6 +487,7 @@ impl Coordinator {
             verification_in_flight: None,
             next_verification: 0,
             verify_slot_after: verifying::default_slot_after(),
+            protocol_range: ProtocolRange::current(),
             merges_past_verification: 0,
             last_dispatch: 0,
             claims: BTreeMap::new(),
@@ -777,6 +788,7 @@ impl Coordinator {
             head,
             lease_ms: self.state.config.lease_ms,
             protocol: PROTOCOL_VERSION,
+            protocol_range: Some(self.state.protocol_range),
         };
         vec![connected, Effect::Reply(welcome)]
     }
@@ -2038,6 +2050,7 @@ mod tests {
             head,
             lease_ms,
             protocol,
+            protocol_range,
         } = only_reply(&effects)
         else {
             panic!("expected Welcome, got {effects:?}");
@@ -2045,6 +2058,7 @@ mod tests {
         assert_eq!(head, &CommitId("abc".into()));
         assert_eq!(*lease_ms, LEASE);
         assert_eq!(*protocol, PROTOCOL_VERSION);
+        assert_eq!(*protocol_range, Some(ProtocolRange::current()));
         let events = logged(&effects);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, 0);

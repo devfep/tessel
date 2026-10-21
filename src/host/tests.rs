@@ -15,7 +15,7 @@ use crate::coordinator::{Coordinator as Core, Effect};
 use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
-    Fence, Intent, Mode, OnConflict, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
+    Fence, Intent, Mode, OnConflict, ProtocolRange, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
 };
 use crate::shell::{self, Outbound, Work, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
 
@@ -450,6 +450,38 @@ fn host_due_leases_expire_in_their_own_write_before_a_client_message() {
     ));
 }
 
+fn welcome_range(kit: &Testkit, sock: SocketId) -> Option<ProtocolRange> {
+    let ServerMsg::Welcome { protocol_range, .. } = &kit.received(sock)[0] else {
+        panic!("expected Welcome, got {:?}", kit.received(sock));
+    };
+    *protocol_range
+}
+
+#[test]
+fn host_a_welcome_announces_the_protocol_range_the_config_sets() {
+    let range = ProtocolRange { min: 3, max: 7 };
+    let mut kit = Testkit::new(HostConfig {
+        protocol_range: Some(range),
+        ..config()
+    });
+    let sock = welcomed(&mut kit, "a1");
+    assert_eq!(welcome_range(&kit, sock), Some(range));
+    kit.restart();
+    let again = welcomed(&mut kit, "a2");
+    assert_eq!(
+        welcome_range(&kit, again),
+        Some(range),
+        "the range is applied on every load, not stored"
+    );
+}
+
+#[test]
+fn host_a_welcome_announces_this_builds_protocol_when_the_config_sets_no_range() {
+    let mut kit = kit();
+    let sock = welcomed(&mut kit, "a1");
+    assert_eq!(welcome_range(&kit, sock), Some(ProtocolRange::current()));
+}
+
 #[test]
 fn host_a_client_call_persists_then_binds_then_settles() {
     let mut kit = kit();
@@ -544,6 +576,7 @@ fn welcome(lease_ms: u64) -> ServerMsg {
         head: CommitId("ab".repeat(20)),
         lease_ms,
         protocol: 1,
+        protocol_range: None,
     }
 }
 

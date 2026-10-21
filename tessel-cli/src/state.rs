@@ -83,6 +83,10 @@ pub struct State {
     /// older than the coordinator and its view may lack what those frames said.
     #[serde(default)]
     pub skipped_frames: u64,
+    /// Set while the coordinator's `Welcome` announces a protocol range that does not include this
+    /// daemon's version. The daemon connects anyway; this says it may misread what it is sent.
+    #[serde(default)]
+    pub protocol_warning: Option<String>,
     pub claims: Vec<HeldClaim>,
     pub queued: Option<QueuedWait>,
     pub updated_at_ms: u64,

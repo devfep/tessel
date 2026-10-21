@@ -1609,6 +1609,7 @@ mod tests {
                             head: CommitId("h".into()),
                             lease_ms: 30_000,
                             protocol: tessel_coordinator::protocol::PROTOCOL_VERSION,
+                            protocol_range: None,
                         };
                         let marker =
                             review_event(log.len() as u64, EventKind::AgentConnected { agent });

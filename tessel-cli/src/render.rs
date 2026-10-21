@@ -768,6 +768,9 @@ pub fn status_text(state: &State, running: bool, unread: usize) -> String {
             state.skipped_frames
         );
     }
+    if let Some(warning) = &state.protocol_warning {
+        let _ = writeln!(out, "warning: {}", one_line(warning));
+    }
     let _ = writeln!(out, "base: {} (sent in the last hello)", state.base);
     let _ = writeln!(out, "start: {}", state.start_base);
     if let Some(head) = &state.coordinator_head {

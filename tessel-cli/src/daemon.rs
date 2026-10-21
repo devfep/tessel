@@ -12,7 +12,8 @@ use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
     uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event,
-    EventKind, Intent, OnConflict, RequestId, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    EventKind, Intent, OnConflict, ProtocolRange, RequestId, ScopeClaim, ServerMsg,
+    PROTOCOL_VERSION,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -379,6 +380,7 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         lease_ms: None,
         last_error: None,
         skipped_frames: 0,
+        protocol_warning: None,
         claims: Vec::new(),
         queued: None,
         updated_at_ms: now_ms(),
@@ -420,6 +422,19 @@ fn restrict_permissions(sock: &std::path::Path) -> anyhow::Result<()> {
 }
 
 /// Appends a timestamped line to `daemon.log`, with the token removed.
+/// What a daemon outside the coordinator's protocol range says, in its log and in `tessel status`.
+fn protocol_warning(range: ProtocolRange) -> String {
+    let speaks = if range.min == range.max {
+        format!("v{}", range.min)
+    } else {
+        format!("v{} to v{}", range.min, range.max)
+    };
+    format!(
+        "the coordinator speaks protocol {speaks} and this daemon speaks v{PROTOCOL_VERSION}; it \
+         connects anyway and may misread what it is sent, so update the older of the two"
+    )
+}
+
 fn log(worktree: &Worktree, config: &Config, message: &str) {
     let line = format!("{} {}\n", now_ms(), config.token.redact(message));
     let written = std::fs::OpenOptions::new()
@@ -792,7 +807,12 @@ impl Daemon {
 
     fn on_server_msg(&mut self, msg: ServerMsg) {
         match msg {
-            ServerMsg::Welcome { head, lease_ms, .. } => self.on_welcome(head.0, lease_ms),
+            ServerMsg::Welcome {
+                head,
+                lease_ms,
+                protocol_range,
+                ..
+            } => self.on_welcome(head.0, lease_ms, protocol_range),
             ServerMsg::Granted {
                 req,
                 claim,
@@ -898,7 +918,8 @@ impl Daemon {
         self.notify(NoticeKind::Unexpected, note, Some(msg.clone()));
     }
 
-    fn on_welcome(&mut self, head: String, lease_ms: u64) {
+    fn on_welcome(&mut self, head: String, lease_ms: u64, range: Option<ProtocolRange>) {
+        self.note_protocol_range(range);
         self.state.coordinator_head = Some(head);
         self.ever_online = true;
         self.backoff = FIRST_BACKOFF;
@@ -920,6 +941,22 @@ impl Daemon {
         )));
         self.log(&format!("welcomed; lease {lease_ms} ms"));
         self.persist();
+    }
+
+    /// Warns, once for as long as the same range is announced, when the coordinator's range does
+    /// not include this daemon's version. The daemon connects anyway. A coordinator that announces
+    /// no range, or one that includes this version, clears the warning.
+    fn note_protocol_range(&mut self, range: Option<ProtocolRange>) {
+        let warning = range
+            .filter(|range| !range.contains(PROTOCOL_VERSION))
+            .map(protocol_warning);
+        if warning == self.state.protocol_warning {
+            return;
+        }
+        if let Some(text) = &warning {
+            self.log(&format!("warning: {text}"));
+        }
+        self.state.protocol_warning = warning;
     }
 
     /// Records a granted claim. A log read that finished between the coordinator's grant and its
@@ -2750,6 +2787,7 @@ mod tests {
             lease_ms: None,
             last_error: None,
             skipped_frames: 0,
+            protocol_warning: None,
             claims: vec![held(1), held(2)],
             queued: None,
             updated_at_ms: 0,
@@ -3227,8 +3265,44 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut daemon = daemon_in(dir.path());
         daemon.welcome_deadline = Some(Instant::now() + PROBE_LIMIT);
-        daemon.on_welcome("a".repeat(40), 30_000);
+        daemon.on_welcome("a".repeat(40), 30_000, None);
         assert!(daemon.welcome_deadline.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_welcome_without_a_range_or_with_one_around_this_version_warns_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.on_welcome("a".repeat(40), 30_000, None);
+        let around = ProtocolRange {
+            min: PROTOCOL_VERSION,
+            max: PROTOCOL_VERSION + 2,
+        };
+        daemon.on_welcome("a".repeat(40), 30_000, Some(around));
+        assert_eq!(daemon.state.protocol_warning, None);
+        assert!(!daemon_log(&daemon).contains("warning"));
+    }
+
+    #[tokio::test]
+    async fn a_range_that_excludes_this_version_warns_once_and_a_later_fit_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let above = ProtocolRange {
+            min: PROTOCOL_VERSION + 1,
+            max: PROTOCOL_VERSION + 3,
+        };
+        daemon.on_welcome("a".repeat(40), 30_000, Some(above));
+        daemon.on_welcome("a".repeat(40), 30_000, Some(above));
+        let log = daemon_log(&daemon);
+        assert_eq!(
+            log.matches("warning: the coordinator speaks").count(),
+            1,
+            "{log}"
+        );
+        assert!(log.contains("v2 to v4 and this daemon speaks v1"), "{log}");
+        assert!(daemon.state.protocol_warning.is_some());
+        daemon.on_welcome("a".repeat(40), 30_000, None);
+        assert_eq!(daemon.state.protocol_warning, None);
     }
 
     const HEAD_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -71,6 +71,30 @@
 /// top-level message type (invariant 13). A new optional field (`#[serde(default)]`) keeps it.
 pub const PROTOCOL_VERSION: u16 = 1;
 
+/// The lowest and the highest `PROTOCOL_VERSION` a server speaks, both included. A server
+/// announces it in `Welcome::protocol_range` so a client can warn when its own version is outside
+/// it, before a message it cannot read arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolRange {
+    pub min: u16,
+    pub max: u16,
+}
+
+impl ProtocolRange {
+    /// The range of this build: the one version it speaks.
+    pub fn current() -> Self {
+        Self {
+            min: PROTOCOL_VERSION,
+            max: PROTOCOL_VERSION,
+        }
+    }
+
+    /// Whether `version` is one the server speaks.
+    pub fn contains(self, version: u16) -> bool {
+        self.min <= version && version <= self.max
+    }
+}
+
 fn v1() -> u16 {
     1
 }
@@ -539,6 +563,10 @@ pub enum ServerMsg {
         head: CommitId,
         lease_ms: u64,
         protocol: u16,
+        /// The versions the server speaks. An older server omits it, and a client then has
+        /// nothing to compare its own version with.
+        #[serde(default)]
+        protocol_range: Option<ProtocolRange>,
     },
     Granted {
         req: RequestId,
@@ -1593,5 +1621,42 @@ mod tests {
         };
         assert_eq!(reviewer, Some(AgentId("felix".to_string())));
         assert_eq!(note.as_deref(), Some("not this way"));
+    }
+
+    #[test]
+    fn a_welcome_from_an_older_server_has_no_protocol_range() {
+        let old = r#"{"type":"welcome","head":"ab","lease_ms":9,"protocol":1}"#;
+        let ServerMsg::Welcome { protocol_range, .. } = serde_json::from_str(old).unwrap() else {
+            panic!("expected Welcome");
+        };
+        assert_eq!(protocol_range, None);
+    }
+
+    #[test]
+    fn a_welcome_carries_the_protocol_range_through_json() {
+        let sent = ServerMsg::Welcome {
+            head: CommitId("ab".to_string()),
+            lease_ms: 9,
+            protocol: 3,
+            protocol_range: Some(ProtocolRange { min: 2, max: 4 }),
+        };
+        let json = serde_json::to_string(&sent).unwrap();
+        assert!(
+            json.contains(r#""protocol_range":{"min":2,"max":4}"#),
+            "{json}"
+        );
+        let ServerMsg::Welcome { protocol_range, .. } = serde_json::from_str(&json).unwrap() else {
+            panic!("expected Welcome");
+        };
+        assert_eq!(protocol_range, Some(ProtocolRange { min: 2, max: 4 }));
+    }
+
+    #[test]
+    fn a_protocol_range_includes_both_ends_and_nothing_outside() {
+        let range = ProtocolRange { min: 2, max: 4 };
+        assert!([2, 3, 4].into_iter().all(|v| range.contains(v)));
+        assert!(![0, 1, 5, u16::MAX].into_iter().any(|v| range.contains(v)));
+        assert!(ProtocolRange::current().contains(PROTOCOL_VERSION));
+        assert!(!ProtocolRange::current().contains(PROTOCOL_VERSION + 1));
     }
 }
