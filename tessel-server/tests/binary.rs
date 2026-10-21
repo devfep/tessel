@@ -32,7 +32,17 @@ fn write_config(dir: &Path) -> Result<std::path::PathBuf, std::io::Error> {
     Ok(path)
 }
 
-fn spawn(config: &Path) -> Result<Child, std::io::Error> {
+/// A server process that is killed when the test ends, however it ends.
+struct Server(Child);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn(config: &Path) -> Result<Server, std::io::Error> {
     Command::new(BINARY)
         .args(["serve", "--config"])
         .arg(config)
@@ -40,12 +50,13 @@ fn spawn(config: &Path) -> Result<Child, std::io::Error> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
+        .map(Server)
 }
 
 /// Lines of the child's stderr, as they arrive.
-fn lines(child: &mut Child) -> mpsc::Receiver<String> {
+fn lines(server: &mut Server) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
-    let stderr = child.stderr.take();
+    let stderr = server.0.stderr.take();
     std::thread::spawn(move || {
         let Some(stderr) = stderr else { return };
         for line in BufReader::new(stderr).lines() {
@@ -73,11 +84,6 @@ fn until(rx: &mpsc::Receiver<String>, needle: &str) -> Result<Vec<String>, Strin
             Err(_) => return Err(format!("never saw {needle:?}; saw {seen:?}")),
         }
     }
-}
-
-fn stop(mut child: Child) -> Result<(), std::io::Error> {
-    child.kill()?;
-    child.wait().map(|_| ())
 }
 
 #[test]
@@ -123,13 +129,12 @@ fn serve_starts_creates_the_stores_and_answers_401_with_no_identity() -> TestRes
     let refusal = lines(&mut second);
     let line = until(&refusal, "in use by tessel-server pid")?.concat();
     assert!(
-        line.contains(&child.id().to_string()),
+        line.contains(&child.0.id().to_string()),
         "names the first server: {line}"
     );
     assert!(
-        !second.wait()?.success(),
+        !second.0.wait()?.success(),
         "the second server exits with a failure"
     );
-    stop(child)?;
     Ok(())
 }
