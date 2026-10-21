@@ -38,7 +38,7 @@ pub fn prepare(path: &Path) -> anyhow::Result<Prepared> {
     let bytes = redact(&raw);
     if bytes.len() > MAX_BYTES {
         bail!(
-            "the transcript {shown} is {} bytes after redaction; the limit is \
+            "the transcript {shown} is {} bytes after redaction; the CLI accepts at most \
              {MAX_BYTES} bytes (4 MiB). Trim it and submit again",
             bytes.len()
         );
