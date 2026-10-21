@@ -95,7 +95,7 @@ person-weeks for one maintainer working with agents.
 | Phase | Scope |
 |---|---|
 | 0. Foundations (~3) | CI lanes required on main; a GitHub spike (compare-and-swap landing of a tested commit under rulesets); merge-queue property tests; core fixes: dispatch ids, the landed commit on `already_merged`, verification slots and `VerificationDropped` |
-| 1. Portable host and lander (~10-12) | `runtime.rs` moved step for step into the sans-IO host; the simulator with invariants I1 to I12 and failpoints; `tessel-server` with SQLite, versioned state, the protocol range, metrics, Ed25519 identity and token minting; the Rust lander and a local test runner; minimal advisory mode; Cloudflare and TypeScript code deleted |
+| 1. Portable host and lander (~13) | `runtime.rs` moved step for step into the sans-IO host; `tessel-server` with SQLite, versioned state, the protocol range, Ed25519 identity and token minting, the Rust lander and a local test runner, run first by one developer on their own machine and dogfooded on this repository; then the simulator with invariants I1 to I12 and failpoints and the staged landing; metrics; minimal advisory mode; Cloudflare and TypeScript code deleted |
 | 2. GitHub landing (~5-7) | GitHub App adapter: human-provisioned fork pool, candidate pull requests whose CI runs without secrets, two rulesets, `updateRefs` compare-and-swap, polling reconciliation; `tessel admin doctor` |
 | 3. Adoptable | Trials on GitHub; the `tessel/claims` advisory check; review page and dashboard behind OIDC; per-repo review configuration; `tessel admin`; backup, restore drill, retention; signed releases and an image |
 | 4. Reach | Symbol claims for Python and Go; Sandcastle (`mattpocock/sandcastle`) as the second agent harness: a template whose sandboxed agents claim and submit through Tessel, which lands their work in place of an LLM merge step; Linux and macOS packages |
@@ -105,9 +105,9 @@ person-weeks for one maintainer working with agents.
 ## 8. Dogfooding
 
 Tessel's own changes go through feature branches and pull requests, with a git note on each commit
-(`CLAUDE.md`). Once Phase 1 ships, the repository is coordinated by `tessel-server` in advisory
-mode (claims released when their pull requests merge), and once Phase 2 ships, it lands through
-the GitHub adapter.
+(`CLAUDE.md`). From Phase 1's M4, the repository is coordinated and landed by a `tessel-server`
+on Felix's machine; from M6 by a hosted one in advisory mode (claims released when their pull
+requests merge); and once Phase 2 ships, it lands through the GitHub adapter.
 
 ## 9. Decisions (17 October 2026)
 
@@ -119,6 +119,11 @@ the GitHub adapter.
 4. The protocol version range is announced through a new optional field, without a version bump.
 5. The contest-era licence whitelist no longer applies; licences are an ordinary engineering
    choice. The crate stays MIT.
+6. Local first (20 October 2026). Within Phase 1 the single-developer local setup comes before
+   the simulator and the staged landing: M3 the local server, M4 its dogfood on this repository,
+   M5 hardening, M6 team mode and the deletion. The first local release lands through the host's
+   single `Prepare` call; the staged landing follows in M5. Details and cost: the proposal's
+   decision 15.
 
 ## 10. Risks
 
