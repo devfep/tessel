@@ -26,15 +26,12 @@ impl Inner {
         (before, main): (&CommitId, &CommitId),
     ) -> CallAnswer {
         let repo = self.repo.to_string();
-        let (Some(fork_remote), Ok(before), Ok(main)) = (
-            self.fork_of(agent),
-            Sha::parse(&before.0),
-            Sha::parse(&main.0),
-        ) else {
-            tracing::warn!(
-                repo,
-                "a trial names no fork or a main that is not a commit id"
-            );
+        let fork_remote = match self.fork_of(agent) {
+            Ok(fork) => fork,
+            Err(refused) => return refused,
+        };
+        let (Ok(before), Ok(main)) = (Sha::parse(&before.0), Sha::parse(&main.0)) else {
+            tracing::warn!(repo, "a trial names a main that is not a commit id");
             return CallAnswer::Unknown;
         };
         let commit = match commit {

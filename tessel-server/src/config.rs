@@ -116,9 +116,9 @@ impl RepositoryConfig {
                 "is required with remote: where an agent's fork is, with {agent} for its name",
             ),
             (Some(remote), Some(_)) if blank(remote) => refuse("remote", "must not be empty"),
-            (Some(_), Some(fork)) if !fork.contains(FORK_AGENT_PLACEHOLDER) => refuse(
+            (Some(_), Some(fork)) if fork.matches(FORK_AGENT_PLACEHOLDER).count() != 1 => refuse(
                 "fork",
-                "must contain {agent}, which stands for the agent's name",
+                "must contain {agent} exactly once, standing for the agent's name",
             ),
             (Some(_), Some(_)) if !has_lander => refuse(
                 "remote",
@@ -418,6 +418,11 @@ mod tests {
                 "remote = \"\"\nfork = \"/f/{agent}\"\n",
                 "[[repository]]",
                 "remote",
+            ),
+            (
+                "remote = \"/r.git\"\nfork = \"/f/{agent}/{agent}\"\n",
+                "[[repository]]",
+                "fork",
             ),
             (
                 "remote = \"/r.git\"\nfork = \"/f/x.git\"\n",

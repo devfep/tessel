@@ -34,7 +34,7 @@ use tessel_lander::run::SystemRunner;
 use tessel_lander::types::Sha;
 
 use crate::config::{LanderConfig, RepositoryConfig, FORK_AGENT_PLACEHOLDER};
-use crate::id::RepoId;
+use crate::id::{Name, RepoId};
 use crate::repo::{BoxFuture, CallPort};
 
 use answer::merge_answer;
@@ -59,6 +59,10 @@ pub enum LandingError {
     #[error("the lander's git environment: {0}")]
     Git(#[from] CommandError),
 }
+
+/// What a refusal says when an agent's name cannot name a fork.
+pub const BAD_AGENT_NAME_MESSAGE: &str =
+    "the agent name is not lowercase letters, digits and interior hyphens of at most 63 characters";
 
 /// What `Test` and `Land` are refused with: they are never asked while `Prepare` is the merge.
 pub const STAND_IN_MESSAGE: &str = "this lander runs the whole merge in the Prepare call; \
@@ -213,10 +217,22 @@ impl Inner {
         }
     }
 
-    /// The fork of `agent`, or `None` when the name could not be a path component.
-    fn fork_of(&self, agent: &AgentId) -> Option<String> {
-        tessel_coordinator::shell::is_agent_id(&agent.0)
-            .then(|| self.fork.replace(FORK_AGENT_PLACEHOLDER, &agent.0))
+    /// The fork of `agent`. The name must pass the grammar of tenant and repository names, checked
+    /// here whatever the verifier did, so it can never be a path; any other name is a rule
+    /// refusal and no path is made.
+    fn fork_of(&self, agent: &AgentId) -> Result<String, CallAnswer> {
+        match Name::parse(&agent.0) {
+            Ok(name) => Ok(self.fork.replace(FORK_AGENT_PLACEHOLDER, name.as_str())),
+            Err(error) => {
+                tracing::warn!(repo = %self.repo, %error, "an agent name is not a fork name");
+                Err(CallAnswer::Refused {
+                    refusal: Refusal::Rule {
+                        rule: RuleKind::ForkMissing,
+                        message: BAD_AGENT_NAME_MESSAGE.to_string(),
+                    },
+                })
+            }
+        }
     }
 
     fn ports<'a>(&'a self, work: &'a Work) -> Ports<'a> {
@@ -231,12 +247,12 @@ impl Inner {
         scopes: &[ScopeClaim],
     ) -> CallAnswer {
         let repo = self.repo.to_string();
-        let (Some(fork_remote), Ok(commit)) = (self.fork_of(agent), Sha::parse(&fork_commit.0))
-        else {
-            tracing::info!(
-                repo,
-                "the agent has no fork or the commit is not a commit id"
-            );
+        let fork_remote = match self.fork_of(agent) {
+            Ok(fork) => fork,
+            Err(refused) => return refused,
+        };
+        let Ok(commit) = Sha::parse(&fork_commit.0) else {
+            tracing::info!(repo, "the commit is not a commit id");
             return CallAnswer::Refused {
                 refusal: Refusal::CommitNotInFork,
             };

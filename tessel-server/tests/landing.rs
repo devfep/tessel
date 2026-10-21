@@ -20,8 +20,11 @@ use tessel_coordinator::host::call::{
 };
 use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, ClaimId, CommitId, Mode, Scope, ScopeClaim};
+use tessel_server::id::Name;
 use tessel_server::id::RepoId;
-use tessel_server::landing::{Landing, LandingError, LocalRunner, TestRunner, STAND_IN_MESSAGE};
+use tessel_server::landing::{
+    Landing, LandingError, LocalRunner, TestRunner, BAD_AGENT_NAME_MESSAGE, STAND_IN_MESSAGE,
+};
 use tessel_server::repo::{now_ms, CallPort};
 
 use support::{capture_logs, git, log_lines_with, passing, result, Repos, Scripted};
@@ -301,19 +304,62 @@ async fn a_commit_that_is_not_in_the_fork_is_refused() -> TestResult {
     let answer = prepare(&landing, &unpushed, whole_repo()).await;
     assert_eq!(answer, refused(Refusal::CommitNotInFork));
 
-    let no_fork = Request::Prepare {
-        claim: ClaimId(1),
-        agent: AgentId("../a1".to_string()),
-        fork_commit: CommitId(unpushed),
-        scopes: whole_repo(),
-    };
-    assert_eq!(
-        ask(&landing, no_fork, 60_000).await,
-        refused(Refusal::CommitNotInFork)
-    );
     let not_a_commit = prepare(&landing, "abc", whole_repo()).await;
     assert_eq!(not_a_commit, refused(Refusal::CommitNotInFork));
     assert_eq!((runner.runs(), repos.main_head()), (0, before));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let runner = passing();
+    let landing = landing(&repos, "landing-names", runner.clone());
+    let too_long = "a".repeat(64);
+    for name in [
+        "..",
+        "../a1",
+        "a/b",
+        "A1",
+        "a_1",
+        "a.b",
+        "-a",
+        "a-",
+        "",
+        too_long.as_str(),
+    ] {
+        let agent = AgentId(name.to_string());
+        let prepare = Request::Prepare {
+            claim: ClaimId(1),
+            agent: agent.clone(),
+            fork_commit: CommitId(commit.clone()),
+            scopes: whole_repo(),
+        };
+        let trial = Request::Trial {
+            agent,
+            commit: None,
+            before: CommitId(repos.main_head()),
+            main: CommitId(repos.main_head()),
+        };
+        for request in [prepare, trial] {
+            let answer = ask(&landing, request, 60_000).await;
+            assert_eq!(
+                answer,
+                refused(Refusal::Rule {
+                    rule: RuleKind::ForkMissing,
+                    message: BAD_AGENT_NAME_MESSAGE.to_string()
+                }),
+                "{name:?}"
+            );
+        }
+    }
+    assert_eq!(runner.runs(), 0);
+    let sixty_three = "a".repeat(63);
+    assert!(
+        Name::parse(&sixty_three).is_ok(),
+        "63 characters is the longest name"
+    );
     Ok(())
 }
 
