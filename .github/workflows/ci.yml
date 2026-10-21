@@ -85,6 +85,23 @@ jobs:
       - name: Land one commit by compare-and-swap after the runner's command ran
         run: tessel-server/ci/landing-e2e.sh
 
+  quickstart:
+    name: Slow lane, quickstart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: quickstart
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the server, the CLI and the runner
+        run: cargo build -p tessel-server -p tessel-cli -p tessel-runner
+      - name: Run the commands of docs/local-setup.md and check the landed commit
+        run: tessel-server/ci/quickstart.sh
+
   deny:
     name: Slow lane, advisories and bans
     runs-on: ubuntu-latest
