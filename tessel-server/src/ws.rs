@@ -9,6 +9,11 @@
 //! Refusals come in the order the Worker used: path (404), method (405 with `Allow`), repository
 //! not served (403), then the token (401). A `ws` request that is not an upgrade is then 426.
 //!
+//! Who a route admits. `ws` and `summary` admit agents: a token for a reserved service name is
+//! refused there. `trunk-moved` admits the `lander` service only. The verifier guarantees that a
+//! token names a reserved service if and only if its role is `service`, so the route decides by
+//! the name.
+//!
 //! The adapter sets the verified agent itself, from the token and nothing else (R2): no header
 //! the client sends names an agent. A refusal is logged with its reason and path, never the
 //! token (R3).
@@ -26,6 +31,7 @@ use tessel_coordinator::protocol::AgentId;
 use tessel_coordinator::shell::{self, PokeReply, Route, MAX_FRAME_BYTES};
 
 use crate::id::RepoId;
+use crate::identity::{self, LANDER};
 use crate::repo::{RepoHandle, Wire};
 
 /// The body of every 401: the same for every reason, which is only logged.
@@ -92,16 +98,36 @@ fn quoted(path: &str) -> String {
     format!("{cut:?}")
 }
 
-/// The agent the request's token was issued to, or the reason it was refused.
-fn authenticate(app: &App, headers: &HeaderMap, id: &RepoId) -> Result<AgentId, &'static str> {
-    let token = headers
+/// The agent the request's token was issued to, or the reason it was refused. The token must
+/// also be one the route admits.
+fn authenticate(
+    app: &App,
+    headers: &HeaderMap,
+    id: &RepoId,
+    target: Target,
+) -> Result<AgentId, &'static str> {
+    let header = headers
         .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|token| !token.is_empty())
-        .ok_or("no bearer token")?;
+        .and_then(|value| value.to_str().ok());
+    let token = identity::bearer_token(header).ok_or("no bearer token")?;
     let verifier = app.verifier.as_ref().ok_or("no identity is configured")?;
-    verifier.verify(token, id).map_err(|refusal| refusal.reason)
+    let agent = verifier
+        .verify(token, id)
+        .map_err(|refusal| refusal.reason)?;
+    admit(target, &agent)?;
+    Ok(agent)
+}
+
+/// Whether `target` admits the holder of a token for `agent`.
+fn admit(target: Target, agent: &AgentId) -> Result<(), &'static str> {
+    match target {
+        Target::Ws | Target::Summary if identity::is_reserved_service(&agent.0) => {
+            Err("a service token on an agent route")
+        }
+        Target::Ws | Target::Summary => Ok(()),
+        Target::TrunkMoved if agent.0 == LANDER => Ok(()),
+        Target::TrunkMoved => Err("only the lander may poke trunk-moved"),
+    }
 }
 
 async fn serve(
@@ -135,7 +161,7 @@ async fn serve(
             "this deployment does not serve that repo",
         );
     };
-    let agent = match authenticate(&app, &headers, &id) {
+    let agent = match authenticate(&app, &headers, &id, target) {
         Ok(agent) => agent,
         Err(reason) => {
             tracing::warn!(path = %quoted(uri.path()), reason, "refused a request");
@@ -235,6 +261,21 @@ mod tests {
             ("/tenant/acme/repo/demo/trunk-moved", Target::TrunkMoved),
         ] {
             assert_eq!(parse_path(path), Some((id.clone(), target)), "{path}");
+        }
+    }
+
+    #[test]
+    fn agent_routes_admit_agents_and_the_trunk_poke_admits_only_the_lander() {
+        let agent = |name: &str| AgentId(name.to_string());
+        for target in [Target::Ws, Target::Summary] {
+            assert!(admit(target, &agent("a1")).is_ok());
+            for service in ["lander", "runner", "server"] {
+                assert!(admit(target, &agent(service)).is_err(), "{service}");
+            }
+        }
+        assert!(admit(Target::TrunkMoved, &agent("lander")).is_ok());
+        for other in ["a1", "runner", "server", "Lander", "lander2"] {
+            assert!(admit(Target::TrunkMoved, &agent(other)).is_err(), "{other}");
         }
     }
 
