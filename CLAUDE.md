@@ -9,8 +9,10 @@ decisions. The detailed design, requirements and test strategy are in
 
 ## Layout
 - `src/protocol.rs`: the wire protocol, shared by CLI and coordinator. **Read its invariants (top of file) before changing anything that touches claims, fences, merging or evidence.**
-- `src/lib.rs`: crate root. `protocol`, `coordinator`, `shell` and `merge` are public and build natively; `runtime`, `store` and `identity` are the Cloudflare Worker glue, behind the default `runtime` feature (the CLI depends on the crate without it).
-- `src/runtime.rs`: the Cloudflare Worker and Durable Object host. Replaced by the portable host and `tessel-server` in Phase 1, then removed.
+- `src/lib.rs`: crate root. `protocol`, `coordinator`, `shell`, `merge` and `host` are public and
+  build natively. The crate has no features.
+- `src/host/`: the portable sans-IO host around the core. Adapters do only I/O; `tessel-server`,
+  the adapter that serves it, is M3's work in progress.
 - `tessel-cli/`: the native `tessel` CLI and per-worktree daemon (Cargo workspace member). Its tests run the real binary against a fake coordinator driving the real core.
 - `tessel-swarm/`: the scripted swarm and A/B harness; its local target runs the real core natively.
 - `tessel-steward/`: TypeScript Worker for merges, tests and the dashboard on Cloudflare. Removed in Phase 1 once the Rust lander in `tessel-server` replaces it; its merge rules (`merge-steps.ts`, `merge-coverage.ts`, `merge-commands.ts`) are the reference for that port.
@@ -18,7 +20,7 @@ decisions. The detailed design, requirements and test strategy are in
 ## Commands
 - `cargo test --workspace`: protocol, coordinator, CLI and swarm tests. Must pass before every commit.
 - `pnpm --dir tessel-steward test`, `typecheck` and `lint`: the steward's tests, including real-git integration tests.
-- `npx wrangler dev`: run the Cloudflare coordinator locally on :8787, until Phase 1 replaces it. Nothing is deployed.
+- `scripts/ci/check-named-tests.sh`: checks that `docs/reference/runtime-rules.md` names real tests.
 
 ## Rules
 1. **Protocol compatibility.** Changes are additive (new optional fields with `#[serde(default)]`) or bump `PROTOCOL_VERSION`. Ask before any breaking change.

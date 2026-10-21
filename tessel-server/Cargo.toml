@@ -14,8 +14,8 @@ name = "tessel-server"
 path = "src/main.rs"
 
 [dependencies]
-# The host, the wire protocol and the shell; without the `runtime` feature there is no `worker`.
-tessel-coordinator = { path = "..", default-features = false }
+# The host, the wire protocol and the shell.
+tessel-coordinator = { path = ".." }
 # The HTTP server and the WebSocket upgrade. Only what `/ws`, the summary and the poke need.
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
 # One store file per repository, written in one transaction per commit. The system SQLite is not

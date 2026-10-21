@@ -352,7 +352,7 @@ impl LocalServer {
             endpoint: Endpoint {
                 ws_url: format!("ws://{addr}{path}"),
                 tokens: issued,
-                remote: Remote::Local {
+                remote: Remote {
                     trunk: trunk_dir,
                     forks: forks_dir,
                 },

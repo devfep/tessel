@@ -1,3 +1,0 @@
-# src/runtime.rs is Cloudflare Worker glue for wasm. It has no tests, so every mutant in it would
-# be missed. P1-DROP-WORKER deletes the file in M3 and removes this exclude with it.
-exclude_globs = ["src/runtime.rs"]

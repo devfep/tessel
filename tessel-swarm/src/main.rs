@@ -7,9 +7,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use tessel_swarm::endpoint::Token;
-use tessel_swarm::guard::ScratchRepo;
-use tessel_swarm::live::{self, Steward};
 use tessel_swarm::on::Policy;
 use tessel_swarm::report;
 use tessel_swarm::run::{self, Spec};
@@ -39,22 +36,6 @@ enum Command {
     },
     /// Run the workload and write the results.
     Run(Box<RunArgs>),
-    /// Create the demo repository as a named repo on a deployed steward, for agents that are
-    /// not scripted. Needs `STEWARD_ADMIN_TOKEN`. Repositories are never deleted.
-    DemoRepo(DemoRepoArgs),
-}
-
-#[derive(clap::Args)]
-struct DemoRepoArgs {
-    /// Repository name; must be `swarm-<suffix>`.
-    #[arg(long)]
-    repo: String,
-    /// https:// origin of the steward Worker.
-    #[arg(long)]
-    steward: String,
-    /// Also fork the repository once per agent, e.g. `a1,a2`.
-    #[arg(long, value_delimiter = ',')]
-    agents: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -64,21 +45,10 @@ enum Mode {
     Both,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Target {
-    /// The real coordinator core and a git steward, in this process.
-    Local,
-    /// A deployed coordinator and steward. Needs --coordinator (the swarm deployment, never
-    /// production), --steward and `STEWARD_ADMIN_TOKEN`.
-    Live,
-}
-
 #[derive(clap::Args)]
 struct RunArgs {
     #[arg(long, value_enum, default_value = "both")]
     mode: Mode,
-    #[arg(long, value_enum, default_value = "local")]
-    target: Target,
     #[arg(long, default_value_t = 1)]
     seed: u64,
     #[arg(long, default_value_t = 10)]
@@ -106,12 +76,6 @@ struct RunArgs {
     /// Scratch repository name; must be `swarm-<suffix>`. Default: swarm-s<seed>-<time>.
     #[arg(long)]
     repo: Option<String>,
-    /// Live only: ws:// or wss:// origin of the coordinator Worker.
-    #[arg(long)]
-    coordinator: Option<String>,
-    /// Live only: https:// origin of the steward Worker.
-    #[arg(long)]
-    steward: Option<String>,
     #[arg(long, default_value = "swarm-results")]
     out: PathBuf,
 }
@@ -139,25 +103,7 @@ async fn main() -> Result<()> {
             write_out(&serde_json::to_string_pretty(&list)?)
         }
         Command::Run(args) => run_command(&args).await,
-        Command::DemoRepo(args) => demo_repo_command(&args),
     }
-}
-
-fn demo_repo_command(args: &DemoRepoArgs) -> Result<()> {
-    let repo = ScratchRepo::parse(&args.repo)?;
-    let admin = std::env::var("STEWARD_ADMIN_TOKEN")
-        .context("set STEWARD_ADMIN_TOKEN to create the demo repository")?;
-    let steward = Steward::new(&args.steward, Token::new(admin))?;
-    let scratch = tempfile::tempdir().context("cannot create a scratch directory")?;
-    let made = live::create_demo_repo(&steward, &repo, scratch.path(), &args.agents)?;
-    write_out(&format!(
-        "repo {}\nremote {}\ncommit {}",
-        made.repo, made.remote, made.commit
-    ))?;
-    for (name, remote) in &made.forks {
-        write_out(&format!("fork {name}\nremote {remote}"))?;
-    }
-    Ok(())
 }
 
 async fn run_command(args: &RunArgs) -> Result<()> {
@@ -166,9 +112,6 @@ async fn run_command(args: &RunArgs) -> Result<()> {
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let repo = run::resolve_repo(args.repo.as_deref(), args.seed, now)?;
-    if args.target == Target::Live && args.mode != Mode::Off {
-        check_live_args(args)?;
-    }
     let spec = Spec {
         seed: args.seed,
         tasks: args.tasks,
@@ -201,10 +144,8 @@ async fn run_command(args: &RunArgs) -> Result<()> {
             args.out.join(format!("{stem}-off.json")).display()
         ));
     }
-    let (target, on) = match args.target {
-        Target::Local => ("local", run::run_on_local(&spec, &list, &repo).await?),
-        Target::Live => ("live", run_live(args, &spec, &list, &repo).await?),
-    };
+    let target = "local";
+    let on = run::run_on_local(&spec, &list, &repo).await?;
     save(
         &args.out.join(format!("{stem}-on.json")),
         &report::on_json(&header, target, spec.policy, &on),
@@ -222,29 +163,4 @@ async fn run_command(args: &RunArgs) -> Result<()> {
     let table = report::ab_markdown(&header, target, spec.policy, &off, &on);
     std::fs::write(args.out.join(format!("{stem}-ab.md")), &table)?;
     write_out(&table)
-}
-
-/// Everything about a live run that can be refused without doing any work, so a refused run
-/// writes nothing.
-fn check_live_args(args: &RunArgs) -> Result<()> {
-    let (Some(coordinator), Some(_)) = (&args.coordinator, &args.steward) else {
-        bail!("--target live needs --coordinator and --steward");
-    };
-    tessel_swarm::guard::check_coordinator(coordinator)
-}
-
-async fn run_live(
-    args: &RunArgs,
-    spec: &Spec,
-    list: &[tasks::Task],
-    repo: &ScratchRepo,
-) -> Result<tessel_swarm::on::OnResult> {
-    let (Some(coordinator), Some(steward)) = (&args.coordinator, &args.steward) else {
-        bail!("--target live needs --coordinator and --steward");
-    };
-    let admin = std::env::var("STEWARD_ADMIN_TOKEN")
-        .context("set STEWARD_ADMIN_TOKEN for --target live")?;
-    let steward = Steward::new(steward, Token::new(admin))?;
-    write_out(&format!("live target: creating scratch repo {repo}"))?;
-    run::run_on_live(spec, list, repo, &steward, coordinator).await
 }

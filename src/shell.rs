@@ -1,5 +1,5 @@
-//! Pure helpers for the Durable Object shell in `runtime.rs`: everything that can be decided without
-//! a runtime. The shell only reads storage and sockets, calls these, and does what they say.
+//! Pure helpers for the host: everything that can be decided without I/O. The host and its
+//! adapters read storage and sockets, call these, and do what they say.
 //!
 //! Decisions made here:
 //! - A `Notify` for an agent with no open socket is dropped. The core keeps the state that
@@ -104,7 +104,7 @@ impl std::fmt::Display for LoadError {
             LoadError::MissingRun => {
                 write!(
                     f,
-                    "the RUN variable is missing or empty; set it in wrangler.toml"
+                    "the RUN variable is missing or empty; set it in the host's config"
                 )
             }
             LoadError::InvalidShadowEnabled => write!(
@@ -213,14 +213,6 @@ pub fn is_agent_id(agent: &str) -> bool {
         && agent
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-}
-
-/// Whether the Worker serves `repo`. `prefix` is the `ALLOWED_REPO_PREFIX` var: unset or empty
-/// serves every repo; otherwise only repos whose name starts with it. A deployment that shares its
-/// signing key with others sets it, so a token minted for another deployment's repo opens nothing
-/// here.
-pub fn repo_allowed(prefix: Option<&str>, repo: &str) -> bool {
-    prefix.is_none_or(|p| repo.starts_with(p))
 }
 
 /// `SHADOW_ENABLED`: exactly "true" or "false"; unset means false. Anything else is an error.
@@ -585,68 +577,6 @@ impl SummaryTally {
     }
 }
 
-/// Why the Worker refuses a request before it reaches the Durable Object.
-#[cfg(feature = "runtime")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Denied {
-    NotFound,
-    /// The route takes only this method.
-    MethodNotAllowed {
-        allow: &'static str,
-    },
-    /// The deployment does not serve this repo (`ALLOWED_REPO_PREFIX`).
-    Forbidden,
-    /// A valid token, but not the steward's: only the steward may poke a trunk move.
-    NotSteward,
-    /// No valid identity token for this repo. The reason is for logs only; the answer is the
-    /// same 401 for every reason.
-    Unauthorized(crate::identity::IdentityError),
-}
-
-/// Everything the Worker knows about a request when it decides whether to serve it.
-#[cfg(feature = "runtime")]
-pub struct Inbound<'a> {
-    pub method: &'a str,
-    pub segments: &'a [&'a str],
-    pub allowed_prefix: Option<&'a str>,
-    pub signing_key: Option<&'a str>,
-    pub authorization: Option<&'a str>,
-    pub now_ms: u64,
-}
-
-/// Decide whether the Worker serves a request, and for which agent. The refusals come in a fixed
-/// order: path, method, repo prefix, token. A summary read takes `GET` only and a trunk poke
-/// `POST` only; the `ws` route leaves the method to the upgrade check in the Durable Object.
-#[cfg(feature = "runtime")]
-pub fn authorize<'a>(inbound: &Inbound<'a>) -> Result<(Route<'a>, AgentId), Denied> {
-    let route = parse_route(inbound.segments).ok_or(Denied::NotFound)?;
-    let repo = match route {
-        Route::Ws { repo } => repo,
-        Route::Summary { repo } => only_method(inbound, "GET", repo)?,
-        Route::TrunkMoved { repo } => only_method(inbound, "POST", repo)?,
-    };
-    if !repo_allowed(inbound.allowed_prefix, repo) {
-        return Err(Denied::Forbidden);
-    }
-    let agent = crate::identity::verify_bearer(
-        inbound.signing_key,
-        inbound.authorization,
-        repo,
-        inbound.now_ms,
-    )
-    .map_err(Denied::Unauthorized)?;
-    if let Route::TrunkMoved { .. } = route {
-        if agent.0 != TRUNK_POKE_AGENT {
-            return Err(Denied::NotSteward);
-        }
-    }
-    Ok((route, agent))
-}
-
-/// The only agent that may poke a trunk move: the steward signs its own token for it.
-#[cfg(feature = "runtime")]
-const TRUNK_POKE_AGENT: &str = "steward";
-
 /// What a trunk poke is answered with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PokeReply {
@@ -662,20 +592,6 @@ pub fn poke_reply(stored_state: Option<&str>) -> PokeReply {
     match stored_state {
         Some(_) => PokeReply::Recorded,
         None => PokeReply::UnknownRepo,
-    }
-}
-
-/// `repo`, if the request uses `allow` (compared exactly); else `MethodNotAllowed`.
-#[cfg(feature = "runtime")]
-fn only_method<'a>(
-    inbound: &Inbound<'_>,
-    allow: &'static str,
-    repo: &'a str,
-) -> Result<&'a str, Denied> {
-    if inbound.method == allow {
-        Ok(repo)
-    } else {
-        Err(Denied::MethodNotAllowed { allow })
     }
 }
 
@@ -875,21 +791,6 @@ pub fn persist_entries(
     Ok(entries)
 }
 
-/// Whether delivery must read the other sockets' sessions: only a notification or an event can
-/// go to a socket other than the sender.
-pub fn needs_sessions(outbound: &[Outbound], events: &[Event]) -> bool {
-    if !events.is_empty() {
-        return true;
-    }
-    for item in outbound {
-        match item {
-            Outbound::Reply(_) => {}
-            Outbound::Notify { .. } => return true,
-        }
-    }
-    false
-}
-
 /// The agent whose queued request to withdraw when a socket in `closing` goes away: the bound
 /// agent, unless another open socket (`others`, which excludes the closing one) is bound to it,
 /// and only if it has a queued request (`has_queued`), so a close that changes nothing is not
@@ -983,20 +884,6 @@ mod tests {
         Assumption, ClaimId, CommitId, EventKind, Fence, Intent, Mode, OnConflict, Outcome,
         ReleaseReason, Scope, ScopeClaim, Summary, UnverifiedAssumption,
     };
-
-    #[test]
-    fn repo_prefix_limits_which_repos_a_deployment_serves() {
-        for repo in ["swarm-x", "tessel-dogfood", "demo"] {
-            assert!(repo_allowed(None, repo), "unset serves everything");
-            assert!(repo_allowed(Some(""), repo), "empty serves everything");
-        }
-        assert!(repo_allowed(Some("swarm-"), "swarm-x"));
-        assert!(repo_allowed(Some("swarm-"), "swarm-"));
-        assert!(!repo_allowed(Some("swarm-"), "tessel-dogfood"));
-        assert!(!repo_allowed(Some("swarm-"), "demo"));
-        assert!(!repo_allowed(Some("swarm-"), "my-swarm-x"));
-        assert!(!repo_allowed(Some("swarm-"), "swarm"));
-    }
 
     const NOW: u64 = 1_000;
 
@@ -2502,16 +2389,6 @@ mod tests {
     }
 
     #[test]
-    fn delivery_reads_sessions_only_for_notifications_and_events() {
-        let reply = Outbound::Reply(binary_rejection());
-        assert!(!needs_sessions(&[], &[]));
-        assert!(!needs_sessions(&[reply.clone(), reply.clone()], &[]));
-        assert!(needs_sessions(&[reply.clone(), queued("a2")], &[]));
-        assert!(needs_sessions(&[reply], &[event_at(0)]));
-        assert!(needs_sessions(&[], &[event_at(0)]));
-    }
-
-    #[test]
     fn a_closing_socket_withdraws_its_agent_only_when_it_was_the_last_one() {
         let closing = bound("a1");
         let queued = |_: &AgentId| true;
@@ -3017,219 +2894,6 @@ mod tests {
             "/trunk-moved",
         ] {
             assert_eq!(parse_route(&path(other)), None, "{other}");
-        }
-    }
-
-    #[cfg(feature = "runtime")]
-    mod routes {
-        use super::*;
-        use crate::identity::IdentityError;
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        use hmac::{Hmac, KeyInit, Mac};
-        use sha2::Sha256;
-
-        const KEY: &str = "test-signing-key-not-a-secret";
-        const SIGNED_AT: u64 = 1_000_000;
-
-        fn token(key: &str, repo: &str, agent: &str, exp_ms: u64) -> String {
-            let payload =
-                serde_json::json!({"v": 1, "repo": repo, "agent": agent, "exp_ms": exp_ms});
-            let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
-            let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
-            mac.update(payload.as_bytes());
-            let mac = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-            format!("{payload}.{mac}")
-        }
-
-        fn bearer(repo: &str, agent: &str) -> String {
-            format!("Bearer {}", token(KEY, repo, agent, SIGNED_AT + 1))
-        }
-
-        fn ask(
-            method: &str,
-            url_path: &str,
-            prefix: Option<&str>,
-            authorization: Option<&str>,
-        ) -> Result<(String, AgentId), Denied> {
-            let segments = path(url_path);
-            let inbound = Inbound {
-                method,
-                segments: &segments,
-                allowed_prefix: prefix,
-                signing_key: Some(KEY),
-                authorization,
-                now_ms: SIGNED_AT,
-            };
-            authorize(&inbound).map(|(route, who)| (format!("{route:?}"), who))
-        }
-
-        #[test]
-        fn any_agent_of_the_repo_may_read_the_summary() {
-            let auth = bearer("demo", "dashboard");
-            let got = ask("GET", "/repo/demo/summary", None, Some(&auth));
-            assert_eq!(
-                got,
-                Ok((
-                    format!("{:?}", Route::Summary { repo: "demo" }),
-                    agent("dashboard")
-                ))
-            );
-            let other = bearer("demo", "a7");
-            assert!(ask("GET", "/repo/demo/summary", None, Some(&other)).is_ok());
-        }
-
-        #[test]
-        fn a_summary_read_without_a_valid_token_is_unauthorized() {
-            let get = |auth: Option<&str>| ask("GET", "/repo/demo/summary", None, auth);
-            let unauthorized = |got: Result<_, Denied>| matches!(got, Err(Denied::Unauthorized(_)));
-            assert!(unauthorized(get(None)));
-            assert!(unauthorized(get(Some("Bearer nonsense"))));
-            assert!(unauthorized(get(Some(&bearer("elsewhere", "dashboard")))));
-            let expired = format!("Bearer {}", token(KEY, "demo", "dashboard", SIGNED_AT));
-            assert!(unauthorized(get(Some(&expired))));
-            let forged = format!(
-                "Bearer {}",
-                token("another-key", "demo", "dashboard", SIGNED_AT + 1)
-            );
-            assert!(unauthorized(get(Some(&forged))));
-            let no_key = Inbound {
-                method: "GET",
-                segments: &path("/repo/demo/summary"),
-                allowed_prefix: None,
-                signing_key: None,
-                authorization: Some(&bearer("demo", "dashboard")),
-                now_ms: SIGNED_AT,
-            };
-            assert_eq!(
-                authorize(&no_key).unwrap_err(),
-                Denied::Unauthorized(IdentityError::NoSigningKey)
-            );
-        }
-
-        #[test]
-        fn a_prefixed_worker_refuses_other_repos_before_it_looks_at_the_token() {
-            let auth = bearer("demo", "dashboard");
-            let refused = ask("GET", "/repo/demo/summary", Some("swarm-"), Some(&auth));
-            assert_eq!(refused, Err(Denied::Forbidden));
-            let refused = ask("GET", "/repo/demo/summary", Some("swarm-"), None);
-            assert_eq!(refused, Err(Denied::Forbidden));
-            let auth = bearer("swarm-x", "dashboard");
-            assert!(ask("GET", "/repo/swarm-x/summary", Some("swarm-"), Some(&auth)).is_ok());
-        }
-
-        #[test]
-        fn the_summary_answers_get_only() {
-            let auth = bearer("demo", "dashboard");
-            for method in ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "get"] {
-                let got = ask(method, "/repo/demo/summary", None, Some(&auth));
-                assert_eq!(
-                    got,
-                    Err(Denied::MethodNotAllowed { allow: "GET" }),
-                    "{method}"
-                );
-            }
-            assert_eq!(
-                ask("POST", "/repo/demo/summary", None, None),
-                Err(Denied::MethodNotAllowed { allow: "GET" }),
-                "the method is judged before the token"
-            );
-        }
-
-        #[test]
-        fn a_trunk_poke_with_a_token_for_its_repo_is_admitted() {
-            let auth = bearer("demo", "steward");
-            let got = ask("POST", "/repo/demo/trunk-moved", None, Some(&auth));
-            assert_eq!(
-                got,
-                Ok((
-                    format!("{:?}", Route::TrunkMoved { repo: "demo" }),
-                    agent("steward")
-                ))
-            );
-        }
-
-        #[test]
-        fn a_trunk_poke_without_a_valid_token_or_for_another_repo_is_refused() {
-            let post = |auth: Option<&str>| ask("POST", "/repo/demo/trunk-moved", None, auth);
-            let unauthorized = |got: Result<_, Denied>| matches!(got, Err(Denied::Unauthorized(_)));
-            assert!(unauthorized(post(None)));
-            assert!(unauthorized(post(Some("Bearer nonsense"))));
-            assert!(unauthorized(post(Some(&bearer("elsewhere", "steward")))));
-            let expired = format!("Bearer {}", token(KEY, "demo", "steward", SIGNED_AT));
-            assert!(unauthorized(post(Some(&expired))));
-            let auth = bearer("demo", "steward");
-            let refused = ask(
-                "POST",
-                "/repo/demo/trunk-moved",
-                Some("swarm-"),
-                Some(&auth),
-            );
-            assert_eq!(refused, Err(Denied::Forbidden));
-        }
-
-        #[test]
-        fn a_trunk_poke_from_any_agent_but_the_steward_is_refused() {
-            for who in ["a1", "dashboard", "Steward", "steward2"] {
-                let auth = bearer("demo", who);
-                let got = ask("POST", "/repo/demo/trunk-moved", None, Some(&auth));
-                assert_eq!(got, Err(Denied::NotSteward), "{who}");
-            }
-        }
-
-        #[test]
-        fn a_trunk_poke_takes_post_only() {
-            let auth = bearer("demo", "steward");
-            for method in ["GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "post"] {
-                let got = ask(method, "/repo/demo/trunk-moved", None, Some(&auth));
-                assert_eq!(
-                    got,
-                    Err(Denied::MethodNotAllowed { allow: "POST" }),
-                    "{method}"
-                );
-            }
-        }
-
-        #[test]
-        fn the_ws_route_keeps_its_order_of_refusals() {
-            let auth = bearer("demo", "a1");
-            assert!(ask("GET", "/repo/demo/ws", None, Some(&auth)).is_ok());
-            assert!(
-                ask("POST", "/repo/demo/ws", None, Some(&auth)).is_ok(),
-                "the upgrade check, not the Worker, judges the method of a ws request"
-            );
-            assert_eq!(
-                ask("GET", "/repo/demo/ws", Some("swarm-"), Some(&auth)),
-                Err(Denied::Forbidden)
-            );
-            assert!(matches!(
-                ask("GET", "/repo/demo/ws", None, None),
-                Err(Denied::Unauthorized(_))
-            ));
-            assert_eq!(
-                ask("GET", "/nope", None, Some(&auth)),
-                Err(Denied::NotFound)
-            );
-        }
-
-        #[test]
-        fn the_ws_route_binds_the_agent_of_a_token_for_its_repo_only() {
-            let auth = bearer("demo", "a7");
-            let (route, who) = ask("GET", "/repo/demo/ws", None, Some(&auth)).unwrap();
-            assert_eq!(route, format!("{:?}", Route::Ws { repo: "demo" }));
-            assert_eq!(who, agent("a7"));
-            let elsewhere = bearer("elsewhere", "a7");
-            assert!(matches!(
-                ask("GET", "/repo/demo/ws", None, Some(&elsewhere)),
-                Err(Denied::Unauthorized(_))
-            ));
-            let other = bearer("other", "a8");
-            let (_, who) = ask("GET", "/repo/other/ws", None, Some(&other)).unwrap();
-            assert_eq!(who, agent("a8"));
-            assert!(matches!(
-                ask("GET", "/repo/other/ws", None, Some(&auth)),
-                Err(Denied::Unauthorized(_))
-            ));
         }
     }
 }

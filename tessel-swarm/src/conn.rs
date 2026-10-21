@@ -113,14 +113,8 @@ pub struct Conn {
     unawaited: Vec<RequestId>,
 }
 
-/// Installs the TLS provider `wss://` needs. Harmless if one is already installed.
-pub fn install_tls() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
 impl Conn {
     pub async fn open(url: &str, token: &Token) -> Result<Self> {
-        install_tls();
         let mut request = url.into_client_request().context("bad coordinator URL")?;
         let mut bearer = HeaderValue::from_str(&format!("Bearer {}", token.expose()))
             .context("the identity token is not a valid header value")?;
