@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tessel_coordinator::host::call::{Call, CallAnswer, Refusal, Request};
+use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, CommitId, ScopeClaim};
 use tessel_lander::git::{CommandError, Git, MergeSources, MAIN_BRANCH};
 use tessel_lander::merge::{run_merge, MergeContext, MergePolicy, MergeRequest};
@@ -201,6 +202,7 @@ impl Inner {
             } => self.prepare(work, agent, fork_commit, scopes),
             Request::Test { .. } | Request::Land { .. } => CallAnswer::Refused {
                 refusal: Refusal::Rule {
+                    rule: RuleKind::Other,
                     message: STAND_IN_MESSAGE.to_string(),
                 },
             },

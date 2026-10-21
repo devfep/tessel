@@ -683,25 +683,42 @@ async fn the_same_repository_listed_twice_is_refused_at_start() -> TestResult {
 
 #[tokio::test]
 async fn with_no_lander_a_submission_is_refused_and_never_reported_landed() -> TestResult {
+    let log = captured_log();
     let dir = tempfile::tempdir()?;
-    let server = start(dir.path()).await?;
-    let mut socket = welcomed(server.local_addr(), DEMO, TOKEN_A1, "a1").await?;
+    let repos = [("acme", "no-lander-log")];
+    let server = start_with(dir.path(), &repos, Some(tokens()), Arc::new(NoLander)).await?;
+    let path = "/tenant/acme/repo/no-lander-log";
+    let mut socket = welcomed(server.local_addr(), path, TOKEN_A1, "a1").await?;
     send(&mut socket, &claim(1, "src/a.rs")).await?;
     let (claim_id, fence) = granted(&expect(&mut socket).await?).ok_or("no grant")?;
     send(&mut socket, &submit(claim_id, fence)).await?;
     let mut saw_accepted = false;
-    loop {
+    let reason = loop {
         let msg = expect(&mut socket).await?;
         if matches!(msg, ServerMsg::Accepted { .. }) {
             saw_accepted = true;
-        } else if let ServerMsg::SubmitRejected { claim, .. } = &msg {
-            assert_eq!(*claim, claim_id);
-            break;
+        } else if let ServerMsg::SubmitRejected { claim, reason, .. } = msg {
+            assert_eq!(claim, claim_id);
+            break reason;
         } else {
             return Err(format!("expected a refusal, never a landing: {msg:?}").into());
         }
-    }
+    };
     assert!(saw_accepted);
+    assert_eq!(
+        reason, "this server has no lander configured; nothing can land until one is",
+        "the agent is told the lander is missing, not that its fork is"
+    );
+    let text = String::from_utf8(log.0.lock().unwrap_or_else(PoisonError::into_inner).clone())?;
+    let ours: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("no-lander-log") && line.contains("(NoLander) refused"))
+        .collect();
+    assert!(
+        ours.iter()
+            .any(|line| line.contains(r#"\"no lander is configured on this server\""#)),
+        "the rule's message is in the log, quoted: {ours:?}"
+    );
     server.stop().await;
     Ok(())
 }

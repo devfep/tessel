@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::merge::RuleKind;
 use crate::protocol::{AgentId, ClaimId, CommitId, ScopeClaim};
 
 /// Names a call. The adapter echoes it in `Replied` and `CallLost`.
@@ -122,8 +123,13 @@ pub enum Refusal {
     /// check). GitHub types these (`UNPROCESSABLE`, `Branch 'refs/heads/main' is protected: ...`,
     /// `docs/proposals/github-spike.md` section 2), unlike a stale `beforeOid`, which is `Unknown`.
     Rule {
+        /// Which rule, as a fixed word: the agent reads one fixed reason per kind. Named `rule`
+        /// because `kind` is this enum's tag. An answer stored without one reads as `Other`.
+        #[serde(default)]
+        rule: RuleKind,
         /// The host's message, untrusted. The lander must cut it to
-        /// `REASON_OUTPUT_MAX_CHARS` characters; it is shown quoted and never read.
+        /// `REASON_OUTPUT_MAX_CHARS` characters; the host logs it, bounded and quoted again, and
+        /// never sends it to an agent.
         message: String,
     },
 }
@@ -245,6 +251,16 @@ mod tests {
         ]
     }
 
+    fn rule_kind() -> impl Strategy<Value = RuleKind> {
+        prop_oneof![
+            Just(RuleKind::NoLander),
+            Just(RuleKind::ProtectedRef),
+            Just(RuleKind::RequiredCheck),
+            Just(RuleKind::ForkMissing),
+            Just(RuleKind::Other),
+        ]
+    }
+
     fn refusal() -> impl Strategy<Value = Refusal> {
         prop_oneof![
             prop::collection::vec(".{0,12}", 0..3).prop_map(|files| Refusal::Conflict { files }),
@@ -260,7 +276,7 @@ mod tests {
                 }
             }),
             Just(Refusal::CommitNotInFork),
-            ".{0,40}".prop_map(|message| Refusal::Rule { message }),
+            (rule_kind(), ".{0,40}").prop_map(|(rule, message)| Refusal::Rule { rule, message }),
         ]
     }
 
@@ -304,6 +320,27 @@ mod tests {
     fn an_answer_of_an_unknown_kind_reads_as_unknown() {
         let answer: CallAnswer = serde_json::from_str(r#"{"kind":"from_a_newer_build"}"#).unwrap();
         assert_eq!(answer, CallAnswer::Unknown);
+    }
+
+    #[test]
+    fn a_rule_refusal_stored_without_a_rule_reads_as_other() {
+        let old: Refusal =
+            serde_json::from_str(r#"{"kind":"rule","message":"protected"}"#).unwrap();
+        assert_eq!(
+            old,
+            Refusal::Rule {
+                rule: RuleKind::Other,
+                message: "protected".to_string()
+            }
+        );
+        let typed = Refusal::Rule {
+            rule: RuleKind::NoLander,
+            message: "m".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&typed).unwrap(),
+            r#"{"kind":"rule","rule":"no_lander","message":"m"}"#
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use tessel_coordinator::host::call::{
     Call, CallAnswer, CallId, DispatchId, Refusal, Request, TestFailure, TrialResult,
 };
+use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, ClaimId, CommitId, Mode, Scope, ScopeClaim};
 use tessel_server::id::RepoId;
 use tessel_server::landing::{Landing, LandingError, LocalRunner, TestRunner, STAND_IN_MESSAGE};
@@ -602,6 +603,7 @@ async fn test_and_land_are_refused_naming_the_stand_in() -> TestResult {
         assert_eq!(
             answer,
             refused(Refusal::Rule {
+                rule: RuleKind::Other,
                 message: STAND_IN_MESSAGE.to_string()
             })
         );

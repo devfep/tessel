@@ -21,6 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tessel_coordinator::host::call::{Call, CallAnswer, Refusal};
 use tessel_coordinator::host::{BatchId, Host, HostConfig, Input, Output, SocketId};
+use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::AgentId;
 use tessel_coordinator::shell::{self, PokeReply, ReplayStep, SummaryTally};
 use tokio::sync::mpsc;
@@ -70,6 +71,7 @@ impl CallPort for NoLander {
         Box::pin(async {
             CallAnswer::Refused {
                 refusal: Refusal::Rule {
+                    rule: RuleKind::NoLander,
                     message: NO_LANDER_MESSAGE.to_string(),
                 },
             }
@@ -660,6 +662,7 @@ mod tests {
                 answer,
                 CallAnswer::Refused {
                     refusal: Refusal::Rule {
+                        rule: RuleKind::NoLander,
                         message: NO_LANDER_MESSAGE.to_string()
                     }
                 },

@@ -165,6 +165,46 @@ pub struct StepExit {
     pub stderr: String,
 }
 
+/// Which rule refused a request. A fixed word: the agent reads one fixed reason per kind, and the
+/// message of the rule (a git host's text, untrusted) is logged and never carried to an agent.
+/// `Other` is a refusal nobody classified, and the default of anything stored without a kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleKind {
+    /// The server has no lander configured, so nothing can land.
+    NoLander,
+    /// The git host's rules protect main against this update.
+    ProtectedRef,
+    /// The git host requires a check on main that has not passed.
+    RequiredCheck,
+    /// The agent's fork is missing, or is not a fork of this repository.
+    ForkMissing,
+    #[default]
+    Other,
+}
+
+/// The reason an agent reads for a refusal of `kind`.
+fn refused_reason(kind: RuleKind) -> &'static str {
+    match kind {
+        RuleKind::NoLander => "this server has no lander configured; nothing can land until one is",
+        RuleKind::ProtectedRef => {
+            "the git host's rules refused the update to main; an operator must look at the \
+             server log"
+        }
+        RuleKind::RequiredCheck => {
+            "the git host requires a check on main that has not passed; an operator must \
+             look at the server log"
+        }
+        RuleKind::ForkMissing => {
+            "your fork is missing or is not a fork of this repository; check it and submit \
+             again"
+        }
+        RuleKind::Other => {
+            "the steward refused the request (fork missing or not a fork of this repo)"
+        }
+    }
+}
+
 /// The steward's answer to one merge attempt. Exhaustive wherever it is matched, so a new outcome
 /// forces a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -210,11 +250,15 @@ pub enum MergeOutcome {
     /// A step used up its share of the time budget or was killed: not a failing test.
     Timeout {},
     PushFailed {},
-    /// The steward refused the request itself (a 4xx): a missing or invalid fork. A fact about
-    /// the submission, not about the infrastructure, so it is never retried. Never read from a
-    /// response body.
+    /// A rule refused the request itself: the steward's 4xx (a missing or invalid fork, `Other`),
+    /// or a lander or git host rule (`kind`). A fact about the submission, not about the
+    /// infrastructure, so it is never retried. Never read from a response body. The agent reads a
+    /// fixed reason per `kind`; the git host's own message is logged, not carried.
     #[serde(skip_deserializing)]
-    Refused,
+    Refused {
+        #[serde(default)]
+        kind: RuleKind,
+    },
     /// Infrastructure: the steward could not be reached or its answer was unusable. Never sent by
     /// the steward, so it is not read from a response.
     #[serde(skip_deserializing)]
@@ -226,7 +270,9 @@ impl MergeOutcome {
     /// 200 with a known `MergeOutcome` is `ServiceUnavailable`. A body is never kept or quoted.
     pub fn from_response(status: u16, body: &str) -> Self {
         if (400..500).contains(&status) {
-            return MergeOutcome::Refused;
+            return MergeOutcome::Refused {
+                kind: RuleKind::Other,
+            };
         }
         if status != 200 {
             return MergeOutcome::ServiceUnavailable;
@@ -287,9 +333,8 @@ impl MergeOutcome {
             MergeOutcome::CommitNotInFork {} => Verdict::Rejected {
                 reason: "the submitted commit is not on your fork's default branch".to_string(),
             },
-            MergeOutcome::Refused => Verdict::Rejected {
-                reason: "the steward refused the request (fork missing or not a fork of this repo)"
-                    .to_string(),
+            MergeOutcome::Refused { kind } => Verdict::Rejected {
+                reason: refused_reason(*kind).to_string(),
             },
             MergeOutcome::MainMoved {} => Verdict::MainMoved,
             MergeOutcome::Clone {}
@@ -750,9 +795,9 @@ mod tests {
     fn a_4xx_is_a_refusal_of_the_request_whatever_the_body_says() {
         for status in [400, 403, 404, 499] {
             let outcome = MergeOutcome::from_response(status, r#"{"outcome":"merged"}"#);
-            assert_eq!(outcome, MergeOutcome::Refused, "{status}");
+            assert_eq!(outcome, refused(RuleKind::Other), "{status}");
         }
-        let Verdict::Rejected { reason } = MergeOutcome::Refused.verdict() else {
+        let Verdict::Rejected { reason } = refused(RuleKind::Other).verdict() else {
             panic!("a refusal rejects the work");
         };
         assert!(
@@ -1225,6 +1270,10 @@ mod tests {
         );
     }
 
+    fn refused(kind: RuleKind) -> MergeOutcome {
+        MergeOutcome::Refused { kind }
+    }
+
     fn rejected(outcome: &MergeOutcome) -> String {
         let Verdict::Rejected { reason } = outcome.verdict() else {
             panic!("expected a rejection for {outcome:?}");
@@ -1255,6 +1304,50 @@ mod tests {
             rejected(&MergeOutcome::GateInvalid {}),
             "changes the gate (tessel.toml) to a file the steward cannot accept"
         );
+        let by_kind = [
+            (
+                RuleKind::NoLander,
+                "this server has no lander configured; nothing can land until one is",
+            ),
+            (
+                RuleKind::ProtectedRef,
+                "the git host's rules refused the update to main; an operator must look at the \
+                 server log",
+            ),
+            (
+                RuleKind::RequiredCheck,
+                "the git host requires a check on main that has not passed; an operator must \
+                 look at the server log",
+            ),
+            (
+                RuleKind::ForkMissing,
+                "your fork is missing or is not a fork of this repository; check it and submit \
+                 again",
+            ),
+            (
+                RuleKind::Other,
+                "the steward refused the request (fork missing or not a fork of this repo)",
+            ),
+        ];
+        for (kind, sentence) in by_kind {
+            assert_eq!(rejected(&refused(kind)), sentence, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_rule_kind_is_a_snake_case_word_and_reads_as_other_when_absent() {
+        for (kind, word) in [
+            (RuleKind::NoLander, "no_lander"),
+            (RuleKind::ProtectedRef, "protected_ref"),
+            (RuleKind::RequiredCheck, "required_check"),
+            (RuleKind::ForkMissing, "fork_missing"),
+            (RuleKind::Other, "other"),
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{word}\""));
+            assert_eq!(serde_json::from_str::<RuleKind>(&json).unwrap(), kind);
+        }
+        assert_eq!(RuleKind::default(), RuleKind::Other);
     }
 
     #[test]
