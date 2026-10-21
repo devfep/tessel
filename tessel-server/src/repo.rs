@@ -33,7 +33,9 @@ use crate::store::{Store, StoreError};
 /// How many messages may wait for one socket's writer before the socket is closed as too slow.
 const WRITER_QUEUE: usize = 1_024;
 
-/// How many inputs may wait for the repository's task; a flooding client waits, not the heap grows.
+/// How many inputs may wait in the channel to the repository's task. It bounds the channel only:
+/// while a storage operation is outstanding the host queues every input it is given, without
+/// limit, so a client that floods during a slow commit still grows memory.
 const INBOX_QUEUE: usize = 256;
 
 /// The reason `NoLander` gives for refusing every call.
@@ -398,6 +400,10 @@ impl RepoTask {
                 }
             }
         }
+        // Closing the inbox first fails a `blocking_send` the storage thread is stuck in, which
+        // would otherwise keep the join below waiting for a thread that waits for room in a
+        // channel nobody reads any more.
+        self.inbox.close();
         self.jobs = None;
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -561,7 +567,7 @@ impl RepoTask {
 #[cfg(test)]
 mod tests {
     use tessel_coordinator::host::call::{CallId, DispatchId, Request};
-    use tessel_coordinator::protocol::CommitId;
+    use tessel_coordinator::protocol::{ClientMsg, CommitId, PROTOCOL_VERSION};
 
     use super::*;
 
@@ -618,5 +624,98 @@ mod tests {
                 "{request:?}"
             );
         }
+    }
+
+    fn hello_text() -> String {
+        let hello = ClientMsg::Hello {
+            agent: AgentId("a1".to_string()),
+            base: commit("ab"),
+            protocol: PROTOCOL_VERSION,
+        };
+        serde_json::to_string(&hello).unwrap()
+    }
+
+    fn started(dir: &std::path::Path) -> (RunningRepo, PathBuf) {
+        let file = dir.join("s.sqlite");
+        let store = Store::open(&file).unwrap();
+        let config = HostConfig {
+            repo: "acme/demo".to_string(),
+            run: Some("test".to_string()),
+            ..HostConfig::default()
+        };
+        let id = RepoId::new("acme", "demo").unwrap();
+        let running = spawn(id, store, file.clone(), config, Arc::new(NoLander));
+        (running, file)
+    }
+
+    /// A second connection that holds the store's write lock, so a commit waits.
+    fn write_lock(file: &std::path::Path) -> rusqlite::Connection {
+        let blocker = rusqlite::Connection::open(file).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        blocker
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_batch_is_not_released_before_its_transaction_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (running, file) = started(dir.path());
+        let (sock, mut wire) = running
+            .handle
+            .open(AgentId("a1".to_string()))
+            .await
+            .unwrap();
+        let blocker = write_lock(&file);
+        running.handle.frame(sock, hello_text()).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            wire.try_recv().is_err(),
+            "nothing leaves while the batch's transaction cannot commit"
+        );
+        blocker.execute_batch("COMMIT").unwrap();
+        let sent = tokio::time::timeout(Duration::from_secs(5), wire.recv())
+            .await
+            .expect("the welcome arrives once the commit returned");
+        assert!(
+            matches!(&sent, Some(Wire::Text(text)) if text.contains("welcome")),
+            "{sent:?}"
+        );
+        let events = Store::open_read_only(&file)
+            .unwrap()
+            .read_events(0, 10)
+            .unwrap();
+        assert_eq!(events.len(), 1, "the rows were there before the reply");
+        running.stop().await;
+    }
+
+    /// `stop` with a storage thread stuck sending its answer into an inbox nobody reads. The
+    /// runtime is shut down by timeout, so a hang ends the test instead of the process.
+    #[test]
+    fn stop_returns_with_a_full_inbox() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let outcome = runtime.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (running, file) = started(dir.path());
+            let (sock, _wire) = running
+                .handle
+                .open(AgentId("a1".to_string()))
+                .await
+                .unwrap();
+            let blocker = write_lock(&file);
+            running.handle.frame(sock, hello_text()).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            running.handle.tx.send(Msg::Stop).await.unwrap();
+            while running.handle.tx.try_send(Msg::Binary { sock }).is_ok() {}
+            blocker.execute_batch("COMMIT").unwrap();
+            tokio::time::timeout(Duration::from_secs(5), running.task)
+                .await
+                .map(|_| ())
+                .map_err(|_| "stop did not return with a full inbox".to_string())
+        });
+        runtime.shutdown_timeout(Duration::from_secs(1));
+        assert_eq!(outcome, Ok(()));
     }
 }
