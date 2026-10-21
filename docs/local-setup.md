@@ -7,7 +7,8 @@ main has not moved, and reads main back before it tells the agent the commit mer
 in [Landing](configuration.md#landing). A repository without a `remote` has no lander: the inbox
 shows `submit_rejected` ("this server has no lander configured; nothing can land until one is")
 and the claim is active again. A submission that touches a `sensitive` path waits for a reviewer
-first.
+first. The runner is not sandboxed until M5: a trunk's test command runs as you and can write
+to a path `remote`, so land only a repository whose tests you trust.
 Build with `cargo build -p tessel-server -p tessel-cli`; put `target/debug` on your `PATH`.
 
 ## The server

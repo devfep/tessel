@@ -219,7 +219,7 @@ with a `remote` the server answers it in process with the lander and the runner.
 | Outcome | The host is told | The agent sees |
 |---|---|---|
 | Main read back at the head | `Prepared`, so the claim merges | `merged` with the head |
-| The commit conflicts with main | refused | `submit_rejected`, the number of files (at most 50) |
+| The commit conflicts with main | refused | `submit_rejected`, the number of files that conflicted |
 | The change is not covered by the claim, or touches `tessel.toml` | refused | `submit_rejected` with the fixed reason |
 | The tests failed | refused | `submit_rejected` with the exit code and no test output |
 | The commit is not on the agent's fork | refused | `submit_rejected` with the fixed reason |
@@ -236,6 +236,10 @@ call still running at its deadline is answered `Unknown`, its clones are removed
 running cannot push main. A server killed mid-merge is woken for each repository with stored state
 when it restarts, finds the merge in flight and retries it after the first backoff, 10 seconds.
 `Test` and `Land` are refused: the host does not issue them while `Prepare` is the whole merge.
+
+The runner has no sandbox until M5. A trunk's test command runs as the runner's user and can write
+to a path `remote`, which a landing does not prevent: use this only for a repository whose tests
+you trust.
 
 No evidence record is written until P1-EVIDENCE. After a landing the server tells the host main
 moved, as the `trunk-moved` route does for a push it did not make; the route stays for those.

@@ -1,8 +1,9 @@
 //! Calls: durable jobs the host hands to the lander, the test runner or the git host, finished by
 //! reconciliation, not by a request held open (`docs/proposals/real-use.md`, "Calls").
 //!
-//! `Call` and `CallAnswer` are persisted, so both round-trip through serde. Free text in an
-//! answer (file names) is untrusted data: it is carried, never acted on.
+//! `Call` and `CallAnswer` round-trip through serde, so an adapter may carry them or keep them
+//! (the stored state holds the merge marker, not the call; see `calls.rs`). Free text in an answer
+//! (file names) is untrusted data: it is carried, never acted on.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,14 +21,14 @@ pub struct CallId(pub u64);
 #[serde(transparent)]
 pub struct DispatchId(pub u64);
 
-/// An outstanding call: persisted in the batch that creates it, and emitted as `Output::Call`
-/// only after that batch commits.
+/// An outstanding call: held in memory by the host, and emitted as `Output::Call` only after the
+/// batch that starts it has committed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Call {
     pub id: CallId,
     pub dispatch_id: DispatchId,
     pub request: Request,
-    /// Persisted per call. An expired deadline before `Land` is one infrastructure failure; after
+    /// Held per call. An expired deadline before `Land` is one infrastructure failure; after
     /// `Land` it starts `Reconcile`.
     pub deadline_ms: u64,
 }
