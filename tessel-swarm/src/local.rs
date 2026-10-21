@@ -14,6 +14,10 @@
 //! then, only if that was clean, at its `main`, the way the real steward's trial route does.
 //! Without it nothing is dispatched, so the other policies behave as they always have.
 //!
+//! The time the server passes to the core comes from one clock, which a test can freeze and
+//! advance (`freeze_clock`, `advance_clock`, `settle_expiry`), as the CLI fake's can, so that a
+//! lease lapses only when the test says so. The agents stay on real time.
+//!
 //! What the local steward does not do: check the merged diff against the claim (invariant 11);
 //! the core already checked the `touched` list the agent submitted.
 
@@ -27,7 +31,7 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::coordinator::{Config, Coordinator, MergeDispatch, VerifyDispatch};
 use tessel_coordinator::merge::{MergeOutcome, StepExit, TrialOutcome, TrialReport};
-use tessel_coordinator::protocol::{AgentId, CommitId, Event, RunId, ServerMsg};
+use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, Event, RunId, ServerMsg};
 use tessel_coordinator::shell::{self, Action, Outbound, Session};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, Notify};
@@ -51,6 +55,20 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The time the core is told, in milliseconds: the real time, or the instant `freeze` stopped it
+/// at, plus whatever `advance` has added. Only the server uses it; the agents stay on real time.
+#[derive(Default)]
+struct Clock {
+    frozen_at_ms: Option<u64>,
+    skew_ms: u64,
+}
+
+impl Clock {
+    fn now(&self) -> u64 {
+        self.frozen_at_ms.unwrap_or_else(now_ms) + self.skew_ms
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -87,6 +105,11 @@ struct State {
     /// Handshakes turned away because the agent was in `refused`.
     turned_away: usize,
     tripwire: Option<Tripwire>,
+    clock: Clock,
+    /// Completed passes of the lease-expiry loop, so a test can wait for one that saw a new clock.
+    expiry_passes: u64,
+    /// Heartbeats the coordinator has handled, by agent.
+    heartbeats: HashMap<String, usize>,
 }
 
 struct Hub {
@@ -159,7 +182,7 @@ impl State {
             }
         }
         for agent in agents {
-            let effects = self.core.disconnect(&agent, now_ms());
+            let effects = self.core.disconnect(&agent, self.clock.now());
             let (events, outbound) = shell::split_effects(effects);
             self.flush(None, events, outbound);
         }
@@ -300,6 +323,9 @@ impl LocalServer {
                 refused: Vec::new(),
                 turned_away: 0,
                 tripwire: None,
+                clock: Clock::default(),
+                expiry_passes: 0,
+                heartbeats: HashMap::new(),
             }),
             tokens,
             path: path.clone(),
@@ -347,6 +373,44 @@ impl LocalServer {
         Cutter(Arc::clone(&self.hub))
     }
 
+    /// Stops the coordinator's clock: from now on it moves only with `advance_clock`, so no lease
+    /// ends because the machine was slow. Call it before any claim is made.
+    pub fn freeze_clock(&self) {
+        lock(&self.hub.state).clock.frozen_at_ms = Some(now_ms());
+    }
+
+    /// Moves the coordinator's clock forward by `ms`. Follow it with `settle_expiry` before
+    /// asserting on what expired.
+    pub fn advance_clock(&self, ms: u64) {
+        lock(&self.hub.state).clock.skew_ms += ms;
+    }
+
+    /// Waits until the lease-expiry loop has run twice since the call began: the first pass may
+    /// have started before the latest `advance_clock`, the second began after it. Panics if the
+    /// loop does not run, which means its task died.
+    pub async fn settle_expiry(&self) {
+        // Passes come every 50 ms; this is only how long a dead loop takes to be noticed.
+        const LOOP_DEAD_AFTER: Duration = Duration::from_secs(30);
+        let target = lock(&self.hub.state).expiry_passes + 2;
+        let started = tokio::time::Instant::now();
+        while lock(&self.hub.state).expiry_passes < target {
+            assert!(
+                started.elapsed() < LOOP_DEAD_AFTER,
+                "the lease-expiry loop made no pass in {LOOP_DEAD_AFTER:?}; its task died"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// How many heartbeats the coordinator has handled from `agent`.
+    pub fn heartbeats(&self, agent: &str) -> usize {
+        lock(&self.hub.state)
+            .heartbeats
+            .get(agent)
+            .copied()
+            .unwrap_or(0)
+    }
+
     pub fn addr(&self) -> Option<SocketAddr> {
         self.endpoint
             .ws_url
@@ -378,9 +442,11 @@ async fn expire_loop(hub: Arc<Hub>) {
     loop {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let mut state = lock(&hub.state);
-        let effects = state.core.expire(now_ms());
+        let now = state.clock.now();
+        let effects = state.core.expire(now);
         let (events, outbound) = shell::split_effects(effects);
         state.flush(None, events, outbound);
+        state.expiry_passes += 1;
     }
 }
 
@@ -389,7 +455,11 @@ async fn expire_loop(hub: Arc<Hub>) {
 async fn steward_loop(hub: Arc<Hub>, trunk: Git, forks: PathBuf, verify: bool) {
     loop {
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let dispatch = lock(&hub.state).core.begin_merge(now_ms());
+        let dispatch = {
+            let mut state = lock(&hub.state);
+            let now = state.clock.now();
+            state.core.begin_merge(now)
+        };
         let Some(dispatch) = dispatch else {
             if verify {
                 verify_next(&hub, &trunk.dir, &forks).await;
@@ -402,7 +472,8 @@ async fn steward_loop(hub: Arc<Hub>, trunk: Git, forks: PathBuf, verify: bool) {
             .await
             .unwrap_or(MergeOutcome::GitFailed {});
         let mut state = lock(&hub.state);
-        let effects = state.core.merge_outcome(dispatch.id, &outcome, now_ms());
+        let now = state.clock.now();
+        let effects = state.core.merge_outcome(dispatch.id, &outcome, now);
         let (events, outbound) = shell::split_effects(effects);
         state.flush(None, events, outbound);
     }
@@ -410,7 +481,11 @@ async fn steward_loop(hub: Arc<Hub>, trunk: Git, forks: PathBuf, verify: bool) {
 
 /// Runs the next queued trial, if the core has one: a merge is never due when it does.
 async fn verify_next(hub: &Hub, trunk: &Path, forks: &Path) {
-    let dispatch = lock(&hub.state).core.begin_verification(now_ms());
+    let dispatch = {
+        let mut state = lock(&hub.state);
+        let now = state.clock.now();
+        state.core.begin_verification(now)
+    };
     let Some(dispatch) = dispatch else { return };
     let (trunk, forks, work) = (trunk.to_path_buf(), forks.to_path_buf(), dispatch.clone());
     let report = tokio::task::spawn_blocking(move || trial(&trunk, &forks, &work))
@@ -667,7 +742,11 @@ fn handle_text(hub: &Hub, id: u64, session: &mut Session, text: &str) -> bool {
             }
         }
         Action::Call { agent } => {
-            let effects = state.core.handle(&agent, msg, now_ms());
+            let now = state.clock.now();
+            if matches!(msg, ClientMsg::Heartbeat) {
+                *state.heartbeats.entry(agent.0.clone()).or_default() += 1;
+            }
+            let effects = state.core.handle(&agent, msg, now);
             let (events, outbound) = shell::split_effects(effects);
             if let Some(bound) = shell::bind_on_welcome(session, &agent, &outbound) {
                 *session = bound;
@@ -694,7 +773,8 @@ fn close_socket(hub: &Hub, id: u64, session: &Session) {
     {
         return;
     }
-    let effects = state.core.disconnect(agent, now_ms());
+    let now = state.clock.now();
+    let effects = state.core.disconnect(agent, now);
     let (events, outbound) = shell::split_effects(effects);
     state.flush(None, events, outbound);
 }
@@ -706,6 +786,18 @@ mod tests {
     use crate::tasks::{self, Kind, Task};
     use tessel_coordinator::merge::TrialVerdict;
     use tessel_coordinator::protocol::Outcome;
+
+    #[test]
+    fn a_frozen_clock_moves_only_when_advanced() {
+        let mut clock = Clock::default();
+        let real = now_ms();
+        assert!(clock.now() >= real, "an unfrozen clock follows real time");
+        clock.frozen_at_ms = Some(1_000);
+        assert_eq!(clock.now(), 1_000);
+        clock.skew_ms += 300;
+        clock.skew_ms += 450;
+        assert_eq!(clock.now(), 1_750);
+    }
 
     struct Fixture {
         _scratch: tempfile::TempDir,
