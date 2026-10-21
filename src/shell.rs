@@ -1,5 +1,5 @@
-//! Pure helpers for the Durable Object shell in `runtime.rs`: everything that can be decided without
-//! a runtime. The shell only reads storage and sockets, calls these, and does what they say.
+//! Pure helpers for the host: everything that can be decided without I/O. The host and its
+//! adapters read storage and sockets, call these, and do what they say.
 //!
 //! Decisions made here:
 //! - A `Notify` for an agent with no open socket is dropped. The core keeps the state that
@@ -104,7 +104,7 @@ impl std::fmt::Display for LoadError {
             LoadError::MissingRun => {
                 write!(
                     f,
-                    "the RUN variable is missing or empty; set it in wrangler.toml"
+                    "the RUN variable is missing or empty; set it in the host's config"
                 )
             }
             LoadError::InvalidShadowEnabled => write!(
@@ -213,14 +213,6 @@ pub fn is_agent_id(agent: &str) -> bool {
         && agent
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-}
-
-/// Whether the Worker serves `repo`. `prefix` is the `ALLOWED_REPO_PREFIX` var: unset or empty
-/// serves every repo; otherwise only repos whose name starts with it. A deployment that shares its
-/// signing key with others sets it, so a token minted for another deployment's repo opens nothing
-/// here.
-pub fn repo_allowed(prefix: Option<&str>, repo: &str) -> bool {
-    prefix.is_none_or(|p| repo.starts_with(p))
 }
 
 /// `SHADOW_ENABLED`: exactly "true" or "false"; unset means false. Anything else is an error.
@@ -799,21 +791,6 @@ pub fn persist_entries(
     Ok(entries)
 }
 
-/// Whether delivery must read the other sockets' sessions: only a notification or an event can
-/// go to a socket other than the sender.
-pub fn needs_sessions(outbound: &[Outbound], events: &[Event]) -> bool {
-    if !events.is_empty() {
-        return true;
-    }
-    for item in outbound {
-        match item {
-            Outbound::Reply(_) => {}
-            Outbound::Notify { .. } => return true,
-        }
-    }
-    false
-}
-
 /// The agent whose queued request to withdraw when a socket in `closing` goes away: the bound
 /// agent, unless another open socket (`others`, which excludes the closing one) is bound to it,
 /// and only if it has a queued request (`has_queued`), so a close that changes nothing is not
@@ -907,20 +884,6 @@ mod tests {
         Assumption, ClaimId, CommitId, EventKind, Fence, Intent, Mode, OnConflict, Outcome,
         ReleaseReason, Scope, ScopeClaim, Summary, UnverifiedAssumption,
     };
-
-    #[test]
-    fn repo_prefix_limits_which_repos_a_deployment_serves() {
-        for repo in ["swarm-x", "tessel-dogfood", "demo"] {
-            assert!(repo_allowed(None, repo), "unset serves everything");
-            assert!(repo_allowed(Some(""), repo), "empty serves everything");
-        }
-        assert!(repo_allowed(Some("swarm-"), "swarm-x"));
-        assert!(repo_allowed(Some("swarm-"), "swarm-"));
-        assert!(!repo_allowed(Some("swarm-"), "tessel-dogfood"));
-        assert!(!repo_allowed(Some("swarm-"), "demo"));
-        assert!(!repo_allowed(Some("swarm-"), "my-swarm-x"));
-        assert!(!repo_allowed(Some("swarm-"), "swarm"));
-    }
 
     const NOW: u64 = 1_000;
 
@@ -2422,16 +2385,6 @@ mod tests {
             panic!("expected a watch");
         };
         assert_eq!(from_seq, MAX_SAFE_SEQ);
-    }
-
-    #[test]
-    fn delivery_reads_sessions_only_for_notifications_and_events() {
-        let reply = Outbound::Reply(binary_rejection());
-        assert!(!needs_sessions(&[], &[]));
-        assert!(!needs_sessions(&[reply.clone(), reply.clone()], &[]));
-        assert!(needs_sessions(&[reply.clone(), queued("a2")], &[]));
-        assert!(needs_sessions(&[reply], &[event_at(0)]));
-        assert!(needs_sessions(&[], &[event_at(0)]));
     }
 
     #[test]
