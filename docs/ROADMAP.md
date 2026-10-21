@@ -7,15 +7,19 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-20 evening EDT. Merged since the last rewrite: SWARM-AGENT-CHECKS-UNDER-LOAD
-part 1 (`345b722`, #65), the previous STATE (`77e5678`, #66) and CLI-RECONCILE-INFLIGHT-NOTICE with
-CLI-RELEASE-BEFORE-GRANT (`fd91df2`, #67). The orchestrator's gate on `fd91df2` is green (1718
-tests, all seven steps). M2's done-check waits on P1-CLI-ON-HOST, the next task to dispatch.
-**In flight:** nothing; every lane and reviewer is stopped (account switch).
+**As of:** 2026-10-20 20:30 EDT. Main at `8768a8c` (#65-#68 merged; the orchestrator's gate on
+`fd91df2` is green, 1718 tests, all seven steps; #68 was docs only). M2's done-check waits on
+P1-CLI-ON-HOST, now in flight.
+**In flight:** lane A, P1-CLI-ON-HOST, worktree `.claude/worktrees/p1-cli-on-host`, branch
+`task-p1-cli-on-host` from `8768a8c`, dispatched 20:30; P1-FAKE-HELLO-LOST is folded in as its
+bounded last step (the fake's orchestration it concerns is what the task replaces). Lane B,
+SWARM-SHORT-LEASE-TESTS, swarm half only, worktree `.claude/worktrees/swarm-short-lease-tests`,
+branch `task-swarm-short-lease-tests` from `8768a8c`, dispatched 20:30; the two `cli.rs` lease
+tests it also names wait until P1-CLI-ON-HOST merges, since lane A is rebuilding that fake.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
-**Next:** lane A takes P1-CLI-ON-HOST (decision 14 made). P1-FAKE-HELLO-LOST is decided when
-P1-CLI-ON-HOST is dispatched, since that task replaces the fake's orchestration. Lane B takes
-SWARM-SHORT-LEASE-TESTS.
+SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note.
+**Next:** reviews of both lanes, then the M2 done-check once P1-CLI-ON-HOST merges; then the M3
+re-plan (P1-DROP-WORKER first, decision 13), and the `cli.rs` half of SWARM-SHORT-LEASE-TESTS.
 **Decided by Felix (20 October), decision 14:** the CLI's fake coordinator is rebuilt on the host
 in M2 (P1-CLI-ON-HOST), and the swarm's test host in M5, as recommended in
 `docs/proposals/phase-1.md`.
