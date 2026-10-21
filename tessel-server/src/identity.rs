@@ -692,6 +692,11 @@ mod tests {
             let got = verifier(&[("k1", 1)]).verify_at(&token, &id(), exp_ms - 1);
             prop_assert_eq!(got, Ok(AgentId(agent)));
         }
+    }
+
+    proptest! {
+        // Every case checks every byte of a token, so a few dozen cases cover the agent names.
+        #![proptest_config(ProptestConfig::with_cases(24))]
 
         #[test]
         fn flipping_any_one_byte_of_a_token_fails(

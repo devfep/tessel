@@ -1,5 +1,6 @@
 //! The Tessel coordinator server: one host per repository, on SQLite, served over WebSocket.
 
+pub mod admin;
 pub mod config;
 pub mod id;
 pub mod identity;
