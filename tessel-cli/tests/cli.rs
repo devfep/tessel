@@ -570,6 +570,7 @@ async fn start_with_a_refused_token_fails_and_does_not_print_it() -> Result<()> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_config_file_overrides_the_environment() -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     // The environment names an agent and token the coordinator does not know.
     let agent = Agent::new(&fake, "zz", "tok-zz-wrong")?;
     std::fs::create_dir_all(agent.root().join(".tessel"))?;
@@ -585,6 +586,7 @@ async fn the_config_file_overrides_the_environment() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_configuration_is_named() -> Result<()> {
     let fake = Fake::start(30_000, &[]).await?;
+    fake.freeze_clock();
     let agent = Agent::new(&fake, "a1", "x")?;
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tessel"));
     command
@@ -1105,6 +1107,7 @@ const DEEP: &str = "a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-lon
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_worktree_too_deep_for_the_old_socket_path_works_end_to_end() -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     let a1 = Agent::nested(&fake, "a1", TOK1, DEEP)?;
     assert!(
         a1.root().join(".tessel/sock").as_os_str().len() > 100,
@@ -1141,6 +1144,7 @@ fn too_long_runtime_dir() -> Result<tempfile::TempDir> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_socket_path_that_cannot_fit_stops_start_and_blocks_the_hook() -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     let base = too_long_runtime_dir()?;
     let long = base.path().join("x".repeat(100));
     let a1 =
@@ -1159,6 +1163,7 @@ async fn a_socket_path_that_cannot_fit_stops_start_and_blocks_the_hook() -> Resu
 async fn a_socket_directory_with_the_wrong_mode_is_refused_by_start_and_the_hook() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     let runtime = tempfile::tempdir()?;
     let a1 = Agent::new(&fake, "a1", TOK1)?
         .with_env("XDG_RUNTIME_DIR", &runtime.path().display().to_string());
@@ -1753,17 +1758,24 @@ async fn a_grant_after_a_wait_longer_than_the_lease_has_a_fresh_expiry() -> Resu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lapsed_lease_grants_the_queued_waiter_with_no_help_from_the_test() -> Result<()> {
-    let (fake, a1, a2) = world(CLOCK_LEASE_MS).await?;
+    // Long enough that a1's first heartbeat (a third of the lease, about 40 s) comes after the
+    // wait below: the host runs a due expiry before any client frame, so with a shorter lease a
+    // heartbeat could do the timer's work and the test pass with the timer dead.
+    const LAPSE_LEASE_MS: u64 = 120_000;
+    let (fake, a1, a2) = world(LAPSE_LEASE_MS).await?;
     a1.start("long hold")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     a2.start("patient")?;
     assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
     // The clock moves past a1's lease and nothing runs the wake for the test (no `settle_expiry`):
     // the coordinator's own timer must notice that the clock moved.
-    fake.advance_clock(CLOCK_LEASE_MS + 1);
-    eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(())))
+    fake.advance_clock(LAPSE_LEASE_MS + 1);
+    eventually(SHORT, || Ok((granted_to(&fake, "a2") == 1).then_some(())))
         .await
         .context("the lapse was never acted on: the wake timer did not run")?;
+    eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(())))
+        .await
+        .context("the coordinator granted a2, but its daemon does not hold the claim")?;
     assert_eq!(lease_expiries(&fake), 1);
     let inbox = a2.tessel(&["inbox", "--all"])?;
     assert!(

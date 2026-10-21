@@ -1131,7 +1131,10 @@ async fn flush_queued(
     let _ = socket.close(None).await;
     // The reader sends its `Hello` right behind its `Watch`. Closing with that frame unread makes
     // the OS reset the connection, and a reset throws away the events the reader has not read yet,
-    // so the close handshake is finished before the socket is dropped.
+    // so the close handshake is finished before the socket is dropped. A passing run returns as
+    // soon as the daemon answers the close; the 2 s only bounds a daemon that never does. Its
+    // expiry is not recorded: the drop that follows is the same cut a network gives, and the
+    // lost events then show as the failing assertion on what the read held.
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
         while socket.next().await.is_some() {}
     })
