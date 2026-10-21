@@ -714,7 +714,7 @@ async fn pre_edit(root: Option<PathBuf>) -> anyhow::Result<ExitCode> {
 }
 
 fn init_command(cwd: &Path, flags: &init::Flags) -> anyhow::Result<ExitCode> {
-    let card = init::run(cwd, flags, &|name| std::env::var(name).ok(), &init::Curl)?;
+    let card = init::run(cwd, flags, &|name| std::env::var(name).ok())?;
     say(&card);
     Ok(ExitCode::SUCCESS)
 }
