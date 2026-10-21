@@ -88,6 +88,8 @@ M3 are P1-SERVER and P1-IDENTITY; until they merge there is no server to run. Wh
 the core and the portable host in `src/host/`, the lander in `tessel-lander/`, the CLI against a
 fake coordinator that drives the real host, and the swarm harness on 127.0.0.1.
 
+To run `tessel-server` for yourself, follow [`docs/local-setup.md`](docs/local-setup.md).
+
 ## Evidence
 
 The counting rule: **a denial is not a prevented conflict.** Only verified outcomes count.

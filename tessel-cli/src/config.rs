@@ -11,7 +11,7 @@ const ENV_REPO: &str = "TESSEL_REPO";
 const ENV_AGENT: &str = "TESSEL_AGENT";
 const ENV_TOKEN: &str = "TESSEL_TOKEN";
 
-/// The identity token minted by the steward. It never prints: `Debug` hides it, and the only way
+/// The identity token minted by the operator. It never prints: `Debug` hides it, and the only way
 /// to read it is `expose`, which the connection code calls once per handshake.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Token(String);
@@ -128,7 +128,7 @@ impl Config {
     }
 }
 
-/// The steward's name rule: letters, digits, `.`, `_`, `-`, starting with a letter or digit.
+/// The server's name rule: letters, digits, `.`, `_`, `-`, starting with a letter or digit.
 fn validate_name(name: &'static str, value: &str) -> Result<(), ConfigError> {
     let mut chars = value.chars();
     let first_ok = chars.next().is_some_and(|c| c.is_ascii_alphanumeric());

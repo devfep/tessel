@@ -15,17 +15,18 @@ and `NotebookEdit`, whether or not you follow this file.
 Once per worktree, `tessel init` does everything below in one rerunnable step:
 
 ```
-tessel init --coordinator <wss://…> --repo <name> --agent <name> [--steward <https://…>]
+tessel init --coordinator <ws://… or wss://…> --repo <name> --agent <name>
 ```
 
+For a `tessel-server` on this machine the coordinator is `ws://127.0.0.1:7878/tenant/<tenant>`.
 For `init`, a flag wins over `.tessel/config.toml`, which wins over the `TESSEL_*` variables; every
-other command reads the file, then the variables. Your token is minted by the operator, who gives
-you `TESSEL_TOKEN` and nothing else: `init` keeps the token already in the file, else takes
-`TESSEL_TOKEN`. Do not hold `STEWARD_ADMIN_TOKEN`. It mints identities for any agent, reviewers
-included, so only the operator uses it, for example by running `tessel init --steward <https://…>`
-in your worktree with the variable set for that one command. `init` writes `.tessel/config.toml`
-(mode 0600), keeps `.tessel/` out of git through `.git/info/exclude`, and installs the Claude Code
-and git hooks. It never prints the token. Then `tessel start "<one line: what this work is for>"`.
+other command reads the file, then the variables. Your token is minted by the operator with
+`tessel-server admin token`, who gives you `TESSEL_TOKEN` and nothing else: `init` keeps the token
+already in the file, else takes `TESSEL_TOKEN`, else fails and tells you to ask the operator. Do
+not hold the server's key files (`<kid>.key`). They sign a token for any agent, reviewers
+included, so only the operator has them. `init` writes `.tessel/config.toml` (mode 0600), keeps
+`.tessel/` out of git through `.git/info/exclude`, and installs the Claude Code and git hooks. It
+never prints the token. Then `tessel start "<one line: what this work is for>"`.
 
 Or by hand. Set `TESSEL_COORDINATOR` (the `ws://` or `wss://` base URL), `TESSEL_REPO`,
 `TESSEL_AGENT` (letters, digits, `.`, `_`, `-`; start with a letter or digit) and `TESSEL_TOKEN`,

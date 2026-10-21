@@ -231,9 +231,9 @@ fn token_source(file: &FileValues, env: Env<'_>, names: &Names) -> anyhow::Resul
         return Ok(TokenSource::FromEnv(token));
     }
     bail!(
-        "{dropped}no token: set {ENV_TOKEN} to a token minted for this repo and agent. The operator \
-         mints one with: tessel-server admin token --config <file> --kid <kid> --tenant <t> \
-         --repo {} --agent {}; hand the agent {ENV_TOKEN} only, never the signing keys",
+        "{dropped}no token: set {ENV_TOKEN} to a token minted for this repo and agent. The \
+         operator mints one with: tessel-server admin token --config <file> --kid <kid> \
+         --tenant <t> --repo {} --agent {}; hand the agent {ENV_TOKEN} only, never the keys",
         names.repo,
         names.agent
     )
