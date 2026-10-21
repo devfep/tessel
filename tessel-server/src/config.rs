@@ -241,7 +241,8 @@ mod tests {
     #[test]
     fn a_repository_names_its_reviewers_and_sensitive_paths() {
         let config = load(&format!(
-            "{BASE}reviewers = [\"felix\", \"a.b_c-1\"]\nsensitive = [\"src/auth/\", \"tessel.toml\"]\n"
+            "{BASE}reviewers = [\"felix\", \"a.b_c-1\"]\n\
+             sensitive = [\"src/auth/\", \"tessel.toml\"]\n"
         ))
         .unwrap();
         let repository = &config.repositories[0];

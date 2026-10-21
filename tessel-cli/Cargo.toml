@@ -39,6 +39,8 @@ toml = { version = "=1.1.6", default-features = false, features = ["parse", "ser
 [dev-dependencies]
 # Only its demo repository generator, so the symbol test reads the files agents will get.
 tessel-swarm = { path = "../tessel-swarm" }
+# The real server, started in process by `tests/local_server.rs`.
+tessel-server = { path = "../tessel-server" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 

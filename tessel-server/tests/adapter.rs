@@ -864,10 +864,10 @@ async fn a_name_not_in_the_configured_reviewers_is_refused() -> TestResult {
     let mut outsider = welcomed(addr, DEMO, TOKEN_A3, "a3").await?;
     send(&mut outsider, &review(claim_id, true)).await?;
     let refusal = expect(&mut outsider).await?;
-    assert!(
-        matches!(&refusal, ServerMsg::Error { message, .. } if message.contains("configured reviewer")),
-        "{refusal:?}"
-    );
+    let ServerMsg::Error { message, .. } = &refusal else {
+        return Err(format!("expected a refusal, got {refusal:?}").into());
+    };
+    assert!(message.contains("configured reviewer"), "{message}");
     let decided = events_of(dir.path(), "acme", "demo")?
         .iter()
         .filter(|kind| matches!(kind, EventKind::ReviewDecided { .. }))

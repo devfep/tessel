@@ -1564,6 +1564,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tessel-coordinator",
+ "tessel-server",
  "tessel-swarm",
  "thiserror",
  "tokio",

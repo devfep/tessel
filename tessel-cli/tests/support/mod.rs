@@ -1210,6 +1210,15 @@ impl Agent {
 
     /// Like `new`, with the worktree `nest` levels below the temp directory.
     pub fn nested(fake: &Fake, name: &str, token: &str, nest: &str) -> Result<Self> {
+        Self::nested_at(&fake.url, name, token, nest)
+    }
+
+    /// Like `new`, for a coordinator that is not the fake: `url` is its address.
+    pub fn at(url: &str, name: &str, token: &str) -> Result<Self> {
+        Self::nested_at(url, name, token, "")
+    }
+
+    fn nested_at(url: &str, name: &str, token: &str, nest: &str) -> Result<Self> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join(nest);
         let root = path.as_path();
@@ -1231,7 +1240,7 @@ impl Agent {
             dir,
             path,
             env: Vec::new(),
-            url: fake.url.clone(),
+            url: url.to_string(),
         })
     }
 
