@@ -591,7 +591,7 @@ fn try_land(trunk: &Git, forks: &Path, dispatch: &MergeDispatch) -> Result<Merge
                 base: CommitId(base),
             });
         }
-        return Ok(MergeOutcome::Conflict { files });
+        return Ok(MergeOutcome::Conflict { files, total: None });
     }
     match git::run_checks(&trunk.dir)? {
         Checks::Pass { .. } => {

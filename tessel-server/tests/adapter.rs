@@ -34,6 +34,12 @@ use tokio_tungstenite::tungstenite::http::HeaderName;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+#[expect(
+    dead_code,
+    reason = "each test crate compiles all of support and uses only some of it"
+)]
+mod support;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -72,6 +78,7 @@ fn config(dir: &Path, repos: &[(&str, &str)]) -> Config {
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         store_dir: dir.join("stores"),
         identity: None,
+        lander: None,
         repositories: repos
             .iter()
             .map(|(tenant, name)| RepositoryConfig {
@@ -80,6 +87,8 @@ fn config(dir: &Path, repos: &[(&str, &str)]) -> Config {
                 run: "test".to_string(),
                 reviewers: Vec::new(),
                 sensitive: Vec::new(),
+                remote: None,
+                fork: None,
             })
             .collect(),
     }
@@ -674,25 +683,42 @@ async fn the_same_repository_listed_twice_is_refused_at_start() -> TestResult {
 
 #[tokio::test]
 async fn with_no_lander_a_submission_is_refused_and_never_reported_landed() -> TestResult {
+    let log = captured_log();
     let dir = tempfile::tempdir()?;
-    let server = start(dir.path()).await?;
-    let mut socket = welcomed(server.local_addr(), DEMO, TOKEN_A1, "a1").await?;
+    let repos = [("acme", "no-lander-log")];
+    let server = start_with(dir.path(), &repos, Some(tokens()), Arc::new(NoLander)).await?;
+    let path = "/tenant/acme/repo/no-lander-log";
+    let mut socket = welcomed(server.local_addr(), path, TOKEN_A1, "a1").await?;
     send(&mut socket, &claim(1, "src/a.rs")).await?;
     let (claim_id, fence) = granted(&expect(&mut socket).await?).ok_or("no grant")?;
     send(&mut socket, &submit(claim_id, fence)).await?;
     let mut saw_accepted = false;
-    loop {
+    let reason = loop {
         let msg = expect(&mut socket).await?;
         if matches!(msg, ServerMsg::Accepted { .. }) {
             saw_accepted = true;
-        } else if let ServerMsg::SubmitRejected { claim, .. } = &msg {
-            assert_eq!(*claim, claim_id);
-            break;
+        } else if let ServerMsg::SubmitRejected { claim, reason, .. } = msg {
+            assert_eq!(claim, claim_id);
+            break reason;
         } else {
             return Err(format!("expected a refusal, never a landing: {msg:?}").into());
         }
-    }
+    };
     assert!(saw_accepted);
+    assert_eq!(
+        reason, "this server has no lander configured; nothing can land until one is",
+        "the agent is told the lander is missing, not that its fork is"
+    );
+    let text = String::from_utf8(log.0.lock().unwrap_or_else(PoisonError::into_inner).clone())?;
+    let ours: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("no-lander-log") && line.contains("(NoLander) refused"))
+        .collect();
+    assert!(
+        ours.iter()
+            .any(|line| line.contains(r#"\"no lander is configured on this server\""#)),
+        "the rule's message is in the log, quoted: {ours:?}"
+    );
     server.stop().await;
     Ok(())
 }
@@ -874,5 +900,155 @@ async fn a_name_not_in_the_configured_reviewers_is_refused() -> TestResult {
         .count();
     assert_eq!(decided, 0, "the submission is still held");
     server.stop().await;
+    Ok(())
+}
+
+/// A submission of the commit `commit`, which changes only `path`.
+fn submit_commit(claim: ClaimId, fence: Fence, commit: &str, path: &str) -> ClientMsg {
+    let mut msg = submit(claim, fence);
+    if let ClientMsg::Submit {
+        fork_commit,
+        touched,
+        ..
+    } = &mut msg
+    {
+        *fork_commit = CommitId(commit.to_string());
+        *touched = vec![edit(path)];
+    }
+    msg
+}
+
+#[tokio::test]
+async fn a_submission_over_the_socket_lands_on_the_remote_after_the_runner_ran() -> TestResult {
+    let repos = support::Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let dir = tempfile::tempdir()?;
+    let mut config = config(dir.path(), &[]);
+    config.repositories = vec![repos.repository("landing-socket")];
+    config.lander = Some(repos.lander());
+    let runner = support::passing();
+    let deps = Deps {
+        verifier: Some(tokens()),
+        calls: Arc::new(NoLander),
+    };
+    let server = server::start_with_runner(&config, deps, runner.clone()).await?;
+    let path = "/tenant/acme/repo/landing-socket";
+    let mut socket = welcomed(server.local_addr(), path, TOKEN_A1, "a1").await?;
+    send(&mut socket, &claim(1, "src/a.rs")).await?;
+    let (claim_id, fence) = granted(&expect(&mut socket).await?).ok_or("no grant")?;
+    send(
+        &mut socket,
+        &submit_commit(claim_id, fence, &commit, "src/a.rs"),
+    )
+    .await?;
+    let head = loop {
+        let msg = expect(&mut socket).await?;
+        if let ServerMsg::Merged { claim, head } = msg {
+            assert_eq!(claim, claim_id);
+            break head;
+        } else if !matches!(msg, ServerMsg::Accepted { .. }) {
+            return Err(format!("expected the landing, got {msg:?}").into());
+        }
+    };
+    assert_eq!(
+        head.0,
+        repos.main_head(),
+        "the agent heard the head that is on the remote"
+    );
+    assert_eq!(repos.show_on_main("src/a.rs"), "two");
+    assert_eq!(runner.runs(), 1, "the runner ran once, before the push");
+    server.stop().await;
+    Ok(())
+}
+
+/// Answers `Prepare` as landed or refused and notes the kind of every call it is given.
+struct Recording {
+    lands: bool,
+    seen: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl CallPort for Recording {
+    fn answer(&self, call: Call) -> BoxFuture<CallAnswer> {
+        let (lands, seen) = (self.lands, Arc::clone(&self.seen));
+        let head = CommitId("cc".repeat(20));
+        Box::pin(async move {
+            let mut seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+            match call.request {
+                Request::Prepare { .. } => {
+                    seen.push("prepare");
+                    if lands {
+                        CallAnswer::Prepared {
+                            base: CommitId("bb".repeat(20)),
+                            head,
+                        }
+                    } else {
+                        CallAnswer::Refused {
+                            refusal: tessel_coordinator::host::call::Refusal::GateChanged,
+                        }
+                    }
+                }
+                Request::ReadHead { .. } => {
+                    seen.push("read_head");
+                    CallAnswer::Head {
+                        main: Some(head),
+                        landed: Vec::new(),
+                    }
+                }
+                Request::Test { .. }
+                | Request::Land { .. }
+                | Request::Trial { .. }
+                | Request::Reconcile { .. } => CallAnswer::Unknown,
+            }
+        })
+    }
+}
+
+/// Submits one claim to a server whose calls `Recording` answers; returns what it saw once the
+/// submitter has heard the outcome.
+async fn submit_and_record(
+    dir: &Path,
+    lands: bool,
+) -> Result<Vec<&'static str>, Box<dyn std::error::Error>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(Recording {
+        lands,
+        seen: Arc::clone(&seen),
+    });
+    let server = start_with(dir, &[("acme", "demo")], Some(tokens()), calls).await?;
+    let mut socket = welcomed(server.local_addr(), DEMO, TOKEN_A1, "a1").await?;
+    send(&mut socket, &claim(1, "src/a.rs")).await?;
+    let (claim_id, fence) = granted(&expect(&mut socket).await?).ok_or("no grant")?;
+    send(&mut socket, &submit(claim_id, fence)).await?;
+    loop {
+        let msg = expect(&mut socket).await?;
+        if matches!(
+            msg,
+            ServerMsg::Merged { .. } | ServerMsg::SubmitRejected { .. }
+        ) {
+            break;
+        } else if !matches!(msg, ServerMsg::Accepted { .. }) {
+            return Err(format!("unexpected {msg:?}").into());
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    server.stop().await;
+    let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    Ok(seen)
+}
+
+#[tokio::test]
+async fn after_a_landing_the_host_reads_main_again_and_after_a_refusal_it_does_not() -> TestResult {
+    let landed = tempfile::tempdir()?;
+    assert_eq!(
+        submit_and_record(landed.path(), true).await?,
+        ["prepare", "read_head"],
+        "the landing moved main, so the host reads the head"
+    );
+    let refused = tempfile::tempdir()?;
+    assert_eq!(
+        submit_and_record(refused.path(), false).await?,
+        ["prepare"],
+        "a refusal moved nothing"
+    );
     Ok(())
 }

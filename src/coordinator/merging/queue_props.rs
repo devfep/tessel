@@ -15,8 +15,8 @@ use proptest::test_runner::TestRunner;
 use crate::coordinator::verifying::{Subject, Verification};
 use crate::coordinator::{Config, Coordinator, Effect};
 use crate::merge::{
-    infra_backoff_ms, MergeOutcome, StepExit, TrialOutcome, TrialReport, MAX_INFRA_RETRIES,
-    MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
+    infra_backoff_ms, MergeOutcome, RuleKind, StepExit, TrialOutcome, TrialReport,
+    MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Fence,
@@ -124,6 +124,7 @@ impl Answer {
             },
             Answer::Conflict => MergeOutcome::Conflict {
                 files: vec!["a.rs".into()],
+                total: None,
             },
             Answer::TestsFailed => MergeOutcome::TestsFailed {
                 result: StepExit {
@@ -136,7 +137,9 @@ impl Answer {
             Answer::GateChanged => MergeOutcome::GateChanged {},
             Answer::GateInvalid => MergeOutcome::GateInvalid {},
             Answer::CommitNotInFork => MergeOutcome::CommitNotInFork {},
-            Answer::Refused => MergeOutcome::Refused,
+            Answer::Refused => MergeOutcome::Refused {
+                kind: RuleKind::Other,
+            },
             Answer::MainMoved => MergeOutcome::MainMoved {},
             Answer::Clone => MergeOutcome::Clone {},
             Answer::GitFailed => MergeOutcome::GitFailed {},

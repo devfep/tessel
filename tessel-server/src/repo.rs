@@ -21,6 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tessel_coordinator::host::call::{Call, CallAnswer, Refusal};
 use tessel_coordinator::host::{BatchId, Host, HostConfig, Input, Output, SocketId};
+use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::AgentId;
 use tessel_coordinator::shell::{self, PokeReply, ReplayStep, SummaryTally};
 use tokio::sync::mpsc;
@@ -70,6 +71,7 @@ impl CallPort for NoLander {
         Box::pin(async {
             CallAnswer::Refused {
                 refusal: Refusal::Rule {
+                    rule: RuleKind::NoLander,
                     message: NO_LANDER_MESSAGE.to_string(),
                 },
             }
@@ -160,6 +162,7 @@ pub fn spawn(
 ) -> RunningRepo {
     let (tx, inbox) = mpsc::channel(INBOX_QUEUE);
     let (jobs, queue) = std_mpsc::channel();
+    let wake_on_start = holds_state(&id, &store);
     let thread = spawn_storage(id.clone(), store, queue, tx.clone());
     let handle = RepoHandle {
         id: id.clone(),
@@ -176,12 +179,22 @@ pub fn spawn(
         thread: Some(thread),
         sockets: BTreeMap::new(),
         wake_at: None,
+        wake_on_start,
         calls,
     };
     RunningRepo {
         handle,
         task: tokio::spawn(task.run()),
     }
+}
+
+/// Whether `store` holds state. A store that cannot be asked is treated as empty here: the task
+/// reports an unreadable store itself when it loads.
+fn holds_state(id: &RepoId, store: &Store) -> bool {
+    store.has_state().unwrap_or_else(|error| {
+        tracing::warn!(repo = %id, error = %error, "cannot tell whether the store holds state");
+        false
+    })
 }
 
 impl RepoHandle {
@@ -375,11 +388,17 @@ struct RepoTask {
     thread: Option<std::thread::JoinHandle<()>>,
     sockets: BTreeMap<SocketId, SocketEntry>,
     wake_at: Option<u64>,
+    /// The store held state when the task started: a merge or a verification may have been cut
+    /// off by the stop that came before, and only a wake recovers it.
+    wake_on_start: bool,
     calls: Arc<dyn CallPort>,
 }
 
 impl RepoTask {
     async fn run(mut self) {
+        if self.wake_on_start {
+            self.feed(Input::Wake { now_ms: now_ms() });
+        }
         let timer = tokio::time::sleep(Duration::from_secs(3_600));
         tokio::pin!(timer);
         loop {
@@ -548,19 +567,44 @@ impl RepoTask {
         let answer = self.calls.answer(call);
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let input = match tokio::spawn(answer).await {
-                Ok(answer) => Input::Replied {
-                    now_ms: now_ms(),
-                    call: id,
-                    answer,
-                },
-                Err(_) => Input::CallLost {
-                    now_ms: now_ms(),
-                    call: id,
-                },
+            let (input, moved) = match tokio::spawn(answer).await {
+                Ok(answer) => {
+                    let moved = moves_main(&answer);
+                    let replied = Input::Replied {
+                        now_ms: now_ms(),
+                        call: id,
+                        answer,
+                    };
+                    (replied, moved)
+                }
+                Err(_) => (
+                    Input::CallLost {
+                        now_ms: now_ms(),
+                        call: id,
+                    },
+                    false,
+                ),
             };
             let _ = tx.send(Msg::Host(input)).await;
+            if moved {
+                // What the Worker's poke carried when the steward moved main: the host reads
+                // main's head, so agents hear of the new head from the host's own read.
+                let _ = tx.send(Msg::Poke).await;
+            }
         });
+    }
+}
+
+/// Whether the call that got this answer moved main, so the host should read the head again.
+fn moves_main(answer: &CallAnswer) -> bool {
+    match answer {
+        CallAnswer::Prepared { .. } | CallAnswer::Landed { .. } => true,
+        CallAnswer::Tested
+        | CallAnswer::Trialled { .. }
+        | CallAnswer::Head { .. }
+        | CallAnswer::Reconciled { .. }
+        | CallAnswer::Refused { .. }
+        | CallAnswer::Unknown => false,
     }
 }
 
@@ -618,6 +662,7 @@ mod tests {
                 answer,
                 CallAnswer::Refused {
                     refusal: Refusal::Rule {
+                        rule: RuleKind::NoLander,
                         message: NO_LANDER_MESSAGE.to_string()
                     }
                 },

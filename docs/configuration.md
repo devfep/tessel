@@ -189,11 +189,60 @@ table, makes it invalid, and an error names the file and the key.
 | `[[repository]]` `tenant`, `name`, `run` | names | at least one | A repository this server serves, and the run its evidence log is named for. `tenant` and `name` are lowercase letters, digits and interior hyphens, at most 63 characters. |
 | `[[repository]]` `reviewers` | array of agent names | `[]` | The agents that may approve or reject a held submission, which is what `tessel review` does. Empty: nobody may, and a held submission stays held. Each entry has the agent-name form (`A-Z a-z 0-9 . _ -`, first a letter or digit); a bad entry makes the file invalid and the error names the file, the repository and the key. Read as `REVIEWERS` above. |
 | `[[repository]]` `sensitive` | array of path prefixes | `[]` | A submission that touches a path starting with an entry is held for review. No globs; end a directory with `/`. A bad entry (empty, a leading `/`, a `..` segment, a `*`, a comma, a space at either end) makes the file invalid, naming the file, the repository and the key. Read as `SENSITIVE` above. |
+| `[[repository]]` `remote` | path or URL | none | The git remote main lives on. A repository with a `remote` is landed by the server ([Landing](#landing)); one without has no lander and every merge is refused. Only a path, or a URL that needs no credential, works until M4 mints the git host's token. |
+| `[[repository]]` `fork` | path or URL with `{agent}` | required with `remote` | Where an agent's fork is, `{agent}` standing for the agent's name, as in the swarm's `<forks>/<agent>.git`: `/srv/forks/{agent}.git`. `{agent}` must appear exactly once, and `fork` without `remote` is invalid; the error names the file and the key. The name is substituted only if it passes the protocol's agent-name rule (the one the verifier enforces: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 128 bytes), checked again at every call; any other name is refused as a missing fork and no path is made. On a case-insensitive filesystem names that differ only by case share one fork, so mint tokens for lowercase names. The agent pushes the commit to the fork's `main` before `tessel submit`. |
+| `[lander]` `work_dir` | path | required with a `remote` | Where clones live while a call runs, under `<work_dir>/<tenant>/<repo>/`. The directory is the server's: it removes what a killed server left there when it starts. |
+| `[lander]` `runner_config` | path | required with a `remote` | The `tessel-runner.toml` the tests run under ([Runner](#runner-tessel-runner)). It is checked when the server starts, so a file the runner would refuse stops the server, and again before every run. |
 | `[identity]` `keys` | path | none | The directory of Ed25519 keys. |
 | `[identity]` `audience` | name | none | The `aud` a token must carry. |
 
 Without an `[identity]` table the server logs one warning at start and answers 401 on every
-authenticated route.
+authenticated route. A `[lander]` table without a repository that names a `remote` makes the file
+invalid, and so does a `remote` without the table; the error names the file, the table and the key.
+
+### Landing
+
+A merge is one `Prepare` call until the staged landing (HOST-MERGE-STANDIN), and for a repository
+with a `remote` the server answers it in process with the lander and the runner. In order:
+
+1. Read main's head from the remote and pin it.
+2. Clone main, fetch the `main` of the agent's fork and check the commit is on it.
+3. Rebase the commit onto main with a fixed committer, so a retry gives the same commit.
+4. Check the claim covers every changed file and that `tessel.toml` is untouched.
+5. Clone the rebased head into a test tree and run the trunk's `[[test]]` commands there with the
+   runner. The install step is not run: the machine's own toolchain and dependencies are used, and
+   `[install]` in `tessel.toml` is ignored. A trunk with no valid `tessel.toml` cannot be tested, so
+   nothing lands; the server logs why.
+6. Push main with a compare-and-swap on the head read in step 1, then read main back. Only a head
+   found on main is answered as merged.
+
+| Outcome | The host is told | The agent sees |
+|---|---|---|
+| Main read back at the head | `Prepared`, so the claim merges | `merged` with the head |
+| The commit conflicts with main | refused | `submit_rejected`, the number of files that conflicted |
+| The change is not covered by the claim, or touches `tessel.toml` | refused | `submit_rejected` with the fixed reason |
+| The tests failed | refused | `submit_rejected` with the exit code and no test output |
+| The commit is not on the agent's fork | refused | `submit_rejected` with the fixed reason |
+| Main moved before the push | `Unknown`, which the core retries | nothing yet |
+| Anything that did not finish: a clone, a push, a runner that refuses to start, a timeout | `Unknown`, which the core retries | nothing; after three retries, `submit_rejected` as infrastructure |
+
+The first failing test, the conflicting file names (with their total) and every infrastructure
+error go to the server log, cut to a length and quoted, and never to an agent. A submission whose
+main already holds the same change is answered as merged at main's head.
+
+Each call is bounded by its own deadline, 13 minutes from when the host issued it. The tests get
+what is left less 5 seconds, and never more than `timeout_secs` of the runner's configuration. A
+call still running at its deadline is answered `Unknown`, its clones are removed, and what it left
+running cannot push main. A server killed mid-merge is woken for each repository with stored state
+when it restarts, finds the merge in flight and retries it after the first backoff, 10 seconds.
+`Test` and `Land` are refused: the host does not issue them while `Prepare` is the whole merge.
+
+The runner has no sandbox until M5. A trunk's test command runs as the runner's user and can write
+to a path `remote`, which a landing does not prevent: use this only for a repository whose tests
+you trust.
+
+No evidence record is written until P1-EVIDENCE. After a landing the server tells the host main
+moved, as the `trunk-moved` route does for a push it did not make; the route stays for those.
 
 ### Identity
 
@@ -226,8 +275,8 @@ agents only. `trunk-moved` admits the `lander` only.
 
 `tessel-runner [--config <file>]` runs a repository's test commands for one trusted user on their
 own machine. It reads one request as JSON on standard input and writes one result as JSON on
-standard output; nothing calls it yet (P1-SERVER-LANDING will start one process per run or call
-the library). It runs no git and
+standard output. `tessel-server` calls the same library in process for a landing
+([Landing](#landing)). It runs no git and
 opens no network connection. The configuration file is `tessel-runner.toml` in the working
 directory unless `--config` names another. An unknown key makes it invalid.
 

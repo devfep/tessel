@@ -23,6 +23,22 @@ pub struct Config {
     /// Who may connect. Without it the server answers 401 on every authenticated route.
     #[serde(default)]
     pub identity: Option<IdentityConfig>,
+    /// Where landings run and which runner tests them. Required by any repository with a
+    /// `remote`; without a `remote` anywhere it must be absent.
+    #[serde(default)]
+    pub lander: Option<LanderConfig>,
+}
+
+/// The `[lander]` table: the lander and the runner, in process, for the repositories that name a
+/// `remote`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LanderConfig {
+    /// Where clones live while a call runs, under `<work_dir>/<tenant>/<repo>/`. Each call makes
+    /// its clones fresh and removes them; a restart removes any a killed server left.
+    pub work_dir: PathBuf,
+    /// The runner's `tessel-runner.toml`: the one user the tests run for and the longest run.
+    pub runner_config: PathBuf,
 }
 
 /// The `[identity]` table: where the Ed25519 keys are and which audience a token must name.
@@ -55,7 +71,18 @@ pub struct RepositoryConfig {
     /// ends in `/`; there are no globs. Empty: only the other review reasons apply.
     #[serde(default)]
     pub sensitive: Vec<String>,
+    /// The git remote main lives on, a path or a URL. With it the server lands submissions on
+    /// this remote; without it every merge is refused.
+    #[serde(default)]
+    pub remote: Option<String>,
+    /// Where an agent's fork is, with `{agent}` standing for the agent's name:
+    /// `/srv/forks/{agent}.git`. Required with `remote`.
+    #[serde(default)]
+    pub fork: Option<String>,
 }
+
+/// The placeholder in `fork` that the agent's name replaces.
+pub const FORK_AGENT_PLACEHOLDER: &str = "{agent}";
 
 impl RepositoryConfig {
     /// `reviewers` in the comma-separated form `HostConfig` reads, or `None` when there are none.
@@ -66,6 +93,39 @@ impl RepositoryConfig {
     /// `sensitive` in the comma-separated form `HostConfig` reads, or `None` when there are none.
     pub fn sensitive_list(&self) -> Option<String> {
         (!self.sensitive.is_empty()).then(|| self.sensitive.join(","))
+    }
+
+    /// The `remote` and `fork` keys: both or neither, and both need the `[lander]` table.
+    fn check_landing(&self, shown: &str, has_lander: bool) -> Result<(), ConfigError> {
+        let refuse = |key: &'static str, reason: &'static str| {
+            Err(ConfigError::Landing {
+                path: shown.to_string(),
+                table: format!("[[repository]] {}/{}", self.tenant, self.name),
+                key,
+                reason,
+            })
+        };
+        let blank = |text: &str| text.trim().is_empty();
+        match (&self.remote, &self.fork) {
+            (None, Some(_)) => refuse(
+                "fork",
+                "is only read with a remote; add remote or remove it",
+            ),
+            (Some(_), None) => refuse(
+                "fork",
+                "is required with remote: where an agent's fork is, with {agent} for its name",
+            ),
+            (Some(remote), Some(_)) if blank(remote) => refuse("remote", "must not be empty"),
+            (Some(_), Some(fork)) if fork.matches(FORK_AGENT_PLACEHOLDER).count() != 1 => refuse(
+                "fork",
+                "must contain {agent} exactly once, standing for the agent's name",
+            ),
+            (Some(_), Some(_)) if !has_lander => refuse(
+                "remote",
+                "needs the [lander] table with work_dir and runner_config",
+            ),
+            (None, None) | (Some(_), Some(_)) => Ok(()),
+        }
     }
 
     fn check(&self, shown: &str) -> Result<(), ConfigError> {
@@ -102,6 +162,32 @@ impl RepositoryConfig {
                      no space at either end",
                 );
             }
+        }
+        Ok(())
+    }
+}
+
+impl LanderConfig {
+    fn check(&self, shown: &str, any_remote: bool) -> Result<(), ConfigError> {
+        let refuse = |key: &'static str, reason: &'static str| {
+            Err(ConfigError::Landing {
+                path: shown.to_string(),
+                table: "[lander]".to_string(),
+                key,
+                reason,
+            })
+        };
+        if self.work_dir.as_os_str().is_empty() {
+            return refuse("work_dir", "must not be empty");
+        }
+        if self.runner_config.as_os_str().is_empty() {
+            return refuse("runner_config", "must not be empty");
+        }
+        if !any_remote {
+            return refuse(
+                "[lander]",
+                "is read only when a [[repository]] names a remote",
+            );
         }
         Ok(())
     }
@@ -151,6 +237,13 @@ pub enum ConfigError {
         entry: String,
         reason: &'static str,
     },
+    #[error("the configuration {path}: {table}: {key} {reason}")]
+    Landing {
+        path: String,
+        table: String,
+        key: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl Config {
@@ -167,8 +260,14 @@ impl Config {
         if config.repositories.is_empty() {
             return Err(ConfigError::NoRepositories { path: shown });
         }
+        let has_lander = config.lander.is_some();
         for repository in &config.repositories {
             repository.check(&shown)?;
+            repository.check_landing(&shown, has_lander)?;
+        }
+        if let Some(lander) = &config.lander {
+            let any_remote = config.repositories.iter().any(|r| r.remote.is_some());
+            lander.check(&shown, any_remote)?;
         }
         if let Some(identity) = &config.identity {
             identity.check(&shown)?;
@@ -282,6 +381,98 @@ mod tests {
             assert!(shown.contains(key), "{line}: {shown}");
             assert!(shown.contains("acme/demo"), "{line}: {shown}");
         }
+    }
+
+    const LANDER: &str = "\n[lander]\nwork_dir = \"/var/lib/tessel/work\"\n\
+                          runner_config = \"/etc/tessel/tessel-runner.toml\"\n";
+
+    #[test]
+    fn a_repository_with_a_remote_and_a_fork_is_landed_through_the_lander_table() {
+        let config = load(&format!(
+            "{BASE}remote = \"/srv/git/demo.git\"\nfork = \"/srv/forks/{{agent}}.git\"\n{LANDER}"
+        ))
+        .unwrap();
+        let repository = &config.repositories[0];
+        assert_eq!(repository.remote.as_deref(), Some("/srv/git/demo.git"));
+        assert_eq!(repository.fork.as_deref(), Some("/srv/forks/{agent}.git"));
+        let lander = config.lander.unwrap();
+        assert_eq!(lander.work_dir, Path::new("/var/lib/tessel/work"));
+        assert_eq!(
+            lander.runner_config,
+            Path::new("/etc/tessel/tessel-runner.toml")
+        );
+        let bare = load(BASE).unwrap();
+        assert_eq!(
+            (bare.repositories[0].remote.clone(), bare.lander),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn a_bad_landing_setup_is_refused_naming_the_file_the_table_and_the_key() {
+        let fork = "fork = \"/srv/forks/{agent}.git\"\n";
+        for (text, table, key) in [
+            ("remote = \"/r.git\"\n", "[[repository]] acme/demo", "fork"),
+            (fork, "[[repository]] acme/demo", "fork"),
+            (
+                "remote = \"\"\nfork = \"/f/{agent}\"\n",
+                "[[repository]]",
+                "remote",
+            ),
+            (
+                "remote = \"/r.git\"\nfork = \"/f/{agent}/{agent}\"\n",
+                "[[repository]]",
+                "fork",
+            ),
+            (
+                "remote = \"/r.git\"\nfork = \"/f/x.git\"\n",
+                "[[repository]]",
+                "fork",
+            ),
+            (
+                "remote = \"/r.git\"\nfork = \"/f/{agent}\"\n",
+                "[[repository]]",
+                "remote",
+            ),
+        ] {
+            let error = load(&format!("{BASE}{text}")).unwrap_err();
+            let shown = error.to_string();
+            assert!(
+                matches!(error, ConfigError::Landing { .. }),
+                "{text}: {shown}"
+            );
+            assert!(shown.contains("tessel-server.toml"), "{text}: {shown}");
+            assert!(shown.contains(table), "{text}: {shown}");
+            assert!(shown.contains(key), "{text}: {shown}");
+        }
+    }
+
+    #[test]
+    fn a_bad_lander_table_is_refused_naming_the_file_and_the_key() {
+        let landed = format!("{BASE}remote = \"/r.git\"\nfork = \"/f/{{agent}}\"\n");
+        for (text, key) in [
+            (
+                "\n[lander]\nwork_dir = \"\"\nrunner_config = \"r\"\n",
+                "work_dir",
+            ),
+            (
+                "\n[lander]\nwork_dir = \"w\"\nrunner_config = \"\"\n",
+                "runner_config",
+            ),
+            ("\n[lander]\nwork_dir = \"w\"\n", "runner_config"),
+            (
+                "\n[lander]\nwork_dir = \"w\"\nrunner_config = \"r\"\nuser = \"x\"\n",
+                "user",
+            ),
+        ] {
+            let error = load(&format!("{landed}{text}")).unwrap_err();
+            let shown = error.to_string();
+            assert!(shown.contains("tessel-server.toml"), "{text}: {shown}");
+            assert!(shown.contains(key), "{text}: {shown}");
+        }
+        let unused = load(&format!("{BASE}{LANDER}")).unwrap_err();
+        assert!(matches!(unused, ConfigError::Landing { .. }), "{unused}");
+        assert!(unused.to_string().contains("[lander]"), "{unused}");
     }
 
     #[test]

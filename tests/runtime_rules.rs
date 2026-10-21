@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 use tessel_coordinator::coordinator::{parse_head_response, Coordinator as Core, Effect};
-use tessel_coordinator::merge::{MergeOutcome, TrialOutcome, TrialReport};
+use tessel_coordinator::merge::{MergeOutcome, RuleKind, TrialOutcome, TrialReport};
 use tessel_coordinator::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
     Fence, Intent, Mode, OnConflict, Outcome, RaceId, ReleaseReason, RequestId, RunId, Scope,
@@ -434,9 +434,16 @@ fn r26_a_failed_or_unknown_steward_answer_is_service_unavailable_and_a_4xx_is_a_
     );
     assert_eq!(
         MergeOutcome::from_response(404, landed),
-        MergeOutcome::Refused
+        MergeOutcome::Refused {
+            kind: RuleKind::ForkMissing
+        }
     );
-    assert_eq!(MergeOutcome::from_response(499, ""), MergeOutcome::Refused);
+    assert_eq!(
+        MergeOutcome::from_response(499, ""),
+        MergeOutcome::Refused {
+            kind: RuleKind::ForkMissing
+        }
+    );
 
     let stopped = |status, body| TrialReport::from_response(status, body);
     let unavailable = TrialReport::stopped(TrialOutcome::ServiceUnavailable);

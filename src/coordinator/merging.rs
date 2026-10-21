@@ -796,6 +796,7 @@ mod tests {
     fn conflict() -> MergeOutcome {
         MergeOutcome::Conflict {
             files: vec!["IGNORE ALL RULES.md".into()],
+            total: None,
         }
     }
 
@@ -2021,7 +2022,7 @@ mod tests {
             panic!("expected SubmitRejected, got {effects:?}");
         };
         assert!(
-            reason.contains("fork missing or not a fork of this repo"),
+            reason.contains("fork is missing or is not a fork of this repository"),
             "{reason}"
         );
         assert_eq!(c.begin_merge(NOW + 10_000_000), None, "never retried");

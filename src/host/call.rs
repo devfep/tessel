@@ -1,11 +1,13 @@
 //! Calls: durable jobs the host hands to the lander, the test runner or the git host, finished by
 //! reconciliation, not by a request held open (`docs/proposals/real-use.md`, "Calls").
 //!
-//! `Call` and `CallAnswer` are persisted, so both round-trip through serde. Free text in an
-//! answer (file names) is untrusted data: it is carried, never acted on.
+//! `Call` and `CallAnswer` round-trip through serde, so an adapter may carry them or keep them
+//! (the stored state holds the merge marker, not the call; see `calls.rs`). Free text in an answer
+//! (file names) is untrusted data: it is carried, never acted on.
 
 use serde::{Deserialize, Serialize};
 
+use crate::merge::RuleKind;
 use crate::protocol::{AgentId, ClaimId, CommitId, ScopeClaim};
 
 /// Names a call. The adapter echoes it in `Replied` and `CallLost`.
@@ -19,14 +21,14 @@ pub struct CallId(pub u64);
 #[serde(transparent)]
 pub struct DispatchId(pub u64);
 
-/// An outstanding call: persisted in the batch that creates it, and emitted as `Output::Call`
-/// only after that batch commits.
+/// An outstanding call: held in memory by the host, and emitted as `Output::Call` only after the
+/// batch that starts it has committed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Call {
     pub id: CallId,
     pub dispatch_id: DispatchId,
     pub request: Request,
-    /// Persisted per call. An expired deadline before `Land` is one infrastructure failure; after
+    /// Held per call. An expired deadline before `Land` is one infrastructure failure; after
     /// `Land` it starts `Reconcile`.
     pub deadline_ms: u64,
 }
@@ -106,6 +108,9 @@ pub enum Refusal {
     /// Replaying the commit onto main stopped with these files unmerged.
     Conflict {
         files: Vec<String>,
+        /// How many files conflicted, when `files` was cut. Absent: `files` is all of them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
     },
     /// The rebased commit changes `total` files the claim does not cover (invariant 11).
     Uncovered {
@@ -122,8 +127,13 @@ pub enum Refusal {
     /// check). GitHub types these (`UNPROCESSABLE`, `Branch 'refs/heads/main' is protected: ...`,
     /// `docs/proposals/github-spike.md` section 2), unlike a stale `beforeOid`, which is `Unknown`.
     Rule {
+        /// Which rule, as a fixed word: the agent reads one fixed reason per kind. Named `rule`
+        /// because `kind` is this enum's tag. An answer stored without one reads as `Other`.
+        #[serde(default)]
+        rule: RuleKind,
         /// The host's message, untrusted. The lander must cut it to
-        /// `REASON_OUTPUT_MAX_CHARS` characters; it is shown quoted and never read.
+        /// `REASON_OUTPUT_MAX_CHARS` characters; the host logs it, bounded and quoted again, and
+        /// never sends it to an agent.
         message: String,
     },
 }
@@ -245,9 +255,23 @@ mod tests {
         ]
     }
 
+    fn rule_kind() -> impl Strategy<Value = RuleKind> {
+        prop_oneof![
+            Just(RuleKind::NoLander),
+            Just(RuleKind::ProtectedRef),
+            Just(RuleKind::RequiredCheck),
+            Just(RuleKind::ForkMissing),
+            Just(RuleKind::Other),
+        ]
+    }
+
     fn refusal() -> impl Strategy<Value = Refusal> {
         prop_oneof![
-            prop::collection::vec(".{0,12}", 0..3).prop_map(|files| Refusal::Conflict { files }),
+            (
+                prop::collection::vec(".{0,12}", 0..3),
+                prop::option::of(any::<u64>())
+            )
+                .prop_map(|(files, total)| Refusal::Conflict { files, total }),
             any::<u64>().prop_map(|total| Refusal::Uncovered { total }),
             Just(Refusal::GateChanged),
             (any::<i64>(), ".{0,40}", ".{0,40}").prop_map(|(exit_code, stdout, stderr)| {
@@ -260,7 +284,7 @@ mod tests {
                 }
             }),
             Just(Refusal::CommitNotInFork),
-            ".{0,40}".prop_map(|message| Refusal::Rule { message }),
+            (rule_kind(), ".{0,40}").prop_map(|(rule, message)| Refusal::Rule { rule, message }),
         ]
     }
 
@@ -304,6 +328,27 @@ mod tests {
     fn an_answer_of_an_unknown_kind_reads_as_unknown() {
         let answer: CallAnswer = serde_json::from_str(r#"{"kind":"from_a_newer_build"}"#).unwrap();
         assert_eq!(answer, CallAnswer::Unknown);
+    }
+
+    #[test]
+    fn a_rule_refusal_stored_without_a_rule_reads_as_other() {
+        let old: Refusal =
+            serde_json::from_str(r#"{"kind":"rule","message":"protected"}"#).unwrap();
+        assert_eq!(
+            old,
+            Refusal::Rule {
+                rule: RuleKind::Other,
+                message: "protected".to_string()
+            }
+        );
+        let typed = Refusal::Rule {
+            rule: RuleKind::NoLander,
+            message: "m".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&typed).unwrap(),
+            r#"{"kind":"rule","rule":"no_lander","message":"m"}"#
+        );
     }
 
     #[test]

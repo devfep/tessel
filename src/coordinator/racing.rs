@@ -2613,6 +2613,7 @@ mod tests {
         assert_eq!(c.begin_merge(NOW + 3).map(|d| d.claim), Some(one.0));
         let refused = MergeOutcome::Conflict {
             files: vec!["src/a.rs".into()],
+            total: None,
         };
         let effects = c.merge_outcome(c.merge_flight_id(one.0), &refused, NOW + 4);
         assert!(notices(&effects, "a1")

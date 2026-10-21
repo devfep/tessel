@@ -1930,6 +1930,7 @@ fn host_a_refusal_is_a_fact_about_the_work_not_the_service() {
     wake(&mut kit);
     let conflict = Refusal::Conflict {
         files: vec!["x.rs".to_string()],
+        total: None,
     };
     kit.reply(CallId(1), CallAnswer::Refused { refusal: conflict });
     kit.settle();
