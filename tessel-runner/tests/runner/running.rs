@@ -38,21 +38,23 @@ fn a_passing_run_reports_exit_zero_and_passed() {
 #[test]
 fn a_failing_run_quotes_the_first_failing_tests_block_and_not_the_second() {
     let rig = Rig::with_cargo("cat output.txt; exit 101");
+    // Captured once from `cargo test` 1.99.1 on a crate with two failing tests.
     rig.write_in_tree(
         "output.txt",
-        "running 2 tests\ntest a ... FAILED\ntest b ... FAILED\n\nfailures:\n\n\
-         ---- a stdout ----\nthread 'a' panicked at src/lib.rs:1:1:\nboom a\n\n\
-         ---- b stdout ----\nthread 'b' panicked at src/lib.rs:2:1:\nboom b\n",
+        include_str!("../fixtures/cargo-1.99.1-test-failures.stdout"),
     );
     let result = run(&rig.config(), &rig.request()).unwrap();
     assert!(!result.passed);
     assert_eq!(result.exit_code, 101);
-    assert_eq!(
-        result.first_failure.as_deref(),
-        Some("---- a stdout ----\nthread 'a' panicked at src/lib.rs:1:1:\nboom a")
-    );
+    let quoted = result.first_failure.unwrap();
     assert!(
-        result.stdout.contains("boom b"),
+        quoted.starts_with("---- first_fails stdout ----\n\nthread 'first_fails'"),
+        "{quoted}"
+    );
+    assert!(quoted.ends_with("right: 3"), "{quoted}");
+    assert!(!quoted.contains("second_fails"));
+    assert!(
+        result.stdout.contains("second boom"),
         "the output itself is whole"
     );
 }
@@ -189,8 +191,7 @@ fn the_command_reads_a_closed_stdin() {
 #[test]
 fn the_requests_timeout_cannot_exceed_the_configured_one() {
     let rig = Rig::with_cargo("sleep 4444 &\nwait");
-    let mut config = rig.config();
-    config.timeout_secs = 1;
+    let config = rig.config_with_timeout(Some(1));
     let mut asked = rig.request();
     asked.timeout_secs = 3600;
     let started = Instant::now();
@@ -203,8 +204,9 @@ fn the_requests_timeout_cannot_exceed_the_configured_one() {
 #[test]
 fn a_command_that_cannot_start_is_a_supervision_error_that_quotes_nothing() {
     let rig = Rig::with_cargo("true");
-    let mut config = rig.config();
-    config.env = vec![("PATH".to_owned(), String::new())];
+    let config = rig
+        .config()
+        .with_env(vec![("PATH".to_owned(), String::new())]);
     let error = run(&config, &rig.request()).unwrap_err();
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
     assert_eq!(error.exit_code(), 3);
@@ -270,4 +272,59 @@ fn a_timed_out_result_converts_to_a_timed_out_step_outcome_that_did_not_pass() {
     assert!(outcome.timed_out);
     assert!(!outcome.passed);
     assert_eq!(outcome.wall_ms, Some(7));
+}
+
+#[test]
+fn a_leader_that_leaves_its_process_group_cannot_hold_the_reply_past_the_timeout() {
+    let rig =
+        Rig::with_cargo("exec perl -e 'setpgrp(0, getpgrp(getppid())); exec \"sleep\", \"4545\"'");
+    let mut asked = rig.request();
+    asked.timeout_secs = 1;
+    let started = Instant::now();
+    let result = run(&rig.config(), &asked).unwrap();
+    assert!(result.timed_out);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(no_process_matches("sleep 4545"));
+}
+
+#[test]
+fn one_deadline_covers_all_the_commands() {
+    let rig = Rig::with_cargo("sleep 0.7");
+    let mut asked = rig.request();
+    asked.tests.push(asked.tests[0].clone());
+    asked.timeout_secs = 1;
+    let started = Instant::now();
+    let result = run(&rig.config(), &asked).unwrap();
+    assert!(
+        result.timed_out,
+        "two 0.7 s commands fit a 1 s timeout one by one"
+    );
+    assert!(started.elapsed() < Duration::from_millis(1800));
+}
+
+#[test]
+fn a_command_that_kills_itself_is_exit_137_without_a_timeout() {
+    let rig = Rig::with_cargo("kill -9 $$");
+    let result = run(&rig.config(), &rig.request()).unwrap();
+    assert_eq!(result.exit_code, 137);
+    assert!(!result.timed_out);
+    assert!(!result.passed);
+}
+
+#[test]
+fn a_tail_cut_inside_a_character_stays_within_the_limit_and_has_no_broken_character() {
+    let rig = Rig::with_cargo("perl -e 'print \"\\xc3\\xa9\" x 200000; print \"a\"'");
+    let result = run(&rig.config(), &rig.request()).unwrap();
+    assert!(result.stdout_truncated);
+    assert!(
+        result.stdout.len() <= MAX_TAIL_BYTES,
+        "{}",
+        result.stdout.len()
+    );
+    assert!(!result.stdout.contains('\u{FFFD}'));
+    assert!(result.stdout.ends_with("éa"));
 }

@@ -5,7 +5,7 @@ use std::os::unix::fs::symlink;
 use proptest::prelude::*;
 use tessel_lander::gate::CARGO_TEST_FLAGS;
 use tessel_runner::{
-    ConfigReason, RequestRefusal, RunnerConfig, RunnerError, DEFAULT_TIMEOUT_SECS,
+    ConfigReason, RequestRefusal, RunnerConfig, RunnerError, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS,
 };
 
 use crate::common::{argv, config, own_config_text, request, write_config, TEST_ARGV};
@@ -51,8 +51,8 @@ fn a_config_naming_the_current_user_loads_with_the_default_timeout() {
     let dir = tempfile::tempdir().unwrap();
     let path = write_config(dir.path(), &own_config_text(), 0o600);
     let loaded = RunnerConfig::load(&path).unwrap();
-    assert_eq!(loaded.user, config().user);
-    assert_eq!(loaded.timeout_secs, DEFAULT_TIMEOUT_SECS);
+    assert_eq!(loaded.user(), config().user());
+    assert_eq!(loaded.timeout_secs(), DEFAULT_TIMEOUT_SECS);
 }
 
 #[test]
@@ -258,4 +258,30 @@ proptest! {
             "{:?}", refused
         );
     }
+}
+
+#[test]
+fn the_runner_refuses_a_config_timeout_above_a_day() {
+    let dir = tempfile::tempdir().unwrap();
+    for secs in [MAX_TIMEOUT_SECS + 1, i64::MAX as u64] {
+        let text = format!("{}timeout_secs = {secs}\n", own_config_text());
+        let path = write_config(dir.path(), &text, 0o600);
+        let error = RunnerConfig::load(&path).unwrap_err();
+        assert!(error.to_string().contains("timeout_secs"), "{error}");
+        assert_eq!(config_reason(&error), ConfigReason::TimeoutTooLong);
+    }
+    let text = format!("{}timeout_secs = {MAX_TIMEOUT_SECS}\n", own_config_text());
+    let path = write_config(dir.path(), &text, 0o600);
+    assert_eq!(
+        RunnerConfig::load(&path).unwrap().timeout_secs(),
+        MAX_TIMEOUT_SECS
+    );
+}
+
+#[test]
+fn the_runner_refuses_a_tree_another_user_owns() {
+    let refused = request(std::path::Path::new("/usr"), "", &TEST_ARGV)
+        .plan(&config())
+        .unwrap_err();
+    assert_eq!(request_refusal(refused), RequestRefusal::TreeNotOwned);
 }

@@ -21,6 +21,8 @@ use crate::error::{ConfigReason, RunnerError};
 pub const CONFIG_FILE_NAME: &str = "tessel-runner.toml";
 /// The longest a run may take when the file does not say.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 1800;
+/// The largest `timeout_secs` a configuration may set: one day.
+pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 const MAX_CONFIG_BYTES: u64 = 4096;
 /// The only variables a test command inherits from the runner, by name.
 const INHERITED_ENV: [&str; 5] = ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "TMPDIR"];
@@ -48,16 +50,35 @@ fn default_timeout_secs() -> u64 {
 /// What the runner may do: for whom, for how long, and with which environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerConfig {
-    /// The login the runner starts for.
-    pub user: String,
-    /// The longest any run may take; a request may ask for less.
-    pub timeout_secs: u64,
-    /// The whole environment of a test command. [`RunnerConfig::load`] fills it with the runner's
-    /// own `PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME` and `TMPDIR` that are set, and nothing else.
-    pub env: Vec<(String, String)>,
+    user: String,
+    timeout_secs: u64,
+    env: Vec<(String, String)>,
 }
 
 impl RunnerConfig {
+    /// The login the runner starts for.
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+
+    /// The longest any run may take; a request may ask for less.
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+
+    /// Replaces the whole environment of a test command. [`RunnerConfig::load`] fills it with the
+    /// runner's own `PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME` and `TMPDIR` that are set, and
+    /// nothing else. The user check cannot be reached from here: only `load` makes a config.
+    #[must_use]
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> RunnerConfig {
+        self.env = env;
+        self
+    }
+
+    pub(crate) fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+
     /// Reads and checks the configuration file at `path`.
     pub fn load(path: &Path) -> Result<RunnerConfig, RunnerError> {
         let file = path.display().to_string();
@@ -69,6 +90,9 @@ impl RunnerConfig {
         let raw: RawFile = toml::from_str(&text).map_err(|_| refuse(ConfigReason::Invalid))?;
         if raw.runner.timeout_secs == 0 {
             return Err(refuse(ConfigReason::ZeroTimeout));
+        }
+        if raw.runner.timeout_secs > MAX_TIMEOUT_SECS {
+            return Err(refuse(ConfigReason::TimeoutTooLong));
         }
         let login = effective_login().ok_or_else(|| refuse(ConfigReason::LoginUnknown))?;
         if raw.runner.user != login {

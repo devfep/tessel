@@ -23,6 +23,8 @@ pub enum ConfigReason {
     Invalid,
     #[error("[runner] timeout_secs must be at least 1")]
     ZeroTimeout,
+    #[error("[runner] timeout_secs must be at most 86400")]
+    TimeoutTooLong,
     #[error("the login of the user who runs the runner cannot be determined")]
     LoginUnknown,
     #[error("[runner] user must be the login of the user who runs the runner")]

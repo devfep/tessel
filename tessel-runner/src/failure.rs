@@ -6,7 +6,9 @@
 /// The most bytes of the excerpt.
 pub const MAX_FIRST_FAILURE_BYTES: usize = 1500;
 
-/// The first failing test's block, from its `---- <name> stdout ----` line to the next blank line.
+/// The first failing test's block, from its `---- <name> stdout ----` line to the next such line or
+/// the `failures:` line, without the blank lines that end it. Real output has a blank line right
+/// after the header, so the block cannot end at the first blank line.
 /// Without a block, the first line that says `FAILED` or `panicked`. Standard output is searched
 /// before standard error. `None` when neither holds anything.
 pub fn first_failure(stdout: &str, stderr: &str) -> Option<String> {
@@ -17,13 +19,23 @@ pub fn first_failure(stdout: &str, stderr: &str) -> Option<String> {
     Some(bounded(found))
 }
 
+fn is_header(line: &str) -> bool {
+    line.starts_with("---- ") && line.ends_with(" stdout ----")
+}
+
 fn block(text: &str) -> Option<String> {
-    let mut lines = text
-        .lines()
-        .skip_while(|line| !(line.starts_with("---- ") && line.ends_with(" stdout ----")))
-        .peekable();
+    let mut lines = text.lines().skip_while(|line| !is_header(line)).peekable();
     lines.peek()?;
-    let kept: Vec<&str> = lines.take_while(|line| !line.trim().is_empty()).collect();
+    let mut kept: Vec<&str> = vec![];
+    for (index, line) in lines.enumerate() {
+        if index > 0 && (is_header(line) || line == "failures:") {
+            break;
+        }
+        kept.push(line);
+    }
+    while kept.last().is_some_and(|line| line.trim().is_empty()) {
+        kept.pop();
+    }
     Some(kept.join("\n"))
 }
 
@@ -49,17 +61,28 @@ fn bounded(mut text: String) -> String {
 mod tests {
     use super::*;
 
-    const TWO_FAILURES: &str = "running 2 tests\ntest a ... FAILED\ntest b ... FAILED\n\n\
-        failures:\n\n---- a stdout ----\nthread 'a' panicked at src/lib.rs:1:1:\nboom a\n\n\
-        ---- b stdout ----\nthread 'b' panicked at src/lib.rs:2:1:\nboom b\n\nfailures:\n";
+    /// Captured once from `cargo test` 1.99.1 on a crate with two failing tests, the second of
+    /// which prints before it panics.
+    const TWO_FAILURES: &str = include_str!("../tests/fixtures/cargo-1.99.1-test-failures.stdout");
 
     #[test]
     fn the_first_failing_tests_block_is_quoted_and_the_second_is_not() {
         let quoted = first_failure(TWO_FAILURES, "").unwrap();
-        assert_eq!(
-            quoted,
-            "---- a stdout ----\nthread 'a' panicked at src/lib.rs:1:1:\nboom a"
+        assert!(
+            quoted.starts_with("---- first_fails stdout ----\n\nthread 'first_fails'"),
+            "{quoted}"
         );
+        assert!(quoted.ends_with("  left: 2\n right: 3"), "{quoted}");
+        assert!(!quoted.contains("second_fails"));
+    }
+
+    #[test]
+    fn the_last_block_ends_at_the_failures_line() {
+        let quoted =
+            first_failure(&TWO_FAILURES.replacen("---- first_fails", "-- x", 1), "").unwrap();
+        assert!(quoted.starts_with("---- second_fails stdout ----\nprinted by the test"));
+        assert!(quoted.contains("second boom\nnote: run with"), "{quoted}");
+        assert!(quoted.ends_with("to display a backtrace"), "{quoted}");
     }
 
     #[test]

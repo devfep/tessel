@@ -230,7 +230,7 @@ directory unless `--config` names another. An unknown key makes it invalid.
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `[runner]` `user` | login name | required | The one user the runner starts for. |
-| `[runner]` `timeout_secs` | seconds | 1800 | The longest any run may take; a request may ask for less. |
+| `[runner]` `timeout_secs` | seconds | 1800 | The longest any run may take, from 1 to 86400; a request may ask for less. |
 
 The runner refuses to start unless the file exists, is a regular file (not a link) owned by the
 effective user with mode 0600, and `user` equals the login of the effective uid. The login comes
@@ -252,11 +252,12 @@ this environment, taken from the runner's own: `PATH`, `HOME`, `CARGO_HOME`, `RU
 
 The result is `{ "step": "test", "exit_code", "passed", "timed_out", "stdout", "stderr",
 "stdout_truncated", "stderr_truncated", "first_failure", "wall_ms" }`. `passed` is true only for
-exit 0 without a timeout. A killed run has `timed_out` true and exit code 137. `stdout` and
-`stderr` hold the last 256 KiB of each stream, with the matching `_truncated` flag set when the
-start was cut. `first_failure` is the first failing test's block from cargo's output, at most
-1,500 bytes, or `null`. It is untrusted text for a person to read, never an input to pass or
-fail.
+exit 0 without a timeout. A run killed at its timeout has `timed_out` true and exit code 137.
+An exit code of 137 with `timed_out` false came from the command itself and is not a timeout.
+`stdout` and `stderr` hold the last 256 KiB of each stream, with the matching `_truncated` flag
+set when the start was cut. `first_failure` is the first failing test's block from cargo's
+output, at most 1,500 bytes, or `null`. It is untrusted text for a person to read, never an input
+to pass or fail.
 
 | Exit code | Meaning |
 |---|---|

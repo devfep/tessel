@@ -12,13 +12,20 @@ pub fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|word| (*word).to_owned()).collect()
 }
 
-/// A configuration for the user running the tests, with a plain `PATH`.
+/// A configuration for the user running the tests, loaded from a file as the binary does, with a
+/// plain `PATH`.
 pub fn config() -> RunnerConfig {
-    RunnerConfig {
-        user: effective_login().expect("the test user has a login"),
-        timeout_secs: 1800,
-        env: vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned())],
-    }
+    config_with_timeout(None)
+}
+
+pub fn config_with_timeout(timeout_secs: Option<u64>) -> RunnerConfig {
+    let dir = tempfile::tempdir().expect("config dir");
+    let extra = timeout_secs.map_or_else(String::new, |secs| format!("timeout_secs = {secs}\n"));
+    let text = own_config_text() + &extra;
+    let path = write_config(dir.path(), &text, 0o600);
+    RunnerConfig::load(&path)
+        .expect("a config for the current user loads")
+        .with_env(vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned())])
 }
 
 pub fn request(tree: &Path, dir: &str, words: &[&str]) -> RunRequest {
@@ -77,12 +84,14 @@ impl Rig {
     }
 
     pub fn config(&self) -> RunnerConfig {
-        let mut config = config();
-        config.env = vec![
+        self.config_with_timeout(None)
+    }
+
+    pub fn config_with_timeout(&self, timeout_secs: Option<u64>) -> RunnerConfig {
+        config_with_timeout(timeout_secs).with_env(vec![
             ("PATH".to_owned(), self.path_value()),
             ("HOME".to_owned(), "/home-for-test".to_owned()),
-        ];
-        config
+        ])
     }
 
     /// One `cargo test --workspace` in the tree.

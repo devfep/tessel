@@ -53,12 +53,19 @@ impl Tail {
         }
     }
 
+    /// The kept bytes as text, at most [`MAX_TAIL_BYTES`] long: bytes that are not UTF-8 become
+    /// U+FFFD first, then a character the cut left in pieces is dropped whole.
     fn text(&mut self) -> (String, bool) {
         self.cut();
-        (
-            String::from_utf8_lossy(&self.bytes).into_owned(),
-            self.truncated,
-        )
+        let mut text = String::from_utf8_lossy(&self.bytes).into_owned();
+        if text.len() > MAX_TAIL_BYTES {
+            let mut start = text.len() - MAX_TAIL_BYTES;
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            text.drain(..start);
+        }
+        (text, self.truncated)
     }
 }
 
@@ -76,7 +83,9 @@ enum Ended {
 /// Runs every command of `plan` in order and stops at the first that does not exit 0.
 pub fn run_plan(env: &[(String, String)], plan: &Plan) -> Result<RunResult, RunnerError> {
     let started = Instant::now();
-    let deadline = started + plan.timeout;
+    let deadline = started.checked_add(plan.timeout).ok_or_else(|| {
+        RunnerError::unsupervised("deadline", &io::Error::from(io::ErrorKind::InvalidInput))
+    })?;
     let stdout: SharedTail = Arc::default();
     let stderr: SharedTail = Arc::default();
     let mut exit_code = 0;
@@ -149,6 +158,9 @@ fn run_command(
         Err(error) => Err(error),
     };
     kill_group(group);
+    // A leader that moved itself out of its group dodges `killpg`; without this `reap` would wait
+    // for the whole life of the command.
+    child.kill().ok();
     let reaped = reap(&mut child);
     let drained = drain(&finished);
     let ended = ended?;
@@ -241,5 +253,30 @@ fn kill_group(group: u32) {
     // command and nothing else is signalled; ESRCH (everything already gone) is the normal case.
     unsafe {
         libc::killpg(group, libc::SIGKILL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_timeout_too_large_for_the_clock_is_an_error_not_a_panic() {
+        let plan = Plan {
+            root: std::path::PathBuf::from("/"),
+            commands: Vec::new(),
+            timeout: Duration::from_secs(u64::MAX),
+        };
+        let error = run_plan(&[], &plan).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                RunnerError::Unsupervised {
+                    what: "deadline",
+                    ..
+                }
+            ),
+            "{error}"
+        );
     }
 }

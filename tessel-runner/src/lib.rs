@@ -14,6 +14,7 @@ mod supervise;
 
 pub use config::{
     effective_login, effective_uid, RunnerConfig, CONFIG_FILE_NAME, DEFAULT_TIMEOUT_SECS,
+    MAX_TIMEOUT_SECS,
 };
 pub use error::{ConfigReason, RequestRefusal, RunnerError};
 pub use failure::MAX_FIRST_FAILURE_BYTES;
@@ -28,5 +29,5 @@ pub use supervise::MAX_TAIL_BYTES;
 /// could not be supervised ([`RunnerError::Unsupervised`]).
 pub fn run(config: &RunnerConfig, request: &RunRequest) -> Result<RunResult, RunnerError> {
     let plan = request.plan(config)?;
-    supervise::run_plan(&config.env, &plan)
+    supervise::run_plan(config.env(), &plan)
 }

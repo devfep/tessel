@@ -1,0 +1,29 @@
+
+running 3 tests
+test passes ... ok
+test first_fails ... FAILED
+test second_fails ... FAILED
+
+failures:
+
+---- first_fails stdout ----
+
+thread 'first_fails' (93921489) panicked at src/lib.rs:3:5:
+assertion `left == right` failed: arithmetic is off
+  left: 2
+ right: 3
+
+---- second_fails stdout ----
+printed by the test
+
+thread 'second_fails' (93921491) panicked at src/lib.rs:9:5:
+second boom
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    first_fails
+    second_fails
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

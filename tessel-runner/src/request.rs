@@ -80,7 +80,7 @@ impl RunRequest {
         Ok(Plan {
             root,
             commands,
-            timeout: Duration::from_secs(self.timeout_secs.min(config.timeout_secs)),
+            timeout: Duration::from_secs(self.timeout_secs.min(config.timeout_secs())),
         })
     }
 }

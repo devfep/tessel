@@ -20,10 +20,13 @@ pub enum ResultStep {
 pub struct RunResult {
     pub step: ResultStep,
     /// Of the last command that ran; 137 when the run was killed at its timeout, and 128 plus the
-    /// signal number when a signal ended the command.
+    /// signal number when a signal ended the command. An exit code of 137 from the command itself
+    /// (it killed itself, or the system did) is not a timeout: only `timed_out` says the runner
+    /// killed the run.
     pub exit_code: i32,
     /// True only when every command exited 0 and the run did not time out.
     pub passed: bool,
+    /// True only when the runner killed the run at its timeout.
     pub timed_out: bool,
     /// The last bytes of standard output, at most 256 KiB, of all the commands that ran.
     pub stdout: String,
