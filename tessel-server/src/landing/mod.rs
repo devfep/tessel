@@ -16,7 +16,7 @@ mod answer;
 mod deadline;
 mod git_read;
 mod head;
-pub mod names;
+mod names;
 mod ports;
 mod trial;
 mod workdir;
@@ -32,7 +32,6 @@ use tessel_lander::git::{CommandError, Git, MergeSources, MAIN_BRANCH};
 use tessel_lander::merge::{run_merge, MergeContext, MergePolicy, MergeRequest};
 use tessel_lander::run::SystemRunner;
 use tessel_lander::types::Sha;
-use tessel_runner::RunnerError;
 
 use crate::config::{LanderConfig, RepositoryConfig, FORK_AGENT_PLACEHOLDER};
 use crate::id::RepoId;
@@ -59,8 +58,6 @@ pub enum LandingError {
     },
     #[error("the lander's git environment: {0}")]
     Git(#[from] CommandError),
-    #[error("the runner: {0}")]
-    Runner(#[from] RunnerError),
 }
 
 /// What `Test` and `Land` are refused with: they are never asked while `Prepare` is the merge.
@@ -68,7 +65,6 @@ pub const STAND_IN_MESSAGE: &str = "this lander runs the whole merge in the Prep
                                     Test and Land are not issued until the staged landing";
 
 /// Answers the calls of one repository against its git remote.
-#[derive(Clone)]
 pub struct Landing {
     inner: Arc<Inner>,
 }
