@@ -3,6 +3,7 @@
 
 #![expect(clippy::unwrap_used, reason = "test code")]
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use std::time::Duration;
@@ -847,23 +848,240 @@ fn lease_config(heartbeat_every: Duration, work_ms: u64) -> OnConfig {
     }
 }
 
+/// How long a wait on the log or on a push may last before the test says what it waited for. Only
+/// a task that died reaches it, so it is far above anything a loaded machine takes.
+const WAIT: Duration = Duration::from_secs(150);
+
+/// How often a wait looks at the log, a push or a heartbeat count again.
+const POLL: Duration = Duration::from_millis(5);
+
+/// Waits until `find` returns something for the log, and returns it.
+async fn wait_for<T>(
+    what: &str,
+    log: &local::LogReader,
+    find: impl Fn(&[Event]) -> Option<T>,
+) -> T {
+    let started = tokio::time::Instant::now();
+    loop {
+        let events = log.events();
+        if let Some(found) = find(&events) {
+            return found;
+        }
+        assert!(
+            started.elapsed() < WAIT,
+            "gave up after {WAIT:?} waiting for {what}; the log held {} events",
+            events.len()
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Holds each agent's push to its fork until the test lets that agent's push through, so that a
+/// test can keep an agent's claim open and unsubmitted for as long as it needs: a submitted claim
+/// does not lapse. A fork's `pre-receive` hook records that a push arrived, then waits for the
+/// file that `open` removes, not for a duration.
+struct PushGate {
+    dir: tempfile::TempDir,
+}
+
+impl PushGate {
+    fn install(server: &LocalServer) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let tessel_swarm::endpoint::Remote::Local { forks, .. } = server.endpoint.remote.clone()
+        else {
+            unreachable!("the local target has a local remote");
+        };
+        for fork in std::fs::read_dir(forks).unwrap() {
+            let fork = fork.unwrap().path();
+            let name = fork.file_stem().unwrap().to_string_lossy().into_owned();
+            let gate = dir.path().display();
+            std::fs::write(dir.path().join(format!("closed-{name}")), "").unwrap();
+            // The hook gives up when its gate has been closed for `WAIT`, so a test binary that is
+            // killed leaves no hook waiting for ever.
+            let polls = WAIT.as_millis() / 20;
+            let script = format!(
+                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\nn=0\n\
+                 while [ -e '{gate}/closed-{name}' ] && [ \"$n\" -lt {polls} ]; do\n\
+                 sleep 0.02; n=$((n + 1)); done\n\
+                 [ ! -e '{gate}/closed-{name}' ] || exit 1\n"
+            );
+            let hook = fork.join("hooks/pre-receive");
+            std::fs::write(&hook, script).unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        Self { dir }
+    }
+
+    /// Waits until `agent` has pushed: its answer is read, its work is done, and it cannot submit
+    /// before `open`.
+    async fn push_arrived(&self, agent: &str) {
+        let arrived = self.dir.path().join(format!("arrived-{agent}"));
+        let started = tokio::time::Instant::now();
+        while !arrived.exists() {
+            assert!(
+                started.elapsed() < WAIT,
+                "gave up after {WAIT:?} waiting for {agent} to push"
+            );
+            tokio::time::sleep(POLL).await;
+        }
+    }
+
+    fn open(&self, agent: &str) {
+        std::fs::remove_file(self.dir.path().join(format!("closed-{agent}"))).unwrap();
+    }
+}
+
+/// Moves the coordinator's clock in steps, each taken only after the agents it names have sent a
+/// heartbeat since the previous step, so that a step shorter than a lease never lapses a claim
+/// whose agent keeps renewing it, however slowly the machine runs.
+struct Beats<'a> {
+    server: &'a LocalServer,
+    agents: Vec<String>,
+    seen: Vec<usize>,
+}
+
+impl<'a> Beats<'a> {
+    fn new(server: &'a LocalServer, agents: &[&str]) -> Self {
+        let agents: Vec<String> = agents.iter().map(|a| (*a).to_string()).collect();
+        let seen = agents.iter().map(|a| server.heartbeats(a)).collect();
+        Self {
+            server,
+            agents,
+            seen,
+        }
+    }
+
+    /// The agents that have sent no heartbeat since the last step.
+    fn silent(&self) -> Vec<&str> {
+        let owed = |(agent, seen): &(&String, &usize)| self.server.heartbeats(agent) <= **seen;
+        let pairs = self.agents.iter().zip(&self.seen);
+        pairs
+            .filter(owed)
+            .map(|(agent, _)| agent.as_str())
+            .collect()
+    }
+
+    /// Waits for a heartbeat from each agent, then moves the clock by `ms` and waits for an expiry
+    /// pass that saw the new time.
+    async fn step(&mut self, ms: u64) {
+        let started = tokio::time::Instant::now();
+        while self
+            .agents
+            .iter()
+            .zip(&self.seen)
+            .any(|(agent, seen)| self.server.heartbeats(agent) <= *seen)
+        {
+            assert!(
+                started.elapsed() < WAIT,
+                "gave up after {WAIT:?} waiting for a heartbeat from {:?}",
+                self.silent()
+            );
+            tokio::time::sleep(POLL).await;
+        }
+        self.advance(ms).await;
+    }
+
+    /// Moves the clock by `ms` without waiting for a heartbeat: for the first step after a grant,
+    /// which is shorter than the lease the grant just started.
+    async fn advance(&mut self, ms: u64) {
+        self.server.advance_clock(ms);
+        // Counted after the advance: a heartbeat handled before it has not renewed at the new time.
+        self.seen = self
+            .agents
+            .iter()
+            .map(|a| self.server.heartbeats(a))
+            .collect();
+        self.server.settle_expiry().await;
+    }
+}
+
+/// The coordinator's time, in milliseconds, of the first event `pick` accepts.
+fn logged_at(events: &[Event], pick: impl Fn(&EventKind) -> bool) -> u64 {
+    events.iter().find(|e| pick(&e.kind)).unwrap().at_ms
+}
+
+const LEASE_MS: u64 = 400;
+
+/// A step of the coordinator's clock: less than the lease, so that one heartbeat between two
+/// steps is enough to keep a claim, however long the real time between the heartbeats is.
+const STEP_MS: u64 = LEASE_MS * 3 / 4;
+
+/// The agent that got the first grant.
+fn first_granted(events: &[Event]) -> Option<String> {
+    events.iter().find_map(|e| {
+        let EventKind::ClaimGranted { agent, .. } = &e.kind else {
+            return None;
+        };
+        Some(agent.0.clone())
+    })
+}
+
+/// The agent whose request was queued first.
+fn first_queued(events: &[Event]) -> Option<String> {
+    events.iter().find_map(|e| {
+        let EventKind::WaitQueued { agent, .. } = &e.kind else {
+            return None;
+        };
+        Some(agent.0.clone())
+    })
+}
+
+/// `Some` when the log holds a grant to `waiter`.
+fn granted_to(events: &[Event], waiter: &str) -> Option<()> {
+    events.iter().find_map(|e| {
+        let EventKind::ClaimGranted { agent, .. } = &e.kind else {
+            return None;
+        };
+        (agent.0 == waiter).then_some(())
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_is_kept_alive_while_its_agent_works() {
-    // The work takes twice the lease; the heartbeat is fifteen times inside it.
-    let run = run_with_lease(
-        &[body(1, "unitPrice")],
-        lease_config(Duration::from_millis(200), 6000),
-        3000,
-    )
-    .await;
+    // The coordinator's clock runs past two leases while the agent works, and only its heartbeats
+    // renew the claim: between two steps the clock has moved three quarters of a lease.
+    let lease_ms = 3000;
+    let step_ms = lease_ms * 3 / 4;
+    let config = lease_config(Duration::from_millis(200), 0);
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path(), lease_ms).await;
+    server.freeze_clock();
+    let gate = PushGate::install(&server);
+    let log = server.reader();
+    let drive = async {
+        let agent = wait_for("a grant", &log, first_granted).await;
+        gate.push_arrived(&agent).await;
+        let mut beats = Beats::new(&server, &[&agent]);
+        for _ in 0..3 {
+            beats.step(step_ms).await;
+        }
+        gate.open(&agent);
+    };
+    let agents = scratch.path().join("agents");
+    let tasks = [body(1, "unitPrice")];
+    let (result, ()) = tokio::join!(
+        on::run_on(&server.endpoint, &tasks, &agents, &config),
+        drive
+    );
+    let result = result.unwrap();
     assert_eq!(
-        run.result.results[0].result,
+        result.results[0].result,
         Resolution::Merged,
         "{:?}",
-        run.result.results
+        result.results
     );
-    assert_eq!(run.result.summary.merges, 1);
-    run.server.shutdown().await;
+    assert_eq!(result.summary.merges, 1);
+    assert_eq!(lease_expired(&result.events), []);
+    let granted = logged_at(&result.events, |k| {
+        matches!(k, EventKind::ClaimGranted { .. })
+    });
+    let merged = logged_at(&result.events, |k| matches!(k, EventKind::Merged { .. }));
+    assert_eq!(
+        merged - granted,
+        3 * step_ms,
+        "the claim lived through three steps, two and a quarter leases, on the coordinator's clock"
+    );
+    server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -894,47 +1112,105 @@ fn lease_expired(log: &[Event]) -> Vec<ClaimId> {
         .collect()
 }
 
+/// Steps of the coordinator's clock the waiter queues through: six leases.
+const QUEUE_STEPS: u64 = 8;
+
+/// Steps after the waiter's grant: two and a quarter leases.
+const GRANT_STEPS: u64 = 3;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive() {
-    // The holder works for five leases while the other agent waits in the queue, so the waiter's
-    // grant arrives long after its claim was sent. Its claim must still be renewed.
+    // The coordinator's clock runs six leases while one agent holds the scope and the other waits
+    // in the queue, so the waiter's grant arrives long after its claim was sent. Its expiry counts
+    // from the grant, and its heartbeats renew it for two more leases. Both agents' pushes are
+    // held, so neither claim is submitted, and the clock moves only after a heartbeat.
     let tasks = [body(1, "unitPrice"), body(2, "unitPrice")];
     let config = OnConfig {
         heartbeat_every: Duration::from_millis(80),
-        ..config(2, Policy::Wait, 2000)
+        ..config(2, Policy::Wait, 0)
     };
-    let run = run_with_lease(&tasks, config, 400).await;
-    let outcomes: Vec<Resolution> = run.result.results.iter().map(|r| r.result).collect();
-    assert_eq!(outcomes, [Resolution::Merged, Resolution::Merged]);
-    assert_eq!(run.result.waits_in_log, 1);
-    assert!(
-        run.result.results.iter().any(|r| r.waited_ms >= 1600),
-        "one agent waited for several leases: {:?}",
-        run.result.results
+    let scratch = tempfile::tempdir().unwrap();
+    let server = start_server(&config, scratch.path(), LEASE_MS).await;
+    server.freeze_clock();
+    let gate = PushGate::install(&server);
+    let log = server.reader();
+    let drive = async {
+        let holder = wait_for("the first grant", &log, first_granted).await;
+        let waiter = wait_for("a queued claim", &log, first_queued).await;
+        gate.push_arrived(&holder).await;
+        let mut beats = Beats::new(&server, &[&holder, &waiter]);
+        for _ in 0..QUEUE_STEPS {
+            beats.step(STEP_MS).await;
+        }
+        gate.open(&holder);
+        wait_for("the waiter's grant", &log, |events| {
+            granted_to(events, &waiter)
+        })
+        .await;
+        gate.push_arrived(&waiter).await;
+        let mut beats = Beats::new(&server, &[&waiter]);
+        beats.advance(STEP_MS).await;
+        for _ in 1..GRANT_STEPS {
+            beats.step(STEP_MS).await;
+        }
+        gate.open(&waiter);
+    };
+    let agents = scratch.path().join("agents");
+    let (result, ()) = tokio::join!(
+        on::run_on(&server.endpoint, &tasks, &agents, &config),
+        drive
     );
-    assert_eq!(lease_expired(&run.result.events), []);
-    run.server.shutdown().await;
+    let result = result.unwrap();
+    let outcomes: Vec<Resolution> = result.results.iter().map(|r| r.result).collect();
+    assert_eq!(outcomes, [Resolution::Merged, Resolution::Merged]);
+    assert_eq!(result.waits_in_log, 1);
+    assert_eq!(lease_expired(&result.events), []);
+    let events = &result.events;
+    let queued = logged_at(events, |k| matches!(k, EventKind::WaitQueued { .. }));
+    let waiter_granted = events
+        .iter()
+        .filter(|e| matches!(e.kind, EventKind::ClaimGranted { .. }))
+        .nth(1)
+        .unwrap()
+        .at_ms;
+    let last_merged = events
+        .iter()
+        .rfind(|e| matches!(e.kind, EventKind::Merged { .. }))
+        .unwrap()
+        .at_ms;
+    assert_eq!(
+        waiter_granted - queued,
+        QUEUE_STEPS * STEP_MS,
+        "the waiter queued for six leases on the coordinator's clock"
+    );
+    assert_eq!(
+        last_merged - waiter_granted,
+        GRANT_STEPS * STEP_MS,
+        "its claim lived {GRANT_STEPS} steps, two and a quarter leases, past the grant"
+    );
+    server.shutdown().await;
 }
 
+/// How long the waiter stays queued, in real time, before it is cut. It is a minimum that the
+/// test then reads back as the lower bound of the agent's own measured wait, so a stall on a
+/// loaded machine only lengthens it and never breaks the bound. The holder's push is held until
+/// the cut has returned, so the order of the cut and the holder's release does not depend on it.
 const QUEUED_FOR: Duration = Duration::from_millis(300);
 
 /// Waits until the log shows an agent queued and then `QUEUED_FOR` more, then closes that agent's
-/// socket from the coordinator's side without withdrawing its queued request. Returns the agent.
-async fn cut_the_first_waiter(log: local::LogReader, cutter: local::Cutter) -> String {
-    loop {
-        let queued = log.events().into_iter().find_map(|e| {
-            let EventKind::WaitQueued { agent, .. } = e.kind else {
-                return None;
-            };
-            Some(agent.0)
-        });
-        if let Some(agent) = queued {
-            tokio::time::sleep(QUEUED_FOR).await;
-            assert!(cutter.cut(&agent), "{agent} had an open socket");
-            return agent;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+/// socket from the coordinator's side without withdrawing its queued request, and then lets the
+/// holder's push through. Returns the agent that was cut.
+async fn cut_the_first_waiter(
+    log: &local::LogReader,
+    cutter: &local::Cutter,
+    gate: &PushGate,
+) -> String {
+    let waiter = wait_for("a queued claim", log, first_queued).await;
+    let holder = wait_for("the first grant", log, first_granted).await;
+    tokio::time::sleep(QUEUED_FOR).await;
+    assert!(cutter.cut(&waiter), "{waiter} had an open socket");
+    gate.open(&holder);
+    waiter
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -947,13 +1223,17 @@ async fn an_agent_whose_connection_the_coordinator_closes_while_it_waits_ends_on
         ..config(2, Policy::Wait, 1500)
     };
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&config, scratch.path(), 600).await;
-    let cut = tokio::spawn(cut_the_first_waiter(server.reader(), server.cutter()));
+    let lease_ms = 600;
+    let server = start_server(&config, scratch.path(), lease_ms).await;
+    server.freeze_clock();
+    let gate = PushGate::install(&server);
+    let (log, cutter) = (server.reader(), server.cutter());
     let agents = scratch.path().join("agents");
-    let result = on::run_on(&server.endpoint, &tasks, &agents, &config)
-        .await
-        .unwrap();
-    let waiter = cut.await.unwrap();
+    let (result, waiter) = tokio::join!(
+        on::run_on(&server.endpoint, &tasks, &agents, &config),
+        cut_the_first_waiter(&log, &cutter, &gate)
+    );
+    let result = result.unwrap();
     let mine = |r: &&on::TaskResult| r.agent == waiter;
     let cut_off = result.results.iter().find(mine).unwrap();
     assert_eq!(cut_off.result, Resolution::Disconnected, "{cut_off:?}");
@@ -972,7 +1252,8 @@ async fn an_agent_whose_connection_the_coordinator_closes_while_it_waits_ends_on
     assert_eq!(other.result, Resolution::Merged, "{other:?}");
     assert_eq!(result.summary.merges, 1);
     // The coordinator still granted the request of the agent it had cut off, to no socket, and
-    // that claim lapses one lease later: the live log's signature.
+    // that claim lapses one lease later on the coordinator's clock: the live log's signature. The
+    // other agent's claim is gone by now, so no heartbeat is owed to anything that is still open.
     let granted_to_waiter = result.events.iter().find_map(|e| {
         let EventKind::ClaimGranted { agent, claim, .. } = &e.kind else {
             return None;
@@ -980,15 +1261,16 @@ async fn an_agent_whose_connection_the_coordinator_closes_while_it_waits_ends_on
         (agent.0 == waiter).then_some(*claim)
     });
     let granted_to_waiter = granted_to_waiter.expect("the cut-off waiter's request was granted");
-    let mut lapsed = Vec::new();
-    for _ in 0..100 {
-        lapsed = lease_expired(&server.log());
-        if !lapsed.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(lapsed, [granted_to_waiter]);
+    server.advance_clock(lease_ms - 1);
+    server.settle_expiry().await;
+    assert_eq!(
+        lease_expired(&server.log()),
+        [],
+        "the claim lives until a full lease has passed since its grant"
+    );
+    server.advance_clock(1);
+    server.settle_expiry().await;
+    assert_eq!(lease_expired(&server.log()), [granted_to_waiter]);
     let run = Run {
         server,
         result,
@@ -1012,12 +1294,14 @@ async fn the_tasks_a_cut_off_agent_never_took_are_done_by_the_others() {
     };
     let scratch = tempfile::tempdir().unwrap();
     let server = start_server(&config, scratch.path(), 3000).await;
-    let cut = tokio::spawn(cut_the_first_waiter(server.reader(), server.cutter()));
+    let gate = PushGate::install(&server);
+    let (log, cutter) = (server.reader(), server.cutter());
     let agents = scratch.path().join("agents");
-    let result = on::run_on(&server.endpoint, &tasks, &agents, &config)
-        .await
-        .unwrap();
-    let waiter = cut.await.unwrap();
+    let (result, waiter) = tokio::join!(
+        on::run_on(&server.endpoint, &tasks, &agents, &config),
+        cut_the_first_waiter(&log, &cutter, &gate)
+    );
+    let result = result.unwrap();
     let outcomes: Vec<(&str, Resolution)> = result
         .results
         .iter()
@@ -1167,36 +1451,72 @@ async fn an_agent_whose_own_checks_fail_reports_the_failure_not_the_noise_around
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
-    // A test in main waits on a timer for one and a half leases, so the agent's checks outlast
-    // the lease with no simulated work around them and nothing but the heartbeat renews it.
+    // A test in main waits for the driver while the agent's checks run, so they outlast the lease
+    // with no simulated work around them and nothing but the heartbeat renews it. The coordinator's
+    // clock runs past two leases meanwhile, a step after each heartbeat; the test in main reads
+    // the files the driver writes, so no timer decides how long the checks last.
     let cfg = lease_config(Duration::from_millis(200), 0);
     let scratch = tempfile::tempdir().unwrap();
     let lease_ms = 3000;
+    let step_ms = lease_ms * 3 / 4;
     let server = start_server(&cfg, scratch.path(), lease_ms).await;
+    server.freeze_clock();
     let tessel_swarm::endpoint::Remote::Local { trunk, .. } = server.endpoint.remote.clone() else {
         unreachable!("the local target has a local remote");
     };
+    let signals = tempfile::tempdir().unwrap();
+    let (started, release) = (
+        signals.path().join("started"),
+        signals.path().join("release"),
+    );
     std::fs::write(
         trunk.join("test/slow.test.ts"),
         format!(
-            "import {{ test }} from \"node:test\";\n\
+            "import {{ existsSync, writeFileSync }} from \"node:fs\";\n\
+             import {{ test }} from \"node:test\";\n\
+             import {{ setTimeout as pause }} from \"node:timers/promises\";\n\
              test(\"slow\", async () => {{\n\
-             await new Promise((done) => setTimeout(done, {}));\n}});\n",
-            lease_ms * 3 / 2
+             writeFileSync(\"{}\", \"\");\n\
+             for (let n = 0; n < {} && !existsSync(\"{}\"); n++) await pause(20);\n}});\n",
+            started.display(),
+            WAIT.as_millis() / 20,
+            release.display()
         ),
     )
     .unwrap();
     Git::new(&trunk).commit_all("Add a slow test").unwrap();
+    let log = server.reader();
+    let drive = async {
+        let agent = wait_for("a grant", &log, first_granted).await;
+        let waiting = tokio::time::Instant::now();
+        while !started.exists() {
+            assert!(
+                waiting.elapsed() < WAIT,
+                "gave up waiting for the checks to start"
+            );
+            tokio::time::sleep(POLL).await;
+        }
+        let mut beats = Beats::new(&server, &[&agent]);
+        for _ in 0..3 {
+            beats.step(step_ms).await;
+        }
+        std::fs::write(&release, "").unwrap();
+    };
     let agents = scratch.path().join("agents");
-    let result = on::run_on(&server.endpoint, &[body(1, "unitPrice")], &agents, &cfg)
-        .await
-        .unwrap();
+    let tasks = [body(1, "unitPrice")];
+    let (result, ()) = tokio::join!(on::run_on(&server.endpoint, &tasks, &agents, &cfg), drive);
+    let result = result.unwrap();
     let r = &result.results[0];
-    assert!(
-        r.work_ms > lease_ms,
-        "the checks outlasted the lease: {r:?}"
-    );
     assert_eq!(r.result, Resolution::Merged, "{r:?}");
     assert_eq!(lease_expired(&result.events), []);
+    let granted = logged_at(&result.events, |k| {
+        matches!(k, EventKind::ClaimGranted { .. })
+    });
+    let merged = logged_at(&result.events, |k| matches!(k, EventKind::Merged { .. }));
+    assert_eq!(
+        merged - granted,
+        3 * step_ms,
+        "the checks outlasted two leases on the coordinator's clock"
+    );
     server.shutdown().await;
 }
