@@ -491,8 +491,7 @@ impl Host {
                 let bound = shell::bind_on_welcome(&session, &agent, &applied.outbound);
                 let (entries, mut held) = held_of(applied);
                 held.reply_to = Some(sock);
-                held.bind = None;
-                let _ = bound;
+                held.bind = bound.map(|bound| (sock, bound));
                 self.start_commit(entries, held, None, out);
             }
             Ok(Prepared::Refused) => {
