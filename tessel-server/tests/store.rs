@@ -290,7 +290,7 @@ fn a_forked_child_before_exec_does_not_hold_the_directory() -> TestResult {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
 
-    const WINDOW_MICROS: libc::useconds_t = 300_000;
+    const WINDOW_NANOS: libc::c_long = 300_000_000;
 
     let dir = tempfile::tempdir()?;
     let root = dir.path().join("stores");
@@ -299,12 +299,15 @@ fn a_forked_child_before_exec_does_not_hold_the_directory() -> TestResult {
     let signal_fd = signal.as_raw_fd();
     let spawner = std::thread::spawn(move || {
         let mut command = std::process::Command::new("true");
-        // SAFETY: the closure runs between fork and exec and calls only `write` and `usleep`,
-        // which are async-signal-safe; it touches no memory the parent's other threads own.
+        // SAFETY: the closure runs between fork and exec and calls only `write` and `nanosleep`,
+        // which POSIX lists as async-signal-safe; the `timespec` is built on the child's stack
+        // from zeroed memory and no memory the parent's other threads own is touched.
         unsafe {
             command.pre_exec(move || {
+                let mut window: libc::timespec = std::mem::zeroed();
+                window.tv_nsec = WINDOW_NANOS;
                 libc::write(signal_fd, b"x".as_ptr().cast(), 1);
-                libc::usleep(WINDOW_MICROS);
+                libc::nanosleep(&raw const window, std::ptr::null_mut());
                 Ok(())
             });
         }
