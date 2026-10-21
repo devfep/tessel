@@ -181,7 +181,8 @@ async fn serve(path: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // No lander is configured yet: a merge is refused.
+    // A repository that names a `remote` is landed by the lander `server::start` builds from the
+    // configuration; the others get this port, which refuses every merge.
     let deps = Deps {
         verifier,
         calls: Arc::new(NoLander),

@@ -548,19 +548,44 @@ impl RepoTask {
         let answer = self.calls.answer(call);
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let input = match tokio::spawn(answer).await {
-                Ok(answer) => Input::Replied {
-                    now_ms: now_ms(),
-                    call: id,
-                    answer,
-                },
-                Err(_) => Input::CallLost {
-                    now_ms: now_ms(),
-                    call: id,
-                },
+            let (input, moved) = match tokio::spawn(answer).await {
+                Ok(answer) => {
+                    let moved = moves_main(&answer);
+                    let replied = Input::Replied {
+                        now_ms: now_ms(),
+                        call: id,
+                        answer,
+                    };
+                    (replied, moved)
+                }
+                Err(_) => (
+                    Input::CallLost {
+                        now_ms: now_ms(),
+                        call: id,
+                    },
+                    false,
+                ),
             };
             let _ = tx.send(Msg::Host(input)).await;
+            if moved {
+                // What the Worker's poke carried when the steward moved main: the host reads
+                // main's head, so agents hear of the new head from the host's own read.
+                let _ = tx.send(Msg::Poke).await;
+            }
         });
+    }
+}
+
+/// Whether the call that got this answer moved main, so the host should read the head again.
+fn moves_main(answer: &CallAnswer) -> bool {
+    match answer {
+        CallAnswer::Prepared { .. } | CallAnswer::Landed { .. } => true,
+        CallAnswer::Tested
+        | CallAnswer::Trialled { .. }
+        | CallAnswer::Head { .. }
+        | CallAnswer::Reconciled { .. }
+        | CallAnswer::Refused { .. }
+        | CallAnswer::Unknown => false,
     }
 }
 

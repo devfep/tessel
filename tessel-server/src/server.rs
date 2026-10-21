@@ -9,8 +9,9 @@ use tessel_coordinator::host::HostConfig;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::config::Config;
+use crate::config::{Config, RepositoryConfig};
 use crate::id::{IdError, RepoId};
+use crate::landing::{Landing, LandingError, LocalRunner, TestRunner};
 use crate::repo::{self, CallPort, RunningRepo};
 use crate::store::{StoreDir, StoreError};
 use crate::ws::{self, App, Verifier};
@@ -19,6 +20,8 @@ use crate::ws::{self, App, Verifier};
 pub struct Deps {
     /// `None`: no identity is configured, and every authenticated route answers 401.
     pub verifier: Option<Arc<dyn Verifier>>,
+    /// Answers the calls of every repository that names no `remote`. A repository with a
+    /// `remote` is answered by the lander, which the server builds from the configuration.
     pub calls: Arc<dyn CallPort>,
 }
 
@@ -39,6 +42,14 @@ pub enum StartError {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    #[error("the lander of {tenant:?}/{name:?}: {source}")]
+    Landing {
+        tenant: String,
+        name: String,
+        source: LandingError,
+    },
+    #[error("the [lander] table: {0}")]
+    Runner(#[from] tessel_runner::RunnerError),
 }
 
 /// A server that is listening.
@@ -71,8 +82,59 @@ impl RunningServer {
     }
 }
 
-/// Take the lock, open every store, start every repository and listen.
+/// Take the lock, open every store, start every repository and listen. A repository that names a
+/// `remote` is answered by the lander, with the runner `[lander] runner_config` names.
 pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartError> {
+    let runner = match &config.lander {
+        Some(lander) => {
+            let runner: Arc<dyn TestRunner> =
+                Arc::new(LocalRunner::new(lander.runner_config.clone())?);
+            Some(runner)
+        }
+        None => None,
+    };
+    start_repositories(config, deps, runner).await
+}
+
+/// Like [`start`], with the tests run by `runner`: the means to run a landing without repo code.
+pub async fn start_with_runner(
+    config: &Config,
+    deps: Deps,
+    runner: Arc<dyn TestRunner>,
+) -> Result<RunningServer, StartError> {
+    start_repositories(config, deps, Some(runner)).await
+}
+
+/// The port that answers the calls of `repository`: the lander when it names a `remote`.
+fn calls_of(
+    id: &RepoId,
+    repository: &RepositoryConfig,
+    config: &Config,
+    (default, runner): (&Arc<dyn CallPort>, &Option<Arc<dyn TestRunner>>),
+) -> Result<Arc<dyn CallPort>, StartError> {
+    if repository.remote.is_none() {
+        return Ok(Arc::clone(default));
+    }
+    let landing = |source| StartError::Landing {
+        tenant: repository.tenant.clone(),
+        name: repository.name.clone(),
+        source,
+    };
+    let (Some(lander), Some(runner)) = (&config.lander, runner) else {
+        return Err(landing(LandingError::Unconfigured {
+            repo: id.to_string(),
+        }));
+    };
+    let lander =
+        Landing::new(id.clone(), repository, lander, Arc::clone(runner)).map_err(landing)?;
+    Ok(Arc::new(lander))
+}
+
+async fn start_repositories(
+    config: &Config,
+    deps: Deps,
+    runner: Option<Arc<dyn TestRunner>>,
+) -> Result<RunningServer, StartError> {
     let dir = StoreDir::open(&config.store_dir)?;
     let mut repos = Vec::new();
     let mut handles = BTreeMap::new();
@@ -89,6 +151,7 @@ pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartEr
                 name: repository.name.clone(),
             });
         }
+        let calls = calls_of(&id, repository, config, (&deps.calls, &runner))?;
         let store = dir.open_repo(&id)?;
         let host = HostConfig {
             repo: id.to_string(),
@@ -97,13 +160,7 @@ pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartEr
             sensitive: repository.sensitive_list(),
             ..HostConfig::default()
         };
-        let running = repo::spawn(
-            id.clone(),
-            store,
-            dir.repo_file(&id),
-            host,
-            deps.calls.clone(),
-        );
+        let running = repo::spawn(id.clone(), store, dir.repo_file(&id), host, calls);
         tracing::info!(repo = %id, "serving");
         handles.insert(id, running.handle.clone());
         repos.push(running);

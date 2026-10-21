@@ -5,6 +5,7 @@ pub mod config;
 pub mod id;
 pub mod identity;
 pub mod keys;
+pub mod landing;
 pub mod repo;
 pub mod server;
 pub mod store;
