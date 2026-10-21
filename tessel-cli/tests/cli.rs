@@ -2768,7 +2768,7 @@ async fn a_merge_that_lands_while_the_socket_is_down_still_moves_the_base() -> R
     assert_eq!(a1.tessel(&["submit", "--evidence", "ok"])?.code, 0);
     assert_eq!(a1.status()?["state"]["start_base"], pinned);
 
-    // Cut the daemon off, let the steward merge, and let the daemon come back.
+    // Cut the daemon off, let the lander merge, and let the daemon come back.
     let before = fake.received("a1").len();
     fake.set_accepting(false);
     fake.drop_connections();

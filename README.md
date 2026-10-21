@@ -8,8 +8,8 @@ rebases it, checks that the claim covered every change, and pushes `main` once t
 CI has run the tests on it. Work merges with no human unless a rule flags it, and a flagged
 change says why. Tessel's first implementation ran on Cloudflare; that host is deleted.
 `tessel-server` replaces it as a single server meant to work with GitHub and the team's own CI;
-today it runs on one machine and does not land yet. [`PLAN.md`](PLAN.md) has the plan and its
-status.
+today it runs on one machine and lands onto a git remote you name. [`PLAN.md`](PLAN.md) has the
+plan and its status.
 
 It is for you if you run several coding agents (Claude Code, an MCP client, your own scripts) on
 one repository at the same time, and you want their work to land without overwriting or breaking
@@ -68,15 +68,16 @@ explains each part, follows one conflict end to end with real CLI output, and de
    or in the local runner for a single trusted user, never in the lander. The claim is released
    and the next waiting agent is granted.
 
-`tessel-server` runs steps 1 to 5 today. Step 6 is not wired into it: the server has no lander yet
-(P1-SERVER-LANDING), so a submission that reaches the merge is refused and the claim is active
-again. The swarm harness below runs step 6 with a local stand-in.
+`tessel-server` runs all six steps for a repository that names a `remote` and a `fork`: its lander
+rebases the commit, the runner runs the trunk's test command, and main is pushed and read back. A
+repository without a `remote` has no lander, so a submission that reaches the merge is refused and
+the claim is active again. No evidence record and no transcript copy exist yet (P1-EVIDENCE).
 
 ## See it run
 
 No account needed. The swarm harness runs scripted agents twice on a small TypeScript
 repository: once with plain git and no coordination, once against the real coordinator core on
-127.0.0.1 with a local steward. You need Rust, git and Node 22.18 or newer.
+127.0.0.1 with a local stand-in for the lander. You need Rust, git and Node 22.18 or newer.
 
     cargo build -p tessel-swarm
     target/debug/tessel-swarm run --seed 1 --tasks 10 --agents 4 --overlap 0.5 --out swarm-results
@@ -89,9 +90,9 @@ contested function varies with timing, so your numbers can differ from run to ru
 ## Hosting today
 
 Nothing is deployed from this repository, and the Cloudflare Worker that used to host the
-coordinator is deleted. `tessel-server` serves claims, review and identity on one machine and does
-not land yet (P1-SERVER-LANDING). `tessel-runner` runs a repository's test commands for one trusted
-user; nothing calls it yet. Also in the tree: the core and the portable host in `src/host/`, the
+coordinator is deleted. `tessel-server` serves claims, review, identity and landing on one machine.
+`tessel-runner` runs a repository's test commands for one trusted user, and the server's lander
+calls it. Also in the tree: the core and the portable host in `src/host/`, the
 lander in `tessel-lander/`, the CLI against a fake coordinator that drives the real host, and the
 swarm harness on 127.0.0.1.
 

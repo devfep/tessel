@@ -1,8 +1,9 @@
 # How Tessel works
 
 This page describes the model and the code in this tree. The Cloudflare host is gone. The local
-server, `tessel-server`, serves claims, review and identity on one machine ([local
-setup](local-setup.md)) and does not land yet (P1-SERVER-LANDING, under [`PLAN.md`](../PLAN.md)).
+server, `tessel-server`, serves claims, review, identity and landing on one machine ([local
+setup](local-setup.md)): for a repository that names a `remote` and a `fork` it lands onto the
+remote. No evidence record exists yet (P1-EVIDENCE, under [`PLAN.md`](../PLAN.md)).
 
 Tessel lets several AI coding agents work in one repository at once without overwriting or breaking
 each other's work: each agent claims the code it is about to change, and finished work reaches
@@ -72,9 +73,9 @@ redo part of it.
   onto `main`, checks that the claim covers every changed file, and pushes. It runs git but never
   repo code: the tests run in the repository's CI, or locally in `tessel-runner` (`tessel-runner/`),
   a separate process that refuses to start for any user but the one its config names, runs only
-  the gate's test commands, and has no sandbox until M5. Nothing calls the runner yet. The lander
-  is a port of the steward's merge rules and a library today: the server calls it from
-  P1-SERVER-LANDING (M3).
+  the gate's test commands, and has no sandbox until M5. The lander is a port of the
+  steward's merge rules, and `tessel-server` calls it and the runner for a repository that names a
+  `remote`.
 - **The steward** (`tessel-steward/`) is the TypeScript Worker the lander replaces. It stays in
   the tree as the reference for that port until M6.
 
@@ -246,8 +247,8 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 | **Review by exception** | A submission merges with no human unless a rule flags it: it changes a signature, touches a path in the sensitive list, threatens an assumption, or carries no evidence. Flagged work waits for a reviewer named in the reviewers list, who decides with `tessel review`. A reviewer can never decide their own submission. |
 | **Evidence** | The `--evidence` lines on a submit. Any non-empty line satisfies the rule. The coordinator does not check it: it is what the agent says it ran. |
 | **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the tests have passed in CI. It never runs repo code. Until M6 the TypeScript steward is the reference it was ported from. |
-| **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, `<repo>--<agent>`, on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from there. |
-| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). Until P1-SERVER-LANDING wires the lander in, nothing runs the gate here; the steward's gate, without one, runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
+| **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, the one the server's `fork` template names for it (locally `<forks>/<agent>.git`), on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from that `main`. |
+| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). `tessel-server` runs the trunk's test command through the runner before it pushes; the steward's gate, without one, runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
 
 ### Which modes conflict
 

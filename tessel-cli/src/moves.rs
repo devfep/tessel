@@ -310,7 +310,7 @@ pub fn next_moves(outcome: &ClaimOutcome, situation: &Situation) -> Vec<Move> {
         ClaimOutcome::Granted { .. } | ClaimOutcome::Covered => vec![
             plain(
                 "tessel submit --evidence \"<tests run and result>\"",
-                "after you edit, commit and push to your fork, hand the work to the steward",
+                "after you edit, commit and push to your fork, hand the work to the lander",
             ),
             plain("tessel inbox", "read notices before and after editing"),
             plain("tessel release", "give the claim up if you will not edit"),

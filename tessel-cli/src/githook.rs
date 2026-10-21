@@ -118,7 +118,7 @@ fn read_stdin() -> anyhow::Result<Vec<u8>> {
     Ok(input)
 }
 
-/// The agent's claims that are not submitted. A submitted claim is the steward's now.
+/// The agent's claims that are not submitted. A submitted claim is the lander's now.
 fn unsubmitted_scopes(state: &State) -> Vec<ScopeClaim> {
     state
         .claims

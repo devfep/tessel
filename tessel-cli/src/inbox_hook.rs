@@ -181,7 +181,7 @@ enum Step {
     Waiting,
 }
 
-/// Which submitted claims the steward has dealt with. The wait ends when all of them are.
+/// Which submitted claims the lander has dealt with. The wait ends when all of them are.
 struct Progress {
     submitted: Vec<ClaimId>,
     merged: Vec<ClaimId>,
@@ -239,7 +239,7 @@ impl Progress {
 }
 
 /// `hook stop`: lets the turn end unless the agent's submission is pending or was rejected.
-/// Waits up to `wait` for the steward, then blocks once with where things stand.
+/// Waits up to `wait` for the landing, then blocks once with where things stand.
 pub async fn stop(
     stdin: std::io::Result<Vec<u8>>,
     root: Option<&Path>,
@@ -289,7 +289,7 @@ async fn try_stop(
         .filter(|claim| claim.submitted && claim.awaiting_review)
         .map(|claim| claim.claim)
         .collect();
-    wait_for_steward(&worktree, Progress::new(&submitted, in_review), wait).await
+    wait_for_landing(&worktree, Progress::new(&submitted, in_review), wait).await
 }
 
 /// Nothing is submitted, but a rejection the agent has not read yet still keeps it going: a
@@ -319,7 +319,7 @@ async fn live_state(worktree: &Worktree) -> Result<State, String> {
     }
 }
 
-async fn wait_for_steward(
+async fn wait_for_landing(
     worktree: &Worktree,
     mut progress: Progress,
     wait: Duration,
@@ -361,8 +361,8 @@ fn rejection(worktree: &Worktree) -> Result<HookOutput, String> {
 fn still_pending(submitted: &[ClaimId], wait: Duration) -> String {
     let ids: Vec<String> = submitted.iter().map(|claim| claim.0.to_string()).collect();
     format!(
-        "Your submission (claim {}) is still in the steward's merge queue after {} s and has not \
-         merged. Run `tessel status` and `tessel inbox` to see where it stands, and \
+        "Your submission (claim {}) is still waiting for the server's lander after {} s and has \
+         not merged. Run `tessel status` and `tessel inbox` to see where it stands, and \
          `tessel submit` again only if a notice says it was rejected. You may end your turn after \
          that.",
         ids.join(", "),

@@ -455,13 +455,14 @@ What a held mode covers when submitting (`protocol.rs:196-210`): every mode cove
 | `--evidence "<text>"` | none, at least one | What shows the work is right. Repeatable. The CLI drops blank entries (`tessel-cli/src/submit.rs:63-75`). Self-reported: the coordinator accepts any non-empty evidence list, and nothing checks that the tests ran. |
 | `--rejected "<approach>::<reason>"` | none | An approach tried and dropped. Repeatable. |
 | `--claim <id>` | the only unsubmitted claim | Required when several are held. |
-| `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork. |
-| `--transcript <file>` | none | A session transcript. Redacted, at most 4 MiB, stored on the local branch `tessel/transcript-<claim>`; push that branch to your fork (`tessel-cli/src/transcript.rs`). |
+| `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork's `main`. |
+| `--transcript <file>` | none | A session transcript. Redacted, at most 4 MiB, stored on the local branch `tessel/transcript-<claim>` (`tessel-cli/src/transcript.rs`). Nothing copies it yet (P1-EVIDENCE). |
 
-Push first: `git push <your fork> HEAD:main`. The lander (nothing lands until P1-SERVER-LANDING;
-the steward before it) fetches only the fork's default branch and needs the commit reachable from
-it (`tessel-steward/src/merge-commands.ts:55-62`, `merge-steps.ts:96-110,234`). The fork is
-`<repo>--<agent>` (`src/merge.rs:85`).
+Push first: `git push <your fork> HEAD:main`. The server's lander fetches only the fork's `main`
+and needs the commit reachable from it ([Landing](#landing)). The fork is the one the server's
+`fork` template names for the agent, locally `<forks>/<agent>.git`; the CLI does not choose it. The
+runner runs the trunk's test command on the rebased commit before main moves. No evidence record
+and no transcript copy exist yet (P1-EVIDENCE).
 
 ### `tessel review <claim> --approve | --reject [--note "<reason>"]`
 

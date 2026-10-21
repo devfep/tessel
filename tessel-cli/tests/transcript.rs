@@ -124,12 +124,7 @@ fn sent_transcripts(fake: &Fake, agent: &str) -> Vec<Option<TranscriptRef>> {
         .collect()
 }
 
-fn push_line(claim: u64) -> String {
-    format!(
-        "push it with git push {REPO}--a1 tessel/transcript-{claim} so the steward can copy it \
-         after the merge"
-    )
-}
+const STAYS_LOCAL: &str = "it stays in this repository, because no transcript copy exists yet";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_redacted_transcript_is_stored_on_its_branch_and_named_by_hash() -> Result<()> {
@@ -164,7 +159,7 @@ async fn a_redacted_transcript_is_stored_on_its_branch_and_named_by_hash() -> Re
         })]
     );
     assert_eq!(git(&a1.root(), &["status", "--porcelain"])?, "");
-    assert!(done.stdout.contains(&push_line(claim)), "{}", done.stdout);
+    assert!(done.stdout.contains(STAYS_LOCAL), "{}", done.stdout);
     let sha = sha256_hex(&bytes)?;
     assert!(
         done.stdout.contains(&format!(

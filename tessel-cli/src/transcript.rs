@@ -1,7 +1,7 @@
 //! `tessel submit --transcript`: redacts a session transcript, stores it on a local branch of its
 //! own without touching the working tree or the index, and names it by hash in the decision
-//! record. The steward copies it after the merge only when the hash matches. A transcript is
-//! untrusted text: nothing here reads meaning into it.
+//! record. It is prepared for the evidence record (P1-EVIDENCE); nothing copies it today. A
+//! transcript is untrusted text: nothing here reads meaning into it.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -14,7 +14,7 @@ use tessel_coordinator::protocol::TranscriptRef;
 
 use crate::render::escape;
 
-/// The largest transcript the steward reads (`TRANSCRIPT_MAX_BYTES` in its evidence steps).
+/// The largest transcript this CLI accepts.
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
 
 const TOKEN_PREFIX: &[u8] = b"art_v";
@@ -28,7 +28,7 @@ pub struct Prepared {
     sha256: String,
 }
 
-/// Reads the transcript at `path`, redacts it and checks the steward's size limit.
+/// Reads the transcript at `path`, redacts it and checks the size limit.
 pub fn prepare(path: &Path) -> anyhow::Result<Prepared> {
     let shown = escape(&path.display().to_string());
     let raw = std::fs::read(path).with_context(|| format!("cannot read the transcript {shown}"))?;
@@ -38,7 +38,7 @@ pub fn prepare(path: &Path) -> anyhow::Result<Prepared> {
     let bytes = redact(&raw);
     if bytes.len() > MAX_BYTES {
         bail!(
-            "the transcript {shown} is {} bytes after redaction; the steward copies at most \
+            "the transcript {shown} is {} bytes after redaction; the CLI accepts at most \
              {MAX_BYTES} bytes (4 MiB). Trim it and submit again",
             bytes.len()
         );
@@ -50,7 +50,7 @@ pub fn prepare(path: &Path) -> anyhow::Result<Prepared> {
     Ok(Prepared { bytes, sha256 })
 }
 
-/// Replaces what the steward's `redactTokens` replaces (`art_v[\w.~+/=-]*`) and every token after
+/// Replaces every `art_v` token (`art_v[\w.~+/=-]*`) and every token after
 /// `Bearer ` up to whitespace. The scheme word is matched in any case, as HTTP allows.
 pub fn redact(text: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len());
@@ -127,10 +127,9 @@ pub fn store(
     }
     writeln!(
         text,
-        "transcript: {branch} holds {path} (sha256 {}…); push it with git push {} {branch} so the \
-         steward can copy it after the merge",
+        "transcript: {branch} holds {path} (sha256 {}…); it stays in this repository, because no \
+         transcript copy exists yet (P1-EVIDENCE)",
         &prepared.sha256[..12],
-        escape(fork)
     )?;
     let reference = TranscriptRef {
         repo: fork.to_string(),
@@ -193,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_redacted_like_the_steward_does() {
+    fn art_v_and_bearer_tokens_are_redacted() {
         assert_eq!(redacted("x art_vAB.c~+/=-_9 y"), "x art_v…[redacted] y");
         assert_eq!(redacted("art_v"), "art_v…[redacted]");
         assert_eq!(redacted("art_vAB,cd"), "art_v…[redacted],cd");
