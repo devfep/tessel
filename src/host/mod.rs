@@ -30,7 +30,7 @@ mod tests;
 use std::collections::{HashMap, VecDeque};
 
 use crate::coordinator::HeadRead;
-use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
+use crate::protocol::{AgentId, ClientMsg, Event, ProtocolRange, ServerMsg};
 use crate::shell::{self, Action, Session, Target, Work};
 use batch::{Committed, Discarded, Held, Pending};
 use call::{Call, CallAnswer, CallId, Request};
@@ -161,7 +161,7 @@ pub enum Output {
 
 /// The repo the host serves and the deployment settings it reads when it builds the core (the
 /// Worker's variables today). `run` and `shadow_enabled` matter only for a repo with nothing
-/// stored; `reviewers` and `sensitive` are applied on every load.
+/// stored; `reviewers`, `sensitive` and `protocol_range` are applied on every load.
 #[derive(Debug, Clone, Default)]
 pub struct HostConfig {
     /// Named in log lines.
@@ -170,6 +170,8 @@ pub struct HostConfig {
     pub shadow_enabled: Option<String>,
     pub reviewers: Option<String>,
     pub sensitive: Option<String>,
+    /// The protocol versions `Welcome` announces; `None` announces the one this build speaks.
+    pub protocol_range: Option<ProtocolRange>,
 }
 
 /// A client message to handle: the expiry step that precedes it runs as its own write first.

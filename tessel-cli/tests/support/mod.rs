@@ -23,7 +23,7 @@ use tempfile::TempDir;
 use tessel_coordinator::host::call::{Call, CallAnswer, Request as CallRequest, TrialResult};
 use tessel_coordinator::host::{Host, HostConfig, Input, Output as HostOutput, SocketId};
 use tessel_coordinator::protocol::{
-    AgentId, ClientMsg, CommitId, Event, ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClientMsg, CommitId, Event, ProtocolRange, ServerMsg, PROTOCOL_VERSION,
 };
 use tessel_coordinator::shell::{self, Action, Session, EVENT_PREFIX, STATE_KEY};
 use tokio::net::{TcpListener, TcpStream};
@@ -572,10 +572,21 @@ pub struct Fake {
 impl Fake {
     /// `agents` maps each agent name to the token the fake accepts for it.
     pub async fn start(lease_ms: u64, agents: &[(&str, &str)]) -> Result<Self> {
+        Self::start_announcing(lease_ms, agents, None).await
+    }
+
+    /// Like `start`, with the host announcing `range` in every `Welcome` (its `HostConfig` says
+    /// so); `None` announces the range of this build.
+    pub async fn start_announcing(
+        lease_ms: u64,
+        agents: &[(&str, &str)],
+        range: Option<ProtocolRange>,
+    ) -> Result<Self> {
         let config = HostConfig {
             repo: REPO.to_string(),
             run: Some("test".to_string()),
             shadow_enabled: Some("false".to_string()),
+            protocol_range: range,
             ..HostConfig::default()
         };
         let store = BTreeMap::from([(STATE_KEY.to_string(), initial_state(lease_ms)?)]);

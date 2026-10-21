@@ -1,0 +1,63 @@
+[package]
+name = "tessel-server"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The Tessel coordinator server: one host per repository, on SQLite"
+
+[lib]
+name = "tessel_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tessel-server"
+path = "src/main.rs"
+
+[dependencies]
+# The host, the wire protocol and the shell.
+tessel-coordinator = { path = ".." }
+# The HTTP server and the WebSocket upgrade. Only what `/ws`, the summary and the poke need.
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
+# One store file per repository, written in one transaction per commit. The system SQLite is not
+# assumed: `bundled` builds the one this code was tested with.
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+# The command line: `serve` now, and the subcommands the identity task adds.
+clap = { version = "=4.6.7", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "=2.0.21"
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+# The configuration file; the version the CLI and the lander already use, so the lockfile holds one.
+toml = { version = "=1.1.6", default-features = false, features = ["parse", "serde"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "std"] }
+
+[dev-dependencies]
+futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }
+proptest = "1.11.0"
+tempfile = "=3.27.0"
+tokio-tungstenite = "=0.30.0"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+panic_in_result_fn = "deny"
+unimplemented = "deny"
+allow_attributes = "deny"
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+module_name_repetitions = "allow"
+similar_names = "allow"
+# An internal binary's library: per-function `# Errors` sections would only restate the error types.
+missing_errors_doc = "allow"
+must_use_candidate = "allow"

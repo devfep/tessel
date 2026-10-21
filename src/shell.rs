@@ -1162,6 +1162,7 @@ mod tests {
                 head: crate::protocol::CommitId("x".into()),
                 lease_ms: 1,
                 protocol: 1,
+                protocol_range: None,
             },
         }];
         assert!(bind_on_welcome(&Session::default(), &agent("a1"), &outbound).is_none());

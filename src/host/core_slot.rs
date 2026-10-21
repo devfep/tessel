@@ -187,13 +187,17 @@ pub fn build_core(
     let sensitive = shell::sensitive_or_all(config.sensitive.as_deref(), |e| {
         reports.push(format!("coordinator {repo}: {e}; every submission is held"));
     });
-    shell::load_core(
+    let mut core = shell::load_core(
         stored,
         config.run.as_deref(),
         config.shadow_enabled.as_deref(),
         reviewers,
         sensitive,
-    )
+    )?;
+    if let Some(range) = config.protocol_range {
+        core.set_protocol_range(range);
+    }
+    Ok(core)
 }
 
 #[cfg(test)]

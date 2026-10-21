@@ -543,6 +543,7 @@ mod tests {
                 head: CommitId("h".into()),
                 lease_ms: 30_000,
                 protocol: PROTOCOL_VERSION,
+                protocol_range: None,
             };
             let text = serde_json::to_string(&welcome).unwrap();
             socket.send(Message::text(text)).await.unwrap();
@@ -612,6 +613,7 @@ mod tests {
                             head: CommitId("h".into()),
                             lease_ms: 30_000,
                             protocol: PROTOCOL_VERSION,
+                            protocol_range: None,
                         };
                         let connected = ServerMsg::Event {
                             event: Event {
