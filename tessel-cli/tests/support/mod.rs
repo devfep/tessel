@@ -50,14 +50,13 @@ pub fn now_ms() -> u64 {
     u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// What a socket task writes: a message the protocol knows, a text frame as given, a close frame
-/// that ends the socket, or an end with no close frame at all.
+/// What a socket task writes: a message the protocol knows, a text frame as given, or a close
+/// frame that ends the socket.
 #[derive(Clone)]
 enum Wire {
     Msg(ServerMsg),
     Raw(String),
     Close { code: u16, reason: String },
-    Cut,
 }
 
 /// A socket the fake serves, as the host has last said it stands.
@@ -539,22 +538,27 @@ fn set_session(st: &mut State, sock: SocketId, session: Session) {
 }
 
 /// A call the host handed out. A head read is answered at once, with the head of the last merge
-/// the fake landed; any other waits for `merge_next` or `verify_next`.
+/// the fake landed; a merge or a trial waits for `merge_next` or `verify_next`. The host does not
+/// issue any other call yet, so one that arrives fails the test instead of waiting unanswered.
 fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Input>) {
-    if let CallRequest::ReadHead { .. } = call.request {
-        let answer = CallAnswer::Head {
-            main: st.landed.clone(),
-            landed: Vec::new(),
-        };
-        let call = call.id;
-        pending.push_back(Input::Replied {
-            now_ms,
-            call,
-            answer,
-        });
-        return;
+    match &call.request {
+        CallRequest::Prepare { .. } | CallRequest::Trial { .. } => st.calls.push(call),
+        CallRequest::ReadHead { .. } => {
+            let answer = CallAnswer::Head {
+                main: st.landed.clone(),
+                landed: Vec::new(),
+            };
+            let call = call.id;
+            pending.push_back(Input::Replied {
+                now_ms,
+                call,
+                answer,
+            });
+        }
+        CallRequest::Test { .. } | CallRequest::Land { .. } | CallRequest::Reconcile { .. } => {
+            unreachable!("the host issued a call the fake does not answer: {call:?}");
+        }
     }
-    st.calls.push(call);
 }
 
 /// A coordinator on 127.0.0.1 that accepts exactly the tokens it was given.
@@ -681,6 +685,15 @@ impl Fake {
             | CallRequest::Reconcile { .. } => false,
         };
         let Some(call) = self.inner.call_of(st, is_merge) else {
+            let trial_out = st
+                .calls
+                .iter()
+                .any(|call| matches!(call.request, CallRequest::Trial { .. }));
+            assert!(
+                !trial_out,
+                "merge_next: a trial is outstanding, so no wake can start a merge; answer it with \
+                 verify_next first"
+            );
             return;
         };
         let (base, head) = (sha('b'), sha('c'));
@@ -1040,7 +1053,6 @@ async fn write_wire(
             socket.send(Message::Close(Some(frame))).await?;
             return Ok(false);
         }
-        Wire::Cut => return Ok(false),
     };
     socket.send(Message::text(text)).await?;
     if deaf {
