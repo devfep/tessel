@@ -1597,6 +1597,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessel-runner"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tessel-lander",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "tessel-server"
 version = "0.1.0"
 dependencies = [
