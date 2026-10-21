@@ -20,7 +20,7 @@ use crate::init;
 use crate::moves::{holding_now, Holding, Situation};
 use crate::plan;
 use crate::render::{
-    escape, needs_attention, notice_text, outcome_text, quote_untrusted, status_text, submit_text,
+    needs_attention, notice_text, outcome_text, quote_untrusted, status_text, submit_text,
     uncovered_text,
 };
 use crate::review::{self, Decision};
