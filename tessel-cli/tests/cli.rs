@@ -25,10 +25,21 @@ use tessel_coordinator::protocol::{
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 const TOK2: &str = "tok-a2-S3CRETvalue";
+/// How long a wait for something that is on its way runs before the test calls it missing. Every
+/// `eventually(SHORT, ..)` returns the moment its cause is there; the bound only decides how long
+/// a cause that never comes takes to be reported. It stays real time because the daemon and the
+/// `tessel` processes it waits on are real processes. A stall of the machine longer than this,
+/// while the cause is still pending, fails the test; the bound is not raised to hide that.
 const SHORT: Duration = Duration::from_secs(8);
 
+/// A coordinator whose clock is frozen before anything happens: no lease ends because the machine
+/// was slow, and a test that wants one to end moves the clock itself with `advance_clock`. What
+/// stays on real time is the daemon's own: its heartbeat period (a third of the lease), the
+/// silence after which it drops a link (half a lease), its local expiry while offline and its
+/// reconnect backoff.
 async fn world(lease_ms: u64) -> Result<(Fake, Agent, Agent)> {
     let fake = Fake::start(lease_ms, &[("a1", TOK1), ("a2", TOK2)]).await?;
+    fake.freeze_clock();
     let a1 = Agent::new(&fake, "a1", TOK1)?;
     let a2 = Agent::new(&fake, "a2", TOK2)?;
     Ok((fake, a1, a2))
@@ -319,11 +330,16 @@ async fn heartbeats_keep_a_claim_alive_past_its_lease() -> Result<()> {
     // A passing run waits one heartbeat period (a third of the lease) per step; this only decides
     // how long a daemon that sends none takes to be called dead.
     const HEARTBEAT_WAIT: Duration = Duration::from_secs(60);
-    // The coordinator's clock is frozen and moves a third of a lease after each heartbeat it has
-    // received, so the claim lives on the heartbeats and never on how fast the machine is. Four
-    // steps are more than a lease: without renewal the claim would be gone after the third.
+    // The coordinator's clock is frozen (by `world`) and moves a third of a lease after each
+    // heartbeat it has received, so the claim lives on the heartbeats and never on how fast the
+    // machine is. Four steps are more than a lease: without renewal the claim would be gone after
+    // the third.
+    //
+    // The 3 s lease stays real: it sets the daemon's heartbeat period (1 s, on its own clock), and
+    // a longer lease would make the four steps take as many tens of seconds. A stall of more than
+    // 1.5 s makes the daemon drop the link and make it again, and the heartbeats go on over the new
+    // one; the outcome is read off the coordinator's frozen clock, so the stall costs time only.
     let (fake, a1, a2) = world(LEASE_MS).await?;
-    fake.freeze_clock();
     a1.start("long job")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     for step in 1..=4 {
@@ -387,8 +403,49 @@ async fn a_queued_wait_is_recorded_as_withdrawn_when_the_socket_drops() -> Resul
     );
     assert!(a2.status()?["state"]["queued"].is_null());
     assert_eq!(a1.tessel(&["release"])?.code, 0);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The release and any grant it makes are stored in one step: once the release is in the log,
+    // the grant that a wait still queued would have got is there too.
+    eventually(SHORT, || Ok((claims_released(&fake) == 1).then_some(()))).await?;
+    assert_eq!(
+        granted_to(&fake, "a2"),
+        0,
+        "a withdrawn wait must not be granted"
+    );
     assert_eq!(a2.held_claims()?, 0, "a withdrawn wait must not be granted");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_wait_is_withdrawn_on_the_agents_last_close_and_not_before() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start_settled("hold it").await?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start_settled("need it").await?;
+    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
+
+    // A second socket of a2's comes and goes while its daemon's stays open: not the last close.
+    fake.act("a2", ClientMsg::Heartbeat);
+    assert_eq!(
+        withdrawn_waits(&fake),
+        0,
+        "a socket closed while another was open"
+    );
+
+    // The daemon's own socket is the last one the host has for a2, so its close withdraws the wait.
+    let before = hellos(&fake, "a2");
+    fake.drop_connections();
+    eventually(SHORT, || Ok((withdrawn_waits(&fake) == 1).then_some(())))
+        .await
+        .context("the last socket closed and the wait stayed queued")?;
+    back_online(&fake, &a2, before).await?;
+
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    eventually(SHORT, || Ok((claims_released(&fake) == 1).then_some(()))).await?;
+    assert_eq!(
+        granted_to(&fake, "a2"),
+        0,
+        "a withdrawn wait must not be granted"
+    );
     Ok(())
 }
 
@@ -513,6 +570,7 @@ async fn start_with_a_refused_token_fails_and_does_not_print_it() -> Result<()> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_config_file_overrides_the_environment() -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     // The environment names an agent and token the coordinator does not know.
     let agent = Agent::new(&fake, "zz", "tok-zz-wrong")?;
     std::fs::create_dir_all(agent.root().join(".tessel"))?;
@@ -528,6 +586,7 @@ async fn the_config_file_overrides_the_environment() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_configuration_is_named() -> Result<()> {
     let fake = Fake::start(30_000, &[]).await?;
+    fake.freeze_clock();
     let agent = Agent::new(&fake, "a1", "x")?;
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tessel"));
     command
@@ -1048,6 +1107,7 @@ const DEEP: &str = "a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-long-dir/a-lon
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_worktree_too_deep_for_the_old_socket_path_works_end_to_end() -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     let a1 = Agent::nested(&fake, "a1", TOK1, DEEP)?;
     assert!(
         a1.root().join(".tessel/sock").as_os_str().len() > 100,
@@ -1084,6 +1144,7 @@ fn too_long_runtime_dir() -> Result<tempfile::TempDir> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_socket_path_that_cannot_fit_stops_start_and_blocks_the_hook() -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     let base = too_long_runtime_dir()?;
     let long = base.path().join("x".repeat(100));
     let a1 =
@@ -1102,6 +1163,7 @@ async fn a_socket_path_that_cannot_fit_stops_start_and_blocks_the_hook() -> Resu
 async fn a_socket_directory_with_the_wrong_mode_is_refused_by_start_and_the_hook() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
     let runtime = tempfile::tempdir()?;
     let a1 = Agent::new(&fake, "a1", TOK1)?
         .with_env("XDG_RUNTIME_DIR", &runtime.path().display().to_string());
@@ -1585,9 +1647,51 @@ async fn hostile_text_from_the_coordinator_never_reaches_the_terminal_raw() -> R
     Ok(())
 }
 
-/// Lease of the tests that move the coordinator's clock instead of waiting: long, so that the real
-/// time they take can never end a lease.
+/// Lease of the tests that move the coordinator's clock instead of waiting. Their clock is frozen
+/// by `world`, so the real time they take cannot end a lease whatever its length.
 const CLOCK_LEASE_MS: u64 = 30_000;
+
+/// How many claims the log shows released, whatever the reason.
+fn claims_released(fake: &Fake) -> usize {
+    fake.events()
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::ClaimReleased { .. }))
+        .count()
+}
+
+/// When each grant in the log was made, on the coordinator's clock, in order.
+fn grant_times(fake: &Fake) -> Vec<u64> {
+    fake.events()
+        .iter()
+        .filter_map(|event| {
+            let EventKind::ClaimGranted { .. } = event.kind else {
+                return None;
+            };
+            Some(event.at_ms)
+        })
+        .collect()
+}
+
+/// How many queued requests the log shows left the queue without a grant.
+fn withdrawn_waits(fake: &Fake) -> usize {
+    fake.events()
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::WaitWithdrawn { .. }))
+        .count()
+}
+
+/// How many grants the log shows for `agent`.
+fn granted_to(fake: &Fake, agent: &str) -> usize {
+    fake.events()
+        .iter()
+        .filter(|event| {
+            let EventKind::ClaimGranted { agent: who, .. } = &event.kind else {
+                return false;
+            };
+            who.0 == agent
+        })
+        .count()
+}
 
 fn lease_expiries(fake: &Fake) -> usize {
     fake.events()
@@ -1625,6 +1729,11 @@ async fn a_grant_after_a_wait_longer_than_the_lease_has_a_fresh_expiry() -> Resu
     );
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(()))).await?;
+    // The clock is frozen, so the grant is exactly the two steps after the first one. A clock
+    // that kept running would add the real time the test took.
+    let granted = grant_times(&fake);
+    assert_eq!(granted.len(), 2, "{granted:?}");
+    assert_eq!(granted[1] - granted[0], 2 * step, "{granted:?}");
     let status = a2.status()?;
     let expires = status["state"]["claims"][0]["expires_at_ms"]
         .as_u64()
@@ -1644,6 +1753,36 @@ async fn a_grant_after_a_wait_longer_than_the_lease_has_a_fresh_expiry() -> Resu
         a2.tessel(&["inbox", "--all"])?.stdout
     );
     assert_eq!(a2.held_claims()?, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lapsed_lease_grants_the_queued_waiter_with_no_help_from_the_test() -> Result<()> {
+    // Long enough that a1's first heartbeat (a third of the lease, about 40 s) comes after the
+    // wait below: the host runs a due expiry before any client frame, so with a shorter lease a
+    // heartbeat could do the timer's work and the test pass with the timer dead.
+    const LAPSE_LEASE_MS: u64 = 120_000;
+    let (fake, a1, a2) = world(LAPSE_LEASE_MS).await?;
+    a1.start("long hold")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("patient")?;
+    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
+    // The clock moves past a1's lease and nothing runs the wake for the test (no `settle_expiry`):
+    // the coordinator's own timer must notice that the clock moved.
+    fake.advance_clock(LAPSE_LEASE_MS + 1);
+    eventually(SHORT, || Ok((granted_to(&fake, "a2") == 1).then_some(())))
+        .await
+        .context("the lapse was never acted on: the wake timer did not run")?;
+    eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(())))
+        .await
+        .context("the coordinator granted a2, but its daemon does not hold the claim")?;
+    assert_eq!(lease_expiries(&fake), 1);
+    let inbox = a2.tessel(&["inbox", "--all"])?;
+    assert!(
+        inbox.stdout.contains("[granted_after_wait]"),
+        "{}",
+        inbox.stdout
+    );
     Ok(())
 }
 
@@ -1886,23 +2025,40 @@ async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released()
     a1.start_settled("short job").await?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["release"])?.code, 0);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    // The log is: connected, granted, released, connected again. Cut it before the release.
-    fake.cut_replay(2);
+    eventually(SHORT, || Ok((claims_released(&fake) == 1).then_some(()))).await?;
+    // Keep everything before the release: the read has the grant and not the release, however
+    // many connections the log shows before it.
+    let kept = fake
+        .events()
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::ClaimReleased { .. }))
+        .context("the release is not in the log")?;
+    fake.cut_replay(Some(kept));
     let before = hellos(&fake, "a1");
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    // The daemon says so in the same step that decides what to adopt, so once the notice is
+    // there the decision has been made.
+    let inbox = eventually(SHORT, || {
+        let inbox = a1.tessel(&["inbox", "--all"])?.stdout;
+        Ok(inbox.contains("not read to its end").then_some(inbox))
+    })
+    .await?;
+    let files = a1.tessel_files()?;
+    assert!(
+        files.contains(&format!(
+            "event log read: {kept} events (TRUNCATED), 1 live claims for this agent"
+        )),
+        "the cut read did not show the grant without its release (kept {kept} of {:?}): {files}",
+        fake.events()
+            .iter()
+            .map(|event| event.seq)
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         a1.held_claims()?,
         0,
-        "a dead claim was adopted from a cut-off read"
-    );
-    let inbox = a1.tessel(&["inbox", "--all"])?;
-    assert!(
-        inbox.stdout.contains("not read to its end"),
-        "{}",
-        inbox.stdout
+        "a dead claim was adopted from a cut-off read: {inbox}"
     );
     Ok(())
 }
@@ -1912,7 +2068,8 @@ async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_t
 ) -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
     a1.start_settled("unlucky twice").await?;
-    fake.cut_replay(1);
+    // Keep the log as it is now: the grant the lost reply is for comes after it and is left out.
+    fake.cut_replay(Some(fake.events().len()));
     fake.lose_next("a1", Lose::ClaimReply);
     let refused = a1.tessel(&["claim", "src/a.rs"])?;
     assert_eq!(refused.code, 1, "{}", refused.all());
@@ -1923,7 +2080,7 @@ async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_t
     );
     assert_eq!(a1.held_claims()?, 0);
 
-    fake.cut_replay(0);
+    fake.cut_replay(None);
     let before = hellos(&fake, "a1");
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
@@ -1939,12 +2096,32 @@ async fn a_wait_queued_while_the_log_is_read_survives_the_read_connection_closin
     a1.start("holder")?;
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     a2.start_settled("waiter").await?;
-    let before = hellos(&fake, "a2");
+    // The read stays open, never reaching its end marker, until the test gives it one.
+    fake.stall_live_events(true);
+    let (before1, before2) = (hellos(&fake, "a1"), hellos(&fake, "a2"));
     fake.drop_connections();
-    back_online(&fake, &a2, before).await?;
-    // Queued right after the reconnect, while or just after the log is read on a second socket.
-    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    // Both daemons reconnect and each opens a log read.
+    eventually(SHORT, || {
+        let back = hellos(&fake, "a1") > before1 && hellos(&fake, "a2") > before2;
+        Ok((back && fake.watching_sockets() == 2).then_some(()))
+    })
+    .await
+    .context("the log reads did not open")?;
+    // Queued while the log is being read on a second socket of the same agent.
+    let queued = a2.tessel(&["claim", "--wait", "src/a.rs"])?;
+    assert_eq!(queued.code, 4, "{}", queued.all());
+    // One more live event is the end marker: the read finishes and its socket closes. That is
+    // not the agent's last socket, so it must not withdraw the wait.
+    fake.stall_live_events(false);
+    fake.act("a1", ClientMsg::Heartbeat);
+    eventually(SHORT, || Ok((fake.watching_sockets() == 0).then_some(())))
+        .await
+        .context("the log read did not end")?;
+    assert_eq!(
+        withdrawn_waits(&fake),
+        0,
+        "the read socket closing withdrew the wait"
+    );
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(()))).await?;
     Ok(())
@@ -2125,6 +2302,9 @@ async fn dropping_the_working_socket_closes_the_log_read() -> Result<()> {
     .await?;
     fake.set_accepting(false);
     fake.drop_main_connections();
+    // Real time, and it must stay: the daemon closes a read at its own limit (`SNAPSHOT_LIMIT`,
+    // 5 s) if nothing else does, so a bound shorter than that is what shows the read closed
+    // because the working socket dropped. A stall of more than 2 s while it closes fails the test.
     eventually(Duration::from_secs(2), || {
         Ok((fake.watching_sockets() == 0).then_some(()))
     })
@@ -2262,14 +2442,20 @@ async fn a_request_that_arrives_while_a_claim_is_in_flight_waits_and_amends_it()
     let (one, two) = std::thread::scope(|scope| {
         let one = scope.spawn(|| a1.hook("Edit", "file_path", "src/a.rs"));
         // The first claim has reached the coordinator, whose reply is held back.
-        for _ in 0..400 {
-            if sent(&fake) == 1 {
-                break;
-            }
+        let waiting_since = std::time::Instant::now();
+        while sent(&fake) != 1 {
+            assert!(
+                waiting_since.elapsed() < SHORT,
+                "the first claim never reached the coordinator"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         let two = scope.spawn(|| a1.hook("Edit", "file_path", "src/b.rs"));
-        // The second request reaches the daemon and must wait for that reply.
+        // The second request should reach the daemon while that reply is held, and wait for it.
+        // Nothing outside the daemon shows that it has, so this stays a real pause. A stall that
+        // makes it too short only lets the request arrive after the reply, where the daemon
+        // amends the held claim: the assertions below still hold, and only the in-flight path
+        // goes unexercised that run.
         std::thread::sleep(Duration::from_millis(500));
         fake.release_held();
         (one.join(), two.join())
@@ -2336,8 +2522,6 @@ async fn review_required_before_accepted_decides_the_reply_and_accepted_is_not_u
     let done = a1.tessel(&["submit", "--evidence", "ok"])?;
     assert_eq!(done.code, 7, "{}", done.all());
     assert!(done.stdout.contains("review required"), "{}", done.stdout);
-    // The Accepted that follows is dropped quietly.
-    tokio::time::sleep(Duration::from_millis(300)).await;
     let inbox = a1.tessel(&["inbox", "--all"])?;
     assert!(!inbox.stdout.contains("[unexpected]"), "{}", inbox.stdout);
     assert!(
@@ -2540,16 +2724,16 @@ async fn stop_gives_up_confirming_within_the_clients_patience() -> Result<()> {
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     // The event log read never reaches its end marker, so no release can be confirmed.
     fake.stall_live_events(true);
-    let began = std::time::Instant::now();
+    // The client gives up on `stop` after 30 s; the daemon's own deadline for confirming is 15 s.
+    // A daemon that waited past the client's patience would leave the client with a timeout, not
+    // this answer, so the answer is the whole assertion and no stopwatch is needed.
     let stopped = a1.tessel(&["stop"])?;
-    let took = began.elapsed();
     assert_eq!(stopped.code, 0, "{}", stopped.all());
     assert!(
         stopped.stdout.contains("NOT released"),
         "{}",
         stopped.stdout
     );
-    assert!(took < Duration::from_secs(22), "stop took {took:?}");
     Ok(())
 }
 
@@ -2663,6 +2847,7 @@ const TOK_R: &str = "tok-r1-S3CRETvalue";
 /// A coordinator with `r1` as its only reviewer and agents `a1` and `a2`. Nobody is started.
 async fn race_world() -> Result<(Fake, Agent, Agent, Agent)> {
     let fake = Fake::start(30_000, &[("a1", TOK1), ("a2", TOK2), ("r1", TOK_R)]).await?;
+    fake.freeze_clock();
     fake.set_reviewers(&["r1"]);
     let a1 = Agent::new(&fake, "a1", TOK1)?;
     let a2 = Agent::new(&fake, "a2", TOK2)?;

@@ -11,6 +11,7 @@
 //! time with nothing outstanding.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -39,6 +40,9 @@ pub const REPO: &str = "demo";
 
 /// The most inputs one wire event may cause before the fake gives up: far more than any needs.
 const FEED_LIMIT: usize = 10_000;
+
+/// `cut_replay`'s value while no replay is cut.
+const NO_CUT: usize = usize::MAX;
 
 /// The longest the wake timer sleeps before it looks at the clock again.
 const WAKE_RECHECK: Duration = Duration::from_secs(1);
@@ -128,6 +132,9 @@ struct Inner {
     frozen_at_ms: AtomicU64,
     /// The wake changed, or the clock did: the wake timer looks again.
     wake_changed: Notify,
+    /// Why the wake timer's task stopped, if it did: the panic that ended it, naming the call or
+    /// the check that failed. The task cannot fail a test itself, so the fake reports it.
+    timer_failure: Mutex<Option<String>>,
 }
 
 /// A message to lose on its way, as a dropped network connection would.
@@ -282,6 +289,12 @@ impl Inner {
     }
 
     /// A page of the stored log for the replay of `sock`; `done` when the socket is gone.
+    ///
+    /// Two things here are the fake's own. The cut (`cut_replay`) keeps the first events of the
+    /// log and is seen by the daemon as a read that never reaches its end. The page size is not
+    /// seen at all: a fake that handed back the whole log in one page would be read the same way,
+    /// because the host asks again for the rest and is told there is none, so no CLI test can
+    /// tell `take(limit)` from its absence.
     fn page(
         &self,
         st: &mut State,
@@ -292,11 +305,11 @@ impl Inner {
         let Some(entry) = st.sockets.get_mut(&sock).filter(|e| !e.session.closed) else {
             return (Vec::new(), true);
         };
-        let cut = self.cut_replay.load(Ordering::SeqCst);
+        let keep = self.cut_replay.load(Ordering::SeqCst);
         entry.replaying = true;
-        entry.cut = cut > 0;
+        entry.cut = keep != NO_CUT;
         let mut log = stored_events(&st.store);
-        log.truncate(log.len().saturating_sub(cut));
+        log.truncate(keep);
         let page = log
             .into_iter()
             .filter(|event| event.seq >= from_seq)
@@ -471,6 +484,16 @@ impl Inner {
         self.feed(&mut st, Input::Closed { now_ms, sock }, None);
     }
 
+    /// Fails the test, naming the call or the check, if the wake timer's task has died.
+    fn assert_timer_alive(&self) {
+        let failure = lock(&self.timer_failure).clone();
+        assert!(
+            failure.is_none(),
+            "the fake's wake timer failed: {}",
+            failure.unwrap_or_default()
+        );
+    }
+
     fn wake_is_due(&self, st: &State) -> bool {
         st.wake_at.is_some_and(|at| at <= self.clock())
     }
@@ -537,9 +560,38 @@ fn set_session(st: &mut State, sock: SocketId, session: Session) {
     entry.session = session;
 }
 
+/// Whether `request` is the merge preparation that `merge_next` answers.
+fn is_merge_call(request: &CallRequest) -> bool {
+    match request {
+        CallRequest::Prepare { .. } => true,
+        CallRequest::Test { .. }
+        | CallRequest::Land { .. }
+        | CallRequest::Trial { .. }
+        | CallRequest::ReadHead { .. }
+        | CallRequest::Reconcile { .. } => false,
+    }
+}
+
+/// Whether `request` is the verification trial that `verify_next` answers.
+fn is_trial_call(request: &CallRequest) -> bool {
+    match request {
+        CallRequest::Trial { .. } => true,
+        CallRequest::Prepare { .. }
+        | CallRequest::Test { .. }
+        | CallRequest::Land { .. }
+        | CallRequest::ReadHead { .. }
+        | CallRequest::Reconcile { .. } => false,
+    }
+}
+
 /// A call the host handed out. A head read is answered at once, with the head of the last merge
 /// the fake landed; a merge or a trial waits for `merge_next` or `verify_next`. The host does not
 /// issue any other call yet, so one that arrives fails the test instead of waiting unanswered.
+///
+/// The head-read answer is fake-only. A real steward reads a trunk that anything can move; the
+/// fake has no trunk and never pokes one, so the head it reports is the one `merge_next` last
+/// landed, or none. The host turns that answer into the trunk moves it announces, so no CLI test
+/// can see a trunk that moved by any means other than a landing the fake made.
 fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Input>) {
     match &call.request {
         CallRequest::Prepare { .. } | CallRequest::Trial { .. } => st.calls.push(call),
@@ -612,7 +664,7 @@ impl Fake {
                 .map(|(agent, token)| ((*token).to_string(), (*agent).to_string()))
                 .collect(),
             accepting: AtomicBool::new(true),
-            cut_replay: AtomicUsize::new(0),
+            cut_replay: AtomicUsize::new(NO_CUT),
             skip_seq: AtomicU64::new(u64::MAX),
             raw_in_replay: Mutex::new(None),
             stall_live: AtomicBool::new(false),
@@ -624,6 +676,7 @@ impl Fake {
             skew_ms: AtomicU64::new(0),
             frozen_at_ms: AtomicU64::new(0),
             wake_changed: Notify::new(),
+            timer_failure: Mutex::new(None),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
@@ -676,7 +729,12 @@ impl Fake {
         st.host = Host::new(st.config.clone());
     }
 
-    /// Makes the coordinator send `ReviewRequired` before `Accepted`, as REVIEW-1 will.
+    /// Makes the fake put a `ReviewRequired` reply ahead of any other reply to the same frame.
+    ///
+    /// Fake-only, and it pins nothing: the core answers a flagged submission with `ReviewRequired`
+    /// alone and sends `Accepted` when a reviewer approves it, so the frame has no other reply to
+    /// put it ahead of and nothing is reordered. A CLI test that turns this on passes with the
+    /// switch removed.
     pub fn review_before_accepted(&self, on: bool) {
         self.inner.review_first.store(on, Ordering::SeqCst);
     }
@@ -687,19 +745,8 @@ impl Fake {
     pub fn merge_next(&self) {
         let mut guard = lock(&self.inner.state);
         let st = &mut *guard;
-        let is_merge: fn(&CallRequest) -> bool = |request| match request {
-            CallRequest::Prepare { .. } => true,
-            CallRequest::Test { .. }
-            | CallRequest::Land { .. }
-            | CallRequest::Trial { .. }
-            | CallRequest::ReadHead { .. }
-            | CallRequest::Reconcile { .. } => false,
-        };
-        let Some(call) = self.inner.call_of(st, is_merge) else {
-            let trial_out = st
-                .calls
-                .iter()
-                .any(|call| matches!(call.request, CallRequest::Trial { .. }));
+        let Some(call) = self.inner.call_of(st, is_merge_call) else {
+            let trial_out = st.calls.iter().any(|call| is_trial_call(&call.request));
             assert!(
                 !trial_out,
                 "merge_next: a trial is outstanding, so no wake can start a merge; answer it with \
@@ -718,15 +765,7 @@ impl Fake {
     pub fn verify_next(&self, passed: bool) -> bool {
         let mut guard = lock(&self.inner.state);
         let st = &mut *guard;
-        let is_trial: fn(&CallRequest) -> bool = |request| match request {
-            CallRequest::Trial { .. } => true,
-            CallRequest::Prepare { .. }
-            | CallRequest::Test { .. }
-            | CallRequest::Land { .. }
-            | CallRequest::ReadHead { .. }
-            | CallRequest::Reconcile { .. } => false,
-        };
-        let Some(call) = self.inner.call_of(st, is_trial) else {
+        let Some(call) = self.inner.call_of(st, is_trial_call) else {
             return false;
         };
         let result = if passed {
@@ -780,6 +819,7 @@ impl Fake {
 
     /// How many sockets are reading the event log right now.
     pub fn watching_sockets(&self) -> usize {
+        self.inner.assert_timer_alive();
         lock(&self.inner.state)
             .sockets
             .values()
@@ -807,10 +847,14 @@ impl Fake {
         self.to_agent(agent, &Wire::Raw(frame.to_string()));
     }
 
-    /// Makes every event-log replay stop `n` events short and close, as a dropped connection
-    /// would. 0 turns it off.
-    pub fn cut_replay(&self, n: usize) {
-        self.inner.cut_replay.store(n, Ordering::SeqCst);
+    /// Makes every event-log replay carry only the first `keep` events of the log and then close,
+    /// as a dropped connection would: the reader gets those events and no end marker. `None` turns
+    /// it off. Counting from the start keeps the cut where the test put it, whatever the reconnect
+    /// itself adds to the end of the log.
+    pub fn cut_replay(&self, keep: Option<usize>) {
+        self.inner
+            .cut_replay
+            .store(keep.unwrap_or(NO_CUT), Ordering::SeqCst);
     }
 
     /// Loses the next message of this kind from `agent`.
@@ -890,6 +934,7 @@ impl Fake {
     pub async fn settle_expiry(&self) {
         // A wake sets the next one for later; a host that wakes itself again and again is stuck.
         const WAKES_MAX: usize = 100;
+        self.inner.assert_timer_alive();
         tokio::task::yield_now().await;
         for _ in 0..WAKES_MAX {
             if !self.inner.fire_due_wake() {
@@ -914,11 +959,13 @@ impl Fake {
 
     /// The coordinator's event log so far: what the host has stored.
     pub fn events(&self) -> Vec<Event> {
+        self.inner.assert_timer_alive();
         stored_events(&lock(&self.inner.state).store)
     }
 
     /// Every message `agent` has sent the host, in order.
     pub fn received(&self, agent: &str) -> Vec<ClientMsg> {
+        self.inner.assert_timer_alive();
         let st = lock(&self.inner.state);
         st.received
             .iter()
@@ -928,11 +975,31 @@ impl Fake {
     }
 }
 
+impl Drop for Fake {
+    /// A test that waited on something the dead timer would have caused ends in a timeout; this
+    /// makes the run say why. It stays quiet while another panic is already unwinding.
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.inner.assert_timer_alive();
+        }
+    }
+}
+
 /// Fires the host's wake when the fake's clock reaches it, and looks again whenever the wake or
-/// the clock changes.
+/// the clock changes. If the wake panics (a call the fake cannot answer, a host that never settles)
+/// the panic is kept in `timer_failure` and the task ends.
 async fn wake_loop(inner: Arc<Inner>) {
     loop {
-        inner.fire_due_wake();
+        let fired = std::panic::catch_unwind(AssertUnwindSafe(|| inner.fire_due_wake()));
+        if let Err(panic) = fired {
+            let why = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("a panic with no message");
+            *lock(&inner.timer_failure) = Some(why.to_string());
+            return;
+        }
         match inner.wake_wait() {
             Some(wait) => {
                 tokio::select! {
@@ -1034,6 +1101,7 @@ async fn serve(
                 Some(Ok(Message::Text(text))) => {
                     inner.wait_if_log_read(&text).await;
                     if inner.handle_text(id, &text) {
+                        flush_queued(&mut socket, &mut rx, deaf).await;
                         break;
                     }
                 }
@@ -1044,6 +1112,33 @@ async fn serve(
         }
     }
     inner.close_socket(id);
+}
+
+/// Writes what the host already queued for the socket before the fake cuts it, then closes it,
+/// as a connection that drops after the events sent so far have been carried: the events of a cut
+/// replay arrive, and the end marker does not. The close is a frame, and the peer's answer is
+/// awaited, so that its unread events are not lost to a reset.
+async fn flush_queued(
+    socket: &mut WebSocketStream<TcpStream>,
+    rx: &mut mpsc::UnboundedReceiver<Wire>,
+    deaf: bool,
+) {
+    while let Ok(wire) = rx.try_recv() {
+        if !matches!(write_wire(socket, wire, deaf).await, Ok(true)) {
+            return;
+        }
+    }
+    let _ = socket.close(None).await;
+    // The reader sends its `Hello` right behind its `Watch`. Closing with that frame unread makes
+    // the OS reset the connection, and a reset throws away the events the reader has not read yet,
+    // so the close handshake is finished before the socket is dropped. A passing run returns as
+    // soon as the daemon answers the close; the 2 s only bounds a daemon that never does. Its
+    // expiry is not recorded: the drop that follows is the same cut a network gives, and the
+    // lost events then show as the failing assertion on what the read held.
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while socket.next().await.is_some() {}
+    })
+    .await;
 }
 
 /// Writes `wire`, followed by stray pongs when the link is one-way. False once the socket is to
