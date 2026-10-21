@@ -6,6 +6,7 @@
     reason = "a failed expect or panic is a failed test; the helpers are not #[test] functions"
 )]
 
+mod binary;
 mod common;
 mod refusals;
 mod running;

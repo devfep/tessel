@@ -70,9 +70,10 @@ redo part of it.
   M3's work in progress (P1-SERVER, P1-IDENTITY).
 - **The lander** (`tessel-lander/`) is the merge path in Rust: it rebases the submitted commit
   onto `main`, checks that the claim covers every changed file, and pushes. It runs git but never
-  repo code: the tests run in the repository's CI (or the local runner for a single trusted user)
-  before it pushes. It is a port of the steward's merge rules and a library today:
-  the server calls it from P1-SERVER-LANDING (M3).
+  repo code: the tests run in the repository's CI, or locally in `tessel-runner` (`tessel-runner/`),
+  a separate process that refuses to start for any user but the one its config names, runs only
+  the gate's test commands, and has no sandbox until M5. The lander is a port of the steward's
+  merge rules and a library today: the server calls it from P1-SERVER-LANDING (M3).
 - **The steward** (`tessel-steward/`) is the TypeScript Worker the lander replaces. It stays in
   the tree as the reference for that port until M6.
 

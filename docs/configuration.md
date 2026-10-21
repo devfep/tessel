@@ -219,6 +219,55 @@ agents only. `trunk-moved` admits the `lander` only.
 | `tessel-server admin keygen --config <file> --kid <kid>` | Writes `<kid>.key` and `<kid>.pub` into `[identity] keys`, creating the directory. Refuses to overwrite either file. |
 | `tessel-server admin token --config <file> --kid <kid> --tenant <t> --repo <r> --agent <a> [--ttl <duration>] [--service]` | Prints a token on standard output and nothing else, and never logs it. `--ttl` is `30m`, `12h` or `7d` and defaults to `24h`. |
 
+## Runner: `tessel-runner`
+
+`tessel-runner [--config <file>]` runs a repository's test commands for one trusted user on their
+own machine. It reads one request as JSON on standard input and writes one result as JSON on
+standard output; the server starts one process per run, or calls the library. It runs no git and
+opens no network connection. The configuration file is `tessel-runner.toml` in the working
+directory unless `--config` names another. An unknown key makes it invalid.
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `[runner]` `user` | login name | required | The one user the runner starts for. |
+| `[runner]` `timeout_secs` | seconds | 1800 | The longest any run may take; a request may ask for less. |
+
+The runner refuses to start unless the file exists, is a regular file (not a link) owned by the
+effective user with mode 0600, and `user` equals the login of the effective uid. The login comes
+from the password database (`getpwuid_r`), never from `$USER`. A refusal exits 2 with one fixed
+line on standard error that names the file and, where it applies, the key.
+
+The request is `{ "tree": "<absolute path>", "tests": [{ "dir": "<relative or empty>", "argv":
+[...] }], "timeout_secs": n }`. `tests` is the `[[test]]` list of the trunk's `tessel.toml`, parsed
+by the sender. The runner checks every entry again with the lander's parser, so only the commands
+the gate allows run. `tree` must be a directory the effective user owns, and every `dir` must stay
+inside it: `..`, an absolute `dir` and a link out of the tree are refused. A refused request runs
+nothing and exits 2.
+
+The commands run in order, each in `tree/dir`, and the run stops at the first one that does not
+exit 0. The whole run, reading the output included, is under one timeout; on timeout the process
+group is killed and no child is left behind. A command gets standard input closed and exactly
+this environment, taken from the runner's own: `PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME` and
+`TMPDIR`. Nothing else reaches it, `TESSEL_TOKEN` and `STEWARD_ADMIN_TOKEN` included.
+
+The result is `{ "step": "test", "exit_code", "passed", "timed_out", "stdout", "stderr",
+"stdout_truncated", "stderr_truncated", "first_failure", "wall_ms" }`. `passed` is true only for
+exit 0 without a timeout. A killed run has `timed_out` true and exit code 137. `stdout` and
+`stderr` hold the last 256 KiB of each stream, with the matching `_truncated` flag set when the
+start was cut. `first_failure` is the first failing test's block from cargo's output, at most
+1,500 bytes, or `null`. It is untrusted text for a person to read, never an input to pass or
+fail.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | A run completed. Pass or fail is in the result. |
+| 2 | Refused before anything ran: the configuration, the user or the request. |
+| 3 | The run could not be supervised, for example the command could not start. |
+
+There is no sandbox. The commands run with the privileges of the user who started the runner, and
+a command that leaves its process group outlives the kill. The sandbox is M5. Until then the
+runner is for one trusted user running their own repository.
+
 ## Steward: `tessel-steward/wrangler.jsonc`
 
 | Name | Where | Value in repo | If unset | Effect |

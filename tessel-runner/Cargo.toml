@@ -9,6 +9,10 @@ description = "The local test runner: runs a repository's test commands for one 
 name = "tessel_runner"
 path = "src/lib.rs"
 
+[[bin]]
+name = "tessel-runner"
+path = "src/main.rs"
+
 [dependencies]
 # Only the types (`GateConfig`, `TestCommand`, `StepOutcome`) and the strict `tessel.toml` parser,
 # so the runner accepts exactly the commands the lander's gate accepts. No git function is called.
