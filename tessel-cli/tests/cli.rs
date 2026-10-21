@@ -416,6 +416,40 @@ async fn a_queued_wait_is_recorded_as_withdrawn_when_the_socket_drops() -> Resul
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_wait_is_withdrawn_on_the_agents_last_close_and_not_before() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start_settled("hold it").await?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start_settled("need it").await?;
+    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
+
+    // A second socket of a2's comes and goes while its daemon's stays open: not the last close.
+    fake.act("a2", ClientMsg::Heartbeat);
+    assert_eq!(
+        withdrawn_waits(&fake),
+        0,
+        "a socket closed while another was open"
+    );
+
+    // The daemon's own socket is the last one the host has for a2, so its close withdraws the wait.
+    let before = hellos(&fake, "a2");
+    fake.drop_connections();
+    eventually(SHORT, || Ok((withdrawn_waits(&fake) == 1).then_some(())))
+        .await
+        .context("the last socket closed and the wait stayed queued")?;
+    back_online(&fake, &a2, before).await?;
+
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    eventually(SHORT, || Ok((claims_released(&fake) == 1).then_some(()))).await?;
+    assert_eq!(
+        granted_to(&fake, "a2"),
+        0,
+        "a withdrawn wait must not be granted"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn release_frees_everything_or_one_claim() -> Result<()> {
     let (_fake, a1, a2) = world(30_000).await?;
     a1.start("two files")?;
@@ -1718,6 +1752,29 @@ async fn a_grant_after_a_wait_longer_than_the_lease_has_a_fresh_expiry() -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lapsed_lease_grants_the_queued_waiter_with_no_help_from_the_test() -> Result<()> {
+    let (fake, a1, a2) = world(CLOCK_LEASE_MS).await?;
+    a1.start("long hold")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("patient")?;
+    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
+    // The clock moves past a1's lease and nothing runs the wake for the test (no `settle_expiry`):
+    // the coordinator's own timer must notice that the clock moved.
+    fake.advance_clock(CLOCK_LEASE_MS + 1);
+    eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(())))
+        .await
+        .context("the lapse was never acted on: the wake timer did not run")?;
+    assert_eq!(lease_expiries(&fake), 1);
+    let inbox = a2.tessel(&["inbox", "--all"])?;
+    assert!(
+        inbox.stdout.contains("[granted_after_wait]"),
+        "{}",
+        inbox.stdout
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_whose_reply_was_lost_is_found_and_answered_after_the_reconnect() -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
     a1.start("unlucky")?;
@@ -1957,8 +2014,9 @@ async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released()
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
     assert_eq!(a1.tessel(&["release"])?.code, 0);
     eventually(SHORT, || Ok((claims_released(&fake) == 1).then_some(()))).await?;
-    // The log is: connected, granted, released, connected again. Cut it before the release.
-    fake.cut_replay(2);
+    // The log is: connected, connected, granted, released. Keep the first three: the read has
+    // the grant and not the release.
+    fake.cut_replay(Some(3));
     let before = hellos(&fake, "a1");
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
@@ -1969,6 +2027,11 @@ async fn a_truncated_log_read_does_not_adopt_a_claim_that_was_already_released()
         Ok(inbox.contains("not read to its end").then_some(inbox))
     })
     .await?;
+    let files = a1.tessel_files()?;
+    assert!(
+        files.contains("event log read: 3 events (TRUNCATED), 1 live claims for this agent"),
+        "the cut read did not show the grant without its release: {files}"
+    );
     assert_eq!(
         a1.held_claims()?,
         0,
@@ -1982,7 +2045,8 @@ async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_t
 ) -> Result<()> {
     let (fake, a1, a2) = world(30_000).await?;
     a1.start_settled("unlucky twice").await?;
-    fake.cut_replay(1);
+    // The log is: connected, connected. The grant the lost reply was for is left out.
+    fake.cut_replay(Some(2));
     fake.lose_next("a1", Lose::ClaimReply);
     let refused = a1.tessel(&["claim", "src/a.rs"])?;
     assert_eq!(refused.code, 1, "{}", refused.all());
@@ -1993,7 +2057,7 @@ async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_t
     );
     assert_eq!(a1.held_claims()?, 0);
 
-    fake.cut_replay(0);
+    fake.cut_replay(None);
     let before = hellos(&fake, "a1");
     fake.drop_connections();
     back_online(&fake, &a1, before).await?;
