@@ -7,22 +7,24 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-21 09:20 EDT. Main at `ade2d60` (#72, #73 and #74 merged; the orchestrator's
-gate on `ade2d60` is green, 1730 tests, all seven steps: test, clippy, build, fmt, named tests,
-actionlint, zizmor; the wasm and no-default-features steps are gone with the feature). M3 is two
-tasks in: the Worker glue is deleted (P1-DROP-WORKER) and `tessel-server` serves the host over a
-WebSocket on SQLite (P1-SERVER); R2-R5 and R49 are "now"; R1 is the last "after move" row.
+**As of:** 2026-10-21 11:55 EDT. Main at `adcc7b6` (#75, #76 and #77 merged; the orchestrator's
+gate on `adcc7b6` is green, 1789 tests, all seven steps). M3 is four tasks in: the Worker glue is
+gone (P1-DROP-WORKER), `tessel-server` serves the host over a WebSocket on SQLite (P1-SERVER),
+Ed25519 identity and token minting are in (P1-IDENTITY), and the CLI suite runs on a frozen
+coordinator clock (CLI-LEASE-TESTS). No rules-list row is "after move": R1 became "now" with #76.
 Ruleset step 2 done by Felix 21 October (six required checks remain).
-**In flight (dispatched 21 October 09:10 from `ade2d60`):** lane B, P1-IDENTITY, worktree
-`.claude/worktrees/task-p1-identity`, branch `task-p1-identity`. Lane A, CLI-LEASE-TESTS (the
-`cli.rs` half of SWARM-SHORT-LEASE-TESTS with CLI-FAKE-SEAM-GAPS), worktree
-`.claude/worktrees/task-cli-lease-tests`, branch `task-cli-lease-tests`.
+**In flight (dispatched 21 October 11:50 from `adcc7b6`):** lane B, P1-RUNNER, worktree
+`.claude/worktrees/task-p1-runner`, branch `task-p1-runner`. Lane A, P1-LOCAL-SETUP first half
+(`tessel init` without `--steward`, reviewers in the server's config, the real CLI against a server
+with identity, `docs/local-setup.md`), worktree `.claude/worktrees/task-p1-local-setup`, branch
+`task-p1-local-setup`.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** reviews of both lanes; then P1-RUNNER (lane B), P1-LOCAL-SETUP (lane A), then
-P1-SERVER-LANDING (lane B, Felix reviews) with HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES
-and SERVER-NOLANDER-MESSAGE (a core change; Felix approves its design first).
+**Next:** reviews of both lanes; then P1-SERVER-LANDING (lane B, Felix reviews) with
+HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES and SERVER-NOLANDER-MESSAGE (a core change;
+Felix approves its design first); then P1-LOCAL-SETUP's second half (the quickstart on CI to a
+landed commit) and M3's done-check.
 **Decided by Felix (20 October), decision 15, local first:** M3 the local server, M4 its dogfood
 on this repository, M5 hardening, M6 team mode and the deletion; the first local release lands
 through the host's single `Prepare` call (`docs/proposals/phase-1.md`, decision 15; `PLAN.md`
@@ -31,7 +33,7 @@ decision 6). Ruleset step 4 (Felix as bypass actor) is his, before M4's first la
 in M2 (P1-CLI-ON-HOST), and the swarm's test host in M5, as recommended in
 `docs/proposals/phase-1.md`.
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
-The adapter rows R2-R5 and R49 became "now" with P1-SERVER's named adapter tests; R1 does with
+The adapter rows R2-R5 and R49 became "now" with P1-SERVER's named adapter tests, R1 with
 P1-IDENTITY.
 **Pending from Felix:** the plan's decisions 1-11 and proposed changes A-D (B now M6)
 (`docs/proposals/phase-1.md`); decision 13 was carried out as recommended (P1-DROP-WORKER merged).
@@ -228,8 +230,7 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   answer fails naming it. Plant `7fa59b8` (R29) was red on CI (run 39525193786: the core's R29 test
   and the first four `cli` tests) and its revert green (39525475588). Review mutants pinned twelve
   seams; six are pinned by no CLI test (CLI-FAKE-SEAM-GAPS below).
-- [ ] **CLI-FAKE-SEAM-GAPS** — lane A; dispatched 21 October 09:10 from `ade2d60` with the
-  `cli.rs` lease tests as CLI-LEASE-TESTS. From
+- [x] **CLI-FAKE-SEAM-GAPS** (`adcc7b6`, #77) — lane A, with the `cli.rs` lease tests. From
   the P1-CLI-ON-HOST review: mutants of the fake survive the whole CLI suite for the wake timer
   (`advance_clock` not waking it), `act`'s close, a socket's close reaching the host (the old
   fake with its disconnect removed also passed 537 of 537), replay page truncation, the review
@@ -237,7 +238,15 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   answer (the fake never pokes the trunk). Also: `merge_next`'s outstanding-trial check uses
   `matches!`, and a failure inside the timer task would surface as a timeout. Done: a CLI test
   that a queued wait is withdrawn on the waiter's last close, one per seam a CLI behaviour
-  depends on, and the rest written down as fake-only with a reason.
+  depends on, and the rest written down as fake-only with a reason. #77: the wake timer (its test
+  holds a 120 s lease so a heartbeat cannot close the window), `act`'s close and a socket's close
+  are pinned; the old truncated-read test pinned nothing (the fake dropped the cut socket before
+  any event), and `cut_replay` now keeps every event before the agent's release; the review
+  reorder, the head-read answer and the replay page size are documented fake-only; `merge_next`
+  is exhaustive; a timer-task panic fails the next call naming it. Fourteen plants each red.
+- [ ] **CLI-REVIEW-ORDER-TEST** — lane A, with the next CLI task. From CLI-LEASE-TESTS: the CLI
+  review-order test passes with its seam removed (the core replies `ReviewRequired` alone), so it
+  pins nothing. Done: retired, or reworked to pin what the CLI does with `ReviewRequired`.
 - [x] **P1-LANDER-MERGE** (`70526c9`, #48) — lane B. `prepare` and `land` ported from
   `merge-steps.ts`, with the clone-only `Workspace` type; 53 unit and 14 real-git tests ported.
   `clone_main` refuses a destination that is in use, a symlink or contains `..`, and makes it
@@ -306,9 +315,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   shared directory or port. Not ruled out: memory or process pressure from many `node --test` runs,
   and a second writer in the checkout (two cuts within one heartbeat). Done: the cause named from
   the next failure's note, and a test for it.
-- [ ] **SWARM-SHORT-LEASE-TESTS** — lane B; swarm half merged (`e9df98c`, #71); the `cli.rs` half
-  dispatched 21 October 09:10 from `ade2d60` as CLI-LEASE-TESTS (lane A, with CLI-FAKE-SEAM-GAPS).
-  Two more tests
+- [x] **SWARM-SHORT-LEASE-TESTS** (`adcc7b6`, #77) — lane B for the swarm half (`e9df98c`, #71),
+  lane A for the `cli.rs` half (CLI-LEASE-TESTS, #77, with CLI-FAKE-SEAM-GAPS). Two more tests
   failed once under load and passed on rerun, both after P1-FLAKE-UNDER-LOAD:
   `tessel-swarm/tests/on_local.rs` `a_claim_granted_after_a_queue_wait_of_many_leases_is_kept_alive`
   gave `[Lapsed, Merged]` at a load average near 90 (a 400 ms lease with an 80 ms heartbeat: a 400
@@ -320,8 +328,13 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   the holder's push with a `pre-receive` hook until the cut has returned; `verification_outcome`
   reads the same clock. Left on real time, filed as SWARM-REAL-LEASE-CUT-TESTS:
   `the_tasks_a_cut_off_agent_never_took` (3 s lease; the waiter's claim must lapse) and
-  `an_agent_cut_off_while_it_works` (600 ms lease, 1.2 s cut margin). Remaining here: the two
-  `cli.rs` tests.
+  `an_agent_cut_off_while_it_works` (600 ms lease, 1.2 s cut margin). #77: the two `cli.rs` tests
+  were never named, so the whole file was audited; every CLI world ran the fake's clock on real
+  time with 30 s leases, now frozen (only `advance_clock` moves it); sleeps replaced by waits on
+  the cause; two real-time bounds stay with their reason in the test; no bound raised. The first
+  push was red on Linux: the fake closed a cut replay socket with the reader's `Hello` unread, the
+  OS reset the connection and events already written were lost; the fake now drains and completes
+  the close handshake (the reviewer reproduced the symptom on a Mac with the drain removed).
 - [ ] **SWARM-REAL-LEASE-CUT-TESTS** — lane B, with the next swarm task. From the
   SWARM-SHORT-LEASE-TESTS review: the two cut tests above keep real leases because the cut
   waiter's claim has to lapse for the run to end; the hook and node wait loops count iterations,
@@ -413,16 +426,37 @@ claims reconciled.
   the log-line helpers have no production caller (pinned by R13, R37, R40; the server should use
   them), and the release profile's `opt-level = "s"` and `lto` came from the Worker starter.
   Done: every line true of the tree, no behaviour change.
-- [ ] **P1-IDENTITY** — lane B; dispatched 21 October 09:10 from `ade2d60`. Ed25519 tokens with
-  `kid`, `aud`, tenant and `role` claims and the reserved service names `lander`, `runner`,
-  `server`; `tessel-server admin keygen` and `admin token`; a `Verifier` on the `[identity]` config
-  (keys directory, audience; every `.pub` present verifies, so rotation overlaps); R1's refusals as
-  adapter tests ported one for one from the deleted `routes` cases, and R1 "now". No deny-list yet.
-- [ ] **P1-RUNNER** — lane B. The local test runner, single trusted user, on a `TestTree`.
-- [ ] **P1-SERVER-LANDING** — lane B, after P1-SERVER and P1-RUNNER; Felix reviews. The adapter
-  half of HOST-MERGE-STANDIN, with HOST-CALL-DEADLINE-BACKSTOP and SERVER-CONFLICT-NAMES.
-- [ ] **P1-LOCAL-SETUP** — lane A, last. `tessel init` against a local server, reviewers in the
-  server's config, `docs/local-setup.md`, the quickstart followed on CI.
+- [x] **P1-IDENTITY** (`c2f00d2`, #76) — lane B. Ed25519 tokens `<payload>.<signature>` with
+  `v`, `kid`, `aud`, `tenant`, `repo`, `agent`, `role` and `exp_ms`, the signature over the payload
+  text as sent and checked with `verify_strict` (pinned by an identity-point key test; weak keys
+  are refused at load); refusals in a fixed order with fixed text, a token over 1 KiB refused
+  before decoding. `[identity]` config (keys directory, audience; every `.pub` present verifies,
+  so rotation overlaps; no deny-list yet, said in the docs); `tessel-server admin keygen` (0600,
+  no overwrite) and `admin token` (stdout only). Reserved service names `lander`, `runner`,
+  `server`, matched case-insensitively: `ws` and `summary` admit agents only, `trunk-moved`
+  admits `lander` only; the `Verifier` trait states that contract. R1 "now" with the ten deleted
+  `routes` cases ported one for one in `tessel-server/tests/routes.rs`. 1730 to 1787 tests; ten
+  review mutants each red. Not verified: the real CLI against a server with `[identity]` (owed
+  by P1-LOCAL-SETUP); the flip-any-byte proptest runs 24 of 256 cases. Key-file modes are Unix
+  APIs, as the CLI and lander already use.
+- [ ] **P1-RUNNER** — lane B; dispatched 21 October 11:50 from `adcc7b6`. `tessel-runner`, its
+  own crate and binary: refuses to start unless `tessel-runner.toml` (0600, owned by the
+  effective user) names that user; takes one JSON request on stdin (the tree, the trunk's
+  `[[test]]` commands re-checked against the lander's grammar, a timeout) and answers one JSON
+  result convertible to the lander's `StepOutcome` (bounded output tails, the first failing test's
+  block quoted and bounded, a timeout that kills the process group); a fixed environment, no git,
+  no network, no sandbox (M5). P1-SERVER-LANDING spawns it or calls its library.
+- [ ] **P1-SERVER-LANDING** — lane B, after P1-RUNNER; Felix reviews. The adapter half of
+  HOST-MERGE-STANDIN, with HOST-CALL-DEADLINE-BACKSTOP, SERVER-CONFLICT-NAMES and
+  SERVER-NOLANDER-MESSAGE.
+- [ ] **P1-LOCAL-SETUP** — lane A. First half dispatched 21 October 11:50 from `adcc7b6`:
+  `tessel init` against a local server (`--steward`, the `curl` transport and
+  `STEWARD_ADMIN_TOKEN` deleted; the token comes from the file or `TESSEL_TOKEN`, minted by
+  `tessel-server admin token`), reviewers in the server's repository config reaching
+  `HostConfig`, the real CLI against a server with `[identity]` (the test P1-IDENTITY left owed),
+  the skills and docs that taught `--steward` rewritten, and `docs/local-setup.md` up to
+  `tessel submit`. Second half, after P1-SERVER-LANDING: the quickstart followed on CI from a
+  clean checkout to a landed commit.
 
 ## Carried over from the contest build
 
