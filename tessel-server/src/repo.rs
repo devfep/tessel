@@ -160,6 +160,7 @@ pub fn spawn(
 ) -> RunningRepo {
     let (tx, inbox) = mpsc::channel(INBOX_QUEUE);
     let (jobs, queue) = std_mpsc::channel();
+    let wake_on_start = holds_state(&id, &store);
     let thread = spawn_storage(id.clone(), store, queue, tx.clone());
     let handle = RepoHandle {
         id: id.clone(),
@@ -176,12 +177,22 @@ pub fn spawn(
         thread: Some(thread),
         sockets: BTreeMap::new(),
         wake_at: None,
+        wake_on_start,
         calls,
     };
     RunningRepo {
         handle,
         task: tokio::spawn(task.run()),
     }
+}
+
+/// Whether `store` holds state. A store that cannot be asked is treated as empty here: the task
+/// reports an unreadable store itself when it loads.
+fn holds_state(id: &RepoId, store: &Store) -> bool {
+    store.has_state().unwrap_or_else(|error| {
+        tracing::warn!(repo = %id, error = %error, "cannot tell whether the store holds state");
+        false
+    })
 }
 
 impl RepoHandle {
@@ -375,11 +386,17 @@ struct RepoTask {
     thread: Option<std::thread::JoinHandle<()>>,
     sockets: BTreeMap<SocketId, SocketEntry>,
     wake_at: Option<u64>,
+    /// The store held state when the task started: a merge or a verification may have been cut
+    /// off by the stop that came before, and only a wake recovers it.
+    wake_on_start: bool,
     calls: Arc<dyn CallPort>,
 }
 
 impl RepoTask {
     async fn run(mut self) {
+        if self.wake_on_start {
+            self.feed(Input::Wake { now_ms: now_ms() });
+        }
         let timer = tokio::time::sleep(Duration::from_secs(3_600));
         tokio::pin!(timer);
         loop {

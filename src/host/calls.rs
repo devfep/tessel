@@ -9,6 +9,16 @@
 //! An answer that is not of the kind the call asks for, `Unknown` included, is the service being
 //! unavailable: infrastructure, retried with backoff (R26). A head answer that is not a head is
 //! `None` (R23).
+//!
+//! The host does not time out a call itself (HOST-CALL-DEADLINE-BACKSTOP). The adapter's deadline
+//! is enough, for two reasons. The adapter owns the call's lifetime: it holds the call's
+//! `deadline_ms` and answers `Unknown` when the deadline passes, whatever the work is doing, and
+//! a panic in the answer reaches the host as `CallLost`. And the one failure a deadline cannot
+//! cover, the adapter process dying mid-call, takes the host with it. Calls are held in memory
+//! only; what is stored is the merge marker. A restarted host finds a merge in flight that no
+//! call waits for and recovers it on the first wake (R24, `recover_merge_step`), so the claim is
+//! retried and not left waiting for an answer nobody will send. What stays uncovered is an
+//! adapter that neither answers, panics nor dies: a bug in the adapter, not a state of the call.
 
 use crate::coordinator::{MergeDispatch, VerifyDispatch};
 use crate::host::call::{
