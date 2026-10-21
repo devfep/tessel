@@ -4,11 +4,11 @@ Tessel is a transaction layer for many AI coding agents working in one git repos
 agent edits code, it claims what it will touch: a directory, a file, or one function. A claim that
 overlaps another agent's work is refused before anything is written, with the other agent's intent
 and the moves still open. Finished work goes to the agent's own fork and is submitted; the lander
-rebases it, checks that the claim covered every change, runs the tests, and only then pushes
-`main`. Work merges with no human unless a rule flags it, and a flagged change says why. Tessel's
-first implementation ran on Cloudflare; that host is deleted. It is being rebuilt as a single
-server that works with GitHub and the team's own CI; [`PLAN.md`](PLAN.md) has the plan and its
-status.
+rebases it, checks that the claim covered every change, and pushes `main` once the repository's
+CI has run the tests on it. Work merges with no human unless a rule flags it, and a flagged
+change says why. Tessel's first implementation ran on Cloudflare; that host is deleted. It is
+being rebuilt as a single server that works with GitHub and the team's own CI;
+[`PLAN.md`](PLAN.md) has the plan and its status.
 
 It is for you if you run several coding agents (Claude Code, an MCP client, your own scripts) on
 one repository at the same time, and you want their work to land without overwriting or breaking
@@ -36,8 +36,8 @@ an assumption nobody wrote down. Each is found after the work is done.
                | git push to its own fork                        v
                v                                       +--------------------+
         the agent's fork -----------------------------> | lander: rebase,    |
-                                                       | coverage, tests,   |
-                                                       | push main          |
+                                                       | coverage, push     |
+                                                       | main (no tests)    |
                                                        +--------------------+
 ```
 
@@ -62,8 +62,9 @@ explains each part, follows one conflict end to end with real CLI output, and de
    The coordinator checks the claim's fence (the number that proves the claim has not expired) and
    that the claim covers every change, then applies the review rules.
 6. **Merge.** The lander takes one submission at a time. It rebases onto `main`, checks coverage
-   again per file, runs the repository's gate, and pushes `main`. The claim is released and the
-   next waiting agent is granted.
+   again per file, and pushes `main` once the tests have passed: they run in the repository's CI,
+   or in the local runner for a single trusted user, never in the lander. The claim is released
+   and the next waiting agent is granted.
 
 ## See it run
 

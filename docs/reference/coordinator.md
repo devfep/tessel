@@ -29,10 +29,12 @@ a host test, or an adapter test that the server's tasks write.
 
 ## The wire
 
+Nothing in this tree serves these routes until P1-SERVER merges; this part describes the protocol
+a host speaks, not something you can connect to today.
+
 A socket opens for one agent of one repo. The adapter checks who the caller is before the host
 sees the socket: a `hello` for any other agent gets `not_owner` and the socket is closed. The
-path routes the adapter serves are `ws` and `summary` for a repo, and a trunk-moved poke
-(`shell::parse_route`).
+routes `shell::parse_route` knows are `ws` and `summary` for a repo, and a trunk-moved poke.
 
 `summary` answers `{"summary": {...}, "head_seq": n}`: the evidence counters over the repo's whole
 event log and the `seq` of its last event (`null` for an empty log). It is a read: no socket, no

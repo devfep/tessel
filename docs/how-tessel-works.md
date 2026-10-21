@@ -34,7 +34,7 @@ redo part of it.
 | Two agents want the same function | Both edit it; the later merge conflicts or breaks the build | The second is told before it edits, with the holder's intent, and waits or picks other work |
 | A signature change and a new caller | Merge cleanly in git, then the build fails | If the caller's agent claims `depend` on the function (the skill teaches this; the hooks claim only edits), the two claims conflict and cannot run at once. If it does not, the gate's tests reject the later one at merge, before `main` changes |
 | One agent relies on another's behaviour | Unrecorded | Recorded as an assumption; the agent whose work threatens it is told, and so is the agent who made it |
-| Who merges to `main` | Whoever pushes | Only the lander, after it rebases, checks coverage and runs the tests |
+| Who merges to `main` | Whoever pushes | Only the lander, after it rebases and checks coverage, and once the tests have passed in CI |
 | Code review | Every change | Only changes a rule flags, each with the reason |
 | A crashed or stalled agent | Its branch sits there | Its claim expires 30 seconds after its last heartbeat, and its stale work can no longer be submitted |
 
@@ -51,8 +51,8 @@ redo part of it.
                | git push to its own fork                        v
                v                                       +--------------------+
         the agent's fork -----------------------------> | lander: rebase,    |
-                                                       | coverage, tests,   |
-                                                       | push main          |
+                                                       | coverage, push     |
+                                                       | main (no tests)    |
                                                        +--------------------+
 ```
 
@@ -69,8 +69,9 @@ redo part of it.
   fake coordinator on a local WebSocket; `tessel-server`, the adapter that serves it for real, is
   M3's work in progress (P1-SERVER, P1-IDENTITY).
 - **The lander** (`tessel-lander/`) is the merge path in Rust: it rebases the submitted commit
-  onto `main`, checks that the claim covers every changed file, and takes the repository's gate.
-  It runs git but never repo code. It is a port of the steward's merge rules and a library today:
+  onto `main`, checks that the claim covers every changed file, and pushes. It runs git but never
+  repo code: the tests run in the repository's CI (or the local runner for a single trusted user)
+  before it pushes. It is a port of the steward's merge rules and a library today:
   the server calls it from P1-SERVER-LANDING (M3).
 - **The steward** (`tessel-steward/`) is the TypeScript Worker the lander replaces. It stays in
   the tree as the reference for that port until M6.
@@ -186,10 +187,12 @@ rules. None applies here: a body change, not on a sensitive path, threatening no
 evidence attached. So the work goes straight to the merge queue.
 
 **5. The merge lands it.** The local stand-in cherry-picked the commit onto the trunk and ran
-`node --test`. The real merge path (the steward's `tessel-steward/`, ported to `tessel-lander/`)
-clones `main`, fetches the fork, checks the commit is on the fork's `main`, rebases it, checks
-that the claim covers every file the rebased change touches, runs the repository's gate, pushes
-`main` with a lease, and confirms by reading `main` back.
+`node --test`. The real merge path was the steward's (`tessel-steward/`), which ran the
+repository's gate itself in a container: it cloned `main`, fetched the fork, checked the commit
+is on the fork's `main`, rebased it, checked that the claim covers every file the rebased change
+touches, ran the gate, pushed `main` with a lease, and confirmed by reading `main` back. The
+lander (`tessel-lander/`) ports the git and coverage steps. It never runs repo code, so the tests
+run in the repository's CI (or the local runner for a single trusted user) before it pushes.
 
 ```
 [a1] $ tessel inbox
@@ -240,7 +243,7 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 | **Assumption** | Behaviour you rely on in code you do not own, recorded with `--assume`. It is not a lock: a claim that could break it is granted, but told which assumptions are at risk. When that work is submitted, it is held for review and the assuming agent is told. After it merges, the merge path tests the assuming agent's work against the new `main` and logs the result. |
 | **Review by exception** | A submission merges with no human unless a rule flags it: it changes a signature, touches a path in the sensitive list, threatens an assumption, or carries no evidence. Flagged work waits for a reviewer named in the reviewers list, who decides with `tessel review`. A reviewer can never decide their own submission. |
 | **Evidence** | The `--evidence` lines on a submit. Any non-empty line satisfies the rule. The coordinator does not check it: it is what the agent says it ran. |
-| **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and runs the gate, one submission at a time. Until M6 the TypeScript steward is the reference it was ported from. |
+| **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the tests have passed in CI. It never runs repo code. Until M6 the TypeScript steward is the reference it was ported from. |
 | **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, `<repo>--<agent>`, on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from there. |
 | **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). Without one, the steward's gate runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
 
@@ -274,15 +277,15 @@ queued.
   lease and a fence, and it ends when the work merges or the agent stops renewing it.
 - **Conflicts are checked when you claim**, before you write anything. They compare what each agent
   will change (a body, a signature, new symbols) instead of which lines differ.
-- **You never push `main`.** You push to your fork and submit. The lander rebases, tests and
-  pushes, one merge at a time, in the order work was submitted.
+- **You never push `main`.** You push to your fork and submit. The lander rebases and
+  pushes, one merge at a time, after the tests have passed, in the order work was submitted.
 - **A submission is not a pull request waiting for a person.** It merges by itself unless a rule
   flags it, and a flagged one says why.
 - **A fork is a separate repository** per agent, not a branch in the trunk.
 
 ## What Tessel does not do
 
-- **Evidence is self-reported.** The merge path runs the gate on every merge, but the `--evidence`
+- **Evidence is self-reported.** The gate runs on every merge, but the `--evidence`
   lines are whatever the agent wrote.
 - **The git note stays local unless pushed.** `tessel submit` writes the four-line note (`intent`,
   `assumes`, `rejected`, `evidence`) on the commit before it sends the submission (see "The commit
