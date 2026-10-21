@@ -93,6 +93,8 @@ pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartEr
         let host = HostConfig {
             repo: id.to_string(),
             run: Some(repository.run.clone()),
+            reviewers: repository.reviewers_list(),
+            sensitive: repository.sensitive_list(),
             ..HostConfig::default()
         };
         let running = repo::spawn(

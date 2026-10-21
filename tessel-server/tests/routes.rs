@@ -200,6 +200,8 @@ async fn start_over(
                 tenant: (*tenant).to_string(),
                 name: (*name).to_string(),
                 run: "test".to_string(),
+                reviewers: Vec::new(),
+                sensitive: Vec::new(),
             })
             .collect(),
     };
@@ -272,6 +274,8 @@ async fn adapter_a_summary_read_without_a_valid_token_is_unauthorized() -> TestR
             tenant: "acme".to_string(),
             name: "demo".to_string(),
             run: "test".to_string(),
+            reviewers: Vec::new(),
+            sensitive: Vec::new(),
         }],
     };
     let unconfigured = server::start(

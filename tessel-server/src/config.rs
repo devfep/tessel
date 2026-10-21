@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use tessel_coordinator::shell;
 
 use crate::id::{Name, NameError};
 
@@ -45,6 +46,65 @@ pub struct RepositoryConfig {
     pub name: String,
     /// Names the run in the evidence log of a repository with nothing stored yet.
     pub run: String,
+    /// The agents that may approve or reject a submission held for review, by agent name. A
+    /// token for one of these names is what lets `tessel review` decide. Empty: nobody may
+    /// review, so a held submission stays held.
+    #[serde(default)]
+    pub reviewers: Vec<String>,
+    /// Path prefixes that hold a submission for review whenever it touches one. A directory
+    /// ends in `/`; there are no globs. Empty: only the other review reasons apply.
+    #[serde(default)]
+    pub sensitive: Vec<String>,
+}
+
+impl RepositoryConfig {
+    /// `reviewers` in the comma-separated form `HostConfig` reads, or `None` when there are none.
+    pub fn reviewers_list(&self) -> Option<String> {
+        (!self.reviewers.is_empty()).then(|| self.reviewers.join(","))
+    }
+
+    /// `sensitive` in the comma-separated form `HostConfig` reads, or `None` when there are none.
+    pub fn sensitive_list(&self) -> Option<String> {
+        (!self.sensitive.is_empty()).then(|| self.sensitive.join(","))
+    }
+
+    fn check(&self, shown: &str) -> Result<(), ConfigError> {
+        let refuse = |key: &'static str, entry: &str, reason: &'static str| {
+            Err(ConfigError::RepositoryList {
+                path: shown.to_string(),
+                repository: format!("{}/{}", self.tenant, self.name),
+                key,
+                entry: entry.to_string(),
+                reason,
+            })
+        };
+        for entry in &self.reviewers {
+            if !shell::is_agent_id(entry) {
+                return refuse(
+                    "reviewers",
+                    entry,
+                    "an agent name is letters, digits, '.', '_' and '-', starting with a letter \
+                     or digit",
+                );
+            }
+        }
+        for entry in &self.sensitive {
+            let parsed = shell::parse_sensitive(Some(entry));
+            let one_prefix = match parsed.as_deref() {
+                Ok([only]) => only == entry,
+                Ok(_) | Err(_) => false,
+            };
+            if !one_prefix {
+                return refuse(
+                    "sensitive",
+                    entry,
+                    "a path prefix has no comma, no leading '/', no '..' segment and no '*', and \
+                     no space at either end",
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl IdentityConfig {
@@ -81,6 +141,16 @@ pub enum ConfigError {
     Audience { path: String, source: NameError },
     #[error("the configuration {path}: [identity] keys must not be empty")]
     EmptyKeys { path: String },
+    #[error(
+        "the configuration {path}: [[repository]] {repository}: {key} entry {entry:?}: {reason}"
+    )]
+    RepositoryList {
+        path: String,
+        repository: String,
+        key: &'static str,
+        entry: String,
+        reason: &'static str,
+    },
 }
 
 impl Config {
@@ -96,6 +166,9 @@ impl Config {
         })?;
         if config.repositories.is_empty() {
             return Err(ConfigError::NoRepositories { path: shown });
+        }
+        for repository in &config.repositories {
+            repository.check(&shown)?;
         }
         if let Some(identity) = &config.identity {
             identity.check(&shown)?;
@@ -162,6 +235,51 @@ mod tests {
             let shown = error.to_string();
             assert!(shown.contains("tessel-server.toml"), "{shown}");
             assert!(shown.contains(key), "{key}: {shown}");
+        }
+    }
+
+    #[test]
+    fn a_repository_names_its_reviewers_and_sensitive_paths() {
+        let config = load(&format!(
+            "{BASE}reviewers = [\"felix\", \"a.b_c-1\"]\nsensitive = [\"src/auth/\", \"tessel.toml\"]\n"
+        ))
+        .unwrap();
+        let repository = &config.repositories[0];
+        assert_eq!(
+            repository.reviewers_list().as_deref(),
+            Some("felix,a.b_c-1")
+        );
+        assert_eq!(
+            repository.sensitive_list().as_deref(),
+            Some("src/auth/,tessel.toml")
+        );
+        let bare = load(BASE).unwrap();
+        assert_eq!(bare.repositories[0].reviewers_list(), None);
+        assert_eq!(bare.repositories[0].sensitive_list(), None);
+    }
+
+    #[test]
+    fn a_bad_reviewer_or_sensitive_entry_is_refused_naming_the_file_and_the_key() {
+        for (line, key) in [
+            ("reviewers = [\"Not A Name\"]", "reviewers"),
+            ("reviewers = [\"\"]", "reviewers"),
+            ("reviewers = [\"ana,bo\"]", "reviewers"),
+            ("sensitive = [\"/etc\"]", "sensitive"),
+            ("sensitive = [\"a/../b\"]", "sensitive"),
+            ("sensitive = [\"src/*\"]", "sensitive"),
+            ("sensitive = [\"\"]", "sensitive"),
+            ("sensitive = [\"a.rs,b.rs\"]", "sensitive"),
+            ("sensitive = [\" a.rs\"]", "sensitive"),
+        ] {
+            let error = load(&format!("{BASE}{line}\n")).unwrap_err();
+            let shown = error.to_string();
+            assert!(
+                matches!(error, ConfigError::RepositoryList { .. }),
+                "{line}: {shown}"
+            );
+            assert!(shown.contains("tessel-server.toml"), "{line}: {shown}");
+            assert!(shown.contains(key), "{line}: {shown}");
+            assert!(shown.contains("acme/demo"), "{line}: {shown}");
         }
     }
 
