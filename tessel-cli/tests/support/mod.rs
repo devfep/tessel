@@ -1,28 +1,47 @@
-//! Test support: a fake coordinator that drives the crate's real `Coordinator` core behind a
-//! local WebSocket server, and helpers that run the real `tessel` binary in temp git repos.
+//! Test support: a fake coordinator that runs the crate's real `Host` behind a local WebSocket
+//! server, and helpers that run the real `tessel` binary in temp git repos.
+//!
+//! The fake is the adapter. It owns the WebSocket plumbing (listener, token check, path check,
+//! 503 refusal, one task per socket) and the fault-injection seams. Everything a coordinator
+//! decides is the host's: each wire event becomes an `Input` stamped from the fake's clock, goes
+//! through `Host::step`, and each `Output` is carried out here the way an adapter would: a store,
+//! sends to the sockets' channels, closes, the wake timer, and calls left for `merge_next` and
+//! `verify_next` to answer. One lock covers the host and everything it touches, and the host's own
+//! storage and replay requests are answered before the next input, so inputs reach it one at a
+//! time with nothing outstanding.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tempfile::TempDir;
-use tessel_coordinator::coordinator::{Config, Coordinator};
-use tessel_coordinator::merge::{MergeOutcome, TrialOutcome, TrialReport};
-use tessel_coordinator::protocol::{AgentId, ClientMsg, CommitId, Event, RunId, ServerMsg};
-use tessel_coordinator::shell::{self, Action, Outbound, Session};
+use tessel_coordinator::host::call::{Call, CallAnswer, Request as CallRequest, TrialResult};
+use tessel_coordinator::host::{Host, HostConfig, Input, Output as HostOutput, SocketId};
+use tessel_coordinator::protocol::{
+    AgentId, ClientMsg, CommitId, Event, ServerMsg, PROTOCOL_VERSION,
+};
+use tessel_coordinator::shell::{self, Action, Session, EVENT_PREFIX, STATE_KEY};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, Notify};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::WebSocketStream;
 
 pub const REPO: &str = "demo";
+
+/// The most inputs one wire event may cause before the fake gives up: far more than any needs.
+const FEED_LIMIT: usize = 10_000;
+
+/// The longest the wake timer sleeps before it looks at the clock again.
+const WAKE_RECHECK: Duration = Duration::from_secs(1);
 
 pub fn now_ms() -> u64 {
     let since = SystemTime::now()
@@ -31,28 +50,67 @@ pub fn now_ms() -> u64 {
     u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
 }
 
-struct SocketEntry {
-    id: u64,
-    bound: Option<AgentId>,
-    watching: bool,
-    /// The socket has seen a `go_silent` or `go_deaf` request and reads nothing more.
-    muted: bool,
-    tx: mpsc::UnboundedSender<Wire>,
-}
-
-/// What a socket task writes: a message the protocol knows, or a text frame as given.
+/// What a socket task writes: a message the protocol knows, a text frame as given, or a close
+/// frame that ends the socket.
+#[derive(Clone)]
 enum Wire {
     Msg(ServerMsg),
     Raw(String),
+    Close { code: u16, reason: String },
+}
+
+/// A socket the fake serves, as the host has last said it stands.
+struct SocketEntry {
+    session: Session,
+    /// The socket has seen a `go_silent` or `go_deaf` request and reads nothing more.
+    muted: bool,
+    /// The log is being replayed to it: events written now are replay pages, not live events.
+    replaying: bool,
+    /// Its replay was cut short: the socket is dropped as soon as the replay is over.
+    cut: bool,
+    tx: mpsc::UnboundedSender<Wire>,
+}
+
+/// What becomes of the sends one frame causes to the socket it came on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Replies {
+    Deliver,
+    /// Kept until `release_held`.
+    Park,
+    Lose,
+}
+
+/// The socket whose frame is being handled and what to do with the sends it causes to it.
+struct Origin {
+    sock: SocketId,
+    replies: Replies,
+}
+
+/// Everything the host touches, behind one lock.
+struct State {
+    host: Host,
+    config: HostConfig,
+    /// Inputs fed so far.
+    fed: u64,
+    store: BTreeMap<String, String>,
+    sockets: BTreeMap<SocketId, SocketEntry>,
+    next_socket: u64,
+    /// Calls the host has handed out and nobody has answered.
+    calls: Vec<Call>,
+    /// The head of the last merge `merge_next` landed, which is what a head read answers.
+    landed: Option<CommitId>,
+    /// The wake the host last asked for, on the fake's clock.
+    wake_at: Option<u64>,
+    logs: Vec<String>,
+    received: Vec<(AgentId, ClientMsg)>,
+    parked: Vec<(SocketId, ServerMsg)>,
+    origin: Option<Origin>,
+    origin_sends: Vec<ServerMsg>,
 }
 
 struct Inner {
-    core: Mutex<Coordinator>,
-    sockets: Mutex<Vec<SocketEntry>>,
-    received: Mutex<Vec<(AgentId, ClientMsg)>>,
+    state: Mutex<State>,
     tokens: HashMap<String, String>,
-    next_socket: Mutex<u64>,
-    events: Mutex<Vec<Event>>,
     accepting: AtomicBool,
     cut_replay: AtomicUsize,
     skip_seq: AtomicU64,
@@ -63,24 +121,13 @@ struct Inner {
     /// Event-log readers' `Watch` frames wait here while `hold_log_reads` is on.
     hold_watch: AtomicBool,
     watch_gate: Notify,
-    held: Mutex<Vec<(u64, Vec<Outbound>)>>,
     lose: Mutex<Vec<(String, Lose)>>,
     /// Milliseconds the coordinator clock runs ahead of the real one (`Fake::advance_clock`).
     skew_ms: AtomicU64,
-    /// Completed passes of the lease-expiry loop, so a test can wait for one that saw a new clock.
-    expiry_passes: AtomicU64,
     /// When `Fake::freeze_clock` stopped the coordinator clock; zero while it runs.
     frozen_at_ms: AtomicU64,
-}
-
-impl Inner {
-    /// The time the core is told, in milliseconds: the real time, or the instant the clock was
-    /// frozen at, plus whatever `advance_clock` has added.
-    fn clock(&self) -> u64 {
-        let frozen = self.frozen_at_ms.load(Ordering::SeqCst);
-        let base = if frozen == 0 { now_ms() } else { frozen };
-        base + self.skew_ms.load(Ordering::SeqCst)
-    }
+    /// The wake changed, or the clock did: the wake timer looks again.
+    wake_changed: Notify,
 }
 
 /// A message to lose on its way, as a dropped network connection would.
@@ -94,13 +141,64 @@ pub enum Lose {
     Review,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The commit id of 40 copies of `digit`, which stands for a commit the fake never made.
+fn sha(digit: char) -> CommitId {
+    CommitId(digit.to_string().repeat(40))
+}
+
+/// The text frame a client message goes out as.
+fn frame_text(msg: &ClientMsg) -> String {
+    let text = serde_json::to_string(msg);
+    assert!(text.is_ok(), "a client message serializes: {text:?}");
+    text.unwrap_or_default()
+}
+
+/// Every stored event, by `seq`.
+fn stored_events(store: &BTreeMap<String, String>) -> Vec<Event> {
+    let mut events = Vec::new();
+    for (key, json) in store {
+        if key.starts_with(EVENT_PREFIX) {
+            let parsed = serde_json::from_str::<Event>(json);
+            assert!(
+                parsed.is_ok(),
+                "the stored event {key} does not parse: {parsed:?}"
+            );
+            events.extend(parsed);
+        }
+    }
+    events.sort_by_key(|event| event.seq);
+    events
+}
+
+/// The state of a repository with nothing in it yet, with the lease the test asked for. The host
+/// builds a fresh core with the production lease, so the store starts with this one instead.
+fn initial_state(lease_ms: u64) -> Result<String> {
+    ensure!(
+        lease_ms > 0,
+        "a lease of zero ms would end every grant at once"
+    );
+    let core = shell::load_core(None, Some("test"), Some("false"), Vec::new(), Vec::new())
+        .map_err(|e| anyhow::anyhow!("building the first state: {e}"))?;
+    let mut state = serde_json::to_value(&core)?;
+    *state
+        .pointer_mut("/config/lease_ms")
+        .context("the core's state has no config.lease_ms")? = lease_ms.into();
+    Ok(state.to_string())
 }
 
 impl Inner {
+    /// The time the host is told, in milliseconds: the real time, or the instant the clock was
+    /// frozen at, plus whatever `advance_clock` has added.
+    fn clock(&self) -> u64 {
+        let frozen = self.frozen_at_ms.load(Ordering::SeqCst);
+        let base = if frozen == 0 { now_ms() } else { frozen };
+        base + self.skew_ms.load(Ordering::SeqCst)
+    }
+
     async fn wait_if_log_read(&self, text: &str) {
         if !matches!(shell::parse_client_msg(text), Ok(ClientMsg::Watch { .. })) {
             return;
@@ -114,53 +212,351 @@ impl Inner {
         }
     }
 
-    fn mark_muted(&self, id: u64) {
-        if let Some(entry) = lock(&self.sockets).iter_mut().find(|s| s.id == id) {
+    fn mark_muted(&self, sock: SocketId) {
+        if let Some(entry) = lock(&self.state).sockets.get_mut(&sock) {
             entry.muted = true;
         }
     }
 
-    /// Records events in the log and sends them to the sockets that watch it.
-    fn publish(&self, events: Vec<Event>) {
-        let mut log = lock(&self.events);
-        let sockets = lock(&self.sockets);
-        for event in events {
-            let live = !self.stall_live.load(Ordering::SeqCst);
-            for entry in sockets.iter().filter(|s| s.watching && live) {
-                let _ = entry.tx.send(Wire::Msg(ServerMsg::Event {
-                    event: event.clone(),
-                }));
+    /// Hands `input` to the host and carries out what it asks, then answers what the host asks of
+    /// storage and of the calls only the fake makes, until the host waits for nothing.
+    fn feed(&self, st: &mut State, input: Input, origin: Option<Origin>) {
+        st.origin = origin;
+        st.fed += 1;
+        let mut pending = VecDeque::from([input]);
+        let mut steps = 0;
+        while let Some(input) = pending.pop_front() {
+            assert!(
+                steps < FEED_LIMIT,
+                "the host still asks for answers after {FEED_LIMIT} inputs; it logged {:?}",
+                st.logs
+            );
+            steps += 1;
+            let outputs = st.host.step(input);
+            self.execute(st, outputs, &mut pending);
+        }
+        self.finish_replies(st);
+    }
+
+    fn execute(&self, st: &mut State, outputs: Vec<HostOutput>, pending: &mut VecDeque<Input>) {
+        let now_ms = self.clock();
+        for output in outputs {
+            match output {
+                HostOutput::Load => {
+                    let stored = st.store.get(STATE_KEY).cloned();
+                    pending.push_back(Input::Loaded { now_ms, stored });
+                }
+                HostOutput::Commit { batch, entries } => {
+                    st.store.extend(entries);
+                    pending.push_back(Input::Committed { now_ms, batch });
+                }
+                HostOutput::Send { sock, msg } => self.send(st, sock, msg),
+                HostOutput::SetSession { sock, session } => set_session(st, sock, session),
+                HostOutput::Close { sock, code, reason } => {
+                    if let Some(entry) = st.sockets.get(&sock) {
+                        let _ = entry.tx.send(Wire::Close { code, reason });
+                    }
+                }
+                HostOutput::ReadEvents {
+                    sock,
+                    from_seq,
+                    limit,
+                } => {
+                    let (events, done) = self.page(st, sock, from_seq, limit);
+                    pending.push_back(Input::ReplayPage {
+                        now_ms,
+                        sock,
+                        events,
+                        done,
+                    });
+                }
+                HostOutput::SetWake { at_ms } => {
+                    st.wake_at = at_ms;
+                    self.wake_changed.notify_one();
+                }
+                HostOutput::Call(call) => take_call(st, call, now_ms, pending),
+                HostOutput::Log { line } => st.logs.push(line),
+                HostOutput::Metric { .. } => {}
             }
-            log.push(event);
         }
     }
 
-    /// Runs `msg` on the core as `agent`, outside any socket.
-    fn act(&self, agent: &AgentId, msg: ClientMsg) {
-        let effects = lock(&self.core).handle(agent, msg, self.clock());
-        let (events, outbound) = shell::split_effects(effects);
-        self.deliver(None, outbound);
-        self.publish(events);
+    /// A page of the stored log for the replay of `sock`; `done` when the socket is gone.
+    fn page(
+        &self,
+        st: &mut State,
+        sock: SocketId,
+        from_seq: u64,
+        limit: usize,
+    ) -> (Vec<Event>, bool) {
+        let Some(entry) = st.sockets.get_mut(&sock).filter(|e| !e.session.closed) else {
+            return (Vec::new(), true);
+        };
+        let cut = self.cut_replay.load(Ordering::SeqCst);
+        entry.replaying = true;
+        entry.cut = cut > 0;
+        let mut log = stored_events(&st.store);
+        log.truncate(log.len().saturating_sub(cut));
+        let page = log
+            .into_iter()
+            .filter(|event| event.seq >= from_seq)
+            .take(limit)
+            .collect();
+        (page, false)
     }
 
-    fn deliver(&self, origin: Option<u64>, outbound: Vec<Outbound>) {
-        let sockets = self
-            .sockets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for item in outbound {
-            match item {
-                Outbound::Reply(msg) => {
-                    if let Some(entry) = sockets.iter().find(|s| Some(s.id) == origin) {
-                        let _ = entry.tx.send(Wire::Msg(msg));
-                    }
-                }
-                Outbound::Notify { agent, msg } => {
-                    for entry in sockets.iter().filter(|s| s.bound.as_ref() == Some(&agent)) {
-                        let _ = entry.tx.send(Wire::Msg(msg.clone()));
-                    }
+    /// Writes `msg` to `sock`, unless it is the socket whose frame is being handled and its
+    /// sends are kept for `finish_replies`.
+    fn send(&self, st: &mut State, sock: SocketId, msg: ServerMsg) {
+        if st.origin.as_ref().is_some_and(|origin| origin.sock == sock) {
+            st.origin_sends.push(msg);
+            return;
+        }
+        self.write(st, sock, msg);
+    }
+
+    fn write(&self, st: &State, sock: SocketId, msg: ServerMsg) {
+        let Some(entry) = st.sockets.get(&sock) else {
+            return;
+        };
+        let wire = if let ServerMsg::Event { event } = msg {
+            let Some(wire) = self.event_wire(entry.replaying, event) else {
+                return;
+            };
+            wire
+        } else {
+            Wire::Msg(msg)
+        };
+        let _ = entry.tx.send(wire);
+    }
+
+    /// A live event is held back while `stall_live_events` is on. A replayed one may be left
+    /// out, or sent as a frame of the test's own.
+    fn event_wire(&self, replaying: bool, event: Event) -> Option<Wire> {
+        if !replaying {
+            let live = !self.stall_live.load(Ordering::SeqCst);
+            return live.then_some(Wire::Msg(ServerMsg::Event { event }));
+        }
+        if event.seq == self.skip_seq.load(Ordering::SeqCst) {
+            return None;
+        }
+        match lock(&self.raw_in_replay).as_ref() {
+            Some((seq, text)) if *seq == event.seq => Some(Wire::Raw(text.clone())),
+            Some(_) | None => Some(Wire::Msg(ServerMsg::Event { event })),
+        }
+    }
+
+    /// The sends the handled frame caused to its own socket: the review notice first when
+    /// `review_before_accepted` is on, then delivered, kept or lost as the frame's origin says.
+    fn finish_replies(&self, st: &mut State) {
+        let Some(origin) = st.origin.take() else {
+            return;
+        };
+        let mut sends = std::mem::take(&mut st.origin_sends);
+        if self.review_first.load(Ordering::SeqCst) {
+            sends.sort_by_key(|msg| !matches!(msg, ServerMsg::ReviewRequired { .. }));
+        }
+        match origin.replies {
+            Replies::Deliver => {
+                for msg in sends {
+                    self.write(st, origin.sock, msg);
                 }
             }
+            Replies::Park => st
+                .parked
+                .extend(sends.into_iter().map(|msg| (origin.sock, msg))),
+            Replies::Lose => {}
+        }
+    }
+
+    /// A socket opened for `agent`, whose token the handshake accepted.
+    fn open_socket(&self, agent: AgentId, tx: mpsc::UnboundedSender<Wire>) -> SocketId {
+        let mut st = lock(&self.state);
+        let sock = SocketId(st.next_socket);
+        st.next_socket += 1;
+        let session = Session {
+            verified: Some(agent.clone()),
+            ..Session::default()
+        };
+        st.sockets.insert(
+            sock,
+            SocketEntry {
+                session,
+                muted: false,
+                replaying: false,
+                cut: false,
+                tx,
+            },
+        );
+        let now_ms = self.clock();
+        let opened = Input::Opened {
+            now_ms,
+            sock,
+            verified: agent,
+        };
+        self.feed(&mut st, opened, None);
+        sock
+    }
+
+    /// A text frame arrived on `sock`. True when the socket must end now: the frame was lost on
+    /// its way, its reply was, or its replay was cut.
+    fn handle_text(&self, sock: SocketId, text: &str) -> bool {
+        let mut guard = lock(&self.state);
+        let st = &mut *guard;
+        let now_ms = self.clock();
+        let frame = Input::Frame {
+            now_ms,
+            sock,
+            text: text.to_string(),
+        };
+        let Ok(msg) = shell::parse_client_msg(text) else {
+            self.feed(st, frame, None);
+            return false;
+        };
+        let Some(session) = st.sockets.get(&sock).map(|entry| entry.session.clone()) else {
+            return true;
+        };
+        let lost = session
+            .agent
+            .as_ref()
+            .and_then(|agent| self.take_loss(agent, &msg));
+        let replies = match lost {
+            Some(Lose::Release | Lose::Review) => return true,
+            Some(Lose::ClaimReply) => Replies::Lose,
+            None if self.takes_held_reply(&msg) => Replies::Park,
+            None => Replies::Deliver,
+        };
+        if let Action::Call { agent } = shell::decide(&session, &msg) {
+            st.received.push((agent, msg));
+        }
+        let kept = replies != Replies::Deliver || self.review_first.load(Ordering::SeqCst);
+        self.feed(st, frame, kept.then_some(Origin { sock, replies }));
+        replies == Replies::Lose || st.sockets.get(&sock).is_some_and(|entry| entry.cut)
+    }
+
+    /// Whether `msg` is the claim or amend whose reply `hold_next_claim_reply` keeps back.
+    fn takes_held_reply(&self, msg: &ClientMsg) -> bool {
+        let claims = matches!(msg, ClientMsg::Claim { .. } | ClientMsg::Amend { .. });
+        claims && self.hold_claim_reply.swap(false, Ordering::SeqCst)
+    }
+
+    fn take_loss(&self, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
+        let wanted = if let ClientMsg::Claim { .. } | ClientMsg::Amend { .. } = msg {
+            Lose::ClaimReply
+        } else if let ClientMsg::Release { .. } = msg {
+            Lose::Release
+        } else if let ClientMsg::Review { .. } = msg {
+            Lose::Review
+        } else {
+            return None;
+        };
+        let mut pending = lock(&self.lose);
+        let at = pending
+            .iter()
+            .position(|(who, what)| *who == agent.0 && *what == wanted)?;
+        Some(pending.remove(at).1)
+    }
+
+    fn handle_binary(&self, sock: SocketId) {
+        let mut st = lock(&self.state);
+        let now_ms = self.clock();
+        self.feed(&mut st, Input::Binary { now_ms, sock }, None);
+    }
+
+    /// The socket's task ended, however it did.
+    fn close_socket(&self, sock: SocketId) {
+        let mut st = lock(&self.state);
+        st.sockets.remove(&sock);
+        let now_ms = self.clock();
+        self.feed(&mut st, Input::Closed { now_ms, sock }, None);
+    }
+
+    fn wake_is_due(&self, st: &State) -> bool {
+        st.wake_at.is_some_and(|at| at <= self.clock())
+    }
+
+    /// Runs the wake if the host's is due on the fake's clock. True if it ran.
+    fn fire_due_wake(&self) -> bool {
+        let mut st = lock(&self.state);
+        if !self.wake_is_due(&st) {
+            return false;
+        }
+        let now_ms = self.clock();
+        st.wake_at = None;
+        self.feed(&mut st, Input::Wake { now_ms }, None);
+        true
+    }
+
+    /// How long the timer may sleep before it looks again; none while there is no wake, or while
+    /// a frozen clock cannot reach it until `advance_clock` moves it.
+    fn wake_wait(&self) -> Option<Duration> {
+        let at = lock(&self.state).wake_at?;
+        let now_ms = self.clock();
+        if at > now_ms && self.frozen_at_ms.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
+        let wait = Duration::from_millis(at.saturating_sub(now_ms).max(1));
+        Some(wait.min(WAKE_RECHECK))
+    }
+
+    /// The outstanding call `wanted` picks. A wake is run first if no call is out, since only a
+    /// wake issues one.
+    fn call_of(&self, st: &mut State, wanted: fn(&CallRequest) -> bool) -> Option<Call> {
+        let find = |st: &State| st.calls.iter().find(|call| wanted(&call.request)).cloned();
+        if let Some(call) = find(st) {
+            return Some(call);
+        }
+        if !st.calls.is_empty() {
+            return None;
+        }
+        st.wake_at = None;
+        let now_ms = self.clock();
+        self.feed(st, Input::Wake { now_ms }, None);
+        find(st)
+    }
+
+    fn answer(&self, st: &mut State, call: &Call, answer: CallAnswer) {
+        st.calls.retain(|out| out.id != call.id);
+        let now_ms = self.clock();
+        let replied = Input::Replied {
+            now_ms,
+            call: call.id,
+            answer,
+        };
+        self.feed(st, replied, None);
+    }
+}
+
+fn set_session(st: &mut State, sock: SocketId, session: Session) {
+    let Some(entry) = st.sockets.get_mut(&sock) else {
+        return;
+    };
+    if session.watch_from.is_some() {
+        entry.replaying = false;
+    }
+    entry.session = session;
+}
+
+/// A call the host handed out. A head read is answered at once, with the head of the last merge
+/// the fake landed; a merge or a trial waits for `merge_next` or `verify_next`. The host does not
+/// issue any other call yet, so one that arrives fails the test instead of waiting unanswered.
+fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Input>) {
+    match &call.request {
+        CallRequest::Prepare { .. } | CallRequest::Trial { .. } => st.calls.push(call),
+        CallRequest::ReadHead { .. } => {
+            let answer = CallAnswer::Head {
+                main: st.landed.clone(),
+                landed: Vec::new(),
+            };
+            let call = call.id;
+            pending.push_back(Input::Replied {
+                now_ms,
+                call,
+                answer,
+            });
+        }
+        CallRequest::Test { .. } | CallRequest::Land { .. } | CallRequest::Reconcile { .. } => {
+            unreachable!("the host issued a call the fake does not answer: {call:?}");
         }
     }
 }
@@ -176,21 +572,34 @@ pub struct Fake {
 impl Fake {
     /// `agents` maps each agent name to the token the fake accepts for it.
     pub async fn start(lease_ms: u64, agents: &[(&str, &str)]) -> Result<Self> {
-        let config = Config {
-            run: RunId("test".into()),
-            lease_ms,
-            shadow_enabled: false,
+        let config = HostConfig {
+            repo: REPO.to_string(),
+            run: Some("test".to_string()),
+            shadow_enabled: Some("false".to_string()),
+            ..HostConfig::default()
         };
+        let store = BTreeMap::from([(STATE_KEY.to_string(), initial_state(lease_ms)?)]);
         let inner = Arc::new(Inner {
-            core: Mutex::new(Coordinator::new(config)?),
-            sockets: Mutex::new(Vec::new()),
-            received: Mutex::new(Vec::new()),
+            state: Mutex::new(State {
+                host: Host::new(config.clone()),
+                config,
+                fed: 0,
+                store,
+                sockets: BTreeMap::new(),
+                next_socket: 0,
+                calls: Vec::new(),
+                landed: None,
+                wake_at: None,
+                logs: Vec::new(),
+                received: Vec::new(),
+                parked: Vec::new(),
+                origin: None,
+                origin_sends: Vec::new(),
+            }),
             tokens: agents
                 .iter()
                 .map(|(agent, token)| ((*token).to_string(), (*agent).to_string()))
                 .collect(),
-            next_socket: Mutex::new(0),
-            events: Mutex::new(Vec::new()),
             accepting: AtomicBool::new(true),
             cut_replay: AtomicUsize::new(0),
             skip_seq: AtomicU64::new(u64::MAX),
@@ -200,18 +609,17 @@ impl Fake {
             hold_claim_reply: AtomicBool::new(false),
             hold_watch: AtomicBool::new(false),
             watch_gate: Notify::new(),
-            held: Mutex::new(Vec::new()),
             lose: Mutex::new(Vec::new()),
             skew_ms: AtomicU64::new(0),
-            expiry_passes: AtomicU64::new(0),
             frozen_at_ms: AtomicU64::new(0),
+            wake_changed: Notify::new(),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("ws://{}", listener.local_addr()?);
         let (kill, kill_rx) = watch::channel((0, false));
         let (mute, mute_rx) = watch::channel((0, false));
         tokio::spawn(accept(listener, Arc::clone(&inner), kill_rx, mute_rx));
-        tokio::spawn(expire_loop(Arc::clone(&inner)));
+        tokio::spawn(wake_loop(Arc::clone(&inner)));
         Ok(Self {
             url,
             inner,
@@ -239,16 +647,22 @@ impl Fake {
 
     /// Delivers the replies kept back by `hold_next_claim_reply`.
     pub fn release_held(&self) {
-        let held = std::mem::take(&mut *lock(&self.inner.held));
-        for (origin, outbound) in held {
-            self.inner.deliver(Some(origin), outbound);
+        let mut st = lock(&self.inner.state);
+        for (sock, msg) in std::mem::take(&mut st.parked) {
+            self.inner.write(&st, sock, msg);
         }
     }
 
-    /// Names the agents who may review (the core's `REVIEWERS`).
+    /// Names the agents who may review (the host's `reviewers`). The host reads them when it
+    /// loads the core, so this must come before the first socket opens.
     pub fn set_reviewers(&self, reviewers: &[&str]) {
-        let ids = reviewers.iter().map(|id| AgentId((*id).into())).collect();
-        lock(&self.inner.core).set_reviewers(ids);
+        let mut st = lock(&self.inner.state);
+        assert_eq!(
+            st.fed, 0,
+            "set_reviewers must come before any socket opens: the host reads it on load"
+        );
+        st.config.reviewers = Some(reviewers.join(","));
+        st.host = Host::new(st.config.clone());
     }
 
     /// Makes the coordinator send `ReviewRequired` before `Accepted`, as REVIEW-1 will.
@@ -256,47 +670,64 @@ impl Fake {
         self.inner.review_first.store(on, Ordering::SeqCst);
     }
 
-    /// Runs the next queued merge to completion on the real core, as the steward would, and
-    /// sends `Merged` to the submitter if it has a socket open.
+    /// Answers the merge the host has asked the steward for with a landing on main, as the
+    /// steward would, and so sends `Merged` to the submitter if it has a socket open. If no merge
+    /// is out, a wake runs first; if none is queued, nothing happens.
     pub fn merge_next(&self) {
-        let effects = {
-            let mut core = lock(&self.inner.core);
-            let Some(dispatch) = core.begin_merge(self.inner.clock()) else {
-                return;
-            };
-            let landed = MergeOutcome::Merged {
-                base: CommitId("b".repeat(40)),
-                head: CommitId("c".repeat(40)),
-            };
-            core.merge_outcome(dispatch.id, &landed, self.inner.clock())
+        let mut guard = lock(&self.inner.state);
+        let st = &mut *guard;
+        let is_merge: fn(&CallRequest) -> bool = |request| match request {
+            CallRequest::Prepare { .. } => true,
+            CallRequest::Test { .. }
+            | CallRequest::Land { .. }
+            | CallRequest::Trial { .. }
+            | CallRequest::ReadHead { .. }
+            | CallRequest::Reconcile { .. } => false,
         };
-        let (events, outbound) = shell::split_effects(effects);
-        self.inner.deliver(None, outbound);
-        self.inner.publish(events);
+        let Some(call) = self.inner.call_of(st, is_merge) else {
+            let trial_out = st
+                .calls
+                .iter()
+                .any(|call| matches!(call.request, CallRequest::Trial { .. }));
+            assert!(
+                !trial_out,
+                "merge_next: a trial is outstanding, so no wake can start a merge; answer it with \
+                 verify_next first"
+            );
+            return;
+        };
+        let (base, head) = (sha('b'), sha('c'));
+        st.landed = Some(head.clone());
+        self.inner
+            .answer(st, &call, CallAnswer::Prepared { base, head });
     }
 
-    /// Runs the next queued verification (a race entry's trial) on the real core, as the steward
-    /// would, with its tests passing or failing. Returns false when nothing was ready to run.
+    /// Answers the next verification (a race entry's trial) the host has asked the steward for,
+    /// with its tests passing or failing. Returns false when nothing was ready to run.
     pub fn verify_next(&self, passed: bool) -> bool {
-        let effects = {
-            let mut core = lock(&self.inner.core);
-            let Some(dispatch) = core.begin_verification(self.inner.clock()) else {
-                return false;
-            };
-            let outcome = if passed {
-                TrialOutcome::Clean {}
-            } else {
-                TrialOutcome::TestsFailed {}
-            };
-            core.verification_outcome(
-                dispatch.id,
-                &TrialReport::stopped(outcome),
-                self.inner.clock(),
-            )
+        let mut guard = lock(&self.inner.state);
+        let st = &mut *guard;
+        let is_trial: fn(&CallRequest) -> bool = |request| match request {
+            CallRequest::Trial { .. } => true,
+            CallRequest::Prepare { .. }
+            | CallRequest::Test { .. }
+            | CallRequest::Land { .. }
+            | CallRequest::ReadHead { .. }
+            | CallRequest::Reconcile { .. } => false,
         };
-        let (events, outbound) = shell::split_effects(effects);
-        self.inner.deliver(None, outbound);
-        self.inner.publish(events);
+        let Some(call) = self.inner.call_of(st, is_trial) else {
+            return false;
+        };
+        let result = if passed {
+            TrialResult::Clean
+        } else {
+            TrialResult::TestsFailed
+        };
+        let answer = CallAnswer::Trialled {
+            before: None,
+            after: Some(result),
+        };
+        self.inner.answer(st, &call, answer);
         true
     }
 
@@ -321,8 +752,8 @@ impl Fake {
     /// Every open socket has taken up a `go_silent` or `go_deaf` request. The request itself only
     /// queues the change; until this is true a socket may still read a frame and answer it.
     pub fn all_sockets_muted(&self) -> bool {
-        let sockets = lock(&self.inner.sockets);
-        !sockets.is_empty() && sockets.iter().all(|s| s.muted)
+        let st = lock(&self.inner.state);
+        !st.sockets.is_empty() && st.sockets.values().all(|entry| entry.muted)
     }
 
     /// Refuses (or accepts again) new connections with HTTP 503. Open sockets are unaffected.
@@ -338,9 +769,10 @@ impl Fake {
 
     /// How many sockets are reading the event log right now.
     pub fn watching_sockets(&self) -> usize {
-        lock(&self.inner.sockets)
-            .iter()
-            .filter(|s| s.watching)
+        lock(&self.inner.state)
+            .sockets
+            .values()
+            .filter(|entry| entry.session.watch_from.is_some())
             .count()
     }
 
@@ -361,13 +793,7 @@ impl Fake {
 
     /// Sends this text frame, as given, to every open socket bound to `agent`.
     pub fn send_raw(&self, agent: &str, frame: &str) {
-        let agent = AgentId(agent.into());
-        for entry in lock(&self.inner.sockets)
-            .iter()
-            .filter(|s| s.bound.as_ref() == Some(&agent))
-        {
-            let _ = entry.tx.send(Wire::Raw(frame.to_string()));
-        }
+        self.to_agent(agent, &Wire::Raw(frame.to_string()));
     }
 
     /// Makes every event-log replay stop `n` events short and close, as a dropped connection
@@ -381,48 +807,90 @@ impl Fake {
         lock(&self.inner.lose).push((agent.to_string(), what));
     }
 
-    /// Makes `agent` send `msg` to the coordinator without any socket, as if from elsewhere.
+    /// Makes `agent` send `msg` to the coordinator from a socket of its own that has no peer: the
+    /// fake opens it, says hello, sends `msg`, and closes it, so the host sees what it would see
+    /// from a connection that came and went. Its replies go nowhere, and neither the hello nor
+    /// `msg` counts in `received`. The hello is one more `AgentConnected` in the log, and the
+    /// close withdraws the agent's queued request only if the agent has no other socket open.
     pub fn act(&self, agent: &str, msg: ClientMsg) {
-        self.inner.act(&AgentId(agent.into()), msg);
+        let agent = AgentId(agent.into());
+        let hello = ClientMsg::Hello {
+            agent: agent.clone(),
+            base: CommitId("0".repeat(40)),
+            protocol: PROTOCOL_VERSION,
+        };
+        let mut st = lock(&self.inner.state);
+        let sock = SocketId(st.next_socket);
+        st.next_socket += 1;
+        let opened = Input::Opened {
+            now_ms: self.inner.clock(),
+            sock,
+            verified: agent,
+        };
+        self.inner.feed(&mut st, opened, None);
+        for frame in [hello, msg] {
+            let text = frame_text(&frame);
+            let now_ms = self.inner.clock();
+            self.inner
+                .feed(&mut st, Input::Frame { now_ms, sock, text }, None);
+        }
+        let closed = Input::Closed {
+            now_ms: self.inner.clock(),
+            sock,
+        };
+        self.inner.feed(&mut st, closed, None);
     }
 
     /// Sends `msg` to every open socket bound to `agent`.
     pub fn push(&self, agent: &str, msg: ServerMsg) {
-        let notify = Outbound::Notify {
-            agent: AgentId(agent.into()),
-            msg,
-        };
-        self.inner.deliver(None, vec![notify]);
+        self.to_agent(agent, &Wire::Msg(msg));
+    }
+
+    fn to_agent(&self, agent: &str, wire: &Wire) {
+        let agent = AgentId(agent.into());
+        let st = lock(&self.inner.state);
+        for entry in st
+            .sockets
+            .values()
+            .filter(|entry| entry.session.agent.as_ref() == Some(&agent))
+        {
+            let _ = entry.tx.send(wire.clone());
+        }
     }
 
     /// Moves the coordinator's clock `ms` ahead of the real one, as if that long had passed
-    /// there. Leases expire on this clock; the daemons, which are real processes, keep the real
+    /// there. Leases end on this clock; the daemons, which are real processes, keep the real
     /// one. Follow it with `settle_expiry` before asserting on what expired.
     pub fn advance_clock(&self, ms: u64) {
         self.inner.skew_ms.fetch_add(ms, Ordering::SeqCst);
+        self.inner.wake_changed.notify_one();
     }
 
     /// Stops the coordinator clock: from now on it moves only with `advance_clock`, so no lease
     /// ends because the machine was slow. Call it before any claim is made.
     pub fn freeze_clock(&self) {
         self.inner.frozen_at_ms.store(now_ms(), Ordering::SeqCst);
+        self.inner.wake_changed.notify_one();
     }
 
-    /// Waits until the lease-expiry loop has run twice since the call began: the first pass may
-    /// have started before the latest `advance_clock`, the second began after it. Panics if the
-    /// loop does not run, which means its task died.
+    /// Runs every wake that is due on the coordinator's clock, so what was due at the current
+    /// clock has been applied when it returns: leases that ended are expired, and their grants
+    /// made. The timer does the same on its own; this makes the moment certain.
     pub async fn settle_expiry(&self) {
-        // Passes come every 20 ms; this is only how long a dead loop takes to be noticed.
-        const LOOP_DEAD_AFTER: Duration = Duration::from_secs(30);
-        let target = self.inner.expiry_passes.load(Ordering::SeqCst) + 2;
-        let started = tokio::time::Instant::now();
-        while self.inner.expiry_passes.load(Ordering::SeqCst) < target {
-            assert!(
-                started.elapsed() < LOOP_DEAD_AFTER,
-                "the fake's lease-expiry loop made no pass in {LOOP_DEAD_AFTER:?}; its task died"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        // A wake sets the next one for later; a host that wakes itself again and again is stuck.
+        const WAKES_MAX: usize = 100;
+        tokio::task::yield_now().await;
+        for _ in 0..WAKES_MAX {
+            if !self.inner.fire_due_wake() {
+                return;
+            }
         }
+        let st = lock(&self.inner.state);
+        assert!(
+            !self.inner.wake_is_due(&st),
+            "the host is still due a wake after {WAKES_MAX}; it logged {:?}",
+            st.logs
+        );
     }
 
     /// How many heartbeats `agent` has sent.
@@ -433,39 +901,36 @@ impl Fake {
             .count()
     }
 
-    /// The coordinator's event log so far.
+    /// The coordinator's event log so far: what the host has stored.
     pub fn events(&self) -> Vec<Event> {
-        lock(&self.inner.events).clone()
+        stored_events(&lock(&self.inner.state).store)
     }
 
-    /// Every message `agent` has sent, in order.
+    /// Every message `agent` has sent the host, in order.
     pub fn received(&self, agent: &str) -> Vec<ClientMsg> {
-        let log = self
-            .inner
-            .received
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        log.iter()
+        let st = lock(&self.inner.state);
+        st.received
+            .iter()
             .filter(|(who, _)| who.0 == agent)
             .map(|(_, msg)| msg.clone())
             .collect()
     }
 }
 
-async fn expire_loop(inner: Arc<Inner>) {
+/// Fires the host's wake when the fake's clock reaches it, and looks again whenever the wake or
+/// the clock changes.
+async fn wake_loop(inner: Arc<Inner>) {
     loop {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let effects = {
-            let mut core = inner
-                .core
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            core.expire(inner.clock())
-        };
-        let (events, outbound) = shell::split_effects(effects);
-        inner.deliver(None, outbound);
-        inner.publish(events);
-        inner.expiry_passes.fetch_add(1, Ordering::SeqCst);
+        inner.fire_due_wake();
+        match inner.wake_wait() {
+            Some(wait) => {
+                tokio::select! {
+                    () = tokio::time::sleep(wait) => {}
+                    () = inner.wake_changed.notified() => {}
+                }
+            }
+            None => inner.wake_changed.notified().await,
+        }
     }
 }
 
@@ -518,10 +983,7 @@ async fn serve(
         let agent = bearer.and_then(|token| tokens.get(token));
         match agent {
             Some(agent) if request.uri().path() == expected => {
-                *seen
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(AgentId(agent.clone()));
+                *lock(&seen) = Some(AgentId(agent.clone()));
                 Ok(response)
             }
             Some(_) | None => {
@@ -534,29 +996,11 @@ async fn serve(
     let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, check).await else {
         return;
     };
-    let Some(agent) = verified.lock().ok().and_then(|v| v.clone()) else {
+    let Some(agent) = lock(&verified).clone() else {
         return;
     };
     let (tx, mut rx) = mpsc::unbounded_channel::<Wire>();
-    let id = {
-        let mut next = inner
-            .next_socket
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *next += 1;
-        *next
-    };
-    lock(&inner.sockets).push(SocketEntry {
-        id,
-        bound: None,
-        watching: false,
-        muted: false,
-        tx,
-    });
-    let mut session = Session {
-        verified: Some(agent),
-        ..Session::default()
-    };
+    let id = inner.open_socket(agent, tx);
     loop {
         tokio::select! {
             _ = mute.changed() => {
@@ -570,42 +1014,51 @@ async fn serve(
             }
             outgoing = rx.recv(), if !mute_writes => {
                 let Some(msg) = outgoing else { break };
-                if write_wire(&mut socket, &msg, deaf).await.is_err() {
-                    break;
+                match write_wire(&mut socket, msg, deaf).await {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => break,
                 }
             }
             frame = socket.next(), if !deaf => match frame {
                 Some(Ok(Message::Text(text))) => {
                     inner.wait_if_log_read(&text).await;
-                    if let Some(parsed) = handle_text(&inner, id, &mut session, &text) {
-                        if parsed.close {
-                            break;
-                        }
+                    if inner.handle_text(id, &text) {
+                        break;
                     }
                 }
+                Some(Ok(Message::Binary(_))) => inner.handle_binary(id),
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
             },
         }
     }
-    close_socket(&inner, id, &session);
+    inner.close_socket(id);
 }
 
-/// Writes `wire`, followed by stray pongs when the link is one-way.
+/// Writes `wire`, followed by stray pongs when the link is one-way. False once the socket is to
+/// end: the host closed it, or the fake cut it.
 async fn write_wire(
     socket: &mut WebSocketStream<TcpStream>,
-    wire: &Wire,
+    wire: Wire,
     deaf: bool,
-) -> Result<(), WsError> {
+) -> Result<bool, WsError> {
     let text = match wire {
-        Wire::Msg(msg) => serde_json::to_string(msg).map_err(|e| WsError::Io(e.into()))?,
-        Wire::Raw(text) => text.clone(),
+        Wire::Msg(msg) => serde_json::to_string(&msg).map_err(|e| WsError::Io(e.into()))?,
+        Wire::Raw(text) => text,
+        Wire::Close { code, reason } => {
+            let frame = CloseFrame {
+                code: CloseCode::from(code),
+                reason: reason.into(),
+            };
+            socket.send(Message::Close(Some(frame))).await?;
+            return Ok(false);
+        }
     };
     socket.send(Message::text(text)).await?;
     if deaf {
         stray_pongs(socket).await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Pongs that echo no ping the daemon sent: one whose payload is a time far ahead (which would
@@ -620,148 +1073,12 @@ async fn stray_pongs(socket: &mut WebSocketStream<TcpStream>) -> Result<(), WsEr
 
 /// Whether a drop request spares this socket: only a request for the main connections does, and
 /// only for a socket that is reading the event log.
-fn keeps_open(inner: &Inner, id: u64, (_, main_only): (u64, bool)) -> bool {
-    let reading = lock(&inner.sockets)
-        .iter()
-        .any(|s| s.id == id && s.watching);
+fn keeps_open(inner: &Inner, sock: SocketId, (_, main_only): (u64, bool)) -> bool {
+    let reading = lock(&inner.state)
+        .sockets
+        .get(&sock)
+        .is_some_and(|entry| entry.session.watch_from.is_some());
     main_only && reading
-}
-
-struct Handled {
-    close: bool,
-}
-
-fn handle_text(inner: &Inner, id: u64, session: &mut Session, text: &str) -> Option<Handled> {
-    let msg = match shell::parse_client_msg(text) {
-        Ok(msg) => msg,
-        Err(fault) => {
-            inner.deliver(Some(id), vec![Outbound::Reply(fault.reply())]);
-            return None;
-        }
-    };
-    match shell::decide(session, &msg) {
-        Action::Reject(reply) => inner.deliver(Some(id), vec![Outbound::Reply(reply)]),
-        Action::RejectAndClose(reply) => {
-            inner.deliver(Some(id), vec![Outbound::Reply(reply)]);
-            return Some(Handled { close: true });
-        }
-        Action::Watch { from_seq } => {
-            let log = lock(&inner.events);
-            let cut = inner.cut_replay.load(Ordering::SeqCst);
-            let mut sockets = lock(&inner.sockets);
-            if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
-                let shown = log.len().saturating_sub(cut);
-                let skip = inner.skip_seq.load(Ordering::SeqCst);
-                let raw = lock(&inner.raw_in_replay).clone();
-                for event in log[..shown]
-                    .iter()
-                    .filter(|e| e.seq >= from_seq && e.seq != skip)
-                {
-                    let wire = match &raw {
-                        Some((seq, text)) if *seq == event.seq => Wire::Raw(text.clone()),
-                        Some(_) | None => Wire::Msg(ServerMsg::Event {
-                            event: event.clone(),
-                        }),
-                    };
-                    let _ = entry.tx.send(wire);
-                }
-                entry.watching = true;
-            }
-            if cut > 0 {
-                return Some(Handled { close: true });
-            }
-        }
-        Action::Call { agent } => {
-            if let Some(lost) = take_loss(inner, &agent, &msg) {
-                if lost == Lose::ClaimReply {
-                    inner.act(&agent, msg);
-                }
-                return Some(Handled { close: true });
-            }
-            inner
-                .received
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((agent.clone(), msg.clone()));
-            let holds_claim_reply =
-                matches!(msg, ClientMsg::Claim { .. } | ClientMsg::Amend { .. });
-            let effects = {
-                let mut core = inner
-                    .core
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                core.handle(&agent, msg, inner.clock())
-            };
-            let (events, mut outbound) = shell::split_effects(effects);
-            if inner.review_first.load(Ordering::SeqCst) {
-                let review =
-                    |o: &Outbound| matches!(o, Outbound::Reply(ServerMsg::ReviewRequired { .. }));
-                outbound.sort_by_key(|o| !review(o));
-            }
-            if let Some(bound) = shell::bind_on_welcome(session, &agent, &outbound) {
-                *session = bound;
-                let mut sockets = inner
-                    .sockets
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(entry) = sockets.iter_mut().find(|s| s.id == id) {
-                    entry.bound.clone_from(&session.agent);
-                }
-            }
-            // As the Durable Object does: the reply first, then the events it caused.
-            if holds_claim_reply && inner.hold_claim_reply.swap(false, Ordering::SeqCst) {
-                lock(&inner.held).push((id, outbound));
-            } else {
-                inner.deliver(Some(id), outbound);
-            }
-            inner.publish(events);
-        }
-    }
-    None
-}
-
-fn close_socket(inner: &Inner, id: u64, session: &Session) {
-    let others_bound = {
-        let mut sockets = inner
-            .sockets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sockets.retain(|s| s.id != id);
-        session
-            .agent
-            .as_ref()
-            .is_some_and(|agent| sockets.iter().any(|s| s.bound.as_ref() == Some(agent)))
-    };
-    let Some(agent) = session.agent.as_ref().filter(|_| !others_bound) else {
-        return;
-    };
-    let effects = {
-        let mut core = inner
-            .core
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        core.disconnect(agent, inner.clock())
-    };
-    let (events, outbound) = shell::split_effects(effects);
-    inner.deliver(None, outbound);
-    inner.publish(events);
-}
-
-fn take_loss(inner: &Inner, agent: &AgentId, msg: &ClientMsg) -> Option<Lose> {
-    let wanted = if let ClientMsg::Claim { .. } | ClientMsg::Amend { .. } = msg {
-        Lose::ClaimReply
-    } else if let ClientMsg::Release { .. } = msg {
-        Lose::Release
-    } else if let ClientMsg::Review { .. } = msg {
-        Lose::Review
-    } else {
-        return None;
-    };
-    let mut pending = lock(&inner.lose);
-    let at = pending
-        .iter()
-        .position(|(who, what)| *who == agent.0 && *what == wanted)?;
-    Some(pending.remove(at).1)
 }
 
 // ---------- agents: real git repos running the real binary ----------
