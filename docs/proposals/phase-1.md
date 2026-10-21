@@ -55,23 +55,22 @@ on GitHub runners only, never on the Mac.
 
 | Lane | Owns |
 |---|---|
-| A, host and server | `src/host/**` (new), `src/sim/**` (new), `src/lib.rs`, `src/shell.rs`, `src/protocol.rs` (additive changes only), `src/coordinator.rs`, `src/coordinator/**` and `src/merge.rs` except in M3, `docs/reference/runtime-rules.md` (new), `tests/runtime_rules.rs` (new), `scripts/ci/check-named-tests.sh` (new), `tests/simulator.rs` (new), `tessel-cli/tests/support/mod.rs`, `tessel-cli/src/daemon.rs` (the range warning, M4), `tessel-swarm/src/local.rs`, `tessel-server/Cargo.toml` and `tessel-server/src/{main,repo,store,ws,metrics}.rs` (new; `main.rs` wires lane B's subcommands) |
-| B, lander, merge path, CI and identity | `.github/workflows/**`, `.cargo/**` (new), `scripts/ci/**` (new) except the named-tests check, `tessel-lander/**` (new), in M3 `src/merge.rs`, `src/coordinator.rs` and `src/coordinator/**`, `tessel-server/src/{identity,admin}.rs` (new), `tessel-cli/src/init.rs`, `deploy/dogfood/**` (new), the deletions and doc rewrites of P1-DROP-WORKER (M3: `src/runtime.rs`, `src/store.rs`, `src/identity.rs`, `wrangler.toml`, `tessel-swarm/src/{live,guard,main}.rs`, `README.md`, `docs/how-tessel-works.md`, `docs/reference/coordinator.md`, `docs/configuration.md`, a proposed `CLAUDE.md` edit) and of `tessel-steward/` (M6) |
+| A, host and server | `src/host/**` (new), `src/sim/**` (new), `src/lib.rs`, `src/shell.rs`, `src/protocol.rs` (additive changes only), `src/coordinator.rs`, `src/coordinator/**` and `src/merge.rs` except in M5, `docs/reference/runtime-rules.md` (new), `tests/runtime_rules.rs` (new), `scripts/ci/check-named-tests.sh` (new), `tests/simulator.rs` (new), `tessel-cli/tests/support/mod.rs`, `tessel-cli/src/daemon.rs` (the range warning, M3), `tessel-swarm/src/local.rs`, `tessel-server/Cargo.toml` and `tessel-server/src/{main,repo,store,ws,metrics}.rs` (new; `main.rs` wires lane B's subcommands) |
+| B, lander, merge path, CI and identity | `.github/workflows/**`, `.cargo/**` (new), `scripts/ci/**` (new) except the named-tests check, `tessel-lander/**` (new), in M5 `src/merge.rs`, `src/coordinator.rs` and `src/coordinator/**`, `tessel-server/src/{identity,admin,runner}.rs` (new), `tessel-cli/src/init.rs`, `deploy/dogfood/**` (new), the deletions and doc rewrites of P1-DROP-WORKER (M3: `src/runtime.rs`, `src/store.rs`, `src/identity.rs`, `wrangler.toml`, `tessel-swarm/src/{live,guard,main}.rs`, `README.md`, `docs/how-tessel-works.md`, `docs/reference/coordinator.md`, `docs/configuration.md`, a proposed `CLAUDE.md` edit) and of `tessel-steward/` (M6) |
 
 Shared files: the root `Cargo.toml` (workspace members, features) and `Cargo.lock`. A lane that
 adds a member or a dependency does it in its own small commit, and the orchestrator does not run
 two such commits at once. `.github/workflows/ci.yml` is lane B's, but lane A adds one step to it
 in P1-RULES and P1-CI-SIM; whichever of two such pull requests merges second merges `main` first.
-The core and `src/merge.rs` pass from lane A to lane B for M3 (the staged landing) and back when
-P1-CORE-RECONCILE merges. M3's cross edits, in order:
+The core and `src/merge.rs` pass from lane A to lane B for M5 (the staged landing) and back when
+P1-CORE-RECONCILE merges. M5's cross edits, in order (P1-DROP-WORKER, lane B, has deleted the
+Cloudflare Rust glue in M3, before any core API change, decision 13):
 
-1. P1-DROP-WORKER (lane B) deletes the Cloudflare Rust glue before any core API changes
-   (decision 13).
-2. P1-CORE-STAGED-LANDING, then P1-CORE-RECONCILE (lane B). P1-CORE-RECONCILE also makes its own
+1. P1-CORE-STAGED-LANDING, then P1-CORE-RECONCILE (lane B). P1-CORE-RECONCILE also makes its own
    edits in `src/host/calls.rs` (the `Reconcile` on `Loaded`, the flipped R24 test); lane A does
    not touch that file or `src/host/wake.rs` until it merges. Meanwhile lane A works in
    `src/sim/**` and `src/host/batch.rs` (P1-SIM-CORE, P1-PERSIST-RETRY).
-3. P1-ONE-BATCH (lane A) runs after P1-CORE-RECONCILE merges, when the core is lane A's again,
+2. P1-ONE-BATCH (lane A) runs after P1-CORE-RECONCILE merges, when the core is lane A's again,
    because it changes the core's `next_wake_ms` as well as `src/host/wake.rs`.
 
 The merge-path tasks (P1-CORE-STAGED-LANDING, P1-CORE-RECONCILE, P1-LANDER-ANCESTRY) go to Felix
@@ -88,232 +87,92 @@ below, the rest in outline, re-planned at each milestone boundary.
 |---|---|---|---|
 | M1. Guardrails and the host's types | 1-2 | Mutation check per pull request; nightly job; `runtime.rs` rules list with in-place tests; the host's `Input`, `Output` and `Call` types; lander git layer | Mutation job required and green; nightly green once; rules check passes; host types round-trip; lander git tests pass |
 | M2. The move | 3-5 | `runtime.rs` moved step for step into `src/host/`, quirks included; the CLI's fake coordinator rebuilt on the host; lander `prepare`, `land` and `trial` ported | No host row of the rules list left "after move"; CLI suite green on the host; ported steward tests green |
-| M3. Simulator and the staged landing | 6-8 | Cloudflare Rust glue deleted first (P1-DROP-WORKER); simulator in two tasks, I1-I12 checkers, failpoints; the core's landing split into `Prepare`, journaled head, `Test`, `Land`; `Unknown` and `Reconcile`; ancestry read-back; persist retry; one batch per wake | Simulator lane required and green; each behaviour change flips its named test |
-| M4. Host changes and `tessel-server` | 8-10 | Exact replay, half-lease persistence, two carried-over tasks; axum, one task per repo, SQLite store, store lock, `state_version` and migrations, protocol range; Ed25519 identity and token minting; local test runner | Adapter suite green; no rules-list row left "after move" (the adapter rows R2-R5 and R49 each "now" with its named test); each host change flips its named test |
-| M5. Lander behind the server; advisory mode | 10-11 | Lander and runner as separate binaries over a local authenticated channel; evidence records; metrics, logs, trace id; swarm local target rebuilt on the server; advisory head sync; reviewers on the server; hosted dogfood server | End-to-end landing on a local git remote; advisory end-to-end test; metrics contract test; `tessel review` approves through the server |
-| M6. Dogfood, then delete | 11-12 | Five merged pull requests of this repo in advisory mode, one redeploy with a claim held across it; the TypeScript steward deleted; ruleset changed in the same step | Phase done-check above |
-
-## M1 tasks
-
-Order: P1-CI-MUTANTS and P1-RULES start together (the first builds nothing locally, so the two
-lanes rule holds); P1-CI-NIGHTLY follows in lane B; P1-HOST-TYPES follows P1-RULES in lane A;
-P1-LANDER-GIT starts in lane B once the CI tasks have merged.
-
-The order asked for, (a) CI checks, (b) the rules list, (c) the host types, is kept, with three
-changes and their reasons:
-
-- (a) and (b) run at the same time. (a) is workflow files and is checked on GitHub, so it adds no
-  local load; waiting for it would idle a lane for no gain.
-- (a) is split into the per-pull-request check (P1-CI-MUTANTS) and the nightly job
-  (P1-CI-NIGHTLY). The required check should not wait on the full-mutation baseline work. The
-  simulator lane is not created in M1: there is nothing for it to run until P1-SIM-CORE, and an
-  empty job would be a phantom check.
-- (c) follows (b), not the other way round: the rules list is the checklist the types are
-  reviewed against (every rule that lives only in `runtime.rs` must have an input or output that
-  carries it).
-
-The lander port is a parallel lane from M1, on separate files (`tessel-lander/**`). It is the
-longest path to the deletion step, and it shares no files with the host.
-
-- [ ] **P1-CI-MUTANTS** — Lane B. Files: `.github/workflows/ci.yml`, `.cargo/mutants.toml`.
-  On `pull_request`: a matrix of N shard jobs, each `cargo mutants --in-diff <diff> --package
-  tessel-coordinator --test-tool nextest --jobs 2 --shard k/N`, and one job named "Slow lane,
-  mutants on changed lines" that `needs` the shards and fails unless each passed; that job is the
-  required check, so the shard count can change without a ruleset edit. Each shard: checkout with
-  `fetch-depth: 0` and `persist-credentials: false`; `taiki-e/install-action` (pinned SHA, as
-  today) with `cargo-mutants@27.1.0` (current release, 2 June 2026, checked upstream) and the
-  existing `cargo-nextest@0.9.148`; `git diff "origin/$BASE_REF...HEAD"` into `$RUNNER_TEMP`, with
-  `BASE_REF` passed through `env:` rather than expanded in `run:` (zizmor's template-injection
-  rule); `timeout-minutes: 30`. Exit 0, or 3 (timeouts only, reported apart from missed mutants),
-  passes; any other code fails (2 missed, 4 baseline failed, 5 and 6 a bad diff). An empty or
-  Rust-free diff exits 0. No path filter: a docs-only pull request still reports the check, as a
-  required check must. N is set from a measurement taken in this task: the run time of a diff
-  that adds a whole existing file (`src/coordinator/trunk.rs` against an empty tree), scaled so
-  that a new file of about 600 lines, the size of a P1-MOVE task, fits 30 minutes per shard; the
-  report states the measurement and N. A `workflow_dispatch` trigger with `files` and `regex`
-  inputs (passed through `env:`) runs `cargo mutants -f <files> --re <regex>` on any branch, for
-  tasks whose tests pin code the pull request does not change. `.cargo/mutants.toml` excludes
-  `src/runtime.rs` (wasm glue with no tests, deleted in M6) with the reason in a comment.
-  Packages are added as `tessel-lander` and `tessel-server` appear; the CLI and swarm crates stay
-  out, because their tests run the real binary and take minutes per mutant. Done: on the task's
-  pull request, a planted commit that adds an untested branch to `src/merge.rs` fails the
-  required job with the mutant named, and the job passes after it is reverted; a dispatch run
-  with `files` set finds a planted untested branch in an unchanged file; `actionlint` and
-  `zizmor` clean. Then Felix adds the check to the ruleset (step 1 under "Ruleset steps").
-- [ ] **P1-RULES** — Lane A. Files: `docs/reference/runtime-rules.md`, `tests/runtime_rules.rs`,
-  `scripts/ci/check-named-tests.sh`, one step in the fast lane of `ci.yml`. Name every rule in
-  `src/runtime.rs` at base `6efe835`, starting from the appendix of this plan, with: the lines it
-  lives on, where its decision lives (`shell`, the core, or `runtime.rs` only), and its status:
-  "now" (a test exists or is written in this task, against the public `shell` and core API, in
-  `tests/runtime_rules.rs`), "after move" (the host test that will pin it, by name, written in
-  M2), or "dropped" (no counterpart outside Cloudflare, with the reason). The script reads the
-  table and fails if a "now" row names a test missing from `cargo test -p tessel-coordinator --
-  --list`. Done: the script fails on the base (no table) and passes after; every `fn` in
-  `runtime.rs` appears in at least one row; and, because the per-pull-request job mutates only
-  changed lines and `src/shell.rs` does not change here, a `workflow_dispatch` run of the mutation
-  job with `files=src/shell.rs` and `regex` set to the functions the "now" rows pin shows each
-  new test killing at least one mutant of its function (the run is linked in the report).
-- [ ] **P1-CI-NIGHTLY** — Lane B. Files: `.github/workflows/nightly.yml`,
-  `scripts/ci/new-missed-mutants.sh`, `scripts/ci/new-missed-mutants.test.sh`,
-  `.cargo/mutants-missed-baseline.txt`. `schedule` (once a day) and `workflow_dispatch`, plus a
-  `pull_request` trigger filtered to the workflow's own paths so the task's pull request runs it.
-  Jobs: "Nightly, proptest at 10,000 cases" (`PROPTEST_CASES=10000 cargo nextest run -p
-  tessel-coordinator --lib`); "Nightly, full mutants" as a four-shard matrix on the core, whose
-  missed mutants are compared with the committed baseline after line and column numbers are
-  stripped. Stripping can make two mutants identical, so the comparison counts each name
-  (`sort | uniq -c`) and fails when any name occurs more often than in the baseline; the baseline
-  only shrinks. Done: the comparison script's test fails on a planted new missed mutant and on a
-  planted second copy of a baseline name, and passes on an unchanged list; the workflow's run on
-  the task's pull request is green; `actionlint`, `zizmor` and `shellcheck` clean.
-- [ ] **P1-HOST-TYPES** — Lane A, after P1-RULES. Files: `src/host/mod.rs`, `src/host/call.rs`,
-  `src/lib.rs`. The host's `Input`, `Output`, `Call` and `CallAnswer` types as frozen in the
-  proposal ("Calls"), with no behaviour: no `step` function yet. `src/host` builds without the
-  `runtime` feature. `Resumed { sockets }` from the proposal's input list models Durable Object
-  hibernation, which `tessel-server` does not have; it is left out unless a rules-list row needs
-  it. Each "after move" row of the rules list gains the input or output that carries it. Done: a
-  proptest that every persisted part (an outstanding call with its dispatch id, request kind and
-  deadline; every `CallAnswer`, `Unknown` included) round-trips through serde, which cannot pass
-  before the types exist; no `_` arm in any match on the new enums (clippy's existing
-  `wildcard_enum_match_arm` deny).
-- [ ] **P1-LANDER-GIT** — Lane B. Files: `tessel-lander/**`, root `Cargo.toml` (member).
-  A library crate: the git command layer and coverage check ported from `merge-commands.ts` and
-  `merge-coverage.ts`, running the `git` binary (as the steward does, so its behaviour is the
-  reference) with a fixed environment: no system or global config, `core.hooksPath` set to an
-  empty directory, `transfer.fsckObjects`, no attribute-driven filters or drivers. The rebase
-  uses a fixed committer name, email and date (C7). Mode checks call `protocol::Mode::permits`
-  instead of porting `modePermits`, so the lander and the coordinator cannot disagree. Done: the
-  11 tests of `merge-commands.test.ts` and the 17 of `merge-coverage.test.ts` (14 `it` and 3
-  `it.each`, each row ported as its own case), ported one for one; a test that rebases a fixture
-  repository and gets a commit id written in the test, which fails if any committer field or the
-  date is taken from the environment.
-
-## M2 tasks
-
-Lane A moves `runtime.rs` into `src/host/`, one area per task, keeping today's behaviour,
-including its quirks. Lane B ports the steward's merge and trial. `src/host/testkit.rs` (from
-P1-MOVE-CALLS) runs the host against an in-memory store and a simulated clock, executes its
-outputs and records each client's transcript; the CLI's test support and, in M3, the simulator are
-built on it.
-
-Today's ordering comes from the Durable Object's input gate: while a storage operation is
-outstanding no other input runs, and a steward `fetch` releases the gate (`runtime.rs`, 433-437
-and 980-986). The host keeps that: an input that arrives while a commit is outstanding is queued
-and applied after `Committed`; an input that arrives while a `Call` is outstanding is applied at
-once. In M2 the outstanding-call table is host memory, like the `merging` and `verifying` cells it
-replaces, so after a reload every in-flight marker the core holds counts as a cut-off, exactly as
-today (R24). From P1-CORE-RECONCILE (M3), a marker found on `Loaded` is reconciled instead.
-
-- [ ] **P1-MOVE-CALLS** — Lane A. Files: `src/host/{mod,batch,core_slot,testkit}.rs`. The call
-  path: load (R14, R15), apply with the soft and hard limits (R16 to R18), one commit at a time
-  with sends held until `Committed` (C1; only `Committed` builds the token that releases sends),
-  inputs queued behind an outstanding commit and not behind an outstanding call (R42), the reload
-  before an answer is applied (R19), a failed commit dropping the core (R30, today's quirk), bind
-  after `Welcome` (R29), settle (R31, R32), expiry before a client call (R28). Done: rows R14 to
-  R19, R28 to R32 and R42 move to "now", each with a host test; two of them are a `Frame` that
-  arrives during an outstanding commit and is applied only after `Committed`, and one that
-  arrives during an outstanding `Call` and is applied at once. Each new test is shown failing on
-  a planted mutant of its rule (commit, red CI run linked, revert), because the moved code is new
-  and the mutation job mutates all of it.
-- [ ] **P1-MOVE-SOCKETS** — Lane A. Files: `src/host/sockets.rs`. Sessions and the socket table:
-  `Opened { sock, verified }`, `Frame`, `Closed`; binary and malformed frames (R7, R8); identity
-  mismatch closing with 1008 (R9); errors closing with 1011 (R10, R32); withdrawal (R11 to R13).
-  Done: rows R6 to R13 "now" or "dropped" with reasons; the mutation job green on the new file.
-- [ ] **P1-MOVE-WAKE** — Lane A. Files: `src/host/{wake,calls}.rs`. The wake, in today's order
-  and shape (R20): expiry, merge recovery, verification recovery, one merge, one verification, the
-  head read, then the next wake, each step its own batch. Today the merge is awaited inside the
-  alarm, so the verification and head-read steps of that wake run only after the merge's answer,
-  and the wake set while it waits is the watchdog; the host keeps that by suspending the wake at
-  its merge `Call` and resuming it on `Replied`, with no other wake while it waits except the
-  watchdog. Also: verification dispatch with its marker persisted first (R25, R27); cut-off
-  recovery (R24); head reads and trunk pokes (R21 to R23); call deadlines enforced by the adapter
-  as today's timeouts (R26, R38); a failed wake rescheduled, which Cloudflare does today by
-  retrying an alarm that returned an error (R41, C9). COORD-WAKE-WHILE-VERIFYING is decided here:
-  a host test of I4 ("if work is due, exactly one wake is pending, and it is in the future") runs
-  a merge dispatch while a verification is in flight. If the moved code schedules a wake at `now`
-  in a loop, the test lands with `#[ignore = "COORD-WAKE-WHILE-VERIFYING: fixed in the next
-  commit"]` and the fix is a separate commit that removes the attribute. Done: rows R20 to R27,
-  R38 and R41 "now"; a test that a wake which dispatched a merge runs its verification step only
-  after `Replied`; a test that a step failing inside a wake leaves exactly one wake pending, in
-  the future; the I4 test passes with no `#[ignore]` left.
-- [ ] **P1-MOVE-REPLAY** — Lane A. Files: `src/host/replay.rs`. `Watch` replay through
-  `ReadEvents` and `ReplayPage`, with every other input queued until the replay ends, which is
-  what the input gate gives today (R36). Done: row R36 "now"; a host test that a `Hello` sent
-  after `Watch { from_seq: 0 }` is answered only after the last page.
-- [ ] **P1-CLI-ON-HOST** — Lane A, after the four above. Files:
-  `tessel-cli/tests/support/mod.rs`. The CLI's fake coordinator keeps its WebSocket plumbing and
-  fault injection (`go_silent`, `go_deaf`) and replaces its copy of the orchestration with the
-  host and the test driver. Done: the CLI suite passes with the same test count. The core's
-  mutation job does not run the CLI tests, so the check that the suite characterises the host at
-  the wire is a planted mutant instead: a commit that breaks one moved rule (R29, bind after
-  `Welcome`) turns at least one CLI test red on CI, and is reverted; the run is linked.
-- [ ] **P1-LANDER-MERGE** — Lane B. Files: `tessel-lander/**`. `run_merge` ported from
-  `merge-steps.ts`, split into the two calls the proposal's C6 requires: `prepare` (fetch, verify
-  the commit, pin main, deterministic rebase, coverage and gate-path checks; returns the head;
-  runs no repo code) and `land` (compare-and-swap push of main from base to the journaled head on
-  a git remote reached by path or URL, then a read-back of main). The read-back keeps the
-  steward's equality rule in this task, so the ported tests pass unchanged; ancestry is the
-  intended change P1-LANDER-ANCESTRY. Done, ported one for one: the 53 tests of
-  `merge-steps.test.ts` (44 `it` and 9 `it.each` rows, each row its own case), with a fake
-  git runner, among them the step order and token lifetimes (no credential is live while repo
-  code runs; the write token is minted only after the tests and revoked when the push ends or
-  throws); the
-  outcome read back from main, never taken from the push's exit code (4 cases); `main_moved`
-  checked before the commit is verified or rebased; `already_merged`; `gate_changed`,
-  `gate_invalid` and `gate_only` under the admin policy; at most `LOCAL_GIT_COMMANDS_MAX` local
-  git commands on the longest path; a stopped rebase as `conflict` with its files and a failed
-  rebase with none as `git_failed`; the coverage check on the rebased range with no external diff
-  drivers and at most 50 names reported. Then the 11 `runMerge` tests of
-  `merge-git.integration.test.ts` (6 merge, 5 coverage) and the 3 of
-  `gate-trunk.integration.test.ts`, against real git. Git commands that read a repository's own
-  config run only in a `Workspace`, a type that only the lander's clone step can produce, so a
-  filter, merge driver or hook in that config can never run (rule 4; P1-LANDER-GIT's review
-  showed an in-place rebase runs them and a fresh clone does not). Decided by Felix on
-  19 October. Done also: no public function takes a repository path where it needs a
-  `Workspace`, and a test that a `Workspace` cannot be built outside the clone step.
-- [ ] **P1-LANDER-TRIAL** — Lane B. Files: `tessel-lander/**`. `run_trial` and the two-sided
-  report (baseline, then the new main) ported, with the test step behind a trait the runner
-  implements in M4. Done: the 6 `runTrial` and 3 `reportTrial` tests of
-  `merge-git.integration.test.ts`, and the unit tests of `merge-trial.test.ts`, ported pass.
-- [ ] **P1-LANDER-ISOLATION** — Lane B. Files: `tessel-lander/**`. S3: a fork that carries
-  hooks, `.gitattributes` filters and drivers, a malformed pack, and a file name with control
-  characters. Done: tests that each is refused or inert, each failing when the matching part of
-  the fixed git environment is removed.
-
-M2's done-check: no host row of the rules list is "after move"; `cargo test --workspace` green
-with the CLI suite on the host; the wasm lane still green (`runtime.rs` unchanged). The adapter
-rows (R2 to R5 and R49, "adapter (M4)") stay "after move" until M4, whose done-check makes each
-"now" with its named adapter test (Felix, 19 October).
+| M3. The local server | 6-8 | Cloudflare Rust glue deleted first (P1-DROP-WORKER); axum, one task per repo, SQLite store, store lock, `state_version`, protocol range; Ed25519 identity and token minting; local test runner; the host's one `Prepare` call answered by prepare, tests and land in process; the adapter rules R1-R5 and R49; `tessel init` against a local server; the single-developer quickstart | No rules-list row left "after move"; an end-to-end landing on CI: a local `tessel-server`, a bare git remote, two CLI agents, one commit landed by compare-and-swap after the runner's command ran on it; `tessel review` approves through the server; a kill -9 loop with claims reconciled |
+| M4. Dogfood on the local server | 8-9 | This repository coordinated and landed by a `tessel-server` on Felix's machine: lanes claim before editing, the runner runs the workspace gate, the lander lands `main`; the build protocol's section 2 rewritten | Five landings of this repository with their notes, claims released by `Merged`; one server restart while a submitted claim is held |
+| M5. Hardening: simulator, staged landing, reconciliation | 9-12 | Simulator in two tasks, I1-I12 checkers, failpoints; the core's landing split into `Prepare`, journaled head, `Test`, `Land`; `Unknown` and `Reconcile`; ancestry read-back; persist retry; one batch per wake; exact replay, half-lease persistence, two carried-over tasks; lander and runner as separate binaries over a local authenticated channel; swarm local target rebuilt on the server | Simulator lane required and green; each behaviour change flips its named test; `cargo tree -p tessel-server` has no lander crate |
+| M6. Team mode, then delete | 12-13 | Evidence records; metrics, logs, trace id; minimal advisory mode with head sync; hooks with the server unreachable; the hosted dogfood server; five merged pull requests in advisory mode and one redeploy with a claim held across it; the TypeScript steward deleted; ruleset changed in the same step | Advisory end-to-end test; metrics contract test; phase done-check above |
 
 ## M3 to M6, in outline
 
-**M3. Simulator and the staged landing.** Lane A in `src/sim/**` and `src/host/**`; lane B owns
-the core and `src/merge.rs` until P1-CORE-RECONCILE merges (order under "Lanes and file
-ownership").
+Re-ordered on 20 October (decision 15): the single-developer local setup comes first, then its
+dogfood, then the hardening the first order began with.
+
+**M3. The local server.** Lane A owns `src/host/**` and `tessel-server/src/{main,repo,store,ws}.rs`;
+lane B owns `tessel-lander/**` and `tessel-server/src/{identity,admin,runner}.rs`.
 - P1-DROP-WORKER (lane B, first in M3, decision 13): deletes `src/runtime.rs`, `src/store.rs`,
   `wrangler.toml`, the `worker` and `console_error_panic_hook` dependencies, the `cdylib` crate
-  type, the `wasm32-unknown-unknown` target and the "Fast lane, wasm clippy" job, with ruleset
-  step 2 made right before it merges. It also deletes what only the Worker called:
-  `src/identity.rs`, the `#[cfg(feature = "runtime")]` items in `src/shell.rs` (`Denied`,
-  `Inbound`, `authorize`, `only_method` and the `routes` test module) and the `runtime` feature
-  itself, so no feature is left holding dead code from M3 to M4; the Ed25519 identity in M4 is
-  written fresh in `tessel-server`, and rule R1 moves to "adapter" with it (`parse_route` stays
-  in `shell` with its tests). Renaming the feature or keeping it for the
-  three weeks would keep code with no caller (`PLAN.md` and `CLAUDE.md`: replace, don't
-  deprecate). It deletes `tessel-swarm`'s live target (`src/live.rs`, the `--target live` path in
-  `src/main.rs`, and the Cloudflare host names in `src/guard.rs`, keeping `ScratchRepo`): it
-  needs a Cloudflare coordinator and steward that can no longer exist, and a live target against
-  a hosted `tessel-server` is added when an A/B run needs one, not before. And it rewrites the
-  docs that describe the deleted code, so no agent follows them from M3 to M6: `README.md`,
-  `docs/how-tessel-works.md`, `docs/reference/coordinator.md`, `docs/configuration.md`, and,
-  proposed in the same pull request for Felix to merge, `CLAUDE.md`'s Layout (`runtime.rs`,
-  `store.rs`, `identity.rs`) and Commands (`npx wrangler dev`); `docs/BUILD-PROTOCOL.md`'s gate
-  row for the wasm warning count is the orchestrator's to change. The TypeScript steward and its
-  CI job stay until M6 as the lander's reference. Done: CI green without the wasm job;
-  `cargo build -p tessel-coordinator` and its clippy with default features pass natively, and
-  `Cargo.toml` has no `runtime` feature; `cargo tree -p tessel-coordinator` has no `worker`,
-  `hmac` or `sha2`; a search of the docs above finds no `wrangler`, `Durable Object` or
-  `runtime.rs` outside history notes; the rules list's "Lives in" column still points at
-  `6efe835`, where the deleted code can be read.
+  type, the `wasm32-unknown-unknown` target and the "Fast lane, wasm clippy" job, with ruleset step
+  2 made right before it merges. It also deletes what only the Worker called: `src/identity.rs`, the
+  `#[cfg(feature = "runtime")]` items in `src/shell.rs` (`Denied`, `Inbound`, `authorize`,
+  `only_method` and the `routes` test module) and the `runtime` feature itself, so no feature is
+  left holding dead code in this milestone; the Ed25519 identity is written fresh in `tessel-server`
+  (P1-IDENTITY), and rule R1 moves to "adapter" with it (`parse_route` stays in `shell` with its
+  tests). Renaming the feature or keeping it for the three weeks would keep code with no caller
+  (`PLAN.md` and `CLAUDE.md`: replace, don't deprecate). It deletes `tessel-swarm`'s live target
+  (`src/live.rs`, the `--target live` path in `src/main.rs`, and the Cloudflare host names in
+  `src/guard.rs`, keeping `ScratchRepo`): it needs a Cloudflare coordinator and steward that can no
+  longer exist, and a live target against a hosted `tessel-server` is added when an A/B run needs
+  one, not before. And it rewrites the docs that describe the deleted code, so no agent follows them
+  from M3 to M6: `README.md`, `docs/how-tessel-works.md`, `docs/reference/coordinator.md`,
+  `docs/configuration.md`, and, proposed in the same pull request for Felix to merge, `CLAUDE.md`'s
+  Layout (`runtime.rs`, `store.rs`, `identity.rs`) and Commands (`npx wrangler dev`);
+  `docs/BUILD-PROTOCOL.md`'s gate row for the wasm warning count is the orchestrator's to change.
+  The TypeScript steward and its CI job stay until M6 as the lander's reference. Done: CI green
+  without the wasm job; `cargo build -p tessel-coordinator` and its clippy with default features
+  pass natively, and `Cargo.toml` has no `runtime` feature; `cargo tree -p tessel-coordinator` has
+  no `worker`, `hmac` or `sha2`; a search of the docs above finds no `wrangler`, `Durable Object` or
+  `runtime.rs` outside history notes; the rules list's "Lives in" column still points at `6efe835`,
+  where the deleted code can be read.
+- P1-SERVER (lane A): axum 0.8 (current 0.8.9) on tokio, one task per repo owning its host (C2),
+  rusqlite (current 0.40.2) in WAL mode with `synchronous=FULL` (C1), an exclusive lock on the
+  store (C2), `state_version` with a migration chain and a fixture per shape (O1; version 1 is the
+  first shape, since nothing was ever deployed to migrate from), the protocol range announced in
+  a new optional field of `Welcome` with the CLI warning outside it (O2), structured
+  `(tenant, repo)` ids (S5).
+- P1-IDENTITY (lane B): Ed25519 identity with `kid`, `aud`, tenant claims and reserved service
+  names, minted by `tessel-server admin token`, replacing the steward's HMAC minting (the Rust HMAC
+  check went in P1-DROP-WORKER) and `tessel init --steward` (S1), with the route and token refusals
+  of R1 as adapter tests that port the `routes` cases P1-DROP-WORKER deletes from `src/shell.rs` one
+  for one (404; 405 with `Allow`; 403; 401 with the fixed body), each named in the rules list, so R1
+  ends the gap with the coverage it had; ed25519-dalek (current 3.0.0) is the candidate, chosen in
+  the task under the dependency rule.
+- P1-RUNNER (lane B): the local test runner as its own binary, refusing to start unless
+  configured for a single trusted user. It runs the repository's test command on a `TestTree`
+  and reports pass or fail with the first failure quoted and bounded (rule 3).
+
+- P1-SERVER-LANDING (lane B, after P1-SERVER and P1-RUNNER; Felix reviews): the adapter half of
+  HOST-MERGE-STANDIN. The host's one `Prepare` call stands for the whole merge until M5, so the
+  local adapter answers it by running the lander's `prepare`, the runner's command on the
+  `TestTree`, and `land`, in process, and replies `Prepared { base, head }` only after the
+  read-back finds the head on main; a refused rebase, a failed test run or a push that lost the
+  race answers `Refused` or `Unknown` as the core expects (rule 6: nothing is reported landed
+  that did not land). No evidence note yet (P1-EVIDENCE, M6); the submitted commit carries the
+  CLI's intent note. Done: an adapter test per outcome, and the end-to-end landing in the
+  done-check.
+- P1-ADAPTER-RULES (lane B, with P1-SERVER): the adapter rows R1-R5 and R49 become "now", each
+  with its named `tessel-server` test (the route and token refusals, the verified agent set by
+  the adapter, refusals logged without the token, 401 and 426, one host per repo).
+- P1-LOCAL-SETUP (lane A, last): `tessel init` against a local server (address and token from
+  configuration, `--steward` minting gone), reviewers in the server's config so `tessel review`
+  approves held submissions through it, and `docs/local-setup.md`: one developer, one binary,
+  a SQLite file, their own remote, in at most a page. Done: the quickstart is followed on CI from
+  a clean checkout to a landed commit.
+
+**M4. Dogfood on the local server.** This repository is coordinated and landed by a
+`tessel-server` that Felix starts on his machine while lanes work, like a dev server; its SQLite
+file keeps claims and held submissions across stops. Lanes claim before editing (`CLAUDE.md`'s
+dogfooding section and `skills/tessel/SKILL.md`); the runner runs `cargo test --workspace` and
+the rest of the gate on the rebased commit; the lander lands `main` on GitHub by compare-and-swap
+push over HTTPS with Felix's token as a ruleset bypass actor (ruleset step 4); the orchestrator's
+gate on the merged tree becomes the runner's run, and `docs/BUILD-PROTOCOL.md` section 2 is
+rewritten for it, as that section says, with Felix's approval of the landing shape before the
+first landing. Done: five landings of this repository with their notes and claims released by
+`Merged`, none released by hand; one server restart while a submitted claim is held, that claim
+landed afterwards. The hosted server and advisory mode are M6.
+
+**M5. Hardening: simulator, staged landing, reconciliation.** Lane A in `src/sim/**` and
+`src/host/**`; lane B owns the core and `src/merge.rs` until P1-CORE-RECONCILE merges (order under
+"Lanes and file ownership").
 - P1-SIM-CORE (lane A): `src/sim/` (SplitMix64 moved from `tessel-swarm/src/rng.rs`); the driver
   on the test kit; a clock that jumps; a store that loses uncommitted writes on crash and can fail
   a commit without crashing; a crash after any output and a reload; client traffic (claims,
@@ -360,52 +219,33 @@ ownership").
   `next_wake_ms`): expiry, recovery and dispatch folded into one batch per wake, with a
   verification or head read that is due after a merge's answer getting a wake at once instead of
   riding the suspended wake. Flips R20's test.
-
-**M4. Host changes and `tessel-server`.**
-- Lane A, host: exact replay without stalling the repo (C3, flips R36's test); lease renewal
-  persisted below half the lease (C10); COORD-HEAD-FROM-AGENT (on `Loaded`, a `ReadHead` call
-  before any dispatch; a simulator check that no dispatch uses an agent-declared base);
+- Host changes (lane A): exact replay without stalling the repo (C3, flips R36's test); lease
+  renewal persisted below half the lease (C10); COORD-HEAD-FROM-AGENT (on `Loaded`, a `ReadHead`
+  call before any dispatch; a simulator check that no dispatch uses an agent-declared base);
   COORD-UNDELIVERED-GRANT (decision 7).
-- Lane A, server: axum 0.8 (current 0.8.9) on tokio, one task per repo owning its host (C2),
-  rusqlite (current 0.40.2) in WAL mode with `synchronous=FULL` (C1), an exclusive lock on the
-  store (C2), `state_version` with a migration chain and a fixture per shape (O1; version 1 is the
-  first shape, since nothing was ever deployed to migrate from), the protocol range announced in
-  a new optional field of `Welcome` with the CLI warning outside it (O2), structured
-  `(tenant, repo)` ids (S5).
-- Lane B: Ed25519 identity with `kid`, `aud`, tenant claims and reserved service names, minted by
-  `tessel-server admin token`, replacing the steward's HMAC minting (the Rust HMAC check went in
-  P1-DROP-WORKER) and `tessel init --steward` (S1), with the route and token refusals of R1 as
-  adapter tests that port the `routes` cases P1-DROP-WORKER deletes from `src/shell.rs` one for
-  one (404; 405 with `Allow`; 403; 401 with the fixed body), each named in the rules list, so
-  R1 ends the gap with the coverage it had; ed25519-dalek (current 3.0.0) is the candidate,
-  chosen in the task under the dependency rule. P1-RUNNER: the local test runner as its own
-  binary, refusing to start unless configured for a single trusted user.
+- Separate binaries (lane B): the lander and the runner as their own binaries (`tessel-lander`,
+  `tessel-runner`), started by `tessel-server` from configured paths, accepting work only from it
+  over a local authenticated channel and taking fork and scopes from the persisted dispatch (S1,
+  S3); `tessel-server` does not link the lander crate (done-check 8).
+- `tessel-swarm/src/local.rs` rebuilt on the server (lane A, decision 14).
 
-**M5. Lander behind the server; advisory mode.** The lander and the runner as their own binaries
-(`tessel-lander`, `tessel-runner`), started by `tessel-server` from configured paths, accepting
-work only from it over a local authenticated channel and taking fork and scopes from the
-persisted dispatch (S1, S3); `tessel-server` does not link the lander crate (done-check 8).
-P1-EVIDENCE: after the read-back finds the head landed, the lander writes the landing's evidence
-record (the `MergeRecord` the dispatch carries, the runner's gate steps as they ran, base and
-head) as a git note on the landed commit under `refs/notes/tessel-evidence`, with no credential
-live while repo code runs (decision 9); at most one per landed commit (I3). The note is a second
-remote write after the landing, so it can be lost to a crash ("landed, note not written" is a
-failpoint). The write is idempotent: the lander reads the notes ref first, writes the note if it
-is absent, does nothing if the same note is there, and reports a different note as an error
-without overwriting it; the notes ref is updated by compare-and-swap like main. It is written
-from a landing `Land` reports and from one `Reconcile` finds, and the core keeps a landing
-"evidence pending" until the lander confirms the note, retrying on the next wake. Reviewers move
-to the server's config (`REVIEWERS` in `wrangler.toml` at `6efe835`), so `tessel review` approves
-held submissions after the steward's dashboard is deleted; the review page itself stays Phase 3.
+**M6. Team mode, then delete.** P1-EVIDENCE: after the read-back finds the head landed, the lander
+writes the landing's evidence record (the `MergeRecord` the dispatch carries, the runner's gate
+steps as they ran, base and head) as a git note on the landed commit under
+`refs/notes/tessel-evidence`, with no credential live while repo code runs (decision 9); at most one
+per landed commit (I3). The note is a second remote write after the landing, so it can be lost to a
+crash ("landed, note not written" is a failpoint). The write is idempotent: the lander reads the
+notes ref first, writes the note if it is absent, does nothing if the same note is there, and
+reports a different note as an error without overwriting it; the notes ref is updated by
+compare-and-swap like main. It is written from a landing `Land` reports and from one `Reconcile`
+finds, and the core keeps a landing "evidence pending" until the lander confirms the note, retrying
+on the next wake. Reviewers stay in the server's config from M3; the review page itself is Phase 3.
 `/metrics`, structured logs keyed by repo, claim and seq, and one trace id from submission to
-landing (O3); `tessel-swarm/src/local.rs` rebuilt on the server; minimal advisory mode (below);
-hook behaviour with the server unreachable (decision 10, O6); the dogfood server deployed.
-
-**M6. Dogfood, then delete.** Five merged pull requests of this repository with claims released
-by head sync, including one redeploy while a submitted claim is held; then one pull request that
-deletes `tessel-steward/` and the "Slow lane, steward" job, with ruleset step 5. (The Cloudflare
-Rust glue went in M3, P1-DROP-WORKER; the HMAC identity with M4's Ed25519 identity.) Docs that
-describe the Cloudflare deployment are rewritten in the same pull request.
+landing (O3); minimal advisory mode (below); hook behaviour with the server unreachable (decision
+10, O6); the hosted dogfood server deployed (decision 2); five merged pull requests of this
+repository in advisory mode with one redeploy while a submitted claim is held (decision 6); then one
+pull request that deletes `tessel-steward/` and the "Slow lane, steward" job, with ruleset step 6.
+Docs that describe the Cloudflare deployment are rewritten in the same pull request.
 
 ## Invariants and the simulator checks that prove them
 
@@ -431,13 +271,13 @@ modes; where an invariant reads differently for an advisory release, the last co
 ## CI: enforcing rule 9
 
 - Per pull request, required: the mutation check on changed lines (P1-CI-MUTANTS), sharded with
-  one aggregating job; from M3, the simulator lane (P1-CI-SIM). Neither has a path filter, so
+  one aggregating job; from M5, the simulator lane (P1-CI-SIM). Neither has a path filter, so
   every pull request reports both. The pull request template's field for the new test's failing
   output stays. Where the per-pull-request job cannot show a new test failing (tests that pin
   unchanged code, or CLI tests of the host), the task uses the mutation job's `workflow_dispatch`
   run or a planted mutant with a linked red run.
 - Nightly: proptest at 10,000 cases and full mutants against a shrinking baseline (P1-CI-NIGHTLY);
-  from M3, the simulator seed sweep. A nightly failure is fixed as a task, never retried away.
+  from M5, the simulator seed sweep. A nightly failure is fixed as a task, never retried away.
 - From M5, a fast-lane step for done-check 8 (`cargo tree -p tessel-server` and a search for
   `FLY_`).
 - Versions named here were checked on 18 October 2026: cargo-mutants 27.1.0,
@@ -465,7 +305,7 @@ Cost if kept: about three to five days in M2.
 
 ## Advisory mode and dogfooding
 
-Minimal advisory mode (M5): the server runs with landing off. A submitted claim is not dispatched
+Minimal advisory mode (M6): the server runs with landing off. A submitted claim is not dispatched
 to the lander; a periodic `ReadHead` call asks the lander for main's head and which submitted
 commits are ancestors of it, and the core releases those claims. Ancestry holds for merge commits
 only: a squash or rebase merge writes new commits, so the submitted commit never becomes an
@@ -546,13 +386,16 @@ Each step is Felix's, made on the date its trigger is met, and recorded with tha
 2. At the start of M3, right before P1-DROP-WORKER merges, with no other pull request open:
    remove "Fast lane, wasm clippy" (decision 13). A required check that never reports blocks
    every pull request, the deleting one included.
-3. After P1-CI-SIM merges (M3): add "Fast lane, simulator".
-4. In M5, before the first pull request is coordinated in advisory mode: set
+3. After P1-CI-SIM merges (M5): add "Fast lane, simulator".
+4. In M4, before the local lander's first landing: add Felix's account as a bypass actor of the
+   required-checks and update-restriction rules, so the lander's compare-and-swap push of `main`
+   from his machine passes (decision 15); the runner has run the gate on that commit.
+5. In M6, before the first pull request is coordinated in advisory mode: set
    `allowed_merge_methods` to `["merge"]` on the `pull_request` rule (decision 3).
-5. In M6, right before the steward's deletion merges, with no other pull request open: remove
+6. In M6, right before the steward's deletion merges, with no other pull request open: remove
    "Slow lane, steward".
 
-Step 5, as a command (step 2 is the same with "Fast lane, wasm clippy"; `+= [{"context": "...",
+Step 6, as a command (step 2 is the same with "Fast lane, wasm clippy"; `+= [{"context": "...",
 "integration_id": 15368}]` on `required_status_checks` adds a check, and
 `.parameters.allowed_merge_methods = ["merge"]` on the `pull_request` rule sets the methods,
 which today allow `merge`, `squash` and `rebase`):
@@ -567,7 +410,7 @@ gh api repos/devfep/tessel/rulesets/25345043 \
   | gh api -X PUT repos/devfep/tessel/rulesets/25345043 --input -
 ```
 
-The steward is deleted only after the Rust lander suite passes (M2, M3) and the dogfood gate is
+The steward is deleted only after the Rust lander suite passes (M2, M5) and the dogfood gate is
 met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 (decision 13).
 
 ## Carried-over tasks
@@ -575,15 +418,15 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
 | Task | Slot | How |
 |---|---|---|
 | COORD-WAKE-WHILE-VERIFYING | M2, P1-MOVE-WAKE | an I4 host test pins the moved behaviour; a fix, if needed, is its own commit that removes the test's `#[ignore]` |
-| COORD-HEAD-FROM-AGENT | M4 | a `ReadHead` call on `Loaded`, before any dispatch; simulator check that no dispatch uses an agent-declared base |
-| COORD-UNDELIVERED-GRANT | M4 | decision 7; a host test that the scope is free again within one lease and the fence is refused after it |
+| COORD-HEAD-FROM-AGENT | M5 | a `ReadHead` call on `Loaded`, before any dispatch; simulator check that no dispatch uses an agent-declared base |
+| COORD-UNDELIVERED-GRANT | M5 | decision 7; a host test that the scope is free again within one lease and the fence is refused after it |
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
 | The move drops a rule nobody wrote down | every `fn` of `runtime.rs` in the rules list, input-gate and alarm-retry rules included; CLI suite on the host; planted mutants of moved rules must fail a test |
-| `runtime.rs` is deleted at the start of M3, before the staged landing | M2's done-check leaves no host rule without a host test; the adapter rules (R2-R5, R49) have no code to protect once `runtime.rs` is gone and are M4's done-check; the code stays readable at `6efe835`; decision 13 |
+| `runtime.rs` is deleted at the start of M3, before the staged landing | M2's done-check leaves no host rule without a host test; the adapter rules (R2-R5, R49) have no code to protect once `runtime.rs` is gone and are M3's done-check; the code stays readable at `6efe835`; decision 13 |
 | A simulator checker passes without checking anything | each checker has a planted-bug test that must fail |
 | A seed does not reproduce | each seed runs twice with transcripts compared; wall-clock calls banned in `src/host` and `src/sim` |
 | The lander port drifts from the steward's behaviour | the steward's 47 unit tests and real-git cases are ported first and are the lander's done-checks; the TypeScript stays as reference until M6 |
@@ -594,7 +437,7 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
 | The dogfood server is down or loses its volume | hooks fail open in advisory mode (decision 10); claims reconcile on reconnect; a lost volume means a fresh state and new claims, never a snapshot restore |
 | The mutation check is slow or flaky | changed lines only, core crates only, sharded with a measured shard count, 30 minutes per shard; flakes are fixed, never retried |
 | The shared Mac is overloaded | heavy runs on CI only; at most two lanes; no local mutation or sweep runs |
-| Phase 1 runs past 12 weeks | re-plan at each milestone boundary; M3 and M4 carry the most and are re-sized first |
+| Phase 1 runs past 12 weeks | re-plan at each milestone boundary; M3 and M5 carry the most and are re-sized first; the phase is sized at 13 weeks since decision 15 |
 
 ## Decisions for Felix
 
@@ -603,16 +446,16 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
    on the quirks; the rules list, host tests and CLI suite check the move.
 2. **Dogfood server on Fly.io**, `shared-cpu-1x` 512 MB with a 1 GB volume, about $3.84 a month.
    The cheapest orderable option, with nothing to administer and builds off the Mac. Needs an
-   account and billing. Fallback: Hetzner CX23 when in stock.
+   account and billing. Fallback: Hetzner CX23 when in stock. Needed in M6 (decision 15).
 3. **Merge commits only on `main`**, set through the ruleset (`allowed_merge_methods: ["merge"]`)
-   in M5, before advisory mode starts (ruleset step 3). No code, no token; matching by pull
+   in M6, before advisory mode starts (ruleset step 5). No code, no token; matching by pull
    request number is Phase 3.
 4. **Advisory releases are `Merged` with a new optional `advisory` field**, counted in
    `advisory_releases` and never in `merges`. A new event kind would bump `PROTOCOL_VERSION`
    (invariant 13), and older daemons, which skip unknown kinds, would treat their log reads as
    incomplete and lose their reconnect repairs; with a field, they read the event as a release,
    which it is.
-5. **Required checks**: the five ruleset steps above, each Felix's edit.
+5. **Required checks**: the six ruleset steps above, each Felix's edit.
 6. **The dogfood gate before the deletion: five merged pull requests and one redeploy** while a
    submitted claim is held, that claim released by head sync afterwards, none released by hand.
    Five pull requests show merge commits from different lanes; the redeploy shows that a held
@@ -638,30 +481,44 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
 12. **The `Call` design is frozen** (`real-use.md`, Architecture, "Calls"), from the spike's
     answers. Merging this plan's pull request approves the freeze; after it, a change to `Call`
     needs Felix.
-13. **Delete the Cloudflare Rust glue at the start of M3, the TypeScript steward in M6.** This
-    moves part of the deletion earlier than the plan first promised (after the lander and
-    advisory mode). M3's staged landing changes the core API that `runtime.rs` calls
-    (`begin_merge`, `merge_outcome`, `recover_merge`, `has_merge_in_flight`, `next_wake_ms`,
+13. **Delete the Cloudflare Rust glue at the start of M3, the TypeScript steward in M6.** This moves
+    part of the deletion earlier than the plan first promised (after the lander and advisory mode).
+    M3's staged landing changes the core API that `runtime.rs` calls (`begin_merge`,
+    `merge_outcome`, `recover_merge`, `has_merge_in_flight`, `next_wake_ms`,
     `MergeOutcome::from_response`). Keeping `runtime.rs` compiling would mean mapping the staged
     `Prepare`, `Test` and `Land` onto the steward's one-call `/merge`, which is a compatibility
     shim, untested because `runtime.rs` has no tests. The Durable Object is no fallback either:
-    nothing is deployed (the instance was deleted on 17 October), and it could land nothing
-    without the steward on Cloudflare. After M2's done-check, every host rule of `runtime.rs` has a
-    host test; the adapter rules (R2-R5, R49) are written down with their named M4 tests and have
-    no code to protect until the adapter exists; and the code stays readable at `6efe835`.
-    What the later gate protects, the
-    lander's reference and its CI check, is the TypeScript steward, which stays until M6. This
-    matches `PLAN.md`'s decision 2 ("removed as soon as the portable host replaces it") and keeps
-    the phase order. It is reversible: P1-DROP-WORKER is one pull request that `git revert`
-    undoes, and nothing deployed needs restoring. If Felix declines, the staged landing waits for
-    the deletion in M6, after advisory mode, which pushes M3's merge-path work about four weeks
-    later.
+    nothing is deployed (the instance was deleted on 17 October), and it could land nothing without
+    the steward on Cloudflare. After M2's done-check, every host rule of `runtime.rs` has a host
+    test; the adapter rules (R2-R5, R49) are written down with their named adapter tests (M3 after
+    decision 15) and have no code to protect until the adapter exists; and the code stays readable
+    at `6efe835`. What the later gate protects, the lander's reference and its CI check, is the
+    TypeScript steward, which stays until M6. This matches `PLAN.md`'s decision 2 ("removed as soon
+    as the portable host replaces it") and keeps the phase order. It is reversible: P1-DROP-WORKER
+    is one pull request that `git revert` undoes, and nothing deployed needs restoring. If Felix
+    declines, the staged landing waits for the deletion in M6, after advisory mode, which pushes
+    M3's merge-path work about four weeks later.
 14. **The native test hosts are rebuilt earlier**: the CLI's in M2, as the wire-level check of
     the move, and the swarm's in M5. The proposal lists them with the deletion (Phase 1, item
     7). Like decision 13, this reorders items within Phase 1 and leaves `PLAN.md`'s scope and
     phase order as they are, so both are filed here as decisions rather than as proposed changes
     to `PLAN.md`; recommended for both, for the reasons given. It is reversible the same way.
     Decided by Felix on 20 October: as recommended.
+15. **Local first.** Felix asked on 20 October that the single-developer local setup take
+    priority. Within Phase 1, M3 becomes the local server (`tessel-server` on SQLite, identity,
+    the local test runner, the host's one `Prepare` call answered by prepare, tests and land in
+    process, the adapter rules, `tessel init` against it and a quickstart), M4 the dogfood of
+    this repository on that server, M5 the hardening the first order put in M3 and M4 (the
+    simulator, the staged landing, reconciliation, the host changes, the lander and runner as
+    separate processes), and M6 team mode (evidence notes, metrics, advisory mode, the hosted
+    server) and the deletion. The first local release lands through the single call the host
+    has today instead of the staged `Prepare`, `Test`, `Land`: for one developer landing into
+    their own repository that is the contest-era behaviour, with the host's cut-off recovery on
+    reload, and the staged landing follows in M5 before any shared server. What it costs: the
+    server ships before the simulator proves the invariants, and the phase is sized at about
+    13 weeks instead of 12. `PLAN.md`'s scope is unchanged; its phase row and dogfooding section
+    are reworded to say the local setup comes first. Decided by Felix on 20 October: as
+    proposed (the single-call merge for the first local release included).
 
 ## Proposed changes for Felix
 
@@ -677,9 +534,9 @@ These change `PLAN.md` scope or order, so they wait for Felix (rule 10):
   If Felix declines `resolve`, a `Land` stuck in doubt holds the queue for good: no submission
   of that repository lands again until the git host answers, and the only other way out is
   editing the database by hand.
-- **B. A deployment for the dogfood server in Phase 1**: a plain container build of the server
-  binary, and `deploy/dogfood/fly.toml` as that instance's own configuration, ahead of Phase 3's
-  signed image. It is not a release and is not signed.
+- **B. A deployment for the dogfood server in Phase 1 (M6 after decision 15)**: a plain container
+  build of the server binary, and `deploy/dogfood/fly.toml` as that instance's own configuration,
+  ahead of Phase 3's signed image. It is not a release and is not signed.
 - **C. I2's `Truncated` clause and I9's restore clause are checked when retention and backup
   arrive (Phase 3).** `PLAN.md` says "the simulator with invariants I1 to I12"; the rest of each
   is checked in Phase 1 (table above).
@@ -695,7 +552,7 @@ adapter test in `tessel-server` (M4), or dropped. P1-RULES checks and completes 
 
 | Rule | Lines | Statement | Lives in | Then |
 |---|---|---|---|---|
-| R1 | 128-131, 149-171 | Routes and token checks decide 404, 405 with `Allow`, 403, 401 with a fixed body | `shell::authorize`; status mapping in runtime | now until P1-DROP-WORKER deletes `authorize`, then adapter (M4) |
+| R1 | 128-131, 149-171 | Routes and token checks decide 404, 405 with `Allow`, 403, 401 with a fixed body | `shell::authorize`; status mapping in runtime | now until P1-DROP-WORKER deletes `authorize`, then adapter (M3) |
 | R2 | 136-139 | The Worker drops `Authorization` and sets the verified agent itself; a caller cannot choose it | runtime | adapter: a client-sent agent header is ignored |
 | R3 | 162-169 | A refusal is logged with its reason and path, never the token or key | runtime | adapter log test |
 | R4 | 208-219 | Summary and trunk-moved need the verified agent (401 otherwise) | runtime | adapter |
@@ -714,25 +571,25 @@ adapter test in `tessel-server` (M4), or dropped. P1-RULES checks and completes 
 | R17 | 403-409 | A state that cannot be serialised drops the core | runtime | host |
 | R18 | 410-431 | The soft limit refuses a client call with its `req` and drops the core; over the hard limit is an error that drops the core | `StoredSize::judge`; runtime | now, then host |
 | R19 | 434-446 | After a steward call, the core is reloaded before an answer is applied, because a client message handled during the call may have dropped it | runtime | host |
-| R20 | 448-463 | A wake runs expiry, merge recovery, verification recovery, one merge, one verification, the head read, then sets the wake; each step is its own write; the merge is awaited inside the wake, so the later steps run after its answer | runtime | host (quirk; one batch per wake in M3) |
+| R20 | 448-463 | A wake runs expiry, merge recovery, verification recovery, one merge, one verification, the head read, then sets the wake; each step is its own write; the merge is awaited inside the wake, so the later steps run after its answer | runtime | host (quirk; one batch per wake in M5) |
 | R21 | 469-486 | A trunk poke for a repo with no state answers 204 and stores nothing; otherwise it is counted, stored, and answered 202 | `shell::poke_reply`, core; runtime | now, then host and adapter |
 | R22 | 491-507 | A head read runs only when the core offers one; its answer is stored before anyone is told | core; runtime | host |
 | R23 | 511-533 | A failed, timed-out or headless head answer is `None`, and logged | `parse_head_response`; runtime | now, then host |
-| R24 | 537-551, 626-640 | A stored in-flight marker with no call waiting in this instance's memory is a cut-off and counts an attempt | `shell::merge_cut_off`, core | now, then host (reconciled instead from M3) |
+| R24 | 537-551, 626-640 | A stored in-flight marker with no call waiting in this instance's memory is a cut-off and counts an attempt | `shell::merge_cut_off`, core | now, then host (reconciled instead from M5) |
 | R25 | 555-595 | A verification runs only when no merge or verification waits here; its marker is stored before the call | runtime | host |
 | R26 | 599-621, 685-707 | A failed call, a timeout, a non-200 or an unknown answer is `ServiceUnavailable` | `from_response`; runtime | now, then host |
 | R27 | 644-683 | A merge runs only when none waits here; its marker is stored before the call; while it waits, the wake is the watchdog | runtime and core | host (COORD-WAKE-WHILE-VERIFYING) |
 | R28 | 723-743 | Due leases expire, in their own write, before a client message is handled; nothing is written when none is due | runtime | host |
 | R29 | 833-869 | A client call: load, expire, handle, persist, bind on `Welcome` after the persist, settle with the sender | runtime; `shell::bind_on_welcome` | host |
-| R30 | 816-831 | State and events are written in one transaction; on failure the core is dropped and nothing is sent | runtime and `store` | host (quirk; persist retry in M3) |
+| R30 | 816-831 | State and events are written in one transaction; on failure the core is dropped and nothing is sent | runtime and `store` | host (quirk; persist retry in M5) |
 | R31 | 871-884 | Settle delivers, then reschedules even if delivery failed; a failed wake write is logged, not returned; dead sockets are withdrawn after | runtime | host |
 | R32 | 899-947 | Only a failed send to the sender is an error; a failed send elsewhere closes that socket with 1011 and delivery goes on | `shell::plan_delivery`; runtime | now, then host |
 | R33 | 908-912 | Sessions are read only when the plan needs them | `shell::needs_sessions` | dropped: a cost of reading attachments |
 | R34 | 949-964 | An unreadable session closes its socket and counts as unbound | runtime | dropped: the host's socket table cannot fail to read |
 | R35 | 966-976 | The wake time comes from `alarm_at_ms`; none deletes the alarm | `shell::alarm_at_ms` | now, then host |
-| R36 | 978-1012 | Replay pages from `from_seq`, then marks the watcher; no other input runs until the replay ends | `shell::after_page`; input gate | now, then host (quirk; exact replay in M4) |
+| R36 | 978-1012 | Replay pages from `from_seq`, then marks the watcher; no other input runs until the replay ends | `shell::after_page`; input gate | now, then host (quirk; exact replay in M5) |
 | R37 | 1014-1042 | The summary is a plain read with an incremental tally; no core, event, wake or socket; `no-store`; 405 for any method but `GET` | `SummaryTally`; runtime | now, then adapter |
-| R38 | 87-91 | A head call waits 30 s and a steward call 13 minutes | runtime | host (deadlines sized for CI in M3) |
+| R38 | 87-91 | A head call waits 30 s and a steward call 13 minutes | runtime | host (deadlines sized for CI in M5) |
 | R39 | 227-229 | Hibernation keeps sockets, with sessions in their attachments | runtime | dropped: `tessel-server` does not hibernate |
 | R40 | 235-239, 264-273 | Accept, close and error lines carry the agent | `shell` log helpers | now, then adapter |
 | R41 | 277-280, 886-897 | A wake that fails returns its error, and Cloudflare runs the alarm again; the wake ends by setting the next one, with its error returned for that retry | runtime | host: a failed step leaves one future wake (C9, I4) |
