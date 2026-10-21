@@ -455,7 +455,7 @@ pub struct SubmitWork {
     pub transcript: Option<PathBuf>,
 }
 
-/// Hands one claim's finished work to the coordinator for the steward to merge. Everything that
+/// Hands one claim's finished work to the coordinator for the lander. Everything that
 /// can be checked here is checked before anything is sent: the evidence, the transcript, the
 /// claim, the commit and that the claim covers every file the commit changed.
 pub async fn submit(

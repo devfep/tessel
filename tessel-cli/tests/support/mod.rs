@@ -584,7 +584,7 @@ fn is_trial_call(request: &CallRequest) -> bool {
 /// the fake landed; a merge or a trial waits for `merge_next` or `verify_next`. The host does not
 /// issue any other call yet, so one that arrives fails the test instead of waiting unanswered.
 ///
-/// The head-read answer is fake-only. A real steward reads a trunk that anything can move; the
+/// The head-read answer is fake-only. A real lander reads a trunk that anything can move; the
 /// fake has no trunk and never pokes one, so the head it reports is the one `merge_next` last
 /// landed, or none. The host turns that answer into the trunk moves it announces, so no CLI test
 /// can see a trunk that moved by any means other than a landing the fake made.
@@ -724,8 +724,8 @@ impl Fake {
         st.host = Host::new(st.config.clone());
     }
 
-    /// Answers the merge the host has asked the steward for with a landing on main, as the
-    /// steward would, and so sends `Merged` to the submitter if it has a socket open. If no merge
+    /// Answers the merge the host has asked the lander for with a landing on main, as the
+    /// lander would, and so sends `Merged` to the submitter if it has a socket open. If no merge
     /// is out, a wake runs first; if none is queued, nothing happens.
     pub fn merge_next(&self) {
         let mut guard = lock(&self.inner.state);
@@ -745,7 +745,7 @@ impl Fake {
             .answer(st, &call, CallAnswer::Prepared { base, head });
     }
 
-    /// Answers the next verification (a race entry's trial) the host has asked the steward for,
+    /// Answers the next verification (a race entry's trial) the host has asked the lander for,
     /// with its tests passing or failing. Returns false when nothing was ready to run.
     pub fn verify_next(&self, passed: bool) -> bool {
         let mut guard = lock(&self.inner.state);

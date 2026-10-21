@@ -516,7 +516,7 @@ async fn a_coordinator_refusal_exits_six() -> Result<()> {
         "a1",
         ServerMsg::SubmitRejected {
             claim: ClaimId(claim_id(&a1)?),
-            reason: "steward says no".into(),
+            reason: "the lander says no".into(),
             reviewer: None,
             note: None,
         },

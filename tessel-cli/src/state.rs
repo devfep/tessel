@@ -157,7 +157,7 @@ pub enum NoticeKind {
     /// The daemon compared its claims with the coordinator's log after a reconnect and
     /// changed something.
     Reconciled,
-    /// The steward merged a submitted claim; the daemon dropped it.
+    /// The lander merged a submitted claim; the daemon dropped it.
     Merged,
     /// The merge of a submitted claim was refused; the claim is active again.
     SubmitRejected,

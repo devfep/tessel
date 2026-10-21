@@ -432,7 +432,7 @@ async fn stop_allows_when_the_stop_hook_is_already_active() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_blocks_once_with_where_things_stand_when_the_steward_is_slow() -> Result<()> {
+async fn stop_blocks_once_with_where_things_stand_when_the_landing_is_slow() -> Result<()> {
     let (fake, a1) = world().await?;
     let claim = submitted_claim(&a1)?;
     // A merge of someone else's claim, arriving while the hook waits, does not settle ours.
@@ -712,7 +712,7 @@ async fn stop_keeps_waiting_once_a_reviewed_submission_is_back_in_the_merge_queu
     awaiting(false).await?;
     assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
     let reason = blocked_reason(&run_stop(&a1, 700, &stop_event(false))?)?;
-    assert!(reason.contains("merge queue"), "{reason}");
+    assert!(reason.contains("server's lander"), "{reason}");
     Ok(())
 }
 
@@ -755,6 +755,6 @@ async fn an_approval_that_lands_while_offline_is_rebuilt_from_the_log_on_reconne
     eventually(SHORT, || Ok((flag()? == false).then_some(()))).await?;
     assert_eq!(a1.status()?["state"]["claims"][0]["submitted"], true);
     let reason = blocked_reason(&run_stop(&a1, 700, &stop_event(false))?)?;
-    assert!(reason.contains("merge queue"), "{reason}");
+    assert!(reason.contains("server's lander"), "{reason}");
     Ok(())
 }

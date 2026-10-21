@@ -74,7 +74,7 @@ async fn an_approval_is_confirmed_from_the_log_and_releases_the_submission() -> 
         reviews(&fake, "r1"),
         [(true, Some("reviewed the deletion".to_string()))]
     );
-    // Only an approved submission is in the merge queue for the steward to take.
+    // Only an approved submission is in the merge queue for the lander to take.
     fake.merge_next();
     eventually(SHORT, || {
         let inbox = a1.tessel(&["inbox", "--all"])?;

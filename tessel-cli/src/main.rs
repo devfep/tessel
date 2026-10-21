@@ -85,7 +85,7 @@ enum Command {
     },
     /// Release one claim, or all of them.
     Release { claim: Option<u64> },
-    /// Hand finished work to the steward to merge. Commit and push it to your fork first.
+    /// Hand finished work to the server's lander. Commit and push it to your fork's main first.
     Submit {
         /// The claim to submit; required when you hold several.
         #[arg(long)]
@@ -101,7 +101,7 @@ enum Command {
         #[arg(long)]
         commit: Option<String>,
         /// A session transcript to attach. It is redacted and stored on the local branch
-        /// tessel/transcript-<claim>; push that branch to your fork for the steward to copy it.
+        /// tessel/transcript-<claim>. Nothing copies it yet (P1-EVIDENCE).
         #[arg(long)]
         transcript: Option<PathBuf>,
     },
@@ -195,7 +195,7 @@ enum HookAction {
     Stop {
         #[arg(long)]
         root: Option<PathBuf>,
-        /// How long to wait for the steward before blocking once, in milliseconds. The
+        /// How long to wait for the landing before blocking once, in milliseconds. The
         /// installed hook timeout (150 s) must stay above it.
         #[arg(long, default_value_t = 120_000, hide = true)]
         wait_ms: u64,

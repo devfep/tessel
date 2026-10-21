@@ -17,7 +17,7 @@ pub struct ServerClaim {
     pub fence: Fence,
     pub scopes: Vec<ScopeClaim>,
     pub race: Option<RaceId>,
-    /// Submitted and not since rejected: the coordinator holds the claim for the steward.
+    /// Submitted and not since rejected: the coordinator holds the claim for the lander.
     pub submitted: bool,
     /// The fork commit of the submission while `submitted`.
     pub submitted_commit: Option<String>,
@@ -230,7 +230,7 @@ pub struct Plan {
     /// claims whose fence moved on. The log's scopes replace the local ones.
     pub rescope: Vec<(ClaimId, Vec<ScopeClaim>)>,
     /// Local claims whose submitted flag differs from the log: a submission whose reply was lost
-    /// (now true), or one the steward rejected (now false). Only a complete read decides this,
+    /// (now true), or one the lander rejected (now false). Only a complete read decides this,
     /// and never for a claim whose state changed since the new connection was welcomed.
     pub set_submitted: Vec<(ClaimId, bool, Option<String>)>,
     /// Local claims whose review flag differs from the log's, for any reason: an approval that

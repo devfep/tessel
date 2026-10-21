@@ -37,7 +37,7 @@ const PRE_EDIT: HookSpec = HookSpec {
     timeout: None,
 };
 
-/// Longer than the 120 s the stop hook waits for the steward.
+/// Longer than the 120 s the stop hook waits for the landing.
 const STOP_TIMEOUT_SECS: u64 = 150;
 
 const HOOKS: [HookSpec; 5] = [

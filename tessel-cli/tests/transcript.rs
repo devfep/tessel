@@ -125,10 +125,7 @@ fn sent_transcripts(fake: &Fake, agent: &str) -> Vec<Option<TranscriptRef>> {
 }
 
 fn push_line(claim: u64) -> String {
-    format!(
-        "push it with git push {REPO}--a1 tessel/transcript-{claim} so the steward can copy it \
-         after the merge"
-    )
+    format!("it stays in this repository, because no transcript copy exists yet (P1-EVIDENCE)")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
