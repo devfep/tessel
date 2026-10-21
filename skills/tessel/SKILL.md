@@ -162,8 +162,8 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
 - **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. The lander
   (the steward before it) fetches only the fork's default branch (`main`), so push to `main`
   whatever your local branch is called. At least one `--evidence` is required (repeatable):
-  without it the work would be held for review. Evidence is self-reported: any non-empty text satisfies the rule and nothing checks that
-  the tests ran, so write only what you ran and saw.
+  without it the work would be held for review. Evidence is self-reported: any non-empty text
+  satisfies the rule and nothing checks that the tests ran, so write only what you ran and saw.
 - **One claim must cover everything the commit changed.** The default is your only unsubmitted
   claim; else `--claim <id>`. `--commit` defaults to `HEAD`. The diff runs from the newest of the
   coordinator's head, your fork point and your start commit (`start` in `tessel status`; it moves
