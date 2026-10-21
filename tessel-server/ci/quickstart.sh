@@ -7,7 +7,7 @@
 # runner, and ends with the commit on the remote's main and the agent's inbox saying merged.
 #
 # Needs target/debug/{tessel-server,tessel} (cargo build -p tessel-server -p tessel-cli), git and
-# cargo on PATH, and port 7878 free (the page's listen address). Gives up after 10 minutes.
+# cargo on PATH, and port 7878 free (the page's listen address). Gives up after 5 minutes.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -21,14 +21,14 @@ fail() {
 	exit 1
 }
 
-# Ends the script after 10 minutes, whatever the walk is waiting for.
+# Ends the script after 5 minutes, whatever the walk is waiting for.
 watchdog() {
 	local parent=$1 napper
-	sleep 600 &
+	sleep 300 &
 	napper=$!
 	trap 'kill "$napper" 2>/dev/null; exit 0' TERM
 	wait "$napper" || exit 0
-	echo "quickstart: gave up after 10 minutes" >&2
+	echo "quickstart: gave up after 5 minutes" >&2
 	kill -TERM "$parent"
 	# bash runs the parent's TERM trap only once its foreground command returns.
 	pkill -TERM -P "$parent" 2>/dev/null || true

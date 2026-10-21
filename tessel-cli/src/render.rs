@@ -432,8 +432,8 @@ fn review_reasons_text(reasons: &[ReviewReason]) -> String {
 }
 
 /// What `tessel submit` prints once the coordinator has answered. `claim` is the submitted
-/// claim, `commit` its fork commit and `fork` the name of the fork the commit must be pushed to.
-pub fn submit_text(outcome: &SubmitOutcome, claim: ClaimId, commit: &str, fork: &str) -> String {
+/// claim and `commit` its fork commit.
+pub fn submit_text(outcome: &SubmitOutcome, claim: ClaimId, commit: &str) -> String {
     match outcome {
         SubmitOutcome::Accepted { queue_position: 0 } => format!(
             "accepted: claim {} ({commit}) is recorded for verification and is not queued to \
@@ -442,7 +442,7 @@ pub fn submit_text(outcome: &SubmitOutcome, claim: ClaimId, commit: &str, fork: 
         ),
         SubmitOutcome::Accepted { queue_position } => format!(
             "accepted: claim {} ({commit}) is in the merge queue at position {queue_position}.\n\
-             The server's lander fetches only `main` of your fork `{fork}`, so the commit must \
+             The server's lander fetches only `main` of your fork, so the commit must \
              already be pushed there. The runner runs the trunk's test command before it lands.\n\
              The outcome arrives in `tessel inbox` (merged, submit_rejected, uncovered or \
              review_required); `tessel status` shows the claim as submitted until then. A \

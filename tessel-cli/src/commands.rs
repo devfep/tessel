@@ -524,7 +524,7 @@ pub async fn submit(
     let Reply::Submit { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
     };
-    text.push_str(&submit_text(&outcome, claim, &fork_commit, &escape(&fork)));
+    text.push_str(&submit_text(&outcome, claim, &fork_commit));
     let code = match outcome {
         SubmitOutcome::Accepted { .. } => 0,
         SubmitOutcome::Uncovered { .. } => EXIT_UNCOVERED,
