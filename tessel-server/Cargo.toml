@@ -21,6 +21,8 @@ axum = { version = "=0.8.9", default-features = false, features = ["http1", "tok
 # One store file per repository, written in one transaction per commit. The system SQLite is not
 # assumed: `bundled` builds the one this code was tested with.
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
+# The command line: `serve` now, and the subcommands the identity task adds.
+clap = { version = "=4.6.7", features = ["derive"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 thiserror = "=2.0.21"

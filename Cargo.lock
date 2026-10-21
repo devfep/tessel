@@ -1815,6 +1815,7 @@ name = "tessel-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "clap",
  "futures-util",
  "proptest",
  "rusqlite",
