@@ -1,9 +1,13 @@
 # Local setup
 
 One developer, one `tessel-server` binary, a SQLite file per repository, your own git remote.
-Landing is not in this build. A held submission waits for a reviewer; after approval this build
-refuses the merge, the inbox shows `submit_rejected` ("the steward refused the request (fork
-missing or not a fork of this repo)") and the claim is active again, until P1-SERVER-LANDING.
+A repository that names a `remote` and a `fork` is landed by the server: it rebases a submitted
+commit onto main, runs the trunk's `tessel.toml` test command on the result, pushes main only if
+main has not moved, and reads main back before it tells the agent the commit merged. The keys are
+in [Landing](configuration.md#landing). A repository without a `remote` has no lander: the inbox
+shows `submit_rejected` ("this server has no lander configured; nothing can land until one is")
+and the claim is active again. A submission that touches a `sensitive` path waits for a reviewer
+first.
 Build with `cargo build -p tessel-server -p tessel-cli`; put `target/debug` on your `PATH`.
 
 ## The server
