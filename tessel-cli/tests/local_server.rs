@@ -63,8 +63,11 @@ impl World {
                 run: "local-server-test".to_string(),
                 reviewers: Vec::new(),
                 sensitive: Vec::new(),
+                remote: None,
+                fork: None,
             }],
             identity: Some(identity.clone()),
+            lander: None,
         };
         let deps = Deps {
             verifier: Some(verifier),

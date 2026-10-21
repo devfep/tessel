@@ -194,6 +194,7 @@ async fn start_over(
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         store_dir: dir.join("stores"),
         identity: None,
+        lander: None,
         repositories: repos
             .iter()
             .map(|(tenant, name)| RepositoryConfig {
@@ -202,6 +203,8 @@ async fn start_over(
                 run: "test".to_string(),
                 reviewers: Vec::new(),
                 sensitive: Vec::new(),
+                remote: None,
+                fork: None,
             })
             .collect(),
     };
@@ -270,12 +273,15 @@ async fn adapter_a_summary_read_without_a_valid_token_is_unauthorized() -> TestR
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         store_dir: bare.path().join("stores"),
         identity: None,
+        lander: None,
         repositories: vec![RepositoryConfig {
             tenant: "acme".to_string(),
             name: "demo".to_string(),
             run: "test".to_string(),
             reviewers: Vec::new(),
             sensitive: Vec::new(),
+            remote: None,
+            fork: None,
         }],
     };
     let unconfigured = server::start(

@@ -1626,6 +1626,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tessel-coordinator",
+ "tessel-lander",
+ "tessel-runner",
  "thiserror",
  "tokio",
  "tokio-tungstenite 0.30.0",

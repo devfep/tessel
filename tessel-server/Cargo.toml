@@ -16,6 +16,10 @@ path = "src/main.rs"
 [dependencies]
 # The host, the wire protocol and the shell.
 tessel-coordinator = { path = ".." }
+# The lander: the merge in two calls, the trial and the git commands. It runs git, never repo code.
+tessel-lander = { path = "../tessel-lander" }
+# The test runner, called as a library: the one place repo code runs for a landing.
+tessel-runner = { path = "../tessel-runner" }
 # The HTTP server and the WebSocket upgrade. Only what `/ws`, the summary and the poke need.
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
 # One store file per repository, written in one transaction per commit. The system SQLite is not

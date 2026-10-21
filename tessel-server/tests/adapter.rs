@@ -72,6 +72,7 @@ fn config(dir: &Path, repos: &[(&str, &str)]) -> Config {
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         store_dir: dir.join("stores"),
         identity: None,
+        lander: None,
         repositories: repos
             .iter()
             .map(|(tenant, name)| RepositoryConfig {
@@ -80,6 +81,8 @@ fn config(dir: &Path, repos: &[(&str, &str)]) -> Config {
                 run: "test".to_string(),
                 reviewers: Vec::new(),
                 sensitive: Vec::new(),
+                remote: None,
+                fork: None,
             })
             .collect(),
     }
