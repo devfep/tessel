@@ -144,8 +144,9 @@ pub fn config_from_vars(run: Option<&str>, shadow: Option<&str>) -> Result<Confi
     })
 }
 
-/// The `reviewers` setting: comma-separated agent ids, spaces around an id ignored; unset or blank means
-/// nobody may review. An empty entry or an id that is not a valid agent id is an error.
+/// The `reviewers` setting: comma-separated agent ids, spaces around an id ignored; unset or
+/// blank means nobody may review. An empty entry or an id that is not a valid agent id is an
+/// error.
 pub fn parse_reviewers(reviewers: Option<&str>) -> Result<Vec<AgentId>, LoadError> {
     let Some(list) = reviewers.filter(|list| !list.trim().is_empty()) else {
         return Ok(Vec::new());
