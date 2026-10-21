@@ -594,6 +594,30 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_message_of_exactly_the_limit_is_logged_whole_and_one_more_is_cut() {
+        let log = |length: usize| {
+            let Some(Output::Log { line }) =
+                rule_refusal_log("r", &rule_answer(&"x".repeat(length)))
+            else {
+                unreachable!("a rule refusal is logged");
+            };
+            line
+        };
+        let exact = log(REASON_OUTPUT_MAX_CHARS);
+        assert_eq!(exact.matches('x').count(), REASON_OUTPUT_MAX_CHARS);
+        assert!(
+            exact.ends_with('"'),
+            "nothing was cut, so no marker: {exact}"
+        );
+        let over = log(REASON_OUTPUT_MAX_CHARS + 1);
+        assert_eq!(over.matches('x').count(), REASON_OUTPUT_MAX_CHARS);
+        assert!(
+            over.ends_with("\"..."),
+            "one over is cut and marked: {over}"
+        );
+    }
+
+    #[test]
     fn only_a_head_answer_with_a_main_is_a_head() {
         let moved = CallAnswer::Head {
             main: Some(commit("m")),
