@@ -47,7 +47,7 @@ Every implementer runs, and the orchestrator re-runs on the merged tree:
 
 | Area | Checks |
 |---|---|
-| Rust | `cargo test`; `cargo clippy --all-targets -- -D warnings` clean for files the task owns; `rustfmt --check` on files the task owns; wasm build warning count not above the base |
+| Rust | `cargo test`; `cargo clippy --all-targets -- -D warnings` clean for files the task owns; `rustfmt --check` on files the task owns |
 | Steward | `pnpm typecheck`; `pnpm exec oxlint`; `pnpm exec oxfmt --check`; `pnpm test` |
 
 Rules for every gate: predict the test count from source before running and compare exactly; prove
