@@ -175,80 +175,16 @@ does not re-check the merged diff against the claim; the core still checks the s
 Files written to `--out`: `seed<N>-off.json`, `seed<N>-on.json`, `seed<N>-on-events.json` (the
 event log the numbers came from) and `seed<N>-ab.md`.
 
-### Live
-
-```
-export STEWARD_ADMIN_TOKEN=...   # the steward's admin token; never printed
-target/debug/tessel-swarm run --target live --seed 1 --tasks 10 --agents 6 \
-  --coordinator wss://tessel-coordinator-swarm.<account>.workers.dev \
-  --steward https://<steward host>
-```
-
-This creates a new scratch repository through the steward admin routes (`swarm-s<seed>-<time>`, or
-`--repo swarm-<name>`), pushes the starting commit, forks it once per agent, mints a write token
-per fork and an identity token per agent (the reviewer and an observer included), and runs `on`
-against the swarm coordinator. Scratch repositories stay in the namespace; there is no delete
-route.
-
-### A named demo repository for real agents
-
-```
-export STEWARD_ADMIN_TOKEN=...   # never printed
-target/debug/tessel-swarm demo-repo --repo swarm-demo --steward https://<steward host> \
-  --agents a1,a2
-```
-
-This creates the named repository `swarm-demo` (the same `swarm-<suffix>` rule as a run), pushes
-the demo's starting commit to its `main`, and with `--agents` forks it once per agent
-(`swarm-demo--a1`, `swarm-demo--a2`). It prints the repo name, the remotes and the commit id, and
-nothing else: no token. The same demo gives the same commit id every time, which also holds for
-the generated `LICENSE` (MIT, the root file's text) that makes the demo repository permissively
-licensed.
-
-The steward's create route returns a write token for the new trunk; the command uses it for the
-one push and drops it. It mints no fork tokens and no identities; those come from the steward's
-own routes, as for any agent. Artifacts reports an existing name as `ALREADY_EXISTS`, which the
-steward answers with HTTP 409; nothing is pushed because the push follows the create. If a later
-step fails (the push or a fork), the trunk already exists, so a re-run is refused at the create:
-use a new name. Repositories are never deleted: there is no delete route, so choose names you
-will keep.
-
-### The swarm coordinator
-
-The live swarm coordinator is a separate deployment of the same code, `tessel-coordinator-swarm`,
-whose only reviewer is the script (`REVIEWERS = "swarm-reviewer"`). The production coordinator's
-reviewer stays `felix`, so the script can approve work on the swarm deployment and nowhere else.
-The swarm Worker also serves only repos named `swarm-*` (its `ALLOWED_REPO_PREFIX` var; production
-leaves it unset and serves all). The signing key is shared, so without that a `tessel-dogfood`
-token would open a socket on the swarm Worker, and a merge there would land on the dogfood trunk
-through the shared steward. Any other repo gets a 403 before the token is looked at.
-`--target live` refuses the production host `tessel-coordinator.devfep.workers.dev` by name, and any
-host that is not `tessel-coordinator-swarm.*` or a local dev server.
-
-The `[env.swarm]` block of the root `wrangler.toml` defines it. Wrangler does not inherit bindings,
-vars, services, secrets or migrations into an environment, so the block repeats them. To deploy
-(not done by this crate):
-
-```
-npx wrangler secret put IDENTITY_SIGNING_KEY --env swarm   # the same value as production
-npx wrangler deploy --env swarm
-```
-
-The key is shared, so identity tokens from the steward's route verify on both deployments; a token
-names a repo and an agent, not a Worker. The swarm deployment keeps its own Durable Object
-storage, so swarm repos never mix with production ones.
-
 ## Safety
 
 - The harness only targets repositories named `swarm-<suffix>`. `tessel-dogfood` and `demo` are
-  refused by name, and every network function takes a `ScratchRepo` that only the guard can build.
-- Tokens are held in a type that does not print, sent as headers (git: `GIT_CONFIG_*` environment;
-  steward: `curl` configuration on stdin), and scrubbed from error text.
+  refused by name, and every function that reaches a coordinator takes a `ScratchRepo` that only
+  the guard can build.
+- Tokens are held in a type that does not print and are sent as a header.
 - Every temporary directory is removed when a run ends, and the local server closes its listener
   and sockets.
-- Dependencies are the workspace's own (tokio, tokio-tungstenite, serde, clap, anyhow, rustls) plus
-  `tempfile` for scratch directories. The steward is called with `curl` rather than adding an HTTP
-  client crate.
+- Dependencies are the workspace's own (tokio, tokio-tungstenite, serde, clap, anyhow) plus
+  `tempfile` for scratch directories.
 
 ## Reproducibility
 

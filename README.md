@@ -3,11 +3,12 @@
 Tessel is a transaction layer for many AI coding agents working in one git repository. Before an
 agent edits code, it claims what it will touch: a directory, a file, or one function. A claim that
 overlaps another agent's work is refused before anything is written, with the other agent's intent
-and the moves still open. Finished work goes to the agent's own fork and is submitted; a steward
+and the moves still open. Finished work goes to the agent's own fork and is submitted; the lander
 rebases it, checks that the claim covered every change, runs the tests, and only then pushes
 `main`. Work merges with no human unless a rule flags it, and a flagged change says why. Tessel's
-first implementation ran on Cloudflare. It is being rebuilt as a single server that works with
-GitHub and the team's own CI; [`PLAN.md`](PLAN.md) has the plan and its status.
+first implementation ran on Cloudflare; that host is deleted. It is being rebuilt as a single
+server that works with GitHub and the team's own CI; [`PLAN.md`](PLAN.md) has the plan and its
+status.
 
 It is for you if you run several coding agents (Claude Code, an MCP client, your own scripts) on
 one repository at the same time, and you want their work to land without overwriting or breaking
@@ -25,33 +26,32 @@ an assumption nobody wrote down. Each is found after the work is done.
 ## The parts
 
 ```
- each agent's worktree                        Cloudflare
- +---------------------------+  WebSocket   +---------------------------------------+
- | agent (Claude Code, an    |------------->| coordinator: Rust Worker, one Durable |
- | MCP client, a script)     |  claim,      | Object per repo: claims, leases,      |
- | `tessel` CLI + daemon     |  submit      | fences, wait queue, review holds,     |
- +-------------+-------------+              | event log                             |
-               |                            +-------------------+-------------------+
-               | git push to its own fork                       | merge, one at a time
-               v                                                v (service binding)
- +-----------------------------------------------------------------------------------+
- | steward: TypeScript Worker                                                        |
- |   Artifacts: the trunk <repo> and one fork <repo>--<agent> per agent              |
- |   container gate: rebase onto main, check coverage, run the tests, push main      |
- |   Queue: a push to the trunk's main tells the coordinator that main moved         |
- |   identity tokens for agents; dashboard and review page behind Cloudflare Access  |
- +-----------------------------------------------------------------------------------+
+ each agent's worktree                           the coordinator
+ +---------------------------+  WebSocket      +------------------------------------+
+ | agent (Claude Code, an    |---------------->| core: claims, leases, fences, wait |
+ | MCP client, a script)     |  claim, submit  | queue, review holds, event log     |
+ | `tessel` CLI + daemon     |                 | host: the step machine around it   |
+ +-------------+-------------+                 +-----------------+------------------+
+               |                                                 | merge, one at a time
+               | git push to its own fork                        v
+               v                                       +--------------------+
+        the agent's fork -----------------------------> | lander: rebase,    |
+                                                       | coverage, tests,   |
+                                                       | push main          |
+                                                       +--------------------+
 ```
 
-Only the steward writes `main`. [How Tessel works](docs/how-tessel-works.md) explains each part,
-follows one conflict end to end with real CLI output, and defines every term.
+Only the lander writes `main`. The core and the host are in `src/`, the lander in
+`tessel-lander/`, the CLI in `tessel-cli/`. `tessel-server`, the process that will serve the host,
+is M3's work in progress (P1-SERVER, P1-IDENTITY). [How Tessel works](docs/how-tessel-works.md)
+explains each part, follows one conflict end to end with real CLI output, and defines every term.
 
 ## How it works, in six steps
 
 1. **Set up.** `tessel init` writes the worktree's config with the agent's identity token and
    installs the Claude Code hooks and the git `pre-commit` and `pre-push` hooks.
 2. **Start.** `tessel start "<what this work is for>"` starts a daemon that connects to the
-   repository's coordinator, a Durable Object, and sends heartbeats.
+   repository's coordinator and sends heartbeats.
 3. **Claim.** Before an edit, the hook (or `tessel claim`) claims the smallest scope that covers
    the edit: a symbol such as a function in Rust or TypeScript, otherwise the file. The coordinator
    checks it against every other claim and the mode conflict table.
@@ -61,13 +61,13 @@ follows one conflict end to end with real CLI output, and defines every term.
 5. **Submit.** The agent commits, pushes to its fork, and runs `tessel submit --evidence "..."`.
    The coordinator checks the claim's fence (the number that proves the claim has not expired) and
    that the claim covers every change, then applies the review rules.
-6. **Merge.** The steward takes one submission at a time. In a container with no Internet, it
-   rebases onto `main`, checks coverage again per file, runs the repository's gate, and pushes
-   `main`. The claim is released and the next waiting agent is granted.
+6. **Merge.** The lander takes one submission at a time. It rebases onto `main`, checks coverage
+   again per file, runs the repository's gate, and pushes `main`. The claim is released and the
+   next waiting agent is granted.
 
 ## See it run
 
-No Cloudflare account needed. The swarm harness runs scripted agents twice on a small TypeScript
+No account needed. The swarm harness runs scripted agents twice on a small TypeScript
 repository: once with plain git and no coordination, once against the real coordinator core on
 127.0.0.1 with a local steward. You need Rust, git and Node 22.18 or newer.
 
@@ -81,10 +81,11 @@ contested function varies with timing, so your numbers can differ from run to ru
 
 ## Hosting today
 
-The coordinator and steward in this repository run on Cloudflare Workers, Durable Objects and
-Artifacts. Phase 1 of [`PLAN.md`](PLAN.md) replaces that host with `tessel-server`, which is not
-built yet. Nothing is deployed from this repository at the moment. To run the Cloudflare host
-yourself, see [Operate it](#operate-it).
+Nothing is deployed from this repository, and the Cloudflare Worker that used to host the
+coordinator is deleted. Phase 1 of [`PLAN.md`](PLAN.md) builds `tessel-server`. Its first tasks in
+M3 are P1-SERVER and P1-IDENTITY; until they merge there is no server to run. What runs today is
+the core and the portable host in `src/host/`, the lander in `tessel-lander/`, the CLI against a
+fake coordinator that drives the real host, and the swarm harness on 127.0.0.1.
 
 ## Evidence
 
@@ -119,20 +120,22 @@ Shipped:
 - Claims on directories, files and Rust or TypeScript symbols, in four modes, with intention locks.
 - Leases, fences, the wait queue, and the decision card with valid moves.
 - Assumptions, with a test of the assuming agent's work after the threatening change merges.
-- Review by exception, decided with `tessel review` or on the steward's review page.
+- Review by exception, decided with `tessel review`.
 - Races: a reviewer runs `tessel race open`, agents `tessel race join`, and `tessel race pick`
   chooses a `human_pick` winner; the coordinator tries each entry's tests and merges at most one.
-- The steward: Artifacts trunk and forks, the container gate, Queue-driven notices that `main`
-  moved, identity tokens, and a dashboard.
 - The CLI with Claude Code hooks, git hooks, and a local MCP server (`tessel mcp`). One
   `tessel init` sets up a worktree.
 - Every grant carries the trunk's head commit.
 - The git note at submit: `tessel submit` writes the four-line note (`intent`, `assumes`,
   `rejected`, `evidence`) on the commit before it sends the submission.
-- Merge records: after every merge the steward writes the claim, intent, decisions, review and gate
-  results to the Artifacts repository `<repo>--evidence`, and copies a verified transcript to
-  `<repo>--transcripts`. `tessel submit --transcript <file>` redacts a transcript and attaches it.
+- `tessel submit --transcript <file>` redacts a session transcript and attaches its hash.
 - Shadow verification and the swarm harness for A/B runs.
+
+Not running today:
+
+- The steward (`tessel-steward/`) and what it did on Cloudflare: Artifacts trunks and forks, the
+  container gate, merge records, identity tokens, the dashboard and the review page. It stays in
+  the tree as the reference for the lander until M6.
 
 Not shipped:
 
@@ -143,34 +146,20 @@ Not shipped:
   for systems other than Unix, and automatic hooks for agents other than Claude Code.
 - Verified evidence strings: `--evidence` is what the agent says it ran.
 
-## Operate it
+## Build it
 
-- [Coordinator reference](docs/reference/coordinator.md): authentication, tokens, a manual
-  WebSocket session, configuration, deploy and the gate.
-- [Configuration](docs/configuration.md): every setting of both Workers.
+- [Coordinator reference](docs/reference/coordinator.md): what is built, and the wire protocol.
+- [Configuration](docs/configuration.md): the host settings, the `tessel.toml` gate, the CLI.
 - [`skills/tessel/SKILL.md`](skills/tessel/SKILL.md): the workflow taught to agents.
 - Build the CLI with `cargo install --path tessel-cli`.
-- [The `tessel.toml` gate](docs/reference/coordinator.md#dogfooding-gate): who may change a
-  repository's gate and how to recover from a broken one.
 
-Run the tests from a fresh clone. You need Rust stable (`rustup`) with the
-`wasm32-unknown-unknown` target, Node 22.18 or newer, pnpm and `wrangler`.
+Run the tests from a fresh clone. You need Rust stable (`rustup`), and Node 22.18 or newer with
+pnpm for the steward's tests.
 
     git clone https://github.com/devfep/tessel.git && cd tessel
-    cargo test --workspace          # protocol, coordinator, CLI and swarm harness
+    cargo test --workspace          # protocol, coordinator, lander, CLI and swarm harness
     cargo build -p tessel-cli       # the tessel CLI at target/debug/tessel
     (cd tessel-steward && pnpm install --frozen-lockfile && pnpm test)
-
-Running the coordinator locally is in the
-[coordinator reference](docs/reference/coordinator.md#run-locally). Deploying the steward needs an
-account with Artifacts enabled.
-
-Keep `STEWARD_ADMIN_TOKEN` with the human operator. Mint each agent's identity token, fork and
-fork write token from your own shell, and give each agent only its own identity token (as
-`TESSEL_TOKEN`, or in its `.tessel/config.toml`). An agent that holds the admin token can mint a
-reviewer identity and approve its own held change. `tessel init --steward <url>` mints the token
-for you when `STEWARD_ADMIN_TOKEN` is set for that one command; run it yourself in the agent's
-worktree, then start the agent without the variable.
 
 ## License
 
