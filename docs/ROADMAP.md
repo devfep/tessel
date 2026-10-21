@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-21 18:55 EDT. Main at `9b2533f` (#83 and #84 merged; CI green at 1887 tests; the
+**As of:** 2026-10-21 20:50 EDT. Main at `9b2533f` (#83 and #84 merged; CI green at 1887 tests; the
 orchestrator's gate on `9b2533f` is green on six steps and red twice on the test step, each time one
 restart test of `tessel-server/tests/adapter.rs` refused by its own store lock right after a stop,
 green five times alone: SERVER-RESTART-TEST-FORK-RACE, in flight). M3 is eight tasks in and one from
@@ -15,17 +15,18 @@ its done-check: `tessel-server` lands a submitted commit on a path remote throug
 runner, by compare-and-swap after the trunk's test command ran on it, and a CI job proves it end to
 end; a kill -9 mid-merge is recovered on restart. Left: the quickstart followed on CI from a clean
 checkout to a landed commit, and the CLI's and skills' steward-as-merger lines.
-**In flight (dispatched 21 October 18:40 from `9b2533f`):** lane A, P1-LOCAL-SETUP's second
-half, worktree `.claude/worktrees/task-p1-local-setup-2`, branch `task-p1-local-setup-2`.
-**In flight (dispatched 21 October 18:50 from `9b2533f`):** lane B,
-SERVER-RESTART-TEST-FORK-RACE, worktree `.claude/worktrees/task-server-lock-fork-race`, branch
-`task-server-lock-fork-race`.
+**Waiting on Felix:** #86 (SERVER-RESTART-TEST-FORK-RACE at `d738979`, three commits, 1888
+tests, CI green, the reviewer's "Yes": the cause confirmed by a test red at `9b2533f`) and #87
+(P1-LOCAL-SETUP's second half at `c0467f4`, nine commits, 1887 tests, CI green with the new
+quickstart job, the reviewer's "Yes" after a hand walk of the page that landed a commit); both
+worktrees stay until they merge. #85 (this STATE).
 **Decided by the orchestrator (21 October), unopposed:** SERVER-NOLANDER-MESSAGE landed under
 design A (fixed refusal kinds, the host's text kept to the server log) in #84.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** M3's done-check on P1-LOCAL-SETUP's merge (no rules-list row "after move": true at
+**Next:** M3's done-check on the merges of #86 and #87, with a fully green gate on main (no
+rules-list row "after move": true at
 `9b2533f`; the end-to-end landing on CI: #84's job; `tessel review` through the server: #80 and
 the quickstart; the kill -9 loop: #84's restart test), then the M4 re-plan (dogfood on this
 repository: the GitHub fork adapter, SERVER-FORK-CASE, ruleset step 4 before its first landing).
@@ -422,7 +423,11 @@ claims reconciled.
   `RequiredCheck`, `ForkMissing`, `Other`); the agent sees one fixed reason per kind (rule 3, the
   fixed-form test extended); the host's message goes bounded and quoted to the server log only;
   `NoLander`'s reason names the missing lander, with an adapter test.
-- [ ] **SERVER-RESTART-TEST-FORK-RACE** — lane B; dispatched 21 October 18:50 from `9b2533f`.
+- [ ] **SERVER-RESTART-TEST-FORK-RACE** — lane B; #86 at `d738979`, reviewed "Yes", waiting for
+  Felix: the store lock is a POSIX record lock (`fcntl`, per process, not inherited by a fork
+  child) with a process-wide registry so a second open in one process is still refused, the
+  file opened once and closed before leaving the registry; a reproducing test with a `pre_exec`
+  sleep, red at `9b2533f`; all-threads stress 5 of 5 against 4 of 5 before.
   From the orchestrator's gate on `9b2533f`: `tessel-server/tests/adapter.rs`
   `a_restart_over_the_same_directory_keeps_the_claims` and then
   `a_second_server_on_the_same_directory_is_refused_at_start` each failed once, reopening the
@@ -434,6 +439,10 @@ claims reconciled.
   run in a binary that spawns no children, or the spawn and the reopen are serialised, with the
   reason written where the lock is taken; preferred: a per-process `fcntl` record lock that a
   fork child does not inherit, with a reproducing test.
+- [ ] **CLI-WORKTREE-LOCK-FORK-RACE** — with the next CLI task. From the #86 review: the CLI
+  daemon's worktree lock (`tessel-cli/src/daemon.rs`, `flock`) has the same fork-window
+  exposure, and the daemon spawns git and hooks. Done: the same record lock, or a written reason
+  the daemon cannot race itself, with a test.
 - [ ] **SERVER-FRAME-LIMIT-TESTS** — M5 hardening, with the next server task. From the P1-SERVER
   review: a frame over 64 KiB is refused by the host with a fixed `Malformed` error before parsing
   (`src/shell.rs`) and the socket stays open; one over 256 KiB fails inside axum and the socket
@@ -510,7 +519,13 @@ claims reconciled.
 - [ ] **SERVER-KILL-AFTER-PUSH-TEST** — M5 hardening, with the next server task. From the same
   review: `restart.rs` kills the server during the runner's command; a kill between the push
   and the answer is untested (it should end as already merged, counted once). Done: that test.
-- [ ] **P1-LOCAL-SETUP** — lane A; second half dispatched 21 October 18:40 from `9b2533f`.
+- [ ] **P1-LOCAL-SETUP** — lane A; second half in #87 at `c0467f4`, reviewed "Yes", waiting for
+  Felix: `docs/local-setup.md` (86 lines) walks to a commit landed on the developer's remote, the
+  CI job "Slow lane, quickstart" runs the page's own fenced blocks from a clean checkout (5 s
+  after the build, a drift in the page fails it), the CLI's text says the server's lander lands
+  after the runner ran the gate and names no fork, the transcript is prepared for the evidence
+  record and nothing copies it yet, and the skills, README, configuration, how-tessel-works and
+  coordinator docs say the same.
   First half merged (`af595c5`, #80): `tessel init` against a
   local server (`--steward`, the `curl` transport and `STEWARD_ADMIN_TOKEN` deleted; the token
   comes from the file or `TESSEL_TOKEN`, and the no-token error names the `tessel-server admin
