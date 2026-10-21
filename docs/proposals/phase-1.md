@@ -661,6 +661,7 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
     7). Like decision 13, this reorders items within Phase 1 and leaves `PLAN.md`'s scope and
     phase order as they are, so both are filed here as decisions rather than as proposed changes
     to `PLAN.md`; recommended for both, for the reasons given. It is reversible the same way.
+    Decided by Felix on 20 October: as recommended.
 
 ## Proposed changes for Felix
 
