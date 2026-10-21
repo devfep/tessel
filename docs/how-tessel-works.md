@@ -247,7 +247,7 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 | **Evidence** | The `--evidence` lines on a submit. Any non-empty line satisfies the rule. The coordinator does not check it: it is what the agent says it ran. |
 | **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the tests have passed in CI. It never runs repo code. Until M6 the TypeScript steward is the reference it was ported from. |
 | **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, `<repo>--<agent>`, on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from there. |
-| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). Without one, the steward's gate runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
+| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). Until P1-SERVER-LANDING wires the lander in, nothing runs the gate here; the steward's gate, without one, runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
 
 ### Which modes conflict
 

@@ -5,15 +5,15 @@
 //! once it is answered: the wake issues its call and suspends, and resumes on `Replied` or
 //! `CallLost`.
 //!
-//! Only one wake runs at a time, so nothing wakes during an awaited call but the watchdog. A
-//! `Wake` that arrives while a call is out therefore sets the watchdog and does nothing else: it
-//! expires no lease (R28 does, on a client message) and asks the core for no wake, which would be
-//! now while a head read or an overdue lease is due. What the deleted runtime set while it
-//! waited: for a merge, the wake of the marker's batch with the merge
-//! counted (the earlier of the next lease expiry and the watchdog); for a verification, the same
-//! with the verification counted and the head read; for a head read, whatever the step before
-//! it set. None of them fires before the call ends. The host sets the watchdog in all three
-//! cases, so that one wake is always pending, and the resumed wake sets the next one as usual.
+//! The server's timer can fire while a call is out, since every committed batch resets the wake.
+//! A `Wake` that arrives then sets the watchdog and does nothing else: it expires no lease (R28
+//! does, on a client message) and asks the core for no wake, which would be now while a head read
+//! or an overdue lease is due. What the deleted Cloudflare runtime set while it waited: for a
+//! merge, the wake of the marker's batch with the merge counted (the earlier of the next lease
+//! expiry and the watchdog); for a verification, the same with the verification counted and the
+//! head read; for a head read, whatever the step before it set. On Cloudflare none of them fired
+//! before the call ended. The host sets the watchdog in all three cases, so that one wake is
+//! always pending, and the resumed wake sets the next one as usual.
 
 use crate::host::calls;
 use crate::host::core_slot::{ApplyError, Prepared, Waits};

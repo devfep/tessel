@@ -69,7 +69,7 @@ explains each part, follows one conflict end to end with real CLI output, and de
    and the next waiting agent is granted.
 
 `tessel-server` runs steps 1 to 5 today. Step 6 is not wired into it: the server has no lander yet
-(P1-SERVER-LANDING), so an approved submission is refused and the claim is active again. The swarm
+(P1-SERVER-LANDING), so a submission that reaches the merge is refused and the claim is active again. The swarm
 harness below runs step 6 with a local stand-in.
 
 ## See it run

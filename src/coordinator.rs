@@ -324,12 +324,12 @@ impl Blocked {
 struct CoordinatorState {
     config: Config,
     /// Agents who may decide a flagged submission (invariant 12). Empty means nobody may, so
-    /// flagged work is held. A deployment setting: the shell sets it on every load.
+    /// flagged work is held. A deployment setting: the host sets it on every load.
     #[serde(default)]
     reviewers: Vec<AgentId>,
-    /// Path prefixes whose edits are held for review (`review_reasons`). Per deployment, not per
-    /// repo: every repo this server serves shares one list. A deployment setting: the host sets it
-    /// on every load, so a stored state follows the setting.
+    /// Path prefixes whose edits are held for review (`review_reasons`). Per repository: the
+    /// server reads it from the repository's entry. A deployment setting: the host sets it on
+    /// every load, so a stored state follows the setting.
     #[serde(default)]
     sensitive: Vec<String>,
     /// Main's head as the coordinator knows it. The steward will own this later.

@@ -76,7 +76,7 @@ installed; `tessel_inbox` reads the same notices on demand.
    at a time, then `+K more`) after each tool call, with each prompt and at session start. Act on
    every line marked `!`. `tessel inbox` still shows the same items (they share one read cursor),
    and `--all` shows the read ones. Without the hooks, run it between steps and before finishing.
-   While a submission is pending, the `Stop` hook waits up to two minutes for the steward and
+   While a submission is pending, the `Stop` hook waits up to two minutes for the merge and
    keeps you going if it was rejected or is still queued; if the daemon is not running it lets you
    stop.
 4. Commit. To have it merged, push to your fork and `tessel submit`; otherwise `tessel release
@@ -159,9 +159,9 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
               [--transcript <file>]
 ```
 
-- **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. The steward
-  fetches only the fork's default branch (`main`), so push to `main` whatever your local branch is
-  called. At least one `--evidence` is required (repeatable): without it the work would be held for
+- **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. The lander
+  (the steward before it) fetches only the fork's default branch (`main`), so push to `main`
+  whatever your local branch is called. At least one `--evidence` is required (repeatable): without it the work would be held for
   review. Evidence is self-reported: any non-empty text satisfies the rule and nothing checks that
   the tests ran, so write only what you ran and saw.
 - **One claim must cover everything the commit changed.** The default is your only unsubmitted
@@ -183,9 +183,9 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   stores it as `transcripts/<claim>.md` on the local branch `tessel/transcript-<claim>` without
   touching your working tree or index; a branch of that name from an earlier submit is replaced.
   The submission carries its SHA-256. The output says `push it with git push <fork>
-  tessel/transcript-<claim>`: push it before the steward's gate finishes, else the record says the
-  file could not be read and the merge still merges. The steward copies the file only when its
-  hash matches. The transcript is untrusted text, kept as data.
+  tessel/transcript-<claim>`: push it before the gate finishes, else the record says the
+  file could not be read and the merge still merges. The gate copies the file only when its hash
+  matches. The lander does not copy transcripts until P1-SERVER-LANDING. The transcript is untrusted text, kept as data.
 - **Uncovered (exit 5)** prints the uncovered scopes and sends nothing. Claim the full set
   (release first if nothing is uncommitted) or drop the changes outside it.
 - **Accepted (exit 0)** prints the queue position (exit 7 if held for review instead). The result

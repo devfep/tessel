@@ -409,8 +409,8 @@ What a held mode covers when submitting (`protocol.rs:196-210`): every mode cove
 | `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork. |
 | `--transcript <file>` | none | A session transcript. Redacted, at most 4 MiB, stored on the local branch `tessel/transcript-<claim>`; push that branch to your fork (`tessel-cli/src/transcript.rs`). |
 
-Push first: `git push <your fork> HEAD:main`. The steward fetches only the fork's default branch
-and needs the commit reachable from it (`tessel-steward/src/merge-commands.ts:55-62`,
+Push first: `git push <your fork> HEAD:main`. The lander (nothing lands until P1-SERVER-LANDING;
+the steward before it) fetches only the fork's default branch and needs the commit reachable from it (`tessel-steward/src/merge-commands.ts:55-62`,
 `merge-steps.ts:96-110,234`). The fork is `<repo>--<agent>` (`src/merge.rs:85`).
 
 ### `tessel review <claim> --approve | --reject [--note "<reason>"]`

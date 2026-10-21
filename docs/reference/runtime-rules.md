@@ -1,7 +1,7 @@
 # Rules of `src/runtime.rs`
 
 Every rule the Cloudflare Worker and Durable Object glue (`src/runtime.rs`, at base `6efe835`)
-enforced, with where its decision lives now and how it is pinned. P1-DROP-WORKER deleted that file
+enforced, with where its decision lived at the base and how it is pinned now. P1-DROP-WORKER deleted that file
 after the rules moved into the portable host and `tessel-server`; the move was checked against this
 table so none was lost. `scripts/ci/check-named-tests.sh` reads it on every pull request.
 

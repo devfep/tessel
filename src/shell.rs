@@ -144,7 +144,7 @@ pub fn config_from_vars(run: Option<&str>, shadow: Option<&str>) -> Result<Confi
     })
 }
 
-/// `REVIEWERS`: comma-separated agent ids, spaces around an id ignored; unset or blank means
+/// The `reviewers` setting: comma-separated agent ids, spaces around an id ignored; unset or blank means
 /// nobody may review. An empty entry or an id that is not a valid agent id is an error.
 pub fn parse_reviewers(reviewers: Option<&str>) -> Result<Vec<AgentId>, LoadError> {
     let Some(list) = reviewers.filter(|list| !list.trim().is_empty()) else {
@@ -161,7 +161,7 @@ pub fn parse_reviewers(reviewers: Option<&str>) -> Result<Vec<AgentId>, LoadErro
     Ok(parsed)
 }
 
-/// The reviewers for a repo, failing closed: a bad `REVIEWERS` value is reported (the report never
+/// The reviewers for a repo, failing closed: a bad `reviewers` value is reported (the report never
 /// carries the value) and means nobody may review, so flagged work stays held (invariant 12). It
 /// must not stop the host from loading, which would stop the repo's leases and merges.
 pub fn reviewers_or_none(reviewers: Option<&str>, report: impl FnOnce(&LoadError)) -> Vec<AgentId> {
@@ -194,7 +194,7 @@ pub fn parse_sensitive(sensitive: Option<&str>) -> Result<Vec<String>, LoadError
     Ok(parsed)
 }
 
-/// The sensitive prefixes for a deployment, failing closed: a bad `SENSITIVE` value is reported
+/// The sensitive prefixes for a deployment, failing closed: a bad `sensitive` value is reported
 /// (the report never carries the value) and holds every real submission, by using the empty prefix,
 /// which matches every path. It must not stop the host from loading.
 pub fn sensitive_or_all(sensitive: Option<&str>, report: impl FnOnce(&LoadError)) -> Vec<String> {
