@@ -173,15 +173,36 @@ async fn the_cli_inits_starts_claims_and_releases_against_a_server_with_identity
     })
     .await
     .context("the server's event log never held the grant and the release")?;
-    assert!(seen > 0);
+    assert!(
+        seen >= 2,
+        "the log holds at least the grant and the release"
+    );
 
     let outputs = [init.all(), started.all(), claimed.all(), released.all()].concat();
     assert!(!outputs.contains(&token), "a command printed the token");
+    let scanned = files_under(&agent.root())?;
+    assert!(scanned.contains(&config), "config.toml was not scanned");
+    assert!(
+        scanned.contains(&agent.root().join(".tessel/daemon.log")),
+        "daemon.log was not scanned"
+    );
     let holders = files_holding(&agent.root(), &token)?;
     assert_eq!(
         holders,
         [config],
         "the token is in files other than the config"
+    );
+    let stores = world.dir.path().join("stores");
+    let store_files = files_under(&stores)?;
+    assert!(
+        store_files
+            .iter()
+            .any(|file| file.extension().is_some_and(|ext| ext == "sqlite")),
+        "the SQLite file was not scanned: {store_files:?}"
+    );
+    assert!(
+        files_holding(&stores, &token)?.is_empty(),
+        "the token is in the server's store directory"
     );
     world.server.stop().await;
     Ok(())
