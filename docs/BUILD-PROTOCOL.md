@@ -50,11 +50,13 @@ request flow at its end applies.
   runner runs the trunk's `tessel.toml` test command on the rebased commit and the lander pushes
   `main` by compare-and-swap; the lane's inbox says merged and the orchestrator closes the box
   with the landed sha from `git log origin/main`.
-- A submission that touches a `sensitive` path (`src/protocol.rs`, `src/host/`, `.github/`,
-  `docs/BUILD-PROTOCOL.md`), or that changes a signature, deletes or renames, is held. The
-  orchestrator decides it as agent `orchestrator` with `tessel review <id> --approve|--reject
-  --note "<reason>"`, only after the reviewer's `Yes` on that exact commit, read from the lane's
-  fork in the reviewer's own clone. A rejection goes back to the lane as a fix pass.
+- A submission the coordinator holds for review (a `sensitive` path: `src/protocol.rs`,
+  `src/host/`, `.github/`, `docs/BUILD-PROTOCOL.md`; a signature change, a deletion or a rename;
+  a threatened assumption; missing evidence: `docs/configuration.md`, "What holds a submission
+  for review") is decided by the orchestrator as agent `orchestrator` with `tessel review <id>
+  --approve|--reject --note "<reason>"`, only after the reviewer's `Yes` on that exact commit,
+  read from the lane's fork in the reviewer's own clone. A rejection goes back to the lane as a
+  fix pass.
 - The orchestrator's own commits (STATE, roadmap rows, briefs' decisions) land the same way, as
   agent `orchestrator` from its fork, so every commit on `main` carries its note.
 - The worktree has one user at a time. The orchestrator hands it from reviewer to implementer only
@@ -73,8 +75,10 @@ orchestrator's gate runs on `main`. A pull request carries exactly the commit th
 
 Every implementer runs this before it reports. At the landing the runner runs the trunk's
 `tessel.toml` test command on the rebased commit (`cargo test --workspace --locked --offline
---no-fail-fast`), and CI on `main` runs the rest after the push; a red CI on `main` is the next
-dispatch, before any other. Until the first landing the orchestrator re-runs it on the merged tree.
+--no-fail-fast`), and CI on `main` runs fmt, clippy and the named-tests check after the push; a
+red CI on `main` is the next dispatch, before any other. `actionlint` and `zizmor` run only in the
+lanes' gates until CI-ACTIONLINT-ZIZMOR adds them to CI. Until the first landing the orchestrator
+re-runs the whole gate on the merged tree.
 
 | Area | Checks |
 |---|---|
