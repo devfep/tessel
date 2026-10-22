@@ -423,9 +423,9 @@ async fn a_name_that_is_not_lowercase_reaches_no_fork_named_by_a_url_template() 
 
 fn forged_token(keys_dir: &Path, agent: &str) -> Result<String, Box<dyn std::error::Error>> {
     let exp_ms = identity::now_ms() + 3_600_000;
-    let json = format!(
-        r#"{{"v":1,"kid":"k1","aud":"landing-test","tenant":"acme","repo":"demo","agent":"{agent}","role":"agent","exp_ms":{exp_ms}}}"#
-    );
+    let head = r#"{"v":1,"kid":"k1","aud":"landing-test","tenant":"acme","repo":"demo","#;
+    let json =
+        head.to_string() + &format!(r#""agent":"{agent}","role":"agent","exp_ms":{exp_ms}}}"#);
     let key = keys::load_signing_key(keys_dir, "k1")?;
     let payload = BASE64URL_NOPAD.encode(json.as_bytes());
     let signature = key.sign(payload.as_bytes());
