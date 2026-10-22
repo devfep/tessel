@@ -126,9 +126,6 @@ pnpm = ["tessel-steward"]
 [[test]]
 argv = ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast"]
 
-[[test]]
-dir = "tessel-steward"
-argv = ["pnpm", "test"]
 ```
 
 ## Host settings
