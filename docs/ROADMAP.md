@@ -7,36 +7,30 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-22 09:40 EDT. Main at `0aaf11a` (#88 merged; the orchestrator's gate on
-`725834c` is green on all seven steps, 1888 tests; main's CI green). M3 is done (its done-check is
-recorded under "### M3"). M4's first two tasks are reviewed "Yes" and wait for Felix, in the order
-#92 then #91.
-**Reviewed "Yes" (lane B, M4-GITHUB-REMOTE):** #92 at `17d9607` (worktree
-`.claude/worktrees/task-m4-github-remote`), 1888 to 1923 tests, CI green. `[lander] token_file`
-(0600, checked at start and before every call, no line break inside), the server binary as git's
-askpass hook answering only a prompt whose host equals the configured `remote` or `fork` host (the
-first substring check handed a token to `github.com.evil.com` in the reviewer's probe; fixed),
-`{agent}` refused in a URL fork's host, the head read at server start for a repository with no
-head. The sandbox landing was not done (no token placed): by hand after the merge.
-**Reviewed "Yes" (lane A, M4-DOGFOOD-SETUP):** #91 at `d41bd44` (worktree
-`.claude/worktrees/task-m4-dogfood-setup`), 1888 one-for-one, CI green; the reviewer walked the
-page (script, server start, a held submission kept over a restart, rejection by `orchestrator`).
-It names #92's `token_file`, so it merges after #92, once the lane has merged `main` and re-walked
-the page on its own config. Measured: a cold `cargo test --workspace --locked --offline
---no-fail-fast` took 237 s at load 9 rising to 75 (D3 does not block landings; `timeout_secs`
-720).
-**Waiting on Felix:** #92, then #91 (after its re-walk); #89 (this STATE) and #90 (the protocol
-rewrite); D1-D4 and ruleset step 4 before the first landing; a token for the sandbox landing
-(contents write on two new private repositories in `tessel-sandbox`, `m4-trunk` and
-`m4-fork-lane-b`, saved 0600 at the path in lane B's brief) or the word to land by hand after #92
-merges.
+**As of:** 2026-10-22 13:30 EDT. Main at `86c93ca` (#90, #91, #92 and #89 merged in that order;
+the orchestrator's gate on `86c93ca` is green on all seven steps, 1923 tests; main's CI green). M4
+is three tasks in: the server lands over HTTPS with a token file read through its own askpass hook
+(#92), `docs/dogfood.md` and its script set the dogfood server up (#91; walked once more on
+`main`'s own config by the orchestrator), and the build protocol's section 2 describes landings
+through the server (#90), in force from the first landing this STATE records. Two more are
+reviewed "Yes" and wait for Felix: CI-ACTIONLINT-ZIZMOR (#94 at `95244fa`: a fast-lane job runs
+`actionlint` and `zizmor` on every pull request and push to `main`; its first run passed) and
+SERVER-FORK-CASE (#95 at `fe2d129`, 1928 tests: the server accepts only lowercase agent names at
+the verifier, `admin token`, `reviewers` and the fork template). Nothing is dispatched.
+**Waiting on Felix:** #94 and #95; the "main: CI required" ruleset to list "Fast lane, workflow
+lint" once #94 merges (a red workflow lint does not block a pull request until it does); the
+GitHub steps of `docs/dogfood.md` (the fine-grained token saved 0600, the three private fork
+repositories, ruleset step 4) and a word on D1-D4 (the page states them as proposals; merging it
+is not that word); for the sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with
+contents write on two new private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`),
+saved 0600 anywhere he names, or the word to skip it since the dogfood landing proves the same
+path; this STATE.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** on #92's merge: the orchestrator's gate on `main`, the sandbox landing by hand, lane A
-merges `main` and re-walks the page, #91 merges; then the GitHub steps of `docs/dogfood.md`
-(Felix), CI-ACTIONLINT-ZIZMOR, and the first landing of this repository (M4-FIRST-LANDINGS) after
-step 4 and D1-D4.
+**Next:** on the merges of #94 and #95: the orchestrator's gate on `main`, the boxes closed,
+worktrees reclaimed; then, on Felix's GitHub steps, the orchestrator starts the server from the
+page and M4-FIRST-LANDINGS begins.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -522,17 +516,23 @@ claims reconciled.
   restart that lands the claim once, and the end-to-end landing job on CI (75 s). 1837 to 1887
   tests; the review's mutants each red, the one CI missed pinned by a boundary test. Left for rows
   below: case-folded fork names, the unused `trunk-moved` route, a kill after the push.
-- [ ] **SERVER-FORK-CASE** — M4, with the GitHub fork adapter. From the P1-SERVER-LANDING
-  review: on a case-insensitive filesystem two agent names differing only by case share one
-  fork (on this Mac a call as `A1` landed through `a1`'s fork), and GitHub logins fold case the
-  same way, so URL forks collide too. `docs/configuration.md` says to mint tokens for lowercase
-  names. Done: a name whose case-folded form equals another live agent's is refused at the
-  verifier or the fork template, with a test on both a path and a URL fork.
+- [ ] **SERVER-FORK-CASE** — lane B; #95 at `fe2d129`, reviewed "Yes", waiting for Felix. As
+  built: the server accepts only lowercase agent names (the verifier, `admin token`, `reviewers`
+  and the fork template each refuse any other; the protocol's rule is unchanged); a store that
+  already holds claims for an uppercase agent keeps them until they expire. From the
+  P1-SERVER-LANDING review: on a case-insensitive filesystem two agent names differing only by
+  case share one fork (on this Mac a call as `A1` landed through `a1`'s fork), and GitHub logins
+  fold case the same way, so URL forks collide too. `docs/configuration.md` says to mint tokens
+  for lowercase names. Done: a name whose case-folded form equals another live agent's is refused
+  at the verifier or the fork template, with a test on both a path and a URL fork.
 - [ ] **SERVER-TRUNK-MOVED-ROUTE** — M6, with team mode. From the same review: nothing in the
   tree calls `trunk-moved` since the adapter feeds the host its own poke after a landing; the
   route stays for main moves the adapter did not make. Done: wired to the git host's push
   event in team mode, or deleted with its `lander` service name.
-- [ ] **CI-ACTIONLINT-ZIZMOR** — M4, before the orchestrator's gate on the merged tree stops (the
+- [ ] **CI-ACTIONLINT-ZIZMOR** — lane A; #94 at `95244fa`, reviewed "Yes", waiting for Felix.
+  As built: "Fast lane, workflow lint" (actionlint 1.7.12 by checksum-verified binary, zizmor
+  1.31.1 through its action pinned by SHA); Felix adds it to the ruleset's required checks. M4,
+  before the orchestrator's gate on the merged tree stops (the
   protocol rewrite, #90). From the M4-DOGFOOD-SETUP review: `.github/workflows/ci.yml` runs fmt,
   clippy and the named-tests check but neither `actionlint` nor `zizmor`, which only the lanes'
   gates run; once landings bypass the orchestrator's gate nothing on `main` checks the workflows.
@@ -594,20 +594,27 @@ hand; one server restart while a submitted claim is held, that claim landed afte
   reviewer token (`reviewers = ["orchestrator"]`); `sensitive` covers `src/protocol.rs`,
   `src/host/`, `.github/` and `docs/BUILD-PROTOCOL.md`.
 
-- [ ] **M4-GITHUB-REMOTE** — lane B; dispatched 22 October 07:40 from `0aaf11a`.
-  `with_push_access` for an HTTPS remote: the credential from
+- [ ] **M4-GITHUB-REMOTE** (`6fcf36b`, #92) — lane B. Merged; its done-check's sandbox landing
+  is pending on a token from Felix (STATE). As built: `[lander] token_file` (0600, checked at
+  start and before every call, no line break inside); the server binary as git's askpass hook,
+  answering only a prompt whose host equals the configured `remote` or `fork` host; `{agent}`
+  refused in a URL fork's host; the head read at server start for a repository with no head.
+  As planned: `with_push_access` for an HTTPS remote: the credential from
   the `[lander]` token file through git's askpass or credential-helper environment, never in
   argv, a URL or a log (test: a fake askpass records what git asked; argv and the log scanned);
   the read-back by `ls-remote` with the same credential; `fork` as a URL; the trunk head read
   from the git host at load (COORD-HEAD-FROM-AGENT). Done: one landing against the P0-SPIKE
   sandbox organisation, recorded in the report, plus the tests.
-- [ ] **M4-DOGFOOD-SETUP** — lane A; dispatched 22 October 07:30 from `0aaf11a`.
-  `docs/dogfood.md` and a script Felix runs: the server
+- [x] **M4-DOGFOOD-SETUP** (`bf3e6bc`, #91) — lane A. The page (120 lines), the script, the
+  trunk's `tessel.toml` without the steward's pnpm step; a cold `cargo test --workspace` measured
+  at 237 s (D3). Walked by the reviewer and, on `main`'s own config, by the orchestrator. As
+  planned: `docs/dogfood.md` and a script Felix runs: the server
   directory outside the checkout, keys, tokens for the two lanes and the orchestrator, the
   repository entry for this repository with `remote`, `fork`, `reviewers` and `sensitive`,
   `tessel-runner.toml`, and the trunk's `tessel.toml` with the gate's commands. Done: Felix
   starts the server from the page; a restart by hand keeps a held submission.
-- [ ] **M4-PROTOCOL-REWRITE** — the orchestrator with Felix. `docs/BUILD-PROTOCOL.md` section 2
+- [x] **M4-PROTOCOL-REWRITE** (`de2ec7f`, #90) — the orchestrator; Felix merged the text. In
+  force from the first landing. As planned: `docs/BUILD-PROTOCOL.md` section 2
   and `CLAUDE.md`'s dogfooding section: lanes `tessel start` with the brief's intent and claim
   before editing; `tessel submit --evidence` replaces push and pull request; the orchestrator
   reviews held submissions with `tessel review`; the adversarial reviewer reads the submitted
