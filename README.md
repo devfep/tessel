@@ -97,6 +97,7 @@ lander in `tessel-lander/`, the CLI against a fake coordinator that drives the r
 swarm harness on 127.0.0.1.
 
 To run `tessel-server` for yourself, follow [`docs/local-setup.md`](docs/local-setup.md).
+To coordinate this repository with one, follow [`docs/dogfood.md`](docs/dogfood.md).
 
 ## Evidence
 
