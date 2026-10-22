@@ -180,6 +180,10 @@ impl CallPort for Landing {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move { inner.answer_within_deadline(call).await })
     }
+
+    fn reads_trunk_head(&self) -> bool {
+        true
+    }
 }
 
 impl Inner {

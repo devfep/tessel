@@ -58,6 +58,12 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 /// as `Input::CallLost`. Free text in an answer is untrusted data.
 pub trait CallPort: Send + Sync + 'static {
     fn answer(&self, call: Call) -> BoxFuture<CallAnswer>;
+
+    /// Whether this port can read main's head. A repository whose port can wakes once when the
+    /// server starts, so a fresh repository knows main's head before its first agent says hello.
+    fn reads_trunk_head(&self) -> bool {
+        false
+    }
 }
 
 /// Stands for "no lander configured". Every call is refused with a typed refusal the core reports
@@ -162,7 +168,7 @@ pub fn spawn(
 ) -> RunningRepo {
     let (tx, inbox) = mpsc::channel(INBOX_QUEUE);
     let (jobs, queue) = std_mpsc::channel();
-    let wake_on_start = holds_state(&id, &store);
+    let wake_on_start = holds_state(&id, &store) || calls.reads_trunk_head();
     let thread = spawn_storage(id.clone(), store, queue, tx.clone());
     let handle = RepoHandle {
         id: id.clone(),
@@ -388,8 +394,9 @@ struct RepoTask {
     thread: Option<std::thread::JoinHandle<()>>,
     sockets: BTreeMap<SocketId, SocketEntry>,
     wake_at: Option<u64>,
-    /// The store held state when the task started: a merge or a verification may have been cut
-    /// off by the stop that came before, and only a wake recovers it.
+    /// The store held state when the task started, so a merge or a verification may have been cut
+    /// off by the stop that came before and only a wake recovers it; or the repository's port reads
+    /// main's head, and a wake reads it.
     wake_on_start: bool,
     calls: Arc<dyn CallPort>,
 }

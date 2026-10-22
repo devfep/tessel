@@ -19,6 +19,9 @@
 //! - No usable answer (the call failed, or the answer was empty or all zeros) leaves the pokes
 //!   pending but is no reason to wake (`head_tried`): a failing steward is not retried in a hot
 //!   loop. The next poke, or any alarm that runs anyway (a merge, a lease), reads again.
+//! - With no head yet, a read is due without a poke, so the head is main's before the first
+//!   `Hello`. A `Hello` that arrives first sets the head itself, and the read that began before it
+//!   is then dropped by the compare-and-set.
 //! - The move is logged as `BaseMoved { by: "steward", notified: [] }`. Nobody is notified: the
 //!   touched scopes of an admin merge are unknown to the coordinator, and claims are not touched.
 
@@ -67,16 +70,23 @@ impl Coordinator {
         Vec::new()
     }
 
-    /// The head read to make now, if a poke is unanswered and no merge is in flight. It is also
-    /// offered after a failed read, so any alarm that runs anyway retries it.
+    /// The head read to make now, if a poke is unanswered or the coordinator has no head yet, and
+    /// no merge is in flight. It is also offered after a failed read, so any alarm that runs
+    /// anyway retries it.
     pub fn begin_head_read(&self) -> Option<HeadRead> {
-        if self.state.head_pokes <= self.state.head_synced || self.state.merge_in_flight.is_some() {
+        if !self.head_read_due() || self.state.merge_in_flight.is_some() {
             return None;
         }
         Some(HeadRead {
             head_at_start: self.state.head.clone(),
             pokes: self.state.head_pokes,
         })
+    }
+
+    /// A poke is unanswered, or no head is known: the first `Hello` would otherwise make an
+    /// agent's declared base the head, unchecked.
+    fn head_read_due(&self) -> bool {
+        self.state.head_pokes > self.state.head_synced || self.state.head.is_none()
     }
 
     /// The alarm time of the head read: now, while a poke has not been tried yet. A poke whose
@@ -96,7 +106,7 @@ impl Coordinator {
         now_ms: u64,
     ) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
-        if self.state.head_pokes <= self.state.head_synced {
+        if !self.head_read_due() {
             return Vec::new();
         }
         if self.state.merge_in_flight.is_some() || self.state.head != read.head_at_start {
@@ -111,7 +121,11 @@ impl Coordinator {
         if self.state.head.as_ref() == Some(&head) {
             return Vec::new();
         }
-        self.state.head = Some(head.clone());
+        let first = self.state.head.replace(head.clone()).is_none();
+        if first {
+            // The first head is no move: nobody had a base to be moved from.
+            return Vec::new();
+        }
         vec![self.event(
             now_ms,
             EventKind::BaseMoved {
@@ -400,7 +414,8 @@ mod tests {
 
     #[test]
     fn a_state_stored_before_the_flag_existed_loads_with_it_down() {
-        let c = core();
+        let mut c = core();
+        hello(&mut c, "a1", OLD);
         let mut state: serde_json::Value = serde_json::to_value(&c).unwrap();
         let fields = state.as_object_mut().unwrap();
         for field in ["head_pokes", "head_synced", "head_tried"] {
@@ -408,6 +423,54 @@ mod tests {
         }
         let loaded: Coordinator = serde_json::from_value(state).unwrap();
         assert_eq!(loaded.begin_head_read(), None);
+    }
+
+    #[test]
+    fn a_core_with_no_head_offers_a_read_and_the_answer_is_its_first_head() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("no head: a read is due");
+        assert_eq!(read.head_at_start, None);
+        assert_eq!(
+            c.next_head_read_ms(NOW),
+            None,
+            "due, but no wake is set for it"
+        );
+        assert!(
+            c.trunk_read(&read, Some(sha(TRUNK)), NOW).is_empty(),
+            "no move is logged"
+        );
+        assert_eq!(head_of(&c), Some(sha(TRUNK)));
+        assert_eq!(c.begin_head_read(), None);
+    }
+
+    #[test]
+    fn a_hello_after_the_read_keeps_the_read_head_and_one_before_it_keeps_its_base() {
+        let mut after = core();
+        let read = after.begin_head_read().expect("due");
+        after.trunk_read(&read, Some(sha(TRUNK)), NOW);
+        hello(&mut after, "a1", OLD);
+        assert_eq!(head_of(&after), Some(sha(TRUNK)));
+
+        let mut before = core();
+        let read = before.begin_head_read().expect("due");
+        hello(&mut before, "a1", OLD);
+        before.trunk_read(&read, Some(sha(TRUNK)), NOW);
+        assert_eq!(
+            head_of(&before),
+            Some(sha(OLD)),
+            "the compare-and-set drops the answer"
+        );
+    }
+
+    #[test]
+    fn a_read_with_no_usable_answer_leaves_no_head_and_is_offered_again() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        for answer in [None, Some(sha("0000000000000000000000000000000000000000"))] {
+            assert!(c.trunk_read(&read, answer, NOW).is_empty());
+            assert_eq!(head_of(&c), None);
+            assert!(c.begin_head_read().is_some());
+        }
     }
 
     #[test]

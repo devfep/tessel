@@ -1781,6 +1781,80 @@ fn host_a_head_read_runs_only_when_offered_and_is_stored_before_anyone_is_told()
     assert_eq!(kit.wake(), None, "main moved and nothing else is due");
 }
 
+fn welcomed_head(kit: &Testkit, sock: SocketId) -> CommitId {
+    for msg in kit.received(sock) {
+        if let ServerMsg::Welcome { head, .. } = msg {
+            return head.clone();
+        }
+    }
+    panic!("no welcome in {:?}", kit.received(sock));
+}
+
+#[test]
+fn host_a_repo_with_no_head_reads_it_in_a_wake_and_a_hello_after_the_read_keeps_it() {
+    let mut kit = kit();
+    wake(&mut kit);
+    let call = kit
+        .calls()
+        .last()
+        .expect("the wake asked for the head")
+        .clone();
+    assert!(matches!(call.request, Request::ReadHead { .. }), "{call:?}");
+    assert_eq!(
+        state(&kit)["head"],
+        json!(null),
+        "no head before the answer"
+    );
+    let trunk = CallAnswer::Head {
+        main: Some(CommitId("trunk".into())),
+        landed: Vec::new(),
+    };
+    kit.reply(call.id, trunk);
+    kit.settle();
+    assert_eq!(state(&kit)["head"], json!("trunk"));
+    assert_eq!(
+        kit.logs(),
+        Vec::<String>::new(),
+        "a first head is not a failure"
+    );
+
+    let sock = welcomed(&mut kit, "a1");
+    assert_eq!(
+        welcomed_head(&kit, sock),
+        CommitId("trunk".into()),
+        "the hello declared abc"
+    );
+    assert_eq!(
+        kit.calls().len(),
+        1,
+        "one read, and none after the head is known"
+    );
+}
+
+#[test]
+fn host_a_hello_before_the_read_is_answered_keeps_its_base_and_the_answer_is_dropped() {
+    let mut kit = kit();
+    wake(&mut kit);
+    let call = kit
+        .calls()
+        .last()
+        .expect("the wake asked for the head")
+        .clone();
+    let sock = welcomed(&mut kit, "a1");
+    assert_eq!(welcomed_head(&kit, sock), CommitId("abc".into()));
+    let trunk = CallAnswer::Head {
+        main: Some(CommitId("trunk".into())),
+        landed: Vec::new(),
+    };
+    kit.reply(call.id, trunk);
+    kit.settle();
+    assert_eq!(
+        state(&kit)["head"],
+        json!("abc"),
+        "the compare-and-set drops the answer"
+    );
+}
+
 #[test]
 fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
     let ends_in_none: [(&str, Option<CallAnswer>); 5] = [
