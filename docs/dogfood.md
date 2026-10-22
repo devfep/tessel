@@ -44,8 +44,9 @@ scripts/dogfood/setup.sh <server dir>
 Make the GitHub token on GitHub: Settings, Developer settings, Personal access tokens,
 Fine-grained tokens, Generate new token. Resource owner `devfep`; Only select repositories:
 `devfep/tessel`, `devfep/tessel-lane-a`, `devfep/tessel-lane-b` and
-`devfep/tessel-orchestrator`; Repository permissions: Contents read and write, Metadata read. Copy it, then save it
-without a shell history or log seeing it, and run the script again to see its last line say the file is in place:
+`devfep/tessel-orchestrator`; Repository permissions: Contents read and write, Metadata read.
+Copy it, then save it without a shell history or log seeing it, and run the script again to see
+its last line say the file is in place:
 
 ```
 (umask 077 && pbpaste >"<server dir>/github-token")
