@@ -95,10 +95,9 @@ git push --force https://github.com/devfep/tessel-lane-a.git HEAD:main
 
 ## The orchestrator
 
-The orchestrator is the reviewer. In a checkout of its own, `init` the same way with
-`tokens/orchestrator` and `--agent orchestrator`, then decide a held submission by the id
-`tessel submit` printed. Its own commits (STATE, roadmap) land through the server too, pushed
-to `tessel-orchestrator` like a lane:
+The orchestrator is the reviewer. In a checkout of its own, `init` as for a lane with
+`tokens/orchestrator` and `--agent orchestrator`; its commits land through the server too, pushed
+to `tessel-orchestrator`. Decide a held submission by the id `tessel submit` printed:
 
 ```
 tessel review <id> --approve --note "looks right"
