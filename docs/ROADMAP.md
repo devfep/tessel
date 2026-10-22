@@ -7,33 +7,42 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-22 07:45 EDT. Main at `0aaf11a` (#88 merged; the orchestrator's gate on
+**As of:** 2026-10-22 09:45 EDT. Main at `0aaf11a` (#88 merged; the orchestrator's gate on
 `725834c` is green on all seven steps, 1888 tests; main's CI green). M3 is done (its done-check is
-recorded under "### M3"). M4's first two tasks are in flight: D1-D4 block only the first landing,
-so they went out on Felix's "continue" with the recommended shapes written into the page and the
-code, each cheap to change.
-**In flight (dispatched 22 October 07:30 from `0aaf11a`):** lane A, M4-DOGFOOD-SETUP, worktree
-`.claude/worktrees/task-m4-dogfood-setup`, branch `task-m4-dogfood-setup`.
-**In flight (dispatched 22 October 07:40 from `0aaf11a`):** lane B, M4-GITHUB-REMOTE, worktree
-`.claude/worktrees/task-m4-github-remote`, branch `task-m4-github-remote`. Its sandbox landing
-runs only with a token Felix places (the orchestrator's session may not hand his `gh` token to a
-lane); otherwise the landing is done by hand after the merge.
-**Waiting on Felix:** D1-D4 and ruleset step 4 before the first landing; for lane B's sandbox
-landing, a token with contents write on two new private repositories in `tessel-sandbox`
-(`m4-trunk`, `m4-fork-lane-b`), saved with mode 0600 at the path in lane B's brief, or the word to
-land by hand after the merge; the protocol rewrite's pull request once drafted; this STATE.
+recorded under "### M3"). M4's first two tasks are both reported done and under Opus review, each
+with a green draft pull request.
+**Under review (lane A, M4-DOGFOOD-SETUP):** #91 at `5bf3c28` (worktree
+`.claude/worktrees/task-m4-dogfood-setup`). First verdict "With fixes" (the hand walk passed:
+script, server start, held submission kept over a restart, rejection by `orchestrator`; six text
+fixes), all fixed in `5bf3c28`, re-check requested. Measured: a cold `cargo test --workspace
+--locked --offline --no-fail-fast` in a fresh worktree took 237 s at load 9 rising to 75, with
+1888 tests, so D3 does not block landings; the runner's `timeout_secs` is 720. Merges after #92,
+then the page's own config is walked once more.
+**Under review (lane B, M4-GITHUB-REMOTE):** #92 at `0311e94` (worktree
+`.claude/worktrees/task-m4-github-remote`), 1888 to 1918 tests. `[lander] token_file` (0600,
+checked at start and before every call), the server binary as git's askpass hook (git runs
+`GIT_ASKPASS` as `<program> <prompt>`, so the brief's subcommand could not work), URL forks, and
+the head read at server start for a repository with no head (COORD-HEAD-FROM-AGENT). The sandbox
+landing was not done: no token was placed, so it is done by hand after the merge.
+**Waiting on Felix:** D1-D4 and ruleset step 4 before the first landing; #89 (this STATE) and #90
+(the protocol rewrite, corrected after the #91 review: every hold reason, and CI runs fmt, clippy
+and the named-tests check only); a token with contents write on two new private repositories in
+`tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`) for the sandbox landing, or the word to land it by
+hand; #91 and #92 once their verdicts are "Yes".
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** on the reports: review, pull requests, Felix merges; lane A's page is verified again
-once lane B's `token_file` key is on `main`; M4-PROTOCOL-REWRITE drafted by the orchestrator
-meanwhile; then the first landing of this repository after step 4 and D1-D4.
+**Next:** the two verdicts, fix passes, un-draft on "Yes"; after #92 merges, the sandbox landing
+by hand and lane A's page re-walked on its own config; then the GitHub steps of `docs/dogfood.md`
+(Felix), the first landing of this repository (M4-FIRST-LANDINGS) after step 4 and D1-D4, with
+CI-ACTIONLINT-ZIZMOR before the orchestrator's gate stops.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
-test`, so clippy, fmt, the named-tests check, actionlint and zizmor stay on CI after a landing;
-the runner inherits no `CARGO_TARGET_DIR`, so each landing builds the workspace cold (lane A
-measures it for D3). `devfep/tessel`'s ruleset "main: CI required" (`pull_request`,
-`required_status_checks`, `non_fast_forward`, `deletion`, no bypass actors) refuses the lander's
-push until step 4.
+test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
+`zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
+`CARGO_TARGET_DIR`, so each landing builds the workspace cold (237 s measured). `devfep/tessel`'s
+ruleset "main: CI required" (`pull_request`, `required_status_checks`, `non_fast_forward`,
+`deletion`, no bypass actors) refuses the lander's push until step 4; the repository admin role
+(id 5) as bypass actor can then also force-push or delete `main`, which M6 removes.
 **Decided by Felix (20 October), decision 15, local first:** M3 the local server, M4 its dogfood
 on this repository, M5 hardening, M6 team mode and the deletion; the first local release lands
 through the host's single `Prepare` call (`docs/proposals/phase-1.md`, decision 15; `PLAN.md`
@@ -115,10 +124,13 @@ load and flake checks run on CI runners.
   `ReleaseReason` would be false (the assuming claim is still live). Built instead: `Merged`
   gains the optional lists `unverified` and `untried_shadows`, and `Summary` the separate counter
   `verifications_unverifiable`; additive, no version bump.
-- [ ] **COORD-HEAD-FROM-AGENT** — from the same review: until the first landing or head read,
-  the coordinator's `head` is the base the first agent declared in its `Hello`
-  (`src/coordinator.rs`), and it becomes the baseline of the first dispatch unchecked. Phase 1:
-  read the trunk head from the git host when the repo loads, before any dispatch.
+- [ ] **COORD-HEAD-FROM-AGENT** — in #92 (M4-GITHUB-REMOTE, under review): a repository with
+  no head reads main's head from the remote at server start, before the first `Hello` can adopt
+  an agent's declared base. Left open by that change: a `Hello` that arrives before the read
+  still sets the head (the read's answer is then dropped), and a failed start read is not
+  rescheduled. From the P0 review: until the first landing or head read, the coordinator's
+  `head` is the base the first agent declared in its `Hello` (`src/coordinator.rs`), and it
+  becomes the baseline of the first dispatch unchecked.
 - [x] **P0-SPIKE** (this pull request) — the GitHub spike in the proposal ("The GitHub adapter",
   spike paragraph): does a fork pull request's check satisfy a required-checks ruleset for a direct
   `updateRefs` of that commit; is a stale `beforeOid` refused with the App as bypass actor; check
@@ -519,6 +531,15 @@ claims reconciled.
   tree calls `trunk-moved` since the adapter feeds the host its own poke after a landing; the
   route stays for main moves the adapter did not make. Done: wired to the git host's push
   event in team mode, or deleted with its `lander` service name.
+- [ ] **CI-ACTIONLINT-ZIZMOR** — M4, before the orchestrator's gate on the merged tree stops (the
+  protocol rewrite, #90). From the M4-DOGFOOD-SETUP review: `.github/workflows/ci.yml` runs fmt,
+  clippy and the named-tests check but neither `actionlint` nor `zizmor`, which only the lanes'
+  gates run; once landings bypass the orchestrator's gate nothing on `main` checks the workflows.
+  Done: both in the fast lane, pinned by SHA, red on a planted workflow fault.
+- [ ] **MERGE-ADMIN-MERGE-TEXT** — with the next core task. From the same review:
+  `src/merge.rs:327` still says a change to `tessel.toml` needs "an admin merge", a steward route
+  that no longer exists; the lander refuses the change and it goes through a pull request. Done:
+  the text says that, with its test.
 - [ ] **SERVER-KILL-AFTER-PUSH-TEST** — M5 hardening, with the next server task. From the same
   review: `restart.rs` kills the server during the runner's command; a kill between the push
   and the answer is untested (it should end as already merged, counted once). Done: that test.
