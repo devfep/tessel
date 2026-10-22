@@ -13,9 +13,10 @@ Mac. D4: the tokens are per lane, `orchestrator` is the only reviewer, and `sens
 ## What runs where
 
 The runner runs the trunk's `tessel.toml` test command, `cargo test --workspace`, on the rebased
-commit in a fresh clone, as you. Clippy, fmt, the named-tests check and the steward's tests stay
-on CI, which runs on `main` after a landing. Each lane runs actionlint and zizmor in its gate
-before it submits. The runner is not sandboxed until M5: land only code whose tests you trust. Two
+commit in a fresh clone, as you. Clippy, fmt, the named-tests check, actionlint, zizmor and the
+steward's tests stay on CI, which runs on `main` after a landing. Each lane also runs actionlint
+and zizmor in its gate before it submits. The runner is not sandboxed until M5: land only code
+whose tests you trust. Two
 things still go through a pull request you merge: a change to `tessel.toml`, which a submission may
 not touch, and a change to this page or `scripts/dogfood/`, the server's own set-up.
 

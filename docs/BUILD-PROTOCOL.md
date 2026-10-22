@@ -75,10 +75,9 @@ orchestrator's gate runs on `main`. A pull request carries exactly the commit th
 
 Every implementer runs this before it reports. At the landing the runner runs the trunk's
 `tessel.toml` test command on the rebased commit (`cargo test --workspace --locked --offline
---no-fail-fast`), and CI on `main` runs fmt, clippy and the named-tests check after the push; a
-red CI on `main` is the next dispatch, before any other. `actionlint` and `zizmor` run only in the
-lanes' gates until CI-ACTIONLINT-ZIZMOR adds them to CI. Until the first landing the orchestrator
-re-runs the whole gate on the merged tree.
+--no-fail-fast`), and CI on `main` runs fmt, clippy, the named-tests check, `actionlint` and
+`zizmor` after the push; a red CI on `main` is the next dispatch, before any other. Until the
+first landing the orchestrator re-runs the whole gate on the merged tree.
 
 | Area | Checks |
 |---|---|
