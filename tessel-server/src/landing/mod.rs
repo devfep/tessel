@@ -28,7 +28,6 @@ use std::sync::Arc;
 use tessel_coordinator::host::call::{Call, CallAnswer, Refusal, Request};
 use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, CommitId, ScopeClaim};
-use tessel_coordinator::shell::is_agent_id;
 use tessel_lander::git::{CommandError, Git, MergeSources, MAIN_BRANCH};
 use tessel_lander::merge::{run_merge, MergeContext, MergePolicy, MergeRequest};
 use tessel_lander::run::SystemRunner;
@@ -37,6 +36,7 @@ use tessel_lander::types::Sha;
 use crate::config::{LanderConfig, RepositoryConfig, FORK_AGENT_PLACEHOLDER};
 use crate::credential::{check_token_file, is_http_url, url_host, with_askpass, TokenFileError};
 use crate::id::RepoId;
+use crate::identity::is_server_agent_name;
 use crate::repo::{BoxFuture, CallPort};
 
 use answer::merge_answer;
@@ -68,7 +68,7 @@ pub enum LandingError {
 
 /// What a refusal says when an agent's name cannot name a fork.
 pub const BAD_AGENT_NAME_MESSAGE: &str =
-    "the agent name is not letters, digits, '.', '_' and '-' of at most 128 bytes, \
+    "the agent name is not lowercase letters, digits, '.', '_' and '-' of at most 128 bytes, \
      starting with a letter or digit";
 
 /// What `Test` and `Land` are refused with: they are never asked while `Prepare` is the merge.
@@ -269,11 +269,13 @@ impl Inner {
         }
     }
 
-    /// The fork of `agent`. The name must pass the protocol's agent-name rule, the one the verifier
+    /// The fork of `agent`. The name must pass the server's agent-name rule, the one the verifier
     /// uses, checked here whatever the verifier did: it has no separator and no leading dot, so it
-    /// can never leave the fork's directory. Any other name is a rule refusal and no path is made.
+    /// can never leave the fork's directory, and it is lowercase, so two names never share a fork
+    /// on a filesystem or git host that folds case. Any other name is a rule refusal and no path
+    /// is made.
     fn fork_of(&self, agent: &AgentId) -> Result<String, CallAnswer> {
-        if is_agent_id(&agent.0) {
+        if is_server_agent_name(&agent.0) {
             return Ok(self.fork.replace(FORK_AGENT_PLACEHOLDER, &agent.0));
         }
         tracing::warn!(repo = %self.repo, "an agent name is not a fork name");
