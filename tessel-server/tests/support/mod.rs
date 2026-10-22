@@ -171,6 +171,7 @@ impl Repos {
         LanderConfig {
             work_dir: self.root.path().join("lander"),
             runner_config: self.root.path().join("runner.toml"),
+            token_file: None,
         }
     }
 

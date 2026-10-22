@@ -1,0 +1,150 @@
+//! The askpass hook as git runs it: the real `tessel-server` binary as `GIT_ASKPASS`, answering
+//! the prompts of a real `git credential fill` in the lander's environment. No network is used.
+
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions are how these tests fail; they return Result so `?` carries setup errors"
+)]
+
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use tessel_lander::git::Git;
+use tessel_server::credential::{with_askpass, ASKPASS_TOKEN_FILE_VAR};
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+const BINARY: &str = env!("CARGO_BIN_EXE_tessel-server");
+const SECRET: &str = "ghs_not-a-real-token-0123456789";
+
+fn token_file(dir: &Path) -> Result<PathBuf, std::io::Error> {
+    let path = dir.join("token");
+    std::fs::write(&path, format!("{SECRET}\n"))?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(path)
+}
+
+fn askpass(prompt: &str, token_file: Option<&Path>) -> Result<Output, std::io::Error> {
+    let mut command = Command::new(BINARY);
+    command.arg(prompt).env_clear();
+    if let Some(file) = token_file {
+        command.env(ASKPASS_TOKEN_FILE_VAR, file);
+    }
+    command.output()
+}
+
+#[test]
+fn the_hook_prints_the_user_name_for_a_username_prompt_and_the_token_for_a_password_prompt(
+) -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let file = token_file(dir.path())?;
+    let user = askpass("Username for 'https://github.com': ", Some(&file))?;
+    assert!(user.status.success());
+    assert_eq!(String::from_utf8(user.stdout)?, "x-access-token\n");
+    assert_eq!(user.stderr, b"");
+    let password = askpass(
+        "Password for 'https://x-access-token@github.com': ",
+        Some(&file),
+    )?;
+    assert!(password.status.success());
+    assert_eq!(String::from_utf8(password.stdout)?, format!("{SECRET}\n"));
+    assert_eq!(password.stderr, b"", "nothing is logged beside the answer");
+    Ok(())
+}
+
+#[test]
+fn the_hook_prints_nothing_and_fails_for_another_prompt_or_no_variable() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let file = token_file(dir.path())?;
+    let cases = [(
+        "Enter passphrase for key '/home/x/.ssh/id': ",
+        Some(file.as_path()),
+    )];
+    for (prompt, variable) in cases {
+        let output = askpass(prompt, variable)?;
+        assert_eq!(output.status.code(), Some(1), "{prompt}");
+        assert_eq!(output.stdout, b"", "{prompt}");
+        assert_eq!(output.stderr, b"", "{prompt}");
+    }
+    Ok(())
+}
+
+#[test]
+fn without_the_variable_the_binary_is_no_hook_and_prints_no_credential() -> TestResult {
+    for prompt in [
+        "Username for 'https://github.com': ",
+        "Password for 'https://github.com': ",
+    ] {
+        let output = askpass(prompt, None)?;
+        assert!(!output.status.success(), "{prompt}");
+        assert_eq!(output.stdout, b"", "{prompt}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_hook_fails_quietly_when_the_token_file_is_no_longer_private() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let file = token_file(dir.path())?;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644))?;
+    let output = askpass("Password for 'https://github.com': ", Some(&file))?;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!((output.stdout, output.stderr), (Vec::new(), Vec::new()));
+    Ok(())
+}
+
+fn credential_fill(git: &Git) -> Result<Output, std::io::Error> {
+    let mut child = Command::new("git")
+        .args(["credential", "fill"])
+        .env_clear()
+        .envs(git.env())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+    stdin.write_all(b"protocol=https\nhost=example.invalid\n\n")?;
+    drop(stdin);
+    child.wait_with_output()
+}
+
+fn lander_git(dir: &Path) -> Result<Git, Box<dyn std::error::Error>> {
+    Ok(Git::create_in(&dir.join("git"))?)
+}
+
+#[test]
+fn git_asks_the_hook_and_gets_the_user_name_and_the_token() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let file = token_file(dir.path())?;
+    let git = with_askpass(lander_git(dir.path())?, Path::new(BINARY), &file);
+    let output = credential_fill(&git)?;
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.lines().any(|line| line == "username=x-access-token"),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == format!("password={SECRET}")),
+        "{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn without_a_token_file_git_finds_no_credential_and_does_not_prompt() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let output = credential_fill(&lander_git(dir.path())?)?;
+    assert!(!output.status.success(), "no credential, so the fill fails");
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(!stdout.contains("password="), "{stdout}");
+    Ok(())
+}

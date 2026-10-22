@@ -738,3 +738,98 @@ fn a_lander_removes_what_a_killed_server_left_and_needs_a_remote_and_a_fork() ->
     assert!(matches!(built, Err(LandingError::Unconfigured { .. })));
     Ok(())
 }
+
+const SECRET: &str = "ghs_not-a-real-token-0123456789";
+
+#[expect(clippy::expect_used, reason = "a failed expect is a failed test")]
+fn token_file(repos: &Repos, mode: u32, text: &str) -> std::path::PathBuf {
+    let path = repos.root.path().join("github-token");
+    std::fs::write(&path, text).expect("token file");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    path
+}
+
+fn lander_with(repos: &Repos, token: &Path) -> tessel_server::config::LanderConfig {
+    tessel_server::config::LanderConfig {
+        token_file: Some(token.to_path_buf()),
+        ..repos.lander()
+    }
+}
+
+#[expect(clippy::expect_used, reason = "a failed expect is a failed test")]
+fn build(repos: &Repos, name: &str, token: &Path) -> Result<Landing, LandingError> {
+    capture_logs();
+    let id = RepoId::new("acme", name).expect("a repository name");
+    let runner: Arc<dyn TestRunner> = passing();
+    Landing::new(
+        id,
+        &repos.repository(name),
+        &lander_with(repos, token),
+        runner,
+    )
+}
+
+#[test]
+fn a_token_file_that_cannot_be_used_stops_the_lander_naming_the_file_and_the_key() -> TestResult {
+    let repos = Repos::new();
+    let missing = repos.root.path().join("no-such-token");
+    let directory = repos.root.path().to_path_buf();
+    let cases = [
+        missing,
+        token_file(&repos, 0o644, SECRET),
+        token_file(&repos, 0o600, ""),
+        directory,
+    ];
+    for path in cases {
+        let Err(error) = build(&repos, "landing-token", &path) else {
+            return Err(format!("{} was accepted", path.display()).into());
+        };
+        let shown = error.to_string();
+        assert!(matches!(error, LandingError::TokenFile(_)), "{shown}");
+        assert!(shown.contains(&path.display().to_string()), "{shown}");
+        assert!(shown.contains("token_file"), "{shown}");
+        assert!(!shown.contains(SECRET), "{shown}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_token_file_that_goes_bad_after_start_ends_the_call_unknown_and_pushes_nothing(
+) -> TestResult {
+    let repos = Repos::new();
+    let path = token_file(&repos, 0o600, &format!("{SECRET}\n"));
+    let landing = build(&repos, "landing-token-late", &path)?;
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let before = repos.main_head();
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+    let answer = prepare(&landing, &commit, vec![file_scope("src/a.rs")]).await;
+    assert_eq!(answer, CallAnswer::Unknown);
+    assert_eq!(repos.main_head(), before, "nothing was pushed");
+    let logged = log_lines_with("cannot use the git token");
+    assert!(
+        logged.iter().any(|line| line.contains("token_file")),
+        "{logged:?}"
+    );
+    assert!(
+        logged.iter().all(|line| !line.contains(SECRET)),
+        "{logged:?}"
+    );
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let landed = prepare(&landing, &commit, vec![file_scope("src/a.rs")]).await;
+    prepared(&landed)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_lander_with_a_token_file_lands_on_a_path_remote_as_before() -> TestResult {
+    let repos = Repos::new();
+    let path = token_file(&repos, 0o600, SECRET);
+    let landing = build(&repos, "landing-token-path", &path)?;
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let answer = prepare(&landing, &commit, vec![file_scope("src/a.rs")]).await;
+    let (_base, head) = prepared(&answer)?;
+    assert_eq!(repos.main_head(), head);
+    Ok(())
+}

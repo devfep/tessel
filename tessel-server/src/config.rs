@@ -39,6 +39,11 @@ pub struct LanderConfig {
     pub work_dir: PathBuf,
     /// The runner's `tessel-runner.toml`: the one user the tests run for and the longest run.
     pub runner_config: PathBuf,
+    /// A file holding the git host's token, for a `remote` or `fork` that is a URL which needs
+    /// one. The file must be a regular file with mode 0600 and not empty. Git reads it through
+    /// the askpass hook at every command of a landing. Without it, landings use no credential.
+    #[serde(default)]
+    pub token_file: Option<PathBuf>,
 }
 
 /// The `[identity]` table: where the Ed25519 keys are and which audience a token must name.
@@ -182,6 +187,13 @@ impl LanderConfig {
         }
         if self.runner_config.as_os_str().is_empty() {
             return refuse("runner_config", "must not be empty");
+        }
+        if self
+            .token_file
+            .as_ref()
+            .is_some_and(|file| file.as_os_str().is_empty())
+        {
+            return refuse("token_file", "must not be empty");
         }
         if !any_remote {
             return refuse(
@@ -444,6 +456,57 @@ mod tests {
             assert!(shown.contains("tessel-server.toml"), "{text}: {shown}");
             assert!(shown.contains(table), "{text}: {shown}");
             assert!(shown.contains(key), "{text}: {shown}");
+        }
+    }
+
+    const URLS: &str = "remote = \"https://github.com/acme/demo.git\"\n\
+                        fork = \"https://github.com/acme/demo-fork-{agent}.git\"\n";
+
+    #[test]
+    fn a_url_remote_and_fork_need_no_token_file_and_a_token_file_is_a_path() {
+        let public = load(&format!("{BASE}{URLS}{LANDER}")).unwrap();
+        assert_eq!(public.lander.unwrap().token_file, None);
+        let private = load(&format!(
+            "{BASE}{URLS}{LANDER}token_file = \"/etc/tessel/github-token\"\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            private.lander.unwrap().token_file.as_deref(),
+            Some(Path::new("/etc/tessel/github-token"))
+        );
+    }
+
+    #[test]
+    fn an_empty_token_file_path_is_refused_naming_the_file_and_the_key() {
+        let error = load(&format!("{BASE}{URLS}{LANDER}token_file = \"\"\n")).unwrap_err();
+        let shown = error.to_string();
+        assert!(matches!(error, ConfigError::Landing { .. }), "{shown}");
+        assert!(shown.contains("tessel-server.toml"), "{shown}");
+        assert!(
+            shown.contains("[lander]") && shown.contains("token_file"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn a_url_fork_is_checked_for_one_agent_placeholder_like_a_path_fork() {
+        for fork in [
+            "https://github.com/acme/demo-fork.git",
+            "https://github.com/acme/{agent}/{agent}.git",
+        ] {
+            let text = format!(
+                "{BASE}remote = \"https://github.com/acme/demo.git\"\nfork = \"{fork}\"\n{LANDER}"
+            );
+            let error = load(&text).unwrap_err();
+            let shown = error.to_string();
+            assert!(
+                matches!(error, ConfigError::Landing { .. }),
+                "{fork}: {shown}"
+            );
+            assert!(
+                shown.contains("fork") && shown.contains("{agent}"),
+                "{fork}: {shown}"
+            );
         }
     }
 
