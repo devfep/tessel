@@ -2,7 +2,7 @@
 
 One `tessel-server` on your Mac coordinates `devfep/tessel`. Two lanes and the orchestrator talk to
 it, and its lander pushes `main` on GitHub. The page sets up the server directory, the three
-tokens and the two lane forks; [Local setup](local-setup.md) is the same walk against a bare
+tokens and the three forks; [Local setup](local-setup.md) is the same walk against a bare
 remote. `<server dir>` is `~/tessel-dogfood`, written out as an absolute path.
 
 Four settings are proposals until you confirm them. D1: the lander pushes `main` over HTTPS with a
@@ -20,8 +20,8 @@ file changes through a pull request you merge.
 
 ## Build and GitHub, by hand
 
-Build from a checkout of `main` and put `target/debug` on your `PATH`. Then make the two lane
-forks. They are plain private repositories: a lane pushes to its own, and the lander fetches its
+Build from a checkout of `main` and put `target/debug` on your `PATH`. Then make the three
+forks. They are plain private repositories: an agent pushes to its own, and the lander fetches its
 `main`.
 
 ```
@@ -29,6 +29,7 @@ cargo build -p tessel-server -p tessel-cli
 export PATH="$PWD/target/debug:$PATH"
 gh repo create devfep/tessel-lane-a --private
 gh repo create devfep/tessel-lane-b --private
+gh repo create devfep/tessel-orchestrator --private
 ```
 
 Run the script. It makes the server directory (`~/tessel-dogfood`, absolute and outside any
@@ -42,9 +43,9 @@ scripts/dogfood/setup.sh <server dir>
 
 Make the GitHub token on GitHub: Settings, Developer settings, Personal access tokens,
 Fine-grained tokens, Generate new token. Resource owner `devfep`; Only select repositories:
-`devfep/tessel`, `devfep/tessel-lane-a` and `devfep/tessel-lane-b`; Repository permissions:
-Contents read and write, Metadata read. Copy it, then save it without a shell history or log
-seeing it, and run the script again to see its last line say the file is in place:
+`devfep/tessel`, `devfep/tessel-lane-a`, `devfep/tessel-lane-b` and
+`devfep/tessel-orchestrator`; Repository permissions: Contents read and write, Metadata read. Copy it, then save it
+without a shell history or log seeing it, and run the script again to see its last line say the file is in place:
 
 ```
 (umask 077 && pbpaste >"<server dir>/github-token")
@@ -95,7 +96,8 @@ git push --force https://github.com/devfep/tessel-lane-a.git HEAD:main
 
 The orchestrator is the reviewer. In a checkout of its own, `init` the same way with
 `tokens/orchestrator` and `--agent orchestrator`, then decide a held submission by the id
-`tessel submit` printed:
+`tessel submit` printed. Its own commits (STATE, roadmap) land through the server too, pushed
+to `tessel-orchestrator` like a lane:
 
 ```
 tessel review <id> --approve --note "looks right"
