@@ -7,25 +7,43 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-21 21:45 EDT. Main at `725834c` (#85, #86 and #87 merged; the orchestrator's
-gate on `725834c` is green on all seven steps, 1888 tests; main's CI green). M3 is done: no
-rules-list row is "after move"; a `tessel-server` lands a submitted commit on a remote through the
-lander and the runner, end to end on CI twice (the landing job and the quickstart job, which runs
-`docs/local-setup.md`'s own commands from a clean checkout); `tessel review` approves through the
-server and the landing follows; a kill -9 mid-merge is recovered on restart with the claim landed
-once. Nothing is dispatched: M4 is re-planned below and waits on Felix's decisions D1-D4 and
-ruleset step 4.
-**Waiting on Felix:** the M4 decisions D1-D4 (section "M4" below) and ruleset step 4 before M4's
-first landing; this STATE.
+**As of:** 2026-10-22 09:40 EDT. Main at `0aaf11a` (#88 merged; the orchestrator's gate on
+`725834c` is green on all seven steps, 1888 tests; main's CI green). M3 is done (its done-check is
+recorded under "### M3"). M4's first two tasks are reviewed "Yes" and wait for Felix, in the order
+#92 then #91.
+**Reviewed "Yes" (lane B, M4-GITHUB-REMOTE):** #92 at `17d9607` (worktree
+`.claude/worktrees/task-m4-github-remote`), 1888 to 1923 tests, CI green. `[lander] token_file`
+(0600, checked at start and before every call, no line break inside), the server binary as git's
+askpass hook answering only a prompt whose host equals the configured `remote` or `fork` host (the
+first substring check handed a token to `github.com.evil.com` in the reviewer's probe; fixed),
+`{agent}` refused in a URL fork's host, the head read at server start for a repository with no
+head. The sandbox landing was not done (no token placed): by hand after the merge.
+**Reviewed "Yes" (lane A, M4-DOGFOOD-SETUP):** #91 at `d41bd44` (worktree
+`.claude/worktrees/task-m4-dogfood-setup`), 1888 one-for-one, CI green; the reviewer walked the
+page (script, server start, a held submission kept over a restart, rejection by `orchestrator`).
+It names #92's `token_file`, so it merges after #92, once the lane has merged `main` and re-walked
+the page on its own config. Measured: a cold `cargo test --workspace --locked --offline
+--no-fail-fast` took 237 s at load 9 rising to 75 (D3 does not block landings; `timeout_secs`
+720).
+**Waiting on Felix:** #92, then #91 (after its re-walk); #89 (this STATE) and #90 (the protocol
+rewrite); D1-D4 and ruleset step 4 before the first landing; a token for the sandbox landing
+(contents write on two new private repositories in `tessel-sandbox`, `m4-trunk` and
+`m4-fork-lane-b`, saved 0600 at the path in lane B's brief) or the word to land by hand after #92
+merges.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** on D1-D4, dispatch M4-GITHUB-REMOTE (lane B) and M4-DOGFOOD-SETUP (lane A); the
-protocol rewrite with Felix; then the first landing of this repository (the old done-check text
-for M3 follows for the record: no rules-list row "after move": true at
-`9b2533f`; the end-to-end landing on CI: #84's job; `tessel review` through the server: #80 and
-the quickstart; the kill -9 loop: #84's restart test), then the M4 re-plan (dogfood on this
-repository: the GitHub fork adapter, SERVER-FORK-CASE, ruleset step 4 before its first landing).
+**Next:** on #92's merge: the orchestrator's gate on `main`, the sandbox landing by hand, lane A
+merges `main` and re-walks the page, #91 merges; then the GitHub steps of `docs/dogfood.md`
+(Felix), CI-ACTIONLINT-ZIZMOR, and the first landing of this repository (M4-FIRST-LANDINGS) after
+step 4 and D1-D4.
+**Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
+test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
+`zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
+`CARGO_TARGET_DIR`, so each landing builds the workspace cold (237 s measured). `devfep/tessel`'s
+ruleset "main: CI required" (`pull_request`, `required_status_checks`, `non_fast_forward`,
+`deletion`, no bypass actors) refuses the lander's push until step 4; the repository admin role
+(id 5) as bypass actor can then also force-push or delete `main`, which M6 removes.
 **Decided by Felix (20 October), decision 15, local first:** M3 the local server, M4 its dogfood
 on this repository, M5 hardening, M6 team mode and the deletion; the first local release lands
 through the host's single `Prepare` call (`docs/proposals/phase-1.md`, decision 15; `PLAN.md`
@@ -107,10 +125,13 @@ load and flake checks run on CI runners.
   `ReleaseReason` would be false (the assuming claim is still live). Built instead: `Merged`
   gains the optional lists `unverified` and `untried_shadows`, and `Summary` the separate counter
   `verifications_unverifiable`; additive, no version bump.
-- [ ] **COORD-HEAD-FROM-AGENT** — from the same review: until the first landing or head read,
-  the coordinator's `head` is the base the first agent declared in its `Hello`
-  (`src/coordinator.rs`), and it becomes the baseline of the first dispatch unchecked. Phase 1:
-  read the trunk head from the git host when the repo loads, before any dispatch.
+- [ ] **COORD-HEAD-FROM-AGENT** — in #92 (M4-GITHUB-REMOTE, under review): a repository with
+  no head reads main's head from the remote at server start, before the first `Hello` can adopt
+  an agent's declared base. Left open by that change: a `Hello` that arrives before the read
+  still sets the head (the read's answer is then dropped), and a failed start read is not
+  rescheduled. From the P0 review: until the first landing or head read, the coordinator's
+  `head` is the base the first agent declared in its `Hello` (`src/coordinator.rs`), and it
+  becomes the baseline of the first dispatch unchecked.
 - [x] **P0-SPIKE** (this pull request) — the GitHub spike in the proposal ("The GitHub adapter",
   spike paragraph): does a fork pull request's check satisfy a required-checks ruleset for a direct
   `updateRefs` of that commit; is a stale `beforeOid` refused with the App as bypass actor; check
@@ -511,6 +532,15 @@ claims reconciled.
   tree calls `trunk-moved` since the adapter feeds the host its own poke after a landing; the
   route stays for main moves the adapter did not make. Done: wired to the git host's push
   event in team mode, or deleted with its `lander` service name.
+- [ ] **CI-ACTIONLINT-ZIZMOR** — M4, before the orchestrator's gate on the merged tree stops (the
+  protocol rewrite, #90). From the M4-DOGFOOD-SETUP review: `.github/workflows/ci.yml` runs fmt,
+  clippy and the named-tests check but neither `actionlint` nor `zizmor`, which only the lanes'
+  gates run; once landings bypass the orchestrator's gate nothing on `main` checks the workflows.
+  Done: both in the fast lane, pinned by SHA, red on a planted workflow fault.
+- [ ] **MERGE-ADMIN-MERGE-TEXT** — with the next core task. From the same review:
+  `src/merge.rs:327` still says a change to `tessel.toml` needs "an admin merge", a steward route
+  that no longer exists; the lander refuses the change and it goes through a pull request. Done:
+  the text says that, with its test.
 - [ ] **SERVER-KILL-AFTER-PUSH-TEST** — M5 hardening, with the next server task. From the same
   review: `restart.rs` kills the server during the runner's command; a kill between the push
   and the answer is untested (it should end as already merged, counted once). Done: that test.
@@ -555,20 +585,24 @@ hand; one server restart while a submitted claim is held, that claim landed afte
   `{agent}`; lanes are few and fixed), or (b) branches in this repository with the template
   gaining a ref, which needs a lander change since it reads only a fork's `main`. Recommended:
   (a), no lander change, forks named for `lane-a` and `lane-b`.
-- D3, the runner's load on the Mac: each landing runs the workspace gate on Felix's machine
-  (about five minutes at load 20; the merge call's deadline is 13 minutes and covers it). Accept,
-  or set `-j 2` and two test threads in the trunk's `tessel.toml`.
+- D3, the runner's load on the Mac: each landing runs `cargo test --workspace` cold on Felix's
+  machine (237 s measured at load 9 on 22 October; the merge call's deadline is 13 minutes and
+  the runner's `timeout_secs` is 720). Accept, or ask for a way to limit the load: the gate's
+  parser accepts none of `-j`, `--` or an environment setting, so limiting it is a runner or
+  gate change, not a `tessel.toml` line.
 - D4, identities: tokens per lane name from the server's keys; the orchestrator holds the
   reviewer token (`reviewers = ["orchestrator"]`); `sensitive` covers `src/protocol.rs`,
   `src/host/`, `.github/` and `docs/BUILD-PROTOCOL.md`.
 
-- [ ] **M4-GITHUB-REMOTE** — lane B. `with_push_access` for an HTTPS remote: the credential from
+- [ ] **M4-GITHUB-REMOTE** — lane B; dispatched 22 October 07:40 from `0aaf11a`.
+  `with_push_access` for an HTTPS remote: the credential from
   the `[lander]` token file through git's askpass or credential-helper environment, never in
   argv, a URL or a log (test: a fake askpass records what git asked; argv and the log scanned);
   the read-back by `ls-remote` with the same credential; `fork` as a URL; the trunk head read
   from the git host at load (COORD-HEAD-FROM-AGENT). Done: one landing against the P0-SPIKE
   sandbox organisation, recorded in the report, plus the tests.
-- [ ] **M4-DOGFOOD-SETUP** — lane A. `docs/dogfood.md` and a script Felix runs: the server
+- [ ] **M4-DOGFOOD-SETUP** — lane A; dispatched 22 October 07:30 from `0aaf11a`.
+  `docs/dogfood.md` and a script Felix runs: the server
   directory outside the checkout, keys, tokens for the two lanes and the orchestrator, the
   repository entry for this repository with `remote`, `fork`, `reviewers` and `sensitive`,
   `tessel-runner.toml`, and the trunk's `tessel.toml` with the gate's commands. Done: Felix
