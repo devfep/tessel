@@ -9,7 +9,9 @@ use std::sync::Arc;
 use clap::{Args, Parser, Subcommand};
 use tessel_server::admin::{self, TokenArgs};
 use tessel_server::config::{Config, IdentityConfig};
-use tessel_server::credential::{askpass_answer, askpass_prompt, ASKPASS_TOKEN_FILE_VAR};
+use tessel_server::credential::{
+    askpass_answer, askpass_prompt, ASKPASS_HOSTS_VAR, ASKPASS_TOKEN_FILE_VAR,
+};
 use tessel_server::identity::{self, Ed25519Verifier};
 use tessel_server::repo::NoLander;
 use tessel_server::server::{self, Deps};
@@ -83,7 +85,8 @@ struct KeyArgs {
 /// Answers git's prompt on standard output. Nothing is logged: git shows this process's standard
 /// error to the user, and the answer is a credential.
 fn askpass(prompt: &str, token_file: Option<&OsStr>) -> ExitCode {
-    let Some(answer) = askpass_answer(prompt, token_file) else {
+    let hosts = std::env::var_os(ASKPASS_HOSTS_VAR);
+    let Some(answer) = askpass_answer(prompt, token_file, hosts.as_deref()) else {
         return ExitCode::FAILURE;
     };
     match writeln!(std::io::stdout(), "{answer}") {

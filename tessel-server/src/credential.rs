@@ -19,6 +19,9 @@ pub const TOKEN_FILE_KEY: &str = "token_file";
 /// The variable that carries the file's path to the askpass hook.
 pub const ASKPASS_TOKEN_FILE_VAR: &str = "TESSEL_ASKPASS_TOKEN_FILE";
 
+/// The variable that carries the hosts the hook may answer for, lowercased and comma-separated.
+pub const ASKPASS_HOSTS_VAR: &str = "TESSEL_ASKPASS_HOSTS";
+
 /// The user name the git host expects with an installation or access token.
 pub const TOKEN_USERNAME: &str = "x-access-token";
 
@@ -105,10 +108,17 @@ pub fn askpass_prompt(args: &[OsString], token_file: Option<&OsStr>) -> Option<S
 }
 
 /// What the askpass hook prints for `prompt`, or `None` when it prints nothing and exits 1:
-/// no token file named, an unreadable one, or a prompt that is neither for a user name nor for a
-/// password.
-pub fn askpass_answer(prompt: &str, token_file: Option<&OsStr>) -> Option<String> {
+/// no token file or no hosts named, an unreadable token file, a prompt that names none of
+/// `hosts` (git's prompts name the URL), or one that is neither for a user name nor a password.
+pub fn askpass_answer(
+    prompt: &str,
+    token_file: Option<&OsStr>,
+    hosts: Option<&OsStr>,
+) -> Option<String> {
     let path = Path::new(token_file?);
+    if !names_a_host(prompt, hosts?) {
+        return None;
+    }
     if prompt.starts_with("Username") {
         return Some(TOKEN_USERNAME.to_owned());
     }
@@ -118,14 +128,40 @@ pub fn askpass_answer(prompt: &str, token_file: Option<&OsStr>) -> Option<String
     None
 }
 
-/// `git` with the askpass hook: `program` run as the hook, told to read `token_file`.
+fn names_a_host(prompt: &str, hosts: &OsStr) -> bool {
+    let prompt = prompt.to_lowercase();
+    hosts
+        .to_string_lossy()
+        .split(',')
+        .any(|host| !host.is_empty() && prompt.contains(host))
+}
+
+/// The lowercased authority of an http(s) URL, without user information: the host and port git
+/// names in a prompt. `None` for a path or any other location.
+pub fn url_host(location: &str) -> Option<String> {
+    if !is_http_url(location) {
+        return None;
+    }
+    let (_, rest) = location.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// `git` with the askpass hook: `program` run as the hook, told to read `token_file` and to
+/// answer only for prompts that name one of `hosts`.
 #[must_use]
-pub fn with_askpass(git: Git, program: &Path, token_file: &Path) -> Git {
+pub fn with_askpass(git: Git, program: &Path, token_file: &Path, hosts: &[String]) -> Git {
     git.with_env("GIT_ASKPASS", program.as_os_str().to_owned())
         .with_env(
             ASKPASS_TOKEN_FILE_VAR,
             OsString::from(token_file.as_os_str()),
         )
+        .with_env(ASKPASS_HOSTS_VAR, OsString::from(hosts.join(",")))
 }
 
 /// Whether `location` is a URL on a git host rather than a path.
@@ -248,12 +284,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = file_with(dir.path(), "token", &format!("{SECRET}\n"), 0o600);
         let file = Some(path.as_os_str());
+        let hosts = Some(OsStr::new("github.com"));
         assert_eq!(
-            askpass_answer("Username for 'https://github.com': ", file).as_deref(),
+            askpass_answer("Username for 'https://github.com': ", file, hosts).as_deref(),
             Some(TOKEN_USERNAME)
         );
         assert_eq!(
-            askpass_answer("Password for 'https://x-access-token@github.com': ", file).as_deref(),
+            askpass_answer(
+                "Password for 'https://x-access-token@GitHub.com': ",
+                file,
+                hosts
+            )
+            .as_deref(),
             Some(SECRET)
         );
         for other in [
@@ -262,10 +304,64 @@ mod tests {
             "password for x",
             "Verification code",
         ] {
-            assert_eq!(askpass_answer(other, file), None, "{other:?}");
+            assert_eq!(askpass_answer(other, file, hosts), None, "{other:?}");
         }
-        for prompt in ["Username for 'https://github.com': ", "Password for 'x': "] {
-            assert_eq!(askpass_answer(prompt, None), None, "no variable: {prompt}");
+        for prompt in [
+            "Username for 'https://github.com': ",
+            "Password for 'github.com': ",
+        ] {
+            assert_eq!(
+                askpass_answer(prompt, None, hosts),
+                None,
+                "no file: {prompt}"
+            );
+            assert_eq!(
+                askpass_answer(prompt, file, None),
+                None,
+                "no hosts: {prompt}"
+            );
+            let empty = Some(OsStr::new(""));
+            assert_eq!(
+                askpass_answer(prompt, file, empty),
+                None,
+                "empty hosts: {prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hook_answers_nothing_for_a_prompt_that_names_another_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = file_with(dir.path(), "token", SECRET, 0o600);
+        let file = Some(path.as_os_str());
+        let hosts = Some(OsStr::new("github.com,git.example.com:8443"));
+        for prompt in [
+            "Username for 'https://evil.com': ",
+            "Password for 'https://x-access-token@evil.com': ",
+            "Password for 'https://git.example.com': ",
+        ] {
+            assert_eq!(askpass_answer(prompt, file, hosts), None, "{prompt}");
+        }
+        let second = "Password for 'https://git.example.com:8443': ";
+        assert_eq!(askpass_answer(second, file, hosts).as_deref(), Some(SECRET));
+    }
+
+    #[test]
+    fn a_host_is_the_lowercased_authority_of_an_http_url_without_user_information() {
+        for (location, host) in [
+            ("https://GitHub.com/o/r.git", Some("github.com")),
+            (
+                "https://u:p@git.example.com:8443/o/r",
+                Some("git.example.com:8443"),
+            ),
+            ("http://localhost", Some("localhost")),
+            ("https://h.example?x=1", Some("h.example")),
+            ("/srv/git/r.git", None),
+            ("file:///srv/r.git", None),
+            ("git@github.com:o/r.git", None),
+            ("https:///no-host", None),
+        ] {
+            assert_eq!(url_host(location).as_deref(), host, "{location}");
         }
     }
 
@@ -274,12 +370,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = file_with(dir.path(), "token", SECRET, 0o644);
         assert_eq!(
-            askpass_answer("Password for 'x': ", Some(path.as_os_str())),
+            askpass_answer(
+                "Password for 'x': ",
+                Some(path.as_os_str()),
+                Some(OsStr::new("x"))
+            ),
             None
         );
         let missing = dir.path().join("missing");
         assert_eq!(
-            askpass_answer("Password for 'x': ", Some(missing.as_os_str())),
+            askpass_answer(
+                "Password for 'x': ",
+                Some(missing.as_os_str()),
+                Some(OsStr::new("x"))
+            ),
             None
         );
     }

@@ -35,7 +35,7 @@ use tessel_lander::run::SystemRunner;
 use tessel_lander::types::Sha;
 
 use crate::config::{LanderConfig, RepositoryConfig, FORK_AGENT_PLACEHOLDER};
-use crate::credential::{check_token_file, is_http_url, with_askpass, TokenFileError};
+use crate::credential::{check_token_file, is_http_url, url_host, with_askpass, TokenFileError};
 use crate::id::RepoId;
 use crate::repo::{BoxFuture, CallPort};
 
@@ -153,7 +153,13 @@ fn credentialed_git(
     };
     check_token_file(token_file)?;
     let program = std::env::current_exe().map_err(LandingError::Executable)?;
-    Ok(with_askpass(git, &program, token_file))
+    let mut hosts: Vec<String> = Vec::new();
+    for host in [remote, fork].into_iter().filter_map(url_host) {
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    Ok(with_askpass(git, &program, token_file, &hosts))
 }
 
 /// Removes what an earlier run of this server left in `dir` (its git environment and the clones
@@ -408,7 +414,7 @@ mod tests {
 
         let repo = RepoId::new("acme", "demo").unwrap();
         let remote = "https://git.example.invalid/acme/demo.git";
-        let fork = "https://git.example.invalid/acme/fork-a1.git";
+        let fork = "https://forks.example.invalid/acme/fork-a1.git";
         let git = credentialed_git(
             Git::create_in(&dir.path().join("git")).unwrap(),
             &repo,
@@ -456,6 +462,9 @@ mod tests {
                 Some(&"0".into()),
                 "{shown}"
             );
+            let hosts = command.env.get("TESSEL_ASKPASS_HOSTS");
+            let expected = OsString::from("git.example.invalid,forks.example.invalid");
+            assert_eq!(hosts, Some(&expected), "{shown}");
             for value in values(&command) {
                 assert!(!value.to_string_lossy().contains(SECRET), "{shown}");
             }

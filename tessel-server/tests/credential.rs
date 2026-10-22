@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use tessel_lander::git::Git;
-use tessel_server::credential::{with_askpass, ASKPASS_TOKEN_FILE_VAR};
+use tessel_server::credential::{with_askpass, ASKPASS_HOSTS_VAR, ASKPASS_TOKEN_FILE_VAR};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -26,9 +26,11 @@ fn token_file(dir: &Path) -> Result<PathBuf, std::io::Error> {
     Ok(path)
 }
 
+const HOST: &str = "github.com";
+
 fn askpass(prompt: &str, token_file: Option<&Path>) -> Result<Output, std::io::Error> {
     let mut command = Command::new(BINARY);
-    command.arg(prompt).env_clear();
+    command.arg(prompt).env_clear().env(ASKPASS_HOSTS_VAR, HOST);
     if let Some(file) = token_file {
         command.env(ASKPASS_TOKEN_FILE_VAR, file);
     }
@@ -55,7 +57,8 @@ fn the_hook_prints_the_user_name_for_a_username_prompt_and_the_token_for_a_passw
 }
 
 #[test]
-fn the_hook_prints_nothing_and_fails_for_another_prompt_or_no_variable() -> TestResult {
+fn the_hook_prints_nothing_and_fails_for_a_prompt_that_asks_for_neither_user_nor_password(
+) -> TestResult {
     let dir = tempfile::tempdir()?;
     let file = token_file(dir.path())?;
     let cases = [(
@@ -67,6 +70,25 @@ fn the_hook_prints_nothing_and_fails_for_another_prompt_or_no_variable() -> Test
         assert_eq!(output.status.code(), Some(1), "{prompt}");
         assert_eq!(output.stdout, b"", "{prompt}");
         assert_eq!(output.stderr, b"", "{prompt}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_hook_prints_nothing_and_fails_for_a_prompt_naming_another_host() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let file = token_file(dir.path())?;
+    for prompt in [
+        "Username for 'https://evil.example': ",
+        "Password for 'https://x-access-token@evil.example': ",
+    ] {
+        let output = askpass(prompt, Some(&file))?;
+        assert_eq!(output.status.code(), Some(1), "{prompt}");
+        assert_eq!(
+            (output.stdout, output.stderr),
+            (Vec::new(), Vec::new()),
+            "{prompt}"
+        );
     }
     Ok(())
 }
@@ -95,7 +117,7 @@ fn the_hook_fails_quietly_when_the_token_file_is_no_longer_private() -> TestResu
     Ok(())
 }
 
-fn credential_fill(git: &Git) -> Result<Output, std::io::Error> {
+fn credential_fill(git: &Git, host: &str) -> Result<Output, std::io::Error> {
     let mut child = Command::new("git")
         .args(["credential", "fill"])
         .env_clear()
@@ -105,7 +127,7 @@ fn credential_fill(git: &Git) -> Result<Output, std::io::Error> {
         .stderr(Stdio::piped())
         .spawn()?;
     let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
-    stdin.write_all(b"protocol=https\nhost=example.invalid\n\n")?;
+    stdin.write_all(format!("protocol=https\nhost={host}\n\n").as_bytes())?;
     drop(stdin);
     child.wait_with_output()
 }
@@ -114,12 +136,39 @@ fn lander_git(dir: &Path) -> Result<Git, Box<dyn std::error::Error>> {
     Ok(Git::create_in(&dir.join("git"))?)
 }
 
+fn configured_git(dir: &Path, file: &Path) -> Result<Git, Box<dyn std::error::Error>> {
+    let hosts = ["git.example.invalid".to_owned()];
+    Ok(with_askpass(
+        lander_git(dir)?,
+        Path::new(BINARY),
+        file,
+        &hosts,
+    ))
+}
+
+#[test]
+fn git_gets_no_credential_for_a_host_the_landing_was_not_configured_for() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let file = token_file(dir.path())?;
+    let output = credential_fill(&configured_git(dir.path(), &file)?, "other.invalid")?;
+    assert!(
+        !output.status.success(),
+        "the hook refused, so the fill fails"
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        !stdout.contains(SECRET) && !stdout.contains("password="),
+        "{stdout}"
+    );
+    Ok(())
+}
+
 #[test]
 fn git_asks_the_hook_and_gets_the_user_name_and_the_token() -> TestResult {
     let dir = tempfile::tempdir()?;
     let file = token_file(dir.path())?;
-    let git = with_askpass(lander_git(dir.path())?, Path::new(BINARY), &file);
-    let output = credential_fill(&git)?;
+    let git = configured_git(dir.path(), &file)?;
+    let output = credential_fill(&git, "git.example.invalid")?;
     let stdout = String::from_utf8(output.stdout)?;
     assert!(
         output.status.success(),
@@ -142,7 +191,7 @@ fn git_asks_the_hook_and_gets_the_user_name_and_the_token() -> TestResult {
 #[test]
 fn without_a_token_file_git_finds_no_credential_and_does_not_prompt() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let output = credential_fill(&lander_git(dir.path())?)?;
+    let output = credential_fill(&lander_git(dir.path())?, "git.example.invalid")?;
     assert!(!output.status.success(), "no credential, so the fill fails");
     let stdout = String::from_utf8(output.stdout)?;
     assert!(!stdout.contains("password="), "{stdout}");
