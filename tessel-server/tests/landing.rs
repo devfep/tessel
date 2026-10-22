@@ -15,16 +15,21 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use data_encoding::BASE64URL_NOPAD;
+use ed25519_dalek::Signer;
 use tessel_coordinator::host::call::{
     Call, CallAnswer, CallId, DispatchId, Refusal, Request, TestFailure, TrialResult,
 };
 use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, ClaimId, CommitId, Mode, Scope, ScopeClaim};
 use tessel_server::id::RepoId;
+use tessel_server::identity::{self, Ed25519Verifier, Role, TokenRequest};
+use tessel_server::keys;
 use tessel_server::landing::{
     Landing, LandingError, LocalRunner, TestRunner, BAD_AGENT_NAME_MESSAGE, STAND_IN_MESSAGE,
 };
 use tessel_server::repo::{now_ms, CallPort};
+use tessel_server::ws::Verifier;
 
 use support::{capture_logs, git, log_lines_with, passing, result, Repos, Scripted};
 
@@ -325,6 +330,8 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
         "",
         "-a",
         ".a",
+        "A1",
+        "Lane-A",
         too_long.as_str(),
     ];
     for name in refused_names {
@@ -355,10 +362,9 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
     }
     assert_eq!(runner.runs(), 0);
     let (sixty_four, longest) = ("a".repeat(64), "a".repeat(128));
-    // Valid names, none with a case twin among the forks (a case-insensitive filesystem would let
-    // `A1` reach `a1`'s fork): each reaches its own fork, which does not exist, so the call is
-    // infrastructure and not a bad name. `a1` has a fork and lands.
-    let missing_fork = ["B2", "a_1", "a.b", sixty_four.as_str(), longest.as_str()];
+    // Valid names: each reaches its own fork, which does not exist, so the call is infrastructure
+    // and not a bad name. `a1` has a fork and lands.
+    let missing_fork = ["b2", "a_1", "a.b", sixty_four.as_str(), longest.as_str()];
     for name in missing_fork {
         let request = Request::Prepare {
             claim: ClaimId(1),
@@ -375,6 +381,112 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
     }
     let landed = prepare(&landing, &commit, whole_repo()).await;
     assert!(prepared(&landed).is_ok(), "a1 has a fork: {landed:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_name_that_is_not_lowercase_reaches_no_fork_named_by_a_url_template() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let runner = passing();
+    capture_logs();
+    let id = RepoId::new("acme", "landing-url-fork")?;
+    let mut repository = repos.repository("landing-url-fork");
+    repository.fork = Some("https://forks.example.invalid/acme/{agent}.git".to_string());
+    let landing = Landing::new(id, &repository, &repos.lander(), runner.clone())?;
+    for name in ["A1", "Lane-A"] {
+        let agent = AgentId(name.to_string());
+        let prepare = Request::Prepare {
+            claim: ClaimId(1),
+            agent: agent.clone(),
+            fork_commit: CommitId(commit.clone()),
+            scopes: whole_repo(),
+        };
+        let trial = Request::Trial {
+            agent,
+            commit: None,
+            before: CommitId(repos.main_head()),
+            main: CommitId(repos.main_head()),
+        };
+        for request in [prepare, trial] {
+            let answer = ask(&landing, request, 60_000).await;
+            let expected = refused(Refusal::Rule {
+                rule: RuleKind::ForkMissing,
+                message: BAD_AGENT_NAME_MESSAGE.to_string(),
+            });
+            assert_eq!(answer, expected, "{name:?}");
+        }
+    }
+    assert_eq!(runner.runs(), 0);
+    Ok(())
+}
+
+fn forged_token(keys_dir: &Path, agent: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let exp_ms = identity::now_ms() + 3_600_000;
+    let head = r#"{"v":1,"kid":"k1","aud":"landing-test","tenant":"acme","repo":"demo","#;
+    let json =
+        head.to_string() + &format!(r#""agent":"{agent}","role":"agent","exp_ms":{exp_ms}}}"#);
+    let key = keys::load_signing_key(keys_dir, "k1")?;
+    let payload = BASE64URL_NOPAD.encode(json.as_bytes());
+    let signature = key.sign(payload.as_bytes());
+    Ok(format!(
+        "{payload}.{}",
+        BASE64URL_NOPAD.encode(&signature.to_bytes())
+    ))
+}
+
+#[tokio::test]
+async fn two_names_that_differ_only_by_case_cannot_both_land_through_one_fork() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let keys_dir = repos.root.path().join("keys");
+    keys::generate(&keys_dir, "k1")?;
+    let verifier = Ed25519Verifier::load(&keys_dir, "landing-test")?;
+    let minted = identity::mint(
+        &keys::load_signing_key(&keys_dir, "k1")?,
+        &TokenRequest {
+            kid: "k1",
+            audience: "landing-test",
+            tenant: "acme",
+            repo: "demo",
+            agent: "a1",
+            role: Role::Agent,
+            ttl_ms: 3_600_000,
+        },
+        identity::now_ms(),
+    )?;
+    let tokens = [minted, forged_token(&keys_dir, "A1")?];
+
+    let repo = RepoId::new("acme", "demo")?;
+    let verified: Vec<Result<AgentId, &str>> = tokens
+        .iter()
+        .map(|token| {
+            verifier
+                .verify(token, &repo)
+                .map_err(|refusal| refusal.reason)
+        })
+        .collect();
+    assert_eq!(
+        verified,
+        [
+            Ok(AgentId("a1".to_string())),
+            Err("token names an agent that is not lowercase")
+        ]
+    );
+
+    let runner = passing();
+    let landing = landing(&repos, "landing-case-twins", runner.clone());
+    for agent in verified.into_iter().flatten() {
+        let request = Request::Prepare {
+            claim: ClaimId(1),
+            agent,
+            fork_commit: CommitId(commit.clone()),
+            scopes: whole_repo(),
+        };
+        let answer = ask(&landing, request, 120_000).await;
+        assert!(prepared(&answer).is_ok(), "{answer:?}");
+    }
+    assert_eq!(runner.runs(), 1);
     Ok(())
 }
 

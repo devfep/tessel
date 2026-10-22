@@ -10,8 +10,9 @@
 //! - `signature` is base64url without padding of the Ed25519 signature over the bytes of the
 //!   `payload` string exactly as sent. The key is the one `kid` names in the key directory.
 //! - `exp_ms` is a Unix time in milliseconds; the token is valid while `exp_ms > now`.
-//! - `agent` follows the name rule of the wire protocol: 1 to 128 characters from `A-Z a-z 0-9
-//!   . _ -`, the first a letter or digit.
+//! - `agent` follows the name rule of the wire protocol, 1 to 128 characters from `A-Z a-z 0-9
+//!   . _ -` with the first a letter or digit, and is stricter: it must be lowercase, so two names
+//!   can never differ only by case and share a fork on a case-folding filesystem or git host.
 //! - `lander`, `runner` and `server` are reserved service names. A token for one has role
 //!   `service`; every other token has role `agent`; a token that mixes the two is refused.
 //!
@@ -65,6 +66,12 @@ pub fn is_reserved_lookalike(name: &str) -> bool {
     RESERVED_SERVICES
         .iter()
         .any(|reserved| reserved.eq_ignore_ascii_case(name))
+}
+
+/// Whether `name` is an agent name this server accepts: the protocol's rule, in lowercase. A name
+/// that equals its ASCII-lowercase form cannot collide with another by case.
+pub fn is_server_agent_name(name: &str) -> bool {
+    is_agent_id(name) && name == name.to_ascii_lowercase()
 }
 
 /// What a token's holder is: an agent working in a repository, or one of the server's services.
@@ -156,10 +163,18 @@ impl Claims {
         }
         let exact = is_reserved_service(&self.agent);
         match (self.role, exact, is_reserved_lookalike(&self.agent)) {
-            (Role::Agent, _, false) | (Role::Service, true, _) => Ok(()),
-            (Role::Agent, _, true) => Err(refuse("an agent token names a reserved service")),
-            (Role::Service, false, _) => Err(refuse("a service token names no reserved service")),
+            (Role::Agent, _, false) | (Role::Service, true, _) => {}
+            (Role::Agent, _, true) => {
+                return Err(refuse("an agent token names a reserved service"))
+            }
+            (Role::Service, false, _) => {
+                return Err(refuse("a service token names no reserved service"))
+            }
         }
+        if !is_server_agent_name(&self.agent) {
+            return Err(refuse("token names an agent that is not lowercase"));
+        }
+        Ok(())
     }
 }
 
@@ -228,6 +243,11 @@ pub enum MintError {
          starting with a letter or digit"
     )]
     Agent,
+    #[error(
+        "--agent {name:?} must be lowercase (a-z, digits, '.', '_' and '-'): names that differ \
+         only by case would share a fork"
+    )]
+    AgentCase { name: String },
     #[error("{name:?} is a reserved service name; mint it with --service")]
     ReservedAgent { name: String },
     #[error("--service needs one of the reserved names: lander, runner, server")]
@@ -281,6 +301,11 @@ pub fn mint(
             })
         }
         (Role::Service, false, _) => return Err(MintError::NotAService),
+    }
+    if !is_server_agent_name(agent) {
+        return Err(MintError::AgentCase {
+            name: agent.to_string(),
+        });
     }
     if ttl_ms == 0 {
         return Err(MintError::NoLifetime);
@@ -647,6 +672,33 @@ mod tests {
     }
 
     #[test]
+    fn minting_refuses_an_agent_name_that_is_not_lowercase_and_names_the_flag() {
+        for name in ["A1", "Lane-A", "aB"] {
+            let error = mint(&key(1), &request(name, Role::Agent, 1), NOW).unwrap_err();
+            assert!(matches!(error, MintError::AgentCase { .. }), "{name}");
+            let shown = error.to_string();
+            assert!(
+                shown.contains("--agent") && shown.contains("lowercase"),
+                "{shown}"
+            );
+        }
+        assert!(mint(&key(1), &request("lane-a", Role::Agent, 1), NOW).is_ok());
+    }
+
+    #[test]
+    fn the_verifier_refuses_a_signed_token_for_an_agent_name_that_is_not_lowercase() {
+        for name in ["A1", "Lane-A", "aB"] {
+            let token = signed(&key(1), &claims(name, EXP));
+            assert_eq!(
+                reason(&token),
+                "token names an agent that is not lowercase",
+                "{name}"
+            );
+        }
+        assert!(check(&signed(&key(1), &claims("lane-a", EXP))).is_ok());
+    }
+
+    #[test]
     fn a_signed_token_whose_role_and_name_disagree_is_refused() {
         let mut agent_named_lander = claims("lander", EXP);
         agent_named_lander.role = Role::Agent;
@@ -731,7 +783,7 @@ mod tests {
     proptest! {
         #[test]
         fn sign_then_verify_round_trips(
-            agent in "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+            agent in "[a-z0-9][a-z0-9._-]{0,127}",
             exp_ms in 1_u64..(1 << 53),
         ) {
             prop_assume!(!is_reserved_lookalike(&agent));
@@ -747,7 +799,7 @@ mod tests {
 
         #[test]
         fn flipping_any_one_byte_of_a_token_fails(
-            agent in "[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+            agent in "[a-z0-9][a-z0-9._-]{0,127}",
         ) {
             prop_assume!(!is_reserved_lookalike(&agent));
             let token = signed(&key(1), &claims(&agent, EXP));

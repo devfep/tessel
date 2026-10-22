@@ -9,6 +9,7 @@ use tessel_coordinator::shell;
 
 use crate::credential::is_http_url;
 use crate::id::{Name, NameError};
+use crate::identity;
 
 /// What `tessel-server serve --config <file>` reads.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -160,12 +161,12 @@ impl RepositoryConfig {
             })
         };
         for entry in &self.reviewers {
-            if !shell::is_agent_id(entry) {
+            if !identity::is_server_agent_name(entry) {
                 return refuse(
                     "reviewers",
                     entry,
-                    "an agent name is letters, digits, '.', '_' and '-', starting with a letter \
-                     or digit",
+                    "an agent name is lowercase letters, digits, '.', '_' and '-', starting with \
+                     a letter or digit",
                 );
             }
         }
@@ -408,6 +409,19 @@ mod tests {
             assert!(shown.contains("tessel-server.toml"), "{line}: {shown}");
             assert!(shown.contains(key), "{line}: {shown}");
             assert!(shown.contains("acme/demo"), "{line}: {shown}");
+        }
+    }
+
+    #[test]
+    fn a_reviewer_that_is_not_lowercase_is_refused_naming_file_repository_and_key() {
+        let error = load(&format!("{BASE}reviewers = [\"Orchestrator\"]\n")).unwrap_err();
+        let shown = error.to_string();
+        assert!(
+            matches!(error, ConfigError::RepositoryList { .. }),
+            "{shown}"
+        );
+        for name in ["tessel-server.toml", "acme/demo", "reviewers"] {
+            assert!(shown.contains(name), "{name}: {shown}");
         }
     }
 
