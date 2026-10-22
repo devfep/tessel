@@ -495,3 +495,43 @@ fn create_in_refuses_a_hooks_or_home_directory_that_holds_anything() {
         assert!(error.to_string().contains("pre-rebase"), "{error}");
     }
 }
+
+#[test]
+fn an_added_variable_reaches_every_command_and_cannot_replace_a_fixed_one() {
+    let git = git()
+        .with_env("GIT_ASKPASS", "/bin/hook".into())
+        .with_env("GIT_TERMINAL_PROMPT", "1".into());
+    let workspace = workspace();
+    let commands = [
+        git.clone_command(&sources(), Path::new("/clone")),
+        git.clone_test_tree_command(&workspace, Path::new("/tree")),
+        git.fetch_fork_command(&workspace, &sources())
+            .expect("fetch"),
+        git.push_command(&workspace, &sources(), &sha('a'), &sha('b')),
+        git.head_command(&workspace),
+    ];
+    for command in commands {
+        assert_eq!(
+            env_value(&command, "GIT_ASKPASS").as_deref(),
+            Some("/bin/hook"),
+            "{:?}",
+            command.argv
+        );
+        assert_eq!(
+            env_value(&command, "GIT_TERMINAL_PROMPT").as_deref(),
+            Some("0"),
+            "a fixed variable is not replaced"
+        );
+    }
+}
+
+#[test]
+fn without_an_added_variable_the_environment_is_the_fixed_one() {
+    let command = git().head_command(&workspace());
+    assert_eq!(env_value(&command, "GIT_ASKPASS"), None);
+    assert_eq!(
+        git().env().len(),
+        command.env.len() - 2,
+        "GIT_DIR and GIT_WORK_TREE only"
+    );
+}

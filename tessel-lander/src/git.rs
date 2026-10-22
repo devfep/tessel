@@ -136,6 +136,7 @@ pub struct Git {
     home: PathBuf,
     hooks_dir: PathBuf,
     path: OsString,
+    extra_env: BTreeMap<String, OsString>,
 }
 
 impl Git {
@@ -148,7 +149,17 @@ impl Git {
             home,
             hooks_dir,
             path,
+            extra_env: BTreeMap::new(),
         }
+    }
+
+    /// Adds a variable to the environment of every command, for a credential hook such as
+    /// `GIT_ASKPASS`. It cannot replace one of the fixed variables of [`Git::env`]: those are
+    /// set after it.
+    #[must_use]
+    pub fn with_env(mut self, key: &str, value: OsString) -> Git {
+        self.extra_env.insert(key.to_owned(), value);
+        self
     }
 
     /// Creates empty `home` and `hooks` directories under `root` and uses them. Fails if either
@@ -206,7 +217,7 @@ impl Git {
 
     /// The environment of every git command: no user config, no prompt, no editor.
     pub fn env(&self) -> BTreeMap<String, OsString> {
-        let mut env = BTreeMap::new();
+        let mut env = self.extra_env.clone();
         env.insert("PATH".to_owned(), self.path.clone());
         env.insert("HOME".to_owned(), self.home.clone().into_os_string());
         env.insert("GIT_CONFIG_GLOBAL".to_owned(), "/dev/null".into());
