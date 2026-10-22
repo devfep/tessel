@@ -7,26 +7,22 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-21 20:50 EDT. Main at `9b2533f` (#83 and #84 merged; CI green at 1887 tests; the
-orchestrator's gate on `9b2533f` is green on six steps and red twice on the test step, each time one
-restart test of `tessel-server/tests/adapter.rs` refused by its own store lock right after a stop,
-green five times alone: SERVER-RESTART-TEST-FORK-RACE, in flight). M3 is eight tasks in and one from
-its done-check: `tessel-server` lands a submitted commit on a path remote through the lander and the
-runner, by compare-and-swap after the trunk's test command ran on it, and a CI job proves it end to
-end; a kill -9 mid-merge is recovered on restart. Left: the quickstart followed on CI from a clean
-checkout to a landed commit, and the CLI's and skills' steward-as-merger lines.
-**Waiting on Felix:** #86 (SERVER-RESTART-TEST-FORK-RACE at `d738979`, three commits, 1888
-tests, CI green, the reviewer's "Yes": the cause confirmed by a test red at `9b2533f`) and #87
-(P1-LOCAL-SETUP's second half at `c0467f4`, nine commits, 1887 tests, CI green with the new
-quickstart job, the reviewer's "Yes" after a hand walk of the page that landed a commit); both
-worktrees stay until they merge. #85 (this STATE).
-**Decided by the orchestrator (21 October), unopposed:** SERVER-NOLANDER-MESSAGE landed under
-design A (fixed refusal kinds, the host's text kept to the server log) in #84.
+**As of:** 2026-10-21 21:45 EDT. Main at `725834c` (#85, #86 and #87 merged; the orchestrator's
+gate on `725834c` is green on all seven steps, 1888 tests; main's CI green). M3 is done: no
+rules-list row is "after move"; a `tessel-server` lands a submitted commit on a remote through the
+lander and the runner, end to end on CI twice (the landing job and the quickstart job, which runs
+`docs/local-setup.md`'s own commands from a clean checkout); `tessel review` approves through the
+server and the landing follows; a kill -9 mid-merge is recovered on restart with the claim landed
+once. Nothing is dispatched: M4 is re-planned below and waits on Felix's decisions D1-D4 and
+ruleset step 4.
+**Waiting on Felix:** the M4 decisions D1-D4 (section "M4" below) and ruleset step 4 before M4's
+first landing; this STATE.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** M3's done-check on the merges of #86 and #87, with a fully green gate on main (no
-rules-list row "after move": true at
+**Next:** on D1-D4, dispatch M4-GITHUB-REMOTE (lane B) and M4-DOGFOOD-SETUP (lane A); the
+protocol rewrite with Felix; then the first landing of this repository (the old done-check text
+for M3 follows for the record: no rules-list row "after move": true at
 `9b2533f`; the end-to-end landing on CI: #84's job; `tessel review` through the server: #80 and
 the quickstart; the kill -9 loop: #84's restart test), then the M4 re-plan (dogfood on this
 repository: the GitHub fork adapter, SERVER-FORK-CASE, ruleset step 4 before its first landing).
@@ -386,7 +382,7 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
 Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT and COORD-UNDELIVERED-GRANT
 (see "Carried-over tasks" in the plan). COORD-WAKE-WHILE-VERIFYING was decided by P1-MOVE-WAKE.
 
-### M3. The local server
+### M3. The local server (done 21 October)
 
 Done when (decision 15): no rules-list row is "after move"; an end-to-end landing on CI (a local
 `tessel-server`, a bare git remote, two CLI agents, one commit landed by compare-and-swap after
@@ -423,22 +419,21 @@ claims reconciled.
   `RequiredCheck`, `ForkMissing`, `Other`); the agent sees one fixed reason per kind (rule 3, the
   fixed-form test extended); the host's message goes bounded and quoted to the server log only;
   `NoLander`'s reason names the missing lander, with an adapter test.
-- [ ] **SERVER-RESTART-TEST-FORK-RACE** — lane B; #86 at `d738979`, reviewed "Yes", waiting for
-  Felix: the store lock is a POSIX record lock (`fcntl`, per process, not inherited by a fork
-  child) with a process-wide registry so a second open in one process is still refused, the
-  file opened once and closed before leaving the registry; a reproducing test with a `pre_exec`
-  sleep, red at `9b2533f`; all-threads stress 5 of 5 against 4 of 5 before.
-  From the orchestrator's gate on `9b2533f`: `tessel-server/tests/adapter.rs`
-  `a_restart_over_the_same_directory_keeps_the_claims` and then
+- [x] **SERVER-RESTART-TEST-FORK-RACE** (`d4d3728`, #86) — lane B. The store lock is a POSIX
+  record lock (`fcntl`, per process, not inherited by a fork child) with a process-wide registry
+  so a second open in one process is still refused, the file opened once and closed before leaving
+  the registry; a reproducing test with a `pre_exec` sleep, red at `9b2533f`; all-threads stress 5
+  of 5 against 4 of 5 before. From the orchestrator's gate on `9b2533f`:
+  `tessel-server/tests/adapter.rs` `a_restart_over_the_same_directory_keeps_the_claims` and then
   `a_second_server_on_the_same_directory_is_refused_at_start` each failed once, reopening the
   directory right after a stop, with the store `Locked` by the test's own pid (five reruns green
-  alone). Since #84 the same binary spawns git and the runner, and a
-  forked child holds the lock file's open description until it execs, so a restart reopening the
-  directory in that window is refused; `flock` is per description, not per process. A test
-  artefact, not a server bug (a real restart follows a process exit). Done: the restart tests
-  run in a binary that spawns no children, or the spawn and the reopen are serialised, with the
-  reason written where the lock is taken; preferred: a per-process `fcntl` record lock that a
-  fork child does not inherit, with a reproducing test.
+  alone). Since #84 the same binary spawns git and the runner, and a forked child holds the lock
+  file's open description until it execs, so a restart reopening the directory in that window is
+  refused; `flock` is per description, not per process. A test artefact, not a server bug (a real
+  restart follows a process exit). Done: the restart tests run in a binary that spawns no
+  children, or the spawn and the reopen are serialised, with the reason written where the lock is
+  taken; preferred: a per-process `fcntl` record lock that a fork child does not inherit, with a
+  reproducing test.
 - [ ] **CLI-WORKTREE-LOCK-FORK-RACE** — with the next CLI task. From the #86 review: the CLI
   daemon's worktree lock (`tessel-cli/src/daemon.rs`, `flock`) has the same fork-window
   exposure, and the daemon spawns git and hooks. Done: the same record lock, or a written reason
@@ -519,28 +514,81 @@ claims reconciled.
 - [ ] **SERVER-KILL-AFTER-PUSH-TEST** — M5 hardening, with the next server task. From the same
   review: `restart.rs` kills the server during the runner's command; a kill between the push
   and the answer is untested (it should end as already merged, counted once). Done: that test.
-- [ ] **P1-LOCAL-SETUP** — lane A; second half in #87 at `c0467f4`, reviewed "Yes", waiting for
-  Felix: `docs/local-setup.md` (86 lines) walks to a commit landed on the developer's remote, the
-  CI job "Slow lane, quickstart" runs the page's own fenced blocks from a clean checkout (5 s
-  after the build, a drift in the page fails it), the CLI's text says the server's lander lands
-  after the runner ran the gate and names no fork, the transcript is prepared for the evidence
-  record and nothing copies it yet, and the skills, README, configuration, how-tessel-works and
-  coordinator docs say the same.
-  First half merged (`af595c5`, #80): `tessel init` against a
-  local server (`--steward`, the `curl` transport and `STEWARD_ADMIN_TOKEN` deleted; the token
-  comes from the file or `TESSEL_TOKEN`, and the no-token error names the `tessel-server admin
-  token` command), `[[repository]]` `reviewers` and `sensitive` validated at load and passed into
-  `HostConfig` (a configured reviewer approves a held submission through the server; a name not
-  configured is refused), the real CLI against an in-process server with `[identity]`
-  (`tessel-cli/tests/local_server.rs`; the token in no file but the 0600 config), the skills, README
-  and configuration docs rewritten, and `docs/local-setup.md` (59 lines, the server's keys outside
-  any checkout) walked by the lane and the reviewer; the page says what this build does after a
-  reviewer approves: the merge is refused and the claim reopens. 1789 to 1783 tests (15 steward
-  minting tests deleted, 9 added). Second half, after P1-SERVER-LANDING: the quickstart followed
-  on CI from a clean checkout to a landed commit, the steward-as-merger wording in the CLI's
-  strings (`inbox_hook.rs`, `mcp.rs`, `moves.rs`, `transcript.rs`) and the skills' merge-path
-  lines rewritten, and `skills/tessel/SKILL.md`'s "before the merge's evidence step finishes"
-  sentence (no such step exists) corrected.
+- [x] **P1-LOCAL-SETUP** (`725834c`, #87; first half `af595c5`, #80) — lane A. Second half:
+  `docs/local-setup.md` (86 lines) walks to a commit landed on the developer's remote, the CI job
+  "Slow lane, quickstart" runs the page's own fenced blocks from a clean checkout (5 s after the
+  build, a drift in the page fails it), the CLI's text says the server's lander lands after the
+  runner ran the gate and names no fork, the transcript is prepared for the evidence record and
+  nothing copies it yet, and the skills, README, configuration, how-tessel-works and coordinator
+  docs say the same. First half merged (`af595c5`, #80): `tessel init` against a local server
+  (`--steward`, the `curl` transport and `STEWARD_ADMIN_TOKEN` deleted; the token comes from the
+  file or `TESSEL_TOKEN`, and the no-token error names the `tessel-server admin token` command),
+  `[[repository]]` `reviewers` and `sensitive` validated at load and passed into `HostConfig` (a
+  configured reviewer approves a held submission through the server; a name not configured is
+  refused), the real CLI against an in-process server with `[identity]`
+  (`tessel-cli/tests/local_server.rs`; the token in no file but the 0600 config), the skills,
+  README and configuration docs rewritten, and `docs/local-setup.md` (59 lines, the server's keys
+  outside any checkout) walked by the lane and the reviewer; the page says what this build does
+  after a reviewer approves: the merge is refused and the claim reopens. 1789 to 1783 tests (15
+  steward minting tests deleted, 9 added). Second half, after P1-SERVER-LANDING: the quickstart
+  followed on CI from a clean checkout to a landed commit, the steward-as-merger wording in the
+  CLI's strings (`inbox_hook.rs`, `mcp.rs`, `moves.rs`, `transcript.rs`) and the skills'
+  merge-path lines rewritten, and `skills/tessel/SKILL.md`'s "before the merge's evidence step
+  finishes" sentence (no such step exists) corrected.
+
+
+### M4. Dogfood on the local server
+
+Plan (`docs/proposals/phase-1.md`, M4): this repository coordinated and landed by a
+`tessel-server` Felix starts on his machine; lanes claim before editing; the runner runs the
+workspace gate on the rebased commit; the lander lands `main` on GitHub by compare-and-swap push
+over HTTPS with Felix's token as the ruleset bypass actor (step 4); `docs/BUILD-PROTOCOL.md`
+section 2 rewritten, with Felix's approval of the landing shape before the first landing. Done
+when: five landings of this repository with their notes and claims released by `Merged`, none by
+hand; one server restart while a submitted claim is held, that claim landed afterwards.
+
+**Decisions for Felix (block the first landing, not the first two tasks):**
+- D1, the landing shape: the lander pushes `main` over HTTPS with a token read from a 0600 file
+  named in `[lander]` (never an environment variable, never in a URL or a log); the bypass actor
+  is Felix (ruleset step 4). Approve or change.
+- D2, the fork shape for lanes: (a) a real GitHub fork per lane name (`fork` a URL with
+  `{agent}`; lanes are few and fixed), or (b) branches in this repository with the template
+  gaining a ref, which needs a lander change since it reads only a fork's `main`. Recommended:
+  (a), no lander change, forks named for `lane-a` and `lane-b`.
+- D3, the runner's load on the Mac: each landing runs the workspace gate on Felix's machine
+  (about five minutes at load 20; the merge call's deadline is 13 minutes and covers it). Accept,
+  or set `-j 2` and two test threads in the trunk's `tessel.toml`.
+- D4, identities: tokens per lane name from the server's keys; the orchestrator holds the
+  reviewer token (`reviewers = ["orchestrator"]`); `sensitive` covers `src/protocol.rs`,
+  `src/host/`, `.github/` and `docs/BUILD-PROTOCOL.md`.
+
+- [ ] **M4-GITHUB-REMOTE** — lane B. `with_push_access` for an HTTPS remote: the credential from
+  the `[lander]` token file through git's askpass or credential-helper environment, never in
+  argv, a URL or a log (test: a fake askpass records what git asked; argv and the log scanned);
+  the read-back by `ls-remote` with the same credential; `fork` as a URL; the trunk head read
+  from the git host at load (COORD-HEAD-FROM-AGENT). Done: one landing against the P0-SPIKE
+  sandbox organisation, recorded in the report, plus the tests.
+- [ ] **M4-DOGFOOD-SETUP** — lane A. `docs/dogfood.md` and a script Felix runs: the server
+  directory outside the checkout, keys, tokens for the two lanes and the orchestrator, the
+  repository entry for this repository with `remote`, `fork`, `reviewers` and `sensitive`,
+  `tessel-runner.toml`, and the trunk's `tessel.toml` with the gate's commands. Done: Felix
+  starts the server from the page; a restart by hand keeps a held submission.
+- [ ] **M4-PROTOCOL-REWRITE** — the orchestrator with Felix. `docs/BUILD-PROTOCOL.md` section 2
+  and `CLAUDE.md`'s dogfooding section: lanes `tessel start` with the brief's intent and claim
+  before editing; `tessel submit --evidence` replaces push and pull request; the orchestrator
+  reviews held submissions with `tessel review`; the adversarial reviewer reads the submitted
+  commit on the fork; the server's landing replaces Felix's merge; the runner's run replaces the
+  orchestrator's gate. Done: Felix approves the text before the first landing.
+- [ ] **M4-FIRST-LANDINGS** — both lanes, after step 4, D1 and the protocol rewrite. The five
+  landings of the done-check, each counted here with its note. SERVER-FORK-CASE lands before the
+  second lane name is minted.
+- [ ] **M4-RESTART-HELD** — lane B. The done-check's restart with a submitted claim held, on the
+  real server, that claim landed afterwards.
+- [ ] **M5-PROOF-CANDIDATE** — M5, to weigh at its re-plan. GitHub Next and Microsoft Research's
+  Proof Driven Development Kit (21 October) proves Rust against a Verus spec and falls back to
+  tests. The core's invariants that proptests pin (one `Merged` per claim, fences persisted before
+  grants, a held submission never dispatched) are candidates for a proof. Done: a written answer
+  whether Verus fits the core, with one invariant tried.
 
 ## Carried over from the contest build
 
