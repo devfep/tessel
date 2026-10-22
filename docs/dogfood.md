@@ -116,5 +116,5 @@ A cold `cargo test --workspace --locked --offline --no-fail-fast` took 237 s on 
 fresh worktree, not a fresh clone. The load was 9 at the start and rose to 75 during the run. The
 runner's `timeout_secs` is 720. The lander asks the runner for what is left of its 13-minute
 deadline less 5 s, about 775 s when the clone, fetch and rebase are quick, so 720 cuts first unless
-they take more than about 55 s. Open, D3: accept this, or set `-j 2` and two test threads in the
-trunk's `tessel.toml`.
+they take more than about 55 s. Open, D3: the gate's parser refuses `-j 2`, so limiting the
+load needs a change, a runner setting or a flag it accepts. Until then D3 is accept or not.

@@ -125,7 +125,6 @@ pnpm = ["tessel-steward"]
 
 [[test]]
 argv = ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast"]
-
 ```
 
 ## Host settings
