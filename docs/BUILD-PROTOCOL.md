@@ -8,42 +8,77 @@ protocol used in the pantry-app repo, at Felix's instruction on 5 October 2026.
 
 | Role | Who | Job |
 |---|---|---|
-| Orchestrator | the session Felix talks to | Dispatches, reviews reports, decides held submissions, gates, writes the roadmap and STATE. Never writes product code. Opens pull requests; Felix merges them (section 2). |
+| Orchestrator | the session Felix talks to | Dispatches, reviews reports, decides held submissions with `tessel review`, writes the roadmap and STATE. Never writes product code. Tells a lane to land on the reviewer's `Yes` (section 2). |
 | Implementer | fresh `general-purpose` subagent, `model: "sonnet"` | Implements exactly one task in its own worktree, runs the gate, commits, reports. |
 | Reviewer | fresh `superpowers:code-reviewer` subagent, `model: "opus"` | Reviews `BASE..HEAD` against the task text. Trusts nothing in the report. Never merges. |
 | Advisor | `model: "opus"`, read-only | Only when a lane has looped for about 45 minutes: explains the way forward to the lane. No edits, no builds. |
 
 Order is fixed: implementer report → reviewer → fix passes back to the SAME implementer → re-check
-by the SAME reviewer → pull request on "Yes" only → Felix merges → orchestrator's gate on `main` →
-close the roadmap box with the merge sha → reclaim worktree and branch → rewrite STATE.
+by the SAME reviewer → the lane lands on "Yes" only (`tessel submit`; a held submission waits for
+the orchestrator's `tessel review`) → the runner's run and the lander's push → CI on `main` →
+close the roadmap box with the landed sha → reclaim worktree and branch → rewrite STATE.
 
 The reviewer's first line is exactly `Ready to merge? Yes`, `No` or `With fixes`. The brief asks for
 an adversarial review, the reviewer's own mutants, spec compliance against the task text, and a flag
 on speculative or over-engineered code.
 
-## 2. Branches and merges
+## 2. Claims, submissions and landings
 
-Nothing is deployed, so until Phase 1 of `PLAN.md` ships `tessel-server` there is no coordinator to
-claim through and no steward to land through.
+This repository is coordinated and landed by a `tessel-server` on Felix's machine, set up by
+`docs/dogfood.md`. This section applies from the first landing STATE records; until then the pull
+request flow at its end applies.
 
 - Each lane works in a worktree `.claude/worktrees/<task>` on branch `task-<task>`, cut from
-  `main`. It never edits files in another worktree and never `git stash`es.
-- Lanes do not touch the same files at once; the orchestrator assigns file ownership in each brief
-  (section 4, item 4).
-- The lane commits to its task branch with the git note from `CLAUDE.md`. The orchestrator pushes
-  the branch and opens a pull request to `main` after the reviewer's `Yes` and a passing gate on
-  the branch. Felix merges pull requests. Nothing is pushed to `main` directly.
+  `main`, as the agent its brief names (`lane-a` or `lane-b`: `tessel init` with that lane's token
+  from the server directory, never printed). It never edits files in another worktree and never
+  `git stash`es.
+- Before editing, the lane runs `tessel start` with the brief's intent and claims what it will
+  change (`skills/tessel/SKILL.md`; section 4, item 12). The brief still assigns file ownership
+  (section 4, item 4): a claim is granted or denied by the coordinator, not negotiated, so a denial
+  means the tasks were cut wrong, and the lane reports it instead of waiting.
+- The lane commits to its task branch. Each commit gets the git note from `CLAUDE.md`, by
+  `tessel submit` for the submitted commit and by hand for the ones before it. Nothing is pushed
+  to `main` by anyone: Felix's token lands it as the ruleset's bypass actor, and only through the
+  lander.
 - Before its final gate and report, a lane merges the current `main` into its branch as its own
-  commit; any change follows in a separate commit, so a fix never hides inside a merge commit.
+  commit; any change follows in a separate commit, so a fix never hides inside a merge commit. The
+  lander rebases the submitted commit onto `main` again; a conflict comes back as
+  `submit_rejected`, and the lane merges `main` once more and submits again.
+- On the reviewer's `Yes`, the orchestrator tells the lane to land: the lane pushes the commit to
+  its fork (`git push --force <fork> HEAD:main`; the server's `fork` template names it) and runs
+  `tessel submit --evidence "<the gate's commands and exit codes>"`. There is no pull request. The
+  runner runs the trunk's `tessel.toml` test command on the rebased commit and the lander pushes
+  `main` by compare-and-swap; the lane's inbox says merged and the orchestrator closes the box
+  with the landed sha from `git log origin/main`.
+- A submission the coordinator holds for review (a `sensitive` path: `src/protocol.rs`,
+  `src/host/`, `.github/`, `docs/BUILD-PROTOCOL.md`; a signature change, a deletion or a rename;
+  a threatened assumption; missing evidence: `docs/configuration.md`, "What holds a submission
+  for review") is decided by the orchestrator as agent `orchestrator` with `tessel review <id>
+  --approve|--reject --note "<reason>"`, only after the reviewer's `Yes` on that exact commit,
+  read from the lane's fork in the reviewer's own clone. A rejection goes back to the lane as a
+  fix pass.
+- The orchestrator's own commits (STATE, roadmap rows, briefs' decisions) land the same way, as
+  agent `orchestrator` from its fork, so every commit on `main` carries its note.
 - The worktree has one user at a time. The orchestrator hands it from reviewer to implementer only
   after the reviewer's idle notice, not on its verdict message alone.
 - A breaking change to `src/protocol.rs` needs Felix's approval first (`CLAUDE.md`, rule 1).
-- Once `tessel-server` coordinates this repository (Phase 1, advisory mode), lanes claim before
-  editing again (`skills/tessel/SKILL.md`), and this section is rewritten.
+- Two things still go through a pull request Felix merges, because the lander refuses the first
+  and the second is outside the repository's gate: a change to `tessel.toml`, and a change to the
+  server's own set-up in `docs/dogfood.md` or `scripts/dogfood/`. Felix merges nothing else by
+  hand.
+
+Until the first landing: the orchestrator pushes the lane's branch and opens a pull request to
+`main` after the reviewer's `Yes` and a passing gate on the branch; Felix merges it; the
+orchestrator's gate runs on `main`. A pull request carries exactly the commit the reviewer passed.
 
 ## 3. Gates
 
-Every implementer runs, and the orchestrator re-runs on the merged tree:
+Every implementer runs this before it reports. At the landing the runner runs the trunk's
+`tessel.toml` test command on the rebased commit (`cargo test --workspace --locked --offline
+--no-fail-fast`), and CI on `main` runs fmt, clippy and the named-tests check after the push; a
+red CI on `main` is the next dispatch, before any other. `actionlint` and `zizmor` run only in the
+lanes' gates until CI-ACTIONLINT-ZIZMOR adds them to CI. Until the first landing the orchestrator
+re-runs the whole gate on the merged tree.
 
 | Area | Checks |
 |---|---|
@@ -56,9 +91,9 @@ a new check can fail (mutant or deliberate break, then restore); exit codes deci
 
 ## 4. What every brief carries
 
-0. A pull request carries exactly the commit the Opus reviewer passed, or one the orchestrator
+0. A submission carries exactly the commit the Opus reviewer passed, or one the orchestrator
    has read. When the orchestrator asks for changes after the Yes, the lane commits, reports the
-   sha, and waits; the pull request is updated only after the orchestrator reads the change.
+   sha, and waits; it submits only after the orchestrator reads the change.
 
 1. "Never end your turn waiting for a notification. You will not be woken." Poll your own long runs
    in bounded foreground loops.
@@ -98,13 +133,13 @@ Docker Desktop is quit when no image build needs it. Use `trash`, never `rm -rf`
 
 ## 6. Autonomy
 
-The orchestrator decides without asking: dispatch order, fix-pass rulings, opening pull requests on
-"Yes", gates, closing boxes, filing new tasks from reviews, reclaiming resources. It reports each
-closed task in at most six lines and continues.
+The orchestrator decides without asking: dispatch order, fix-pass rulings, telling a lane to land on
+"Yes", held submissions, closing boxes, filing new tasks from reviews, reclaiming resources. It
+reports each closed task in at most six lines and continues.
 
 Felix decides: scope or order changes to `PLAN.md`, any breaking protocol change, account and
-billing actions, and merging pull requests. Those go under "Pending from Felix" in the STATE block;
-work that does not depend on them continues.
+billing actions, the ruleset, and the two pull requests of section 2. Those go under "Pending from
+Felix" in the STATE block; work that does not depend on them continues.
 
 For a design question the orchestrator brings one recommendation with its reason, not a list.
 

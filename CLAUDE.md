@@ -34,12 +34,15 @@ decisions. The detailed design, requirements and test strategy are in
 9. **Tested before merged.** CI must be green. A behaviour change comes with a test that fails without it; the proposal's requirements each have a test.
 10. **Don't change `PLAN.md` scope or order without asking.** Propose changes instead.
 
-## Dogfooding: every commit carries its intent
-`tessel submit` writes this note on the submitted commit, from the intent given to `tessel start`,
-the claim's `--assume` statements, `--rejected` and `--evidence`. A commit that already has a note
-keeps it. The note stays in the local repository: `git push` of the fork head does not carry
-`refs/notes/commits`. A commit that lands outside `tessel submit` still gets a hand-written note in
-the same shape:
+## Dogfooding: claim first, every commit carries its intent
+This repository is coordinated and landed by a `tessel-server` (`docs/dogfood.md`; the process is
+`docs/BUILD-PROTOCOL.md`, section 2). Claim before editing (`skills/tessel/SKILL.md`); `tessel
+submit` lands the commit through the server's lander after the runner ran `tessel.toml`'s test
+command on it. `tessel submit` writes this note on the submitted commit, from the intent given to
+`tessel start`, the claim's `--assume` statements, `--rejected` and `--evidence`. A commit that
+already has a note keeps it. The note stays in the local repository: `git push` of the fork head
+does not carry `refs/notes/commits`. A commit that lands outside `tessel submit` (a pull request for
+`tessel.toml` or the server's set-up) still gets a hand-written note in the same shape:
 ```
 git notes add -m "intent: <one line>
 assumes: <behaviour relied on but not owned, or none>
