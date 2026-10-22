@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tessel_coordinator::shell;
 
+use crate::credential::is_http_url;
 use crate::id::{Name, NameError};
 
 /// What `tessel-server serve --config <file>` reads.
@@ -89,6 +90,16 @@ pub struct RepositoryConfig {
 /// The placeholder in `fork` that the agent's name replaces.
 pub const FORK_AGENT_PLACEHOLDER: &str = "{agent}";
 
+/// Whether `fork` is an http(s) URL with `{agent}` in its authority, before the first `/`.
+fn agent_in_url_host(fork: &str) -> bool {
+    if !is_http_url(fork) {
+        return false;
+    }
+    let after_scheme = fork.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = after_scheme.split('/').next().unwrap_or_default();
+    authority.contains(FORK_AGENT_PLACEHOLDER)
+}
+
 impl RepositoryConfig {
     /// `reviewers` in the comma-separated form `HostConfig` reads, or `None` when there are none.
     pub fn reviewers_list(&self) -> Option<String> {
@@ -124,6 +135,11 @@ impl RepositoryConfig {
             (Some(_), Some(fork)) if fork.matches(FORK_AGENT_PLACEHOLDER).count() != 1 => refuse(
                 "fork",
                 "must contain {agent} exactly once, standing for the agent's name",
+            ),
+            (Some(_), Some(fork)) if agent_in_url_host(fork) => refuse(
+                "fork",
+                "must not put {agent} in the host of a URL: an agent's name would choose which \
+                 host receives the token",
             ),
             (Some(_), Some(_)) if !has_lander => refuse(
                 "remote",
@@ -493,6 +509,10 @@ mod tests {
         for fork in [
             "https://github.com/acme/demo-fork.git",
             "https://github.com/acme/{agent}/{agent}.git",
+            "https://{agent}/acme/demo.git",
+            "https://{agent}.example.com/demo.git",
+            "http://git.example.com:{agent}/demo.git",
+            "https://user@{agent}/demo.git",
         ] {
             let text = format!(
                 "{BASE}remote = \"https://github.com/acme/demo.git\"\nfork = \"{fork}\"\n{LANDER}"

@@ -80,6 +80,9 @@ pub fn read_token(path: &Path) -> Result<String, TokenFileError> {
     if token.is_empty() {
         return Err(refuse("is empty"));
     }
+    if token.contains(['\n', '\r']) {
+        return Err(refuse("contains a line break; a token is one line"));
+    }
     Ok(token.to_owned())
 }
 
@@ -154,13 +157,32 @@ mod tests {
             (SECRET.to_owned(), SECRET.to_owned()),
             (format!("{SECRET}\n"), SECRET.to_owned()),
             (format!("{SECRET}\r\n"), SECRET.to_owned()),
-            (format!("{SECRET}\n\n"), format!("{SECRET}\n")),
         ] {
             let path = file_with(dir.path(), "token", &text, 0o600);
             assert_eq!(read_token(&path).unwrap(), token, "{text:?}");
         }
         let readable_by_owner_only = file_with(dir.path(), "ro", SECRET, 0o400);
         assert_eq!(read_token(&readable_by_owner_only).unwrap(), SECRET);
+    }
+
+    #[test]
+    fn a_token_with_a_line_break_inside_is_refused_without_its_content() {
+        let dir = tempfile::tempdir().unwrap();
+        for text in [
+            format!("{SECRET}\nsecond"),
+            format!("{SECRET}\n\n"),
+            format!("{SECRET}\r\n\r\n"),
+            format!("{SECRET}\rmore"),
+            format!("first\n{SECRET}\n"),
+        ] {
+            let path = file_with(dir.path(), "token", &text, 0o600);
+            let error = read_token(&path).unwrap_err().to_string();
+            assert!(
+                error.contains("line break") && error.contains(TOKEN_FILE_KEY),
+                "{error}"
+            );
+            assert!(!error.contains(SECRET), "{error}");
+        }
     }
 
     #[test]
