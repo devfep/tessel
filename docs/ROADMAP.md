@@ -584,9 +584,11 @@ hand; one server restart while a submitted claim is held, that claim landed afte
   `{agent}`; lanes are few and fixed), or (b) branches in this repository with the template
   gaining a ref, which needs a lander change since it reads only a fork's `main`. Recommended:
   (a), no lander change, forks named for `lane-a` and `lane-b`.
-- D3, the runner's load on the Mac: each landing runs the workspace gate on Felix's machine
-  (about five minutes at load 20; the merge call's deadline is 13 minutes and covers it). Accept,
-  or set `-j 2` and two test threads in the trunk's `tessel.toml`.
+- D3, the runner's load on the Mac: each landing runs `cargo test --workspace` cold on Felix's
+  machine (237 s measured at load 9 on 22 October; the merge call's deadline is 13 minutes and
+  the runner's `timeout_secs` is 720). Accept, or ask for a way to limit the load: the gate's
+  parser accepts none of `-j`, `--` or an environment setting, so limiting it is a runner or
+  gate change, not a `tessel.toml` line.
 - D4, identities: tokens per lane name from the server's keys; the orchestrator holds the
   reviewer token (`reviewers = ["orchestrator"]`); `sensitive` covers `src/protocol.rs`,
   `src/host/`, `.github/` and `docs/BUILD-PROTOCOL.md`.
