@@ -1,5 +1,5 @@
 //! What a landing needs from the machine it runs on: the runner that runs the repository's tests,
-//! and the lander's ports over a git remote reached by path.
+//! and the lander's ports over a git remote, reached by path or by URL.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -84,7 +84,8 @@ fn read_gate(tree: &TestTree) -> Result<GateConfig, BoundaryError> {
     })
 }
 
-/// The lander's ports for one call over a remote reached by path, which needs no credential.
+/// The lander's ports for one call over a git remote. The credential, when the remote needs one, is
+/// the token file git reads through its askpass hook; the ports mint and revoke nothing.
 ///
 /// The tests run through [`TestRunner`] on the lander's `TestTree`. The install step is not run:
 /// the machine's own toolchain and dependencies are what the tests use.
@@ -172,7 +173,12 @@ impl<'a> Ports<'a> {
 }
 
 impl MergePorts for Ports<'_> {
-    /// A path remote has no read credential to revoke.
+    /// Nothing is minted for a read, so nothing is revoked. A token file is read only by git's
+    /// askpass hook, while one of the lander's git commands runs; none is running when this
+    /// returns. This is not the isolation the trait describes, though: the runner runs in this
+    /// process as the server's own user, so the repository's test code can read a token file the
+    /// server can. A trunk whose tests are not trusted needs its tests run in CI, or the token
+    /// scoped to the repositories it lands on and nothing more.
     fn revoke_read_access(&self) -> bool {
         true
     }
@@ -185,8 +191,9 @@ impl MergePorts for Ports<'_> {
         self.step(step, tree)
     }
 
-    /// A path remote has no write credential to mint: the push is allowed by the filesystem, and
-    /// M4 mints the git host's token here. A call past its deadline, or given up, must not push.
+    /// Nothing is minted for the push: it uses the token file through git's askpass hook, or no
+    /// credential for a path or a public remote, and nothing is revoked afterwards. A call past
+    /// its deadline, or given up, must not push.
     fn with_push_access<T>(
         &self,
         _update: &PushUpdate,

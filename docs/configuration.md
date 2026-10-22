@@ -185,10 +185,11 @@ table, makes it invalid, and an error names the file and the key.
 | `[[repository]]` `tenant`, `name`, `run` | names | at least one | A repository this server serves, and the run its evidence log is named for. `tenant` and `name` are lowercase letters, digits and interior hyphens, at most 63 characters. |
 | `[[repository]]` `reviewers` | array of agent names | `[]` | The agents that may approve or reject a held submission, which is what `tessel review` does. Empty: nobody may, and a held submission stays held. Each entry has the agent-name form (`A-Z a-z 0-9 . _ -`, first a letter or digit); a bad entry makes the file invalid and the error names the file, the repository and the key. Read as `REVIEWERS` above. |
 | `[[repository]]` `sensitive` | array of path prefixes | `[]` | A submission that touches a path starting with an entry is held for review. No globs; end a directory with `/`. A bad entry (empty, a leading `/`, a `..` segment, a `*`, a comma, a space at either end) makes the file invalid, naming the file, the repository and the key. Read as `SENSITIVE` above. |
-| `[[repository]]` `remote` | path or URL | none | The git remote main lives on. A repository with a `remote` is landed by the server ([Landing](#landing)); one without has no lander and every merge is refused. Only a path, or a URL that needs no credential, works until M4 mints the git host's token. |
-| `[[repository]]` `fork` | path or URL with `{agent}` | required with `remote` | Where an agent's fork is, `{agent}` standing for the agent's name, as in the swarm's `<forks>/<agent>.git`: `/srv/forks/{agent}.git`. `{agent}` must appear exactly once, and `fork` without `remote` is invalid; the error names the file and the key. The name is substituted only if it passes the protocol's agent-name rule (the one the verifier enforces: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 128 bytes), checked again at every call; any other name is refused as a missing fork and no path is made. On a case-insensitive filesystem names that differ only by case share one fork, so mint tokens for lowercase names. The agent pushes the commit to the fork's `main` before `tessel submit`. |
+| `[[repository]]` `remote` | path or URL | none | The git remote main lives on. A repository with a `remote` is landed by the server ([Landing](#landing)); one without has no lander and every merge is refused. A path needs no credential. An `https://` URL on a host that needs one works with `[lander]` `token_file`; without it the server logs once at start that landings on the repository push without a credential, and git's push is refused by a host that requires one. Plain `http://` is accepted here and refused by git (the lander allows only `https`, `ssh` and `file`). |
+| `[[repository]]` `fork` | path or URL with `{agent}` | required with `remote` | Where an agent's fork is, `{agent}` standing for the agent's name, as in the swarm's `<forks>/<agent>.git`: `/srv/forks/{agent}.git`. `{agent}` must appear exactly once, never in the host of a URL, and `fork` without `remote` is invalid; the error names the file and the key. The name is substituted only if it passes the protocol's agent-name rule (the one the verifier enforces: letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 128 bytes), checked again at every call; any other name is refused as a missing fork and no path is made. On a case-insensitive filesystem names that differ only by case share one fork, so mint tokens for lowercase names. The agent pushes the commit to the fork's `main` before `tessel submit`. A URL is validated like a path, and the fetch of a private fork uses `token_file`. |
 | `[lander]` `work_dir` | path | required with a `remote` | Where clones live while a call runs, under `<work_dir>/<tenant>/<repo>/`. The directory is the server's: it removes what a killed server left there when it starts. |
 | `[lander]` `runner_config` | path | required with a `remote` | The `tessel-runner.toml` the tests run under ([Runner](#runner-tessel-runner)). It is checked when the server starts, so a file the runner would refuse stops the server, and again before every run. |
+| `[lander]` `token_file` | path | none | A file holding the git host's token, for a `remote` or `fork` that is a URL which needs one. At start, and again before every call, the file must exist, be a regular file with no group or other permission bits (mode 0600) and be non-empty after one trailing newline is dropped; otherwise the server does not start, or the call ends as `Unknown`, and the error names the file and the key, never any content. Git reads it through its askpass hook: the user name `x-access-token` and the file's content, read when git asks, so a replaced file takes effect on the next git command. The token is in no argument, URL, environment value, log line or error; the environment carries only the file's path. The hook answers only a prompt whose host (the URL's authority without user information, lowercased) equals the host of the `remote` or the `fork`, so a look-alike such as `github.com.evil.com` gets nothing, and a token with a line break inside is refused. The file's owner and its directory's mode are not checked: only the file's mode, re-checked on the open handle at each prompt (the target's mode for a symlink). On Linux the hook is named by the server's executable path, so a server left running across a binary upgrade cannot answer prompts until it is restarted. The tests the runner runs are the server's user and can read the file ([Landing](#landing)). |
 | `[identity]` `keys` | path | none | The directory of Ed25519 keys. |
 | `[identity]` `audience` | name | none | The `aud` a token must carry. |
 
@@ -210,7 +211,10 @@ with a `remote` the server answers it in process with the lander and the runner.
    `[install]` in `tessel.toml` is ignored. A trunk with no valid `tessel.toml` cannot be tested, so
    nothing lands; the server logs why.
 6. Push main with a compare-and-swap on the head read in step 1, then read main back. Only a head
-   found on main is answered as merged.
+   found on main is answered as merged. With `token_file` set, every git command of the landing
+   (the clone, the fork fetch, the push and the read-back) gets the token from the file through
+   git's askpass hook, `tessel-server` itself run by git; nothing is minted and nothing is
+   revoked.
 
 | Outcome | The host is told | The agent sees |
 |---|---|---|
@@ -233,9 +237,15 @@ running cannot push main. A server killed mid-merge is woken for each repository
 when it restarts, finds the merge in flight and retries it after the first backoff, 10 seconds.
 `Test` and `Land` are refused: the host does not issue them while `Prepare` is the whole merge.
 
-The runner has no sandbox until M5. A trunk's test command runs as the runner's user and can write
-to a path `remote`, which a landing does not prevent: use this only for a repository whose tests
-you trust.
+When the server starts, a repository with a `remote` and no head reads main's head once, so the
+head is main's before the first agent says hello. If main cannot be read then, or a hello arrives
+first, the head is the base that hello declared, as before; a later wake of the repository reads
+again while it has no head.
+
+The runner has no sandbox until M5. A trunk's test command runs as the runner's user, which is the
+server's user, and can write to a path `remote` and read the `token_file`, which a landing does not
+prevent: use this only for a repository whose tests you trust, and scope the token to the
+repositories it lands on.
 
 No evidence record is written until P1-EVIDENCE. After a landing the server tells the host main
 moved, as the `trunk-moved` route does for a push it did not make; the route stays for those.

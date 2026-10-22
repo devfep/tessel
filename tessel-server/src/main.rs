@@ -1,5 +1,7 @@
 //! `tessel-server serve --config <file>`, and `admin keygen` and `admin token` for the keys.
 
+use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -7,6 +9,9 @@ use std::sync::Arc;
 use clap::{Args, Parser, Subcommand};
 use tessel_server::admin::{self, TokenArgs};
 use tessel_server::config::{Config, IdentityConfig};
+use tessel_server::credential::{
+    askpass_answer, askpass_prompt, ASKPASS_HOSTS_VAR, ASKPASS_TOKEN_FILE_VAR,
+};
 use tessel_server::identity::{self, Ed25519Verifier};
 use tessel_server::repo::NoLander;
 use tessel_server::server::{self, Deps};
@@ -77,13 +82,34 @@ struct KeyArgs {
     kid: String,
 }
 
+/// Answers git's prompt on standard output. Nothing is logged: git shows this process's standard
+/// error to the user, and the answer is a credential.
+fn askpass(prompt: &str, token_file: Option<&OsStr>) -> ExitCode {
+    let hosts = std::env::var_os(ASKPASS_HOSTS_VAR);
+    let Some(answer) = askpass_answer(prompt, token_file, hosts.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    match writeln!(std::io::stdout(), "{answer}") {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Git runs the askpass hook as `<program> <prompt>`, with no subcommand, so the lander's
+    // environment variable is what says this process is the hook.
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let token_file = std::env::var_os(ASKPASS_TOKEN_FILE_VAR);
+    if let Some(prompt) = askpass_prompt(&args, token_file.as_deref()) {
+        return askpass(&prompt, token_file.as_deref());
+    }
+    let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_max_level(tracing::Level::INFO)
         .init();
-    let outcome = match Cli::parse().command {
+    let outcome = match cli.command {
         Command::Serve { config } => return serve(&config).await,
         Command::Admin { command } => run_admin(command),
     };

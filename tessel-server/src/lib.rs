@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod config;
+pub mod credential;
 pub mod id;
 pub mod identity;
 pub mod keys;

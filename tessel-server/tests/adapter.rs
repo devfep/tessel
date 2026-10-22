@@ -1052,3 +1052,48 @@ async fn after_a_landing_the_host_reads_main_again_and_after_a_refusal_it_does_n
     );
     Ok(())
 }
+
+/// The head in the stored core state of a repository, if a state is stored.
+fn stored_head(dir: &Path, tenant: &str, repo: &str) -> Option<String> {
+    let file = RepoId::new(tenant, repo)
+        .ok()?
+        .store_file(&dir.join("stores"));
+    let state = Store::open_read_only(&file).ok()?.load().ok()??;
+    let state: serde_json::Value = serde_json::from_str(&state).ok()?;
+    state["head"].as_str().map(str::to_owned)
+}
+
+#[tokio::test]
+async fn a_fresh_server_with_a_remote_reads_main_before_the_first_agent_says_hello() -> TestResult {
+    let repos = support::Repos::new();
+    let dir = tempfile::tempdir()?;
+    let mut config = config(dir.path(), &[]);
+    config.repositories = vec![repos.repository("landing-head")];
+    config.lander = Some(repos.lander());
+    let deps = Deps {
+        verifier: Some(tokens()),
+        calls: Arc::new(NoLander),
+    };
+    let server = server::start_with_runner(&config, deps, support::passing()).await?;
+    let main = repos.main_head();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while stored_head(dir.path(), "acme", "landing-head").as_deref() != Some(main.as_str()) {
+        if tokio::time::Instant::now() > deadline {
+            return Err("the server never stored main's head".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let path = "/tenant/acme/repo/landing-head";
+    let mut socket = connect(server.local_addr(), path, Some(TOKEN_A1), &[]).await?;
+    send(&mut socket, &hello("a1")).await?;
+    let ServerMsg::Welcome { head, .. } = expect(&mut socket).await? else {
+        return Err("expected the welcome".into());
+    };
+    assert_eq!(
+        head.0, main,
+        "the agent declared another base; main's head wins"
+    );
+    server.stop().await;
+    Ok(())
+}

@@ -35,6 +35,7 @@ use tessel_lander::run::SystemRunner;
 use tessel_lander::types::Sha;
 
 use crate::config::{LanderConfig, RepositoryConfig, FORK_AGENT_PLACEHOLDER};
+use crate::credential::{check_token_file, is_http_url, url_host, with_askpass, TokenFileError};
 use crate::id::RepoId;
 use crate::repo::{BoxFuture, CallPort};
 
@@ -59,6 +60,10 @@ pub enum LandingError {
     },
     #[error("the lander's git environment: {0}")]
     Git(#[from] CommandError),
+    #[error("{0}")]
+    TokenFile(#[from] TokenFileError),
+    #[error("cannot find this server's executable, which git runs to read the token: {0}")]
+    Executable(std::io::Error),
 }
 
 /// What a refusal says when an agent's name cannot name a fork.
@@ -81,6 +86,7 @@ struct Inner {
     fork: String,
     dir: PathBuf,
     git: Git,
+    token_file: Option<PathBuf>,
     runner: Arc<dyn TestRunner>,
     sequence: AtomicU64,
 }
@@ -107,7 +113,12 @@ impl Landing {
         };
         let dir = lander.work_dir.join(repo.tenant()).join(repo.repo());
         clear_leftovers(&dir)?;
-        let git = Git::create_in(&dir.join("git"))?;
+        let git = credentialed_git(
+            Git::create_in(&dir.join("git"))?,
+            &repo,
+            lander.token_file.as_deref(),
+            (remote, fork),
+        )?;
         Ok(Self {
             inner: Arc::new(Inner {
                 repo,
@@ -115,11 +126,40 @@ impl Landing {
                 fork: fork.clone(),
                 dir,
                 git,
+                token_file: lander.token_file.clone(),
                 runner,
                 sequence: AtomicU64::new(1),
             }),
         })
     }
+}
+
+/// `git` with the askpass hook when a token file is configured, after checking the file. Without
+/// one, a repository on a URL is logged once as landing without a credential.
+fn credentialed_git(
+    git: Git,
+    repo: &RepoId,
+    token_file: Option<&std::path::Path>,
+    (remote, fork): (&str, &str),
+) -> Result<Git, LandingError> {
+    let Some(token_file) = token_file else {
+        if is_http_url(remote) || is_http_url(fork) {
+            tracing::warn!(
+                repo = %repo,
+                "no [lander] token_file: landings on this repository push without a credential"
+            );
+        }
+        return Ok(git);
+    };
+    check_token_file(token_file)?;
+    let program = std::env::current_exe().map_err(LandingError::Executable)?;
+    let mut hosts: Vec<String> = Vec::new();
+    for host in [remote, fork].into_iter().filter_map(url_host) {
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    Ok(with_askpass(git, &program, token_file, &hosts))
 }
 
 /// Removes what an earlier run of this server left in `dir` (its git environment and the clones
@@ -145,6 +185,10 @@ impl CallPort for Landing {
     fn answer(&self, call: Call) -> BoxFuture<CallAnswer> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move { inner.answer_within_deadline(call).await })
+    }
+
+    fn reads_trunk_head(&self) -> bool {
+        true
     }
 }
 
@@ -194,6 +238,12 @@ impl Inner {
     fn run(&self, call: &Call, work: &Work) -> CallAnswer {
         if work.stop.requested() {
             return CallAnswer::Unknown;
+        }
+        if let Some(file) = &self.token_file {
+            if let Err(error) = check_token_file(file) {
+                tracing::error!(repo = %self.repo, error = %error, "cannot use the git token");
+                return CallAnswer::Unknown;
+            }
         }
         match &call.request {
             Request::Prepare {
@@ -300,5 +350,138 @@ impl Inner {
                 CallAnswer::Unknown
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    use tessel_lander::git::GitCommand;
+    use tessel_lander::workspace::{clone_main, CloneOutcome};
+
+    use super::git_read::ls_remote_command;
+    use super::*;
+
+    const SECRET: &str = "ghs_not-a-real-token-0123456789";
+
+    fn plain_git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn values(command: &GitCommand) -> Vec<OsString> {
+        let mut all = command.argv.clone();
+        all.extend(command.env.values().cloned());
+        all
+    }
+
+    #[test]
+    fn every_command_of_a_landing_carries_the_hook_and_the_token_path_and_never_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, format!("{SECRET}\n")).unwrap();
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let main = dir.path().join("main.git");
+        std::fs::create_dir(&main).unwrap();
+        plain_git(
+            &main,
+            &["init", "--quiet", "--bare", "--initial-branch=main"],
+        );
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        plain_git(&work, &["init", "--quiet", "--initial-branch=main"]);
+        plain_git(&work, &["commit", "--quiet", "--allow-empty", "-m", "base"]);
+        plain_git(
+            &work,
+            &["push", "--quiet", main.to_str().unwrap(), "HEAD:main"],
+        );
+
+        let repo = RepoId::new("acme", "demo").unwrap();
+        let remote = "https://git.example.invalid/acme/demo.git";
+        let fork = "https://forks.example.invalid/acme/fork-a1.git";
+        let git = credentialed_git(
+            Git::create_in(&dir.path().join("git")).unwrap(),
+            &repo,
+            Some(&token),
+            (remote, fork),
+        )
+        .unwrap();
+        let program = std::env::current_exe().unwrap();
+
+        let local = MergeSources {
+            main_remote: main.display().to_string(),
+            fork_remote: fork.to_owned(),
+            fork_branch: MAIN_BRANCH.to_owned(),
+        };
+        let cloned = clone_main(&git, &SystemRunner, &local, &dir.path().join("clone")).unwrap();
+        let workspace = match cloned {
+            CloneOutcome::Cloned(workspace) => Some(workspace),
+            CloneOutcome::Failed(_) => None,
+        }
+        .expect("the clone of the local main");
+        let remote_sources = MergeSources {
+            main_remote: remote.to_owned(),
+            ..local.clone()
+        };
+        let base = Sha::parse(&"a".repeat(40)).unwrap();
+        let head = Sha::parse(&"b".repeat(40)).unwrap();
+        let commands = [
+            git.clone_command(&remote_sources, &dir.path().join("again")),
+            git.fetch_fork_command(&workspace, &remote_sources).unwrap(),
+            git.push_command(&workspace, &remote_sources, &base, &head),
+            ls_remote_command(&git, remote, "refs/heads/main"),
+        ];
+        for command in commands {
+            let shown = format!("{:?}", command.argv);
+            let hook = command.env.get("GIT_ASKPASS").map(OsString::as_os_str);
+            assert_eq!(hook, Some(program.as_os_str()), "{shown}");
+            let file = command.env.get("TESSEL_ASKPASS_TOKEN_FILE");
+            assert_eq!(
+                file.map(OsString::as_os_str),
+                Some(token.as_os_str()),
+                "{shown}"
+            );
+            assert_eq!(
+                command.env.get("GIT_TERMINAL_PROMPT"),
+                Some(&"0".into()),
+                "{shown}"
+            );
+            let hosts = command.env.get("TESSEL_ASKPASS_HOSTS");
+            let expected = OsString::from("git.example.invalid,forks.example.invalid");
+            assert_eq!(hosts, Some(&expected), "{shown}");
+            for value in values(&command) {
+                assert!(!value.to_string_lossy().contains(SECRET), "{shown}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_landing_without_a_token_file_has_no_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = RepoId::new("acme", "demo").unwrap();
+        let urls = (
+            "https://git.example.invalid/r.git",
+            "/srv/forks/{agent}.git",
+        );
+        let git = credentialed_git(Git::create_in(dir.path()).unwrap(), &repo, None, urls).unwrap();
+        let command = ls_remote_command(&git, urls.0, "refs/heads/main");
+        assert_eq!(command.env.get("GIT_ASKPASS"), None);
+        assert_eq!(command.env.get("TESSEL_ASKPASS_TOKEN_FILE"), None);
     }
 }

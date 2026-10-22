@@ -29,7 +29,7 @@ fn failed(what: &str, detail: impl std::fmt::Display) -> ReadError {
 /// workspace, so `GIT_DIR` names the lander's empty `HOME`: git then finds no repository, and the
 /// config of whatever repository the server's working directory sits in (a `url.*.insteadOf`, say)
 /// cannot redirect the read.
-fn ls_remote_command(git: &Git, remote: &str, reference: &str) -> GitCommand {
+pub(super) fn ls_remote_command(git: &Git, remote: &str, reference: &str) -> GitCommand {
     let mut env = git.env();
     if let Some(home) = env.get("HOME").cloned() {
         env.insert("GIT_DIR".to_owned(), home);
