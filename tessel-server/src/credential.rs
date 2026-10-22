@@ -128,12 +128,27 @@ pub fn askpass_answer(
     None
 }
 
+/// Whether the host git's prompt names equals one of `hosts`. A prompt reads
+/// `Username for '<url>': ` or `Password for '<url>': `; the host is the lowercased authority of
+/// the quoted URL, without user information. It must equal a configured entry whole, so
+/// `github.com.evil.com`, `evilgithub.com` and `github.com@evil.com` do not match `github.com`.
+/// A prompt with no `://` or no closing quote names no host.
 fn names_a_host(prompt: &str, hosts: &OsStr) -> bool {
-    let prompt = prompt.to_lowercase();
+    let Some(host) = prompt_host(prompt) else {
+        return false;
+    };
     hosts
         .to_string_lossy()
         .split(',')
-        .any(|host| !host.is_empty() && prompt.contains(host))
+        .any(|configured| !configured.is_empty() && configured == host)
+}
+
+fn prompt_host(prompt: &str) -> Option<String> {
+    let (_, rest) = prompt.split_once("://")?;
+    let (url_rest, _) = rest.split_once('\'')?;
+    let authority = url_rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?.to_lowercase();
+    (!host.is_empty()).then_some(host)
 }
 
 /// The lowercased authority of an http(s) URL, without user information: the host and port git
@@ -339,11 +354,27 @@ mod tests {
             "Username for 'https://evil.com': ",
             "Password for 'https://x-access-token@evil.com': ",
             "Password for 'https://git.example.com': ",
+            "Password for 'https://github.com.evil.com': ",
+            "Password for 'https://evilgithub.com': ",
+            "Password for 'https://github.com@evil.com': ",
+            "Password for 'https://evil.com/@github.com': ",
+            "Password for 'https://github.com.evil.com/github.com': ",
+            "Password for https://github.com: ",
+            "Password for 'github.com': ",
+            "Password for 'https://github.com: ",
         ] {
             assert_eq!(askpass_answer(prompt, file, hosts), None, "{prompt}");
         }
-        let second = "Password for 'https://git.example.com:8443': ";
-        assert_eq!(askpass_answer(second, file, hosts).as_deref(), Some(SECRET));
+        for prompt in [
+            "Password for 'https://git.example.com:8443': ",
+            "Password for 'https://user@GIT.example.com:8443/path': ",
+        ] {
+            assert_eq!(
+                askpass_answer(prompt, file, hosts).as_deref(),
+                Some(SECRET),
+                "{prompt}"
+            );
+        }
     }
 
     #[test]
@@ -371,18 +402,18 @@ mod tests {
         let path = file_with(dir.path(), "token", SECRET, 0o644);
         assert_eq!(
             askpass_answer(
-                "Password for 'x': ",
+                "Password for 'https://github.com': ",
                 Some(path.as_os_str()),
-                Some(OsStr::new("x"))
+                Some(OsStr::new("github.com"))
             ),
             None
         );
         let missing = dir.path().join("missing");
         assert_eq!(
             askpass_answer(
-                "Password for 'x': ",
+                "Password for 'https://github.com': ",
                 Some(missing.as_os_str()),
-                Some(OsStr::new("x"))
+                Some(OsStr::new("github.com"))
             ),
             None
         );

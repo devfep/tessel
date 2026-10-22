@@ -150,16 +150,18 @@ fn configured_git(dir: &Path, file: &Path) -> Result<Git, Box<dyn std::error::Er
 fn git_gets_no_credential_for_a_host_the_landing_was_not_configured_for() -> TestResult {
     let dir = tempfile::tempdir()?;
     let file = token_file(dir.path())?;
-    let output = credential_fill(&configured_git(dir.path(), &file)?, "other.invalid")?;
-    assert!(
-        !output.status.success(),
-        "the hook refused, so the fill fails"
-    );
-    let stdout = String::from_utf8(output.stdout)?;
-    assert!(
-        !stdout.contains(SECRET) && !stdout.contains("password="),
-        "{stdout}"
-    );
+    let git = configured_git(dir.path(), &file)?;
+    for host in [
+        "other.invalid",
+        "git.example.invalid.evil.invalid",
+        "evilgit.example.invalid",
+    ] {
+        let output = credential_fill(&git, host)?;
+        assert!(!output.status.success(), "the hook refused {host}");
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(!stdout.contains(SECRET), "{host}: {stdout}");
+        assert!(!stdout.contains("password="), "{host}: {stdout}");
+    }
     Ok(())
 }
 
