@@ -11,30 +11,33 @@ are in git history (`78bcb9a` and earlier).
 orchestrator's gate on `04493a4` is green on six steps and red on the test step: two
 `tessel-swarm` tests fail on this Mac because its Node is now 24 and `node --test` prints the spec
 reporter instead of TAP when stdout is not a terminal, so the swarm's parser counts no tests; CI
-pins Node 22.23.3 and is green; the run stopped at 1857 tests; SWARM-NODE24-TAP dispatched). M4 is
-five tasks in: the server lands over HTTPS with a token file read through its own askpass hook
-(#92); `docs/dogfood.md` and its script set the dogfood server up (#91); the build protocol's
-section 2 describes landings through the server (#90), in force from the first landing this STATE
-records; CI runs `actionlint` and `zizmor` on every pull request and push to `main` (#94); the
-server accepts only lowercase agent names (#95). Nothing is dispatched: the first landing needs
-Felix's GitHub steps.
-**Waiting on Felix:** the "main: CI required" ruleset to list "Fast lane, workflow lint" (its
-required checks today: fmt and clippy, core library tests, Rust workspace, steward, advisories and
-bans, mutants on changed lines; a red workflow lint does not block a pull request until it is
-added); the GitHub steps of `docs/dogfood.md` (the fine-grained token saved 0600, the three
-private fork repositories, ruleset step 4) and a word on D1-D4 (the page states them as
-proposals); for the sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with
-contents write on two new private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`),
-saved 0600 anywhere he names, or the word to skip it; the Cloudflare API token in
-`tessel-steward/.dev.vars` revoked at M6's deletion at the latest (nothing in the tree uses the
-Cloudflare path now); this STATE.
+pins Node 22.23.3 and is green; the run stopped at 1857 tests; SWARM-NODE24-TAP fixes it: #98 at
+`4db1b86`, 1929 tests, reviewed "Yes", waiting for Felix). M4 is five tasks in: the server lands
+over HTTPS with a token file read through its own askpass hook (#92); `docs/dogfood.md` and its
+script set the dogfood server up (#91); the build protocol's section 2 describes landings through
+the server (#90), in force from the first landing this STATE records; CI runs `actionlint` and
+`zizmor` on every pull request and push to `main` (#94); the server accepts only lowercase agent
+names (#95). Nothing is dispatched: the first landing needs Felix's GitHub steps.
+**Waiting on Felix:** #96 (this STATE), #97 (`AGENTS.md` tracked as a symlink to `CLAUDE.md`, his
+decision of 23 October relayed by the homelab-setup session) and #98 (the swarm's TAP reporter);
+the "main: CI required" ruleset to list "Fast lane, workflow lint" (its required checks today: fmt
+and clippy, core library tests, Rust workspace, steward, advisories and bans, mutants on changed
+lines; a red workflow lint does not block a pull request until it is added); the GitHub steps of
+`docs/dogfood.md` (the fine-grained token saved 0600, the three private fork repositories, ruleset
+step 4) and a word on D1-D4 (the page states them as proposals); for the sandbox landing that
+closes M4-GITHUB-REMOTE's done-check, a token with contents write on two new private repositories
+in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`), saved 0600 anywhere he names, or the word to
+skip it; the Cloudflare API token in `tessel-steward/.dev.vars` revoked at M6's deletion at the
+latest.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** SWARM-NODE24-TAP (lane A, in flight) so the gate on `main` is green again; on Felix's
-GitHub steps: the orchestrator starts the server from `docs/dogfood.md`, the lanes `tessel init`
-as `lane-a` and `lane-b`, and M4-FIRST-LANDINGS begins (M4-RESTART-HELD with it); meanwhile
-nothing is dispatched, so the Mac is free.
+**Next:** on #98's merge the gate on `main` is green again (the orchestrator re-runs it); on
+Felix's GitHub steps the orchestrator starts the server from `docs/dogfood.md`, the lanes `tessel
+init` as `lane-a` and `lane-b`, and M4-FIRST-LANDINGS begins (M4-RESTART-HELD with it). Noted from
+the #98 review for the CI row: the Rust workspace job runs on the runner image's unpinned Node,
+and only the steward job pins 22.23.3, so the swarm's tests there follow the image; the TAP flag
+makes them independent of it.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -520,7 +523,8 @@ claims reconciled.
   restart that lands the claim once, and the end-to-end landing job on CI (75 s). 1837 to 1887
   tests; the review's mutants each red, the one CI missed pinned by a boundary test. Left for rows
   below: case-folded fork names, the unused `trunk-moved` route, a kill after the push.
-- [ ] **SWARM-NODE24-TAP** — lane A; dispatched 23 October 01:55 from `04493a4`. From the
+- [ ] **SWARM-NODE24-TAP** — lane A; #98 at `4db1b86`, reviewed "Yes" (1929 tests; the
+  `on_local` test was a third Node 24 failure, fixed with it), waiting for Felix. From the
   orchestrator's gate on `04493a4`: `tessel-swarm/src/git.rs` runs `node --test` in the demo
   repository and parses TAP (`# pass N`, `not ok`), but from Node 23 the default reporter when
   stdout is not a terminal is `spec`, so on a Node 24 machine
