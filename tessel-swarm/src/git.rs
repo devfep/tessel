@@ -335,10 +335,7 @@ pub fn run_checks(dir: &Path) -> Result<Checks> {
 
 /// Like `run_checks`, and keeps how the process ended and what it printed.
 pub fn run_checks_logged(dir: &Path) -> Result<CheckRun> {
-    let output = Command::new("node")
-        .arg("--test")
-        .current_dir(dir)
-        .env_remove("NODE_OPTIONS")
+    let output = node_test_command(dir)
         .output()
         .context("cannot run node; the demo repository's tests need Node 22.18 or newer")?;
     let text = format!(
@@ -358,6 +355,21 @@ pub fn run_checks_logged(dir: &Path) -> Result<CheckRun> {
         status: output.status.to_string(),
         output: text,
     })
+}
+
+/// `node --test` with the TAP reporter asked for by name: from Node 23 the default for a piped
+/// stdout is the `spec` reporter, which `passed_count` and `first_not_ok` cannot read.
+fn node_test_command(dir: &Path) -> Command {
+    let mut command = Command::new("node");
+    command
+        .args([
+            "--test",
+            "--test-reporter=tap",
+            "--test-reporter-destination=stdout",
+        ])
+        .current_dir(dir)
+        .env_remove("NODE_OPTIONS");
+    command
 }
 
 fn failed_kind(text: &str) -> Checks {
@@ -390,6 +402,20 @@ mod tests {
         let git = Git::new(dir.path());
         init_repo(&git, &base_tree()).unwrap();
         assert_eq!(run_checks(dir.path()).unwrap(), Checks::Pass { tests: 12 });
+    }
+
+    #[test]
+    fn node_is_asked_for_the_tap_reporter_whatever_its_default() {
+        let command = node_test_command(Path::new("."));
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "--test",
+                "--test-reporter=tap",
+                "--test-reporter-destination=stdout"
+            ]
+        );
     }
 
     #[test]
