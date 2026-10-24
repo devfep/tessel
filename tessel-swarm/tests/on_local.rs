@@ -108,22 +108,23 @@ async fn run_leased(
 ) -> Run {
     let scratch = tempfile::tempdir().unwrap();
     let server = start_server(&config, scratch.path(), lease_ms).await;
+    let mut hook_task = None;
     if let Some((after, hook)) = hook {
         let trunk = server.endpoint.remote.trunk.clone();
         let log = server.reader();
-        tokio::spawn(async move {
-            while !log
-                .events()
-                .iter()
-                .any(|e| matches!(e.kind, EventKind::ClaimGranted { .. }))
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        hook_task = Some(tokio::spawn(async move {
+            wait_for("a claim grant to run the hook after", &log, |events| {
+                events
+                    .iter()
+                    .any(|e| matches!(e.kind, EventKind::ClaimGranted { .. }))
+                    .then_some(())
+            })
+            .await;
             tokio::time::sleep(after).await;
             tokio::task::spawn_blocking(move || hook(trunk))
                 .await
                 .unwrap();
-        });
+        }));
     }
     let result = on::run_on(
         &server.endpoint,
@@ -133,6 +134,9 @@ async fn run_leased(
     )
     .await
     .unwrap();
+    if let Some(hook_task) = hook_task {
+        hook_task.await.unwrap();
+    }
     Run {
         server,
         result,
@@ -1430,13 +1434,13 @@ async fn time_a_submission_spends_held_for_review_is_not_work_when_the_agent_is_
     let server = start_server(&config, scratch.path(), local::LEASE_MS).await;
     let (log, cutter) = (server.reader(), server.cutter());
     let cut = tokio::spawn(async move {
-        while !log
-            .events()
-            .iter()
-            .any(|e| matches!(e.kind, EventKind::ReviewRequested { .. }))
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        wait_for("a review request to hold the agent after", &log, |events| {
+            events
+                .iter()
+                .any(|e| matches!(e.kind, EventKind::ReviewRequested { .. }))
+                .then_some(())
+        })
+        .await;
         tokio::time::sleep(HELD_FOR).await;
         assert!(cutter.cut("a01"), "a01 had an open socket");
     });
