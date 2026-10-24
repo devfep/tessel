@@ -7,22 +7,21 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 06:20 EDT. Main at `35d1124`. Merged tonight by the orchestrator under Felix's
+**As of:** 2026-10-24 06:45 EDT. Main at `de24d41`. Merged tonight by the orchestrator under Felix's
 standing order, each after CI 13/13 on its head and an Opus "Yes" posted on it: #102, #103, #105,
-#106, #107, #108, #109, #110 and #111; #101 (STATE) merged by the orchestrator before the
+#106, #107, #108, #109, #110, #111 and #112; #101 (STATE) merged by the orchestrator before the
 classifier's refusal below. The orchestrator's gate is green on all seven steps after every merge,
-last on `35d1124` (1960 tests, none failed); main's CI green after each. One CI flake met tonight
+last on `de24d41` (1961 tests, none failed); main's CI green after each. One CI flake met tonight
 (#110's run, `tessel-runner/tests/runner/binary.rs:34`, broken pipe): recorded as
-RUNNER-BINARY-EPIPE, its job re-run once with the row cited, and fixed in #111. Rows closed tonight:
-CLI-WORKTREE-LOCK-FORK-RACE, MERGE-ADMIN-MERGE-TEXT, SERVER-KILL-AFTER-PUSH-TEST,
-SERVER-FRAME-LIMIT-TESTS, DOCS-GATE-SECTION, CLI-LOCK-UPGRADE-WINDOW, COORD-HEAD-FROM-AGENT,
-DOCS-STEWARD-SWEEP, CLI-START-REFUSED-MESSAGE, COORD-HEAD-RESTART-READ, CLI-START-RACE-TEST-VACUOUS,
-DOCS-R22-HOST-TEST, SWARM-REAL-LEASE-CUT-TESTS, RUNNER-BINARY-EPIPE. Open rows found by tonight's
-reviews: LANDER-ADMIN-POLICY-DEAD, CLI-START-DEADLINE-SEAM, SWARM-UNBOUNDED-LOOPS,
-CLI-TEST-STDIN-EPIPE (dispatched to lane A `lane-a-cli-epipe` at 06:15 from `35d1124`, worktree
-`.claude/worktrees/task-cli-test-stdin-epipe`). M4's first landing still needs Felix's GitHub steps.
-Also checked out: this STATE's worktree and the orchestrator's detached gate worktree
-`.claude/worktrees/gate-main`.
+RUNNER-BINARY-EPIPE, its job re-run once with the row cited, fixed in #111, and the same race in the
+CLI's test support fixed in #112. Rows closed tonight: CLI-WORKTREE-LOCK-FORK-RACE,
+MERGE-ADMIN-MERGE-TEXT, SERVER-KILL-AFTER-PUSH-TEST, SERVER-FRAME-LIMIT-TESTS, DOCS-GATE-SECTION,
+CLI-LOCK-UPGRADE-WINDOW, COORD-HEAD-FROM-AGENT, DOCS-STEWARD-SWEEP, CLI-START-REFUSED-MESSAGE,
+COORD-HEAD-RESTART-READ, CLI-START-RACE-TEST-VACUOUS, DOCS-R22-HOST-TEST,
+SWARM-REAL-LEASE-CUT-TESTS, RUNNER-BINARY-EPIPE, CLI-TEST-STDIN-EPIPE. Open rows found by tonight's
+reviews: LANDER-ADMIN-POLICY-DEAD (M6), CLI-START-DEADLINE-SEAM, SWARM-UNBOUNDED-LOOPS. Nothing is
+dispatched; M4's first landing still needs Felix's GitHub steps. Checked out: this STATE's worktree
+and the orchestrator's detached gate worktree `.claude/worktrees/gate-main`.
 **Standing order from Felix (24 October, about 01:25 EDT), for this night only:** the orchestrator
 merges pull requests itself once the protocol is met (lane report, CI green on the head, an Opus
 reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's gate
@@ -671,8 +670,12 @@ claims reconciled.
 - [ ] **SWARM-UNBOUNDED-LOOPS** — from the #110 review: `tessel-swarm/tests/on_local.rs` has two
   wait loops with no bound (near :115 and :1389) outside the two cut tests. Done: each waits by
   the clock with a stated bound and a message naming what it waited for.
-- [ ] **CLI-TEST-STDIN-EPIPE** — lane A, dispatched 24 October 06:15 EDT from `35d1124`. From the
-  #111 review: `tessel-cli/tests/cli.rs:1302` runs `tessel` in a deleted working directory;
+- [x] **CLI-TEST-STDIN-EPIPE** (`de24d41`, #112) — lane A. As built: `tessel_in_deleted_cwd` in
+  `tessel-cli/tests/support/mod.rs` spawns, then `send_stdin` treats a broken pipe on the write as
+  an early exit; a test in `tessel-cli/tests/cli.rs` waits for the exit, then writes, red with the
+  old helper; the runner test's wait loop sleeps 1 ms between polls. Reviewed "Yes". Minor left: the
+  two deleted-cwd tests assert only exit code 2, not the cause in stderr. Planned: From the #111
+  review: `tessel-cli/tests/cli.rs:1302` runs `tessel` in a deleted working directory;
   `tessel-cli/src/commands.rs:90` fails before stdin is read, so the write at
   `tessel-cli/tests/support/mod.rs:1474` can meet a closed pipe, the same race RUNNER-BINARY-EPIPE
   fixed in the runner's tests. Done: the support helper treats a broken pipe on the write as an
