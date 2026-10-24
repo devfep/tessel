@@ -109,29 +109,6 @@ pub fn request_body(
     body.to_string()
 }
 
-/// What the coordinator sends the steward's `/trial`: try `commit` from the agent's fork on main as
-/// it was at `before` (the baseline) and, if that is clean, as it was at `main`, and test it each
-/// time. Without `commit` the steward uses the head of the fork's default branch. Nothing is
-/// merged and nothing is pushed.
-pub fn trial_request_body(
-    repo: &str,
-    agent: &AgentId,
-    before: &CommitId,
-    main: &CommitId,
-    commit: Option<&CommitId>,
-) -> String {
-    let mut body = serde_json::json!({
-        "repo": repo,
-        "fork": fork_name(repo, agent),
-        "before": before.0,
-        "main": main.0,
-    });
-    if let Some(commit) = commit {
-        body["commit"] = serde_json::Value::String(commit.0.clone());
-    }
-    body.to_string()
-}
-
 /// The name of an agent's Artifacts fork of `repo`.
 pub fn fork_name(repo: &str, agent: &AgentId) -> String {
     format!("{repo}--{}", agent.0)
@@ -1039,31 +1016,6 @@ mod tests {
             after: None,
         };
         assert_eq!(unrun.verdict(), TrialVerdict::Infrastructure);
-    }
-
-    #[test]
-    fn the_trial_request_names_the_fork_both_mains_and_the_commit_only_when_there_is_one() {
-        let agent = AgentId("a1".into());
-        let before = CommitId(SHA_A.into());
-        let main = CommitId(SHA_B.into());
-        let commit = CommitId("c".repeat(40));
-        let with = trial_request_body("demo", &agent, &before, &main, Some(&commit));
-        let without = trial_request_body("demo", &agent, &before, &main, None);
-        let with: serde_json::Value = serde_json::from_str(&with).unwrap();
-        let without: serde_json::Value = serde_json::from_str(&without).unwrap();
-        assert_eq!(
-            with,
-            serde_json::json!({
-                "repo": "demo", "fork": "demo--a1", "before": SHA_A, "main": SHA_B,
-                "commit": commit.0,
-            })
-        );
-        assert_eq!(
-            without,
-            serde_json::json!({
-                "repo": "demo", "fork": "demo--a1", "before": SHA_A, "main": SHA_B,
-            })
-        );
     }
 
     #[test]

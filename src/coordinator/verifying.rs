@@ -16,8 +16,7 @@
 //!   outcome nor a drop, and no baseline is invented for it.
 //! - The commit to try is chosen when the trial is dispatched, not when it is recorded: the
 //!   assuming claim's submitted `fork_commit` at that moment; for a claim that has not submitted
-//!   it is `None`, and the steward reads the head of the agent's fork and says which commit that
-//!   was.
+//!   it is `None`: there is nothing to try, and the trial ends Inconclusive.
 //! - Each trial carries a baseline, `before`: main as it was before the merge that challenged the
 //!   assumption. The steward tries the work on `before` first, and a failure on the new main counts
 //!   only if the work was clean there (`TrialReport::verdict`). Without it, work that was already
@@ -159,7 +158,7 @@ pub struct VerifyDispatch {
     /// answer carries it to `verification_outcome`.
     pub id: u64,
     pub agent: AgentId,
-    /// The assuming claim's submitted commit now; `None`: the steward tries the head of the fork.
+    /// The assuming claim's submitted commit now; `None`: not submitted, nothing to try.
     pub commit: Option<CommitId>,
     pub before: CommitId,
     pub main: CommitId,

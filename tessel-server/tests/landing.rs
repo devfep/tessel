@@ -908,6 +908,35 @@ async fn a_trial_with_no_submitted_commit_is_nothing_to_try_and_runs_nothing() -
     Ok(())
 }
 
+#[tokio::test]
+async fn a_trial_with_no_commit_for_an_agent_with_no_fork_is_still_nothing_to_try() -> TestResult {
+    let repos = Repos::new();
+    let base = CommitId(repos.main_head());
+    let runner = passing();
+    let landing = landing(&repos, "landing-trial-no-fork", runner.clone());
+    let answer = ask(
+        &landing,
+        Request::Trial {
+            agent: AgentId("b2".to_string()),
+            commit: None,
+            before: base.clone(),
+            main: base,
+        },
+        60_000,
+    )
+    .await;
+    assert_eq!(
+        answer,
+        CallAnswer::Trialled {
+            before: Some(TrialResult::CommitNotInFork),
+            after: None
+        }
+    );
+    assert_eq!(runner.runs(), 0);
+    assert_no_call_dirs(&repos, "landing-trial-no-fork");
+    Ok(())
+}
+
 #[test]
 fn a_lander_removes_what_a_killed_server_left_and_needs_a_remote_and_a_fork() -> TestResult {
     let repos = Repos::new();
