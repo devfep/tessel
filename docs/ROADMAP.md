@@ -7,11 +7,12 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 13:30 EDT. Main at `768383e`. M4's done-check is met: five landings by the
-dogfood `tessel-server` (`91785b2`, `3f4278b`, `9701abf`, `0c0f119`, `768383e`), each with its
-claims released by `Merged`, and a server restart while a submitted claim was held, that claim
-landed afterwards (M4-RESTART-HELD). Main's CI green on all five. The landed commits carry their
-notes: the rebased ones by hand (LANDER-REBASE-DROPS-NOTES). The server runs on Felix's Mac from
+**As of:** 2026-10-24 13:30 EDT. Main at `768383e`. M4's done-check is met but for the notes: five
+landings by the dogfood `tessel-server` (`91785b2`, `3f4278b`, `9701abf`, `0c0f119`, `768383e`)
+took no hand step and released their claims by `Merged`, and the restart with a held claim passed
+(M4-RESTART-HELD); main's CI is green on all five. Landings 4 and 5 rebased, and their eight
+commits lost their notes; the orchestrator copied them by hand, so M4-FIRST-LANDINGS stays open
+until LANDER-REBASE-DROPS-NOTES lands. The server runs on Felix's Mac from
 `~/tessel-dogfood/bin` at `4382641` (#114), listening on `127.0.0.1:7878`; agent tokens are valid
 to 31 October (re-run `scripts/dogfood/setup.sh` and re-init each worktree after). Lanes cannot
 push (Felix's `~/.claude/hooks/block-lane-push.sh`: "let the orchestrator push"), so the
@@ -803,9 +804,11 @@ reviews (security, operations) and the sandbox trial.
   reviews held submissions with `tessel review`; the adversarial reviewer reads the submitted
   commit on the fork; the server's landing replaces Felix's merge; the runner's run replaces the
   orchestrator's gate. Done: Felix approves the text before the first landing.
-- [x] **M4-FIRST-LANDINGS** (24 October) — both lanes and the orchestrator. Landed by the server:
+- [ ] **M4-FIRST-LANDINGS** — both lanes and the orchestrator. Open only for the notes: landings 4
+  and 5 lost them on the rebase and were copied by hand (LANDER-REBASE-DROPS-NOTES). Landed by the
+  server on 24 October:
   1. `91785b2` DOCS-REFLOW-LONG-LINES (lane A; held for `docs/BUILD-PROTOCOL.md`, approved).
-  2. `3f4278b` this file's STATE (orchestrator; not held).
+  2. `97b0316`..`3f4278b` this file's STATE (orchestrator; not held).
   3. `9701abf` SWARM-UNBOUNDED-LOOPS (lane A; not held).
   4. `c41051a`..`0c0f119` GATE-INVALID-RETRIED (lane B; held, approved after a restart).
   5. `2a7c560`..`768383e` STEWARD-LOG-WORDING (lane A; held, approved).
@@ -851,7 +854,7 @@ reviews (security, operations) and the sandbox trial.
   since #114 is never updated by lanes. Sensitive path.
 - [ ] **DOCS-LONG-PROSE-LINES** — the prose lines over 100 characters listed above.
 - [x] **M4-RESTART-HELD** (24 October) — lane B's claim 4 (GATE-INVALID-RETRIED) held for review;
-  the server stopped and started at 16:54 with nothing running; the claim stayed submitted, was
+  the server stopped and started at 16:54 UTC (12:54 EDT) with nothing running; the claim stayed submitted, was
   approved after the restart and landed (`0c0f119`).
 - [ ] **M5-PROOF-CANDIDATE** — M5, to weigh at its re-plan. GitHub Next and Microsoft Research's
   Proof Driven Development Kit (21 October) proves Rust against a Verus spec and falls back to
