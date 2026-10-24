@@ -21,9 +21,9 @@ The runner runs the trunk's `tessel.toml` test command, `cargo test --workspace`
 commit in a fresh clone, as you. Clippy, fmt, the named-tests check, actionlint, zizmor and the
 steward's tests stay on CI, which runs on `main` after a landing. Each lane also runs actionlint
 and zizmor in its gate before it submits. The runner is not sandboxed until M5: land only code
-whose tests you trust: its tests can read
-`<server dir>` (the tokens, the key and `github-token`) and run `gh` as you. The lanes' gates
-already run the same code as you; M5 separates the user. Two things still go through a pull request you merge: a change to `tessel.toml`, which a submission may
+whose tests you trust: its tests can read `<server dir>` (the tokens, the key and `github-token`)
+and run `gh` as you. The lanes' gates already run the same code as you; M5 separates the user. Two
+things still go through a pull request you merge: a change to `tessel.toml`, which a submission may
 not touch, and a change to this page or `scripts/dogfood/`, the server's own set-up.
 
 ## Build and GitHub, by hand
@@ -110,8 +110,9 @@ M6 removes the bypass. A pre-push hook in the checkout's shared hooks directory 
 
 ## The server
 
-Start it from the copy in `<server dir>/bin`, not from `target/debug`. It listens on `127.0.0.1:7878` and logs to `server.log`. Claims and held
-submissions in `<server dir>/stores` survive a stop, and a restart retries a merge in flight.
+Start it from the copy in `<server dir>/bin`, not from `target/debug`. It listens on
+`127.0.0.1:7878` and logs to `server.log`. Claims and held submissions in `<server dir>/stores`
+survive a stop, and a restart retries a merge in flight.
 
 ```
 nohup <server dir>/bin/tessel-server serve --config <server dir>/tessel-server.toml \
