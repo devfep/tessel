@@ -414,10 +414,31 @@ fn acquire_lock(worktree: &Worktree) -> anyhow::Result<Option<std::fs::File>> {
         .write(true)
         .open(&path)
         .with_context(|| format!("cannot open {}", path.display()))?;
+    match held_by_flock(&file) {
+        Ok(true) => return Ok(None),
+        Ok(false) => {}
+        Err(e) => return Err(e).with_context(|| format!("cannot lock {}", path.display())),
+    }
     match try_record_lock(&file) {
         Ok(true) => Ok(Some(file)),
         Ok(false) => Ok(None),
         Err(e) => Err(e).with_context(|| format!("cannot lock {}", path.display())),
+    }
+}
+
+/// Whether a daemon of an older `tessel`, which held `daemon.lock` with `flock`, is still running.
+///
+/// On Linux a `flock` and a record lock do not exclude each other, so after an upgrade a daemon
+/// from the new binary could start beside one from the old binary that is still alive. Nothing
+/// else in `daemon.lock` names that daemon, so the probe takes the `flock` itself: it fails only
+/// while another open file description holds it. A held lock is given back at once, so the probe
+/// leaves nothing for a forked child to keep. It runs before the record lock because on macOS
+/// the two kinds exclude each other and the probe would otherwise meet this process's own lock.
+fn held_by_flock(file: &std::fs::File) -> std::io::Result<bool> {
+    match file.try_lock() {
+        Ok(()) => file.unlock().map(|()| false),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
     }
 }
 
@@ -3748,5 +3769,55 @@ mod tests {
             second.is_some(),
             "a daemon started inside the exec window is refused by the released lock"
         );
+    }
+
+    /// A daemon of the previous `tessel` held `daemon.lock` with `flock`. On Linux that does not
+    /// exclude the record lock, so the new daemon asks for the `flock` as well and gives it back.
+    #[test]
+    fn a_flock_held_by_an_older_daemon_is_seen_and_given_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.lock");
+        let open = || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        };
+        let older = open();
+        older.lock().unwrap();
+        let probe = open();
+
+        assert!(held_by_flock(&probe).unwrap(), "the older daemon holds it");
+
+        older.unlock().unwrap();
+        assert!(!held_by_flock(&probe).unwrap(), "released, so free");
+        assert!(!held_by_flock(&probe).unwrap(), "the probe kept nothing");
+    }
+
+    #[test]
+    fn a_daemon_refuses_the_lock_while_an_older_daemons_flock_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q"])
+            .status();
+        assert!(init.is_ok_and(|status| status.success()));
+        let worktree = Worktree::discover(dir.path()).unwrap();
+        worktree.prepare_dir().unwrap();
+        let older = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(worktree.lock_path())
+            .unwrap();
+        older.lock().unwrap();
+
+        assert!(acquire_lock(&worktree).unwrap().is_none());
+
+        older.unlock().unwrap();
+        assert!(acquire_lock(&worktree).unwrap().is_some());
     }
 }
