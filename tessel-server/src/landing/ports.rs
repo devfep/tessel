@@ -3,7 +3,7 @@
 
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use tessel_lander::gate::{parse_gate_config, GateConfig, MAX_CONFIG_BYTES, TESSEL_TOML_PATH};
@@ -55,6 +55,7 @@ fn boundary(operation: &'static str, message: impl Into<String>) -> BoundaryErro
 }
 
 /// Why the trunk's gate could not be read.
+#[derive(Debug)]
 enum GateFault {
     /// A fact about the trunk, not a failure of the machine: the file is missing or not a valid
     /// gate. Retrying cannot change it, so the landing is refused. Holds the log message.
@@ -66,7 +67,11 @@ enum GateFault {
 /// The trunk's gate, read from the test tree. A submission cannot change `tessel.toml` (the
 /// lander refuses it before the tests), so the tree's file is main's.
 fn read_gate(tree: &TestTree) -> Result<GateConfig, GateFault> {
-    let path = tree.path().join(TESSEL_TOML_PATH);
+    read_gate_in(tree.path())
+}
+
+fn read_gate_in(root: &Path) -> Result<GateConfig, GateFault> {
+    let path = root.join(TESSEL_TOML_PATH);
     let missing = || {
         GateFault::Unusable(format!(
             "the trunk has no {TESSEL_TOML_PATH} to say how to test it"
