@@ -7,20 +7,21 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 16:10 EDT. Main at `d540b0f`, green. M4's done-check is met: five landings
-by the dogfood `tessel-server` with their claims released by `Merged`, the restart with a held
-claim (M4-RESTART-HELD), and, since LANDER-REBASE-DROPS-NOTES, a rebased landing whose notes arrived
-with no hand step (`905b6b1`..`d540b0f`: the lane's daemon logged "copied 6" once its repository
-had fetched main, and each note equals its submitted commit's). Twelve landings today in all, each
-read by an Opus reviewer on the commit from the fork first; main's CI is green on every one but
+**As of:** 2026-10-24 16:10 EDT. Main at `d540b0f`, green. M4's done-check is met: landings with
+their notes and claims released by `Merged`, none by hand: `dd38fa0`, `d43aeeb`, `1c9497f`,
+`a3993da`, `799c5bc` (fast-forwards) and `905b6b1`..`d540b0f` (rebased; the lane's daemon
+copied its six notes once its repository had fetched main, each equal to its submitted commit's);
+and the restart with a held claim (M4-RESTART-HELD). Eleven server landings today, each read by an
+Opus reviewer on the commit from the fork first; main's CI is green on every one but
 `d43aeeb` (a test needed a git identity the Linux runner lacks, fixed by `1c9497f`): landings test
 on the Mac only, so Linux differences show on main's CI after the landing. The server runs from
 `~/tessel-dogfood/bin` at `d540b0f`, started from inside `~/tessel-dogfood`, on `127.0.0.1:7878`;
 agent tokens are valid to 31 October. Lanes cannot push (Felix's
 `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
 of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
-worktree and decides holds as `orchestrator`. Two lanes ran at once: the coordinator denied each a
-file the other held, and both narrowed their scope. Nothing is dispatched;
+worktree and decides holds as `orchestrator`. Two lanes ran at once; the coordinator denied lane A
+three claims on files lane B held (`src/merge.rs`, then `docs/configuration.md` twice), and lane A
+left them out until lane B's landing released them. Nothing is dispatched;
 `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
