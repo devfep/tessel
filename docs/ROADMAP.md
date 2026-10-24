@@ -39,7 +39,7 @@ Felix's own force-push was refused. A `pre-push` hook in the checkout's shared h
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
 **Waiting on Felix:** narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that lanes push
 branches; the suggested patch to his push hook that exempts only a URL git resolves to itself
-(scratchpad `push-hook-resolved-url.patch`); the Cloudflare API token in
+(`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
 `tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged
 pull requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word).
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the
