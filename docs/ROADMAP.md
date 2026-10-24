@@ -7,34 +7,40 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 01:00 EDT. Main at `d5c27b2` (#96, #97 and #98 merged; the orchestrator's gate
-on `d5c27b2` is green on all seven steps, 1929 tests and none failed, so the Node 24 failures of
-the previous gate are gone; main's CI on `d5c27b2` is red on one job, "Slow lane, local landing
-end to end", by a race in the CI script itself, not the code: it polls until the bare trunk's
-`main` moves and then greps the server log once for the read-back line, which the server writes
-after the push; on this run the grep ran 4 ms before the line (04:57:58.946 against .950); the
-job had passed on the previous eleven `main` runs; CI-LANDING-E2E-LOG-RACE below waits for the
-line in a bounded loop: #100 at `5cf4de5`, CI green on all 13 checks, reviewed "Yes", waiting for
-Felix). M4 is six tasks in: the server lands over HTTPS with a token file read through its own
-askpass hook (#92); `docs/dogfood.md` and its script set the dogfood server up (#91); the build
-protocol's section 2 describes landings through the server (#90), in force from the first landing
-this STATE records; CI runs `actionlint` and `zizmor` on every pull request and push to `main`
-(#94); the server accepts only lowercase agent names (#95); the swarm asks `node --test` for its
-TAP reporter, so its tests pass on Node 22 and 24 alike (#98). `AGENTS.md` is a symlink to
-`CLAUDE.md` (#97). Worktrees: this STATE's and `task-ci-landing-e2e-log-race` (#100's), both
-reclaimed after their merges. Nothing is dispatched: the first landing needs Felix's GitHub steps.
-**Waiting on Felix:** this STATE (#99) and #100 (the e2e script's wait); the "main: CI required" ruleset to list "Fast lane, workflow
-lint" (its required checks today: fmt and clippy, core library tests, Rust workspace, steward,
-advisories and bans, mutants on changed lines; a red workflow lint does not block a pull request
-until it is added); the GitHub steps of `docs/dogfood.md` (the fine-grained token saved 0600, the
-three private fork repositories, ruleset step 4) and a word on D1-D4 (the page states them as
-proposals); for the sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with
-contents write on two new private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`),
-saved 0600 anywhere he names, or the word to skip it; the Cloudflare API token in
-`tessel-steward/.dev.vars` revoked at M6's deletion at the latest. Housekeeping he may want:
-`devfep/tessel` keeps the head branches of 24 merged pull requests (GitHub's "automatically delete
-head branches" setting, or one `git push --delete`, clears them); the orchestrator deletes nothing
-on the remote without his word.
+**As of:** 2026-10-24 01:30 EDT. Main at `0833c8f` (#99 and #100 merged by Felix; the
+orchestrator's gate on `0833c8f` is green on all seven steps, 1929 tests and none failed; main's
+CI on `0833c8f` was queued when this was written; CI-LANDING-E2E-LOG-RACE closed, its fix makes
+the e2e script wait for the server's read-back line). M4 is seven tasks in: the server lands over
+HTTPS with a token file read through its own askpass hook (#92); `docs/dogfood.md` and its script
+set the dogfood server up (#91); the build protocol's section 2 describes landings through the
+server (#90), in force from the first landing this STATE records; CI runs `actionlint` and
+`zizmor` on every pull request and push to `main` (#94); the server accepts only lowercase agent
+names (#95); the swarm asks `node --test` for its TAP reporter (#98); the e2e script waits for the
+read-back line (#100). `AGENTS.md` is a symlink to `CLAUDE.md` (#97).
+**Standing order from Felix (24 October, about 01:25 EDT), for this night only:** the orchestrator
+merges pull requests itself once the protocol is met (lane report, CI green on the head, an Opus
+reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's
+gate on `main` after the merge). It does not cover a breaking protocol change (`CLAUDE.md` rule
+1), `PLAN.md` scope or order (rule 10), a change to `tessel.toml` or to the dogfood set-up (section
+2 keeps those his), or any step that needs his GitHub settings, tokens or D1-D4.
+**Dispatched 01:27 EDT from `0833c8f`** (M5-hardening and carried-over rows pulled forward while
+M4's remaining tasks wait on GitHub steps; none changes `PLAN.md` order, since M4's own tasks stay
+first once unblocked): lane A `lane-a-lock-text`, CLI-WORKTREE-LOCK-FORK-RACE and
+MERGE-ADMIN-MERGE-TEXT, worktree `.claude/worktrees/task-cli-lock-admin-text`; lane B
+`lane-b-server-tests`, SERVER-KILL-AFTER-PUSH-TEST and SERVER-FRAME-LIMIT-TESTS (tests only; the
+close-frame question comes back as a note), worktree
+`.claude/worktrees/task-server-kill-frame-tests`.
+**Waiting on Felix:** the "main: CI required" ruleset to list "Fast lane, workflow lint" (its
+required checks today: fmt and clippy, core library tests, Rust workspace, steward, advisories and
+bans, mutants on changed lines; a red workflow lint does not block a pull request until it is
+added); the GitHub steps of `docs/dogfood.md` (the fine-grained token saved 0600, the three private
+fork repositories, ruleset step 4) and a word on D1-D4 (the page states them as proposals); for the
+sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with contents write on two new
+private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`), saved 0600 anywhere he
+names, or the word to skip it; the Cloudflare API token in `tessel-steward/.dev.vars` revoked at
+M6's deletion at the latest. Housekeeping he may want: `devfep/tessel` keeps the head branches of 24
+merged pull requests (GitHub's "automatically delete head branches" setting, or one `git push
+--delete`, clears them); the orchestrator deletes nothing on the remote without his word.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
@@ -461,15 +467,16 @@ claims reconciled.
   children, or the spawn and the reopen are serialised, with the reason written where the lock is
   taken; preferred: a per-process `fcntl` record lock that a fork child does not inherit, with a
   reproducing test.
-- [ ] **CLI-WORKTREE-LOCK-FORK-RACE** — with the next CLI task. From the #86 review: the CLI
-  daemon's worktree lock (`tessel-cli/src/daemon.rs`, `flock`) has the same fork-window
-  exposure, and the daemon spawns git and hooks. Done: the same record lock, or a written reason
-  the daemon cannot race itself, with a test.
-- [ ] **SERVER-FRAME-LIMIT-TESTS** — M5 hardening, with the next server task. From the P1-SERVER
-  review: a frame over 64 KiB is refused by the host with a fixed `Malformed` error before parsing
-  (`src/shell.rs`) and the socket stays open; one over 256 KiB fails inside axum and the socket
-  drops with no close frame. Neither is tested end to end. Done: an adapter test for each, and a
-  decision whether the axum limit should answer with a close frame.
+- [ ] **CLI-WORKTREE-LOCK-FORK-RACE** — lane A, dispatched 24 October from `0833c8f`. With the next
+  CLI task. From the #86 review: the CLI daemon's worktree lock (`tessel-cli/src/daemon.rs`,
+  `flock`) has the same fork-window exposure, and the daemon spawns git and hooks. Done: the same
+  record lock, or a written reason the daemon cannot race itself, with a test.
+- [ ] **SERVER-FRAME-LIMIT-TESTS** — lane B, dispatched 24 October from `0833c8f`. M5 hardening,
+  with the next server task. From the P1-SERVER review: a frame over 64 KiB is refused by the host
+  with a fixed `Malformed` error before parsing (`src/shell.rs`) and the socket stays open; one over
+  256 KiB fails inside axum and the socket drops with no close frame. Neither is tested end to end.
+  Done: an adapter test for each, and a decision whether the axum limit should answer with a close
+  frame.
 - [x] **CORE-WORKER-COMMENT-SWEEP** (`01e3ce3`, #82) — lane A. Comments and docs that still
   described the Worker or the Durable Object after P1-DROP-WORKER now describe the host and the
   server (`src/protocol.rs`, `src/coordinator.rs`, `src/merge.rs`, `src/trunk.rs`, `src/host/*`,
@@ -536,8 +543,8 @@ claims reconciled.
   Node 23 the default reporter when stdout is not a terminal is `spec`, so on a Node 24 machine
   `the_starting_repository_passes_its_own_tests` saw 0 tests and the failure note lost its first
   failing test; CI, pinned to Node 22.23.3, stayed green.
-- [ ] **CI-LANDING-E2E-LOG-RACE** — lane A; #100 at `5cf4de5`, CI green on all 13 checks (the
-  e2e job included), reviewed "Yes" with no fixes, waiting for Felix. As built: the two one-shot
+- [x] **CI-LANDING-E2E-LOG-RACE** (`e7d2a7e`, #100) — lane A; CI green on all 13 checks (the
+  e2e job included), reviewed "Yes" with no fixes, merged by Felix. As built: the two one-shot
   greps are one wait of at most 30 s with the server-alive check inside it and the two failure
   messages kept apart; the order is the push (`tessel-lander/src/merge.rs:487`), the read-back
   (`:488`), then the log line (`tessel-server/src/landing/answer.rs:45`) after `run_merge`
@@ -572,13 +579,14 @@ claims reconciled.
   nor `zizmor`, which only the lanes' gates run; once landings bypass the orchestrator's gate
   nothing on `main` checks the workflows. Done: both in the fast lane, pinned by SHA, red on a
   planted workflow fault.
-- [ ] **MERGE-ADMIN-MERGE-TEXT** — with the next core task. From the same review:
-  `src/merge.rs:327` still says a change to `tessel.toml` needs "an admin merge", a steward route
-  that no longer exists; the lander refuses the change and it goes through a pull request. Done:
-  the text says that, with its test.
-- [ ] **SERVER-KILL-AFTER-PUSH-TEST** — M5 hardening, with the next server task. From the same
-  review: `restart.rs` kills the server during the runner's command; a kill between the push
-  and the answer is untested (it should end as already merged, counted once). Done: that test.
+- [ ] **MERGE-ADMIN-MERGE-TEXT** — lane A, dispatched 24 October from `0833c8f`. With the next core
+  task. From the same review: `src/merge.rs:327` still says a change to `tessel.toml` needs "an
+  admin merge", a steward route that no longer exists; the lander refuses the change and it goes
+  through a pull request. Done: the text says that, with its test.
+- [ ] **SERVER-KILL-AFTER-PUSH-TEST** — lane B, dispatched 24 October from `0833c8f`. M5 hardening,
+  with the next server task. From the same review: `restart.rs` kills the server during the runner's
+  command; a kill between the push and the answer is untested (it should end as already merged,
+  counted once). Done: that test.
 - [x] **P1-LOCAL-SETUP** (`725834c`, #87; first half `af595c5`, #80) — lane A. Second half:
   `docs/local-setup.md` (86 lines) walks to a commit landed on the developer's remote, the CI job
   "Slow lane, quickstart" runs the page's own fenced blocks from a clean checkout (5 s after the
