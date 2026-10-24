@@ -49,7 +49,8 @@ SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-L
 cannot see the flake (see its entry).
 **Next:** M4-FIRST-LANDINGS 2 to 5 from lanes A and B, one lane's gate at a time while a landing
 runs, the server log watched; M4-RESTART-HELD with the server idle. Candidates:
-GATE-INVALID-RETRIED, STEWARD-LOG-WORDING, SWARM-UNBOUNDED-LOOPS, CLI-START-DEADLINE-SEAM, GATE-INSTANCE-REQUIRED.
+GATE-INVALID-RETRIED, STEWARD-LOG-WORDING, SWARM-UNBOUNDED-LOOPS, CLI-START-DEADLINE-SEAM,
+GATE-INSTANCE-REQUIRED.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
