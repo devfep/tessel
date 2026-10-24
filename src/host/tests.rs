@@ -1832,7 +1832,7 @@ fn host_a_repo_with_no_head_reads_it_in_a_wake_and_a_hello_after_the_read_keeps_
 }
 
 #[test]
-fn host_a_hello_before_the_read_is_answered_keeps_its_base_and_the_answer_is_dropped() {
+fn host_a_hello_before_the_read_is_answered_is_welcomed_with_its_base_and_the_answer_replaces_it() {
     let mut kit = kit();
     wake(&mut kit);
     let call = kit
@@ -1850,8 +1850,8 @@ fn host_a_hello_before_the_read_is_answered_keeps_its_base_and_the_answer_is_dro
     kit.settle();
     assert_eq!(
         state(&kit)["head"],
-        json!("abc"),
-        "the compare-and-set drops the answer"
+        json!("trunk"),
+        "the answer is the truth about main, not the base the hello declared"
     );
 }
 
@@ -1894,7 +1894,11 @@ fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
         );
         assert_eq!(state(&kit)["head"], json!("abc"), "{what} moves nothing");
         assert_eq!(state(&kit)["head_tried"], json!(1), "{what} is tried");
-        assert_eq!(kit.wake(), None, "{what} is no reason to wake");
+        assert_eq!(
+            kit.wake(),
+            Some(kit.now_ms() + INFRA_BACKOFF_BASE_MS),
+            "{what}: the head a hello declared is read again after the backoff"
+        );
     }
 }
 
