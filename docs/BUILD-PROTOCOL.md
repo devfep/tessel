@@ -46,10 +46,10 @@ request flow at its end applies.
   `submit_rejected`, and the lane merges `main` once more and submits again.
 - On the reviewer's `Yes`, the orchestrator tells the lane to land: the lane pushes the commit to
   its fork (`git push <fork> HEAD:refs/heads/<new branch>`; the server's `fork` template names
-  it) and runs `tessel submit --evidence "<the gate's commands and exit codes>"`. There is no pull request. The
-  runner runs the trunk's `tessel.toml` test command on the rebased commit and the lander pushes
-  `main` by compare-and-swap; the lane's inbox says merged and the orchestrator closes the box
-  with the landed sha from `git log origin/main`.
+  it) and runs `tessel submit --evidence "<the gate's commands and exit codes>"`. There is no
+  pull request. The runner runs the trunk's `tessel.toml` test command on the rebased commit and
+  the lander pushes `main` by compare-and-swap; the lane's inbox says merged and the
+  orchestrator closes the box with the landed sha from `git log origin/main`.
 - A submission the coordinator holds for review (a `sensitive` path: `src/protocol.rs`,
   `src/host/`, `.github/`, `docs/BUILD-PROTOCOL.md`; a signature change, a deletion or a rename;
   a threatened assumption; missing evidence: `docs/configuration.md`, "What holds a submission

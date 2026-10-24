@@ -192,8 +192,8 @@ evidence attached. So the work goes straight to the merge queue.
 `tessel-server/src/landing/mod.rs`). It clones `main`, fetches the fork, checks that a fork
 branch contains the commit, rebases it, and checks that the claim covers every file the rebased
 change touches. The runner then runs the trunk's test commands on a clone of the rebased head.
-The lander pushes `main` with a compare-and-swap on the head it read and confirms by reading `main` back. The
-lander runs git and never repo code; the runner runs the tests and never git.
+The lander pushes `main` with a compare-and-swap on the head it read and confirms by reading
+`main` back. The lander runs git and never repo code; the runner runs the tests and never git.
 
 ```
 [a1] $ tessel inbox
