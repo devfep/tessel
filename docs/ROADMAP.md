@@ -7,30 +7,37 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-22 13:30 EDT. Main at `86c93ca` (#90, #91, #92 and #89 merged in that order;
-the orchestrator's gate on `86c93ca` is green on all seven steps, 1923 tests; main's CI green). M4
-is three tasks in: the server lands over HTTPS with a token file read through its own askpass hook
-(#92), `docs/dogfood.md` and its script set the dogfood server up (#91; walked once more on
-`main`'s own config by the orchestrator), and the build protocol's section 2 describes landings
-through the server (#90), in force from the first landing this STATE records. Two more are
-reviewed "Yes" and wait for Felix: CI-ACTIONLINT-ZIZMOR (#94 at `95244fa`: a fast-lane job runs
-`actionlint` and `zizmor` on every pull request and push to `main`; its first run passed) and
-SERVER-FORK-CASE (#95 at `fe2d129`, 1928 tests: the server accepts only lowercase agent names at
-the verifier, `admin token`, `reviewers` and the fork template). Nothing is dispatched.
-**Waiting on Felix:** #94 and #95; the "main: CI required" ruleset to list "Fast lane, workflow
-lint" once #94 merges (a red workflow lint does not block a pull request until it does); the
-GitHub steps of `docs/dogfood.md` (the fine-grained token saved 0600, the three private fork
-repositories, ruleset step 4) and a word on D1-D4 (the page states them as proposals; merging it
-is not that word); for the sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with
-contents write on two new private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`),
-saved 0600 anywhere he names, or the word to skip it since the dogfood landing proves the same
-path; this STATE.
+**As of:** 2026-10-23 01:50 EDT. Main at `04493a4` (#94, #95 and #93 merged; main's CI green; the
+orchestrator's gate on `04493a4` is green on six steps and red on the test step: two
+`tessel-swarm` tests fail on this Mac because its Node is now 24 and `node --test` prints the spec
+reporter instead of TAP when stdout is not a terminal, so the swarm's parser counts no tests; CI
+pins Node 22.23.3 and is green; the run stopped at 1857 tests; SWARM-NODE24-TAP fixes it: #98 at
+`4db1b86`, 1929 tests, reviewed "Yes", waiting for Felix). M4 is five tasks in: the server lands
+over HTTPS with a token file read through its own askpass hook (#92); `docs/dogfood.md` and its
+script set the dogfood server up (#91); the build protocol's section 2 describes landings through
+the server (#90), in force from the first landing this STATE records; CI runs `actionlint` and
+`zizmor` on every pull request and push to `main` (#94); the server accepts only lowercase agent
+names (#95). Nothing is dispatched: the first landing needs Felix's GitHub steps.
+**Waiting on Felix:** #96 (this STATE), #97 (`AGENTS.md` tracked as a symlink to `CLAUDE.md`, his
+decision of 23 October relayed by the homelab-setup session) and #98 (the swarm's TAP reporter);
+the "main: CI required" ruleset to list "Fast lane, workflow lint" (its required checks today: fmt
+and clippy, core library tests, Rust workspace, steward, advisories and bans, mutants on changed
+lines; a red workflow lint does not block a pull request until it is added); the GitHub steps of
+`docs/dogfood.md` (the fine-grained token saved 0600, the three private fork repositories, ruleset
+step 4) and a word on D1-D4 (the page states them as proposals); for the sandbox landing that
+closes M4-GITHUB-REMOTE's done-check, a token with contents write on two new private repositories
+in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`), saved 0600 anywhere he names, or the word to
+skip it; the Cloudflare API token in `tessel-steward/.dev.vars` revoked at M6's deletion at the
+latest.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** on the merges of #94 and #95: the orchestrator's gate on `main`, the boxes closed,
-worktrees reclaimed; then, on Felix's GitHub steps, the orchestrator starts the server from the
-page and M4-FIRST-LANDINGS begins.
+**Next:** on #98's merge the gate on `main` is green again (the orchestrator re-runs it); on
+Felix's GitHub steps the orchestrator starts the server from `docs/dogfood.md`, the lanes `tessel
+init` as `lane-a` and `lane-b`, and M4-FIRST-LANDINGS begins (M4-RESTART-HELD with it). Noted from
+the #98 review for the CI row: the Rust workspace job runs on the runner image's unpinned Node,
+and only the steward job pins 22.23.3, so the swarm's tests there follow the image; the TAP flag
+makes them independent of it.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -516,7 +523,15 @@ claims reconciled.
   restart that lands the claim once, and the end-to-end landing job on CI (75 s). 1837 to 1887
   tests; the review's mutants each red, the one CI missed pinned by a boundary test. Left for rows
   below: case-folded fork names, the unused `trunk-moved` route, a kill after the push.
-- [ ] **SERVER-FORK-CASE** — lane B; #95 at `fe2d129`, reviewed "Yes", waiting for Felix. As
+- [ ] **SWARM-NODE24-TAP** — lane A; #98 at `4db1b86`, reviewed "Yes" (1929 tests; the
+  `on_local` test was a third Node 24 failure, fixed with it), waiting for Felix. From the
+  orchestrator's gate on `04493a4`: `tessel-swarm/src/git.rs` runs `node --test` in the demo
+  repository and parses TAP (`# pass N`, `not ok`), but from Node 23 the default reporter when
+  stdout is not a terminal is `spec`, so on a Node 24 machine
+  `the_starting_repository_passes_its_own_tests` sees 0 tests and the failure note loses its first
+  failing test; CI, pinned to Node 22.23.3, is green. Done: the TAP reporter asked for explicitly,
+  a test that pins the flag, the README's Node line, the two tests green on Node 24.
+- [x] **SERVER-FORK-CASE** (`9334aaf`, #95) — lane B. As
   built: the server accepts only lowercase agent names (the verifier, `admin token`, `reviewers`
   and the fork template each refuse any other; the protocol's rule is unchanged); a store that
   already holds claims for an uppercase agent keeps them until they expire. From the
@@ -529,14 +544,14 @@ claims reconciled.
   tree calls `trunk-moved` since the adapter feeds the host its own poke after a landing; the
   route stays for main moves the adapter did not make. Done: wired to the git host's push
   event in team mode, or deleted with its `lander` service name.
-- [ ] **CI-ACTIONLINT-ZIZMOR** — lane A; #94 at `95244fa`, reviewed "Yes", waiting for Felix.
-  As built: "Fast lane, workflow lint" (actionlint 1.7.12 by checksum-verified binary, zizmor
-  1.31.1 through its action pinned by SHA); Felix adds it to the ruleset's required checks. M4,
-  before the orchestrator's gate on the merged tree stops (the
-  protocol rewrite, #90). From the M4-DOGFOOD-SETUP review: `.github/workflows/ci.yml` runs fmt,
-  clippy and the named-tests check but neither `actionlint` nor `zizmor`, which only the lanes'
-  gates run; once landings bypass the orchestrator's gate nothing on `main` checks the workflows.
-  Done: both in the fast lane, pinned by SHA, red on a planted workflow fault.
+- [x] **CI-ACTIONLINT-ZIZMOR** (`8c49be8`, #94) — lane A. As built: "Fast lane, workflow lint"
+  (actionlint 1.7.12 by checksum-verified binary, zizmor 1.31.1 through its action pinned by SHA);
+  Felix adds it to the ruleset's required checks. M4, before the orchestrator's gate on the merged
+  tree stops (the protocol rewrite, #90). From the M4-DOGFOOD-SETUP review:
+  `.github/workflows/ci.yml` runs fmt, clippy and the named-tests check but neither `actionlint`
+  nor `zizmor`, which only the lanes' gates run; once landings bypass the orchestrator's gate
+  nothing on `main` checks the workflows. Done: both in the fast lane, pinned by SHA, red on a
+  planted workflow fault.
 - [ ] **MERGE-ADMIN-MERGE-TEXT** — with the next core task. From the same review:
   `src/merge.rs:327` still says a change to `tessel.toml` needs "an admin merge", a steward route
   that no longer exists; the lander refuses the change and it goes through a pull request. Done:
