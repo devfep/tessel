@@ -106,7 +106,6 @@ pub async fn start_with_runner(
     deps: Deps,
     runner: Arc<dyn TestRunner>,
 ) -> Result<RunningServer, StartError> {
-    let config = &config.with_absolute_paths()?;
     start_repositories(config, deps, Some(runner)).await
 }
 
@@ -140,6 +139,7 @@ async fn start_repositories(
     deps: Deps,
     runner: Option<Arc<dyn TestRunner>>,
 ) -> Result<RunningServer, StartError> {
+    let config = &config.with_absolute_paths()?;
     let dir = StoreDir::open(&config.store_dir)?;
     let mut repos = Vec::new();
     let mut handles = BTreeMap::new();
