@@ -83,3 +83,42 @@ async fn start_still_says_running_but_not_connected_for_a_daemon_that_is_alive()
     assert!(!done.stderr.contains("lock"), "{}", done.stderr);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_starts_against_an_offline_coordinator_name_the_daemon_that_answers() -> Result<()> {
+    let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    fake.freeze_clock();
+    fake.set_accepting(false);
+    let a1 = Agent::new(&fake, "a1", TOK1)?;
+
+    let (first, second) = std::thread::scope(|scope| {
+        let one = scope.spawn(|| a1.tessel(&["start", "racer one"]));
+        let two = scope.spawn(|| a1.tessel(&["start", "racer two"]));
+        (one.join(), two.join())
+    });
+    let outputs = [
+        first.map_err(|_| anyhow::anyhow!("first start panicked"))??,
+        second.map_err(|_| anyhow::anyhow!("second start panicked"))??,
+    ];
+
+    let winner = a1.status()?["state"]["pid"].to_string();
+    for done in &outputs {
+        assert!(
+            !done.all().contains("no daemon answers"),
+            "a daemon answers for this worktree: {}",
+            done.all()
+        );
+    }
+    let losers: Vec<_> = outputs
+        .iter()
+        .filter(|done| done.stderr.contains("did not start"))
+        .collect();
+    for loser in losers {
+        assert!(
+            loser.stderr.contains(&format!("pid {winner}")),
+            "the loser does not name the winner (pid {winner}): {}",
+            loser.stderr
+        );
+    }
+    Ok(())
+}
