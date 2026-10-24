@@ -16,9 +16,10 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::host::call::{Call, CallAnswer, Request};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, DecisionRecord, EventKind, Fence, Intent, Mode,
-    OnConflict, ProtocolRange, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, EventKind, Fence, Intent,
+    Mode, OnConflict, ProtocolRange, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
+use tessel_coordinator::shell::MAX_FRAME_BYTES;
 use tessel_server::config::{Config, RepositoryConfig};
 use tessel_server::id::RepoId;
 use tessel_server::identity::{self, Ed25519Verifier, Role, TokenRequest};
@@ -1094,6 +1095,77 @@ async fn a_fresh_server_with_a_remote_reads_main_before_the_first_agent_says_hel
         head.0, main,
         "the agent declared another base; main's head wins"
     );
+    server.stop().await;
+    Ok(())
+}
+
+/// A valid `Hello`, padded with trailing spaces to `len` bytes: a frame the parser would accept
+/// if the size check did not come first.
+fn padded_hello(len: usize) -> Result<String, Box<dyn std::error::Error>> {
+    let mut text = serde_json::to_string(&hello("a1"))?;
+    text.extend(std::iter::repeat_n(' ', len - text.len()));
+    Ok(text)
+}
+
+#[tokio::test]
+async fn a_frame_over_the_host_limit_is_refused_and_the_socket_stays_open() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let server = start(dir.path()).await?;
+    let mut socket = welcomed(server.local_addr(), DEMO, TOKEN_A1, "a1").await?;
+
+    let over = padded_hello(MAX_FRAME_BYTES + 1)?;
+    assert_eq!(over.len(), MAX_FRAME_BYTES + 1);
+    socket.send(Message::text(over)).await?;
+    let reply = expect(&mut socket).await?;
+    let ServerMsg::Error { req, code, message } = reply else {
+        return Err(format!("expected the fixed refusal, got {reply:?}").into());
+    };
+    assert_eq!((req, code), (None, ErrorCode::Malformed));
+    assert_eq!(
+        message,
+        format!("frame is larger than {MAX_FRAME_BYTES} bytes")
+    );
+
+    send(&mut socket, &claim(1, "src/a.rs")).await?;
+    let reply = expect(&mut socket).await?;
+    assert!(
+        granted(&reply).is_some(),
+        "the socket still serves: {reply:?}"
+    );
+    server.stop().await;
+    Ok(())
+}
+
+/// Past `MAX_FRAME_BYTES * 4` axum's own limit fails the read before the host sees the frame. The
+/// client gets no close frame, no reply and no 1009: the connection just ends, as a reset or an
+/// end of stream, depending on the platform. The server keeps serving other sockets.
+#[tokio::test]
+async fn a_frame_over_the_transport_limit_drops_the_socket_without_a_close_frame() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let server = start(dir.path()).await?;
+    let mut socket = welcomed(server.local_addr(), DEMO, TOKEN_A1, "a1").await?;
+
+    let over = padded_hello(MAX_FRAME_BYTES * 4 + 1)?;
+    let _ = socket.send(Message::text(over)).await;
+    let until = tokio::time::Instant::now() + WAIT;
+    loop {
+        let frame = tokio::time::timeout_at(until, socket.next()).await?;
+        match frame {
+            None | Some(Err(WsError::Io(_) | WsError::Protocol(_) | WsError::ConnectionClosed)) => {
+                break;
+            }
+            Some(Ok(Message::Close(close))) => {
+                return Err(format!("the server sent a close frame: {close:?}").into());
+            }
+            Some(Ok(Message::Text(text))) => {
+                return Err(format!("the server answered the frame: {text}").into());
+            }
+            Some(Ok(_)) => {}
+            Some(Err(error)) => return Err(format!("unexpected failure: {error:?}").into()),
+        }
+    }
+
+    let _other = welcomed(server.local_addr(), DEMO, TOKEN_A2, "a2").await?;
     server.stop().await;
     Ok(())
 }
