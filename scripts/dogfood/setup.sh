@@ -8,9 +8,10 @@
 # orchestrator. Safe to run again: it rewrites the two configurations and the tokens, and keeps
 # the key. It never calls gh, never pushes and never starts the server. Needs `tessel-server` and
 # `tessel` on PATH, and copies both into <server dir>/bin: git's askpass hook is the server's own
-# current_exe, so it must run from a copy that a later cargo build cannot replace mid-landing.
+# current_exe, so it must run from a copy that a later cargo build cannot replace mid-landing, and
+# the docs run `tessel init` from the `tessel` copy so the git hooks it installs point at it.
 # <server dir>/.cargo/config.toml caps landing builds at 6 jobs, as cargo reads it upward from the
-# runner's clone and a fork cannot change it. Tokens are written by redirection and never printed.
+# runner's clone; a submission's own .cargo/ is held as sensitive. Tokens are never printed.
 set -euo pipefail
 
 kid="2026-10"

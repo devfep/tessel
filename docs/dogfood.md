@@ -21,7 +21,7 @@ The runner runs the trunk's `tessel.toml` test command, `cargo test --workspace`
 commit in a fresh clone, as you. Clippy, fmt, the named-tests check, actionlint, zizmor and the
 steward's tests stay on CI, which runs on `main` after a landing. Each lane also runs actionlint
 and zizmor in its gate before it submits. The runner is not sandboxed until M5: land only code
-whose tests you trust: its tests can read `<server dir>` (the tokens, the key and `github-token`)
+whose tests you trust. Its tests can read `<server dir>` (the tokens, the key and `github-token`)
 and run `gh` as you. The lanes' gates already run the same code as you; M5 separates the user. Two
 things still go through a pull request you merge: a change to `tessel.toml`, which a submission may
 not touch, and a change to this page or `scripts/dogfood/`, the server's own set-up.
@@ -50,8 +50,11 @@ unless it exists, and a token for `lane-a`, `lane-b` and `orchestrator` in `<ser
 each valid 7 days. It copies `tessel-server` and `tessel` into `<server dir>/bin` on every run,
 because git's askpass hook is the server's own executable and a later `cargo build` must not
 replace it mid-landing. It writes `<server dir>/.cargo/config.toml` with `jobs = 6`, which cargo
-reads from the runner's clone upward, so a landing build uses 6 of the 12 cores and a fork cannot
-change that. It never calls `gh` and never starts the server.
+reads from the runner's clone upward, so a landing build uses 6 of the 12 cores. The cap limits
+compile jobs, not test threads. A `.cargo/config.toml` inside a submission would take precedence
+over it, but that file lands only as a held change, because `.cargo/` is sensitive. The `tessel`
+copy is the one every worktree runs `init` from, so its git hooks point at a binary that stays.
+It never calls `gh` and never starts the server.
 
 ```
 scripts/dogfood/setup.sh <server dir>
@@ -97,8 +100,9 @@ actor:
 gh api repos/devfep/tessel/rulesets/25345043 \
   | jq '{name, target, enforcement, conditions,
          rules: [.rules[] | select(.type != "deletion" and .type != "non_fast_forward")],
-         bypass_actors: (.bypass_actors + [{actor_id: 5, actor_type: "RepositoryRole",
-                                            bypass_mode: "always"}])}' \
+         bypass_actors: (.bypass_actors
+           | if any(.[]; .actor_id == 5 and .actor_type == "RepositoryRole") then .
+             else . + [{actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always"}] end)}' \
   | gh api -X PUT repos/devfep/tessel/rulesets/25345043 --input -
 gh api repos/devfep/tessel/rulesets/25345043 --jq .current_user_can_bypass
 ```
@@ -120,27 +124,31 @@ nohup <server dir>/bin/tessel-server serve --config <server dir>/tessel-server.t
 kill "$(cat "<server dir>/server.pid")"
 ```
 
-The second command stops it; run the first again to restart. Tokens last 7 days. After that, run
-the script again; in each worktree, `trash .tessel/config.toml` and `tessel init` again, because
-`init` keeps the token already in the file.
+The second command stops it; run the first again to restart. Tokens last 7 days. After that, run the
+script again; in each worktree, `trash .tessel/config.toml` and `<server dir>/bin/tessel init`
+again, because `init` keeps the token already in the file.
 
 ## A lane
 
 In the lane's worktree, `init` keeps the token in `.tessel/config.toml` (mode 0600) and never
-prints it; use `lane-b` for the other lane. Each task starts from a new `main`, so a lane pushes
+prints it; use `lane-b` for the other lane. Run `<server dir>/bin/tessel`, here and afterwards:
+`init` installs git hooks that point at the running binary's path, and a `target/debug` inside a
+worktree disappears with it. Each task starts from a new `main`, so a lane pushes
 `HEAD:main` to its own fork with `--force` before `tessel submit`.
 
 ```
 TESSEL_TOKEN=$(cat <server dir>/tokens/lane-a) \
-  tessel init --coordinator ws://127.0.0.1:7878/tenant/devfep --repo tessel --agent lane-a
+  <server dir>/bin/tessel init --coordinator ws://127.0.0.1:7878/tenant/devfep \
+  --repo tessel --agent lane-a
 git push --force https://github.com/devfep/tessel-lane-a.git HEAD:main
 ```
 
 ## The orchestrator
 
-The orchestrator is the reviewer. In a checkout of its own, `init` as for a lane with
-`tokens/orchestrator` and `--agent orchestrator`; its commits land through the server too, pushed
-to `tessel-orchestrator`. Decide a held submission by the id `tessel submit` printed:
+The orchestrator is the reviewer. In a checkout of its own, run `<server dir>/bin/tessel init` as
+for a lane with `tokens/orchestrator` and `--agent orchestrator`; its commits land through the
+server too, pushed to `tessel-orchestrator`. Decide a held submission by the id `tessel submit`
+printed:
 
 ```
 tessel review <id> --approve --note "looks right"
