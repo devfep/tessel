@@ -141,6 +141,7 @@ impl Coordinator {
 mod tests {
     use super::*;
     use crate::coordinator::Config;
+    use crate::merge::{infra_backoff_ms, MergeOutcome, MAX_INFRA_RETRIES};
     use crate::protocol::{
         ClientMsg, DecisionRecord, Intent, Mode, OnConflict, RequestId, RunId, Scope, ScopeClaim,
         ServerMsg,
@@ -471,6 +472,170 @@ mod tests {
             assert_eq!(head_of(&c), None);
             assert!(c.begin_head_read().is_some());
         }
+    }
+
+    /// The main a merge dispatch was baselined on.
+    fn dispatched_main(c: &Coordinator) -> Option<CommitId> {
+        c.state
+            .merge_in_flight
+            .as_ref()
+            .and_then(|flight| flight.main.clone())
+    }
+
+    #[test]
+    fn a_hello_before_the_start_read_answers_leaves_the_read_head_for_the_next_dispatch() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("no head: a read is due");
+        assert_eq!(hello(&mut c, "a1", OLD), sha(OLD));
+        let effects = c.trunk_read(&read, Some(sha(TRUNK)), NOW + 1);
+        assert_eq!(head_of(&c), Some(sha(TRUNK)));
+        let [EventKind::BaseMoved { head, by, notified }] = logged(&effects)[..] else {
+            panic!("the agent was told OLD, so the change is logged: {effects:?}");
+        };
+        assert_eq!((head, by), (&sha(TRUNK), &agent("steward")));
+        assert!(notified.is_empty());
+        assert_eq!(c.begin_head_read(), None, "the read is answered");
+        merge_in_flight(&mut c, "a1");
+        assert_eq!(dispatched_main(&c), Some(sha(TRUNK)));
+        assert_eq!(hello(&mut c, "a2", NEWER), sha(TRUNK));
+    }
+
+    #[test]
+    fn a_start_read_answering_the_head_a_hello_set_keeps_it_and_logs_nothing() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        hello(&mut c, "a1", OLD);
+        assert!(c.trunk_read(&read, Some(sha(OLD)), NOW + 1).is_empty());
+        assert_eq!(head_of(&c), Some(sha(OLD)));
+        assert_eq!(c.begin_head_read(), None);
+    }
+
+    #[test]
+    fn the_head_a_hello_set_is_remembered_across_save_and_reload() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        hello(&mut c, "a1", OLD);
+        let saved = serde_json::to_string(&c).unwrap();
+        let mut reloaded: Coordinator = serde_json::from_str(&saved).unwrap();
+        reloaded.trunk_read(&read, Some(sha(TRUNK)), NOW + 1);
+        assert_eq!(head_of(&reloaded), Some(sha(TRUNK)));
+    }
+
+    #[test]
+    fn a_landing_after_a_hello_is_not_replaced_by_the_stale_start_read() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        hello(&mut c, "a1", OLD);
+        merge_in_flight(&mut c, "a1");
+        assert!(c.trunk_read(&read, Some(sha(TRUNK)), NOW + 1).is_empty());
+        assert_eq!(head_of(&c), Some(sha(OLD)), "no read applies mid-merge");
+        let dispatch = c
+            .state
+            .merge_in_flight
+            .as_ref()
+            .expect("in flight")
+            .dispatch;
+        let merged = MergeOutcome::Merged {
+            base: sha(OLD),
+            head: sha(NEWER),
+        };
+        c.merge_outcome(dispatch, &merged, NOW + 2);
+        assert_eq!(head_of(&c), Some(sha(NEWER)));
+        assert!(c.trunk_read(&read, Some(sha(TRUNK)), NOW + 3).is_empty());
+        assert_eq!(
+            head_of(&c),
+            Some(sha(NEWER)),
+            "the landing is the newer truth"
+        );
+    }
+
+    #[test]
+    fn a_head_from_an_earlier_read_is_not_replaced_by_a_blind_start_read() {
+        let mut c = core();
+        let first = c.begin_head_read().expect("due");
+        let stale = c.begin_head_read().expect("due again before the answer");
+        c.trunk_read(&first, Some(sha(TRUNK)), NOW);
+        assert!(c.trunk_read(&stale, Some(sha(NEWER)), NOW + 1).is_empty());
+        assert_eq!(head_of(&c), Some(sha(TRUNK)));
+    }
+
+    #[test]
+    fn a_failed_start_read_is_offered_again_after_the_backoff_and_not_before() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        c.trunk_read(&read, None, NOW);
+        let first = NOW + infra_backoff_ms(1);
+        for early in [NOW, NOW + 1, first - 1] {
+            assert_eq!(
+                c.next_head_read_ms(early),
+                Some(first),
+                "not woken at {early}"
+            );
+        }
+        assert_eq!(c.next_head_read_ms(first), Some(first));
+        assert_eq!(c.next_head_read_ms(first + 5), Some(first + 5));
+        let retry = c.begin_head_read().expect("still due");
+        c.trunk_read(&retry, None, first);
+        let second = first + infra_backoff_ms(2);
+        assert_eq!(c.next_head_read_ms(first + 1), Some(second));
+        assert!(second - first > first - NOW, "the wait grows");
+    }
+
+    #[test]
+    fn a_failed_start_read_stops_waking_after_the_infrastructure_retries() {
+        let mut c = core();
+        let mut now = NOW;
+        for failure in 1..=MAX_INFRA_RETRIES + 1 {
+            let read = c
+                .begin_head_read()
+                .expect("a head read is always owed with no head");
+            c.trunk_read(&read, None, now);
+            let wake = c.next_head_read_ms(now);
+            if failure <= MAX_INFRA_RETRIES {
+                now = wake.expect("a retry is scheduled");
+            } else {
+                assert_eq!(wake, None, "no wake after {failure} failures");
+            }
+        }
+        assert!(
+            c.begin_head_read().is_some(),
+            "an alarm that runs anyway still reads"
+        );
+        c.trunk_moved(now);
+        assert_eq!(
+            c.next_head_read_ms(now),
+            Some(now),
+            "a poke is a new reason"
+        );
+    }
+
+    #[test]
+    fn a_hello_after_a_failed_start_read_leaves_the_retry_due_and_its_answer_applies() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        c.trunk_read(&read, None, NOW);
+        hello(&mut c, "a1", OLD);
+        let retry_at = NOW + infra_backoff_ms(1);
+        assert_eq!(c.next_head_read_ms(NOW + 1), Some(retry_at));
+        let retry = c
+            .begin_head_read()
+            .expect("the base a hello declared is unchecked");
+        assert_eq!(retry.head_at_start, Some(sha(OLD)));
+        c.trunk_read(&retry, Some(sha(TRUNK)), retry_at);
+        assert_eq!(head_of(&c), Some(sha(TRUNK)));
+        assert_eq!(c.begin_head_read(), None);
+        assert_eq!(c.next_head_read_ms(retry_at + 1), None);
+    }
+
+    #[test]
+    fn a_read_that_works_ends_the_retries() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        c.trunk_read(&read, None, NOW);
+        let retry = c.begin_head_read().expect("due");
+        c.trunk_read(&retry, Some(sha(TRUNK)), NOW + 1);
+        assert_eq!(c.next_head_read_ms(NOW + 2), None);
+        assert_eq!(c.begin_head_read(), None);
     }
 
     #[test]
