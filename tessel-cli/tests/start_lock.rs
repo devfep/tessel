@@ -14,6 +14,7 @@ mod support;
 
 use std::fs::OpenOptions;
 use std::path::PathBuf;
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -86,6 +87,16 @@ async fn start_still_says_running_but_not_connected_for_a_daemon_that_is_alive()
     Ok(())
 }
 
+/// A daemon that is killed and reaped on every path out of a test, including a failed `?`.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Puts a socket back once the second daemon has logged that it gave way. Until then the
 /// second `start` finds no daemon at the path, so it spawns one; afterwards its probes answer.
 fn restore_when_a_daemon_gives_way(
@@ -115,7 +126,7 @@ async fn a_second_start_names_the_offline_daemon_that_holds_the_lock_when_its_ow
     fake.freeze_clock();
     fake.set_accepting(false);
     let a1 = Agent::new(&fake, "a1", TOK1)?;
-    let mut winner = a1.spawn_daemon("the first start")?;
+    let mut winner = KillOnDrop(a1.spawn_daemon("the first start")?);
     let state = eventually(Duration::from_secs(8), || {
         Ok(a1
             .status()
@@ -132,14 +143,13 @@ async fn a_second_start_names_the_offline_daemon_that_holds_the_lock_when_its_ow
     let log = a1.root().join(".tessel/daemon.log");
     let restorer = restore_when_a_daemon_gives_way(hidden, socket, log);
 
-    let done = a1.tessel(&["start", "the second start"])?;
+    let done = a1.tessel(&["start", "the second start"]);
 
     let restored = restorer
         .join()
-        .map_err(|_| anyhow::anyhow!("restorer panicked"))?;
-    let winner_ran = winner.try_wait()?.is_none();
-    winner.kill()?;
-    winner.wait()?;
+        .map_err(|_| anyhow::anyhow!("restorer panicked"));
+    let winner_ran = winner.0.try_wait().map(|status| status.is_none());
+    let (done, restored, winner_ran) = (done?, restored?, winner_ran?);
     restored?;
     assert!(winner_ran, "the first daemon exited: {}", done.all());
     assert_eq!(

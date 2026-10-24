@@ -257,13 +257,22 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
         .process_group(0)
         .spawn()
         .context("cannot start the daemon")?;
-    let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+    await_online(&worktree, &mut child, START_TIMEOUT).await
+}
+
+/// Waits up to `timeout` for the daemon `child` to come online, and says why if it does not.
+async fn await_online(
+    worktree: &Worktree,
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> anyhow::Result<Report> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut answered = None;
     loop {
         // A daemon that exits cleanly lost the lock to another one, which will come online.
         let exited = child.try_wait()?;
         if let Some(status) = exited.filter(|status| !status.success()) {
-            bail!(exited_message(&worktree, status));
+            bail!(exited_message(worktree, status));
         }
         if let Ok(Reply::Status { state }) =
             rpc::call(&worktree.sock(), &Request::Status, Duration::from_secs(1)).await
@@ -278,9 +287,9 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
         }
         if tokio::time::Instant::now() >= deadline {
             if let Some(status) = child.try_wait()? {
-                bail!(deadline_message(&worktree, status, answered.as_deref()));
+                bail!(deadline_message(worktree, status, answered.as_deref()));
             }
-            let reason = match State::read(&worktree) {
+            let reason = match State::read(worktree) {
                 Ok(Some(state)) => state.last_error.unwrap_or_else(|| "no answer yet".into()),
                 Ok(None) | Err(_) => "no state written".to_string(),
             };
@@ -818,5 +827,28 @@ mod tests {
 
         assert!(message.contains("held by another process"), "{message}");
         assert!(!message.contains("before connecting"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_fails_during_the_last_probe_is_reported_with_its_exit_status() {
+        let (_dir, worktree) = worktree_with_log("connecting\nrefused: bad token\n");
+        // A socket that accepts and never answers holds the probe for its full second, so the
+        // daemon's exit lands after the loop's first check and after the deadline.
+        let _silent = tokio::net::UnixListener::bind(worktree.sock()).unwrap();
+        let mut child = Process::new("sh")
+            .args(["-c", "sleep 0.3; exit 3"])
+            .spawn()
+            .unwrap();
+
+        let error = await_online(&worktree, &mut child, Duration::from_millis(100))
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("exited (exit status: 3) before connecting"),
+            "{error}"
+        );
+        assert!(error.contains("refused: bad token"), "{error}");
     }
 }
