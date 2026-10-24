@@ -88,6 +88,19 @@ impl Repos {
         self.work_git(&["push", "--quiet", "--force", &remote, "main"]);
     }
 
+    /// Pushes the work tree's HEAD to a new branch of `remote`, without force.
+    pub fn push_branch(&self, remote: &Path, branch: &str) {
+        let remote = remote.display().to_string();
+        let target = format!("HEAD:refs/heads/{branch}");
+        self.work_git(&["push", "--quiet", &remote, &target]);
+    }
+
+    /// Deletes a branch of the bare fork; the objects stay in its store.
+    pub fn delete_fork_branch(&self, branch: &str) {
+        let reference = format!("refs/heads/{branch}");
+        fixture_git(&self.fork, &["update-ref", "-d", &reference]);
+    }
+
     pub fn main_head(&self) -> Sha {
         Sha::parse(&fixture_git(&self.main, &["rev-parse", "main"])).expect("sha")
     }
