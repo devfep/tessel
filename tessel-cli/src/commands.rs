@@ -258,6 +258,7 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
         .spawn()
         .context("cannot start the daemon")?;
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+    let mut answered = None;
     loop {
         // A daemon that exits cleanly lost the lock to another one, which will come online.
         let exited = child.try_wait()?;
@@ -276,15 +277,11 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
                     state.agent, state.repo, state.pid
                 )));
             }
+            answered = Some(state);
         }
         if tokio::time::Instant::now() >= deadline {
-            if exited.is_some() {
-                bail!(
-                    "the daemon did not start: the lock {} is held by another process, and no \
-                     daemon answers for this worktree. Stop that process (`tessel stop` reaches \
-                     only a daemon that answers), then run `tessel start` again",
-                    worktree.lock_path().display()
-                );
+            if child.try_wait()?.is_some() {
+                bail!(gave_way_message(&worktree, answered.as_deref()));
             }
             let reason = match State::read(&worktree) {
                 Ok(Some(state)) => state.last_error.unwrap_or_else(|| "no answer yet".into()),
@@ -297,6 +294,27 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// What `start` says when its daemon exited cleanly and none came online: it gave way to a holder
+/// of the worktree lock. A holder that answered `Status` is named; with no answer, only the lock.
+fn gave_way_message(worktree: &Worktree, answered: Option<&State>) -> String {
+    let Some(state) = answered else {
+        return format!(
+            "the daemon did not start: the lock {} is held by another process, and no daemon \
+             answers for this worktree. Stop that process (`tessel stop` reaches only a daemon \
+             that answers), then run `tessel start` again",
+            worktree.lock_path().display()
+        );
+    };
+    let error = state.last_error.as_deref().unwrap_or("no error recorded");
+    format!(
+        "the daemon did not start: another daemon already holds the lock for this worktree \
+         (pid {}, {}): {error}. Run `tessel status` to see it, or `tessel stop` to stop it, \
+         then run `tessel start` again",
+        state.pid,
+        connection_word(state.connection)
+    )
 }
 
 fn connection_word(connection: Connection) -> &'static str {
