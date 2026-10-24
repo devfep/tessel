@@ -6,9 +6,9 @@ runner and the CLI. The Cloudflare Worker and its `wrangler.toml` are deleted. T
 it; nothing on this page configures it.
 
 Every setting Tessel reads, where it is set, its default, what it does, and the code that reads it.
-The code references were written against commit `9e363c1` and the `src/shell.rs` ones re-checked
-after the Worker's deletion. A setting that is not on this page is not configurable: the limits in
-[Fixed limits](#fixed-limits) are constants in the code.
+The code references were checked against commit `36b17f2`; the `src/shell.rs` ones were also
+re-checked after the Worker's deletion. A setting that is not on this page is not configurable:
+the limits in [Fixed limits](#fixed-limits) are constants in the code.
 
 Contents: [`tessel.toml`](#per-repository-tesseltoml-the-gate) ·
 [Host settings](#host-settings) · [Server](#server-tessel-server) ·
