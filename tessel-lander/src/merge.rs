@@ -9,7 +9,7 @@
 //! 1. Clone main and fetch the fork with read credentials, then revoke them before anything else
 //!    runs (if the revocation fails, nothing runs and the merge is an error).
 //! 2. Check the cloned main is the commit whose gate was read (else `MainMoved`), then verify the
-//!    commit is reachable from the fork's default branch.
+//!    commit is contained in a fork branch.
 //! 3. Rebase `merge-base..commit` onto main with a fixed committer.
 //! 4. Check that the claim covers every file the rebased range changes (invariant 11) and what
 //!    the range does to `tessel.toml`. This is file level; see [`crate::coverage`].
@@ -249,7 +249,7 @@ fn clone_and_fetch(env: &GitEnv<'_>, clone_dir: &Path) -> Result<CloneOutcome, M
         CloneOutcome::Cloned(workspace) => workspace,
         failed @ CloneOutcome::Failed(_) => return Ok(failed),
     };
-    let fetch = env.run(&env.git.fetch_fork_command(&workspace, env.sources)?)?;
+    let fetch = env.run(&env.git.fetch_fork_command(&workspace, env.sources))?;
     Ok(if fetch.success() {
         CloneOutcome::Cloned(workspace)
     } else {
@@ -274,7 +274,7 @@ pub(crate) fn fetch_then_revoke(
     }
 }
 
-/// Checks that the commit exists in the fetched fork and is reachable from its default branch.
+/// Checks that the commit exists in the fetched fork and that some fork branch contains it.
 pub(crate) fn verify_commit(
     env: &GitEnv<'_>,
     workspace: &Workspace,
@@ -287,15 +287,15 @@ pub(crate) fn verify_commit(
     if !exists.success() {
         return Ok(Some(Halt::GitFailed(exists)));
     }
-    let reachable = env.run(&env.git.reachable_command(workspace, env.sources, commit)?)?;
-    if exited_with(&reachable, 1) {
-        return Ok(Some(Halt::CommitNotInFork));
+    let reachable = env.run(&env.git.reachable_command(workspace, commit))?;
+    if !reachable.success() {
+        return Ok(Some(Halt::GitFailed(reachable)));
     }
-    Ok(if reachable.success() {
-        None
-    } else {
-        Some(Halt::GitFailed(reachable))
-    })
+    Ok(reachable
+        .stdout
+        .trim()
+        .is_empty()
+        .then_some(Halt::CommitNotInFork))
 }
 
 /// Replays `merge-base..commit` onto `base` and reads the new head. A stopped rebase with

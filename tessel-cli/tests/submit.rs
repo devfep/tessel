@@ -109,8 +109,8 @@ async fn a_covered_submission_is_accepted_and_the_claim_shows_as_submitted() -> 
     assert!(done.stdout.contains("accepted"), "{}", done.stdout);
     assert!(done.stdout.contains("position 1"), "{}", done.stdout);
     assert!(
-        done.stdout.contains("fetches only `main` of your fork")
-            && done.stdout.contains("already be pushed there"),
+        done.stdout.contains("fetches the branches of your fork")
+            && done.stdout.contains("already be pushed to one of them"),
         "the output must say the commit has to be on the fork:\n{}",
         done.stdout
     );

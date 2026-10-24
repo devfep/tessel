@@ -244,7 +244,7 @@ pub enum MergeOutcome {
     GateInvalid {},
     /// Another write reached main after the steward read it; try again.
     MainMoved {},
-    /// The commit is not reachable from the fork's default branch.
+    /// The commit is on no branch of the fork.
     CommitNotInFork {},
     /// Infrastructure: the attempt did not finish. These never count for or against the code.
     Clone {},
@@ -337,7 +337,7 @@ impl MergeOutcome {
                         .to_string(),
             },
             MergeOutcome::CommitNotInFork {} => Verdict::Rejected {
-                reason: "the submitted commit is not on your fork's default branch".to_string(),
+                reason: "the submitted commit is not on any branch of your fork".to_string(),
             },
             MergeOutcome::Refused { kind } => Verdict::Rejected {
                 reason: refused_reason(*kind).to_string(),
@@ -367,7 +367,7 @@ pub enum TrialOutcome {
     TestsFailed {},
     /// The replay left main unchanged: the commit adds nothing to test.
     NothingToTest {},
-    /// The commit is not reachable from the fork's default branch.
+    /// The commit is on no branch of the fork.
     CommitNotInFork {},
     /// A main sha of the request is not on main's history. Final: asking again changes nothing.
     MainUnreachable {},

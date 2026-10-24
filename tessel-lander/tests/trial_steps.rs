@@ -84,7 +84,7 @@ fn git_step(command: &GitCommand) -> GitStep {
         (" fetch ", GitStep::Fetch),
         ("refs/remotes/origin/main", GitStep::OnMain),
         ("--quiet", GitStep::Exists),
-        ("--is-ancestor", GitStep::Reachable),
+        (" for-each-ref ", GitStep::Reachable),
         (" merge-base ", GitStep::MergeBase),
         (" rebase ", GitStep::Rebase),
         ("--diff-filter=U", GitStep::Conflicts),
@@ -119,12 +119,12 @@ fn out(exit: i32, stdout: &str) -> Reply {
 fn default_reply(step: GitStep) -> Reply {
     match step {
         GitStep::Exists => out(0, &format!("{}\n", commit())),
+        GitStep::Reachable => out(0, "x\n"),
         GitStep::MergeBase => out(0, &format!("{}\n", merge_base())),
         GitStep::Head => out(0, &format!("{}\n", head())),
         GitStep::Clone
         | GitStep::Fetch
         | GitStep::OnMain
-        | GitStep::Reachable
         | GitStep::Rebase
         | GitStep::Conflicts => exit(0),
     }
@@ -163,7 +163,6 @@ impl Harness {
             MergeSources {
                 main_remote: "https://git.example/demo.git".to_owned(),
                 fork_remote: "https://git.example/demo--a1.git".to_owned(),
-                fork_branch: "main".to_owned(),
             },
         );
         let ctx = TrialContext {
@@ -415,8 +414,8 @@ fn reports_a_stopped_rebase_as_a_conflict_with_the_unmerged_paths_and_runs_no_te
 
 #[test]
 fn reports_a_commit_that_is_not_on_the_fork_as_commit_not_in_fork_and_runs_nothing_after() {
-    for step in [GitStep::Exists, GitStep::Reachable] {
-        let harness = Harness::new().git(step, exit(1));
+    for (step, reply) in [(GitStep::Exists, exit(1)), (GitStep::Reachable, exit(0))] {
+        let harness = Harness::new().git(step, reply);
 
         assert_eq!(harness.outcome(), TrialOutcome::CommitNotInFork);
 

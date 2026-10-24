@@ -193,7 +193,7 @@ table, makes it invalid, and an error names the file and the key.
 | `[[repository]]` `reviewers` | array of agent names | `[]` | The agents that may approve or reject a held submission, which is what `tessel review` does. Empty: nobody may, and a held submission stays held. Each entry is a lowercase agent name (`a-z 0-9 . _ -`, first a letter or digit); a bad entry, an uppercase one included, makes the file invalid and the error names the file, the repository and the key. Read as `REVIEWERS` above. |
 | `[[repository]]` `sensitive` | array of path prefixes | `[]` | A submission that touches a path starting with an entry is held for review. No globs; end a directory with `/`. A bad entry (empty, a leading `/`, a `..` segment, a `*`, a comma, a space at either end) makes the file invalid, naming the file, the repository and the key. Read as `SENSITIVE` above. |
 | `[[repository]]` `remote` | path or URL | none | The git remote main lives on. A repository with a `remote` is landed by the server ([Landing](#landing)); one without has no lander and every merge is refused. A path needs no credential. An `https://` URL on a host that needs one works with `[lander]` `token_file`; without it the server logs once at start that landings on the repository push without a credential, and git's push is refused by a host that requires one. Plain `http://` is accepted here and refused by git (the lander allows only `https`, `ssh` and `file`). |
-| `[[repository]]` `fork` | path or URL with `{agent}` | required with `remote` | Where an agent's fork is, `{agent}` standing for the agent's name, as in the swarm's `<forks>/<agent>.git`: `/srv/forks/{agent}.git`. `{agent}` must appear exactly once, never in the host of a URL, and `fork` without `remote` is invalid; the error names the file and the key. The name is substituted only if it passes the server's agent-name rule (the one the verifier enforces: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 128 bytes), checked again at every call; any other name is refused as a missing fork and no path is made. Agent names are lowercase at this server (the verifier, `admin token`, `reviewers` and the fork template all refuse any other), so two names can never share a fork on a case-insensitive filesystem or a git host that folds case. The agent pushes the commit to the fork's `main` before `tessel submit`. A URL is validated like a path, and the fetch of a private fork uses `token_file`. |
+| `[[repository]]` `fork` | path or URL with `{agent}` | required with `remote` | Where an agent's fork is, `{agent}` standing for the agent's name, as in the swarm's `<forks>/<agent>.git`: `/srv/forks/{agent}.git`. `{agent}` must appear exactly once, never in the host of a URL, and `fork` without `remote` is invalid; the error names the file and the key. The name is substituted only if it passes the server's agent-name rule (the one the verifier enforces: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 128 bytes), checked again at every call; any other name is refused as a missing fork and no path is made. Agent names are lowercase at this server (the verifier, `admin token`, `reviewers` and the fork template all refuse any other), so two names can never share a fork on a case-insensitive filesystem or a git host that folds case. The agent pushes the commit to a branch of the fork before `tessel submit`. A URL is validated like a path, and the fetch of a private fork uses `token_file`. |
 | `[lander]` `work_dir` | path | required with a `remote` | Where clones live while a call runs, under `<work_dir>/<tenant>/<repo>/`. The directory is the server's: it removes what a killed server left there when it starts. |
 | `[lander]` `runner_config` | path | required with a `remote` | The `tessel-runner.toml` the tests run under ([Runner](#runner-tessel-runner)). It is checked when the server starts, so a file the runner would refuse stops the server, and again before every run. |
 | `[lander]` `token_file` | path | none | A file holding the git host's token, for a `remote` or `fork` that is a URL which needs one. At start, and again before every call, the file must exist, be a regular file with no group or other permission bits (mode 0600) and be non-empty after one trailing newline is dropped; otherwise the server does not start, or the call ends as `Unknown`, and the error names the file and the key, never any content. Git reads it through its askpass hook: the user name `x-access-token` and the file's content, read when git asks, so a replaced file takes effect on the next git command. The token is in no argument, URL, environment value, log line or error; the environment carries only the file's path. The hook answers only a prompt whose host (the URL's authority without user information, lowercased) equals the host of the `remote` or the `fork`, so a look-alike such as `github.com.evil.com` gets nothing, and a token with a line break inside is refused. The file's owner and its directory's mode are not checked: only the file's mode, re-checked on the open handle at each prompt (the target's mode for a symlink). On Linux the hook is named by the server's executable path, so a server left running across a binary upgrade cannot answer prompts until it is restarted. The tests the runner runs are the server's user and can read the file ([Landing](#landing)). |
@@ -214,7 +214,8 @@ A merge is one `Prepare` call until the staged landing (HOST-MERGE-STANDIN), and
 with a `remote` the server answers it in process with the lander and the runner. In order:
 
 1. Read main's head from the remote and pin it.
-2. Clone main, fetch the `main` of the agent's fork and check the commit is on it.
+2. Clone main, fetch every branch of the agent's fork and check that some branch contains the
+   commit.
 3. Rebase the commit onto main with a fixed committer, so a retry gives the same commit.
 4. Check the claim covers every changed file and that `tessel.toml` is untouched.
 5. Clone the rebased head into a test tree and run the trunk's `[[test]]` commands there with the
@@ -451,14 +452,17 @@ What a held mode covers when submitting (`protocol.rs:196-210`): every mode cove
 | `--evidence "<text>"` | none, at least one | What shows the work is right. Repeatable. The CLI drops blank entries (`tessel-cli/src/submit.rs:63-75`). Self-reported: the coordinator accepts any non-empty evidence list, and nothing checks that the tests ran. |
 | `--rejected "<approach>::<reason>"` | none | An approach tried and dropped. Repeatable. |
 | `--claim <id>` | the only unsubmitted claim | Required when several are held. |
-| `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork's `main`. |
+| `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to a branch of the agent's fork. |
 | `--transcript <file>` | none | A session transcript. Redacted, at most 4 MiB, stored on the local branch `tessel/transcript-<claim>` (`tessel-cli/src/transcript.rs`). Nothing copies it yet (P1-EVIDENCE). |
 
-Push first: `git push <your fork> HEAD:main`. The server's lander fetches only the fork's `main`
-and needs the commit reachable from it ([Landing](#landing)). The fork is the one the server's
-`fork` template names for the agent, locally `<forks>/<agent>.git`; the CLI does not choose it. The
-runner runs the trunk's test command on the rebased commit before main moves. No evidence record
-and no transcript copy exist yet (P1-EVIDENCE).
+Push first: `git push <your fork> HEAD:refs/heads/<new branch>`, without force. The server's
+lander fetches every branch of the fork and needs one of them to contain the commit
+([Landing](#landing)); a commit that is in the fork's object store but on no branch is refused.
+Never rewrite a branch you have pushed: after an amend or a rebase, push a new name, such as
+`tessel/<claim>-<n>`. The fork is the one the server's `fork` template names for the agent,
+locally `<forks>/<agent>.git`; the CLI does not choose it. The runner runs the trunk's test command
+on the rebased commit before main moves. No evidence record and no transcript copy exist yet
+(P1-EVIDENCE).
 
 ### `tessel review <claim> --approve | --reject [--note "<reason>"]`
 

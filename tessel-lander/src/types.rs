@@ -38,18 +38,3 @@ impl fmt::Display for Sha {
         f.write_str(&self.0)
     }
 }
-
-/// Whether `name` is safe to put in a refspec: it starts with a letter or digit, is at most 128
-/// characters of `[A-Za-z0-9._/-]`, has no `..` and does not end in `/`. A name that starts with
-/// `-` can therefore never be read as an option.
-pub fn is_safe_branch_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    let Some(first) = bytes.next() else {
-        return false;
-    };
-    first.is_ascii_alphanumeric()
-        && name.len() <= 128
-        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'))
-        && !name.contains("..")
-        && !name.ends_with('/')
-}

@@ -54,7 +54,7 @@ fn the_rebased_head_is_a_known_id_whatever_the_callers_environment_says() {
 
     let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
     let remote = repo.display().to_string();
-    let sources = sources_for(&remote, &remote, "feature");
+    let sources = sources_for(&remote, &remote);
     let workspace = cloned(
         clone_main(
             &git,

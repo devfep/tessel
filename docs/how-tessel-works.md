@@ -174,11 +174,11 @@ trunk. The change keeps the behaviour, and the tests pass.
 
 [a1] $ git commit -qam "Name the discount amount in applyDiscount"
 
-[a1] $ git push -q fork HEAD:main
+[a1] $ git push -q fork HEAD:refs/heads/tessel/claim-1
 
 [a1] $ tessel submit --evidence "node --test passed (12 tests)"
 accepted: claim 1 (2bfdf735f84f9310e07683f8366ee017b82ed874) is in the merge queue at position 1.
-The server's lander fetches only `main` of your fork, so the commit must already be pushed there. The runner runs the trunk's test command before it lands.
+The server's lander fetches the branches of your fork, so the commit must already be pushed to one of them. The runner runs the trunk's test command before it lands.
 The outcome arrives in `tessel inbox` (merged, submit_rejected, uncovered or review_required); `tessel status` shows the claim as submitted until then. A submitted claim cannot be released.
 ```
 
@@ -189,10 +189,10 @@ evidence attached. So the work goes straight to the merge queue.
 
 **5. The merge lands it.** The local stand-in cherry-picked the commit onto the trunk and ran
 `node --test`. The real merge path is the server's lander (`tessel-lander/`, called from
-`tessel-server/src/landing/mod.rs`). It clones `main`, fetches the fork, checks the commit is on
-the fork's `main`, rebases it, and checks that the claim covers every file the rebased change
-touches. The runner then runs the trunk's test commands on a clone of the rebased head. The lander
-pushes `main` with a compare-and-swap on the head it read and confirms by reading `main` back. The
+`tessel-server/src/landing/mod.rs`). It clones `main`, fetches the fork, checks that a fork
+branch contains the commit, rebases it, and checks that the claim covers every file the rebased
+change touches. The runner then runs the trunk's test commands on a clone of the rebased head.
+The lander pushes `main` with a compare-and-swap on the head it read and confirms by reading `main` back. The
 lander runs git and never repo code; the runner runs the tests and never git.
 
 ```
@@ -245,7 +245,7 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 | **Review by exception** | A submission merges with no human unless a rule flags it: it changes a signature, touches a path in the sensitive list, threatens an assumption, or carries no evidence. Flagged work waits for a reviewer named in the reviewers list, who decides with `tessel review`. A reviewer can never decide their own submission. |
 | **Evidence** | The `--evidence` lines on a submit. Any non-empty line satisfies the rule. The coordinator does not check it: it is what the agent says it ran. |
 | **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the runner has run the trunk's test commands on the rebased commit. It never runs repo code. |
-| **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, the one the server's `fork` template names for it (locally `<forks>/<agent>.git`), on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from that `main`. |
+| **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, the one the server's `fork` template names for it (locally `<forks>/<agent>.git`), to a new branch of that fork: `git push <fork> HEAD:refs/heads/<new branch>`, without force, and never rewrites a pushed branch. The lander lands the submitted commit if some branch of the fork contains it. |
 | **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). `tessel-server` runs the trunk's test command through the runner before it pushes; a trunk without one cannot be tested, so nothing lands. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
 
 ### Which modes conflict

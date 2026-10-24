@@ -323,7 +323,6 @@ impl Inner {
         let sources = MergeSources {
             main_remote: self.remote.clone(),
             fork_remote,
-            fork_branch: MAIN_BRANCH.to_owned(),
         };
         let (clone_dir, test_dir) = (work.dir.child("main"), work.dir.child("test"));
         let ctx = MergeContext {
@@ -429,7 +428,6 @@ mod tests {
         let local = MergeSources {
             main_remote: main.display().to_string(),
             fork_remote: fork.to_owned(),
-            fork_branch: MAIN_BRANCH.to_owned(),
         };
         let cloned = clone_main(&git, &SystemRunner, &local, &dir.path().join("clone")).unwrap();
         let workspace = match cloned {
@@ -445,7 +443,7 @@ mod tests {
         let head = Sha::parse(&"b".repeat(40)).unwrap();
         let commands = [
             git.clone_command(&remote_sources, &dir.path().join("again")),
-            git.fetch_fork_command(&workspace, &remote_sources).unwrap(),
+            git.fetch_fork_command(&workspace, &remote_sources),
             git.push_command(&workspace, &remote_sources, &base, &head),
             ls_remote_command(&git, remote, "refs/heads/main"),
         ];

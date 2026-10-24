@@ -35,11 +35,10 @@ impl GitRunner for AlwaysOk {
     }
 }
 
-pub fn sources_for(main_remote: &str, fork_remote: &str, fork_branch: &str) -> MergeSources {
+pub fn sources_for(main_remote: &str, fork_remote: &str) -> MergeSources {
     MergeSources {
         main_remote: main_remote.to_owned(),
         fork_remote: fork_remote.to_owned(),
-        fork_branch: fork_branch.to_owned(),
     }
 }
 
@@ -47,7 +46,7 @@ pub fn sources_for(main_remote: &str, fork_remote: &str, fork_branch: &str) -> M
 /// the command builders. The directory does not exist.
 pub fn workspace_at(path: &str) -> Workspace {
     let git = Git::new("/lander/home".into(), "/lander/hooks".into());
-    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let sources = sources_for("https://git.example/demo.git", "");
     cloned(clone_main(&git, &AlwaysOk, &sources, Path::new(path)).expect("clone step runs"))
 }
 

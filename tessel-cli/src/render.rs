@@ -442,8 +442,9 @@ pub fn submit_text(outcome: &SubmitOutcome, claim: ClaimId, commit: &str) -> Str
         ),
         SubmitOutcome::Accepted { queue_position } => format!(
             "accepted: claim {} ({commit}) is in the merge queue at position {queue_position}.\n\
-             The server's lander fetches only `main` of your fork, so the commit must \
-             already be pushed there. The runner runs the trunk's test command before it lands.\n\
+             The server's lander fetches the branches of your fork, so the commit must \
+             already be pushed to one of them. The runner runs the trunk's test command \
+             before it lands.\n\
              The outcome arrives in `tessel inbox` (merged, submit_rejected, uncovered or \
              review_required); `tessel status` shows the claim as submitted until then. A \
              submitted claim cannot be released.\n",

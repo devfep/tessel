@@ -132,9 +132,21 @@ impl Repos {
         self.head()
     }
 
-    /// Commits `files` on the work tree's head, pushes the commit to the fork of `a1`, and puts
-    /// the work tree back where it was.
+    /// Commits `files` on the work tree's head, pushes the commit to a new branch of the fork of
+    /// `a1` without force, and puts the work tree back where it was.
     pub fn fork_commit(&self, files: &[(&str, &str)]) -> String {
+        let before = self.head();
+        let commit = self.commit(files);
+        let fork = self.fork_of("a1").display().to_string();
+        let target = format!("HEAD:refs/heads/tessel/{commit}");
+        git(&self.work, &["push", "--quiet", &fork, &target]);
+        git(&self.work, &["reset", "--quiet", "--hard", &before]);
+        commit
+    }
+
+    /// Commits `files` on the work tree's head, force-pushes the commit to the fork's `main` and
+    /// puts the work tree back. A Trial without a commit reads that `main`.
+    pub fn fork_main_commit(&self, files: &[(&str, &str)]) -> String {
         let before = self.head();
         let commit = self.commit(files);
         self.push(&self.fork_of("a1"));

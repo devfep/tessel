@@ -66,7 +66,7 @@ fn markers(dir: &Path) -> Vec<String> {
 
 fn clone_source(git: &Git, source: &Path, destination: &Path) -> Workspace {
     let remote = source.display().to_string();
-    let sources = sources_for(&remote, &remote, "feature");
+    let sources = sources_for(&remote, &remote);
     cloned(clone_main(git, &SystemRunner, &sources, destination).expect("clone runs"))
 }
 
@@ -145,7 +145,7 @@ fn an_empty_directory_inside_another_repository_does_not_run_that_repositorys_co
     let inside = repo.join("inside");
     fs::create_dir(&inside).expect("empty dir inside the repository");
     let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
-    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let sources = sources_for("https://git.example/demo.git", "");
     let workspace = cloned(clone_main(&git, &support::AlwaysOk, &sources, &inside).expect("clone"));
 
     let rebase = run(&git.rebase_command(&workspace, &m, &a, &b)).expect("rebase runs");
@@ -273,7 +273,7 @@ fn a_remote_that_names_a_command_or_a_plain_transport_is_refused() {
         ("http://127.0.0.1:9/repo.git".to_owned(), "http"),
         ("git://127.0.0.1:9/repo.git".to_owned(), "git"),
     ] {
-        let sources = sources_for(&remote, "", "main");
+        let sources = sources_for(&remote, "");
         let destination = scratch.path().join(format!("workspace-{expected}"));
         let clone = failed_clone(
             clone_main(&git, &SystemRunner, &sources, &destination).expect("clone runs"),

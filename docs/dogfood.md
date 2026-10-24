@@ -29,7 +29,7 @@ not touch, and a change to this page or `scripts/dogfood/`, the server's own set
 ## Build and GitHub, by hand
 
 Build from a checkout of `main` and put `target/debug` on your `PATH`. Then make the three
-private forks: an agent pushes to its own, and the lander fetches its `main`.
+private forks: an agent pushes to its own, and the lander fetches every branch.
 
 ```
 cargo build -p tessel-server -p tessel-cli
@@ -133,14 +133,15 @@ again, because `init` keeps the token already in the file.
 In the lane's worktree, `init` keeps the token in `.tessel/config.toml` (mode 0600) and never
 prints it; use `lane-b` for the other lane. Run `<server dir>/bin/tessel`, here and afterwards:
 `init` installs git hooks that point at the running binary's path, and a `target/debug` inside a
-worktree disappears with it. Each task starts from a new `main`, so a lane pushes
-`HEAD:main` to its own fork with `--force` before `tessel submit`.
+worktree disappears with it. A lane pushes each task's commit to a new branch of its own fork,
+without force, before `tessel submit`, and never rewrites a branch it pushed; after an amend or a
+rebase it pushes a new name.
 
 ```
 TESSEL_TOKEN=$(cat <server dir>/tokens/lane-a) \
   <server dir>/bin/tessel init --coordinator ws://127.0.0.1:7878/tenant/devfep \
   --repo tessel --agent lane-a
-git push --force https://github.com/devfep/tessel-lane-a.git HEAD:main
+git push https://github.com/devfep/tessel-lane-a.git HEAD:refs/heads/tessel/<claim>-1
 ```
 
 ## The orchestrator

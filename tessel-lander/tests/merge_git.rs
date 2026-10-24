@@ -129,6 +129,68 @@ fn refuses_a_commit_that_is_not_on_the_forks_default_branch() {
 }
 
 #[test]
+fn lands_a_commit_that_is_on_a_fork_branch_other_than_main() {
+    let repos = Repos::new();
+    let base = repos.head();
+    let forked = repos.commit("b.txt", "fork work\n");
+    repos.push_branch(&repos.fork, "tessel/claim-1");
+    repos.reset_to(base.as_str());
+
+    let outcome = merge(&repos, &forked, &whole_repo());
+
+    assert!(
+        matches!(outcome, MergeOutcome::Merged { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(repos.show_on_main("b.txt"), "fork work");
+}
+
+#[test]
+fn refuses_a_commit_that_is_in_the_forks_object_store_but_on_no_branch() {
+    let repos = Repos::new();
+    let base = repos.head();
+    let dangling = repos.commit("b.txt", "fork work\n");
+    repos.push_branch(&repos.fork, "tessel/claim-1");
+    repos.delete_fork_branch("tessel/claim-1");
+    repos.reset_to(base.as_str());
+    let main_before = repos.main_head();
+
+    assert_eq!(
+        merge(&repos, &dangling, &whole_repo()),
+        MergeOutcome::CommitNotInFork
+    );
+    assert_eq!(repos.main_head(), main_before);
+}
+
+#[test]
+fn refuses_a_commit_that_is_on_the_trunk_but_on_no_fork_branch() {
+    let repos = Repos::new();
+    let base = repos.head();
+    let trunk_only = repos.commit("c.txt", "trunk work\n");
+    repos.push(&repos.main);
+    repos.reset_to(base.as_str());
+
+    assert_eq!(
+        merge(&repos, &trunk_only, &whole_repo()),
+        MergeOutcome::CommitNotInFork
+    );
+}
+
+#[test]
+fn answers_commit_not_in_fork_for_a_fork_with_no_branches() {
+    let repos = Repos::new();
+    let base = repos.head();
+    let forked = repos.commit("b.txt", "fork work\n");
+    repos.delete_fork_branch("main");
+    repos.reset_to(base.as_str());
+
+    assert_eq!(
+        merge(&repos, &forked, &whole_repo()),
+        MergeOutcome::CommitNotInFork
+    );
+}
+
+#[test]
 fn does_not_overwrite_main_when_it_moved_after_the_clone() {
     let repos = Repos::new();
     let forked = diverged_without_conflict(&repos);

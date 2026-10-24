@@ -14,7 +14,7 @@ use tessel_lander::git::{
     ensure_supported_git, parse_nul_separated, CommandError, Git, GitCommand, MergeSources,
     COMMITTER_DATE, COMMITTER_EMAIL, COMMITTER_NAME, MAX_PUSH_BODY_BYTES,
 };
-use tessel_lander::types::{is_safe_branch_name, Sha};
+use tessel_lander::types::Sha;
 use tessel_lander::workspace::Workspace;
 
 use support::workspace_at;
@@ -34,7 +34,6 @@ fn sources() -> MergeSources {
     MergeSources {
         main_remote: "https://git.example/tessel/demo.git".to_owned(),
         fork_remote: "https://git.example/tessel/demo--a1.git".to_owned(),
-        fork_branch: "main".to_owned(),
     }
 }
 
@@ -88,56 +87,35 @@ fn clones_main_with_dashdash_before_the_remote_so_it_cannot_be_read_as_an_option
 }
 
 #[test]
-fn fetches_only_the_forks_default_branch_into_refs_remotes_fork() {
+fn fetches_every_fork_branch_into_refs_remotes_fork_without_tags() {
     let sources = sources();
-    let argv = argv(
-        &git()
-            .fetch_fork_command(&workspace(), &sources)
-            .expect("safe branch"),
-    );
+    let argv = argv(&git().fetch_fork_command(&workspace(), &sources));
+    assert!(argv.contains(&"--no-tags".to_owned()));
+    assert!(argv.contains(&"--quiet".to_owned()));
     assert_eq!(
         argv[argv.len() - 2..],
         [
             sources.fork_remote.clone(),
-            "+refs/heads/main:refs/remotes/fork/main".to_owned()
+            "+refs/heads/*:refs/remotes/fork/*".to_owned()
         ]
     );
 }
 
 #[test]
-fn refuses_a_fork_branch_name_that_is_not_safe_in_a_refspec() {
-    let hostile = MergeSources {
-        fork_branch: "main --upload-pack=x".to_owned(),
-        ..sources()
-    };
-    let fetch = git()
-        .fetch_fork_command(&workspace(), &hostile)
-        .expect_err("hostile branch");
-    assert!(fetch.to_string().contains("unsafe fork branch"), "{fetch}");
-    let reachable = git()
-        .reachable_command(&workspace(), &hostile, &sha('a'))
-        .expect_err("hostile branch");
-    assert!(
-        reachable.to_string().contains("unsafe fork branch"),
-        "{reachable}"
-    );
-}
-
-#[test]
 fn passes_a_commit_as_one_argv_element_never_inside_shell_text() {
-    let command = git()
-        .reachable_command(&workspace(), &sources(), &sha('a'))
-        .expect("safe branch");
+    let command = git().reachable_command(&workspace(), &sha('a'));
     assert_eq!(
         argv(&command),
         [
             "git",
             "-C",
             "/workspace",
-            "merge-base",
-            "--is-ancestor",
+            "for-each-ref",
+            "--count=1",
+            "--format=x",
+            "--contains",
             &"a".repeat(40),
-            "refs/remotes/fork/main",
+            "refs/remotes/fork/",
         ]
     );
 }
@@ -407,35 +385,6 @@ fn sha_parse_accepts_only_forty_lowercase_hex_characters() {
 }
 
 #[test]
-fn branch_names_are_safe_only_when_they_cannot_be_an_option_or_escape_a_ref() {
-    for ok in [
-        "main",
-        "feature/x-1.2_3",
-        "a",
-        &"a".repeat(128),
-        "release/1.0",
-    ] {
-        assert!(is_safe_branch_name(ok), "{ok:?}");
-    }
-    for bad in [
-        "",
-        "-x",
-        ".x",
-        "/x",
-        "a/",
-        "a..b",
-        "a b",
-        "a;b",
-        "a\nb",
-        "a:b",
-        "a~b",
-        &"a".repeat(129),
-    ] {
-        assert!(!is_safe_branch_name(bad), "{bad:?}");
-    }
-}
-
-#[test]
 fn git_2_31_or_newer_is_accepted() {
     for version in [
         "git version 2.31.0",
@@ -505,8 +454,7 @@ fn an_added_variable_reaches_every_command_and_cannot_replace_a_fixed_one() {
     let commands = [
         git.clone_command(&sources(), Path::new("/clone")),
         git.clone_test_tree_command(&workspace, Path::new("/tree")),
-        git.fetch_fork_command(&workspace, &sources())
-            .expect("fetch"),
+        git.fetch_fork_command(&workspace, &sources()),
         git.push_command(&workspace, &sources(), &sha('a'), &sha('b')),
         git.head_command(&workspace),
     ];

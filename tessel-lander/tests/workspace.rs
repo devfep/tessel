@@ -48,7 +48,7 @@ fn a_clone_into_a_missing_directory_is_a_workspace_at_that_path() {
     let outcome = clone_main(
         &git,
         &SystemRunner,
-        &sources_for(&remote, &remote, "main"),
+        &sources_for(&remote, &remote),
         &destination,
     )
     .expect("clone runs");
@@ -69,7 +69,7 @@ fn a_clone_into_an_existing_empty_directory_is_a_workspace() {
     let outcome = clone_main(
         &git,
         &SystemRunner,
-        &sources_for(&remote, &remote, "main"),
+        &sources_for(&remote, &remote),
         &destination,
     )
     .expect("clone runs");
@@ -93,7 +93,7 @@ fn a_repository_that_already_holds_its_own_config_is_refused_with_the_real_runne
     let error = clone_main(
         &git,
         &SystemRunner,
-        &sources_for(&remote, &remote, "main"),
+        &sources_for(&remote, &remote),
         &planted,
     )
     .expect_err("refused");
@@ -107,7 +107,7 @@ fn a_repository_that_already_holds_its_own_config_is_refused_with_the_real_runne
 #[test]
 fn a_clone_git_did_not_complete_is_not_a_workspace() {
     let git = Git::new("/lander/home".into(), "/lander/hooks".into());
-    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let sources = sources_for("https://git.example/demo.git", "");
     for exit_code in [Some(128), Some(1), None] {
         let outcome =
             clone_main(&git, &Exits(exit_code), &sources, "/w".as_ref()).expect("runner answers");
@@ -132,7 +132,7 @@ fn an_existing_repository_is_refused_even_to_a_runner_that_runs_nothing() {
     let error = clone_main(
         &git,
         &support::AlwaysOk,
-        &sources_for("https://git.example/demo.git", "", "main"),
+        &sources_for("https://git.example/demo.git", ""),
         &planted,
     )
     .expect_err("a repository is not a destination");
@@ -147,7 +147,7 @@ fn an_existing_repository_is_refused_even_to_a_runner_that_runs_nothing() {
 fn a_file_a_non_empty_directory_and_a_symlink_are_refused_before_anything_runs() {
     let scratch = TempDir::new().expect("tempdir");
     let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
-    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let sources = sources_for("https://git.example/demo.git", "");
     let file = scratch.path().join("file");
     fs::write(&file, "x").expect("file");
     let full = scratch.path().join("full");
@@ -171,7 +171,7 @@ fn a_file_a_non_empty_directory_and_a_symlink_are_refused_before_anything_runs()
 fn an_empty_directory_and_a_missing_path_are_accepted_by_a_runner_that_runs_nothing() {
     let scratch = TempDir::new().expect("tempdir");
     let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
-    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let sources = sources_for("https://git.example/demo.git", "");
     let empty = scratch.path().join("empty");
     fs::create_dir(&empty).expect("empty dir");
     for destination in [empty, scratch.path().join("missing")] {
@@ -185,7 +185,7 @@ fn an_empty_directory_and_a_missing_path_are_accepted_by_a_runner_that_runs_noth
 fn a_destination_with_parent_dir_components_is_refused_even_when_its_start_is_missing() {
     let scratch = TempDir::new().expect("tempdir");
     let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
-    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let sources = sources_for("https://git.example/demo.git", "");
     let repo = scratch.path().join("planted");
     fs::create_dir(&repo).expect("planted dir");
     fixture_git(&repo, &["init", "--quiet", "--initial-branch=main"]);
@@ -210,7 +210,7 @@ fn a_destination_that_cannot_be_inspected_is_refused_before_anything_runs() {
 
     let scratch = TempDir::new().expect("tempdir");
     let git = Git::create_in(&scratch.path().join("lander")).expect("environment");
-    let sources = sources_for("https://git.example/demo.git", "", "main");
+    let sources = sources_for("https://git.example/demo.git", "");
     let closed = scratch.path().join("closed");
     fs::create_dir(&closed).expect("dir");
     fs::set_permissions(&closed, fs::Permissions::from_mode(0o000)).expect("close dir");

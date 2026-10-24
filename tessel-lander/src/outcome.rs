@@ -202,7 +202,7 @@ pub enum MergeOutcome {
 /// Not evidence about the code, but true statements about this attempt:
 /// - `NothingToTest`: replaying the commit left main unchanged, so there is nothing of the
 ///   commit's to test. Running main's own tests would blame the commit for main.
-/// - `CommitNotInFork`: the commit is not reachable from the fork's default branch.
+/// - `CommitNotInFork`: no fork branch contains the commit.
 /// - `MainUnreachable`: `main` is not on main's history, so there is no such state of main to try
 ///   the commit on. Asking again cannot change it.
 ///
