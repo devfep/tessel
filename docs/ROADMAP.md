@@ -7,50 +7,49 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 06:45 EDT. Main at `de24d41`. Merged tonight by the orchestrator under Felix's
-standing order, each after CI 13/13 on its head and an Opus "Yes" posted on it: #102, #103, #105,
-#106, #107, #108, #109, #110, #111 and #112; #101 (STATE) merged by the orchestrator before the
-classifier's refusal below. The orchestrator's gate is green on all seven steps after every merge,
-last on `de24d41` (1961 tests, none failed); main's CI green after each. One CI flake met tonight
-(#110's run, `tessel-runner/tests/runner/binary.rs:34`, broken pipe): recorded as
-RUNNER-BINARY-EPIPE, its job re-run once with the row cited, fixed in #111, and the same race in the
-CLI's test support fixed in #112. Rows closed tonight: CLI-WORKTREE-LOCK-FORK-RACE,
-MERGE-ADMIN-MERGE-TEXT, SERVER-KILL-AFTER-PUSH-TEST, SERVER-FRAME-LIMIT-TESTS, DOCS-GATE-SECTION,
-CLI-LOCK-UPGRADE-WINDOW, COORD-HEAD-FROM-AGENT, DOCS-STEWARD-SWEEP, CLI-START-REFUSED-MESSAGE,
-COORD-HEAD-RESTART-READ, CLI-START-RACE-TEST-VACUOUS, DOCS-R22-HOST-TEST,
-SWARM-REAL-LEASE-CUT-TESTS, RUNNER-BINARY-EPIPE, CLI-TEST-STDIN-EPIPE. Open rows found by tonight's
-reviews: LANDER-ADMIN-POLICY-DEAD (M6), CLI-START-DEADLINE-SEAM, SWARM-UNBOUNDED-LOOPS. Nothing is
-dispatched; M4's first landing still needs Felix's GitHub steps. Checked out: this STATE's worktree
-and the orchestrator's detached gate worktree `.claude/worktrees/gate-main`.
-**Standing order from Felix (24 October, about 01:25 EDT), for this night only:** the orchestrator
-merges pull requests itself once the protocol is met (lane report, CI green on the head, an Opus
-reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's gate
-on `main` after the merge). It does not cover a breaking protocol change (`CLAUDE.md` rule 1),
-`PLAN.md` scope or order (rule 10), a change to `tessel.toml` or to the dogfood set-up (section 2
-keeps those his), or any step that needs his GitHub settings, tokens or D1-D4. After the
-orchestrator merged #101 (STATE, no reviewer) the auto-mode classifier refused its next local
-fast-forward as a merge without review, so STATE pull requests, this one included, wait for Felix;
-the orchestrator gates `main` in a detached worktree instead of moving its local `main`.
-**Waiting on Felix:** this STATE pull request; the "main: CI required" ruleset to list "Fast lane,
-workflow lint" (its required checks today: fmt and clippy, core library tests, Rust workspace,
-steward, advisories and bans, mutants on changed lines; a red workflow lint does not block a pull
-request until it is added); the GitHub steps of `docs/dogfood.md` (the fine-grained token saved
-0600, the three private fork repositories, ruleset step 4) and a word on D1-D4 (the page states them
-as proposals); for the sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with
-contents write on two new private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`),
-saved 0600 anywhere he names, or the word to skip it; the Cloudflare API token in
-`tessel-steward/.dev.vars` revoked at M6's deletion at the latest. Housekeeping he may want:
-`devfep/tessel` keeps the head branches of 24 merged pull requests (GitHub's "automatically delete
-head branches" setting, or one `git push --delete`, clears them); the orchestrator deletes nothing
-on the remote without his word.
+**As of:** 2026-10-24 12:00 EDT. Main at `91785b2`, the first commit landed by the dogfood
+`tessel-server` (M4-FIRST-LANDINGS 1 of 5). The server runs on Felix's Mac from
+`~/tessel-dogfood/bin` at `4382641` (#114), listening on `127.0.0.1:7878`; agent tokens are valid
+to 31 October (re-run `scripts/dogfood/setup.sh` and re-init each worktree after). Merged today by
+Felix: #104, #113 (DOGFOOD-HARDENING), #114 (LANDER-FORK-ANY-BRANCH); the orchestrator's gate is
+green on `4382641` (1962 tests, none failed) and main's CI on `91785b2`. Nothing is dispatched; the
+orchestrator's checkout `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the
+detached gate worktree.
+**Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
+reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
+classifier still refuses the orchestrator's own pull request merges ("Merge Without Review"), so
+pull requests (`tessel.toml`, the server's set-up, or anything the server cannot land) wait for
+Felix's merge; everything else lands through the server.
+**Decided by Felix (24 October):** D1 as written, with the ruleset split below; D2 (a), private
+repos `devfep/tessel-lane-a`, `-lane-b` and `-orchestrator` (Actions off), lanes pushing a new
+branch per submission since #114; D3 accepted with landing builds capped at 6 jobs
+(`<server dir>/.cargo/config.toml`; tests still use every core: load reached 55 on the first
+landing); D4 accepted as a process control, not a security boundary, until M5 runs the server as
+its own macOS user. The GitHub token is fine-grained ("tessel-dogfood-lander": the four repos,
+Contents read/write, Metadata read; expires 23 November 2026). `delete_repo` was removed from gh's
+token. `PUSH_ALLOW_REMOTES` in `~/.claude/overlay.env` exempts the forks and the sandbox repos
+from Felix's push hook. Claude Code deny rules on the server directory were not added: lanes are
+the orchestrator's subagents and share its permissions; the orchestrator runs `tessel init` in
+each worktree before handing it over instead.
+**Ruleset split (24 October):** "main: no rewrite" (25786281: deletion, non-fast-forward, no
+bypass; `current_user_can_bypass` never) and "main: CI required" (25345043: pull request and the 7
+required checks, the repository admin role as bypass; always). Proven first on
+`tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
+Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
+(`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
+**Waiting on Felix:** narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that lanes push
+branches; the suggested patch to his push hook that exempts only a URL git resolves to itself
+(scratchpad `push-hook-resolved-url.patch`); the Cloudflare API token in
+`tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged
+pull requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word).
+Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the
+sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** on Felix's GitHub steps the orchestrator starts the server from `docs/dogfood.md`, the
-lanes `tessel init` as `lane-a` and `lane-b`, and M4-FIRST-LANDINGS begins (M4-RESTART-HELD with
-it). Noted from the #98 review for a CI row: the Rust workspace job runs on the runner image's
-unpinned Node, and only the steward job pins 22.23.3, so the swarm's tests there follow the image;
-the TAP flag makes them independent of it.
+**Next:** M4-FIRST-LANDINGS 2 to 5 from lanes A and B, one lane's gate at a time while a landing
+runs, the server log watched; M4-RESTART-HELD with the server idle. Candidates:
+GATE-INVALID-RETRIED, STEWARD-LOG-WORDING, SWARM-UNBOUNDED-LOOPS, CLI-START-DEADLINE-SEAM, GATE-INSTANCE-REQUIRED.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -768,25 +767,13 @@ section 2 rewritten, with Felix's approval of the landing shape before the first
 when: five landings of this repository with their notes and claims released by `Merged`, none by
 hand; one server restart while a submitted claim is held, that claim landed afterwards.
 
-**Decisions for Felix (block the first landing, not the first two tasks):**
-- D1, the landing shape: the lander pushes `main` over HTTPS with a token read from a 0600 file
-  named in `[lander]` (never an environment variable, never in a URL or a log); the bypass actor
-  is Felix (ruleset step 4). Approve or change.
-- D2, the fork shape for lanes: (a) a real GitHub fork per lane name (`fork` a URL with
-  `{agent}`; lanes are few and fixed), or (b) branches in this repository with the template
-  gaining a ref, which needs a lander change since it reads only a fork's `main`. Recommended:
-  (a), no lander change, forks named for `lane-a` and `lane-b`.
-- D3, the runner's load on the Mac: each landing runs `cargo test --workspace` cold on Felix's
-  machine (237 s measured at load 9 on 22 October; the merge call's deadline is 13 minutes and
-  the runner's `timeout_secs` is 720). Accept, or ask for a way to limit the load: the gate's
-  parser accepts none of `-j`, `--` or an environment setting, so limiting it is a runner or
-  gate change, not a `tessel.toml` line.
-- D4, identities: tokens per lane name from the server's keys; the orchestrator holds the
-  reviewer token (`reviewers = ["orchestrator"]`); `sensitive` covers `src/protocol.rs`,
-  `src/host/`, `.github/` and `docs/BUILD-PROTOCOL.md`.
+**Decided by Felix (24 October):** D1-D4, as the STATE block records, after two adversarial
+reviews (security, operations) and the sandbox trial.
 
-- [ ] **M4-GITHUB-REMOTE** (`6fcf36b`, #92) — lane B. Merged; its done-check's sandbox landing
-  is pending on a token from Felix (STATE). As built: `[lander] token_file` (0600, checked at
+- [x] **M4-GITHUB-REMOTE** (`6fcf36b`, #92) — lane B. Done-check met 24 October: the sandbox
+  landing on `tessel-sandbox/m4-trunk` (`8c878d3`, parent `661a420`), lane B's commit fetched from
+  the private fork `m4-fork-lane-b` and pushed over HTTPS with a fine-grained token through the
+  askpass hook, through the admin-role bypass. As built: `[lander] token_file` (0600, checked at
   start and before every call, no line break inside); the server binary as git's askpass hook,
   answering only a prompt whose host equals the configured `remote` or `fork` host; `{agent}`
   refused in a URL fork's host; the head read at server start for a repository with no head.
@@ -812,8 +799,35 @@ hand; one server restart while a submitted claim is held, that claim landed afte
   commit on the fork; the server's landing replaces Felix's merge; the runner's run replaces the
   orchestrator's gate. Done: Felix approves the text before the first landing.
 - [ ] **M4-FIRST-LANDINGS** — both lanes, after step 4, D1 and the protocol rewrite. The five
-  landings of the done-check, each counted here with its note. SERVER-FORK-CASE lands before the
-  second lane name is minted.
+  landings of the done-check, each counted here with its note. Landed: 1. `91785b2`
+  DOCS-REFLOW-LONG-LINES (lane A; held for `docs/BUILD-PROTOCOL.md`, approved with `tessel
+  review` after an Opus "Yes"; `merged` in lane A's inbox). The lane committed but never ran its
+  fork push (nothing refused it; a dry run passed), so the orchestrator pushed it.
+- [x] **DOGFOOD-HARDENING** (`5864fe2`, #113) — lane A. From the two adversarial reviews of
+  D1-D4: `sensitive` grew to 20 gate and infrastructure prefixes; `setup.sh` copies the binaries
+  to `<server dir>/bin` and writes the 6-job cap; `docs/dogfood.md` gained the ruleset split, the
+  token's permissions, Actions off on forks and the rules while landings run. Opus "Yes" after one
+  fix pass.
+- [x] **LANDER-FORK-ANY-BRANCH** (`4382641`, #114) — lane A. Lanes could not `git push --force
+  <fork> HEAD:main` (denied to their sessions). The lander fetches `+refs/heads/*` of the fork
+  (`--no-tags --quiet`) and lands a commit only if `for-each-ref --contains` finds it on a fork
+  branch; an empty fork answers `CommitNotInFork`. Never fetched by sha: protocol v2 serves any
+  object the fork holds. Design chosen by an adversarial review; Opus "Yes" after one fix pass.
+- [x] **DOCS-REFLOW-LONG-LINES** (`91785b2`, landed by the server) — lane A. Two prose lines #114
+  left over 100 characters. Others remain at `docs/BUILD-PROTOCOL.md:16,119,128` and
+  `docs/how-tessel-works.md:181,182` (DOCS-LONG-PROSE-LINES).
+- [ ] **GATE-INVALID-RETRIED** — from the sandbox trial: an invalid trunk `tessel.toml` is
+  answered `Unknown` and retried as infrastructure (four tries, then a generic "submit again")
+  instead of refused with its reason. Done: a refusal naming the gate's error, with a test.
+- [ ] **GATE-INSTANCE-REQUIRED** — from the sandbox trial: the gate parser requires `instance`
+  (one of `standard-1..4`), which `tessel.toml` and the docs say the lander ignores. Done: the
+  parser and the docs agree (optional for the lander, or documented as required).
+- [ ] **STEWARD-LOG-WORDING** — host log lines still say "steward head call failed" and "steward
+  merge call failed" (`src/host/calls.rs:257`, tests in `src/host/tests.rs`). Sensitive path.
+- [ ] **TRIAL-UNSUBMITTED-READS-FORK-MAIN** — from the #114 design review: a trial with no commit
+  reads the fork's `main` (`tessel-server/src/landing/trial.rs:39`, `src/host/call.rs:53`), which
+  since #114 is never updated by lanes. Sensitive path.
+- [ ] **DOCS-LONG-PROSE-LINES** — the prose lines over 100 characters listed above.
 - [ ] **M4-RESTART-HELD** — lane B. The done-check's restart with a submitted claim held, on the
   real server, that claim landed afterwards.
 - [ ] **M5-PROOF-CANDIDATE** — M5, to weigh at its re-plan. GitHub Next and Microsoft Research's
