@@ -127,13 +127,14 @@ struct Git<'a> {
 }
 
 impl Git<'_> {
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(self.root).args(args);
+        command
+    }
+
     fn output(&self, args: &[&str]) -> Option<Output> {
-        Command::new("git")
-            .arg("-C")
-            .arg(self.root)
-            .args(args)
-            .output()
-            .ok()
+        self.command(args).output().ok()
     }
 
     /// Stdout of a git command that succeeded.
@@ -737,6 +738,52 @@ mod tests {
         );
         std::fs::remove_file(&lock).unwrap();
         assert_eq!(copy_notes(&s.repo.root(), &job), done(1, 0, 0, 0));
+    }
+
+    #[test]
+    fn git_runs_with_the_c_locale_so_its_messages_can_be_told_apart() {
+        let git = Git {
+            root: Path::new("."),
+        };
+        let command = git.command(&["notes", "copy"]);
+        let envs: Vec<_> = command.get_envs().collect();
+        for (key, value) in [("LC_ALL", "C"), ("LANGUAGE", "C")] {
+            assert!(
+                envs.contains(&(key.as_ref(), Some(value.as_ref()))),
+                "{key} is not set to {value}: {envs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_submitted_commits_with_one_key_are_not_copied_to_the_one_landed_commit() {
+        let s = submission();
+        s.repo.note(&s.commits[0], "intent: one");
+        git(&s.repo.root(), &["checkout", "-q", "work"]);
+        let twin = s.repo.edit(&[(2, "one"), (16, "twin")], "change one", 1);
+        git(&s.repo.root(), &["checkout", "-q", "main"]);
+        s.repo.note(&twin, "intent: twin");
+        let base = s.main_moves();
+        let landed = s.repo.rebase(&base, &[&s.commits[0]]);
+        let job = job_of(&twin, &base, &landed[0]);
+        assert_eq!(copy_notes(&s.repo.root(), &job), done(0, 0, 0, 2));
+        assert_eq!(s.repo.note_of(&landed[0]), None);
+    }
+
+    #[test]
+    fn commits_that_an_earlier_submission_landed_are_not_reported_as_not_landed() {
+        let s = submission();
+        s.repo.note(&s.commits[0], "intent: one");
+        s.repo.note(&s.commits[1], "intent: two");
+        let base = s.main_moves();
+        let first = s.repo.rebase(&base, &[&s.commits[0]]);
+        let earlier = job_of(&s.commits[0], &base, &first[0]);
+        assert_eq!(copy_notes(&s.repo.root(), &earlier), done(1, 0, 0, 0));
+        let second = s.repo.rebase(&first[0], &[&s.commits[1]]);
+        let mut job = job_of(&s.commits[1], &first[0], &second[0]);
+        job.floor = Some(s.commits[0].clone());
+        assert_eq!(copy_notes(&s.repo.root(), &job), done(1, 0, 0, 0));
+        assert_eq!(s.repo.note_of(&second[0]).as_deref(), Some("intent: two"));
     }
 
     #[test]

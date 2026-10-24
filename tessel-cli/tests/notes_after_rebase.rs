@@ -206,3 +206,130 @@ async fn a_head_fetched_later_gets_its_note_on_the_next_command() -> Result<()> 
     assert_eq!(pending_notes(&a1)?, 0);
     Ok(())
 }
+
+fn waiting_lines(a1: &Agent) -> usize {
+    daemon_log(a1)
+        .lines()
+        .filter(|line| line.contains("notes after rebase") && line.contains("waiting"))
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiting_job_logs_once_however_many_heartbeats_pass() -> Result<()> {
+    let fake = Fake::start(1_500, &[("a1", TOK1)]).await?;
+    let a1 = Agent::new(&fake, "a1", TOK1)?;
+    let sha = submitted(&a1).await?;
+    let (_clone, base, head) = landed_in_a_clone(&a1, &sha)?;
+
+    fake.merge_next_at(&base, &head);
+    eventually(SHORT, || Ok((waiting_lines(&a1) >= 1).then_some(())))
+        .await
+        .context("a job waiting for its commits was never logged")?;
+    let beats = fake.heartbeats("a1");
+    eventually(SHORT, || {
+        Ok((fake.heartbeats("a1") >= beats + 4).then_some(()))
+    })
+    .await
+    .context("no heartbeats passed")?;
+
+    assert_eq!(waiting_lines(&a1), 1, "{}", daemon_log(&a1));
+    assert_eq!(pending_notes(&a1)?, 1);
+    Ok(())
+}
+
+/// A `git` first on PATH that takes three seconds over `git notes list`, which only the notes
+/// copy runs without a commit, and is plain git otherwise.
+fn slow_git(dir: &Path) -> Result<String> {
+    let real = String::from_utf8(
+        std::process::Command::new("which")
+            .arg("git")
+            .output()?
+            .stdout,
+    )?;
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in *\"notes list\") sleep 3;; esac\nexec {} \"$@\"\n",
+        real.trim()
+    );
+    let path = dir.join("git");
+    std::fs::write(&path, script)?;
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    Ok(format!(
+        "{}:{}",
+        dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_daemon_keeps_answering_while_a_slow_copy_runs() -> Result<()> {
+    let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
+    let bin = tempfile::tempdir()?;
+    let a1 = Agent::new(&fake, "a1", TOK1)?.with_env("PATH", &slow_git(bin.path())?);
+    let sha = submitted(&a1).await?;
+    let note = note_of(&a1.root(), &sha).context("no note on the submitted commit")?;
+    let (clone, base, head) = landed_in_a_clone(&a1, &sha)?;
+    fetch_into(&a1, clone.path(), &head)?;
+
+    fake.merge_next_at(&base, &head);
+    let began = std::time::Instant::now();
+    let mut slowest = Duration::ZERO;
+    while began.elapsed() < Duration::from_secs(2) {
+        let asked = std::time::Instant::now();
+        a1.status()?;
+        slowest = slowest.max(asked.elapsed());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        slowest < Duration::from_secs(1),
+        "a command waited {slowest:?}"
+    );
+    eventually(Duration::from_secs(15), || {
+        Ok(note_of(&a1.root(), &head).filter(|copy| *copy == note))
+    })
+    .await
+    .context("the slow copy never finished")?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_job_survives_a_daemon_restart() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let sha = submitted(&a1).await?;
+    let note = note_of(&a1.root(), &sha).context("no note on the submitted commit")?;
+    let (clone, base, head) = landed_in_a_clone(&a1, &sha)?;
+    fake.merge_next_at(&base, &head);
+    eventually(SHORT, || Ok((pending_notes(&a1)? == 1).then_some(()))).await?;
+
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    a1.start_settled("again").await?;
+    assert_eq!(pending_notes(&a1)?, 1, "the job is lost on restart");
+
+    fetch_into(&a1, clone.path(), &head)?;
+    eventually(SHORT, || {
+        a1.status()?;
+        Ok(note_of(&a1.root(), &head).filter(|copy| *copy == note))
+    })
+    .await
+    .context("the restarted daemon never copied the note")?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_state_file_from_before_pending_notes_still_loads() -> Result<()> {
+    let (_fake, a1) = world().await?;
+    a1.start("first")?;
+    assert_eq!(a1.tessel(&["stop"])?.code, 0);
+    let path = a1.root().join(".tessel/state.json");
+    let mut state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    state
+        .as_object_mut()
+        .context("state is not an object")?
+        .remove("pending_notes")
+        .context("state.json has no pending_notes")?;
+    std::fs::write(&path, serde_json::to_string(&state)?)?;
+
+    a1.start_settled("second").await?;
+    assert_eq!(pending_notes(&a1)?, 0);
+    Ok(())
+}
