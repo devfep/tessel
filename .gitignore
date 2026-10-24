@@ -12,5 +12,4 @@ node_modules/
 .DS_Store
 worker-configuration.d.ts
 .claude/
-/AGENTS.md
 .tessel/
