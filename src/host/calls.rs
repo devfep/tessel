@@ -1,10 +1,10 @@
 //! The calls the wake issues, and what their answers mean to the core (R21 to R23, R26, R38).
 //!
 //! Until the core stages its landing (P1-CORE-STAGED-LANDING), a merge is one call: `Prepare`,
-//! which stands for the lander's one-call `/merge`. It is answered `Prepared { base, head }`
+//! which stands for the whole merge the lander runs. It is answered `Prepared { base, head }`
 //! once main is at `head`, or `Refused`. The staged `Test` and `Land` calls are not issued yet,
-//! though an answer to either counts as a merge answer. `Call` carries no evidence record, so the
-//! `MergeRecord` the lander receives today is not sent.
+//! though an answer to either counts as a merge answer. `Call` carries no evidence record, so no
+//! `MergeRecord` reaches the lander.
 //!
 //! An answer that is not of the kind the call asks for, `Unknown` included, is the service being
 //! unavailable: infrastructure, retried with backoff (R26). A head answer that is not a head is

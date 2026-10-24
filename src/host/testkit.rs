@@ -138,7 +138,7 @@ impl Testkit {
         self.input(Input::Wake { now_ms });
     }
 
-    /// The lander poked the trunk.
+    /// Main moved: the trunk was poked.
     pub fn poke(&mut self) {
         let now_ms = self.now_ms;
         self.input(Input::TrunkPoked { now_ms });
