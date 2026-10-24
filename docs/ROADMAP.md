@@ -7,17 +7,18 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 03:20 EDT. Main at `36b17f2`. Merged tonight by the orchestrator under Felix's
+**As of:** 2026-10-24 04:30 EDT. Main at `c50be59`. Merged tonight by the orchestrator under Felix's
 standing order, each after CI 13/13 on its head and an Opus "Yes" posted on it: #102 and #103 (first
-round), #105 and #106 (second round); #101 (STATE) merged by the orchestrator before the
-classifier's refusal below. The orchestrator's gate is green on all seven steps on `3b19099` (1931
-tests), `f2d1bd1` (1934), `dec1c56` (1936) and `36b17f2` (1948), none failed; main's CI green on
-each. Rows closed tonight: CLI-WORKTREE-LOCK-FORK-RACE, MERGE-ADMIN-MERGE-TEXT,
-SERVER-KILL-AFTER-PUSH-TEST, SERVER-FRAME-LIMIT-TESTS, DOCS-GATE-SECTION, CLI-LOCK-UPGRADE-WINDOW,
-COORD-HEAD-FROM-AGENT. Rows added from the reviews: LANDER-ADMIN-POLICY-DEAD, DOCS-STEWARD-SWEEP,
-CLI-START-REFUSED-MESSAGE, COORD-HEAD-RESTART-READ. M4's first landing still needs Felix's GitHub
-steps. No lane runs; checked out are this STATE's worktree and the orchestrator's detached gate
-worktree `.claude/worktrees/gate-main`.
+round), #105 and #106 (second round), #107 and #108 (third round); #101 (STATE) merged by the
+orchestrator before the classifier's refusal below. The orchestrator's gate is green on all seven
+steps on `3b19099` (1931 tests), `f2d1bd1` (1934), `dec1c56` (1936), `36b17f2` (1948), `ff56bd5`
+(1954) and `c50be59` (1957), none failed; main's CI green on each. Rows closed tonight:
+CLI-WORKTREE-LOCK-FORK-RACE, MERGE-ADMIN-MERGE-TEXT, SERVER-KILL-AFTER-PUSH-TEST,
+SERVER-FRAME-LIMIT-TESTS, DOCS-GATE-SECTION, CLI-LOCK-UPGRADE-WINDOW, COORD-HEAD-FROM-AGENT,
+DOCS-STEWARD-SWEEP, CLI-START-REFUSED-MESSAGE, COORD-HEAD-RESTART-READ. Rows added from the reviews
+and still open: LANDER-ADMIN-POLICY-DEAD, CLI-START-RACE-TEST-VACUOUS, DOCS-R22-HOST-TEST. M4's
+first landing still needs Felix's GitHub steps. No lane runs; checked out are this STATE's worktree
+and the orchestrator's detached gate worktree `.claude/worktrees/gate-main`.
 **Standing order from Felix (24 October, about 01:25 EDT), for this night only:** the orchestrator
 merges pull requests itself once the protocol is met (lane report, CI green on the head, an Opus
 reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's gate
@@ -607,20 +608,44 @@ claims reconciled.
   (`flock`) and one from the new (record lock) could both run on one worktree. Done: a written
   answer whether an upgrade can overlap (does `tessel` stop the old daemon first?), and if it can,
   the new daemon also refuses while an old daemon's pid in `daemon.lock` is alive, with a test.
-- [ ] **DOCS-STEWARD-SWEEP** — from the #105 review: `docs/configuration.md`'s images section
-  and the gate's fallback text still cite the steward. Done: every page under `docs/` (except
-  history and proposals) says what the Rust server does, with Rust file refs; a `rg -n -i
-  steward docs/*.md docs/reference` pass shows only deliberate historical mentions.
-- [ ] **CLI-START-REFUSED-MESSAGE** — from the #105 review: when a new daemon refuses the lock
-  (an older daemon's `flock`, or a fork child in its exec window), `tessel start` waits 10 s and
-  says "running (pid) but not connected", naming the exited child's pid. Done: the message says
-  the worktree lock is held and by what it knows, with a test.
-- [ ] **COORD-HEAD-RESTART-READ** — from the #106 review: a server restarted while the start
-  head read is out keeps the head a `Hello` adopted unchecked until the next trunk poke (a
-  scratch test showed it). Old behaviour, not a regression of #106; the one-line fix (offer the
-  read again on load when `head_from_hello` is set) breaks five tests, so it needs a design:
-  which wakes a restored state owes. Done: the design in the row, the restart case tested, the
-  five tests changed only where they pinned the gap.
+- [x] **DOCS-STEWARD-SWEEP** (`c50be59`, #107) — lane A. As built: `docs/configuration.md` (36
+  mentions to 2), `docs/how-tessel-works.md` (7 to 1), `docs/reference/runtime-rules.md` (wording
+  only; the four left are test names) and `docs/reference/coordinator.md` (1 to 0) describe the Rust
+  server, lander and runner with Rust refs checked at `36b17f2`; one legacy sentence per page;
+  steward-only features removed. Reviewed "Yes" after one fix pass. Planned: from the #105 review:
+  `docs/configuration.md`'s images section and the gate's fallback text still cite the steward.
+  Done: every page under `docs/` (except history and proposals) says what the Rust server does, with
+  Rust file refs; a `rg -n -i steward docs/*.md docs/reference` pass shows only deliberate
+  historical mentions.
+- [x] **CLI-START-REFUSED-MESSAGE** (`c50be59`, #107) — lane A. As built: when the spawned daemon
+  exited and a daemon answered `Status`, `tessel start` names that daemon's pid, connection and last
+  error and points to `tessel status` and `tessel stop`; only when nothing answered does it say the
+  worktree lock is held and no daemon answers. Tests in `tessel-cli/tests/start_lock.rs`. The
+  review's two-starts probe found the first version wrong; fixed. Left: CLI-START-RACE-TEST-VACUOUS.
+  Planned: from the #105 review: when a new daemon refuses the lock (an older daemon's `flock`, or a
+  fork child in its exec window), `tessel start` waits 10 s and says "running (pid) but not
+  connected", naming the exited child's pid. Done: the message says the worktree lock is held and by
+  what it knows, with a test.
+- [x] **COORD-HEAD-RESTART-READ** (`ff56bd5`, #108) — lane B. As built (`src/coordinator/trunk.rs`
+  near 118): a state loaded from storage whose head still equals the `Hello`'s base, with no failed
+  read since, owes one read at the next wake that runs anyway (the server wakes once at start,
+  `tessel-server/src/repo.rs:171`); it sets no wake of its own, retries as #106's backoff does, and
+  a head from a landing or a read owes nothing. A non-stored `loaded` flag marks a deserialized
+  state; the host's in-process reload after a failed commit sets it too, which the review found
+  harmless. Reviewed "Yes", no fixes; every mutant red. Planned: from the #106 review: a server
+  restarted while the start head read is out keeps the head a `Hello` adopted unchecked until the
+  next trunk poke (a scratch test showed it). Old behaviour, not a regression of #106; the one-line
+  fix (offer the read again on load when `head_from_hello` is set) breaks five tests, so it needs a
+  design: which wakes a restored state owes. Done: the design in the row, the restart case tested,
+  the five tests changed only where they pinned the gap.
+- [ ] **CLI-START-RACE-TEST-VACUOUS** — from the #107 re-check: the two-starts race test in
+  `tessel-cli/tests/start_lock.rs` passes without checking anything when neither start loses,
+  and the deadline's `try_wait` treats any exit as giving way, so a daemon that fails in the last
+  second gets the held-lock text. Done: the test asserts exactly one start lost (or forces it),
+  and a non-zero exit at the deadline keeps the "exited before connecting" message, with a test.
+- [ ] **DOCS-R22-HOST-TEST** — from the #108 review: `docs/reference/runtime-rules.md` R22 does
+  not name the host test #108 added for the restart read. Done: R22's row names it, and the
+  named-tests check stays green.
 - [x] **SERVER-FORK-CASE** (`9334aaf`, #95) — lane B. As
   built: the server accepts only lowercase agent names (the verifier, `admin token`, `reviewers`
   and the fork template each refuse any other; the protocol's rule is unchanged); a store that
