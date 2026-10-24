@@ -235,10 +235,12 @@ pub enum MergeOutcome {
     Uncovered {
         total: u64,
     },
-    /// The commit rebased onto main changes `tessel.toml`, the gate the steward judges by. Only an
-    /// admin merge may change the gate; over the coordinator's binding the work is rejected.
+    /// The commit rebased onto main changes `tessel.toml`, the gate the tests are judged by. The
+    /// server's lander refuses a submission that changes it; the change goes through a pull
+    /// request the repository's owner merges.
     GateChanged {},
-    /// An admin merge changes `tessel.toml` to a file the steward cannot accept.
+    /// A merge under the lander's admin policy changes `tessel.toml` to a file it cannot accept.
+    /// No caller asks for that policy yet, so a running server does not send this.
     GateInvalid {},
     /// Another write reached main after the steward read it; try again.
     MainMoved {},
@@ -324,12 +326,15 @@ impl MergeOutcome {
                 ),
             },
             MergeOutcome::GateChanged {} => Verdict::Rejected {
-                reason: "changes the gate (tessel.toml); only an admin merge may change it"
-                    .to_string(),
+                reason:
+                    "changes the gate (tessel.toml); the server's lander refuses it, so change \
+                         it in a pull request that the repository's owner merges"
+                        .to_string(),
             },
             MergeOutcome::GateInvalid {} => Verdict::Rejected {
-                reason: "changes the gate (tessel.toml) to a file the steward cannot accept"
-                    .to_string(),
+                reason:
+                    "changes the gate (tessel.toml) to a file the server's lander cannot accept"
+                        .to_string(),
             },
             MergeOutcome::CommitNotInFork {} => Verdict::Rejected {
                 reason: "the submitted commit is not on your fork's default branch".to_string(),
