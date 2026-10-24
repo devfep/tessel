@@ -62,7 +62,7 @@ A `test.argv` must be one of (`tessel-lander/src/gate.rs:91-97`):
 
 Not allowed: a `+toolchain` argument, `--config`, `-Z`, `--manifest-path`, `--target`, a `--`
 passthrough, environment assignments, and a shell. Each argument must match
-`^[A-Za-z0-9._/=:@+,%-]+$` and be at most 200 characters (`:35,111-119`). A directory must be `.` or
+`^[A-Za-z0-9._/=:@+,%-]+$` and be at most 200 characters (`:35,112-120`). A directory must be `.` or
 `/`-separated segments that start with a letter, digit or `_` and continue with `A-Z a-z 0-9 . _ -`,
 so `..` is refused (`:99-110`).
 
