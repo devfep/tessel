@@ -1,10 +1,10 @@
 //! The calls the wake issues, and what their answers mean to the core (R21 to R23, R26, R38).
 //!
 //! Until the core stages its landing (P1-CORE-STAGED-LANDING), a merge is one call: `Prepare`,
-//! which stands for the steward's one-call `/merge`. It is answered `Prepared { base, head }`
+//! which stands for the lander's one-call `/merge`. It is answered `Prepared { base, head }`
 //! once main is at `head`, or `Refused`. The staged `Test` and `Land` calls are not issued yet,
 //! though an answer to either counts as a merge answer. `Call` carries no evidence record, so the
-//! `MergeRecord` the steward receives today is not sent.
+//! `MergeRecord` the lander receives today is not sent.
 //!
 //! An answer that is not of the kind the call asks for, `Unknown` included, is the service being
 //! unavailable: infrastructure, retried with backoff (R26). A head answer that is not a head is
@@ -228,7 +228,7 @@ impl Host {
                 let outcome = merge_outcome_of(&answer);
                 out.extend(rule_refusal_log(&self.config.repo, &answer));
                 if outcome == MergeOutcome::ServiceUnavailable {
-                    out.push(self.failure("steward merge call", "no usable answer"));
+                    out.push(self.failure("lander merge call", "no usable answer"));
                 }
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.merge_outcome(dispatch, &outcome, now_ms)
@@ -239,7 +239,7 @@ impl Host {
                 let report = trial_report_of(&answer);
                 out.extend(rule_refusal_log(&self.config.repo, &answer));
                 if report == TrialReport::stopped(TrialOutcome::ServiceUnavailable) {
-                    out.push(self.failure("steward trial call", "no usable answer"));
+                    out.push(self.failure("lander trial call", "no usable answer"));
                 }
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.verification_outcome(dispatch, &report, now_ms)
@@ -254,7 +254,7 @@ impl Host {
                 };
                 let head = head_of(&answer);
                 if head.is_none() {
-                    out.push(self.failure("steward head call", "no head in the answer"));
+                    out.push(self.failure("head call", "no head in the answer"));
                 }
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.trunk_read(&read, head, now_ms)

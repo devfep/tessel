@@ -338,7 +338,7 @@ fn host_the_soft_limit_judges_growth_against_the_size_last_written() {
 }
 
 #[test]
-fn host_the_core_is_reloaded_after_a_steward_call_before_the_answer_is_applied() {
+fn host_the_core_is_reloaded_after_a_lander_call_before_the_answer_is_applied() {
     let mut kit = kit();
     welcomed(&mut kit, "a1");
     let call = head_read_outstanding(&mut kit);
@@ -1898,7 +1898,7 @@ fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
             .last()
             .unwrap_or_else(|| panic!("{what} is logged"));
         assert!(
-            line.contains("steward head call failed: no head in the answer"),
+            line.contains("head call failed: no head in the answer"),
             "{what}: {line}"
         );
         assert_eq!(state(&kit)["head"], json!("abc"), "{what} moves nothing");
@@ -1966,7 +1966,7 @@ fn host_a_marker_with_a_call_waiting_is_not_a_cut_off() {
 }
 
 #[test]
-fn host_a_failed_or_timed_out_steward_call_is_service_unavailable() {
+fn host_a_failed_or_timed_out_lander_call_is_service_unavailable() {
     let unusable: [(&str, Option<CallAnswer>); 4] = [
         ("a failed call", Some(CallAnswer::Unknown)),
         ("a timeout", None),
@@ -1994,7 +1994,7 @@ fn host_a_failed_or_timed_out_steward_call_is_service_unavailable() {
         );
         let line = kit.logs().last().unwrap();
         assert!(
-            line.contains("steward merge call failed: no usable answer"),
+            line.contains("lander merge call failed: no usable answer"),
             "{what}: {line}"
         );
     }
@@ -2010,7 +2010,7 @@ fn host_a_failed_or_timed_out_steward_call_is_service_unavailable() {
     );
     let line = kit.logs().last().unwrap();
     assert!(
-        line.contains("steward trial call failed: no usable answer"),
+        line.contains("lander trial call failed: no usable answer"),
         "{line}"
     );
 }
@@ -2041,7 +2041,7 @@ fn host_a_refusal_is_a_fact_about_the_work_not_the_service() {
 }
 
 #[test]
-fn host_a_head_call_waits_30_seconds_and_a_steward_call_13_minutes() {
+fn host_a_head_call_waits_30_seconds_and_a_lander_call_13_minutes() {
     let mut kit = kit();
     submitted(&mut kit);
     wake(&mut kit);
@@ -2564,7 +2564,7 @@ fn host_a_page_the_adapter_calls_done_ends_the_replay() {
 
 type Scenario = (&'static str, fn() -> Testkit);
 
-fn steward_call(request: Request) -> Call {
+fn lander_call(request: Request) -> Call {
     Call {
         id: CallId(41),
         dispatch_id: DispatchId(1),
@@ -2578,7 +2578,7 @@ fn steward_call(request: Request) -> Call {
 fn answered_without_state(request: Request) -> Testkit {
     let mut kit = kit();
     welcomed(&mut kit, "a1");
-    let call = steward_call(request);
+    let call = lander_call(request);
     let id = call.id;
     kit.host.calls.insert(id, call);
     kit.reply(id, CallAnswer::Unknown);
@@ -2700,7 +2700,7 @@ fn the_call_and_commit_error_paths() -> Vec<Scenario> {
                 submitted: Vec::new(),
             })
         }),
-        ("steward head call", || {
+        ("head call", || {
             let mut kit = kit();
             welcomed(&mut kit, "a1");
             let call = head_read_outstanding(&mut kit);
@@ -2708,7 +2708,7 @@ fn the_call_and_commit_error_paths() -> Vec<Scenario> {
             kit.settle();
             kit
         }),
-        ("steward merge call", || {
+        ("lander merge call", || {
             let mut kit = kit();
             submitted(&mut kit);
             wake(&mut kit);
@@ -2716,7 +2716,7 @@ fn the_call_and_commit_error_paths() -> Vec<Scenario> {
             kit.settle();
             kit
         }),
-        ("steward trial call", || {
+        ("lander trial call", || {
             let (mut kit, _, call) = trial_outstanding();
             kit.reply(call.id, CallAnswer::Unknown);
             kit.settle();
