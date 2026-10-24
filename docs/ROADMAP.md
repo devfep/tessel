@@ -13,16 +13,17 @@ the previous gate are gone; main's CI on `d5c27b2` is red on one job, "Slow lane
 end to end", by a race in the CI script itself, not the code: it polls until the bare trunk's
 `main` moves and then greps the server log once for the read-back line, which the server writes
 after the push; on this run the grep ran 4 ms before the line (04:57:58.946 against .950); the
-job had passed on the previous eleven `main` runs; CI-LANDING-E2E-LOG-RACE below, dispatched to
-lane A 24 October 01:10 EDT, waits for the line in a bounded loop). M4 is six tasks in: the server lands over HTTPS with a token file read through its own
+job had passed on the previous eleven `main` runs; CI-LANDING-E2E-LOG-RACE below waits for the
+line in a bounded loop: #100 at `5cf4de5`, CI green on all 13 checks, reviewed "Yes", waiting for
+Felix). M4 is six tasks in: the server lands over HTTPS with a token file read through its own
 askpass hook (#92); `docs/dogfood.md` and its script set the dogfood server up (#91); the build
 protocol's section 2 describes landings through the server (#90), in force from the first landing
 this STATE records; CI runs `actionlint` and `zizmor` on every pull request and push to `main`
 (#94); the server accepts only lowercase agent names (#95); the swarm asks `node --test` for its
 TAP reporter, so its tests pass on Node 22 and 24 alike (#98). `AGENTS.md` is a symlink to
-`CLAUDE.md` (#97). Worktrees: this STATE's and lane A's `task-ci-landing-e2e-log-race`. Nothing
-else is dispatched: the first landing needs Felix's GitHub steps.
-**Waiting on Felix:** this STATE; the "main: CI required" ruleset to list "Fast lane, workflow
+`CLAUDE.md` (#97). Worktrees: this STATE's and `task-ci-landing-e2e-log-race` (#100's), both
+reclaimed after their merges. Nothing is dispatched: the first landing needs Felix's GitHub steps.
+**Waiting on Felix:** this STATE (#99) and #100 (the e2e script's wait); the "main: CI required" ruleset to list "Fast lane, workflow
 lint" (its required checks today: fmt and clippy, core library tests, Rust workspace, steward,
 advisories and bans, mutants on changed lines; a red workflow lint does not block a pull request
 until it is added); the GitHub steps of `docs/dogfood.md` (the fine-grained token saved 0600, the
@@ -535,7 +536,13 @@ claims reconciled.
   Node 23 the default reporter when stdout is not a terminal is `spec`, so on a Node 24 machine
   `the_starting_repository_passes_its_own_tests` saw 0 tests and the failure note lost its first
   failing test; CI, pinned to Node 22.23.3, stayed green.
-- [ ] **CI-LANDING-E2E-LOG-RACE** — lane A, dispatched 24 October from `d5c27b2`. Main's CI on
+- [ ] **CI-LANDING-E2E-LOG-RACE** — lane A; #100 at `5cf4de5`, CI green on all 13 checks (the
+  e2e job included), reviewed "Yes" with no fixes, waiting for Felix. As built: the two one-shot
+  greps are one wait of at most 30 s with the server-alive check inside it and the two failure
+  messages kept apart; the order is the push (`tessel-lander/src/merge.rs:487`), the read-back
+  (`:488`), then the log line (`tessel-server/src/landing/answer.rs:45`) after `run_merge`
+  returns; the reviewer ran the new loop against a log appended 2 s late (green; the old grep red
+  with CI's message). Not reproduced: the 4 ms race itself. From main's CI on
   `d5c27b2` failed "Slow lane, local landing end to end" with "the server did not log a read-back
   landing" while the server log in the same output holds the line, 4 ms after the script's grep:
   `tessel-server/ci/landing-e2e.sh` waits for the bare trunk's `main` to move and then checks the
