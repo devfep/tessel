@@ -25,13 +25,13 @@ agent's fork can neither supply nor change it (`tessel-server/src/landing/ports.
 `tessel-lander/src/merge.rs:337-375`).
 
 The file is strict. An unknown key, a file over 4096 bytes, invalid TOML, or a command outside the
-allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:226-257`).
+allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:227-264`).
 
 ### Keys
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `instance` | string, required | none | One of `standard-1` to `standard-4`. Checked, never used. |
+| `instance` | string, optional | none | Left out, it is fine. Given, it must be one of `standard-1` to `standard-4`. Checked, never used. |
 | `[install]` | table, optional | none | Only `cargo` and `pnpm`. Checked, never run. |
 | `install.cargo` | boolean | `false` | Checked, never run. |
 | `install.pnpm` | array of at most 4 directories | `[]` | Checked, never run. |
@@ -45,8 +45,9 @@ parsing `:191-212`. The install step passes without running anything
 
 ### Instances
 
-`instance` must be one of `standard-1` to `standard-4`, and `lite` is not accepted
-(`tessel-lander/src/gate.rs:37-53,246-248`). The Rust server has no container sizes. It checks the
+`instance` may be left out. When it is given it must be one of `standard-1` to `standard-4`, and
+`lite` is not accepted
+(`tessel-lander/src/gate.rs:37-53,239-254`). The Rust server has no container sizes. It checks the
 name and reads it nowhere else, so the tests get the resources of the machine the server runs on.
 
 ### Allowed commands
@@ -75,7 +76,7 @@ way, with the parser's reason, quoted and cut, in the log. Neither is retried: t
 operator must fix it on main ([Landing](#landing)). A file that exists but cannot be read is still
 an infrastructure failure that the core retries. Nothing lands and nothing falls back to another
 gate.
-`GatePlan` and `read_gate_plan` (`tessel-lander/src/gate.rs:259-297`) model the missing-file case,
+`GatePlan` and `read_gate_plan` (`tessel-lander/src/gate.rs:266-304`) model the missing-file case,
 and the server does not call them.
 
 ### Toolchain and dependencies

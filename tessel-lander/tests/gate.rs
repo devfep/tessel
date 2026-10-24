@@ -57,7 +57,7 @@ fn reads_the_gate_defaulting_the_directory_of_a_command_to_the_repo_root() {
     assert_eq!(
         parse_gate_config(GOOD),
         Ok(GateConfig {
-            instance: GateInstance::Standard4,
+            instance: Some(GateInstance::Standard4),
             install_cargo: true,
             install_pnpm: strings(&["tessel-steward"]),
             tests: vec![
@@ -78,7 +78,7 @@ fn reads_the_gate_defaulting_the_directory_of_a_command_to_the_repo_root() {
 fn accepts_the_tessel_toml_committed_at_the_root_of_this_repo() {
     let text = include_str!("../../tessel.toml");
     let config = parse_gate_config(text).expect("the repo's own gate is valid");
-    assert_eq!(config.instance, GateInstance::Standard4);
+    assert_eq!(config.instance, Some(GateInstance::Standard4));
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn needs_no_install_table() {
     let config =
         parse_gate_config("instance = \"standard-1\"\n[[test]]\nargv = [\"npm\", \"test\"]\n")
             .expect("valid");
-    assert_eq!(config.instance, GateInstance::Standard1);
+    assert_eq!(config.instance, Some(GateInstance::Standard1));
     assert!(!config.install_cargo);
     assert_eq!(config.install_pnpm, Vec::<String>::new());
 }
@@ -115,6 +115,7 @@ fn rejects_an_unknown_instance_and_lite() {
 fn accepts_a_gate_without_an_instance() {
     let config =
         parse_gate_config("[[test]]\nargv = [\"npm\", \"test\"]\n").expect("instance is optional");
+    assert_eq!(config.instance, None);
     assert_eq!(config.tests.len(), 1);
 }
 
@@ -127,7 +128,10 @@ fn accepts_each_instance_it_names() {
         ("standard-4", GateInstance::Standard4),
     ] {
         let text = format!("instance = \"{name}\"\n[[test]]\nargv = [\"npm\", \"test\"]\n");
-        assert_eq!(parse_gate_config(&text).expect("valid").instance, instance);
+        assert_eq!(
+            parse_gate_config(&text).expect("valid").instance,
+            Some(instance)
+        );
     }
 }
 
@@ -359,7 +363,7 @@ fn reads_tessel_toml_at_the_commit_it_is_given() {
     let GatePlan::Configured(config) = plan else {
         unreachable!("{plan:?}")
     };
-    assert_eq!(config.instance, GateInstance::Standard4);
+    assert_eq!(config.instance, Some(GateInstance::Standard4));
 }
 
 #[test]

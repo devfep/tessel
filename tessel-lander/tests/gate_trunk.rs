@@ -108,7 +108,7 @@ fn a_fork_that_weakens_tessel_toml_is_tried_by_the_trunks_gate_and_is_never_merg
     let GatePlan::Configured(config) = plan else {
         unreachable!("{plan:?}")
     };
-    assert_eq!(config.instance, GateInstance::Standard4);
+    assert_eq!(config.instance, Some(GateInstance::Standard4));
     assert_eq!(config.tests, strong_gate_commands());
 
     let ports = LocalPorts::new(&w.repos);
@@ -140,7 +140,7 @@ fn a_fork_that_weakens_tessel_toml_would_get_the_weak_gate_if_it_were_read_from_
     let GatePlan::Configured(config) = &from_fork else {
         unreachable!("{from_fork:?}")
     };
-    assert_eq!(config.instance, GateInstance::Standard1);
+    assert_eq!(config.instance, Some(GateInstance::Standard1));
     let from_trunk = read_gate_plan(&BareRepo(w.repos.main.clone()), &w.base).expect("reads");
     assert_ne!(from_trunk, from_fork);
 }
@@ -165,5 +165,5 @@ fn a_fork_that_weakens_tessel_toml_is_judged_by_main_as_it_was_at_the_pinned_com
     let GatePlan::Configured(config) = plan else {
         unreachable!("{plan:?}")
     };
-    assert_eq!(config.instance, GateInstance::Standard4);
+    assert_eq!(config.instance, Some(GateInstance::Standard4));
 }

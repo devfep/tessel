@@ -62,7 +62,8 @@ pub struct TestCommand {
 /// A validated `tessel.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateConfig {
-    pub instance: GateInstance,
+    /// Checked when present and never used; a gate may leave it out.
+    pub instance: Option<GateInstance>,
     /// Run `cargo fetch --locked --offline` before the tests.
     pub install_cargo: bool,
     /// Directories in which `pnpm install` runs (offline, frozen lockfile, no scripts).
@@ -235,16 +236,22 @@ pub fn parse_gate_config(text: &str) -> Result<GateConfig, InvalidGate> {
     if has_unknown_key(&document, &["instance", "install", "test"]) {
         return invalid("only the keys instance, install and test are known");
     }
-    let instance = document
-        .get("instance")
-        .and_then(Value::as_str)
-        .and_then(|name| {
-            GateInstance::NAMES
-                .iter()
-                .find_map(|(known, instance)| (*known == name).then_some(*instance))
-        });
-    let Some(instance) = instance else {
-        return invalid("instance must be one of standard-1, standard-2, standard-3, standard-4");
+    let instance = match document.get("instance") {
+        None => None,
+        Some(value) => {
+            let named = value.as_str().and_then(|name| {
+                GateInstance::NAMES
+                    .iter()
+                    .find_map(|(known, instance)| (*known == name).then_some(*instance))
+            });
+            let Some(named) = named else {
+                return invalid(
+                    "instance, when given, must be one of standard-1, standard-2, standard-3, \
+                     standard-4",
+                );
+            };
+            Some(named)
+        }
     };
     let (install_cargo, install_pnpm) = parse_install(document.get("install"))?;
     let tests = parse_tests(document.get("test"))?;
