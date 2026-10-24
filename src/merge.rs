@@ -1314,8 +1314,8 @@ mod tests {
         );
         assert_eq!(
             rejected(&MergeOutcome::GateChanged {}),
-            "changes the gate (tessel.toml); the server's lander refuses it, so change it in a pull \
-             request that the repository's owner merges"
+            "changes the gate (tessel.toml); the server's lander refuses it, so change it in a \
+             pull request that the repository's owner merges"
         );
         let by_kind = [
             (
