@@ -94,6 +94,7 @@ pub fn run(command: &GitCommand) -> Result<GitOutput, RunError> {
     let deadline = Instant::now() + command.timeout;
     let mut child = Command::new(program)
         .args(args)
+        .current_dir(&command.dir)
         .env_clear()
         .envs(&command.env)
         .stdin(Stdio::null())

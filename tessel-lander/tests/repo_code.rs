@@ -200,6 +200,7 @@ fn probe(git: &Git, workspace: &Workspace, args: &[&str]) -> GitCommand {
     argv.extend(args.iter().map(OsString::from));
     GitCommand {
         argv,
+        dir: git.home().to_owned(),
         env: git.env(),
         timeout: Duration::from_secs(10),
     }

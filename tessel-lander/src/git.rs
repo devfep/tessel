@@ -59,10 +59,13 @@ const REBASE_TIMEOUT: Duration = Duration::from_secs(30);
 const TEST_TREE_TIMEOUT: Duration = Duration::from_secs(30);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// One git invocation. `argv[0]` is `git`; the environment is the whole environment.
+/// One git invocation. `argv[0]` is `git`; the environment is the whole environment. `dir` is
+/// where the process starts: an absolute directory that exists, never the server's own working
+/// directory, which can be removed while the server runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCommand {
     pub argv: Vec<OsString>,
+    pub dir: PathBuf,
     pub env: BTreeMap<String, OsString>,
     pub timeout: Duration,
 }
@@ -137,7 +140,7 @@ pub struct Git {
 
 impl Git {
     /// Uses `home` as `HOME` and `hooks_dir` as `core.hooksPath`; both must be empty directories
-    /// that exist when a command runs. `PATH` is the only variable taken from the process, so
+    /// that exist when a command runs, and `home` must be absolute: every command starts in it. `PATH` is the only variable taken from the process, so
     /// git finds its own helpers.
     pub fn new(home: PathBuf, hooks_dir: PathBuf) -> Git {
         let path = std::env::var_os("PATH").unwrap_or_default();
@@ -147,6 +150,11 @@ impl Git {
             path,
             extra_env: BTreeMap::new(),
         }
+    }
+
+    /// The empty directory every command starts in, and uses as `HOME`.
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// Adds a variable to the environment of every command, for a credential hook such as
@@ -239,6 +247,7 @@ impl Git {
         argv.extend(args.iter().map(OsString::from));
         GitCommand {
             argv,
+            dir: self.home.clone(),
             env: self.env(),
             timeout,
         }

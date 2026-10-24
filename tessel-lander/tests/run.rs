@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tessel_lander::git::GitCommand;
@@ -35,6 +36,7 @@ fn returned_without_waiting(elapsed: Duration) -> bool {
 
 fn command(argv: &[&str], env: &[(&str, &str)], timeout: Duration) -> GitCommand {
     GitCommand {
+        dir: PathBuf::from("/"),
         argv: argv.iter().map(OsString::from).collect(),
         env: env
             .iter()
@@ -63,6 +65,16 @@ fn the_process_sees_exactly_the_command_environment() {
     .expect("env runs");
     assert!(output.success());
     assert_eq!(output.stdout, "ONLY=this\n");
+}
+
+#[test]
+fn the_process_starts_in_the_command_directory() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let mut command = sh("pwd -P");
+    command.dir = dir.path().canonicalize().expect("canonical path");
+    let output = run(&command).expect("sh runs");
+    assert!(output.success(), "{}", output.stderr);
+    assert_eq!(output.stdout.trim_end(), command.dir.display().to_string());
 }
 
 #[test]

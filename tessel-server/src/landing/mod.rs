@@ -18,6 +18,7 @@ mod git_read;
 mod head;
 mod names;
 mod ports;
+mod start_paths;
 mod trial;
 mod workdir;
 
@@ -44,6 +45,7 @@ use deadline::Stop;
 use git_read::read_branch;
 use names::{quote, MAX_LOGGED_CHARS};
 use ports::Ports;
+use start_paths::{absolute, absolute_location};
 use workdir::CallDir;
 
 pub use ports::{LocalRunner, TestRunner};
@@ -55,6 +57,11 @@ pub enum LandingError {
     Unconfigured { repo: String },
     #[error("cannot prepare the work directory {path}: {source}")]
     WorkDir {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("cannot resolve {path} against the working directory: {source}")]
+    Resolve {
         path: String,
         source: std::io::Error,
     },
@@ -111,22 +118,26 @@ impl Landing {
                 repo: repo.to_string(),
             });
         };
-        let dir = lander.work_dir.join(repo.tenant()).join(repo.repo());
+        let (remote, fork) = (absolute_location(remote)?, absolute_location(fork)?);
+        let token_file = lander.token_file.as_deref().map(absolute).transpose()?;
+        let dir = absolute(&lander.work_dir)?
+            .join(repo.tenant())
+            .join(repo.repo());
         clear_leftovers(&dir)?;
         let git = credentialed_git(
             Git::create_in(&dir.join("git"))?,
             &repo,
-            lander.token_file.as_deref(),
-            (remote, fork),
+            token_file.as_deref(),
+            (&remote, &fork),
         )?;
         Ok(Self {
             inner: Arc::new(Inner {
                 repo,
-                remote: remote.clone(),
-                fork: fork.clone(),
+                remote,
+                fork,
                 dir,
                 git,
-                token_file: lander.token_file.clone(),
+                token_file,
                 runner,
                 sequence: AtomicU64::new(1),
             }),

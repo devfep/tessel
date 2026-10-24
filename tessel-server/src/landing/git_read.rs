@@ -35,6 +35,7 @@ pub(super) fn ls_remote_command(git: &Git, remote: &str, reference: &str) -> Git
         env.insert("GIT_DIR".to_owned(), home);
     }
     GitCommand {
+        dir: git.home().to_owned(),
         argv: ["git", "ls-remote", "--"]
             .into_iter()
             .map(OsString::from)
