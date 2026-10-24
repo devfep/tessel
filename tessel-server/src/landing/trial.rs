@@ -1,10 +1,11 @@
-//! `Trial`: a commit of an agent's fork tried on main as it was and as it is now.
+//! `Trial`: a commit of an agent's fork tried on main as it was and as it is now. A trial with no
+//! commit is not submitted work: there is nothing to try, so it is inconclusive.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessel_coordinator::host::call::{CallAnswer, TrialResult};
 use tessel_coordinator::protocol::{AgentId, CommitId};
-use tessel_lander::git::{MergeSources, MAIN_BRANCH};
+use tessel_lander::git::MergeSources;
 use tessel_lander::merge::MergeError;
 use tessel_lander::outcome::TrialOutcome;
 use tessel_lander::run::SystemRunner;
@@ -12,12 +13,11 @@ use tessel_lander::trial::{report_trial, run_trial, TrialContext, TrialPlan};
 use tessel_lander::types::Sha;
 
 use super::answer::trial_answer;
-use super::git_read::read_branch;
 use super::names::{quote, MAX_LOGGED_CHARS};
 use super::{Inner, Work};
 
 impl Inner {
-    /// Tries `commit` (or the head of the agent's fork) on main at `before` and at `main`.
+    /// Tries `commit` on main at `before` and at `main`. `None` is not submitted: nothing to try.
     pub(super) fn trial(
         &self,
         work: &Work,
@@ -34,17 +34,7 @@ impl Inner {
             tracing::warn!(repo, "a trial names a main that is not a commit id");
             return CallAnswer::Unknown;
         };
-        let commit = match commit {
-            Some(commit) => Sha::parse(&commit.0).ok(),
-            None => match read_branch(&self.git, &fork_remote, MAIN_BRANCH) {
-                Ok(head) => head,
-                Err(error) => {
-                    tracing::warn!(repo, error = %error, "cannot read the fork's head");
-                    return CallAnswer::Unknown;
-                }
-            },
-        };
-        let Some(commit) = commit else {
+        let Some(commit) = commit.and_then(|commit| Sha::parse(&commit.0).ok()) else {
             return CallAnswer::Trialled {
                 before: Some(TrialResult::CommitNotInFork),
                 after: None,

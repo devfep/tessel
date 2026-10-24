@@ -832,10 +832,10 @@ async fn test_and_land_are_refused_naming_the_stand_in() -> TestResult {
 }
 
 #[tokio::test]
-async fn a_trial_runs_the_fork_head_on_main_and_reports_each_side() -> TestResult {
+async fn a_trial_runs_the_fork_commit_on_main_and_reports_each_side() -> TestResult {
     let repos = Repos::new();
     let base = CommitId(repos.main_head());
-    repos.fork_main_commit(&[("src/a.rs", "two\n")]);
+    let fork_commit = CommitId(repos.fork_main_commit(&[("src/a.rs", "two\n")]));
     let outcome = Arc::new(AtomicBool::new(true));
     let runner = {
         let outcome = Arc::clone(&outcome);
@@ -849,7 +849,7 @@ async fn a_trial_runs_the_fork_head_on_main_and_reports_each_side() -> TestResul
         main: base.clone(),
     };
 
-    let clean = ask(&landing, trial(None), 60_000).await;
+    let clean = ask(&landing, trial(Some(fork_commit.clone())), 60_000).await;
     assert_eq!(
         clean,
         CallAnswer::Trialled {
@@ -858,7 +858,7 @@ async fn a_trial_runs_the_fork_head_on_main_and_reports_each_side() -> TestResul
         }
     );
     outcome.store(false, Ordering::SeqCst);
-    let failed = ask(&landing, trial(None), 60_000).await;
+    let failed = ask(&landing, trial(Some(fork_commit)), 60_000).await;
     assert_eq!(
         failed,
         CallAnswer::Trialled {

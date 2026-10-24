@@ -50,10 +50,10 @@ pub enum Request {
     Test { base: CommitId, head: CommitId },
     /// Compare-and-swap main from `base` to `head`.
     Land { base: CommitId, head: CommitId },
-    /// Verify a challenged assumption: `commit` (or the fork's head, if `None`) against `before`
-    /// and then against `main`.
+    /// Verify a challenged assumption: `commit` against `before` and then against `main`. `None`
+    /// is work that was not submitted: there is nothing to try, and the answer is inconclusive.
     Trial {
-        /// Whose fork `commit` is on, and whose head is tried when `commit` is `None`.
+        /// Whose fork `commit` is on.
         agent: AgentId,
         commit: Option<CommitId>,
         before: CommitId,
