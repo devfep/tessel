@@ -1515,7 +1515,7 @@ fn host_a_wake_runs_its_steps_in_order_each_as_its_own_write() {
         "the cut-off counts as an attempt"
     );
     assert_eq!(
-        kit.calls().len(),
+        calls_besides_head_reads(&kit),
         1,
         "it is not dispatched again: it is in backoff"
     );
@@ -1781,6 +1781,15 @@ fn host_a_head_read_runs_only_when_offered_and_is_stored_before_anyone_is_told()
     assert_eq!(kit.wake(), None, "main moved and nothing else is due");
 }
 
+/// The calls that are not head reads: a restart may owe a read, and these are what it must not
+/// dispatch again.
+fn calls_besides_head_reads(kit: &Testkit) -> usize {
+    kit.calls()
+        .iter()
+        .filter(|call| !matches!(call.request, Request::ReadHead { .. }))
+        .count()
+}
+
 fn welcomed_head(kit: &Testkit, sock: SocketId) -> CommitId {
     for msg in kit.received(sock) {
         if let ServerMsg::Welcome { head, .. } = msg {
@@ -1914,9 +1923,14 @@ fn host_a_marker_with_no_call_waiting_is_a_cut_off() {
     assert!(!merge_marker_stored(&kit), "the cut-off is recovered");
     assert_eq!(infra_failures(&kit, "1"), 1, "and counted as an attempt");
     assert_eq!(
-        kit.calls().len(),
+        calls_besides_head_reads(&kit),
         1,
         "nothing is dispatched: the claim is in backoff"
+    );
+    let last = kit.calls().last().expect("the restart asked for the head");
+    assert!(
+        matches!(last.request, Request::ReadHead { .. }),
+        "the restart lost the start read, so the head a hello declared is read: {last:?}"
     );
 }
 
@@ -2986,4 +3000,35 @@ fn host_a_replay_ends_before_the_failed_socket_is_withdrawn() {
         kit.logs()
     );
     assert_eq!(kit.session(a2).unwrap().watch_from, None, "never marked");
+}
+
+#[test]
+fn host_a_restart_with_a_hello_adopted_head_reads_main_at_its_first_wake_and_not_before() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    wake(&mut kit);
+    assert!(kit.calls().is_empty(), "no restart yet, no read");
+    kit.restart();
+    wake(&mut kit);
+    let call = kit
+        .calls()
+        .last()
+        .expect("the restored state asks for the head");
+    assert!(matches!(call.request, Request::ReadHead { .. }), "{call:?}");
+    let id = call.id;
+    kit.reply(
+        id,
+        CallAnswer::Head {
+            main: Some(CommitId("xyz".into())),
+            landed: Vec::new(),
+        },
+    );
+    kit.settle();
+    assert_eq!(
+        state(&kit)["head"],
+        json!("xyz"),
+        "main's head replaces the hello's"
+    );
+    assert_eq!(state(&kit)["head_from_hello"], json!(null));
+    assert_eq!(kit.wake(), None, "and nothing more is owed");
 }
