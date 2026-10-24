@@ -414,11 +414,6 @@ fn acquire_lock(worktree: &Worktree) -> anyhow::Result<Option<std::fs::File>> {
         .write(true)
         .open(&path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    match held_by_flock(&file) {
-        Ok(true) => return Ok(None),
-        Ok(false) => {}
-        Err(e) => return Err(e).with_context(|| format!("cannot lock {}", path.display())),
-    }
     match try_record_lock(&file) {
         Ok(true) => Ok(Some(file)),
         Ok(false) => Ok(None),
