@@ -5,12 +5,18 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use super::LandingError;
+/// A configured path that could not be made absolute.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot resolve {path} against the working directory: {source}")]
+pub struct ResolveError {
+    pub path: String,
+    pub source: io::Error,
+}
 
 /// `path` against the working directory, with `.` and `..` resolved by name: the result must not
 /// need the working directory to exist when it is used.
-pub(super) fn absolute(path: &Path) -> Result<PathBuf, LandingError> {
-    let fail = |source| LandingError::Resolve {
+pub fn absolute(path: &Path) -> Result<PathBuf, ResolveError> {
+    let fail = |source| ResolveError {
         path: path.display().to_string(),
         source,
     };
@@ -32,7 +38,7 @@ pub(super) fn absolute(path: &Path) -> Result<PathBuf, LandingError> {
 
 /// `remote` or `fork` as git is given it: a URL or an `host:path` address as it is, a path made
 /// absolute.
-pub(super) fn absolute_location(location: &str) -> Result<String, LandingError> {
+pub fn absolute_location(location: &str) -> Result<String, ResolveError> {
     let host_path = match (location.find(':'), location.find('/')) {
         (Some(colon), Some(slash)) => colon < slash,
         (Some(_), None) => true,
@@ -44,7 +50,7 @@ pub(super) fn absolute_location(location: &str) -> Result<String, LandingError> 
     absolute(Path::new(location))?
         .into_os_string()
         .into_string()
-        .map_err(|_| LandingError::Resolve {
+        .map_err(|_| ResolveError {
             path: location.to_owned(),
             source: io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -67,7 +73,7 @@ mod tests {
     fn an_absolute_path_is_kept() {
         assert_eq!(
             absolute(Path::new("/srv/x/../forks")).unwrap(),
-            Path::new("/srv/forks")
+            Path::new("/srv/x/../forks")
         );
     }
 

@@ -7,6 +7,7 @@ pub mod id;
 pub mod identity;
 pub mod keys;
 pub mod landing;
+pub mod paths;
 pub mod repo;
 pub mod server;
 pub mod store;

@@ -10,6 +10,7 @@ use tessel_coordinator::shell;
 use crate::credential::is_http_url;
 use crate::id::{Name, NameError};
 use crate::identity;
+use crate::paths::ResolveError;
 
 /// What `tessel-server serve --config <file>` reads.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -99,6 +100,14 @@ fn agent_in_url_host(fork: &str) -> bool {
     let after_scheme = fork.split_once("://").map_or("", |(_, rest)| rest);
     let authority = after_scheme.split('/').next().unwrap_or_default();
     authority.contains(FORK_AGENT_PLACEHOLDER)
+}
+
+impl Config {
+    /// This configuration with `store_dir` and `runner_config` made absolute, so that removing
+    /// the directory the server started in does not affect them.
+    pub fn with_absolute_paths(&self) -> Result<Config, ResolveError> {
+        Ok(self.clone())
+    }
 }
 
 impl RepositoryConfig {

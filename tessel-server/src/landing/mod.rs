@@ -18,7 +18,6 @@ mod git_read;
 mod head;
 mod names;
 mod ports;
-mod start_paths;
 mod trial;
 mod workdir;
 
@@ -38,6 +37,7 @@ use crate::config::{LanderConfig, RepositoryConfig, FORK_AGENT_PLACEHOLDER};
 use crate::credential::{check_token_file, is_http_url, url_host, with_askpass, TokenFileError};
 use crate::id::RepoId;
 use crate::identity::is_server_agent_name;
+use crate::paths::{absolute, absolute_location, ResolveError};
 use crate::repo::{BoxFuture, CallPort};
 
 use answer::merge_answer;
@@ -45,7 +45,6 @@ use deadline::Stop;
 use git_read::read_branch;
 use names::{quote, MAX_LOGGED_CHARS};
 use ports::Ports;
-use start_paths::{absolute, absolute_location};
 use workdir::CallDir;
 
 pub use ports::{LocalRunner, TestRunner};
@@ -60,11 +59,8 @@ pub enum LandingError {
         path: String,
         source: std::io::Error,
     },
-    #[error("cannot resolve {path} against the working directory: {source}")]
-    Resolve {
-        path: String,
-        source: std::io::Error,
-    },
+    #[error(transparent)]
+    Resolve(#[from] ResolveError),
     #[error("the lander's git environment: {0}")]
     Git(#[from] CommandError),
     #[error("{0}")]
