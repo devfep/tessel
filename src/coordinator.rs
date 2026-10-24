@@ -344,6 +344,18 @@ struct CoordinatorState {
     /// but not in `head_synced`, so it is pending without being a reason to wake.
     #[serde(default)]
     head_tried: u64,
+    /// The head a `Hello` adopted because the coordinator had none. It was never read from main,
+    /// so a head read replaces it (see `trunk`). Only while `head` still equals it: a landing or
+    /// a read moves `head` on and leaves this dead.
+    #[serde(default)]
+    head_from_hello: Option<CommitId>,
+    /// Reads of main's head that failed since the last one that worked, while the head was
+    /// missing or adopted from a `Hello`. A restored state keeps the count.
+    #[serde(default)]
+    head_start_failures: u32,
+    /// The earliest time to try the head read again after such a failure.
+    #[serde(default)]
+    head_start_retry_ms: u64,
     next_claim: u64,
     next_fence: u64,
     next_seq: u64,
@@ -478,6 +490,9 @@ impl Coordinator {
             head_pokes: 0,
             head_synced: 0,
             head_tried: 0,
+            head_from_hello: None,
+            head_start_failures: 0,
+            head_start_retry_ms: 0,
             next_claim: 1,
             next_fence: 1,
             next_seq: 0,
@@ -777,6 +792,9 @@ impl Coordinator {
             // A reviewer with no commit sends zeros; it must never become the head.
             self.state.head.clone().unwrap_or(base)
         } else {
+            if self.state.head.is_none() {
+                self.state.head_from_hello = Some(base.clone());
+            }
             self.state.head.get_or_insert(base).clone()
         };
         let connected = self.event(
