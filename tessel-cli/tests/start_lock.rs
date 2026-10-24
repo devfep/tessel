@@ -13,9 +13,11 @@
 mod support;
 
 use std::fs::OpenOptions;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use support::{Agent, Fake};
+use support::{eventually, Agent, Fake};
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
 
@@ -84,41 +86,83 @@ async fn start_still_says_running_but_not_connected_for_a_daemon_that_is_alive()
     Ok(())
 }
 
+/// Puts a socket back once the second daemon has logged that it gave way. Until then the
+/// second `start` finds no daemon at the path, so it spawns one; afterwards its probes answer.
+fn restore_when_a_daemon_gives_way(
+    hidden: PathBuf,
+    socket: PathBuf,
+    log: PathBuf,
+) -> std::thread::JoinHandle<Result<()>> {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("another daemon holds the lock") {
+                std::fs::rename(&hidden, &socket)?;
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::fs::rename(&hidden, &socket)?;
+        anyhow::bail!("no daemon logged that it gave way")
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_starts_against_an_offline_coordinator_name_the_daemon_that_answers() -> Result<()> {
+async fn a_second_start_names_the_offline_daemon_that_holds_the_lock_when_its_own_gives_way(
+) -> Result<()> {
     let fake = Fake::start(30_000, &[("a1", TOK1)]).await?;
     fake.freeze_clock();
     fake.set_accepting(false);
     let a1 = Agent::new(&fake, "a1", TOK1)?;
+    let mut winner = a1.spawn_daemon("the first start")?;
+    let state = eventually(Duration::from_secs(8), || {
+        Ok(a1
+            .status()
+            .ok()
+            .filter(|status| status["state"]["pid"].is_u64()))
+    })
+    .await?["state"]
+        .clone();
+    let socket = PathBuf::from(state["socket"].as_str().unwrap_or_default());
+    let hidden = socket.with_extension("hidden");
+    // The pre-check of the second start finds no daemon, as in a race where the first daemon
+    // holds the lock but has not bound its socket yet. The first daemon keeps its socket open.
+    std::fs::rename(&socket, &hidden)?;
+    let log = a1.root().join(".tessel/daemon.log");
+    let restorer = restore_when_a_daemon_gives_way(hidden, socket, log);
 
-    let (first, second) = std::thread::scope(|scope| {
-        let one = scope.spawn(|| a1.tessel(&["start", "racer one"]));
-        let two = scope.spawn(|| a1.tessel(&["start", "racer two"]));
-        (one.join(), two.join())
-    });
-    let outputs = [
-        first.map_err(|_| anyhow::anyhow!("first start panicked"))??,
-        second.map_err(|_| anyhow::anyhow!("second start panicked"))??,
-    ];
+    let done = a1.tessel(&["start", "the second start"])?;
 
-    let winner = a1.status()?["state"]["pid"].to_string();
-    for done in &outputs {
-        assert!(
-            !done.all().contains("no daemon answers"),
-            "a daemon answers for this worktree: {}",
-            done.all()
-        );
-    }
-    let losers: Vec<_> = outputs
-        .iter()
-        .filter(|done| done.stderr.contains("did not start"))
-        .collect();
-    for loser in losers {
-        assert!(
-            loser.stderr.contains(&format!("pid {winner}")),
-            "the loser does not name the winner (pid {winner}): {}",
-            loser.stderr
-        );
-    }
+    let restored = restorer
+        .join()
+        .map_err(|_| anyhow::anyhow!("restorer panicked"))?;
+    let winner_ran = winner.try_wait()?.is_none();
+    winner.kill()?;
+    winner.wait()?;
+    restored?;
+    assert!(winner_ran, "the first daemon exited: {}", done.all());
+    assert_eq!(
+        done.code,
+        1,
+        "the second start did not lose: {}",
+        done.all()
+    );
+    assert!(
+        done.stderr.contains("did not start"),
+        "the second start does not say it lost: {}",
+        done.stderr
+    );
+    assert!(
+        done.stderr.contains(&format!("pid {}", state["pid"])),
+        "the loser does not name the winner (pid {}): {}",
+        state["pid"],
+        done.stderr
+    );
+    assert!(
+        !done.all().contains("no daemon answers"),
+        "a daemon answers for this worktree: {}",
+        done.all()
+    );
     Ok(())
 }
