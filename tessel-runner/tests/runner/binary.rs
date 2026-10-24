@@ -1,8 +1,9 @@
 //! The real `tessel-runner` binary over standard input and standard output.
 
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -10,8 +11,8 @@ use crate::common::{argv, own_config_text, write_config, Rig};
 
 const SECRET_NAMES: [&str; 2] = ["TESSEL_TOKEN", "STEWARD_ADMIN_TOKEN"];
 
-fn run_binary(rig: &Rig, config: &Path, path_env: &str, input: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tessel-runner"))
+fn spawn_binary(rig: &Rig, config: &Path, path_env: &str) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_tessel-runner"))
         .arg("--config")
         .arg(config)
         .env_clear()
@@ -25,14 +26,31 @@ fn run_binary(rig: &Rig, config: &Path, path_env: &str, input: &str) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("start the runner");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(input.as_bytes())
-        .expect("send the request");
+        .expect("start the runner")
+}
+
+fn send_request(child: &mut Child, input: &str) {
+    let mut stdin = child.stdin.take().expect("stdin");
+    match stdin.write_all(input.as_bytes()) {
+        Ok(()) => {}
+        // The runner refuses a bad config before it reads stdin, so it may have exited already.
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => {}
+        Err(error) => panic!("send the request: {error}"),
+    }
+}
+
+fn run_binary(rig: &Rig, config: &Path, path_env: &str, input: &str) -> Output {
+    let mut child = spawn_binary(rig, config, path_env);
+    send_request(&mut child, input);
     child.wait_with_output().expect("wait for the runner")
+}
+
+fn wait_until_exited(child: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().expect("poll the runner").is_none() {
+        assert!(Instant::now() < deadline, "the runner did not exit");
+        std::thread::yield_now();
+    }
 }
 
 fn own_config(rig: &Rig) -> std::path::PathBuf {
@@ -131,6 +149,19 @@ fn the_binary_exits_2_with_a_fixed_message_when_the_config_is_missing() {
     assert!(message.contains("tessel-runner.toml"), "{message}");
     assert!(message.contains("does not exist"), "{message}");
     assert!(!rig.tree.path().join("ran").exists());
+}
+
+#[test]
+fn the_binary_exits_2_even_when_it_exited_before_the_request_was_sent() {
+    let rig = Rig::with_cargo("touch ran");
+    let missing = rig.bin.path().join("tessel-runner.toml");
+    let mut child = spawn_binary(&rig, &missing, &rig.path_value());
+    wait_until_exited(&mut child);
+    send_request(&mut child, &request_json(&rig));
+    let output = child.wait_with_output().expect("wait for the runner");
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(text(&output.stdout), "");
+    assert!(text(&output.stderr).contains("does not exist"));
 }
 
 #[test]
