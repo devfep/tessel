@@ -567,7 +567,7 @@ pub fn notice_text(notice: &Notice) -> String {
             let _ = writeln!(out, "  code {code:?}");
             out.push_str(&quote_untrusted("the coordinator", message));
         }
-        ServerMsg::Merged { claim, head } => {
+        ServerMsg::Merged { claim, head, .. } => {
             let head = escape(&head.0);
             let _ = writeln!(out, "  claim {} is merged; main is now at {head}", claim.0);
         }

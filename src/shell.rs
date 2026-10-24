@@ -2662,6 +2662,7 @@ mod tests {
         EventKind::Merged {
             claim: ClaimId(1),
             head: CommitId("abc".to_string()),
+            base: None,
             unverified: Vec::new(),
             untried_shadows: Vec::new(),
         }
@@ -2692,6 +2693,7 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(1),
                 head: CommitId("abc".to_string()),
+                base: None,
                 unverified: vec![UnverifiedAssumption {
                     claim: ClaimId(4),
                     assumption: assumption(),

@@ -380,6 +380,7 @@ mod tests {
         ServerMsg::Merged {
             claim: ClaimId(claim),
             head: CommitId("abc".into()),
+            base: None,
         }
     }
 

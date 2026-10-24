@@ -2158,6 +2158,7 @@ mod tests {
         let merged = ServerMsg::Merged {
             claim: ClaimId(4),
             head: CommitId("d".repeat(40)),
+            base: None,
         };
         let mut conn = connect(vec![stale(1), merged]).await;
         release(&mut conn, &held(3)).await.unwrap();
@@ -2455,6 +2456,7 @@ mod tests {
                 EventKind::Merged {
                     claim: ClaimId(1),
                     head: CommitId("c".repeat(40)),
+                    base: None,
                     unverified: Vec::new(),
                     untried_shadows: Vec::new(),
                 },

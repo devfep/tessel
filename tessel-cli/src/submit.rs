@@ -805,6 +805,7 @@ mod tests {
             last_error: None,
             skipped_frames: 0,
             protocol_warning: None,
+            pending_notes: Vec::new(),
             claims: Vec::new(),
             queued: None,
             updated_at_ms: 0,

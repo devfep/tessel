@@ -462,6 +462,7 @@ impl Coordinator {
                 EventKind::Merged {
                     claim,
                     head: head.clone(),
+                    base: None,
                     unverified,
                     untried_shadows,
                 },
@@ -471,6 +472,7 @@ impl Coordinator {
                 msg: ServerMsg::Merged {
                     claim,
                     head: head.clone(),
+                    base: None,
                 },
             },
         ];
@@ -837,7 +839,7 @@ mod tests {
 
         let to_a = notices(&effects, "a");
         assert!(
-            matches!(&to_a[..], [ServerMsg::Merged { claim: id, head }] if *id == claim && head.0 == MAIN),
+            matches!(&to_a[..], [ServerMsg::Merged { claim: id, head, .. }] if *id == claim && head.0 == MAIN),
             "{to_a:?}"
         );
         assert!(replies(&effects).is_empty(), "no sender to reply to");
@@ -887,6 +889,42 @@ mod tests {
             matches!(replies(&effects)[..], [ServerMsg::Welcome { head, .. }] if head.0 == MAIN),
             "{effects:?}"
         );
+    }
+
+    #[test]
+    fn a_landing_names_main_before_it_on_the_message_and_the_event() {
+        let mut c = core();
+        let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
+        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW + 5);
+        assert!(
+            matches!(
+                &notices(&effects, "a")[..],
+                [ServerMsg::Merged { base: Some(base), .. }] if base.0 == "old"
+            ),
+            "{effects:?}"
+        );
+        assert!(matches!(
+            &logged(&effects)[0],
+            EventKind::Merged { base: Some(base), .. } if base.0 == "old"
+        ));
+    }
+
+    #[test]
+    fn a_landing_whose_span_is_unknown_names_no_base() {
+        let mut c = core();
+        let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
+        let outcome = MergeOutcome::AlreadyMerged {
+            base: CommitId(MAIN.into()),
+        };
+        let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, NOW);
+        assert!(matches!(
+            &notices(&effects, "a")[..],
+            [ServerMsg::Merged { base: None, .. }]
+        ));
+        assert!(matches!(
+            &logged(&effects)[0],
+            EventKind::Merged { base: None, .. }
+        ));
     }
 
     #[test]

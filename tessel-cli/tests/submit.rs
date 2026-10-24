@@ -439,6 +439,7 @@ async fn merged_ends_the_claim_and_is_announced_in_the_inbox() -> Result<()> {
         ServerMsg::Merged {
             claim: ClaimId(id),
             head: CommitId("abc123def456".into()),
+            base: None,
         },
     );
     eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(()))).await?;
@@ -824,6 +825,7 @@ async fn the_base_advances_to_the_merged_commit_and_only_then() -> Result<()> {
         ServerMsg::Merged {
             claim: ClaimId(claim_id(&a1)?),
             head: CommitId("2".repeat(40)),
+            base: None,
         },
     );
     eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(()))).await?;

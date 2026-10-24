@@ -728,6 +728,12 @@ impl Fake {
     /// lander would, and so sends `Merged` to the submitter if it has a socket open. If no merge
     /// is out, a wake runs first; if none is queued, nothing happens.
     pub fn merge_next(&self) {
+        self.merge_next_at(&"b".repeat(40), &"c".repeat(40));
+    }
+
+    /// Like `merge_next`, with the landing on main running from `base` to `head`: the commits of
+    /// the repository a test built, as the lander's rebase of the submission would make them.
+    pub fn merge_next_at(&self, base: &str, head: &str) {
         let mut guard = lock(&self.inner.state);
         let st = &mut *guard;
         let Some(call) = self.inner.call_of(st, is_merge_call) else {
@@ -739,7 +745,7 @@ impl Fake {
             );
             return;
         };
-        let (base, head) = (sha('b'), sha('c'));
+        let (base, head) = (CommitId(base.to_string()), CommitId(head.to_string()));
         st.landed = Some(head.clone());
         self.inner
             .answer(st, &call, CallAnswer::Prepared { base, head });

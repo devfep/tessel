@@ -359,9 +359,12 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
     // The diff base is pinned at the first start in a worktree and then only moves when a merge
     // lands (`on_merged`): not on a restart, a reconnect, `stop` or a lapsed lease. Deleting
     // `.tessel/state.json` resets it to HEAD.
-    let persisted = State::read(&worktree)?
-        .map(|prior| prior.start_base)
+    let prior = State::read(&worktree)?;
+    let persisted = prior
+        .as_ref()
+        .map(|prior| prior.start_base.clone())
         .filter(|pinned| !pinned.is_empty());
+    let pending_notes = prior.map(|prior| prior.pending_notes).unwrap_or_default();
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let accept = tokio::spawn(accept_loop(listener, cmd_tx, shutdown_rx));
@@ -381,6 +384,7 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
         last_error: None,
         skipped_frames: 0,
         protocol_warning: None,
+        pending_notes,
         claims: Vec::new(),
         queued: None,
         updated_at_ms: now_ms(),
@@ -922,7 +926,9 @@ impl Daemon {
                 claim,
                 queue_position,
             } => self.on_accepted(req, claim, queue_position),
-            ServerMsg::Merged { claim, ref head } => {
+            ServerMsg::Merged {
+                claim, ref head, ..
+            } => {
                 self.state.coordinator_head = Some(head.0.clone());
                 self.on_merged(claim, msg);
             }
@@ -2840,6 +2846,7 @@ mod tests {
             last_error: None,
             skipped_frames: 0,
             protocol_warning: None,
+            pending_notes: Vec::new(),
             claims: vec![held(1), held(2)],
             queued: None,
             updated_at_ms: 0,

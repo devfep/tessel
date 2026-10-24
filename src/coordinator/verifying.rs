@@ -875,6 +875,25 @@ mod tests {
     }
 
     #[test]
+    fn a_recovered_merge_names_the_main_it_was_dispatched_from_as_the_landing_base() {
+        let mut c = core();
+        let (challenger, due) = challenger_with_lost_answer(&mut c);
+        c.begin_merge(due).expect("the retry is dispatched");
+        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+
+        let told = effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::Notify {
+                    msg: ServerMsg::Merged { base: Some(base), .. },
+                    ..
+                } if base.0 == MAIN
+            )
+        });
+        assert!(told, "{effects:?}");
+    }
+
+    #[test]
     fn a_prepared_answer_at_main_after_a_lost_answer_verifies_against_the_dispatch_main() {
         use crate::host::call::CallAnswer;
         let mut c = core();

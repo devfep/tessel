@@ -610,6 +610,11 @@ pub enum ServerMsg {
     Merged {
         claim: ClaimId,
         head: CommitId,
+        /// Main as it was before the landing, so `base..head` is exactly the commits the landing
+        /// put on main (the submission's commits, rebased). Old coordinators omit it, and so does
+        /// a landing whose span is unknown; a CLI then copies no notes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<CommitId>,
     },
     SubmitRejected {
         claim: ClaimId,
@@ -879,6 +884,10 @@ pub enum EventKind {
     Merged {
         claim: ClaimId,
         head: CommitId,
+        /// Main before the landing (`ServerMsg::Merged::base`). Absent from events logged by an
+        /// older coordinator and when the span of the landing is unknown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<CommitId>,
         /// Assumptions this landing challenged whose assuming claim was still live, but that
         /// could not be queued for verification because main as it was before the landing is
         /// unknown (a recovered merge). They stay unverified; `Summary` counts them as
@@ -1326,6 +1335,7 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(3),
                 head: CommitId("abc".into()),
+                base: None,
                 unverified: Vec::new(),
                 untried_shadows: Vec::new(),
             },
@@ -1338,6 +1348,58 @@ mod tests {
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back.seq, 42);
         assert!(matches!(back.kind, EventKind::Merged { .. }));
+    }
+
+    #[test]
+    fn a_merged_message_and_event_carry_base_when_set_and_omit_it_when_not() {
+        let with = ServerMsg::Merged {
+            claim: ClaimId(3),
+            head: CommitId("abc".into()),
+            base: Some(CommitId("def".into())),
+        };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains(r#""base":"def""#), "{json}");
+        let back = serde_json::from_str::<ServerMsg>(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        let without = ServerMsg::Merged {
+            claim: ClaimId(3),
+            head: CommitId("abc".into()),
+            base: None,
+        };
+        let json = serde_json::to_string(&without).unwrap();
+        assert!(!json.contains("base"), "{json}");
+        let back = serde_json::from_str::<ServerMsg>(&json).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+
+        let kind = EventKind::Merged {
+            claim: ClaimId(3),
+            head: CommitId("abc".into()),
+            base: Some(CommitId("def".into())),
+            unverified: Vec::new(),
+            untried_shadows: Vec::new(),
+        };
+        let json = serde_json::to_string(&ev(1, kind)).unwrap();
+        assert!(json.contains(r#""base":"def""#), "{json}");
+        let EventKind::Merged { base, .. } = serde_json::from_str::<Event>(&json).unwrap().kind
+        else {
+            panic!("expected Merged");
+        };
+        assert_eq!(base, Some(CommitId("def".into())));
+    }
+
+    #[test]
+    fn a_merged_message_and_event_from_an_old_coordinator_have_no_base() {
+        let old = r#"{"type":"merged","claim":3,"head":"abc"}"#;
+        let ServerMsg::Merged { base, .. } = serde_json::from_str::<ServerMsg>(old).unwrap() else {
+            panic!("expected Merged");
+        };
+        assert_eq!(base, None);
+        let old = r#"{"seq":7,"at_ms":1,"run":"r","event":"merged","claim":3,"head":"abc"}"#;
+        let EventKind::Merged { base, .. } = serde_json::from_str::<Event>(old).unwrap().kind
+        else {
+            panic!("expected Merged");
+        };
+        assert_eq!(base, None);
     }
 
     #[test]
@@ -1371,6 +1433,7 @@ mod tests {
         let kind = EventKind::Merged {
             claim: ClaimId(3),
             head: CommitId("abc".into()),
+            base: None,
             unverified: vec![UnverifiedAssumption {
                 claim: ClaimId(2),
                 assumption: Assumption {

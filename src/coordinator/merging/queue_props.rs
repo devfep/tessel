@@ -1269,6 +1269,7 @@ fn check_unverifiable(world: &World, claim: u64, owed: &Owed, effects: &[Effect]
         if let EventKind::Merged {
             claim: c,
             head,
+            base: _,
             unverified,
             untried_shadows,
         } = kind

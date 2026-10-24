@@ -698,6 +698,7 @@ fn every_counted_kind(count: u64) -> Vec<EventKind> {
             EventKind::Merged {
                 claim: ClaimId(1),
                 head: CommitId("abc".into()),
+                base: None,
                 unverified: unverified.clone(),
                 untried_shadows: Vec::new(),
             },

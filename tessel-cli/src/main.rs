@@ -9,6 +9,7 @@ mod inbox_hook;
 mod init;
 mod mcp;
 mod moves;
+mod notes;
 mod plan;
 mod race;
 mod reconcile;

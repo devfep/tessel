@@ -637,6 +637,7 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(claim),
                 head: CommitId("d".repeat(40)),
+                base: None,
                 unverified: Vec::new(),
                 untried_shadows: Vec::new(),
             },
@@ -886,6 +887,7 @@ mod tests {
             EventKind::Merged {
                 claim: ClaimId(1),
                 head,
+                base: None,
                 unverified: Vec::new(),
                 untried_shadows: Vec::new(),
             },

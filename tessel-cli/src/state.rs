@@ -36,6 +36,23 @@ pub struct HeldClaim {
     pub assumptions: Vec<String>,
 }
 
+/// A landing whose submitted commits' notes are still to be copied onto the commits the lander
+/// made from them (`notes::copy_notes`). Kept in `state.json` until done, so a restart or an
+/// offline spell does not lose it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteJob {
+    pub claim: ClaimId,
+    /// The fork commit that was submitted.
+    pub source: String,
+    /// The diff base before this submission: commits up to it were landed (and handled) earlier.
+    #[serde(default)]
+    pub floor: Option<String>,
+    /// Main before the landing (`Merged::base`).
+    pub base: String,
+    /// Main after the landing (`Merged::head`).
+    pub head: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Connection {
@@ -87,6 +104,9 @@ pub struct State {
     /// daemon's version. The daemon connects anyway; this says it may misread what it is sent.
     #[serde(default)]
     pub protocol_warning: Option<String>,
+    /// Landings whose notes are not yet copied, oldest first.
+    #[serde(default)]
+    pub pending_notes: Vec<NoteJob>,
     pub claims: Vec<HeldClaim>,
     pub queued: Option<QueuedWait>,
     pub updated_at_ms: u64,

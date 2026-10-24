@@ -992,3 +992,100 @@ async fn a_lander_with_a_token_file_lands_on_a_path_remote_as_before() -> TestRe
     assert_eq!(repos.main_head(), head);
     Ok(())
 }
+
+/// Twenty lines, some replaced: `edits` are (line number, text).
+fn twenty_lines(edits: &[(usize, &str)]) -> String {
+    let mut text = String::new();
+    for n in 1..=20 {
+        match edits.iter().find(|(line, _)| *line == n) {
+            Some((_, to)) => text.push_str(to),
+            None => text.push_str(&format!("line {n}")),
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// What a commit's note follows it by: author name, email and date, and the raw message.
+fn note_key(repo: &Path, commit: &str) -> String {
+    git(
+        repo,
+        &["log", "-1", "--date=raw", "--format=%an|%ae|%ad|%B", commit],
+    )
+}
+
+fn patch_id(repo: &Path, commit: &str) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let patch = git(repo, &["show", "--format=", commit]);
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["patch-id", "--stable"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(patch.as_bytes())?;
+    Ok(String::from_utf8(child.wait_with_output()?.stdout)?)
+}
+
+#[tokio::test]
+async fn a_rebase_over_another_landing_keeps_what_a_note_follows_a_commit_by() -> TestResult {
+    let repos = Repos::new();
+    repos.main_commit(&[("src/ctx.rs", &twenty_lines(&[]))]);
+    let before = repos.head();
+    let one = repos.commit(&[("src/ctx.rs", &twenty_lines(&[(2, "one")]))]);
+    std::fs::write(
+        repos.work.join("src/ctx.rs"),
+        twenty_lines(&[(2, "one"), (10, "two")]),
+    )?;
+    git(&repos.work, &["add", "--all"]);
+    git(&repos.work, &["commit", "--quiet", "-m", "second change"]);
+    let two = repos.head();
+    let fork = repos.fork_of("a1").display().to_string();
+    git(
+        &repos.work,
+        &[
+            "push",
+            "--quiet",
+            &fork,
+            &format!("HEAD:refs/heads/tessel/{two}"),
+        ],
+    );
+    git(&repos.work, &["reset", "--quiet", "--hard", &before]);
+    // Another landing, two lines from the first edit: the rebase is clean and changes the
+    // context of that commit's patch.
+    let moved = repos.main_commit(&[("src/ctx.rs", &twenty_lines(&[(4, "elsewhere")]))]);
+    let landing = landing(&repos, "landing-notes", passing());
+
+    let answer = prepare(&landing, &two, whole_repo()).await;
+
+    let (base, head) = prepared(&answer)?;
+    assert_eq!(base, moved, "base is main as it was before the landing");
+    let landed: Vec<String> = git(
+        &repos.main,
+        &["rev-list", "--reverse", &format!("{base}..{head}")],
+    )
+    .lines()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(landed.len(), 2, "base..head is exactly the rebased commits");
+    for (submitted, rebased) in [(&one, &landed[0]), (&two, &landed[1])] {
+        assert_ne!(submitted, rebased);
+        assert_eq!(
+            note_key(&repos.work, submitted),
+            note_key(&repos.main, rebased),
+            "the rebase keeps the author line and the message"
+        );
+    }
+    assert_ne!(
+        patch_id(&repos.work, &one)?,
+        patch_id(&repos.main, &landed[0])?,
+        "the first patch changed with its context, so a patch id would not find it"
+    );
+    Ok(())
+}

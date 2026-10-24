@@ -442,6 +442,7 @@ async fn stop_blocks_once_with_where_things_stand_when_the_landing_is_slow() -> 
             ServerMsg::Merged {
                 claim: ClaimId(claim + 1000),
                 head: CommitId("abc".into()),
+                base: None,
             },
         );
     })?;
@@ -521,6 +522,7 @@ async fn stop_allows_as_soon_as_the_submission_merges() -> Result<()> {
             ServerMsg::Merged {
                 claim: ClaimId(claim),
                 head: CommitId("abc123".into()),
+                base: None,
             },
         );
     })?;

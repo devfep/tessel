@@ -944,7 +944,7 @@ async fn a_submission_over_the_socket_lands_on_the_remote_after_the_runner_ran()
     .await?;
     let head = loop {
         let msg = expect(&mut socket).await?;
-        if let ServerMsg::Merged { claim, head } = msg {
+        if let ServerMsg::Merged { claim, head, .. } = msg {
             assert_eq!(claim, claim_id);
             break head;
         } else if !matches!(msg, ServerMsg::Accepted { .. }) {
