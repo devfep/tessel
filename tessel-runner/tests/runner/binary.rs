@@ -1,6 +1,6 @@
 //! The real `tessel-runner` binary over standard input and standard output.
 
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -30,12 +30,13 @@ fn spawn_binary(rig: &Rig, config: &Path, path_env: &str) -> Child {
 }
 
 fn send_request(child: &mut Child, input: &str) {
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(input.as_bytes())
-        .expect("send the request");
+    let mut stdin = child.stdin.take().expect("stdin");
+    match stdin.write_all(input.as_bytes()) {
+        Ok(()) => {}
+        // The runner refuses a bad config before it reads stdin, so it may have exited already.
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => {}
+        Err(error) => panic!("send the request: {error}"),
+    }
 }
 
 fn run_binary(rig: &Rig, config: &Path, path_env: &str, input: &str) -> Output {
