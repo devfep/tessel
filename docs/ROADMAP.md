@@ -7,18 +7,22 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 04:30 EDT. Main at `c50be59`. Merged tonight by the orchestrator under Felix's
-standing order, each after CI 13/13 on its head and an Opus "Yes" posted on it: #102 and #103 (first
-round), #105 and #106 (second round), #107 and #108 (third round); #101 (STATE) merged by the
-orchestrator before the classifier's refusal below. The orchestrator's gate is green on all seven
-steps on `3b19099` (1931 tests), `f2d1bd1` (1934), `dec1c56` (1936), `36b17f2` (1948), `ff56bd5`
-(1954) and `c50be59` (1957), none failed; main's CI green on each. Rows closed tonight:
+**As of:** 2026-10-24 06:20 EDT. Main at `35d1124`. Merged tonight by the orchestrator under Felix's
+standing order, each after CI 13/13 on its head and an Opus "Yes" posted on it: #102, #103, #105,
+#106, #107, #108, #109, #110 and #111; #101 (STATE) merged by the orchestrator before the
+classifier's refusal below. The orchestrator's gate is green on all seven steps after every merge,
+last on `35d1124` (1960 tests, none failed); main's CI green after each. One CI flake met tonight
+(#110's run, `tessel-runner/tests/runner/binary.rs:34`, broken pipe): recorded as
+RUNNER-BINARY-EPIPE, its job re-run once with the row cited, and fixed in #111. Rows closed tonight:
 CLI-WORKTREE-LOCK-FORK-RACE, MERGE-ADMIN-MERGE-TEXT, SERVER-KILL-AFTER-PUSH-TEST,
 SERVER-FRAME-LIMIT-TESTS, DOCS-GATE-SECTION, CLI-LOCK-UPGRADE-WINDOW, COORD-HEAD-FROM-AGENT,
-DOCS-STEWARD-SWEEP, CLI-START-REFUSED-MESSAGE, COORD-HEAD-RESTART-READ. Rows added from the reviews
-and still open: LANDER-ADMIN-POLICY-DEAD, CLI-START-RACE-TEST-VACUOUS, DOCS-R22-HOST-TEST. M4's
-first landing still needs Felix's GitHub steps. No lane runs; checked out are this STATE's worktree
-and the orchestrator's detached gate worktree `.claude/worktrees/gate-main`.
+DOCS-STEWARD-SWEEP, CLI-START-REFUSED-MESSAGE, COORD-HEAD-RESTART-READ, CLI-START-RACE-TEST-VACUOUS,
+DOCS-R22-HOST-TEST, SWARM-REAL-LEASE-CUT-TESTS, RUNNER-BINARY-EPIPE. Open rows found by tonight's
+reviews: LANDER-ADMIN-POLICY-DEAD, CLI-START-DEADLINE-SEAM, SWARM-UNBOUNDED-LOOPS,
+CLI-TEST-STDIN-EPIPE (dispatched to lane A `lane-a-cli-epipe` at 06:15 from `35d1124`, worktree
+`.claude/worktrees/task-cli-test-stdin-epipe`). M4's first landing still needs Felix's GitHub steps.
+Also checked out: this STATE's worktree and the orchestrator's detached gate worktree
+`.claude/worktrees/gate-main`.
 **Standing order from Felix (24 October, about 01:25 EDT), for this night only:** the orchestrator
 merges pull requests itself once the protocol is met (lane report, CI green on the head, an Opus
 reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's gate
@@ -379,12 +383,16 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   push was red on Linux: the fake closed a cut replay socket with the reader's `Hello` unread, the
   OS reset the connection and events already written were lost; the fake now drains and completes
   the close handshake (the reviewer reproduced the symptom on a Mac with the drain removed).
-- [ ] **SWARM-REAL-LEASE-CUT-TESTS** — lane B, with the next swarm task. From the
-  SWARM-SHORT-LEASE-TESTS review: the two cut tests above keep real leases because the cut
-  waiter's claim has to lapse for the run to end; the hook and node wait loops count iterations,
-  not time, so at a load near 50 the hook gave up after 256 s instead of 150 s. Done: both tests
-  end on the cause under the frozen clock or state their real-time bound, and the loops wait by
-  the clock.
+- [x] **SWARM-REAL-LEASE-CUT-TESTS** (`cad3703`, #110) — lane B. As built: both cut tests run under
+  the frozen clock, the lapse produced by clock steps after the observed grant, and assert the lapse
+  at its exact clock time, so a no-op freeze fails both; the hook (`date +%s`), node (`Date.now`)
+  and Rust (`Instant`) wait loops wait by the clock with their 150 s bound; no bound raised.
+  Reviewed "Yes" after one fix pass. Left: SWARM-UNBOUNDED-LOOPS. Planned: lane B, with the next
+  swarm task. From the SWARM-SHORT-LEASE-TESTS review: the two cut tests above keep real leases
+  because the cut waiter's claim has to lapse for the run to end; the hook and node wait loops count
+  iterations, not time, so at a load near 50 the hook gave up after 256 s instead of 150 s. Done:
+  both tests end on the cause under the frozen clock or state their real-time bound, and the loops
+  wait by the clock.
 - [ ] **HOST-MERGE-STANDIN** — M5, with P1-CORE-STAGED-LANDING; its adapter half is done
   (P1-SERVER-LANDING, `9b2533f`: `Prepare` is the whole merge, with tests); the merge record
   reaching the lander is open. From
@@ -638,14 +646,51 @@ claims reconciled.
   fix (offer the read again on load when `head_from_hello` is set) breaks five tests, so it needs a
   design: which wakes a restored state owes. Done: the design in the row, the restart case tested,
   the five tests changed only where they pinned the gap.
-- [ ] **CLI-START-RACE-TEST-VACUOUS** — from the #107 re-check: the two-starts race test in
-  `tessel-cli/tests/start_lock.rs` passes without checking anything when neither start loses,
-  and the deadline's `try_wait` treats any exit as giving way, so a daemon that fails in the last
-  second gets the held-lock text. Done: the test asserts exactly one start lost (or forces it),
-  and a non-zero exit at the deadline keeps the "exited before connecting" message, with a test.
-- [ ] **DOCS-R22-HOST-TEST** — from the #108 review: `docs/reference/runtime-rules.md` R22 does
-  not name the host test #108 added for the restart read. Done: R22's row names it, and the
+- [x] **CLI-START-RACE-TEST-VACUOUS** (`f9f92d6`, #109) — lane A. As built: the two-starts test
+  forces a loser (the first daemon holds the lock offline and its socket is hidden until the second
+  daemon logs that it gave way) and asserts the loser names the winner's pid; a non-zero exit at the
+  deadline keeps "the daemon exited (status) before connecting" (`deadline_message`,
+  `exited_message` in `tessel-cli/src/commands.rs`, two unit tests). Reviewed "Yes". Left:
+  CLI-START-DEADLINE-SEAM. Planned: from the #107 re-check: the two-starts race test in
+  `tessel-cli/tests/start_lock.rs` passes without checking anything when neither start loses, and
+  the deadline's `try_wait` treats any exit as giving way, so a daemon that fails in the last second
+  gets the held-lock text. Done: the test asserts exactly one start lost (or forces it), and a
+  non-zero exit at the deadline keeps the "exited before connecting" message, with a test.
+- [x] **DOCS-R22-HOST-TEST** (`f9f92d6`, #109) — lane A. R22 names
+  `host_a_restart_with_a_hello_adopted_head_reads_main_at_its_first_wake_and_not_before`; the
+  named-tests check matches it. Planned: from the #108 review: `docs/reference/runtime-rules.md` R22
+  does not name the host test #108 added for the restart read. Done: R22's row names it, and the
   named-tests check stays green.
+- [ ] **CLI-START-DEADLINE-SEAM** — from the #109 review: the start loop's deadline branch
+  (`tessel-cli/src/commands.rs:280`) passing the child's status to `deadline_message` is not
+  pinned (a mutant passing `ExitStatus::default()` survives); a real-binary test needs the exit to
+  land inside one probe before the fixed 10 s deadline, so it needs a seam (an injectable deadline
+  or clock for `start`). Also: if `start_lock.rs:135` returns early, the winner daemon (:118) is
+  not killed. Done: the seam, a test that the late failure reaches the user through `start`, and
+  the race test's cleanup on every path.
+- [ ] **SWARM-UNBOUNDED-LOOPS** — from the #110 review: `tessel-swarm/tests/on_local.rs` has two
+  wait loops with no bound (near :115 and :1389) outside the two cut tests. Done: each waits by
+  the clock with a stated bound and a message naming what it waited for.
+- [ ] **CLI-TEST-STDIN-EPIPE** — lane A, dispatched 24 October 06:15 EDT from `35d1124`. From the
+  #111 review: `tessel-cli/tests/cli.rs:1302` runs `tessel` in a deleted working directory;
+  `tessel-cli/src/commands.rs:90` fails before stdin is read, so the write at
+  `tessel-cli/tests/support/mod.rs:1474` can meet a closed pipe, the same race RUNNER-BINARY-EPIPE
+  fixed in the runner's tests. Done: the support helper treats a broken pipe on the write as an
+  early exit (as `tessel-runner/tests/runner/binary.rs` does), with a test that forces the exit
+  before the write; the runner helper's busy wait sleeps between polls.
+- [x] **RUNNER-BINARY-EPIPE** (`35d1124`, #111) — lane A. As built: the runner binary tests'
+  `send_request` treats a broken pipe on the write as the runner having exited early (it refuses a
+  missing config at `tessel-runner/src/main.rs:57`, before reading stdin at :58); a test waits for
+  the exit, then writes, red with the old helper. #110's failed job was re-run once with this row
+  cited (attempt 2 green). Reviewed "Yes". The same race in the CLI's test support:
+  CLI-TEST-STDIN-EPIPE. Found: flake seen on #110's CI (run 40083221329, 24 October, Linux):
+  `tessel-runner/tests/runner/binary.rs:34`
+  `the_binary_exits_2_with_a_fixed_message_when_the_config_is_missing` panicked with "send the
+  request: Broken pipe": the runner exits 2 on the missing config before it reads stdin, so the
+  test's `write_all` can meet a closed pipe. Failed on both nextest attempts in that run; #110 does
+  not touch the runner. Done: the helper treats a broken pipe on the write as the runner having
+  exited early and still checks the exit code and message; a test that forces the early exit before
+  the write.
 - [x] **SERVER-FORK-CASE** (`9334aaf`, #95) — lane B. As
   built: the server accepts only lowercase agent names (the verifier, `admin token`, `reviewers`
   and the fork template each refuse any other; the protocol's rule is unchanged); a store that
