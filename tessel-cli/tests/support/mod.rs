@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1451,10 +1451,15 @@ impl Agent {
 
     /// Runs `tessel args...` from a directory that is deleted before `tessel` starts.
     pub fn tessel_in_deleted_cwd(&self, args: &[&str], stdin: &str) -> Result<Done> {
-        use std::io::Write;
+        let child = self.spawn_in_deleted_cwd(args)?;
+        send_stdin(child, stdin)
+    }
+
+    /// Spawns `tessel args...` from a directory that is deleted before `tessel` starts.
+    pub fn spawn_in_deleted_cwd(&self, args: &[&str]) -> Result<Child> {
         let gone = self.dir.path().join("gone");
         std::fs::create_dir_all(&gone)?;
-        let mut child = Command::new("sh")
+        let child = Command::new("sh")
             .arg("-c")
             .arg("cd \"$1\" && rmdir \"$1\" && shift && exec \"$@\"")
             .arg("sh")
@@ -1470,10 +1475,7 @@ impl Agent {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(stdin.as_bytes())?;
-        }
-        Ok(Done::from(child.wait_with_output()?))
+        Ok(child)
     }
 
     /// `tessel status --json`, parsed.
@@ -1505,6 +1507,25 @@ impl Drop for Agent {
         // Best effort: a failed test must not leave a daemon behind.
         let _ = self.command(&["stop"]).output();
     }
+}
+
+/// Writes `stdin` to the child, closes its input and waits for it to finish.
+pub fn send_stdin(mut child: Child, stdin: &str) -> Result<Done> {
+    use std::io::Write;
+    if let Some(mut pipe) = child.stdin.take() {
+        pipe.write_all(stdin.as_bytes())?;
+    }
+    Ok(Done::from(child.wait_with_output()?))
+}
+
+/// Polls until the child has exited, failing after 30 seconds.
+pub fn wait_until_exited(child: &mut Child) -> Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while child.try_wait()?.is_none() {
+        ensure!(std::time::Instant::now() < deadline, "the child did not exit");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
 }
 
 pub struct Done {

@@ -1314,6 +1314,17 @@ async fn the_hook_blocks_when_the_process_has_no_working_directory() -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hook_blocks_when_tessel_exits_before_its_input_is_written() -> Result<()> {
+    let (_fake, a1, _a2) = world(30_000).await?;
+    let root = a1.root().display().to_string();
+    let mut child = a1.spawn_in_deleted_cwd(&["hook", "pre-edit", "--root", &root])?;
+    support::wait_until_exited(&mut child)?;
+    let done = support::send_stdin(child, "{}")?;
+    assert_eq!(done.code, 2, "{}", done.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_hook_blocks_a_path_whose_name_cannot_be_claimed() -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let (_fake, a1, _a2) = world(30_000).await?;
