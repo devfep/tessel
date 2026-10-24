@@ -104,12 +104,18 @@ fn rejects_unknown_keys_at_every_level() {
 }
 
 #[test]
-fn rejects_a_missing_or_unknown_instance_and_lite() {
-    assert!(rejected("[[test]]\nargv = [\"npm\", \"test\"]\n").contains("instance"));
+fn rejects_an_unknown_instance_and_lite() {
     for instance in ["lite", "standard-9", "huge", ""] {
         let text = format!("instance = \"{instance}\"\n[[test]]\nargv = [\"npm\", \"test\"]\n");
         assert!(rejected(&text).contains("instance"), "{instance}");
     }
+}
+
+#[test]
+fn accepts_a_gate_without_an_instance() {
+    let config =
+        parse_gate_config("[[test]]\nargv = [\"npm\", \"test\"]\n").expect("instance is optional");
+    assert_eq!(config.tests.len(), 1);
 }
 
 #[test]
