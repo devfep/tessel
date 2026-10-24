@@ -26,9 +26,9 @@ fn failed(what: &str, detail: impl std::fmt::Display) -> ReadError {
 }
 
 /// `git ls-remote` for `branch` of `remote`, in the lander's fixed environment. It runs outside any
-/// workspace, so `GIT_DIR` names the lander's empty `HOME`: git then finds no repository, and the
-/// config of whatever repository the server's working directory sits in (a `url.*.insteadOf`, say)
-/// cannot redirect the read.
+/// workspace, so `GIT_DIR` names the lander's empty `HOME`, which is also where it starts: git then
+/// finds no repository, and the config of whatever repository the server was started in (a
+/// `url.*.insteadOf`, say) cannot redirect the read.
 pub(super) fn ls_remote_command(git: &Git, remote: &str, reference: &str) -> GitCommand {
     let mut env = git.env();
     if let Some(home) = env.get("HOME").cloned() {
@@ -161,8 +161,8 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
-    /// Runs `command` as the lander's runner would, but from `cwd`, which the real runner takes
-    /// from the server process.
+    /// Runs `command` as the lander's runner would, but from `cwd` instead of the command's own
+    /// directory, which is where the server's directory is made to matter.
     fn run_in(cwd: &std::path::Path, command: &GitCommand) -> String {
         let (program, args) = command.argv.split_first().unwrap();
         let output = Command::new(program)

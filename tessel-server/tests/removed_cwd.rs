@@ -10,6 +10,7 @@
 #[expect(dead_code, reason = "this file uses a part of the shared fixtures")]
 mod support;
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use tessel_coordinator::host::call::{Call, CallAnswer, CallId, DispatchId, Request};
@@ -22,7 +23,7 @@ use support::{capture_logs, passing, Repos};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// `target` as a path relative to `from`, which is a directory directly under `base`, the root of the test.
+/// `target`, which is under `base`, as a path relative to a directory directly under `base`.
 fn relative_from_child(base: &Path, target: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let below = target.strip_prefix(base)?;
     Ok(Path::new("..").join(below).display().to_string())
@@ -45,8 +46,12 @@ async fn a_landing_started_with_relative_paths_works_after_its_start_directory_i
         "{}/{{agent}}.git",
         relative_from_child(base, &repos.forks)?
     ));
+    let token = base.join("token");
+    std::fs::write(&token, "ghs_not-a-real-token\n")?;
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600))?;
     let mut lander = repos.lander();
     lander.work_dir = Path::new("..").join("lander");
+    lander.token_file = Some(Path::new("..").join("token"));
     let landing = Landing::new(
         RepoId::new("acme", "removed-cwd")?,
         &repository,

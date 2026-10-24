@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use crate::config::{Config, RepositoryConfig};
 use crate::id::{IdError, RepoId};
 use crate::landing::{Landing, LandingError, LocalRunner, TestRunner};
+use crate::paths::ResolveError;
 use crate::repo::{self, CallPort, RunningRepo};
 use crate::store::{StoreDir, StoreError};
 use crate::ws::{self, App, Verifier};
@@ -48,6 +49,8 @@ pub enum StartError {
         name: String,
         source: LandingError,
     },
+    #[error(transparent)]
+    Resolve(#[from] ResolveError),
     #[error("the [lander] table: {0}")]
     Runner(#[from] tessel_runner::RunnerError),
 }
@@ -85,6 +88,7 @@ impl RunningServer {
 /// Take the lock, open every store, start every repository and listen. A repository that names a
 /// `remote` is answered by the lander, with the runner `[lander] runner_config` names.
 pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartError> {
+    let config = &config.with_absolute_paths()?;
     let runner = match &config.lander {
         Some(lander) => {
             let runner: Arc<dyn TestRunner> =
@@ -102,6 +106,7 @@ pub async fn start_with_runner(
     deps: Deps,
     runner: Arc<dyn TestRunner>,
 ) -> Result<RunningServer, StartError> {
+    let config = &config.with_absolute_paths()?;
     start_repositories(config, deps, Some(runner)).await
 }
 

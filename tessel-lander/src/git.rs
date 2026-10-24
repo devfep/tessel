@@ -140,8 +140,8 @@ pub struct Git {
 
 impl Git {
     /// Uses `home` as `HOME` and `hooks_dir` as `core.hooksPath`; both must be empty directories
-    /// that exist when a command runs, and `home` must be absolute: every command starts in it. `PATH` is the only variable taken from the process, so
-    /// git finds its own helpers.
+    /// that exist when a command runs, and `home` must be absolute: every command starts in it.
+    /// `PATH` is the only variable taken from the process, so git finds its own helpers.
     pub fn new(home: PathBuf, hooks_dir: PathBuf) -> Git {
         let path = std::env::var_os("PATH").unwrap_or_default();
         Git {

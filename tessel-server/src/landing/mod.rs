@@ -503,4 +503,53 @@ mod tests {
         assert_eq!(command.env.get("GIT_ASKPASS"), None);
         assert_eq!(command.env.get("TESSEL_ASKPASS_TOKEN_FILE"), None);
     }
+
+    #[test]
+    fn a_relative_token_file_reaches_the_hook_as_an_absolute_path() {
+        let here = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let token = here.path().join("token");
+        std::fs::write(&token, format!("{SECRET}\n")).unwrap();
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let relative = Path::new(here.path().file_name().unwrap()).join("token");
+        let work = tempfile::tempdir().unwrap();
+        let repository = RepositoryConfig {
+            tenant: "acme".to_owned(),
+            name: "demo".to_owned(),
+            run: "t".to_owned(),
+            reviewers: Vec::new(),
+            sensitive: Vec::new(),
+            remote: Some("/srv/main.git".to_owned()),
+            fork: Some("/srv/forks/{agent}.git".to_owned()),
+        };
+        let lander = LanderConfig {
+            work_dir: work.path().to_owned(),
+            runner_config: "runner.toml".into(),
+            token_file: Some(relative),
+        };
+        let runner = Arc::new(LocalRunnerStub);
+
+        let landing = Landing::new(
+            RepoId::new("acme", "demo").unwrap(),
+            &repository,
+            &lander,
+            runner,
+        )
+        .unwrap();
+
+        let command = ls_remote_command(&landing.inner.git, "/srv/main.git", "refs/heads/main");
+        let hook_path = Path::new(command.env.get("TESSEL_ASKPASS_TOKEN_FILE").unwrap());
+        assert_eq!(hook_path, token.canonicalize().unwrap());
+        assert_eq!(landing.inner.token_file.as_deref(), Some(hook_path));
+    }
+
+    struct LocalRunnerStub;
+
+    impl TestRunner for LocalRunnerStub {
+        fn run(
+            &self,
+            _request: &tessel_runner::RunRequest,
+        ) -> Result<tessel_runner::RunResult, tessel_runner::RunnerError> {
+            unreachable!("no test runs in this test")
+        }
+    }
 }

@@ -188,6 +188,11 @@ Nothing checks that the tests ran.
 `tessel-server serve --config <file>` reads one TOML file. An unknown key, in the file or in a
 table, makes it invalid, and an error names the file and the key.
 
+A relative path is relative to the directory `tessel-server serve` starts in. `store_dir`,
+`work_dir`, `runner_config`, `token_file` and a `remote` or `fork` that is a path (not a URL or a
+`host:path` address) are made absolute once at start, so removing that directory later does not
+affect the server. `[identity]` `keys` is read only at start.
+
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `listen` | socket address | required | Where the server listens, `127.0.0.1:7878` for example. |

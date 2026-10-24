@@ -13,13 +13,17 @@ pub struct ResolveError {
     pub source: io::Error,
 }
 
-/// `path` against the working directory, with `.` and `..` resolved by name: the result must not
-/// need the working directory to exist when it is used.
+/// An absolute `path` as it is. A relative one against the working directory, with `.` and `..`
+/// resolved by name (the working directory is a physical path, so that is exact): the result must
+/// not need the working directory to exist when it is used.
 pub fn absolute(path: &Path) -> Result<PathBuf, ResolveError> {
     let fail = |source| ResolveError {
         path: path.display().to_string(),
         source,
     };
+    if path.is_absolute() {
+        return Ok(path.to_owned());
+    }
     let full = std::path::absolute(path).map_err(fail)?;
     let mut resolved = PathBuf::new();
     for component in full.components() {

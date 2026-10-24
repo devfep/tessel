@@ -10,7 +10,7 @@ use tessel_coordinator::shell;
 use crate::credential::is_http_url;
 use crate::id::{Name, NameError};
 use crate::identity;
-use crate::paths::ResolveError;
+use crate::paths::{absolute, ResolveError};
 
 /// What `tessel-server serve --config <file>` reads.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -106,7 +106,12 @@ impl Config {
     /// This configuration with `store_dir` and `runner_config` made absolute, so that removing
     /// the directory the server started in does not affect them.
     pub fn with_absolute_paths(&self) -> Result<Config, ResolveError> {
-        Ok(self.clone())
+        let mut resolved = self.clone();
+        resolved.store_dir = absolute(&self.store_dir)?;
+        if let Some(lander) = resolved.lander.as_mut() {
+            lander.runner_config = absolute(&lander.runner_config)?;
+        }
+        Ok(resolved)
     }
 }
 
