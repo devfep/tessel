@@ -1,5 +1,5 @@
 //! Property tests for the merge queue: random interleavings of claims, submits, reviews, races,
-//! lease expiry, dispatches, steward answers and restarts, with the queue's documented rules
+//! lease expiry, dispatches, lander answers and restarts, with the queue's documented rules
 //! checked after every step. The model below is deliberately independent of `Submission`: it counts
 //! answers itself and only reads the core's state to find out which claims are live.
 //!
@@ -60,7 +60,7 @@ fn fork_sha(agent: &AgentId) -> String {
     format!("{seed:02x}").repeat(20)
 }
 
-/// What the steward can answer, as the test generates it.
+/// What the lander can answer, as the test generates it.
 #[derive(Debug, Clone, Copy)]
 enum Answer {
     Merged,
@@ -364,7 +364,7 @@ struct Model {
     /// approval does not move a claim, a new submission goes to the end.
     order: Vec<u64>,
     inflight: Option<Flight>,
-    /// Claims whose dispatch was answered with an infrastructure failure or lost: the steward may
+    /// Claims whose dispatch was answered with an infrastructure failure or lost: the lander may
     /// have landed them. They are dispatched before any other claim, held-and-approved ones
     /// included, until they land or are rejected.
     doubt: BTreeSet<u64>,
@@ -998,7 +998,7 @@ fn run_shadowed_landing(world: &mut World, who: usize, on: usize) {
 
 /// A challenging submission whose first dispatch is lost and whose retry is answered
 /// `already_merged`: the verification it queues must start from main as it was at the lost
-/// dispatch and end at the steward's main, and none may compare main with itself.
+/// dispatch and end at the lander's main, and none may compare main with itself.
 fn run_recovered_landing(
     world: &mut World,
     (who, on): (usize, usize),
@@ -1070,7 +1070,7 @@ fn run_recovered_landing(
     assert_eq!(
         queued.main,
         CommitId(LANDED.into()),
-        "check 8: ends at the steward's main"
+        "check 8: ends at the lander's main"
     );
     CHECK_8_RUNS.fetch_add(1, Ordering::Relaxed);
 }
@@ -1190,7 +1190,7 @@ fn begin_checked(world: &mut World) {
     });
 }
 
-/// Apply the steward's answer for `claim` through `merge_outcome` and check what it did.
+/// Apply the lander's answer for `claim` through `merge_outcome` and check what it did.
 fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> {
     let current = world.model.inflight.filter(|flight| flight.claim == claim);
     let Some(flight) = current else {

@@ -1,9 +1,9 @@
-//! The merge queue: which submitted claim the steward merges next, and what each answer does.
+//! The merge queue: which submitted claim the lander merges next, and what each answer does.
 //!
 //! One merge is in flight per repo, taken in submission order. The shell persists the in-flight
-//! marker (`begin_merge`) before it calls the steward, and applies the answer with
+//! marker (`begin_merge`) before it calls the lander, and applies the answer with
 //! `merge_outcome`. A restart that finds a marker dispatches the same claim again, which is safe:
-//! the steward answers `already_merged` for a commit it already landed. That answer names main as
+//! the lander answers `already_merged` for a commit it already landed. That answer names main as
 //! it is now, not the commit that landed or what main was before, so the baseline of what it
 //! queues for verification is main as recorded at the first dispatch whose answer was lost
 //! (`Submission::unanswered_from`). Without one, nothing is queued, and the `Merged` event lists
@@ -21,7 +21,7 @@
 //!   `ClaimGranted` before `BaseMoved`.
 //! - A submission whose first dispatch was lost (`Submission::unanswered_from`) is the exception to
 //!   submission order: it is dispatched before any other and waited for through its backoff, even
-//!   if a held submission with a lower ordinal is approved meanwhile. The steward may have landed
+//!   if a held submission with a lower ordinal is approved meanwhile. The lander may have landed
 //!   it, and a merge that lands in between would widen what its verification compares.
 //! - Assumptions are challenged once, at submit time (invariant 8). A merge does not challenge them
 //!   again: the evidence counters count every `AssumptionChallenged` event. A merge does record
@@ -71,7 +71,7 @@ impl Rejection {
     }
 }
 
-/// One merge for the shell to ask the steward for.
+/// One merge for the shell to ask the lander for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeDispatch {
     /// Unique to this dispatch, never reused. The answer carries it to `merge_outcome`.
@@ -79,11 +79,11 @@ pub struct MergeDispatch {
     pub claim: ClaimId,
     pub agent: AgentId,
     pub fork_commit: CommitId,
-    /// The scopes the claim holds, which the steward checks the merged change against.
+    /// The scopes the claim holds, which the lander checks the merged change against.
     pub scopes: Vec<ScopeClaim>,
     /// 1 for the first dispatch of this submission, counting every retry.
     pub attempt: u32,
-    /// What the steward writes into the merge's evidence record, taken from the held claim. Boxed:
+    /// What the lander writes into the merge's evidence record, taken from the held claim. Boxed:
     /// it holds the claim's free text, and a dispatch travels inside small enums.
     pub record: Box<MergeRecord>,
 }
@@ -121,7 +121,7 @@ impl Coordinator {
     /// no submission, all held for review, the next one is in backoff, a verification is in
     /// flight, or the verification slot is due (`merge_must_wait`).
     ///
-    /// The marker is part of the state: the caller persists it before calling the steward.
+    /// The marker is part of the state: the caller persists it before calling the lander.
     pub fn begin_merge(&mut self, now_ms: u64) -> Option<MergeDispatch> {
         let now_ms = self.advance_clock(now_ms);
         if let Some(flight) = self.state.merge_in_flight.clone() {
@@ -167,9 +167,9 @@ impl Coordinator {
         self.state.merge_in_flight.is_some()
     }
 
-    /// Account for a merge that was in flight when the process died: the steward's answer is lost,
+    /// Account for a merge that was in flight when the process died: the lander's answer is lost,
     /// so the dispatch counts as an infrastructure failure. The claim is retried after a backoff
-    /// and rejected at the bound, so a commit that hangs the steward cannot wedge the queue.
+    /// and rejected at the bound, so a commit that hangs the lander cannot wedge the queue.
     pub fn recover_merge(&mut self, now_ms: u64) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
         let Some(flight) = self.state.merge_in_flight.take() else {
@@ -187,7 +187,7 @@ impl Coordinator {
     /// When the shell should next run `begin_merge`, as an absolute time in milliseconds since the
     /// epoch that is never before `now_ms`: "now" is `now_ms`, not 0.
     ///
-    /// `merging_here` is true while this instance is waiting for the steward. The merge in flight
+    /// `merging_here` is true while this instance is waiting for the lander. The merge in flight
     /// then schedules only a watchdog, `MERGE_WATCHDOG_MS` after `now_ms`: its answer reschedules,
     /// and the watchdog fires only if the instance died first. Otherwise a stored marker means the
     /// process restarted, and the alarm must recover it at once.
@@ -218,7 +218,7 @@ impl Coordinator {
         }
     }
 
-    /// Apply the steward's answer to the merge dispatch `dispatch` (`MergeDispatch::id`). Only the
+    /// Apply the lander's answer to the merge dispatch `dispatch` (`MergeDispatch::id`). Only the
     /// merge in flight can be answered: an answer to any other dispatch is stale (the marker was
     /// cleared or moved on, perhaps to a later dispatch of the same claim) and changes nothing.
     pub fn merge_outcome(
@@ -366,7 +366,7 @@ impl Coordinator {
             scopes: held.scopes.clone(),
             attempt,
             // `review` is known only with `decisions`: a submission stored before both existed,
-            // or a race entry, sends neither, and the steward records them as not supplied.
+            // or a race entry, sends neither, and the lander records them as not supplied.
             record: Box::new(MergeRecord {
                 claim,
                 intent: held.intent.clone(),

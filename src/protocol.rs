@@ -51,7 +51,7 @@
 //!     A denial is *not* a prevented conflict. Prevention is only counted when
 //!     verified: in experiment runs, `OnConflict::Shadow` lets a denied agent
 //!     keep working in a quarantined fork that can never merge; when the
-//!     blocking work lands, the steward test-merges the shadow fork against it
+//!     blocking work lands, the lander test-merges the shadow fork against it
 //!     and records the `Outcome`. Clean means the denial was a false alarm.
 //! 11. Coverage. Every scope a submission touched must be covered by the
 //!     claim: some claimed scope covers it, in a mode that `permits` the touched
@@ -392,7 +392,7 @@ pub enum OnConflict {
     Wait,
     /// Experiment runs only (invariant 10). Record the denial, then let the
     /// agent continue in a quarantined fork that places no locks and can never
-    /// merge, so the steward can later verify whether the conflict was real.
+    /// merge, so the lander can later verify whether the conflict was real.
     Shadow,
 }
 

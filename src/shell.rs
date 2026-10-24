@@ -435,7 +435,7 @@ pub fn alarm_at_ms(next_alarm_ms: Option<u64>, now_ms: u64) -> Option<f64> {
 }
 
 /// Whether a stored in-flight merge (or verification) was cut off by a restart. It was not if this
-/// instance is itself waiting on the steward: recovery must then do nothing.
+/// instance is itself waiting on the lander: recovery must then do nothing.
 pub fn merge_cut_off(merging_here: bool, in_flight: bool) -> bool {
     in_flight && !merging_here
 }
@@ -484,7 +484,7 @@ pub enum Route<'a> {
     Ws { repo: &'a str },
     /// `/repo/<name>/summary`: the read-only evidence summary.
     Summary { repo: &'a str },
-    /// `/repo/<name>/trunk-moved`: the steward's poke that main moved. It carries no data the
+    /// `/repo/<name>/trunk-moved`: the lander's poke that main moved. It carries no data the
     /// coordinator uses; it only asks for the head to be read again.
     TrunkMoved { repo: &'a str },
 }

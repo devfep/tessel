@@ -1,4 +1,4 @@
-//! What the coordinator asks of the steward and how it reads the answer. Pure: the host makes the
+//! What the coordinator asks of the lander and how it reads the answer. Pure: the host makes the
 //! call, this module decides what a response means.
 //!
 //! The steward's `MergeOutcome` (tessel-steward/src/merge-types.ts) is the source of the shapes
@@ -46,12 +46,12 @@ pub fn infra_backoff_ms(retry: u32) -> u64 {
     INFRA_BACKOFF_BASE_MS.saturating_mul(factor)
 }
 
-/// What the steward writes into the evidence record of a merge that lands, beside what it measured
+/// What the lander writes into the evidence record of a merge that lands, beside what it measured
 /// itself (`tessel-steward/src/evidence-fields.ts` reads it; a test on each side pins the same
 /// body). It never decides the merge. Free text in it was written by the agent or a reviewer:
-/// the steward quotes it as data (CLAUDE.md rule 4).
+/// the lander quotes it as data (CLAUDE.md rule 4).
 ///
-/// `decisions` and `review` are sent only when the coordinator knows them, and the steward records
+/// `decisions` and `review` are sent only when the coordinator knows them, and the lander records
 /// each one it lacks as "not supplied by the coordinator". `review` is `Some(None)`, sent as
 /// `null`, for a submission that was not held.
 #[derive(Debug, Clone, Serialize)]
@@ -65,7 +65,7 @@ pub struct MergeRecord {
 }
 
 /// Compared by their JSON: `Intent` and `DecisionRecord` (frozen in `protocol.rs`) have no
-/// `PartialEq`, and the JSON is exactly what the steward is sent.
+/// `PartialEq`, and the JSON is exactly what the lander is sent.
 impl PartialEq for MergeRecord {
     fn eq(&self, other: &Self) -> bool {
         serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
@@ -90,9 +90,9 @@ pub struct ReviewDecision {
     pub note: Option<String>,
 }
 
-/// What the coordinator sends the steward: merge `commit` from the agent's fork into main, for a
+/// What the coordinator sends the lander: merge `commit` from the agent's fork into main, for a
 /// claim that holds `scopes`, with what the evidence record of the merge needs (`record`). The
-/// steward checks the merged change against `scopes` (invariant 11); it refuses a request without
+/// lander checks the merged change against `scopes` (invariant 11); it refuses a request without
 /// them, so the check cannot be skipped.
 pub fn request_body(
     repo: &str,
@@ -186,17 +186,17 @@ fn refused_reason(kind: RuleKind) -> &'static str {
     }
 }
 
-/// The steward's answer to one merge attempt. Exhaustive wherever it is matched, so a new outcome
+/// The lander's answer to one merge attempt. Exhaustive wherever it is matched, so a new outcome
 /// forces a decision.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum MergeOutcome {
-    /// Main was updated to `head`, read back by the steward after the push.
+    /// Main was updated to `head`, read back by the lander after the push.
     Merged {
         base: CommitId,
         head: CommitId,
     },
-    /// The rebase left nothing to add to main, which is at `base`: the main the steward pinned
+    /// The rebase left nothing to add to main, which is at `base`: the main the lander pinned
     /// for this attempt and read back from its clone, so main as it is now, with the commit's
     /// changes already in it. It does not name the commit that landed them.
     AlreadyMerged {
@@ -225,7 +225,7 @@ pub enum MergeOutcome {
     /// A merge under the lander's admin policy changes `tessel.toml` to a file it cannot accept.
     /// No caller asks for that policy yet, so a running server does not send this.
     GateInvalid {},
-    /// Another write reached main after the steward read it; try again.
+    /// Another write reached main after the lander read it; try again.
     MainMoved {},
     /// The commit is on no branch of the fork.
     CommitNotInFork {},
@@ -245,8 +245,8 @@ pub enum MergeOutcome {
         #[serde(default)]
         kind: RuleKind,
     },
-    /// Infrastructure: the steward could not be reached or its answer was unusable. Never sent by
-    /// the steward, so it is not read from a response.
+    /// Infrastructure: the lander could not be reached or its answer was unusable. Never sent by
+    /// the lander, so it is not read from a response.
     #[serde(skip_deserializing)]
     ServiceUnavailable,
 }
@@ -362,12 +362,12 @@ pub enum TrialOutcome {
     /// The steward refused the request (a 4xx). A fact about the request, never retried.
     #[serde(skip_deserializing)]
     Refused,
-    /// Infrastructure: the steward could not be reached or its answer was unusable.
+    /// Infrastructure: the lander could not be reached or its answer was unusable.
     #[serde(skip_deserializing)]
     ServiceUnavailable,
 }
 
-/// The steward's answer to one trial call: the commit tried on main at `before` (the baseline),
+/// The lander's answer to one trial call: the commit tried on main at `before` (the baseline),
 /// then, only if that was clean, on the new main. `before` is `None` when the trial stopped before
 /// either run.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -481,7 +481,7 @@ pub enum TestsVerdict {
 
 impl TrialReport {
     /// Whether the commit's tests pass, from a trial whose `before` and `main` are the same sha.
-    /// The steward then runs the commit once and reports that run as `before`, so only `before`
+    /// The lander then runs the commit once and reports that run as `before`, so only `before`
     /// is read; a report that stopped early has only `after`. There is no baseline to compare
     /// against, so a failure is the commit's own.
     /// - `Clean`: `Some(true)`. `TestsFailed`: `Some(false)`. `Timeout`: `None`, not `Some(false)`: a
@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_every_outcome_the_steward_sends() {
+    fn reads_every_outcome_the_lander_sends() {
         let step = r#"{"step":"test","exitCode":1,"stdout":"x","stderr":"y","stdoutTruncated":false,"stderrTruncated":false,"passed":false}"#;
         assert_eq!(
             parse(&format!(
@@ -1090,7 +1090,7 @@ mod tests {
     /// `PINNED_BODY` in `tessel-steward/src/evidence-fields.test.ts` is this body, and the
     /// steward's parser reads every field of it: change both together.
     #[test]
-    fn request_body_carries_the_record_fields_the_steward_reads() {
+    fn request_body_carries_the_record_fields_the_lander_reads() {
         let file = |path: &str| Scope::File { path: path.into() };
         let record = MergeRecord {
             claim: ClaimId(7),
@@ -1195,7 +1195,7 @@ mod tests {
         assert!(!value.as_object().unwrap().contains_key("decisions"));
     }
 
-    /// The steward's merged outcome carries `evidence` (whether the merge's record was written);
+    /// The lander's merged outcome carries `evidence` (whether the merge's record was written);
     /// it says nothing about the code, so it is read past.
     #[test]
     fn a_merged_outcome_with_an_evidence_field_is_still_merged() {
@@ -1727,7 +1727,7 @@ Error: nope
     }
 
     #[test]
-    fn merge_records_are_equal_only_when_everything_sent_to_the_steward_is() {
+    fn merge_records_are_equal_only_when_everything_sent_to_the_lander_is() {
         assert_eq!(record(1, "s"), record(1, "s"));
 
         let with_decisions = MergeRecord {

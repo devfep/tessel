@@ -1,23 +1,23 @@
 //! Keeping `head` current when main moves without the coordinator: an admin merge goes around the
-//! merge queue, so only the steward knows the new trunk head.
+//! merge queue, so only the lander knows the new trunk head.
 //!
-//! The steward's push event reaches the coordinator as a bare poke (`trunk_moved`) that carries no
+//! The lander's push event reaches the coordinator as a bare poke (`trunk_moved`) that carries no
 //! data, so nothing in the request can set the head: it only counts (`head_pokes`, persisted), and
-//! the alarm does the rest. The shell asks the steward for the trunk head through its binding-only
+//! the alarm does the rest. The shell asks the lander for the trunk head through its binding-only
 //! merge service, then offers the answer to `trunk_read`.
 //!
 //! Decisions made here:
-//! - A poke is a count, not a flag, so a poke that arrives while a read is awaiting the steward is
+//! - A poke is a count, not a flag, so a poke that arrives while a read is awaiting the lander is
 //!   not lost: a read acknowledges only the pokes counted when it began (`head_synced`), and any
 //!   later poke leaves another read due.
 //! - The read is a compare-and-set. The host handles other inputs while it waits for the
-//!   steward, so `trunk_read` applies the answer only if no merge is in flight and `head` is still
+//!   lander, so `trunk_read` applies the answer only if no merge is in flight and `head` is still
 //!   what it was when the read began. Otherwise nothing changes and the read stays due, so the
 //!   next alarm reads again. A merge that is in flight is not waited for: its own landing sets
 //!   `head`, and the pending pokes then make the alarm check that the trunk has not moved past it.
 //! - An answer that is the current head acknowledges the pokes and changes nothing else.
 //! - No usable answer (the call failed, or the answer was empty or all zeros) leaves the pokes
-//!   pending but is no reason to wake (`head_tried`): a failing steward is not retried in a hot
+//!   pending but is no reason to wake (`head_tried`): a failing lander is not retried in a hot
 //!   loop. The next poke, or any alarm that runs anyway (a merge, a lease), reads again.
 //! - With no head yet, a read is due without a poke, so the head is main's before the first
 //!   `Hello`. A `Hello` that arrives first sets the head itself (`head_from_hello`), but that base
@@ -43,7 +43,7 @@ use super::{Coordinator, Effect};
 use crate::merge::{infra_backoff_ms, MAX_INFRA_RETRIES};
 use crate::protocol::{AgentId, CommitId, EventKind};
 
-/// The agent a trunk move is attributed to: the steward is the only writer of main.
+/// The agent a trunk move is attributed to: the lander is the only writer of main.
 const STEWARD_AGENT: &str = "steward";
 
 /// A head read the shell should make now, with the head it was made against.
@@ -55,12 +55,12 @@ pub struct HeadRead {
     pub pokes: u64,
 }
 
-/// What the coordinator sends the steward's `/head`: read the head of `repo`'s main.
+/// What the coordinator sends the lander's `/head`: read the head of `repo`'s main.
 pub fn head_request_body(repo: &str) -> String {
     serde_json::json!({ "repo": repo }).to_string()
 }
 
-/// The head a steward `/head` response carries: `{ "head": "<sha>" }` with status 200. Any other
+/// The head a lander `/head` response carries: `{ "head": "<sha>" }` with status 200. Any other
 /// status or shape is `None`. A body is never kept or quoted.
 pub fn parse_head_response(status: u16, body: &str) -> Option<CommitId> {
     if status != 200 {
@@ -77,7 +77,7 @@ fn is_null_head(head: &CommitId) -> bool {
 }
 
 impl Coordinator {
-    /// The steward says main moved: count it. The request carries nothing the core uses.
+    /// The lander says main moved: count it. The request carries nothing the core uses.
     /// Persisted with the rest of the state by the caller.
     pub fn trunk_moved(&mut self, now_ms: u64) -> Vec<Effect> {
         self.advance_clock(now_ms);
@@ -148,7 +148,7 @@ impl Coordinator {
         self.state.head_start_retry_ms = now_ms.saturating_add(wait);
     }
 
-    /// Apply the trunk head the steward answered for `read`. `None` is an unusable answer.
+    /// Apply the trunk head the lander answered for `read`. `None` is an unusable answer.
     pub fn trunk_read(
         &mut self,
         read: &HeadRead,

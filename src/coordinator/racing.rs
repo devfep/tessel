@@ -2604,7 +2604,7 @@ mod tests {
     }
 
     #[test]
-    fn a_winner_rejected_by_the_steward_gets_its_claim_back_as_any_claim_would() {
+    fn a_winner_rejected_by_the_lander_gets_its_claim_back_as_any_claim_would() {
         let mut c = core();
         open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", RaceId(1));

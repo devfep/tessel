@@ -1,4 +1,4 @@
-//! Assumption verification: after a submission that challenged assumptions merges, the steward
+//! Assumption verification: after a submission that challenged assumptions merges, the lander
 //! tries each assuming agent's work on the new main, and the result is logged (invariant 8, and
 //! invariant 10 for the evidence rule). A challenge is a warning at submit time; only this turns it
 //! into evidence, so `Summary::assumptions_confirmed_broken` counts verified outcomes only.
@@ -18,7 +18,7 @@
 //!   assuming claim's submitted `fork_commit` at that moment; for a claim that has not submitted
 //!   it is `None`: there is nothing to try, and the trial ends Inconclusive.
 //! - Each trial carries a baseline, `before`: main as it was before the merge that challenged the
-//!   assumption. The steward tries the work on `before` first, and a failure on the new main counts
+//!   assumption. The lander tries the work on `before` first, and a failure on the new main counts
 //!   only if the work was clean there (`TrialReport::verdict`). Without it, work that was already
 //!   failing, or that clashes with an unrelated merge, would be counted as an assumption broken by
 //!   this one.
@@ -53,7 +53,7 @@
 //!   not a verdict about the work (nothing to test, the commit is not on the fork, a timeout,
 //!   infrastructure that kept failing) is `Inconclusive`, which no counter treats as broken.
 //! - A race entry's tests are tried by the same queue (invariant 7, see `racing`): one trial per
-//!   entry with `before` and `main` both the head when the race closed, which the steward runs once
+//!   entry with `before` and `main` both the head when the race closed, which the lander runs once
 //!   and reads as both sides. What the trial says is read by `TrialReport::tests_passed`, not by
 //!   `verdict`: there is no baseline to compare against. Nothing about a race trial is logged as
 //!   an `AssumptionVerified`; the race's own events are the record.
@@ -140,7 +140,7 @@ pub(super) struct Verification {
     pub(super) retry_at_ms: Option<u64>,
 }
 
-/// The verification in flight: persisted before the steward is called.
+/// The verification in flight: persisted before the lander is called.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct VerifyFlight {
     /// The queued verification being run.
@@ -151,7 +151,7 @@ pub(super) struct VerifyFlight {
     dispatch: u64,
 }
 
-/// One trial for the shell to ask the steward for.
+/// One trial for the shell to ask the lander for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyDispatch {
     /// Unique to this dispatch, never reused, even for a retry of the same verification. The
@@ -423,7 +423,7 @@ impl Coordinator {
     /// nothing is queued or the next one is in backoff. The queue is strict: a verification in
     /// backoff is waited for.
     ///
-    /// The marker is part of the state: the caller persists it before calling the steward.
+    /// The marker is part of the state: the caller persists it before calling the lander.
     pub fn begin_verification(&mut self, now_ms: u64) -> Option<VerifyDispatch> {
         let now_ms = self.advance_clock(now_ms);
         if self.state.verification_in_flight.is_some() || self.merge_pending_at(now_ms) {
@@ -487,7 +487,7 @@ impl Coordinator {
     /// since the epoch that is never before `now_ms`. `None` when nothing is queued, or while a
     /// merge is due or in flight: the merge's own alarm comes first and reschedules.
     ///
-    /// `verifying_here` is true while this instance is waiting for the steward: only a watchdog
+    /// `verifying_here` is true while this instance is waiting for the lander: only a watchdog
     /// is scheduled then, as for a merge. Otherwise a stored marker means the process restarted
     /// and the alarm must recover it at once.
     pub fn next_verification_ms(&self, verifying_here: bool, now_ms: u64) -> Option<u64> {
@@ -522,7 +522,7 @@ impl Coordinator {
             .min()
     }
 
-    /// Apply the steward's answer to the verification dispatch `dispatch`
+    /// Apply the lander's answer to the verification dispatch `dispatch`
     /// (`VerifyDispatch::id`). An answer to any other dispatch is stale, including an earlier
     /// dispatch of the verification now in flight, and changes nothing. An answer for a
     /// verification whose claim ended meanwhile is discarded and logs nothing.
@@ -938,7 +938,7 @@ mod tests {
     fn main_moved_after_a_lost_answer_keeps_the_first_baseline() {
         let mut c = core();
         let (challenger, due) = challenger_with_lost_answer(&mut c);
-        // The cut-off attempt kept running at the steward and pushed; the retry finds main moved.
+        // The cut-off attempt kept running at the lander and pushed; the retry finds main moved.
         c.begin_merge(due).expect("the retry is dispatched");
         c.merge_outcome(
             c.merge_flight_id(challenger),
@@ -1026,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreachable_steward_leaves_the_same_baseline_as_a_restart() {
+    fn an_unreachable_lander_leaves_the_same_baseline_as_a_restart() {
         let mut c = core();
         merge_edit(&mut c, "a0", "src/z.rs", MAIN);
         let (_, challenger) = challenged(&mut c);
@@ -1231,7 +1231,7 @@ mod tests {
         let dispatch = c.begin_verification(NOW).unwrap();
         assert_eq!(
             dispatch.commit, None,
-            "a1 has not submitted: the steward reads the fork"
+            "a1 has not submitted: the lander reads the fork"
         );
     }
 
