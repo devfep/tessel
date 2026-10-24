@@ -8,18 +8,19 @@ are in git history (`78bcb9a` and earlier).
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
 **As of:** 2026-10-24 17:40 EDT. Main at `cd68555`, green; the orchestrator's gate is green on it
-(2008 tests). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD). Seventeen server landings today,
-each read by an Opus reviewer on the commit from the fork first; main's CI is green on every one but
-`d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept
-their notes with no hand step. Every open row from today's reviews is closed; the remaining
-"steward" names in `src/` are serialized, the TypeScript steward's, or read by its tests, and go
-with it in Phase 1. The server runs from `~/tessel-dogfood/bin` at `cd68555`, started from inside
-`~/tessel-dogfood`, on `127.0.0.1:7878`; agent tokens are valid to 31 October. Lanes cannot push
-(Felix's `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new
-branch of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
+(2008 tests). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD). Seventeen server landings today, each
+read by an Opus reviewer on the commit from the fork first; main's CI is green on every one but
+`d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept their
+notes with no hand step. Every open row from today's reviews is closed but LANDER-ADMIN-POLICY-DEAD,
+which waits for M6's team-mode re-plan; the remaining "steward" names in `src/` are serialized, the
+TypeScript steward's, or read by its tests, and go with it in Phase 1. The server runs from
+`~/tessel-dogfood/bin` at `cd68555`, started from inside `~/tessel-dogfood`, on `127.0.0.1:7878`;
+agent tokens are valid to 31 October. Lanes cannot push (Felix's
+`~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
+of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
 worktree and decides holds as `orchestrator`. Two lanes ran at once four times; the coordinator
 denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
-`src/coordinator/verifying.rs` (twice), each while the other lane held it, and the denied lane
+`src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up. Nothing is dispatched;
 `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
@@ -55,7 +56,8 @@ sandbox commits use his GitHub noreply address.
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
 **Next:** M5's re-plan (hardening: the simulator, invariants I1-I12, the staged landing, the
-server as its own macOS user) is Felix's to open. No open row from today is left.
+server as its own macOS user) is Felix's to open. No open row from today is left but
+LANDER-ADMIN-POLICY-DEAD (M6).
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -675,7 +677,8 @@ claims reconciled.
   or clock for `start`). Also: if `start_lock.rs:135` returns early, the winner daemon (:118) is
   not killed. Done: the seam, a test that the late failure reaches the user through `start`, and
   the race test's cleanup on every path.
-- [ ] **SWARM-UNBOUNDED-LOOPS** — from the #110 review: `tessel-swarm/tests/on_local.rs` has two
+- [x] **SWARM-UNBOUNDED-LOOPS** (`9701abf`, landed by the server) — lane A. Planned: from the
+  #110 review: `tessel-swarm/tests/on_local.rs` has two
   wait loops with no bound (near :115 and :1389) outside the two cut tests. Done: each waits by
   the clock with a stated bound and a message naming what it waited for.
 - [x] **CLI-TEST-STDIN-EPIPE** (`de24d41`, #112) — lane A. As built: `tessel_in_deleted_cwd` in
