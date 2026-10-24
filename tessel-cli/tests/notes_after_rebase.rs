@@ -231,6 +231,10 @@ async fn a_waiting_job_logs_once_however_many_heartbeats_pass() -> Result<()> {
     })
     .await
     .context("no heartbeats passed")?;
+    for _ in 0..3 {
+        a1.status()?;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     assert_eq!(waiting_lines(&a1), 1, "{}", daemon_log(&a1));
     assert_eq!(pending_notes(&a1)?, 1);

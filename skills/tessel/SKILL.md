@@ -188,7 +188,8 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   match only; a landed commit that already has a note keeps it; never `-f`). The daemon log says
   how many notes were copied, already there, not landed (the commit was dropped as already on main
   or squashed) or skipped as ambiguous; it never prints note text. If the landed commits are not
-  in your repository yet, the copy waits and runs after you fetch, on the next message or command.
+  in your repository yet, the copy waits and runs after you fetch, on your next command,
+  a landing notice (`Merged` or `BaseMoved`) or a reconnect.
   A landing that names no base (an older server) copies nothing.
 - **A transcript is optional.** `--transcript <file>` redacts the file (Artifacts tokens `art_v…`
   and the token after `Bearer `), refuses an empty file or one over 4 MiB after redaction, and
