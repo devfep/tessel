@@ -101,8 +101,8 @@ The server's landing path does not run the install step, so `[install]` costs no
 (`tessel-server/src/landing/ports.rs:126-139`). All `[[test]]` commands share one deadline. It is
 the call's remaining time less 5 seconds and at least 1 second
 (`tessel-server/src/landing/deadline.rs:43-48`), cut to `timeout_secs` of `tessel-runner.toml` if
-that is smaller (`tessel-runner/src/request.rs:83`; the default is at
-`tessel-runner/src/config.rs:46`). There is no separate share per command. A run that reaches the
+that is smaller (`tessel-runner/src/request.rs:83`; the default, 1800 s, is at
+`tessel-runner/src/config.rs:23`). There is no separate share per command. A run that reaches the
 deadline is killed and reported with exit code 137 and `timed_out` set, not as a failing test
 (`tessel-runner/src/supervise.rs:26,86-100`).
 
