@@ -356,6 +356,11 @@ struct CoordinatorState {
     /// The earliest time to try the head read again after such a failure.
     #[serde(default)]
     head_start_retry_ms: u64,
+    /// Whether this instance was loaded from storage. Never stored: every load sets it, `new`
+    /// clears it. A loaded state whose head is still the one a `Hello` adopted owes one read of
+    /// main, because the read that was out when the process stopped left no marker (see `trunk`).
+    #[serde(skip, default = "loaded_from_storage")]
+    loaded: bool,
     next_claim: u64,
     next_fence: u64,
     next_seq: u64,
@@ -416,6 +421,10 @@ struct CoordinatorState {
     /// stream of compatible new claims can keep delaying a waiter. That is a known limit.
     /// An agent with a queued request holds nothing and may not make any other claim.
     waiting: Vec<Waiting>,
+}
+
+fn loaded_from_storage() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -493,6 +502,7 @@ impl Coordinator {
             head_from_hello: None,
             head_start_failures: 0,
             head_start_retry_ms: 0,
+            loaded: false,
             next_claim: 1,
             next_fence: 1,
             next_seq: 0,

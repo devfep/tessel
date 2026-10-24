@@ -30,6 +30,12 @@
 //!   for it. Any alarm that runs anyway still offers it while the head is missing, and a poke
 //!   starts the count again. Agents already welcomed learn nothing new: the next `Welcome` and
 //!   the next dispatch carry the head.
+//! - A state loaded from storage whose head is still the `Hello`'s owes one read at the first
+//!   wake that runs anyway (the server wakes once at start), because a read that was out when the
+//!   process stopped left no marker. It sets no wake of its own. If that read fails it is retried
+//!   as above, so a state that keeps failing backs off and stops. A head a landing or an earlier
+//!   read set owes nothing, and neither does a state that was not loaded: its `Hello` came while
+//!   the start read was out, and the answer or the retries above deal with it.
 //! - The move is logged as `BaseMoved { by: "steward", notified: [] }`. Nobody is notified: the
 //!   touched scopes of an admin merge are unknown to the coordinator, and claims are not touched.
 
@@ -106,10 +112,14 @@ impl Coordinator {
         self.state.head.is_some() && self.state.head == self.state.head_from_hello
     }
 
-    /// A start read failed, the retries are not used up, and the head is still unchecked.
+    /// The head is still unchecked and either a start read failed with retries left, or this
+    /// state was loaded from storage and no read has failed since: the read that was out when the
+    /// process stopped is gone.
     fn start_retry_owed(&self) -> bool {
         let failures = self.state.head_start_failures;
-        self.head_is_adopted() && (1..=MAX_INFRA_RETRIES).contains(&failures)
+        let retrying = (1..=MAX_INFRA_RETRIES).contains(&failures);
+        let lost_with_the_process = failures == 0 && self.state.loaded;
+        self.head_is_adopted() && (retrying || lost_with_the_process)
     }
 
     /// The alarm time of the head read: now, while a poke has not been tried yet, or the end of
@@ -479,6 +489,8 @@ mod tests {
     #[test]
     fn a_state_stored_before_the_flag_existed_loads_with_it_down() {
         let mut c = core();
+        let first = c.begin_head_read().expect("no head: a read is due");
+        c.trunk_read(&first, Some(sha(OLD)), NOW);
         hello(&mut c, "a1", OLD);
         let mut state: serde_json::Value = serde_json::to_value(&c).unwrap();
         let fields = state.as_object_mut().unwrap();
@@ -766,5 +778,81 @@ mod tests {
         let effects = restored.trunk_read(&read, Some(sha(TRUNK)), NOW + 1);
         assert_eq!(head_of(&restored), Some(sha(TRUNK)));
         assert_eq!(effects.len(), 1, "the move is logged: {effects:?}");
+    }
+
+    fn reloaded(c: &Coordinator) -> Coordinator {
+        serde_json::from_str(&serde_json::to_string(c).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_hello_after_the_start_read_was_offered_owes_no_second_read_until_a_restart() {
+        let mut c = core();
+        c.begin_head_read().expect("no head: a read is due");
+        hello(&mut c, "a1", OLD);
+        assert_eq!(c.begin_head_read(), None, "the read out is waited for");
+        assert!(
+            reloaded(&c).begin_head_read().is_some(),
+            "a restart lost it"
+        );
+    }
+
+    #[test]
+    fn a_restored_head_a_landing_set_owes_no_read() {
+        let mut c = core();
+        c.begin_head_read().expect("due");
+        hello(&mut c, "a1", OLD);
+        merge_in_flight(&mut c, "a1");
+        let dispatch = c
+            .state
+            .merge_in_flight
+            .as_ref()
+            .expect("in flight")
+            .dispatch;
+        let merged = MergeOutcome::Merged {
+            base: sha(OLD),
+            head: sha(NEWER),
+        };
+        c.merge_outcome(dispatch, &merged, NOW + 1);
+        assert_eq!(head_of(&c), Some(sha(NEWER)));
+        assert_eq!(reloaded(&c).begin_head_read(), None);
+    }
+
+    #[test]
+    fn a_restored_head_read_from_main_owes_no_read() {
+        let mut c = core();
+        let read = c.begin_head_read().expect("due");
+        c.trunk_read(&read, Some(sha(TRUNK)), NOW);
+        hello(&mut c, "a1", OLD);
+        assert_eq!(reloaded(&c).begin_head_read(), None);
+    }
+
+    #[test]
+    fn a_restored_state_whose_reads_keep_failing_backs_off_and_stops() {
+        let mut c = core();
+        c.begin_head_read().expect("due");
+        hello(&mut c, "a1", OLD);
+        let mut c = reloaded(&c);
+        assert_eq!(
+            c.next_head_read_ms(NOW),
+            None,
+            "owed, but no wake of its own"
+        );
+        let mut now = NOW;
+        for failure in 1..=MAX_INFRA_RETRIES {
+            let read = c.begin_head_read().expect("owed until the retries run out");
+            c.trunk_read(&read, None, now);
+            let wait = infra_backoff_ms(failure);
+            assert_eq!(
+                c.next_head_read_ms(now),
+                Some(now + wait),
+                "failure {failure}"
+            );
+            now += wait;
+        }
+        let last = c.begin_head_read().expect("the last retry");
+        c.trunk_read(&last, None, now);
+        assert_eq!(c.begin_head_read(), None, "no read is owed after the bound");
+        assert_eq!(c.next_head_read_ms(now), None);
+        assert_eq!(head_of(&c), Some(sha(OLD)));
     }
 }
