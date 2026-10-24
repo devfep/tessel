@@ -1529,7 +1529,10 @@ pub fn send_stdin(mut child: Child, stdin: &str) -> Result<Done> {
 pub fn wait_until_exited(child: &mut Child) -> Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while child.try_wait()?.is_none() {
-        ensure!(std::time::Instant::now() < deadline, "the child did not exit");
+        ensure!(
+            std::time::Instant::now() < deadline,
+            "the child did not exit"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     Ok(())
