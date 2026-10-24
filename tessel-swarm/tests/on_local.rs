@@ -886,13 +886,15 @@ impl PushGate {
             let name = fork.file_stem().unwrap().to_string_lossy().into_owned();
             let gate = dir.path().display();
             std::fs::write(dir.path().join(format!("closed-{name}")), "").unwrap();
-            // The hook gives up when its gate has been closed for `WAIT`, so a test binary that is
-            // killed leaves no hook waiting for ever.
-            let polls = WAIT.as_millis() / 20;
+            // The hook gives up when its gate has been closed for `WAIT` by the clock, not by
+            // a count of polls, which a loaded machine stretches: a test binary that is killed
+            // leaves no hook waiting for ever.
+            let secs = WAIT.as_secs();
             let script = format!(
-                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\nn=0\n\
-                 while [ -e '{gate}/closed-{name}' ] && [ \"$n\" -lt {polls} ]; do\n\
-                 sleep 0.02; n=$((n + 1)); done\n\
+                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\n\
+                 end=$(( $(date +%s) + {secs} ))\n\
+                 while [ -e '{gate}/closed-{name}' ] && [ \"$(date +%s)\" -lt \"$end\" ]; do\n\
+                 sleep 0.02; done\n\
                  [ ! -e '{gate}/closed-{name}' ] || exit 1\n"
             );
             let hook = fork.join("hooks/pre-receive");
@@ -1463,9 +1465,10 @@ async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
              import {{ setTimeout as pause }} from \"node:timers/promises\";\n\
              test(\"slow\", async () => {{\n\
              writeFileSync(\"{}\", \"\");\n\
-             for (let n = 0; n < {} && !existsSync(\"{}\"); n++) await pause(20);\n}});\n",
+             const end = Date.now() + {};\n\
+             while (Date.now() < end && !existsSync(\"{}\")) await pause(20);\n}});\n",
             started.display(),
-            WAIT.as_millis() / 20,
+            WAIT.as_millis(),
             release.display()
         ),
     )
