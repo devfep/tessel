@@ -6,8 +6,12 @@
 # Makes <server dir>/{keys,stores,lander,tokens}, writes tessel-runner.toml and tessel-server.toml,
 # makes the signing key unless it exists, and mints a token for each of lane-a, lane-b and
 # orchestrator. Safe to run again: it rewrites the two configurations and the tokens, and keeps
-# the key. It never calls gh, never pushes and never starts the server. Needs `tessel-server` on
-# PATH. Tokens are written by redirection and never printed.
+# the key. It never calls gh, never pushes and never starts the server. Needs `tessel-server` and
+# `tessel` on PATH, and copies both into <server dir>/bin: git's askpass hook is the server's own
+# current_exe, so it must run from a copy that a later cargo build cannot replace mid-landing, and
+# the docs run `tessel init` from the `tessel` copy so the git hooks it installs point at it.
+# <server dir>/.cargo/config.toml caps landing builds at 6 jobs, as cargo reads it upward from the
+# runner's clone; a submission's own .cargo/ is held as sensitive. Tokens are never printed.
 set -euo pipefail
 
 kid="2026-10"
@@ -31,11 +35,20 @@ esac
 case "$dir" in
 *[\"\\]*) fail "the server directory may not contain a quote or a backslash: $dir" ;;
 esac
-command -v tessel-server >/dev/null ||
-	fail "tessel-server is not on PATH: cargo build -p tessel-server, then add target/debug"
+for binary in tessel-server tessel; do
+	command -v "$binary" >/dev/null ||
+		fail "$binary is not on PATH: cargo build -p tessel-server -p tessel-cli, add target/debug"
+done
 
 umask 077
-mkdir -p "$dir/keys" "$dir/stores" "$dir/lander" "$dir/tokens"
+mkdir -p "$dir/keys" "$dir/stores" "$dir/lander" "$dir/tokens" "$dir/bin" "$dir/.cargo"
+
+for binary in tessel-server tessel; do
+	install -m 755 "$(command -v "$binary")" "$dir/bin/$binary"
+	echo "copied $binary into $dir/bin"
+done
+
+printf '[build]\njobs = 6\n' >"$dir/.cargo/config.toml"
 
 printf '[runner]\nuser = "%s"\ntimeout_secs = %s\n' "$(id -un)" "$runner_timeout_secs" \
 	>"$dir/tessel-runner.toml"
@@ -58,7 +71,12 @@ run = "dogfood"
 remote = "https://github.com/$tenant/$repo.git"
 fork = "https://github.com/$tenant/$repo-{agent}.git"
 reviewers = ["orchestrator"]
-sensitive = ["src/protocol.rs", "src/host/", ".github/", "docs/BUILD-PROTOCOL.md"]
+sensitive = [
+	"src/protocol.rs", "src/host/", ".github/", "docs/BUILD-PROTOCOL.md", "docs/dogfood.md",
+	"scripts/", "tessel-server/ci/", "tessel-server/src/landing/", "tessel-server/src/credential.rs",
+	"tessel-runner/src/", "tessel-lander/src/", "src/coordinator/merging.rs", "src/shell.rs",
+	".cargo/", "rust-toolchain.toml", "Cargo.lock", "CLAUDE.md", "PLAN.md", "skills/", ".claude/",
+]
 TOML
 
 if [ -e "$dir/keys/$kid.key" ]; then
