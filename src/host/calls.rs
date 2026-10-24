@@ -27,8 +27,8 @@ use crate::host::call::{
 use crate::host::wake::WakeStep;
 use crate::host::{Host, Job, Output};
 use crate::merge::{
-    MergeOutcome, StepExit, TrialOutcome, TrialReport, REASON_OUTPUT_MAX_CHARS,
-    STEWARD_CALL_TIMEOUT_MS,
+    MergeOutcome, StepExit, TrialOutcome, TrialReport, LANDER_CALL_TIMEOUT_MS,
+    REASON_OUTPUT_MAX_CHARS,
 };
 use crate::protocol::CommitId;
 use crate::shell::Work;
@@ -47,7 +47,7 @@ pub fn merge_call(id: CallId, dispatch: &MergeDispatch, now_ms: u64) -> Call {
             fork_commit: dispatch.fork_commit.clone(),
             scopes: dispatch.scopes.clone(),
         },
-        deadline_ms: now_ms.saturating_add(STEWARD_CALL_TIMEOUT_MS),
+        deadline_ms: now_ms.saturating_add(LANDER_CALL_TIMEOUT_MS),
     }
 }
 
@@ -61,7 +61,7 @@ pub fn trial_call(id: CallId, dispatch: &VerifyDispatch, now_ms: u64) -> Call {
             before: dispatch.before.clone(),
             main: dispatch.main.clone(),
         },
-        deadline_ms: now_ms.saturating_add(STEWARD_CALL_TIMEOUT_MS),
+        deadline_ms: now_ms.saturating_add(LANDER_CALL_TIMEOUT_MS),
     }
 }
 

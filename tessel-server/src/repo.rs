@@ -594,7 +594,7 @@ impl RepoTask {
             };
             let _ = tx.send(Msg::Host(input)).await;
             if moved {
-                // What the Worker's poke carried when the steward moved main: the host reads
+                // What the Worker's poke carried when the lander moved main: the host reads
                 // main's head, so agents hear of the new head from the host's own read.
                 let _ = tx.send(Msg::Poke).await;
             }

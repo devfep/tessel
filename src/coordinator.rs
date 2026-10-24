@@ -8,13 +8,13 @@
 //! - Claim ids and fences start at 1 and are never reused. Event `seq` starts at 0.
 //! - `Hello` does not have to precede other messages; connection state belongs to the caller.
 //! - The lock table is derived from the claims. It is not serialized; deserializing rebuilds it.
-//! - A submitted claim stops expiring and keeps its locks until the steward reports its merge
+//! - A submitted claim stops expiring and keeps its locks until the lander reports its merge
 //!   outcome. Submissions are numbered, which fixes their order in the merge queue.
-//! - A submitted claim is merged by the steward, one at a time, in submission order (see `merging`).
+//! - A submitted claim is merged by the lander, one at a time, in submission order (see `merging`).
 //!   A submission that needs review (invariant 12) is held and never dispatched until a reviewer
 //!   named by `set_reviewers` approves it; a rejection returns the claim to active.
 //! - A merge that landed work which had challenged assumptions queues a verification of each still
-//!   live assuming claim; the steward tries that agent's work on the new main, one at a time,
+//!   live assuming claim; the lander tries that agent's work on the new main, one at a time,
 //!   only while no merge is due (see `verifying`).
 //! - A shadow claim (invariant 10) is a real claim with an id, a fence and a lease that places no
 //!   lock, so it blocks nobody. Submitting one records it for verification and never queues it.
@@ -132,7 +132,7 @@ struct ActiveClaim {
     /// (invariant 5); the ordinal fixes its place in the merge queue.
     #[serde(default)]
     submitted: Option<u64>,
-    /// What the steward is asked to merge, set with `submitted` and cleared with it.
+    /// What the lander is asked to merge, set with `submitted` and cleared with it.
     #[serde(default)]
     work: Option<Submission>,
     /// Shadow claims only: what the verification of the denial needs (invariant 10).
@@ -140,7 +140,7 @@ struct ActiveClaim {
     denial: Option<Denial>,
 }
 
-/// What a shadow claim keeps so that, when the work that blocked it merges, the steward can
+/// What a shadow claim keeps so that, when the work that blocked it merges, the lander can
 /// test-merge the shadow work against it. Kept apart from `work` because a shadow claim is never
 /// queued for merge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,7 +152,7 @@ struct Denial {
     fork_commit: Option<CommitId>,
 }
 
-/// The work of a submitted claim, kept until the steward answers.
+/// The work of a submitted claim, kept until the lander answers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Submission {
     fork_commit: CommitId,
@@ -179,7 +179,7 @@ struct Submission {
     #[serde(default)]
     retry_at_ms: Option<u64>,
     /// Main's head at the first dispatch whose answer was lost or unusable (a restart, a timeout,
-    /// an unreachable steward): the attempt may have landed on top of it. The first one is kept
+    /// an unreachable lander): the attempt may have landed on top of it. The first one is kept
     /// through later answers, `main_moved` included: a cut-off attempt that went on to push makes
     /// the retry find main moved. A submission with this set is dispatched before any other and
     /// waited for through its backoff, so no merge from the queue lands in between; if a retry is
@@ -190,7 +190,7 @@ struct Submission {
     /// An attempt is in doubt (see `unanswered_from`), whether or not main was known then.
     #[serde(default)]
     in_doubt: bool,
-    /// The submission's decision record, which the steward writes into the merge's evidence
+    /// The submission's decision record, which the lander writes into the merge's evidence
     /// record. `None` for a race entry and for a submission stored before this field existed: the
     /// record then says it was not supplied. Free text in it is the agent's, untrusted.
     #[serde(default)]
@@ -226,7 +226,7 @@ impl Submission {
     }
 }
 
-/// The one merge in flight: persisted before the steward is called, so a restart re-dispatches it
+/// The one merge in flight: persisted before the lander is called, so a restart re-dispatches it
 /// instead of starting another.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InFlight {
@@ -332,9 +332,9 @@ struct CoordinatorState {
     /// every load, so a stored state follows the setting.
     #[serde(default)]
     sensitive: Vec<String>,
-    /// Main's head as the coordinator knows it. The steward will own this later.
+    /// Main's head as the coordinator knows it. The lander will own this later.
     head: Option<CommitId>,
-    /// How many times the steward has said main moved (see `trunk`).
+    /// How many times the lander has said main moved (see `trunk`).
     #[serde(default)]
     head_pokes: u64,
     /// The pokes a head read has answered: pokes up to this count are reflected in `head`.
@@ -371,14 +371,14 @@ struct CoordinatorState {
     /// Every call advances it, including calls that return an error: "errors change nothing"
     /// means no claim, queue, counter or event changes, not the clock (time is not a decision).
     clock_ms: u64,
-    /// The merge the steward is running, if any. At most one per repo.
+    /// The merge the lander is running, if any. At most one per repo.
     #[serde(default)]
     merge_in_flight: Option<InFlight>,
     /// Verifications still to run, oldest first. Persisted when a merge records them, before
     /// anything is sent. Only verifications of live claims are kept.
     #[serde(default)]
     verifications: Vec<verifying::Verification>,
-    /// The verification the steward is running, if any. At most one per repo.
+    /// The verification the lander is running, if any. At most one per repo.
     #[serde(default)]
     verification_in_flight: Option<verifying::VerifyFlight>,
     /// Id of the next verification; starts at 0 and is never reused.
@@ -1312,7 +1312,7 @@ impl Coordinator {
 
     /// Submit finished work (invariants 4, 5, 8, 11). The claim must be current and not yet
     /// submitted, `touched` must be non-empty and covered by the claim. On success the claim is
-    /// marked submitted, which stops its lease and holds it for the steward; it keeps its locks.
+    /// marked submitted, which stops its lease and holds it for the lander; it keeps its locks.
     /// A rejected submission changes nothing but the event log, and the claim stays submittable.
     ///
     /// A flagged submission (invariant 12) is answered with `ReviewRequired` alone; its `Accepted`
@@ -1429,7 +1429,7 @@ impl Coordinator {
         effects
     }
 
-    /// Record what the steward is to merge for a submitted claim.
+    /// Record what the lander is to merge for a submitted claim.
     fn queue_for_merge(&mut self, claim: ClaimId, submission: Submission) {
         if let Some(held) = self.state.claims.get_mut(&claim.0) {
             held.work = Some(submission);
@@ -1720,7 +1720,7 @@ fn without_duplicates(scopes: Vec<ScopeClaim>) -> Vec<ScopeClaim> {
 }
 
 /// Whether `commit` is a full git object id: 40 lowercase hex characters, the only spelling the
-/// steward accepts.
+/// lander accepts.
 fn is_commit_sha(commit: &str) -> bool {
     commit.len() == 40
         && commit
@@ -3257,7 +3257,7 @@ mod tests {
     }
 
     /// `holder` claims `held`, submits `touched` and has it dispatched; `waiter` queues for
-    /// `wanted`. The steward then reports a merge to `MERGED_HEAD`.
+    /// `wanted`. The lander then reports a merge to `MERGED_HEAD`.
     fn merge_under_a_waiter(
         held: ScopeClaim,
         touched: ScopeClaim,

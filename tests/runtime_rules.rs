@@ -414,7 +414,7 @@ fn grant(core: &mut Core, who: &str, path: &str) -> (ClaimId, Fence) {
 }
 
 #[test]
-fn r26_a_failed_or_unknown_steward_answer_is_service_unavailable_and_a_4xx_is_a_refusal() {
+fn r26_a_failed_or_unknown_lander_answer_is_service_unavailable_and_a_4xx_is_a_refusal() {
     let landed = r#"{"outcome":"merged","base":"a","head":"b"}"#;
     assert_eq!(
         MergeOutcome::from_response(500, landed),

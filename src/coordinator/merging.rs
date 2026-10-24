@@ -1197,7 +1197,7 @@ mod tests {
         assert_eq!(
             (reviewer, note),
             (&None, &None),
-            "a steward rejection names no reviewer"
+            "a lander rejection names no reviewer"
         );
         assert!(
             reason.contains("1 file(s)") && !reason.contains("IGNORE"),
@@ -1321,7 +1321,7 @@ mod tests {
         assert_eq!(
             (reviewer, note),
             (&None, &None),
-            "a steward rejection names no reviewer"
+            "a lander rejection names no reviewer"
         );
         assert_eq!(
             reason,
@@ -2053,7 +2053,7 @@ mod tests {
     }
 
     #[test]
-    fn a_4xx_from_the_steward_rejects_at_once_with_no_retry() {
+    fn a_4xx_from_the_lander_rejects_at_once_with_no_retry() {
         let mut c = core();
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         let outcome = MergeOutcome::from_response(400, "{}");
@@ -2263,7 +2263,7 @@ mod tests {
         assert_eq!(c.next_expiry_ms(), None, "no lease is running");
         let at = c.next_alarm_ms(true, NOW + 7);
         assert_eq!(at, Some(NOW + 7 + MERGE_WATCHDOG_MS));
-        const { assert!(MERGE_WATCHDOG_MS > crate::merge::STEWARD_CALL_TIMEOUT_MS) };
+        const { assert!(MERGE_WATCHDOG_MS > crate::merge::LANDER_CALL_TIMEOUT_MS) };
     }
 
     #[test]
