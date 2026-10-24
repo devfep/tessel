@@ -337,8 +337,10 @@ async fn a_trunk_whose_gate_is_invalid_is_refused_once_and_not_retried() -> Test
     assert_no_call_dirs(&repos, "landing-gate-invalid");
     let lines = log_lines_with("landing-gate-invalid");
     assert!(
-        lines.iter().any(|line| line.contains("not a valid gate")),
-        "the error is logged: {lines:?}"
+        lines
+            .iter()
+            .any(|line| line.contains("the trunk's gate cannot be used")),
+        "the refusal is logged: {lines:?}"
     );
     Ok(())
 }

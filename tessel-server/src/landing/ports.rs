@@ -2,7 +2,7 @@
 //! and the lander's ports over a git remote, reached by path or by URL.
 
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -77,20 +77,29 @@ fn read_gate_in(root: &Path) -> Result<GateConfig, GateFault> {
             "the trunk has no {TESSEL_TOML_PATH} to say how to test it"
         ))
     };
-    let meta = fs::symlink_metadata(&path).map_err(|_| missing())?;
+    let unreadable = || {
+        GateFault::Unreadable(boundary(
+            "read the gate",
+            format!("cannot read {TESSEL_TOML_PATH}"),
+        ))
+    };
+    let meta = fs::symlink_metadata(&path).map_err(|error| match error.kind() {
+        ErrorKind::NotFound => missing(),
+        _ => unreadable(),
+    })?;
     if !meta.is_file() {
         return Err(missing());
     }
     let limit = u64::try_from(MAX_CONFIG_BYTES + 1).unwrap_or(u64::MAX);
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     File::open(&path)
-        .and_then(|file| file.take(limit).read_to_string(&mut text))
-        .map_err(|_| {
-            GateFault::Unreadable(boundary(
-                "read the gate",
-                format!("cannot read {TESSEL_TOML_PATH}"),
-            ))
-        })?;
+        .and_then(|file| file.take(limit).read_to_end(&mut bytes))
+        .map_err(|_| unreadable())?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        GateFault::Unusable(format!(
+            "the trunk's {TESSEL_TOML_PATH} is not valid UTF-8, so not a valid gate"
+        ))
+    })?;
     parse_gate_config(&text).map_err(|invalid| {
         GateFault::Unusable(format!(
             "the trunk's {TESSEL_TOML_PATH} is not a valid gate: {}",

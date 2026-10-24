@@ -343,7 +343,10 @@ impl Inner {
             Ok(outcome) => merge_answer(&repo, outcome, ports.take_first_failure().as_deref()),
             Err(error) => {
                 if let Some(message) = ports.take_gate_refusal() {
-                    tracing::info!(repo, message = %message, "the trunk's gate cannot be used");
+                    tracing::info!(
+                        repo,
+                        "the trunk's gate cannot be used; the landing is refused"
+                    );
                     return CallAnswer::Refused {
                         refusal: Refusal::Rule {
                             rule: RuleKind::GateInvalid,
