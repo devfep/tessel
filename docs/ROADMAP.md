@@ -7,21 +7,20 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 16:10 EDT. Main at `d540b0f`, green. M4's done-check is met: landings with
-their notes and claims released by `Merged`, none by hand: `dd38fa0`, `d43aeeb`, `1c9497f`,
-`a3993da`, `799c5bc` (fast-forwards) and `905b6b1`..`d540b0f` (rebased; the lane's daemon
-copied its six notes once its repository had fetched main, each equal to its submitted commit's);
-and the restart with a held claim (M4-RESTART-HELD). Eleven server landings today, each read by an
-Opus reviewer on the commit from the fork first; main's CI is green on every one but
-`d43aeeb` (a test needed a git identity the Linux runner lacks, fixed by `1c9497f`): landings test
-on the Mac only, so Linux differences show on main's CI after the landing. The server runs from
-`~/tessel-dogfood/bin` at `d540b0f`, started from inside `~/tessel-dogfood`, on `127.0.0.1:7878`;
-agent tokens are valid to 31 October. Lanes cannot push (Felix's
-`~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
-of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
-worktree and decides holds as `orchestrator`. Two lanes ran at once twice; the coordinator denied
-lane A `src/merge.rs` (left to STEWARD-WORDING-REST) and later `docs/configuration.md` twice,
-which lane A claimed once lane B's landing released it. Nothing is dispatched;
+**As of:** 2026-10-24 17:40 EDT. Main at `cd68555`, green; the orchestrator's gate is green on it
+(2008 tests). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD). Seventeen server landings today,
+each read by an Opus reviewer on the commit from the fork first; main's CI is green on every one but
+`d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept
+their notes with no hand step. Every open row from today's reviews is closed; the remaining
+"steward" names in `src/` are serialized, the TypeScript steward's, or read by its tests, and go
+with it in Phase 1. The server runs from `~/tessel-dogfood/bin` at `cd68555`, started from inside
+`~/tessel-dogfood`, on `127.0.0.1:7878`; agent tokens are valid to 31 October. Lanes cannot push
+(Felix's `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new
+branch of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
+worktree and decides holds as `orchestrator`. Two lanes ran at once four times; the coordinator
+denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
+`src/coordinator/verifying.rs` (twice), each while the other lane held it, and the denied lane
+claimed the file after the holder landed or left it to a follow-up. Nothing is dispatched;
 `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
@@ -56,9 +55,7 @@ sandbox commits use his GitHub noreply address.
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
 **Next:** M5's re-plan (hardening: the simulator, invariants I1-I12, the staged landing, the
-server as its own macOS user) is Felix's to open; until then the open rows land through the
-server: STEWARD-WORDING-REST, TRIAL-UNSUBMITTED-READS-FORK-MAIN, CLI-START-DEADLINE-SEAM and
-DOCS-LONG-PROSE-LINES, two lanes at a time.
+server as its own macOS user) is Felix's to open. No open row from today is left.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -668,7 +665,10 @@ claims reconciled.
   named-tests check matches it. Planned: from the #108 review: `docs/reference/runtime-rules.md` R22
   does not name the host test #108 added for the restart read. Done: R22's row names it, and the
   named-tests check stays green.
-- [ ] **CLI-START-DEADLINE-SEAM** — from the #109 review: the start loop's deadline branch
+- [x] **CLI-START-DEADLINE-SEAM** (`3ae90c8`, landed by the server) — lane A. The wait loop is
+  `await_online(worktree, child, timeout)`; `start` passes START_TIMEOUT; a test with a silent
+  socket and a late child pins the deadline branch's exit status; the race test kills its winner
+  daemon on every path. Opus "Yes". Planned: from the #109 review: the start loop's deadline branch
   (`tessel-cli/src/commands.rs:280`) passing the child's status to `deadline_message` is not
   pinned (a mutant passing `ExitStatus::default()` survives); a real-binary test needs the exit to
   land inside one probe before the fixed 10 s deadline, so it needs a seam (an injectable deadline
@@ -844,7 +844,13 @@ reviews (security, operations) and the sandbox trial.
 - [x] **STEWARD-LOG-WORDING** (`768383e`, landed by the server) — lane A. The host's calls are
   "head call", "lander merge call" and "lander trial call", with test names and runtime-rules rows
   to match. Opus "Yes" after one fix pass.
-- [ ] **STEWARD-WORDING-REST** — what STEWARD-LOG-WORDING could not claim: the constant
+- [x] **STEWARD-WORDING-REST** (`87ed743`, landed by the server) — lane A. Renamed the core's
+  steward wording where the Rust lander is meant; kept `STEWARD_CALL_TIMEOUT_MS` (the steward's
+  step-budget test reads it), the historical runtime-rules Functions cells and the steward-only
+  budget lines. Opus "No", then "Yes" after one fix pass.
+- [x] **STEWARD-PROSE-REST** (`cd68555`, landed by the server) — lane B. The remaining comment and
+  test-name prose; what describes the TypeScript steward's wire or Worker stays "steward". Opus
+  "Yes" after one fix pass. Planned for STEWARD-WORDING-REST: the constant
   `STEWARD_CALL_TIMEOUT_MS` (`src/merge.rs`), doc lines in `src/coordinator.rs`,
   `src/coordinator/merging.rs` (two asserts and a test name), `src/coordinator/verifying.rs:37-40`,
   `src/merge.rs:32-37`, `tessel-server/src/repo.rs:597`, `tests/runtime_rules.rs:417` and
@@ -862,10 +868,14 @@ reviews (security, operations) and the sandbox trial.
   an explicit directory; relative config paths (`work_dir`, `token_file`, path `remote`/`fork`,
   `store_dir`, `runner_config`) are made absolute once at start, absolute ones are kept as given;
   tests start from a directory that is then removed. Opus "Yes" after two fix passes.
-- [ ] **TRIAL-UNSUBMITTED-READS-FORK-MAIN** — from the #114 design review: a trial with no commit
+- [x] **TRIAL-UNSUBMITTED-READS-FORK-MAIN** (`54b292b`, landed by the server) — lane B. A trial
+  with no submitted commit answers `CommitNotInFork` after the fork-name check and runs nothing;
+  the core makes it Inconclusive. The dead `trial_request_body` is gone. Design chosen by an
+  adversarial review; Opus "Yes". Planned: from the #114 design review: a trial with no commit
   reads the fork's `main` (`tessel-server/src/landing/trial.rs:39`, `src/host/call.rs:53`), which
   since #114 is never updated by lanes. Sensitive path.
-- [ ] **DOCS-LONG-PROSE-LINES** — the prose lines over 100 characters listed above.
+- [x] **DOCS-LONG-PROSE-LINES** (`2928159`, landed by the server) — lane B. The two prose lines
+  over 100 characters in `docs/BUILD-PROTOCOL.md`; the rest are tables and quoted output.
 - [x] **M4-RESTART-HELD** (24 October) — lane B's claim 4 (GATE-INVALID-RETRIED) held for review;
   the server stopped and started at 16:54 UTC (12:54 EDT) with nothing running; the claim stayed
   submitted, was approved after the restart and landed (`0c0f119`).
