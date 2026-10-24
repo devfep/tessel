@@ -260,7 +260,8 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
         // A daemon that exits cleanly lost the lock to another one, which will come online.
-        if let Some(status) = child.try_wait()?.filter(|status| !status.success()) {
+        let exited = child.try_wait()?;
+        if let Some(status) = exited.filter(|status| !status.success()) {
             bail!(
                 "the daemon exited ({status}) before connecting; last log lines:\n{}",
                 log_tail(&worktree)
@@ -277,6 +278,14 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
             }
         }
         if tokio::time::Instant::now() >= deadline {
+            if exited.is_some() {
+                bail!(
+                    "the daemon did not start: the lock {} is held by another process, and no \
+                     daemon answers for this worktree. Stop that process (`tessel stop` reaches \
+                     only a daemon that answers), then run `tessel start` again",
+                    worktree.lock_path().display()
+                );
+            }
             let reason = match State::read(&worktree) {
                 Ok(Some(state)) => state.last_error.unwrap_or_else(|| "no answer yet".into()),
                 Ok(None) | Err(_) => "no state written".to_string(),
