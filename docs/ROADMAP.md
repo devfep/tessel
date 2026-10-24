@@ -7,19 +7,21 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 13:30 EDT. Main at `768383e`. M4's done-check is met but for the notes: five
-landings by the dogfood `tessel-server` (`91785b2`, `3f4278b`, `9701abf`, `0c0f119`, `768383e`)
-took no hand step and released their claims by `Merged`, and the restart with a held claim passed
-(M4-RESTART-HELD); main's CI is green on all five. Landings 4 and 5 rebased, and their eight
-commits lost their notes; the orchestrator copied them by hand, so M4-FIRST-LANDINGS stays open
-until LANDER-REBASE-DROPS-NOTES lands. The server runs on Felix's Mac from
-`~/tessel-dogfood/bin` at `4382641` (#114), listening on `127.0.0.1:7878`; agent tokens are valid
-to 31 October (re-run `scripts/dogfood/setup.sh` and re-init each worktree after). Lanes cannot
-push (Felix's `~/.claude/hooks/block-lane-push.sh`: "let the orchestrator push"), so the
-orchestrator pushes each lane commit to a new branch of its fork; the Opus reviewer reads it there;
-the orchestrator runs `tessel submit` in the lane's worktree and decides holds as `orchestrator`.
-Nothing is dispatched; `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the
-detached gate worktree.
+**As of:** 2026-10-24 15:00 EDT. Main at `1c9497f`, green. M4's done-check is met but for the
+notes: five landings (`91785b2`, `97b0316`..`3f4278b`, `9701abf`, `0c0f119`, `768383e`) took no hand
+step and released their claims by `Merged`, and the restart with a held claim passed
+(M4-RESTART-HELD). The rebased landings' notes were copied by hand; LANDER-REBASE-DROPS-NOTES has
+since landed (`d43aeeb`), so M4-FIRST-LANDINGS closes with the next landing that rebases and keeps
+its notes with no hand step. Since then: `dd38fa0` (STATE), `d43aeeb` and `1c9497f`, each read by
+an Opus reviewer first. Main's CI went red on `d43aeeb` (a notes test needed a committer identity
+the Linux runner lacks; the Mac guesses one) and `1c9497f` fixed it: landings test on the Mac only,
+so Linux differences show on main's CI after the landing. The server runs from
+`~/tessel-dogfood/bin` at `d43aeeb`, started from inside `~/tessel-dogfood` (SERVER-CWD), on
+`127.0.0.1:7878`; agent tokens are valid to 31 October. Lanes cannot push (Felix's
+`~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
+of its fork; the Opus reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
+worktree and decides holds as `orchestrator`. Nothing is dispatched;
+`.claude/worktrees/orchestrator` holds this commit, `gate-main` is the detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
 classifier still refuses the orchestrator's own pull request merges ("Merge Without Review"), so
@@ -54,8 +56,8 @@ SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-L
 cannot see the flake (see its entry).
 **Next:** M5's re-plan (hardening: the simulator, invariants I1-I12, the staged landing, the
 server as its own macOS user) is Felix's to open; until then the open rows land through the
-server: LANDER-REBASE-DROPS-NOTES first, then GATE-INSTANCE-REQUIRED, STEWARD-WORDING-REST,
-TRIAL-UNSUBMITTED-READS-FORK-MAIN, CLI-START-DEADLINE-SEAM and DOCS-LONG-PROSE-LINES.
+server: SERVER-CWD, GATE-INSTANCE-REQUIRED, STEWARD-WORDING-REST, TRIAL-UNSUBMITTED-READS-FORK-MAIN,
+CLI-START-DEADLINE-SEAM and DOCS-LONG-PROSE-LINES, two lanes at a time so a landing rebases.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -845,10 +847,19 @@ reviews (security, operations) and the sandbox trial.
   `src/coordinator/merging.rs` (two asserts and a test name), `src/coordinator/verifying.rs:37-40`,
   `src/merge.rs:32-37`, `tessel-server/src/repo.rs:597`, `tests/runtime_rules.rs:417` and
   `docs/reference/runtime-rules.md:61` (`ask_steward_for_head`, a name not in code).
-- [ ] **LANDER-REBASE-DROPS-NOTES** — a landing that rebases gives the landed commits new shas, and
-  the git notes stay on the submitted ones (landings 4 and 5: eight commits, copied by the
-  orchestrator by subject and patch id). Done: the landed commits carry their notes without a hand
-  step (the CLI copies them on its `merged` notice, which names the landed head).
+- [x] **LANDER-REBASE-DROPS-NOTES** (`d43aeeb`, landed by the server) — lane A. `Merged` gains an
+  additive `base` (`#[serde(default)]`); the CLI daemon queues {claim, submitted, floor, base,
+  head} and, off its message loop, copies each submitted commit's note to the landed commit with
+  the same author line and raw message (never patch id: a clean rebase changes it), unique matches
+  only, never `-f`, shas and counts only in its log. Design chosen by an adversarial review; Opus
+  "Yes" after two fix passes. Its first landing attempt failed on the server's removed working
+  directory (SERVER-CWD); the merge retried after a restart and landed.
+- [x] **CI-NOTES-TEST-IDENTITY** (`1c9497f`, landed by the server) — lane A. The notes tests'
+  repositories get a local git identity; main's CI was red on `d43aeeb` without it.
+- [ ] **SERVER-CWD** — the server inherits the directory it starts in; started from a worktree
+  that was later removed, every git command failed ("Unable to read current working directory").
+  Done: `docs/dogfood.md`'s start command runs from `<server dir>`, or the server changes into
+  its `store_dir` at start, with a test.
 - [ ] **TRIAL-UNSUBMITTED-READS-FORK-MAIN** — from the #114 design review: a trial with no commit
   reads the fork's `main` (`tessel-server/src/landing/trial.rs:39`, `src/host/call.rs:53`), which
   since #114 is never updated by lanes. Sensitive path.
