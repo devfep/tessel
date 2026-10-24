@@ -3,7 +3,7 @@
 //!
 //! The lander's push event reaches the coordinator as a bare poke (`trunk_moved`) that carries no
 //! data, so nothing in the request can set the head: it only counts (`head_pokes`, persisted), and
-//! the alarm does the rest. The shell asks the lander for the trunk head through its binding-only
+//! the alarm does the rest. The shell asks the steward for the trunk head through its binding-only
 //! merge service, then offers the answer to `trunk_read`.
 //!
 //! Decisions made here:
@@ -55,12 +55,12 @@ pub struct HeadRead {
     pub pokes: u64,
 }
 
-/// What the coordinator sends the lander's `/head`: read the head of `repo`'s main.
+/// What the coordinator sends the steward's `/head`: read the head of `repo`'s main.
 pub fn head_request_body(repo: &str) -> String {
     serde_json::json!({ "repo": repo }).to_string()
 }
 
-/// The head a lander `/head` response carries: `{ "head": "<sha>" }` with status 200. Any other
+/// The head a steward `/head` response carries: `{ "head": "<sha>" }` with status 200. Any other
 /// status or shape is `None`. A body is never kept or quoted.
 pub fn parse_head_response(status: u16, body: &str) -> Option<CommitId> {
     if status != 200 {

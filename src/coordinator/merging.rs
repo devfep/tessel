@@ -83,7 +83,7 @@ pub struct MergeDispatch {
     pub scopes: Vec<ScopeClaim>,
     /// 1 for the first dispatch of this submission, counting every retry.
     pub attempt: u32,
-    /// What the lander writes into the merge's evidence record, taken from the held claim. Boxed:
+    /// What the steward writes into the merge's evidence record, taken from the held claim. Boxed:
     /// it holds the claim's free text, and a dispatch travels inside small enums.
     pub record: Box<MergeRecord>,
 }
@@ -366,7 +366,7 @@ impl Coordinator {
             scopes: held.scopes.clone(),
             attempt,
             // `review` is known only with `decisions`: a submission stored before both existed,
-            // or a race entry, sends neither, and the lander records them as not supplied.
+            // or a race entry, sends neither, and the steward records them as not supplied.
             record: Box::new(MergeRecord {
                 claim,
                 intent: held.intent.clone(),

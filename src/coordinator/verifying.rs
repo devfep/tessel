@@ -18,10 +18,10 @@
 //!   assuming claim's submitted `fork_commit` at that moment; for a claim that has not submitted
 //!   it is `None`: there is nothing to try, and the trial ends Inconclusive.
 //! - Each trial carries a baseline, `before`: main as it was before the merge that challenged the
-//!   assumption. The lander tries the work on `before` first, and a failure on the new main counts
-//!   only if the work was clean there (`TrialReport::verdict`). Without it, work that was already
-//!   failing, or that clashes with an unrelated merge, would be counted as an assumption broken by
-//!   this one.
+//!   assumption. The lander tries the work on `before` and on the new main, and a failure on the
+//!   new main counts only if the work was clean there (`TrialReport::verdict`). Without it, work
+//!   that was already failing, or that clashes with an unrelated merge, would be counted as an
+//!   assumption broken by this one.
 //! - One verification runs at a time, and only while no merge is due: merges have priority. A
 //!   merge in backoff does not hold a verification up. Priority is bounded (invariant I12 of
 //!   `docs/proposals/real-use.md`): after `verify_slot_after` merges (`VERIFY_SLOT_AFTER`,
@@ -1231,7 +1231,7 @@ mod tests {
         let dispatch = c.begin_verification(NOW).unwrap();
         assert_eq!(
             dispatch.commit, None,
-            "a1 has not submitted: the lander reads the fork"
+            "a1 has not submitted: nothing to try"
         );
     }
 
