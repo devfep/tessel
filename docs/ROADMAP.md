@@ -7,17 +7,21 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 01:00 EDT. Main at `d5c27b2` (#96, #97 and #98 merged; main's CI on
-`d5c27b2` was still running when this was written; the orchestrator's gate on `d5c27b2` is green on
-all seven steps, 1929 tests and none failed, so the Node 24 failures of the previous gate are
-gone). M4 is six tasks in: the server lands over HTTPS with a token file read through its own
+**As of:** 2026-10-24 01:00 EDT. Main at `d5c27b2` (#96, #97 and #98 merged; the orchestrator's gate
+on `d5c27b2` is green on all seven steps, 1929 tests and none failed, so the Node 24 failures of
+the previous gate are gone; main's CI on `d5c27b2` is red on one job, "Slow lane, local landing
+end to end", by a race in the CI script itself, not the code: it polls until the bare trunk's
+`main` moves and then greps the server log once for the read-back line, which the server writes
+after the push; on this run the grep ran 4 ms before the line (04:57:58.946 against .950); the
+job had passed on the previous eleven `main` runs; CI-LANDING-E2E-LOG-RACE below, dispatched to
+lane A 24 October 01:10 EDT, waits for the line in a bounded loop). M4 is six tasks in: the server lands over HTTPS with a token file read through its own
 askpass hook (#92); `docs/dogfood.md` and its script set the dogfood server up (#91); the build
 protocol's section 2 describes landings through the server (#90), in force from the first landing
 this STATE records; CI runs `actionlint` and `zizmor` on every pull request and push to `main`
 (#94); the server accepts only lowercase agent names (#95); the swarm asks `node --test` for its
 TAP reporter, so its tests pass on Node 22 and 24 alike (#98). `AGENTS.md` is a symlink to
-`CLAUDE.md` (#97). No worktree but this STATE's is checked out; nothing is dispatched: the first
-landing needs Felix's GitHub steps.
+`CLAUDE.md` (#97). Worktrees: this STATE's and lane A's `task-ci-landing-e2e-log-race`. Nothing
+else is dispatched: the first landing needs Felix's GitHub steps.
 **Waiting on Felix:** this STATE; the "main: CI required" ruleset to list "Fast lane, workflow
 lint" (its required checks today: fmt and clippy, core library tests, Rust workspace, steward,
 advisories and bans, mutants on changed lines; a red workflow lint does not block a pull request
@@ -531,6 +535,15 @@ claims reconciled.
   Node 23 the default reporter when stdout is not a terminal is `spec`, so on a Node 24 machine
   `the_starting_repository_passes_its_own_tests` saw 0 tests and the failure note lost its first
   failing test; CI, pinned to Node 22.23.3, stayed green.
+- [ ] **CI-LANDING-E2E-LOG-RACE** — lane A, dispatched 24 October from `d5c27b2`. Main's CI on
+  `d5c27b2` failed "Slow lane, local landing end to end" with "the server did not log a read-back
+  landing" while the server log in the same output holds the line, 4 ms after the script's grep:
+  `tessel-server/ci/landing-e2e.sh` waits for the bare trunk's `main` to move and then checks the
+  log once (the read-back line, then the landed head in it), but the server pushes first and logs
+  the read-back after `ls-remote` confirms it. Fix: wait for the log line naming the landed head in
+  a bounded loop, same shape as the script's other waits; no server change. Done: the ordering in
+  the server shown by file and line; the script green locally; the job green on the pull request;
+  the failure recorded here as the job's first failure in twelve `main` runs, not retried.
 - [x] **SERVER-FORK-CASE** (`9334aaf`, #95) — lane B. As
   built: the server accepts only lowercase agent names (the verifier, `admin token`, `reviewers`
   and the fork template each refuse any other; the protocol's rule is unchanged); a store that
