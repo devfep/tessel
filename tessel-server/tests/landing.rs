@@ -878,6 +878,36 @@ async fn a_trial_runs_the_fork_head_on_main_and_reports_each_side() -> TestResul
     Ok(())
 }
 
+#[tokio::test]
+async fn a_trial_with_no_submitted_commit_is_nothing_to_try_and_runs_nothing() -> TestResult {
+    let repos = Repos::new();
+    let base = CommitId(repos.main_head());
+    repos.fork_main_commit(&[("src/a.rs", "two\n")]);
+    let runner = passing();
+    let landing = landing(&repos, "landing-trial-none", runner.clone());
+    let answer = ask(
+        &landing,
+        Request::Trial {
+            agent: AgentId("a1".to_string()),
+            commit: None,
+            before: base.clone(),
+            main: base,
+        },
+        60_000,
+    )
+    .await;
+    assert_eq!(
+        answer,
+        CallAnswer::Trialled {
+            before: Some(TrialResult::CommitNotInFork),
+            after: None
+        }
+    );
+    assert_eq!(runner.runs(), 0);
+    assert_no_call_dirs(&repos, "landing-trial-none");
+    Ok(())
+}
+
 #[test]
 fn a_lander_removes_what_a_killed_server_left_and_needs_a_remote_and_a_fork() -> TestResult {
     let repos = Repos::new();
