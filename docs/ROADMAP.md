@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 02:25 EDT. Main at `f2d1bd1` (#101 merged by the orchestrator; #102 and #103
+**As of:** 2026-10-24 02:30 EDT. Main at `f2d1bd1` (#101 merged by the orchestrator; #102 and #103
 merged by the orchestrator under Felix's standing order, each after CI green on its head and an Opus
 "Yes" posted on it; the orchestrator's gate on `3b19099` green, 1931 tests, and on `f2d1bd1` green
 on all seven steps, 1934 tests, none failed; main's CI on `3b19099` green, on `f2d1bd1` running when
@@ -16,8 +16,13 @@ MERGE-ADMIN-MERGE-TEXT (#102), SERVER-KILL-AFTER-PUSH-TEST and SERVER-FRAME-LIMI
 Three rows found by them are added: DOCS-GATE-SECTION, LANDER-ADMIN-POLICY-DEAD,
 CLI-LOCK-UPGRADE-WINDOW. M4 is seven tasks in (#91, #92, #94, #95, #98, #100 and the protocol
 rewrite #90); the first landing needs Felix's GitHub steps. `AGENTS.md` is a symlink to `CLAUDE.md`
-(#97). No lane runs and no worktree is checked out but this STATE's and the orchestrator's detached
-gate worktree `.claude/worktrees/gate-main`.
+(#97). **Dispatched 02:23 EDT from `f2d1bd1`:** lane A `lane-a-docs-upgrade`, DOCS-GATE-SECTION and
+CLI-LOCK-UPGRADE-WINDOW, worktree `.claude/worktrees/task-docs-gate-upgrade-lock`; lane B
+`lane-b-head-read`, COORD-HEAD-FROM-AGENT (the core's head: a start read's answer replaces a head
+adopted from a `Hello`, a failed start read is offered again on a backoff; the lane stops if agents
+would need a new protocol message), worktree `.claude/worktrees/task-coord-head-from-agent`. Also
+checked out: this STATE's worktree and the orchestrator's detached gate worktree
+`.claude/worktrees/gate-main`.
 **Standing order from Felix (24 October, about 01:25 EDT), for this night only:** the orchestrator
 merges pull requests itself once the protocol is met (lane report, CI green on the head, an Opus
 reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's gate
@@ -135,13 +140,13 @@ load and flake checks run on CI runners.
   `ReleaseReason` would be false (the assuming claim is still live). Built instead: `Merged`
   gains the optional lists `unverified` and `untried_shadows`, and `Summary` the separate counter
   `verifications_unverifiable`; additive, no version bump.
-- [ ] **COORD-HEAD-FROM-AGENT** — in #92 (M4-GITHUB-REMOTE, under review): a repository with
-  no head reads main's head from the remote at server start, before the first `Hello` can adopt
-  an agent's declared base. Left open by that change: a `Hello` that arrives before the read
-  still sets the head (the read's answer is then dropped), and a failed start read is not
-  rescheduled. From the P0 review: until the first landing or head read, the coordinator's
-  `head` is the base the first agent declared in its `Hello` (`src/coordinator.rs`), and it
-  becomes the baseline of the first dispatch unchecked.
+- [ ] **COORD-HEAD-FROM-AGENT** — lane B, dispatched 24 October from `f2d1bd1`. In #92
+  (M4-GITHUB-REMOTE, under review): a repository with no head reads main's head from the remote at
+  server start, before the first `Hello` can adopt an agent's declared base. Left open by that
+  change: a `Hello` that arrives before the read still sets the head (the read's answer is then
+  dropped), and a failed start read is not rescheduled. From the P0 review: until the first landing
+  or head read, the coordinator's `head` is the base the first agent declared in its `Hello`
+  (`src/coordinator.rs`), and it becomes the baseline of the first dispatch unchecked.
 - [x] **P0-SPIKE** (this pull request) — the GitHub spike in the proposal ("The GitHub adapter",
   spike paragraph): does a fork pull request's check satisfy a required-checks ruleset for a direct
   `updateRefs` of that commit; is a stale `beforeOid` refused with the App as bypass actor; check
@@ -570,26 +575,25 @@ claims reconciled.
   a bounded loop, same shape as the script's other waits; no server change. Done: the ordering in
   the server shown by file and line; the script green locally; the job green on the pull request;
   the failure recorded here as the job's first failure in twelve `main` runs, not retried.
-- [ ] **DOCS-GATE-SECTION** — from lane A's CLI-LOCK-ADMIN-TEXT report (24 October):
-  `docs/configuration.md`'s "Who may change the gate" (near line 104) still describes the
-  steward: `merge-steps.ts` line refs, an admin merge over `POST /repos/<repo>/merges` with
-  `STEWARD_ADMIN_TOKEN`, and the old reason strings. Now a submission touching `tessel.toml` is
-  refused by the server's lander with the #102 text, the change goes through a pull request
-  Felix merges (BUILD-PROTOCOL section 2), and `MergePolicy::Admin` has no caller outside
-  `tessel-lander/tests/merge_steps.rs`. The step-budget paragraph above it cites
-  `tessel-steward/src/step-budget.ts`: check whether the Rust runner keeps those budgets. Done:
-  the section says what the server does, with Rust file and line refs, and the named-tests check
-  green.
+- [ ] **DOCS-GATE-SECTION** — lane A, dispatched 24 October from `f2d1bd1`. From lane A's
+  CLI-LOCK-ADMIN-TEXT report (24 October): `docs/configuration.md`'s "Who may change the gate" (near
+  line 104) still describes the steward: `merge-steps.ts` line refs, an admin merge over `POST
+  /repos/<repo>/merges` with `STEWARD_ADMIN_TOKEN`, and the old reason strings. Now a submission
+  touching `tessel.toml` is refused by the server's lander with the #102 text, the change goes
+  through a pull request Felix merges (BUILD-PROTOCOL section 2), and `MergePolicy::Admin` has no
+  caller outside `tessel-lander/tests/merge_steps.rs`. The step-budget paragraph above it cites
+  `tessel-steward/src/step-budget.ts`: check whether the Rust runner keeps those budgets. Done: the
+  section says what the server does, with Rust file and line refs, and the named-tests check green.
 - [ ] **LANDER-ADMIN-POLICY-DEAD** — from the same report: `MergePolicy::Admin` and the
   `GateInvalid` outcome it alone produces are built only by tests. Decide with the M6 team-mode
   re-plan whether an admin route returns (then keep) or not (then delete both, "replace, don't
   deprecate").
-- [ ] **CLI-LOCK-UPGRADE-WINDOW** — from the #102 review: on Linux a `flock` and an `fcntl`
-  record lock do not exclude each other, so during an upgrade a daemon from the old binary
-  (`flock`) and one from the new (record lock) could both run on one worktree. Done: a written
-  answer whether an upgrade can overlap (does `tessel` stop the old daemon first?), and if it
-  can, the new daemon also refuses while an old daemon's pid in `daemon.lock` is alive, with a
-  test.
+- [ ] **CLI-LOCK-UPGRADE-WINDOW** — lane A, dispatched 24 October from `f2d1bd1`. From the #102
+  review: on Linux a `flock` and an `fcntl` record lock do not exclude each other, so during an
+  upgrade a daemon from the old binary (`flock`) and one from the new (record lock) could both run
+  on one worktree. Done: a written answer whether an upgrade can overlap (does `tessel` stop the old
+  daemon first?), and if it can, the new daemon also refuses while an old daemon's pid in
+  `daemon.lock` is alive, with a test.
 - [x] **SERVER-FORK-CASE** (`9334aaf`, #95) — lane B. As
   built: the server accepts only lowercase agent names (the verifier, `admin token`, `reviewers`
   and the fork template each refuse any other; the protocol's rule is unchanged); a store that
