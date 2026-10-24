@@ -129,7 +129,13 @@ struct Git<'a> {
 impl Git<'_> {
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new("git");
-        command.arg("-C").arg(self.root).args(args);
+        // The messages are matched as English text (`copy_one`), whatever the user's locale.
+        command
+            .arg("-C")
+            .arg(self.root)
+            .args(args)
+            .env("LC_ALL", "C")
+            .env("LANGUAGE", "C");
         command
     }
 

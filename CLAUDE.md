@@ -43,8 +43,9 @@ command on it. `tessel submit` writes this note on the submitted commit, from th
 already has a note keeps it. The lander rebases the submission, so the landed commits are new
 objects: when the server reports the landing, the daemon copies each submitted commit's note to its
 landed commit (matched by author line and message, never forced over an existing note). The notes
-stay in the local repository: `git push` of the fork head does not carry `refs/notes/commits`. A commit that lands outside `tessel submit` (a pull request for
-`tessel.toml` or the server's set-up) still gets a hand-written note in the same shape:
+stay in the local repository: `git push` of the fork head does not carry `refs/notes/commits`. A
+commit that lands outside `tessel submit` (a pull request for `tessel.toml` or the server's
+set-up) still gets a hand-written note in the same shape:
 ```
 git notes add -m "intent: <one line>
 assumes: <behaviour relied on but not owned, or none>

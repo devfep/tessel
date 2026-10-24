@@ -103,6 +103,10 @@ enum Incoming {
         generation: u64,
         sent_ms: u64,
     },
+    /// The note copies started by `start_notes` finished, each with what became of it.
+    NotesDone {
+        results: Vec<(NoteJob, Step)>,
+    },
 }
 
 /// What the event-log read returned.
@@ -322,6 +326,12 @@ struct Daemon {
     /// `sent_ms` of the newest heartbeat a pong answered, kept for the lapse log line.
     last_pong_sent_ms: Option<u64>,
     ever_online: bool,
+    /// A batch of note copies is running on a blocking thread; at most one is.
+    notes_running: bool,
+    /// A retry was asked for while a batch ran; one more batch starts when it ends.
+    notes_again: bool,
+    /// Jobs whose waiting has been logged, so a retry does not log it again.
+    waiting_logged: Vec<NoteJob>,
 }
 
 /// Runs the daemon for `worktree` until `tessel stop` or a fatal error. Returns `Ok` without
@@ -545,6 +555,9 @@ impl Daemon {
             welcome_limit: WELCOME_LIMIT,
             last_pong_sent_ms: None,
             ever_online: false,
+            notes_running: false,
+            notes_again: false,
+            waiting_logged: Vec::new(),
         }
     }
 
@@ -582,6 +595,7 @@ impl Daemon {
         mut in_rx: mpsc::UnboundedReceiver<Incoming>,
     ) -> anyhow::Result<()> {
         self.persist();
+        self.start_notes();
         loop {
             let online = self.is_online();
             let reconnect_at = self.reconnect_at;
@@ -784,8 +798,17 @@ impl Daemon {
     // ---------- messages from the coordinator ----------
 
     async fn on_incoming(&mut self, incoming: Incoming) {
+        let retry_notes = matches!(
+            incoming,
+            Incoming::Msg {
+                msg: ServerMsg::Merged { .. } | ServerMsg::BaseMoved { .. },
+                ..
+            } | Incoming::Snapshot { .. }
+        );
         self.handle_incoming(incoming).await;
-        self.run_pending_notes().await;
+        if retry_notes {
+            self.start_notes();
+        }
     }
 
     async fn handle_incoming(&mut self, incoming: Incoming) {
@@ -819,6 +842,7 @@ impl Daemon {
             } if generation == self.generation => {
                 self.on_heartbeat_answered(sent_ms);
             }
+            Incoming::NotesDone { results } => self.finish_notes(results),
             Incoming::Msg { .. }
             | Incoming::Closed { .. }
             | Incoming::Snapshot { .. }
@@ -1578,32 +1602,67 @@ impl Daemon {
         self.persist();
     }
 
-    /// Runs the queued note copies on blocking threads. A job whose commits are not here yet, or
-    /// whose notes ref is locked, stays queued; this is tried again on every message from the
-    /// coordinator and every command.
-    async fn run_pending_notes(&mut self) {
+    /// Starts the queued note copies on a blocking thread, unless a batch is already running (then
+    /// one more follows it). The batch reports back as `Incoming::NotesDone`, so the loop keeps
+    /// serving the socket and commands meanwhile. Called on `Merged`, `BaseMoved`, a reconnect's
+    /// log read, every command and at start, not on a heartbeat.
+    fn start_notes(&mut self) {
         if self.state.pending_notes.is_empty() {
             return;
         }
+        if self.notes_running {
+            self.notes_again = true;
+            return;
+        }
+        self.notes_running = true;
+        let jobs = self.state.pending_notes.clone();
         let root = self.worktree.root.clone();
-        let mut waiting = Vec::new();
-        for job in std::mem::take(&mut self.state.pending_notes) {
-            let (dir, owned) = (root.clone(), job.clone());
-            let step = tokio::task::spawn_blocking(move || notes::copy_notes(&dir, &owned))
-                .await
-                .unwrap_or_else(|why| Step::Refused(format!("the copy did not finish: {why}")));
+        let tx = self.in_tx.clone();
+        tokio::spawn(async move {
+            let batch = tokio::task::spawn_blocking(move || {
+                jobs.into_iter()
+                    .map(|job| {
+                        let step = notes::copy_notes(&root, &job);
+                        (job, step)
+                    })
+                    .collect()
+            });
+            let results = batch.await.unwrap_or_default();
+            let _ = tx.send(Incoming::NotesDone { results });
+        });
+    }
+
+    /// A batch ended. A job that finished or was refused leaves the queue; one still waiting for
+    /// its commits or the notes ref stays, and is logged the first time only. `state.json` is
+    /// written only when the queue changed.
+    fn finish_notes(&mut self, results: Vec<(NoteJob, Step)>) {
+        self.notes_running = false;
+        let mut changed = false;
+        for (job, step) in results {
+            if let Step::Waiting(_) = step {
+                if !self.waiting_logged.contains(&job) {
+                    self.log(&notes::describe(&job, &step));
+                    self.waiting_logged.push(job);
+                }
+                continue;
+            }
             let line = notes::describe(&job, &step);
             self.log(&line);
-            match step {
-                Step::Waiting(_) => waiting.push(job),
-                Step::Done(report) if report.not_landed + report.ambiguous == 0 => {}
-                Step::Done(_) | Step::Refused(_) => {
-                    self.notify(NoticeKind::Reconciled, &line, None);
-                }
+            let clean =
+                matches!(&step, Step::Done(report) if report.not_landed + report.ambiguous == 0);
+            if !clean {
+                self.notify(NoticeKind::Reconciled, &line, None);
             }
+            self.state.pending_notes.retain(|queued| *queued != job);
+            self.waiting_logged.retain(|logged| *logged != job);
+            changed = true;
         }
-        self.state.pending_notes = waiting;
-        self.persist();
+        if changed {
+            self.persist();
+        }
+        if std::mem::take(&mut self.notes_again) {
+            self.start_notes();
+        }
     }
 
     /// A merge is the only thing that moves the diff base: everything up to the merged
@@ -1862,7 +1921,7 @@ impl Daemon {
     // ---------- commands from the CLI ----------
 
     async fn on_command(&mut self, command: Command) -> Flow {
-        self.run_pending_notes().await;
+        self.start_notes();
         let Command { request, reply } = command;
         match request {
             Request::Status => {
