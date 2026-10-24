@@ -751,4 +751,20 @@ mod tests {
         let idle = core();
         assert_eq!(idle.next_wake_ms(false, false, NOW), None);
     }
+
+    #[test]
+    fn a_restart_while_the_start_read_is_out_reads_main_again_without_a_poke() {
+        let mut c = core();
+        let lost = c.begin_head_read().expect("no head: a read is due");
+        assert_eq!(lost.head_at_start, None);
+        hello(&mut c, "a1", OLD);
+        let saved = serde_json::to_string(&c).unwrap();
+        let mut restored: Coordinator = serde_json::from_str(&saved).unwrap();
+        let read = restored
+            .begin_head_read()
+            .expect("the head is still the one a Hello adopted: main is read again");
+        let effects = restored.trunk_read(&read, Some(sha(TRUNK)), NOW + 1);
+        assert_eq!(head_of(&restored), Some(sha(TRUNK)));
+        assert_eq!(effects.len(), 1, "the move is logged: {effects:?}");
+    }
 }
