@@ -854,8 +854,8 @@ reviews (security, operations) and the sandbox trial.
   since #114 is never updated by lanes. Sensitive path.
 - [ ] **DOCS-LONG-PROSE-LINES** — the prose lines over 100 characters listed above.
 - [x] **M4-RESTART-HELD** (24 October) — lane B's claim 4 (GATE-INVALID-RETRIED) held for review;
-  the server stopped and started at 16:54 UTC (12:54 EDT) with nothing running; the claim stayed submitted, was
-  approved after the restart and landed (`0c0f119`).
+  the server stopped and started at 16:54 UTC (12:54 EDT) with nothing running; the claim stayed
+  submitted, was approved after the restart and landed (`0c0f119`).
 - [ ] **M5-PROOF-CANDIDATE** — M5, to weigh at its re-plan. GitHub Next and Microsoft Research's
   Proof Driven Development Kit (21 October) proves Rust against a Verus spec and falls back to
   tests. The core's invariants that proptests pin (one `Merged` per claim, fences persisted before
