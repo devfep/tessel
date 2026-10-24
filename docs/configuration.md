@@ -97,20 +97,31 @@ Tessel needs its own toolchain image built from its lockfiles, and the steward's
 
 ### Time budget
 
-All install commands share 60 s. All `[[test]]` commands share 327 s. A command that runs out of
-its share ends as a timeout (exit 124 or 137), not as a failing test
-(`tessel-steward/src/step-budget.ts:33-65,77`, asserted in `step-budget.test.ts:36`).
+The server's landing path does not run the install step, so `[install]` costs no time
+(`tessel-server/src/landing/ports.rs:126-139`). All `[[test]]` commands share one deadline. It is
+the call's remaining time less 5 seconds and at least 1 second
+(`tessel-server/src/landing/deadline.rs:43-48`), cut to `timeout_secs` of `tessel-runner.toml` if
+that is smaller (`tessel-runner/src/request.rs:83`; the default is at
+`tessel-runner/src/config.rs:46`). There is no separate share per command. A run that reaches the deadline is killed and reported with exit
+code 137 and `timed_out` set, not as a failing test (`tessel-runner/src/supervise.rs:26,86-100`).
 
 ### Who may change the gate
 
+No route changes `tessel.toml` through a submission. The lander looks at the files the rebased
+commit changes before it runs any repo code and before it checks the claim's scopes
+(`tessel-lander/src/merge.rs:337-353`, called at `:408`).
+
 | Path | Result | Code |
 |---|---|---|
-| A submission (service binding) whose rebased diff touches `tessel.toml` | Rejected as `gate_changed`: "changes the gate (tessel.toml); only an admin merge may change it" | `merge-steps.ts:151-163`, `src/merge.rs:225` |
-| Admin merge (`POST /repos/<repo>/merges` with `STEWARD_ADMIN_TOKEN`) whose head `tessel.toml` fails validation | Rejected as `gate_invalid`: "changes the gate (tessel.toml) to a file the steward cannot accept" | `merge-steps.ts:164-166`, `src/merge.rs:229` |
-| Admin merge with a valid head file and a diff that touches only `tessel.toml` | Merged without running the install or tests, so a broken trunk gate can be repaired | `merge-steps.ts:168` |
-| Admin merge with a valid head file and a diff that also changes other files | Tested by the trunk's gate as usual | `merge-steps.ts:168` |
+| A submission whose rebased diff touches `tessel.toml` | Refused as `GateChanged` before the tests run. The agent gets `submit_rejected` with "changes the gate (tessel.toml); the server's lander refuses it, so change it in a pull request that the repository's owner merges". | `tessel-server/src/landing/mod.rs:341`, `answer.rs:87-89`, `src/merge.rs:328-333` |
+| A change to `tessel.toml` | A pull request that the repository's owner merges. | `docs/BUILD-PROTOCOL.md`, section 2 |
 
-A claim's scopes must still cover `tessel.toml` in every case.
+The lander also has an admin policy, `MergePolicy::Admin` (`tessel-lander/src/merge.rs:86-89`).
+It would accept a valid new `tessel.toml`, refuse an invalid one as `GateInvalid`, and skip the
+tests when the diff touches only that file (`:349-373`, `:602`). Nothing issues it: the only
+callers outside `tessel-lander/tests/merge_steps.rs` build `MergePolicy::Submission`
+(`tessel-server/src/landing/mod.rs:341`). The server maps `GateInvalid` to the same refusal as
+`GateChanged` (`answer.rs:87`) but cannot reach it.
 
 ### Example
 
