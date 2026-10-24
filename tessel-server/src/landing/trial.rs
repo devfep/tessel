@@ -53,7 +53,6 @@ impl Inner {
         let sources = MergeSources {
             main_remote: self.remote.clone(),
             fork_remote,
-            fork_branch: MAIN_BRANCH.to_owned(),
         };
         let ports = self.ports(work);
         let runs = AtomicU64::new(0);

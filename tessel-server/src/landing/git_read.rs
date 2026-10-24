@@ -6,7 +6,7 @@
 use std::ffi::OsString;
 use std::time::Duration;
 
-use tessel_lander::git::{Git, GitCommand, MergeSources, MAIN_BRANCH};
+use tessel_lander::git::{Git, GitCommand, MergeSources};
 use tessel_lander::run::{run, GitRunner, SystemRunner};
 use tessel_lander::types::Sha;
 use tessel_lander::workspace::{clone_main, CloneOutcome};
@@ -82,7 +82,6 @@ pub fn main_and_ancestors(
     let sources = MergeSources {
         main_remote: remote.to_owned(),
         fork_remote: String::new(),
-        fork_branch: MAIN_BRANCH.to_owned(),
     };
     let workspace = match clone_main(git, &SystemRunner, &sources, clone_dir) {
         Ok(CloneOutcome::Cloned(workspace)) => workspace,

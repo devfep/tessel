@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::run::{run, RunError};
-use crate::types::{is_safe_branch_name, Sha};
+use crate::types::Sha;
 use crate::workspace::Workspace;
 
 pub const MAIN_BRANCH: &str = "main";
@@ -67,19 +67,15 @@ pub struct GitCommand {
     pub timeout: Duration,
 }
 
-/// What a merge reads. `fork_branch` is the fork's default branch. Where it runs is a
-/// [`Workspace`], which only the clone step makes.
+/// What a merge reads. Where it runs is a [`Workspace`], which only the clone step makes.
 #[derive(Debug, Clone)]
 pub struct MergeSources {
     pub main_remote: String,
     pub fork_remote: String,
-    pub fork_branch: String,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommandError {
-    #[error("refusing to use the unsafe fork branch name {name:?}")]
-    UnsafeForkBranch { name: String },
     #[error("cannot create {path} for the git environment: {source}")]
     CreateDir { path: PathBuf, source: io::Error },
     #[error("{path} must be an empty directory: it holds {entry:?}")]
@@ -294,25 +290,20 @@ impl Git {
         command
     }
 
-    /// Fetches only the fork's default branch, into `refs/remotes/fork/<branch>`.
-    pub fn fetch_fork_command(
-        &self,
-        workspace: &Workspace,
-        sources: &MergeSources,
-    ) -> Result<GitCommand, CommandError> {
-        let branch = &sources.fork_branch;
-        let reference = fork_ref(branch)?;
-        Ok(self.local(
+    /// Fetches every branch of the fork, into `refs/remotes/fork/`. The workspace is a fresh
+    /// clone, so only this fetch's refs are there. An empty fork fetches nothing and succeeds.
+    pub fn fetch_fork_command(&self, workspace: &Workspace, sources: &MergeSources) -> GitCommand {
+        self.local(
             workspace,
             &[
                 "fetch",
                 "--no-tags",
                 "--",
                 &sources.fork_remote,
-                &format!("+refs/heads/{branch}:{reference}"),
+                "+refs/heads/*:refs/remotes/fork/*",
             ],
             FETCH_TIMEOUT,
-        ))
+        )
     }
 
     /// Resolves main as cloned. Stdout is the sha.
@@ -345,19 +336,21 @@ impl Git {
         )
     }
 
-    /// Exit 0 when the commit is reachable from the fork's default branch, 1 when it is not.
-    pub fn reachable_command(
-        &self,
-        workspace: &Workspace,
-        sources: &MergeSources,
-        commit: &Sha,
-    ) -> Result<GitCommand, CommandError> {
-        let reference = fork_ref(&sources.fork_branch)?;
-        Ok(self.local(
+    /// Stdout is empty when no fork branch contains the commit. Fork ref names are the agent's
+    /// data: they are only ever matched by git, never printed, logged or put in argv.
+    pub fn reachable_command(&self, workspace: &Workspace, commit: &Sha) -> GitCommand {
+        self.local(
             workspace,
-            &["merge-base", "--is-ancestor", commit.as_str(), &reference],
+            &[
+                "for-each-ref",
+                "--count=1",
+                "--format=x",
+                "--contains",
+                commit.as_str(),
+                "refs/remotes/fork/",
+            ],
             LOCAL_TIMEOUT,
-        ))
+        )
     }
 
     /// Stdout is the merge-base of main and the commit.
@@ -501,15 +494,6 @@ impl Git {
             PUSH_TIMEOUT,
         )
     }
-}
-
-fn fork_ref(branch: &str) -> Result<String, CommandError> {
-    if !is_safe_branch_name(branch) {
-        return Err(CommandError::UnsafeForkBranch {
-            name: branch.to_owned(),
-        });
-    }
-    Ok(format!("refs/remotes/fork/{branch}"))
 }
 
 /// Splits `git diff -z` output into paths. Paths are untrusted data.

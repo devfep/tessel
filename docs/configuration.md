@@ -214,7 +214,8 @@ A merge is one `Prepare` call until the staged landing (HOST-MERGE-STANDIN), and
 with a `remote` the server answers it in process with the lander and the runner. In order:
 
 1. Read main's head from the remote and pin it.
-2. Clone main, fetch the `main` of the agent's fork and check the commit is on it.
+2. Clone main, fetch every branch of the agent's fork and check that some branch contains the
+   commit.
 3. Rebase the commit onto main with a fixed committer, so a retry gives the same commit.
 4. Check the claim covers every changed file and that `tessel.toml` is untouched.
 5. Clone the rebased head into a test tree and run the trunk's `[[test]]` commands there with the
@@ -451,11 +452,14 @@ What a held mode covers when submitting (`protocol.rs:196-210`): every mode cove
 | `--evidence "<text>"` | none, at least one | What shows the work is right. Repeatable. The CLI drops blank entries (`tessel-cli/src/submit.rs:63-75`). Self-reported: the coordinator accepts any non-empty evidence list, and nothing checks that the tests ran. |
 | `--rejected "<approach>::<reason>"` | none | An approach tried and dropped. Repeatable. |
 | `--claim <id>` | the only unsubmitted claim | Required when several are held. |
-| `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to the agent's fork's `main`. |
+| `--commit <sha>` | `HEAD` | The commit to merge. It must already be pushed to a branch of the agent's fork. |
 | `--transcript <file>` | none | A session transcript. Redacted, at most 4 MiB, stored on the local branch `tessel/transcript-<claim>` (`tessel-cli/src/transcript.rs`). Nothing copies it yet (P1-EVIDENCE). |
 
-Push first: `git push <your fork> HEAD:main`. The server's lander fetches only the fork's `main`
-and needs the commit reachable from it ([Landing](#landing)). The fork is the one the server's
+Push first: `git push <your fork> HEAD:refs/heads/<new branch>`, without force. The server's
+lander fetches every branch of the fork and needs one of them to contain the commit
+([Landing](#landing)); a commit that is in the fork's object store but on no branch is refused.
+Never rewrite a branch you have pushed: after an amend or a rebase, push a new name, such as
+`tessel/<claim>-<n>`. The fork is the one the server's
 `fork` template names for the agent, locally `<forks>/<agent>.git`; the CLI does not choose it. The
 runner runs the trunk's test command on the rebased commit before main moves. No evidence record
 and no transcript copy exist yet (P1-EVIDENCE).

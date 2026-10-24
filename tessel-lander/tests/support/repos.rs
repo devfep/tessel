@@ -113,7 +113,6 @@ impl Repos {
         MergeSources {
             main_remote: self.main.display().to_string(),
             fork_remote: self.fork.display().to_string(),
-            fork_branch: "main".to_owned(),
         }
     }
 

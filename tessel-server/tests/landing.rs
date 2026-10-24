@@ -788,7 +788,7 @@ async fn test_and_land_are_refused_naming_the_stand_in() -> TestResult {
 async fn a_trial_runs_the_fork_head_on_main_and_reports_each_side() -> TestResult {
     let repos = Repos::new();
     let base = CommitId(repos.main_head());
-    repos.fork_commit(&[("src/a.rs", "two\n")]);
+    repos.fork_main_commit(&[("src/a.rs", "two\n")]);
     let outcome = Arc::new(AtomicBool::new(true));
     let runner = {
         let outcome = Arc::clone(&outcome);

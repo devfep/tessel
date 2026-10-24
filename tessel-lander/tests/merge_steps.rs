@@ -133,7 +133,7 @@ fn git_step(command: &GitCommand) -> GitStep {
         (" fetch ", GitStep::Fetch),
         ("origin/main^{commit}", GitStep::Base),
         ("--quiet", GitStep::Exists),
-        ("--is-ancestor", GitStep::Reachable),
+        (" for-each-ref ", GitStep::Reachable),
         (" merge-base ", GitStep::MergeBase),
         (" rebase ", GitStep::Rebase),
         ("--diff-filter=U", GitStep::Conflicts),
@@ -190,16 +190,14 @@ fn default_reply(step: GitStep) -> Reply {
     match step {
         GitStep::Base => out(0, &format!("{}\n", base())),
         GitStep::Exists => out(0, &format!("{}\n", commit())),
+        GitStep::Reachable => out(0, "x\n"),
         GitStep::MergeBase => out(0, &format!("{}\n", merge_base())),
         GitStep::Head => out(0, &format!("{}\n", head())),
         GitStep::Changed => out(0, "M\0src/a.ts\0"),
         GitStep::Show => out(0, VALID_GATE),
-        GitStep::Clone
-        | GitStep::Fetch
-        | GitStep::Reachable
-        | GitStep::Rebase
-        | GitStep::Conflicts
-        | GitStep::Push => out(0, ""),
+        GitStep::Clone | GitStep::Fetch | GitStep::Rebase | GitStep::Conflicts | GitStep::Push => {
+            out(0, "")
+        }
     }
 }
 
@@ -402,7 +400,6 @@ fn sources() -> MergeSources {
     MergeSources {
         main_remote: SOURCES_MAIN.to_owned(),
         fork_remote: "https://git.example/demo--a1.git".to_owned(),
-        fork_branch: "main".to_owned(),
     }
 }
 
@@ -996,8 +993,8 @@ fn does_not_call_a_failed_rebase_a_conflict_when_no_file_is_unmerged() {
     assert_eq!(result.exit_code, Some(128));
 }
 
-fn refuses_when(git_step: GitStep) {
-    let harness = Harness::new(Plan::new().git(git_step, exit(1)));
+fn refuses_when(git_step: GitStep, reply: Reply) {
+    let harness = Harness::new(Plan::new().git(git_step, reply));
     assert_eq!(
         merge(&harness, &whole_repo()),
         MergeOutcome::CommitNotInFork
@@ -1008,12 +1005,12 @@ fn refuses_when(git_step: GitStep) {
 
 #[test]
 fn refuses_when_the_commit_object_is_missing() {
-    refuses_when(GitStep::Exists);
+    refuses_when(GitStep::Exists, exit(1));
 }
 
 #[test]
-fn refuses_when_the_commit_is_not_an_ancestor_of_the_forks_default_branch() {
-    refuses_when(GitStep::Reachable);
+fn refuses_when_no_fork_branch_contains_the_commit() {
+    refuses_when(GitStep::Reachable, exit(0));
 }
 
 #[test]
@@ -1447,28 +1444,6 @@ fn a_clone_that_cannot_run_still_revokes_the_read_tokens_and_runs_nothing_after(
         matches!(error, MergeError::Clone(CloneError::Run(_))),
         "{error}"
     );
-    assert_eq!(harness.events(), strings(&["git:clone", "revoke-reads"]));
-}
-
-#[test]
-fn an_unsafe_fork_branch_is_an_error_after_the_read_tokens_are_revoked() {
-    let harness = Harness::new(Plan::new());
-    let (git, pin, commit) = (git(), base(), commit());
-    let hostile = MergeSources {
-        fork_branch: "main --upload-pack=x".to_owned(),
-        ..sources()
-    };
-    let ctx = context(&harness, &git, &hostile, &pin);
-    let scopes = whole_repo();
-    let request = MergeRequest {
-        commit: &commit,
-        scopes: &scopes,
-        policy: MergePolicy::Submission,
-    };
-
-    let error = run_merge(&ctx, &harness, &request).expect_err("unsafe branch");
-
-    assert!(matches!(error, MergeError::Command(_)), "{error}");
     assert_eq!(harness.events(), strings(&["git:clone", "revoke-reads"]));
 }
 

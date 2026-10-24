@@ -153,7 +153,7 @@ unsupported file. If you claim by hand, add `create` when you add a symbol.
 ## Submitting
 
 ```
-git push <your fork> HEAD:main  # first: the commit must be on your fork's main
+git push <your fork> HEAD:refs/heads/<new branch>  # first: no force, a new name each time
 tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
               [--rejected "<approach>::<reason>"] [--claim <id>] [--commit <sha>]
               [--transcript <file>]
@@ -161,11 +161,13 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
 
 - **Push first and give evidence.** `tessel submit` neither pushes nor checks the fork. Your fork
   is the one the server's `fork` template names for your agent (locally `<forks>/<agent>.git`). The
-  server's lander fetches only its `main`, so push to `main` whatever your local branch is called;
-  the runner then runs the trunk's test command on the rebased commit before main moves. At least
-  one `--evidence` is required (repeatable): without it the work would be held for review. Evidence
-  is self-reported: any non-empty text satisfies the rule and nothing checks that the tests ran, so
-  write only what you ran and saw.
+  server's lander fetches every branch of it and lands the commit only if one contains it. Push to
+  a new branch name, without force, and never rewrite a branch you pushed: after an amend or a
+  rebase, push a new name, such as `tessel/<claim>-<n>`. The runner then runs the trunk's test
+  command on the rebased commit before main moves. At least one `--evidence` is required
+  (repeatable): without it the work would be held for review. Evidence is self-reported: any
+  non-empty text satisfies the rule and nothing checks that the tests ran, so write only what you
+  ran and saw.
 - **One claim must cover everything the commit changed.** The default is your only unsubmitted
   claim; else `--claim <id>`. `--commit` defaults to `HEAD`. The diff runs from the newest of the
   coordinator's head, your fork point and your start commit (`start` in `tessel status`; it moves
