@@ -702,6 +702,32 @@ mod tests {
     }
 
     #[test]
+    fn a_poke_starts_the_start_read_retries_again() {
+        let mut c = core();
+        let mut now = NOW;
+        for _ in 0..=MAX_INFRA_RETRIES {
+            let read = c.begin_head_read().expect("a read is owed with no head");
+            c.trunk_read(&read, None, now);
+            now += 1;
+        }
+        c.trunk_moved(now);
+        let read = c.begin_head_read().expect("due");
+        c.trunk_read(&read, None, now);
+        assert_eq!(c.next_head_read_ms(now), Some(now + infra_backoff_ms(1)));
+    }
+
+    #[test]
+    fn an_answer_that_confirms_the_hello_head_ends_its_replaceability() {
+        let mut c = core();
+        let first = c.begin_head_read().expect("due");
+        let second = c.begin_head_read().expect("due again before an answer");
+        hello(&mut c, "a1", OLD);
+        assert!(c.trunk_read(&first, Some(sha(OLD)), NOW + 1).is_empty());
+        assert!(c.trunk_read(&second, Some(sha(TRUNK)), NOW + 2).is_empty());
+        assert_eq!(head_of(&c), Some(sha(OLD)));
+    }
+
+    #[test]
     fn head_request_names_the_repo() {
         assert_eq!(head_request_body("demo"), r#"{"repo":"demo"}"#);
     }
