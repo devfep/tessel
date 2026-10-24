@@ -398,6 +398,14 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
     result
 }
 
+/// Takes the worktree's daemon lock, or returns `None` when another daemon holds it.
+///
+/// The lock is a POSIX record lock, not `flock`. `flock` locks the open file description, and a
+/// child the daemon forks (git, a hook) shares it until the child execs, so a daemon that
+/// exited could still refuse its successor for that window. A record lock belongs to the process
+/// and a fork child does not inherit it. Its two hazards cannot arise here: one process runs one
+/// daemon (`commands.rs` calls `run` once), and nothing else opens `daemon.lock`, so no second
+/// holder takes the lock inside this process and no other descriptor closes it early.
 fn acquire_lock(worktree: &Worktree) -> anyhow::Result<Option<std::fs::File>> {
     let path = worktree.lock_path();
     let file = std::fs::OpenOptions::new()
@@ -406,12 +414,34 @@ fn acquire_lock(worktree: &Worktree) -> anyhow::Result<Option<std::fs::File>> {
         .write(true)
         .open(&path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => {
-            Err(e).with_context(|| format!("cannot lock {}", path.display()))
-        }
+    match try_record_lock(&file) {
+        Ok(true) => Ok(Some(file)),
+        Ok(false) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot lock {}", path.display())),
+    }
+}
+
+/// Takes a write lock over the whole file without waiting. `Ok(false)` means another process
+/// holds it.
+fn try_record_lock(file: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: an all-zero `flock` is a valid value (zero integers). Zero in `l_whence`, `l_start`
+    // and `l_len` is `SEEK_SET`, offset 0, length 0, which locks the whole file; only the lock
+    // type is set below.
+    let mut request: libc::flock = unsafe { std::mem::zeroed() };
+    request.l_type = libc::c_short::try_from(libc::F_WRLCK)
+        .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
+    // SAFETY: `fcntl` with `F_SETLK` reads `request`, which is live for the call, and the
+    // descriptor is open for as long as `file` is borrowed.
+    let status = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw mut request) };
+    if status == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EACCES | libc::EAGAIN) => Ok(false),
+        Some(_) | None => Err(error),
     }
 }
 
