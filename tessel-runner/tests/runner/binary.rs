@@ -49,7 +49,7 @@ fn wait_until_exited(child: &mut Child) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while child.try_wait().expect("poll the runner").is_none() {
         assert!(Instant::now() < deadline, "the runner did not exit");
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
