@@ -2263,7 +2263,7 @@ mod tests {
         assert_eq!(c.next_expiry_ms(), None, "no lease is running");
         let at = c.next_alarm_ms(true, NOW + 7);
         assert_eq!(at, Some(NOW + 7 + MERGE_WATCHDOG_MS));
-        const { assert!(MERGE_WATCHDOG_MS > crate::merge::LANDER_CALL_TIMEOUT_MS) };
+        const { assert!(MERGE_WATCHDOG_MS > crate::merge::STEWARD_CALL_TIMEOUT_MS) };
     }
 
     #[test]

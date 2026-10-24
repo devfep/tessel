@@ -29,16 +29,16 @@ pub const INFRA_BACKOFF_BASE_MS: u64 = 10_000;
 /// tree enforces that limit. A merge that outlives it is retried: the lander answers
 /// `already_merged` if it did land.
 ///
-/// The lander's step timeouts are one budget whose worst case, plus a margin for container start
-/// and teardown, stays under this value (`tessel-steward/src/step-budget.ts`; a lander test reads
+/// The steward's step timeouts are one budget whose worst case, plus a margin for container start
+/// and teardown, stays under this value (`tessel-steward/src/step-budget.ts`; a steward test reads
 /// this constant and checks the sum). A test step that outlasts its share ends as an
 /// infrastructure outcome (`install`), never as failing tests. A trial runs its two sides at
 /// once, so it needs the time of one side.
-pub const LANDER_CALL_TIMEOUT_MS: u64 = 13 * 60 * 1000;
+pub const STEWARD_CALL_TIMEOUT_MS: u64 = 13 * 60 * 1000;
 
 /// While a merge runs, a watchdog alarm is kept this long after the call starts: past the
 /// timeout, so it fires only if the instance died without scheduling the next alarm.
-pub const MERGE_WATCHDOG_MS: u64 = LANDER_CALL_TIMEOUT_MS + 60_000;
+pub const MERGE_WATCHDOG_MS: u64 = STEWARD_CALL_TIMEOUT_MS + 60_000;
 
 /// The wait before infrastructure retry number `retry` (1 for the first).
 pub fn infra_backoff_ms(retry: u32) -> u64 {

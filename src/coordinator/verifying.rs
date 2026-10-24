@@ -34,10 +34,10 @@
 //!   and `next_merge_ms` return `None` while a verification is in flight, whatever the host's
 //!   wakes do, and `begin_verification` refuses while a merge is due or in flight. Time-outs, the
 //!   watchdog and the bounded infrastructure retries are the merge queue's
-//!   (`merge::LANDER_CALL_TIMEOUT_MS`, `MERGE_WATCHDOG_MS`, `MAX_INFRA_RETRIES`). The lander
+//!   (`merge::STEWARD_CALL_TIMEOUT_MS`, `MERGE_WATCHDOG_MS`, `MAX_INFRA_RETRIES`). The lander
 //!   runs the two sides of a trial at the same time; a side that outlives the call timeout is an
 //!   infrastructure failure, so the verification ends `Inconclusive` after the retries (see
-//!   `LANDER_CALL_TIMEOUT_MS`).
+//!   `STEWARD_CALL_TIMEOUT_MS`).
 //! - A claim that ends before its verification runs (released, expired, lost a race or merged)
 //!   drops it. An assumption verification is logged as `VerificationDropped` with the claim, the
 //!   assumption and the reason the claim ended, and `Summary` counts it as `verifications_dropped`,
