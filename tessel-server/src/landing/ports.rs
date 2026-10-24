@@ -83,9 +83,12 @@ fn read_gate_in(root: &Path) -> Result<GateConfig, GateFault> {
             format!("cannot read {TESSEL_TOML_PATH}"),
         ))
     };
-    let meta = fs::symlink_metadata(&path).map_err(|error| match error.kind() {
-        ErrorKind::NotFound => missing(),
-        _ => unreadable(),
+    let meta = fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            missing()
+        } else {
+            unreadable()
+        }
     })?;
     if !meta.is_file() {
         return Err(missing());
@@ -317,16 +320,18 @@ mod tests {
         dir
     }
 
-    fn assert_unusable(result: Result<GateConfig, GateFault>, expected: &str) {
-        match result {
-            Err(GateFault::Unusable(message)) => {
-                assert!(message.contains(expected), "{message}");
-            }
-            other => panic!("expected an unusable gate, got {other:?}"),
-        }
+    fn assert_unusable(result: &Result<GateConfig, GateFault>, expected: &str) {
+        let message = match result {
+            Err(GateFault::Unusable(message)) => message.as_str(),
+            Err(GateFault::Unreadable(_)) | Ok(_) => "",
+        };
+        assert!(
+            message.contains(expected),
+            "expected an unusable gate, got {result:?}"
+        );
     }
 
-    fn assert_unreadable(result: Result<GateConfig, GateFault>) {
+    fn assert_unreadable(result: &Result<GateConfig, GateFault>) {
         assert!(
             matches!(result, Err(GateFault::Unreadable(_))),
             "expected a failed read, got {result:?}"
@@ -336,13 +341,13 @@ mod tests {
     #[test]
     fn a_trunk_with_no_gate_file_is_unusable() {
         let dir = trunk_with(None);
-        assert_unusable(read_gate_in(dir.path()), "has no tessel.toml");
+        assert_unusable(&read_gate_in(dir.path()), "has no tessel.toml");
     }
 
     #[test]
     fn a_gate_file_that_is_not_utf8_is_unusable_not_a_failed_read() {
         let dir = trunk_with(Some(b"instance = \"\xff\xfe\"\n"));
-        assert_unusable(read_gate_in(dir.path()), "not a valid gate");
+        assert_unusable(&read_gate_in(dir.path()), "not a valid gate");
     }
 
     #[test]
@@ -352,7 +357,7 @@ mod tests {
         fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
         let result = read_gate_in(dir.path());
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
-        assert_unreadable(result);
+        assert_unreadable(&result);
     }
 
     #[test]
@@ -361,7 +366,7 @@ mod tests {
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o000)).unwrap();
         let result = read_gate_in(dir.path());
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        assert_unreadable(result);
+        assert_unreadable(&result);
     }
 
     #[test]
