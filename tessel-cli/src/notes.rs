@@ -374,6 +374,12 @@ mod tests {
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
+    fn init(dir: &Path) {
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["config", "user.name", "Lander"]);
+        git(dir, &["config", "user.email", "lander@example.com"]);
+    }
+
     fn date(second: u32) -> String {
         format!("2024-01-01T00:00:{second:02} +0000")
     }
@@ -395,7 +401,7 @@ mod tests {
     impl Repo {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            git(dir.path(), &["init", "-q", "-b", "main"]);
+            init(dir.path());
             std::fs::write(dir.path().join("a.rs"), lines(&[])).unwrap();
             let repo = Self { dir };
             repo.commit_all("start", 0);
@@ -642,7 +648,7 @@ mod tests {
         let elsewhere = tempfile::tempdir().unwrap();
         let remote = s.repo.root();
         let remote = remote.to_str().unwrap();
-        git(elsewhere.path(), &["init", "-q", "-b", "main"]);
+        init(elsewhere.path());
         git(
             elsewhere.path(),
             &[
