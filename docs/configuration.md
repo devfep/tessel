@@ -31,7 +31,7 @@ allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:227-264`).
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `instance` | string, optional | none | Left out, it is fine. Given, it must be one of `standard-1` to `standard-4`. Checked, never used. |
+| `instance` | string, optional | none | Optional; if given, one of `standard-1` to `standard-4`. Checked, never used. |
 | `[install]` | table, optional | none | Only `cargo` and `pnpm`. Checked, never run. |
 | `install.cargo` | boolean | `false` | Checked, never run. |
 | `install.pnpm` | array of at most 4 directories | `[]` | Checked, never run. |
@@ -39,20 +39,20 @@ allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:227-264`).
 | `test.argv` | array of 1 to 24 strings, required | none | The command, run without a shell. |
 | `test.dir` | directory | `"."` | Working directory, relative to the repo root. |
 
-Code: keys and limits `tessel-lander/src/gate.rs:13-35`, install parsing `:160-189`, test
-parsing `:191-212`. The install step passes without running anything
+Code: keys and limits `tessel-lander/src/gate.rs:13-35`, install parsing `:161-190`, test
+parsing `:192-213`. The install step passes without running anything
 (`tessel-server/src/landing/ports.rs:126-139`), so the keys under `[install]` have no effect.
 
 ### Instances
 
 `instance` may be left out. When it is given it must be one of `standard-1` to `standard-4`, and
 `lite` is not accepted
-(`tessel-lander/src/gate.rs:37-53,239-254`). The Rust server has no container sizes. It checks the
+(`tessel-lander/src/gate.rs:37-53,239-255`). The Rust server has no container sizes. It checks the
 name and reads it nowhere else, so the tests get the resources of the machine the server runs on.
 
 ### Allowed commands
 
-A `test.argv` must be one of (`tessel-lander/src/gate.rs:90-96`):
+A `test.argv` must be one of (`tessel-lander/src/gate.rs:91-97`):
 
 - `["pnpm", "test"]` exactly;
 - `["npm", "test"]` exactly;
@@ -64,7 +64,7 @@ Not allowed: a `+toolchain` argument, `--config`, `-Z`, `--manifest-path`, `--ta
 passthrough, environment assignments, and a shell. Each argument must match
 `^[A-Za-z0-9._/=:@+,%-]+$` and be at most 200 characters (`:35,111-119`). A directory must be `.` or
 `/`-separated segments that start with a letter, digit or `_` and continue with `A-Z a-z 0-9 . _ -`,
-so `..` is refused (`:98-109`).
+so `..` is refused (`:99-110`).
 
 ### Without the file
 
