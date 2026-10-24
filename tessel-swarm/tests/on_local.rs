@@ -886,13 +886,15 @@ impl PushGate {
             let name = fork.file_stem().unwrap().to_string_lossy().into_owned();
             let gate = dir.path().display();
             std::fs::write(dir.path().join(format!("closed-{name}")), "").unwrap();
-            // The hook gives up when its gate has been closed for `WAIT`, so a test binary that is
-            // killed leaves no hook waiting for ever.
-            let polls = WAIT.as_millis() / 20;
+            // The hook gives up when its gate has been closed for `WAIT` by the clock, not by
+            // a count of polls, which a loaded machine stretches: a test binary that is killed
+            // leaves no hook waiting for ever.
+            let secs = WAIT.as_secs();
             let script = format!(
-                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\nn=0\n\
-                 while [ -e '{gate}/closed-{name}' ] && [ \"$n\" -lt {polls} ]; do\n\
-                 sleep 0.02; n=$((n + 1)); done\n\
+                "#!/bin/sh\ncat >/dev/null\n: > '{gate}/arrived-{name}'\n\
+                 end=$(( $(date +%s) + {secs} ))\n\
+                 while [ -e '{gate}/closed-{name}' ] && [ \"$(date +%s)\" -lt \"$end\" ]; do\n\
+                 sleep 0.02; done\n\
                  [ ! -e '{gate}/closed-{name}' ] || exit 1\n"
             );
             let hook = fork.join("hooks/pre-receive");
@@ -1283,15 +1285,59 @@ async fn the_tasks_a_cut_off_agent_never_took_are_done_by_the_others() {
         ..config(2, Policy::Wait, 800)
     };
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&config, scratch.path(), 3000).await;
+    let lease_ms = 3000;
+    let server = start_server(&config, scratch.path(), lease_ms).await;
+    server.freeze_clock();
     let gate = PushGate::install(&server);
     let (log, cutter) = (server.reader(), server.cutter());
+    // The cut waiter's request is still queued, so it is granted when the holder releases, to a
+    // socket nobody hears. The others can take the rest only once that claim lapses, and the
+    // clock moves a lease past its grant, a step after each heartbeat of the agent still queued.
+    let drive = async {
+        let waiter = cut_the_first_waiter(&log, &cutter, &gate).await;
+        let holder = wait_for("the first grant", &log, first_granted).await;
+        wait_for("the cut waiter's grant", &log, |events| {
+            granted_to(events, &waiter)
+        })
+        .await;
+        let mut beats = Beats::new(&server, &[&holder]);
+        for _ in 0..2 {
+            beats.step(lease_ms * 3 / 4).await;
+        }
+        waiter
+    };
     let agents = scratch.path().join("agents");
     let (result, waiter) = tokio::join!(
         on::run_on(&server.endpoint, &tasks, &agents, &config),
-        cut_the_first_waiter(&log, &cutter, &gate)
+        drive
     );
     let result = result.unwrap();
+    let ghost = result.events.iter().find_map(|e| {
+        let EventKind::ClaimGranted { agent, claim, .. } = &e.kind else {
+            return None;
+        };
+        (agent.0 == waiter).then_some((*claim, e.at_ms))
+    });
+    let (ghost, granted) = ghost.expect("the cut-off waiter's request was granted");
+    assert_eq!(
+        lease_expired(&result.events),
+        [ghost],
+        "the cut waiter's claim lapsed, and nothing else did"
+    );
+    let lapsed = logged_at(&result.events, |k| {
+        matches!(
+            k,
+            EventKind::ClaimReleased {
+                reason: ReleaseReason::LeaseExpired,
+                ..
+            }
+        )
+    });
+    assert_eq!(
+        lapsed - granted,
+        2 * (lease_ms * 3 / 4),
+        "it lapsed at the second step after its grant, on the coordinator's clock"
+    );
     let outcomes: Vec<(&str, Resolution)> = result
         .results
         .iter()
@@ -1323,24 +1369,23 @@ async fn an_agent_cut_off_while_it_works_has_its_work_time_counted_as_work() {
         ..config(1, Policy::Wait, 1500)
     };
     let scratch = tempfile::tempdir().unwrap();
-    let server = start_server(&config, scratch.path(), 600).await;
+    let lease_ms = 600;
+    let server = start_server(&config, scratch.path(), lease_ms).await;
+    server.freeze_clock();
+    let gate = PushGate::install(&server);
     let (log, cutter) = (server.reader(), server.cutter());
-    let cut = tokio::spawn(async move {
-        while !log
-            .events()
-            .iter()
-            .any(|e| matches!(e.kind, EventKind::ClaimGranted { .. }))
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        tokio::time::sleep(QUEUED_FOR).await;
-        assert!(cutter.cut("a01"), "a01 had an open socket");
-    });
+    // The agent's push is held until the cut has returned, so the cut comes before its submission
+    // however slowly the machine runs, and the work time it has by then is all its own.
+    let cut = async {
+        let agent = wait_for("a grant", &log, first_granted).await;
+        gate.push_arrived(&agent).await;
+        assert!(cutter.cut(&agent), "{agent} had an open socket");
+        gate.open(&agent);
+    };
     let agents = scratch.path().join("agents");
-    let result = on::run_on(&server.endpoint, &[body(1, "unitPrice")], &agents, &config)
-        .await
-        .unwrap();
-    cut.await.unwrap();
+    let tasks = [body(1, "unitPrice")];
+    let (result, ()) = tokio::join!(on::run_on(&server.endpoint, &tasks, &agents, &config), cut);
+    let result = result.unwrap();
     let r = &result.results[0];
     assert_eq!(r.result, Resolution::Disconnected, "{r:?}");
     assert!(
@@ -1349,6 +1394,28 @@ async fn an_agent_cut_off_while_it_works_has_its_work_time_counted_as_work() {
     );
     assert!(r.waited_ms < r.work_ms, "and not as waiting: {r:?}");
     assert_eq!(result.summary.merges, 0);
+    // The cut agent's claim lapses a lease after its grant on the coordinator's clock, which has
+    // not moved since it was frozen.
+    server.settle_expiry().await;
+    assert_eq!(
+        lease_expired(&server.log()),
+        [],
+        "the frozen clock lapses nothing"
+    );
+    server.advance_clock(lease_ms - 1);
+    server.settle_expiry().await;
+    assert_eq!(
+        lease_expired(&server.log()),
+        [],
+        "a lease has not passed yet"
+    );
+    server.advance_clock(1);
+    server.settle_expiry().await;
+    assert_eq!(
+        lease_expired(&server.log()).len(),
+        1,
+        "a full lease has passed"
+    );
     server.shutdown().await;
 }
 
@@ -1463,9 +1530,10 @@ async fn a_claim_is_kept_alive_while_its_agents_own_checks_run() {
              import {{ setTimeout as pause }} from \"node:timers/promises\";\n\
              test(\"slow\", async () => {{\n\
              writeFileSync(\"{}\", \"\");\n\
-             for (let n = 0; n < {} && !existsSync(\"{}\"); n++) await pause(20);\n}});\n",
+             const end = Date.now() + {};\n\
+             while (Date.now() < end && !existsSync(\"{}\")) await pause(20);\n}});\n",
             started.display(),
-            WAIT.as_millis() / 20,
+            WAIT.as_millis(),
             release.display()
         ),
     )
