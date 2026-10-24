@@ -263,10 +263,7 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
         // A daemon that exits cleanly lost the lock to another one, which will come online.
         let exited = child.try_wait()?;
         if let Some(status) = exited.filter(|status| !status.success()) {
-            bail!(
-                "the daemon exited ({status}) before connecting; last log lines:\n{}",
-                log_tail(&worktree)
-            );
+            bail!(exited_message(&worktree, status));
         }
         if let Ok(Reply::Status { state }) =
             rpc::call(&worktree.sock(), &Request::Status, Duration::from_secs(1)).await
@@ -297,8 +294,20 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
 }
 
 /// What `start` says when its daemon has exited by the deadline.
-fn deadline_message(worktree: &Worktree, _status: ExitStatus, answered: Option<&State>) -> String {
-    gave_way_message(worktree, answered)
+fn deadline_message(worktree: &Worktree, status: ExitStatus, answered: Option<&State>) -> String {
+    if status.success() {
+        gave_way_message(worktree, answered)
+    } else {
+        exited_message(worktree, status)
+    }
+}
+
+/// What `start` says when its daemon failed before it came online.
+fn exited_message(worktree: &Worktree, status: ExitStatus) -> String {
+    format!(
+        "the daemon exited ({status}) before connecting; last log lines:\n{}",
+        log_tail(worktree)
+    )
 }
 
 /// What `start` says when its daemon exited cleanly and none came online: it gave way to a holder
