@@ -426,7 +426,8 @@ impl Coordinator {
     /// `before` is main as it was before the work landed. With `None`, or `before == head`, the
     /// span of the landing is unknown, so no verification or trial is queued: one that compared
     /// main with itself would say nothing, and nothing is claimed as verified. What was skipped is
-    /// listed on the `Merged` event (`unverified`, `untried_shadows`).
+    /// listed on the `Merged` event (`unverified`, `untried_shadows`). `before` is also the `base`
+    /// of the `Merged` message and event, so `base..head` is what the landing put on main.
     fn land(
         &mut self,
         claim: ClaimId,
@@ -448,6 +449,7 @@ impl Coordinator {
             .as_ref()
             .map(|work| work.challenged.clone())
             .unwrap_or_default();
+        let landing_base = before.clone();
         let baseline = before.filter(|before| *before != head);
         let (unverified, untried_shadows) = if baseline.is_some() {
             (Vec::new(), Vec::new())
@@ -462,7 +464,7 @@ impl Coordinator {
                 EventKind::Merged {
                     claim,
                     head: head.clone(),
-                    base: None,
+                    base: landing_base.clone(),
                     unverified,
                     untried_shadows,
                 },
@@ -472,7 +474,7 @@ impl Coordinator {
                 msg: ServerMsg::Merged {
                     claim,
                     head: head.clone(),
-                    base: None,
+                    base: landing_base,
                 },
             },
         ];

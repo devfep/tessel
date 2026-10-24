@@ -182,6 +182,14 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   so. A refused submission still leaves the note; a write failure is a warning, not a refusal.
   The note is local: `git push` of the fork head does not carry `refs/notes/commits`, so push it
   with `git push <your fork> refs/notes/commits` to share it.
+- **The note follows a rebased landing.** The lander rebases your commits onto main, so the landed
+  commits have new shas. When the merge is reported, the daemon copies the note of each submitted
+  commit to the landed commit that has the same author name, email, date and message (a unique
+  match only; a landed commit that already has a note keeps it; never `-f`). The daemon log says
+  how many notes were copied, already there, not landed (the commit was dropped as already on main
+  or squashed) or skipped as ambiguous; it never prints note text. If the landed commits are not
+  in your repository yet, the copy waits and runs after you fetch, on the next message or command.
+  A landing that names no base (an older server) copies nothing.
 - **A transcript is optional.** `--transcript <file>` redacts the file (Artifacts tokens `art_v…`
   and the token after `Bearer `), refuses an empty file or one over 4 MiB after redaction, and
   stores it as `transcripts/<claim>.md` on the local branch `tessel/transcript-<claim>` without

@@ -997,9 +997,11 @@ async fn a_lander_with_a_token_file_lands_on_a_path_remote_as_before() -> TestRe
 fn twenty_lines(edits: &[(usize, &str)]) -> String {
     let mut text = String::new();
     for n in 1..=20 {
-        match edits.iter().find(|(line, _)| *line == n) {
-            Some((_, to)) => text.push_str(to),
-            None => text.push_str(&format!("line {n}")),
+        if let Some((_, to)) = edits.iter().find(|(line, _)| *line == n) {
+            text.push_str(to);
+        } else {
+            text.push_str("line ");
+            text.push_str(&n.to_string());
         }
         text.push('\n');
     }

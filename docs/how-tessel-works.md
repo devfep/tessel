@@ -290,8 +290,9 @@ queued.
   lines are whatever the agent wrote.
 - **The git note stays local unless pushed.** `tessel submit` writes the four-line note (`intent`,
   `assumes`, `rejected`, `evidence`) on the commit before it sends the submission (see "The commit
-  gets a git note" in [Submitting](../skills/tessel/SKILL.md#submitting)). Pushing the fork head
-  does not carry it. The coordinator's event log, with the `submitted` event, keeps the same data.
+  gets a git note" in [Submitting](../skills/tessel/SKILL.md#submitting)). The lander rebases the
+  commit, so after the merge the daemon copies the note to the landed commit (see "The note
+  follows a rebased landing" there). Pushing the fork head does not carry it. The coordinator's event log, with the `submitted` event, keeps the same data.
 - **Symbol claims cover Rust and TypeScript** (`.rs`, `.ts`, `.mts`, `.cts`, `.tsx`). Other files
   are claimed whole. The CLI turns more than four symbol claims in one file into one file claim.
 - **The gate runs only allowed commands.** With a `tessel.toml`, the only test commands are

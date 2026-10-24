@@ -25,10 +25,13 @@ use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::config::Config;
+use crate::notes::{self, Step};
 use crate::plan::escalate;
 use crate::reconcile::{self, Local, Plan, ServerClaim};
 use crate::rpc::{self, ClaimOutcome, Reply, Request, SubmitOutcome};
-use crate::state::{append_notice, Connection, HeldClaim, Notice, NoticeKind, QueuedWait, State};
+use crate::state::{
+    append_notice, Connection, HeldClaim, NoteJob, Notice, NoticeKind, QueuedWait, State,
+};
 use crate::worktree::{Worktree, WorktreeError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -274,6 +277,9 @@ enum Flow {
     Continue,
     Exit,
 }
+
+/// Landings kept waiting for their commits or the notes ref; older ones are given up.
+const MAX_PENDING_NOTES: usize = 32;
 
 struct Daemon {
     worktree: Worktree,
@@ -778,6 +784,11 @@ impl Daemon {
     // ---------- messages from the coordinator ----------
 
     async fn on_incoming(&mut self, incoming: Incoming) {
+        self.handle_incoming(incoming).await;
+        self.run_pending_notes().await;
+    }
+
+    async fn handle_incoming(&mut self, incoming: Incoming) {
         match incoming {
             Incoming::Msg { generation, msg } if generation == self.generation => {
                 self.on_server_msg(msg);
@@ -927,9 +938,13 @@ impl Daemon {
                 queue_position,
             } => self.on_accepted(req, claim, queue_position),
             ServerMsg::Merged {
-                claim, ref head, ..
+                claim,
+                ref head,
+                ref base,
             } => {
                 self.state.coordinator_head = Some(head.0.clone());
+                let (head, base) = (head.0.clone(), base.as_ref().map(|base| base.0.clone()));
+                self.queue_notes_of_submission(claim, base, head);
                 self.on_merged(claim, msg);
             }
             ServerMsg::SubmitRejected { claim, .. } => self.on_submit_rejected(claim, msg),
@@ -1282,10 +1297,12 @@ impl Daemon {
         let me = AgentId(self.config.agent.clone());
         let root = self.worktree.root.clone();
         let mut moved = false;
-        for commit in reconcile::landed_commits(&me, events) {
+        for landed in reconcile::landed_submissions(&me, events) {
+            let commit = landed.commit.clone();
             let ahead = commit != self.state.start_base
                 && is_ancestor_off_loop(&root, &self.state.start_base, &commit).await;
             if ahead {
+                self.queue_notes(landed.claim, Some(commit.clone()), landed.base, landed.head);
                 self.state.start_base = commit;
                 moved = true;
             }
@@ -1503,6 +1520,89 @@ impl Daemon {
             held.awaiting_review = awaiting;
         }
         self.fresh.insert(claim);
+        self.persist();
+    }
+
+    /// A landing of the submission held for `claim`: its commits' notes are to follow the commits
+    /// the lander made from them. Must run before `on_merged` forgets the claim.
+    fn queue_notes_of_submission(&mut self, claim: ClaimId, base: Option<String>, head: String) {
+        let source = self
+            .state
+            .claims
+            .iter()
+            .find(|held| held.claim == claim)
+            .and_then(|held| held.submitted_commit.clone());
+        self.queue_notes(claim, source, base, head);
+    }
+
+    /// Queues the copy of the notes of `source` (the submitted commit) onto `base..head`. A
+    /// landing that names no base (an older coordinator, or a span the coordinator does not know)
+    /// copies nothing: `base..head` would be unbounded.
+    fn queue_notes(
+        &mut self,
+        claim: ClaimId,
+        source: Option<String>,
+        base: Option<String>,
+        head: String,
+    ) {
+        let Some(source) = source else { return };
+        let Some(base) = base else {
+            self.log(&format!(
+                "claim {} landed without a base, so no notes were copied",
+                claim.0
+            ));
+            return;
+        };
+        let job = NoteJob {
+            claim,
+            source,
+            floor: Some(self.state.start_base.clone()).filter(|floor| !floor.is_empty()),
+            base,
+            head,
+        };
+        if self.state.pending_notes.contains(&job) {
+            return;
+        }
+        self.state.pending_notes.push(job);
+        let excess = self
+            .state
+            .pending_notes
+            .len()
+            .saturating_sub(MAX_PENDING_NOTES);
+        if excess > 0 {
+            self.state.pending_notes.drain(..excess);
+            self.log(&format!(
+                "{excess} landings waited too long for their notes and were given up"
+            ));
+        }
+        self.persist();
+    }
+
+    /// Runs the queued note copies on blocking threads. A job whose commits are not here yet, or
+    /// whose notes ref is locked, stays queued; this is tried again on every message from the
+    /// coordinator and every command.
+    async fn run_pending_notes(&mut self) {
+        if self.state.pending_notes.is_empty() {
+            return;
+        }
+        let root = self.worktree.root.clone();
+        let mut waiting = Vec::new();
+        for job in std::mem::take(&mut self.state.pending_notes) {
+            let (dir, owned) = (root.clone(), job.clone());
+            let step = tokio::task::spawn_blocking(move || notes::copy_notes(&dir, &owned))
+                .await
+                .unwrap_or_else(|why| Step::Refused(format!("the copy did not finish: {why}")));
+            let line = notes::describe(&job, &step);
+            self.log(&line);
+            match step {
+                Step::Waiting(_) => waiting.push(job),
+                Step::Done(report) if report.not_landed + report.ambiguous == 0 => {}
+                Step::Done(_) | Step::Refused(_) => {
+                    self.notify(NoticeKind::Reconciled, &line, None);
+                }
+            }
+        }
+        self.state.pending_notes = waiting;
         self.persist();
     }
 
@@ -1762,6 +1862,7 @@ impl Daemon {
     // ---------- commands from the CLI ----------
 
     async fn on_command(&mut self, command: Command) -> Flow {
+        self.run_pending_notes().await;
         let Command { request, reply } = command;
         match request {
             Request::Status => {

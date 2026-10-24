@@ -118,9 +118,21 @@ pub fn live_claims(agent: &AgentId, events: &[Event]) -> BTreeMap<u64, ServerCla
     live
 }
 
-/// The fork commits of this agent's submissions that the log shows merged, oldest first. A merge
-/// means everything up to that commit has landed on main, whether or not this daemon heard it.
-pub fn landed_commits(agent: &AgentId, events: &[Event]) -> Vec<String> {
+/// A submission of this agent that the log shows merged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Landed {
+    pub claim: ClaimId,
+    /// The fork commit that was submitted.
+    pub commit: String,
+    /// Main before the landing, if the log says (an older coordinator does not).
+    pub base: Option<String>,
+    /// Main after the landing.
+    pub head: String,
+}
+
+/// This agent's submissions that the log shows merged, oldest first. A merge means everything up
+/// to the fork commit has landed on main, whether or not this daemon heard it.
+pub fn landed_submissions(agent: &AgentId, events: &[Event]) -> Vec<Landed> {
     let mut mine = HashSet::new();
     let mut submitted = std::collections::HashMap::new();
     let mut landed = Vec::new();
@@ -141,8 +153,15 @@ pub fn landed_commits(agent: &AgentId, events: &[Event]) -> Vec<String> {
             EventKind::SubmitRejected { claim, .. } => {
                 submitted.remove(claim);
             }
-            EventKind::Merged { claim, .. } if mine.contains(claim) => {
-                landed.extend(submitted.get(claim).cloned());
+            EventKind::Merged {
+                claim, head, base, ..
+            } if mine.contains(claim) => {
+                landed.extend(submitted.get(claim).map(|commit| Landed {
+                    claim: *claim,
+                    commit: commit.clone(),
+                    base: base.as_ref().map(|base| base.0.clone()),
+                    head: head.0.clone(),
+                }));
             }
             EventKind::Merged { .. }
             | EventKind::ClaimGranted { .. }
@@ -597,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn landed_commits_are_this_agents_merged_submissions_in_order() {
+    fn landed_submissions_are_this_agents_merged_submissions_in_order() {
         let me = AgentId("a1".into());
         let events = vec![
             granted(0, "a1", 1, 1, "a.rs"),
@@ -611,7 +630,32 @@ mod tests {
             merged_event(8, 1),
             merged_event(9, 3),
         ];
-        assert_eq!(landed_commits(&me, &events), vec!["f".to_string()]);
+        let landed = landed_submissions(&me, &events);
+        assert_eq!(
+            landed
+                .iter()
+                .map(|l| (l.claim, l.commit.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(ClaimId(1), "f")]
+        );
+        assert_eq!(landed[0].base, None);
+    }
+
+    #[test]
+    fn a_landing_in_the_log_carries_the_base_it_names() {
+        let me = AgentId("a1".into());
+        let mut merged = merged_event(2, 1);
+        if let EventKind::Merged { base, .. } = &mut merged.kind {
+            *base = Some(tessel_coordinator::protocol::CommitId("b".into()));
+        }
+        let events = vec![
+            granted(0, "a1", 1, 1, "a.rs"),
+            submitted_event(1, 1, "a.rs"),
+            merged,
+        ];
+        let landed = landed_submissions(&me, &events);
+        assert_eq!(landed[0].base.as_deref(), Some("b"));
+        assert_eq!(landed[0].head, "h");
     }
 
     #[test]

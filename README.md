@@ -139,7 +139,8 @@ Shipped:
   `tessel init` sets up a worktree.
 - Every grant carries the trunk's head commit.
 - The git note at submit: `tessel submit` writes the four-line note (`intent`, `assumes`,
-  `rejected`, `evidence`) on the commit before it sends the submission.
+  `rejected`, `evidence`) on the commit before it sends the submission, and copies it to the
+  landed commit after the lander's rebase.
 - `tessel submit --transcript <file>` redacts a session transcript and attaches its hash.
 - Shadow verification and the swarm harness for A/B runs.
 
