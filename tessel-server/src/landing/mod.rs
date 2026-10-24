@@ -342,6 +342,15 @@ impl Inner {
         match run_merge(&ctx, &ports, &request) {
             Ok(outcome) => merge_answer(&repo, outcome, ports.take_first_failure().as_deref()),
             Err(error) => {
+                if let Some(message) = ports.take_gate_refusal() {
+                    tracing::info!(repo, message = %message, "the trunk's gate cannot be used");
+                    return CallAnswer::Refused {
+                        refusal: Refusal::Rule {
+                            rule: RuleKind::GateInvalid,
+                            message,
+                        },
+                    };
+                }
                 let note = quote(&error.to_string(), MAX_LOGGED_CHARS);
                 tracing::warn!(
                     repo,

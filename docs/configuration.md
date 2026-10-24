@@ -68,11 +68,13 @@ so `..` is refused (`:98-109`).
 ### Without the file
 
 The Rust server has no fallback gate. A trunk with no `tessel.toml` cannot be tested: the landing
-fails with "the trunk has no tessel.toml to say how to test it"
-(`tessel-server/src/landing/ports.rs:60-70`). A trunk with an invalid `tessel.toml` fails the same
-way, with the parser's reason (`ports.rs:76-84`). Either failure is an infrastructure failure that
-the core retries, and after three retries the agent sees `submit_rejected` ([Landing](#landing),
-`tessel-server/src/landing/answer.rs:5`). Nothing lands and nothing falls back to another gate.
+is refused with "the trunk has no tessel.toml to say how to test it" in the server log
+(`tessel-server/src/landing/ports.rs`). A trunk with an invalid `tessel.toml` is refused the same
+way, with the parser's reason, quoted and cut, in the log. Neither is retried: the agent sees
+`submit_rejected` with a fixed reason that says the trunk's gate is missing or invalid and an
+operator must fix it on main ([Landing](#landing)). A file that exists but cannot be read is still
+an infrastructure failure that the core retries. Nothing lands and nothing falls back to another
+gate.
 `GatePlan` and `read_gate_plan` (`tessel-lander/src/gate.rs:259-297`) model the missing-file case,
 and the server does not call them.
 
@@ -234,6 +236,7 @@ with a `remote` the server answers it in process with the lander and the runner.
 | The commit conflicts with main | refused | `submit_rejected`, the number of files that conflicted |
 | The change is not covered by the claim, or touches `tessel.toml` | refused | `submit_rejected` with the fixed reason |
 | The tests failed | refused | `submit_rejected` with the exit code and no test output |
+| The trunk's `tessel.toml` is missing or not a valid gate | refused, the parser's error to the log | `submit_rejected` with the fixed reason, not retried |
 | The commit is not on the agent's fork | refused | `submit_rejected` with the fixed reason |
 | Main moved before the push | `Unknown`, which the core retries | nothing yet |
 | Anything that did not finish: a clone, a push, a runner that refuses to start, a timeout | `Unknown`, which the core retries | nothing; after three retries, `submit_rejected` as infrastructure |

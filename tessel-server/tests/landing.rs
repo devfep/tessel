@@ -298,15 +298,20 @@ async fn a_change_to_the_gate_is_refused_before_any_test_runs() -> TestResult {
     Ok(())
 }
 
-/// The message of a rule refusal, which the server logs and never sends to an agent.
-fn rule_message(answer: &CallAnswer) -> Result<&str, String> {
+/// The message of a refusal for a trunk gate that cannot be used, which the server logs and never
+/// sends to an agent.
+fn gate_message(answer: &CallAnswer) -> Result<&str, String> {
     if let CallAnswer::Refused {
-        refusal: Refusal::Rule { message, .. },
+        refusal:
+            Refusal::Rule {
+                rule: RuleKind::GateInvalid,
+                message,
+            },
     } = answer
     {
         return Ok(message);
     }
-    Err(format!("expected a rule refusal, got {answer:?}"))
+    Err(format!("expected a gate-invalid refusal, got {answer:?}"))
 }
 
 #[tokio::test]
@@ -323,13 +328,18 @@ async fn a_trunk_whose_gate_is_invalid_is_refused_once_and_not_retried() -> Test
 
     let answer = prepare(&landing, &commit, whole_repo()).await;
 
-    let message = rule_message(&answer)?;
+    let message = gate_message(&answer)?;
     assert!(
-        message.contains("not a valid gate") && message.contains("unknown_key"),
+        message.contains("not a valid gate") && message.contains("only the keys instance"),
         "the message names the parser's error: {message}"
     );
     assert_eq!((runner.runs(), repos.main_head()), (0, before));
     assert_no_call_dirs(&repos, "landing-gate-invalid");
+    let lines = log_lines_with("landing-gate-invalid");
+    assert!(
+        lines.iter().any(|line| line.contains("not a valid gate")),
+        "the error is logged: {lines:?}"
+    );
     Ok(())
 }
 
@@ -344,7 +354,7 @@ async fn a_trunk_with_no_gate_is_refused_once_and_not_retried() -> TestResult {
 
     let answer = prepare(&landing, &commit, whole_repo()).await;
 
-    let message = rule_message(&answer)?;
+    let message = gate_message(&answer)?;
     assert!(
         message.contains("no tessel.toml"),
         "the message says the gate is missing: {message}"
@@ -684,27 +694,6 @@ async fn a_runner_that_refuses_to_start_is_infrastructure_and_is_logged() -> Tes
     );
     assert!(
         lines.iter().any(|l| l.contains("mode must be 0600")),
-        "{lines:?}"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_trunk_without_a_valid_gate_cannot_be_tested_and_is_infrastructure() -> TestResult {
-    let repos = Repos::new();
-    repos.main_commit(&[("tessel.toml", "this is not a gate\n")]);
-    let before = repos.main_head();
-    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
-    let runner = passing();
-    let landing = landing(&repos, "landing-nogate", runner.clone());
-
-    let answer = prepare(&landing, &commit, whole_repo()).await;
-
-    assert_eq!(answer, CallAnswer::Unknown);
-    assert_eq!((runner.runs(), repos.main_head()), (0, before));
-    let lines = log_lines_with("landing-nogate");
-    assert!(
-        lines.iter().any(|l| l.contains("is not a valid gate")),
         "{lines:?}"
     );
     Ok(())

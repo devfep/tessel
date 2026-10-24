@@ -179,6 +179,8 @@ pub enum RuleKind {
     RequiredCheck,
     /// The agent's fork is missing, or is not a fork of this repository.
     ForkMissing,
+    /// The trunk's `tessel.toml` is missing or is not a valid gate, so nothing can be tested.
+    GateInvalid,
     #[default]
     Other,
 }
@@ -198,6 +200,10 @@ fn refused_reason(kind: RuleKind) -> &'static str {
         RuleKind::ForkMissing => {
             "your fork is missing or is not a fork of this repository; check it and submit \
              again"
+        }
+        RuleKind::GateInvalid => {
+            "the trunk's tessel.toml is missing or is not a valid gate, so nothing can be tested; \
+             an operator must fix it on main (the server log names the error)"
         }
         RuleKind::Other => "a rule refused the request; an operator must look at the server log",
     }
@@ -1338,6 +1344,11 @@ mod tests {
                  again",
             ),
             (
+                RuleKind::GateInvalid,
+                "the trunk's tessel.toml is missing or is not a valid gate, so nothing can be \
+                 tested; an operator must fix it on main (the server log names the error)",
+            ),
+            (
                 RuleKind::Other,
                 "a rule refused the request; an operator must look at the server log",
             ),
@@ -1366,6 +1377,7 @@ mod tests {
             (RuleKind::ProtectedRef, "protected_ref"),
             (RuleKind::RequiredCheck, "required_check"),
             (RuleKind::ForkMissing, "fork_missing"),
+            (RuleKind::GateInvalid, "gate_invalid"),
             (RuleKind::Other, "other"),
         ] {
             let json = serde_json::to_string(&kind).unwrap();

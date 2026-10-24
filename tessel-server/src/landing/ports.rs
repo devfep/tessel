@@ -54,15 +54,23 @@ fn boundary(operation: &'static str, message: impl Into<String>) -> BoundaryErro
     }
 }
 
+/// Why the trunk's gate could not be read.
+enum GateFault {
+    /// A fact about the trunk, not a failure of the machine: the file is missing or not a valid
+    /// gate. Retrying cannot change it, so the landing is refused. Holds the log message.
+    Unusable(String),
+    /// The read itself failed, which a retry may get past.
+    Unreadable(BoundaryError),
+}
+
 /// The trunk's gate, read from the test tree. A submission cannot change `tessel.toml` (the
 /// lander refuses it before the tests), so the tree's file is main's.
-fn read_gate(tree: &TestTree) -> Result<GateConfig, BoundaryError> {
+fn read_gate(tree: &TestTree) -> Result<GateConfig, GateFault> {
     let path = tree.path().join(TESSEL_TOML_PATH);
     let missing = || {
-        boundary(
-            "read the gate",
-            format!("the trunk has no {TESSEL_TOML_PATH} to say how to test it"),
-        )
+        GateFault::Unusable(format!(
+            "the trunk has no {TESSEL_TOML_PATH} to say how to test it"
+        ))
     };
     let meta = fs::symlink_metadata(&path).map_err(|_| missing())?;
     if !meta.is_file() {
@@ -72,15 +80,17 @@ fn read_gate(tree: &TestTree) -> Result<GateConfig, BoundaryError> {
     let mut text = String::new();
     File::open(&path)
         .and_then(|file| file.take(limit).read_to_string(&mut text))
-        .map_err(|_| boundary("read the gate", format!("cannot read {TESSEL_TOML_PATH}")))?;
+        .map_err(|_| {
+            GateFault::Unreadable(boundary(
+                "read the gate",
+                format!("cannot read {TESSEL_TOML_PATH}"),
+            ))
+        })?;
     parse_gate_config(&text).map_err(|invalid| {
-        boundary(
-            "read the gate",
-            format!(
-                "the trunk's {TESSEL_TOML_PATH} is not a valid gate: {}",
-                invalid.reason
-            ),
-        )
+        GateFault::Unusable(format!(
+            "the trunk's {TESSEL_TOML_PATH} is not a valid gate: {}",
+            quote(&invalid.reason, MAX_LOGGED_CHARS)
+        ))
     })
 }
 
@@ -95,6 +105,7 @@ pub struct Ports<'a> {
     pub(super) runner: &'a dyn TestRunner,
     pub(super) stop: &'a Stop,
     first_failure: Mutex<Option<String>>,
+    gate_refusal: Mutex<Option<String>>,
 }
 
 impl<'a> Ports<'a> {
@@ -105,12 +116,22 @@ impl<'a> Ports<'a> {
             runner,
             stop,
             first_failure: Mutex::new(None),
+            gate_refusal: Mutex::new(None),
         }
     }
 
     /// The first failing test of the last run, bounded and quoted, for the server log only.
     pub fn take_first_failure(&self) -> Option<String> {
         self.first_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Why the trunk's gate is missing or invalid, when the last run stopped for that: a refusal,
+    /// not an infrastructure failure. The parser's error is quoted and bounded.
+    pub fn take_gate_refusal(&self) -> Option<String> {
+        self.gate_refusal
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
@@ -139,7 +160,17 @@ impl<'a> Ports<'a> {
     }
 
     fn run_tests(&self, tree: &TestTree) -> Result<StepOutcome, BoundaryError> {
-        let gate = read_gate(tree)?;
+        let gate = match read_gate(tree) {
+            Ok(gate) => gate,
+            Err(GateFault::Unreadable(error)) => return Err(error),
+            Err(GateFault::Unusable(message)) => {
+                *self
+                    .gate_refusal
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(message.clone());
+                return Err(boundary("read the gate", message));
+            }
+        };
         let Some(tree_path) = tree.path().to_str() else {
             return Err(boundary(
                 "run_package_step",

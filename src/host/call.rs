@@ -261,6 +261,7 @@ mod tests {
             Just(RuleKind::ProtectedRef),
             Just(RuleKind::RequiredCheck),
             Just(RuleKind::ForkMissing),
+            Just(RuleKind::GateInvalid),
             Just(RuleKind::Other),
         ]
     }
