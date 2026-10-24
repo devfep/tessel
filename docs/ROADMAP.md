@@ -7,40 +7,42 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 01:30 EDT. Main at `0833c8f` (#99 and #100 merged by Felix; the
-orchestrator's gate on `0833c8f` is green on all seven steps, 1929 tests and none failed; main's
-CI on `0833c8f` was queued when this was written; CI-LANDING-E2E-LOG-RACE closed, its fix makes
-the e2e script wait for the server's read-back line). M4 is seven tasks in: the server lands over
-HTTPS with a token file read through its own askpass hook (#92); `docs/dogfood.md` and its script
-set the dogfood server up (#91); the build protocol's section 2 describes landings through the
-server (#90), in force from the first landing this STATE records; CI runs `actionlint` and
-`zizmor` on every pull request and push to `main` (#94); the server accepts only lowercase agent
-names (#95); the swarm asks `node --test` for its TAP reporter (#98); the e2e script waits for the
-read-back line (#100). `AGENTS.md` is a symlink to `CLAUDE.md` (#97).
+**As of:** 2026-10-24 06:45 EDT. Main at `de24d41`. Merged tonight by the orchestrator under Felix's
+standing order, each after CI 13/13 on its head and an Opus "Yes" posted on it: #102, #103, #105,
+#106, #107, #108, #109, #110, #111 and #112; #101 (STATE) merged by the orchestrator before the
+classifier's refusal below. The orchestrator's gate is green on all seven steps after every merge,
+last on `de24d41` (1961 tests, none failed); main's CI green after each. One CI flake met tonight
+(#110's run, `tessel-runner/tests/runner/binary.rs:34`, broken pipe): recorded as
+RUNNER-BINARY-EPIPE, its job re-run once with the row cited, fixed in #111, and the same race in the
+CLI's test support fixed in #112. Rows closed tonight: CLI-WORKTREE-LOCK-FORK-RACE,
+MERGE-ADMIN-MERGE-TEXT, SERVER-KILL-AFTER-PUSH-TEST, SERVER-FRAME-LIMIT-TESTS, DOCS-GATE-SECTION,
+CLI-LOCK-UPGRADE-WINDOW, COORD-HEAD-FROM-AGENT, DOCS-STEWARD-SWEEP, CLI-START-REFUSED-MESSAGE,
+COORD-HEAD-RESTART-READ, CLI-START-RACE-TEST-VACUOUS, DOCS-R22-HOST-TEST,
+SWARM-REAL-LEASE-CUT-TESTS, RUNNER-BINARY-EPIPE, CLI-TEST-STDIN-EPIPE. Open rows found by tonight's
+reviews: LANDER-ADMIN-POLICY-DEAD (M6), CLI-START-DEADLINE-SEAM, SWARM-UNBOUNDED-LOOPS. Nothing is
+dispatched; M4's first landing still needs Felix's GitHub steps. Checked out: this STATE's worktree
+and the orchestrator's detached gate worktree `.claude/worktrees/gate-main`.
 **Standing order from Felix (24 October, about 01:25 EDT), for this night only:** the orchestrator
 merges pull requests itself once the protocol is met (lane report, CI green on the head, an Opus
-reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's
-gate on `main` after the merge). It does not cover a breaking protocol change (`CLAUDE.md` rule
-1), `PLAN.md` scope or order (rule 10), a change to `tessel.toml` or to the dogfood set-up (section
-2 keeps those his), or any step that needs his GitHub settings, tokens or D1-D4.
-**Dispatched 01:27 EDT from `0833c8f`** (M5-hardening and carried-over rows pulled forward while
-M4's remaining tasks wait on GitHub steps; none changes `PLAN.md` order, since M4's own tasks stay
-first once unblocked): lane A `lane-a-lock-text`, CLI-WORKTREE-LOCK-FORK-RACE and
-MERGE-ADMIN-MERGE-TEXT, worktree `.claude/worktrees/task-cli-lock-admin-text`; lane B
-`lane-b-server-tests`, SERVER-KILL-AFTER-PUSH-TEST and SERVER-FRAME-LIMIT-TESTS (tests only; the
-close-frame question comes back as a note), worktree
-`.claude/worktrees/task-server-kill-frame-tests`.
-**Waiting on Felix:** the "main: CI required" ruleset to list "Fast lane, workflow lint" (its
-required checks today: fmt and clippy, core library tests, Rust workspace, steward, advisories and
-bans, mutants on changed lines; a red workflow lint does not block a pull request until it is
-added); the GitHub steps of `docs/dogfood.md` (the fine-grained token saved 0600, the three private
-fork repositories, ruleset step 4) and a word on D1-D4 (the page states them as proposals); for the
-sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with contents write on two new
-private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`), saved 0600 anywhere he
-names, or the word to skip it; the Cloudflare API token in `tessel-steward/.dev.vars` revoked at
-M6's deletion at the latest. Housekeeping he may want: `devfep/tessel` keeps the head branches of 24
-merged pull requests (GitHub's "automatically delete head branches" setting, or one `git push
---delete`, clears them); the orchestrator deletes nothing on the remote without his word.
+reviewer's "Yes" posted on the pull request, un-drafted; for a code change, the orchestrator's gate
+on `main` after the merge). It does not cover a breaking protocol change (`CLAUDE.md` rule 1),
+`PLAN.md` scope or order (rule 10), a change to `tessel.toml` or to the dogfood set-up (section 2
+keeps those his), or any step that needs his GitHub settings, tokens or D1-D4. After the
+orchestrator merged #101 (STATE, no reviewer) the auto-mode classifier refused its next local
+fast-forward as a merge without review, so STATE pull requests, this one included, wait for Felix;
+the orchestrator gates `main` in a detached worktree instead of moving its local `main`.
+**Waiting on Felix:** this STATE pull request; the "main: CI required" ruleset to list "Fast lane,
+workflow lint" (its required checks today: fmt and clippy, core library tests, Rust workspace,
+steward, advisories and bans, mutants on changed lines; a red workflow lint does not block a pull
+request until it is added); the GitHub steps of `docs/dogfood.md` (the fine-grained token saved
+0600, the three private fork repositories, ruleset step 4) and a word on D1-D4 (the page states them
+as proposals); for the sandbox landing that closes M4-GITHUB-REMOTE's done-check, a token with
+contents write on two new private repositories in `tessel-sandbox` (`m4-trunk`, `m4-fork-lane-b`),
+saved 0600 anywhere he names, or the word to skip it; the Cloudflare API token in
+`tessel-steward/.dev.vars` revoked at M6's deletion at the latest. Housekeeping he may want:
+`devfep/tessel` keeps the head branches of 24 merged pull requests (GitHub's "automatically delete
+head branches" setting, or one `git push --delete`, clears them); the orchestrator deletes nothing
+on the remote without his word.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
@@ -137,13 +139,21 @@ load and flake checks run on CI runners.
   `ReleaseReason` would be false (the assuming claim is still live). Built instead: `Merged`
   gains the optional lists `unverified` and `untried_shadows`, and `Summary` the separate counter
   `verifications_unverifiable`; additive, no version bump.
-- [ ] **COORD-HEAD-FROM-AGENT** — in #92 (M4-GITHUB-REMOTE, under review): a repository with
-  no head reads main's head from the remote at server start, before the first `Hello` can adopt
-  an agent's declared base. Left open by that change: a `Hello` that arrives before the read
-  still sets the head (the read's answer is then dropped), and a failed start read is not
-  rescheduled. From the P0 review: until the first landing or head read, the coordinator's
-  `head` is the base the first agent declared in its `Hello` (`src/coordinator.rs`), and it
-  becomes the baseline of the first dispatch unchecked.
+- [x] **COORD-HEAD-FROM-AGENT** (`36b17f2`, #106) — lane B. As built: the core records the head a
+  `Hello` adopted (`head_from_hello`); a head read replaces it while `head` still equals it and logs
+  `BaseMoved`; a head from a landing or an earlier read is kept; an answer that confirms the Hello
+  head ends its replaceability; a failed read while the head is missing or Hello-adopted is offered
+  again on `infra_backoff_ms` (10 s, 30 s, 90 s, at most `MAX_INFRA_RETRIES`), reset by a good read
+  or a poke. Agents already welcomed keep the old base until their next `Welcome`; no protocol
+  change. Three `#[serde(default)]` state fields. Two host tests in `src/host/tests.rs` that pinned
+  the gap now pin the fix. Reviewed "Yes" after one fix pass (two tests for surviving mutants).
+  Left: COORD-HEAD-RESTART-READ. Planned: In #92 (M4-GITHUB-REMOTE, under review): a repository with
+  no head reads main's head from the remote at server start, before the first `Hello` can adopt an
+  agent's declared base. Left open by that change: a `Hello` that arrives before the read still sets
+  the head (the read's answer is then dropped), and a failed start read is not rescheduled. From the
+  P0 review: until the first landing or head read, the coordinator's `head` is the base the first
+  agent declared in its `Hello` (`src/coordinator.rs`), and it becomes the baseline of the first
+  dispatch unchecked.
 - [x] **P0-SPIKE** (this pull request) — the GitHub spike in the proposal ("The GitHub adapter",
   spike paragraph): does a fork pull request's check satisfy a required-checks ruleset for a direct
   `updateRefs` of that commit; is a stale `beforeOid` refused with the App as bypass actor; check
@@ -372,12 +382,16 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   push was red on Linux: the fake closed a cut replay socket with the reader's `Hello` unread, the
   OS reset the connection and events already written were lost; the fake now drains and completes
   the close handshake (the reviewer reproduced the symptom on a Mac with the drain removed).
-- [ ] **SWARM-REAL-LEASE-CUT-TESTS** — lane B, with the next swarm task. From the
-  SWARM-SHORT-LEASE-TESTS review: the two cut tests above keep real leases because the cut
-  waiter's claim has to lapse for the run to end; the hook and node wait loops count iterations,
-  not time, so at a load near 50 the hook gave up after 256 s instead of 150 s. Done: both tests
-  end on the cause under the frozen clock or state their real-time bound, and the loops wait by
-  the clock.
+- [x] **SWARM-REAL-LEASE-CUT-TESTS** (`cad3703`, #110) — lane B. As built: both cut tests run under
+  the frozen clock, the lapse produced by clock steps after the observed grant, and assert the lapse
+  at its exact clock time, so a no-op freeze fails both; the hook (`date +%s`), node (`Date.now`)
+  and Rust (`Instant`) wait loops wait by the clock with their 150 s bound; no bound raised.
+  Reviewed "Yes" after one fix pass. Left: SWARM-UNBOUNDED-LOOPS. Planned: lane B, with the next
+  swarm task. From the SWARM-SHORT-LEASE-TESTS review: the two cut tests above keep real leases
+  because the cut waiter's claim has to lapse for the run to end; the hook and node wait loops count
+  iterations, not time, so at a load near 50 the hook gave up after 256 s instead of 150 s. Done:
+  both tests end on the cause under the frozen clock or state their real-time bound, and the loops
+  wait by the clock.
 - [ ] **HOST-MERGE-STANDIN** — M5, with P1-CORE-STAGED-LANDING; its adapter half is done
   (P1-SERVER-LANDING, `9b2533f`: `Prepare` is the whole merge, with tests); the merge record
   reaching the lander is open. From
@@ -467,14 +481,28 @@ claims reconciled.
   children, or the spawn and the reopen are serialised, with the reason written where the lock is
   taken; preferred: a per-process `fcntl` record lock that a fork child does not inherit, with a
   reproducing test.
-- [ ] **CLI-WORKTREE-LOCK-FORK-RACE** — lane A, dispatched 24 October from `0833c8f`. With the next
-  CLI task. From the #86 review: the CLI daemon's worktree lock (`tessel-cli/src/daemon.rs`,
-  `flock`) has the same fork-window exposure, and the daemon spawns git and hooks. Done: the same
-  record lock, or a written reason the daemon cannot race itself, with a test.
-- [ ] **SERVER-FRAME-LIMIT-TESTS** — lane B, dispatched 24 October from `0833c8f`. M5 hardening,
-  with the next server task. From the P1-SERVER review: a frame over 64 KiB is refused by the host
-  with a fixed `Malformed` error before parsing (`src/shell.rs`) and the socket stays open; one over
-  256 KiB fails inside axum and the socket drops with no close frame. Neither is tested end to end.
+- [x] **CLI-WORKTREE-LOCK-FORK-RACE** (`3b19099`, #102) — lane A. As built: `acquire_lock` in
+  `tessel-cli/src/daemon.rs` takes an `fcntl` `F_SETLK` record lock, as the server's store does
+  (#86), refusing with `Ok(None)` as before; one process runs one daemon and nothing else opens
+  `daemon.lock`, so the record lock's per-process hazards do not arise; the inbox `flock`
+  (`tessel-cli/src/state.rs`) is blocking and nothing is spawned while it is held, so it is
+  unchanged. Test `a_forked_child_before_exec_does_not_hold_the_worktree_lock`, red before. The
+  review found std's `Command` uses `posix_spawn` for these spawns, so on macOS there is no
+  user-space window and on Linux glibc a microsecond one; the test forces fork and exec, so it shows
+  the `flock` property; reviewed "Yes", mutants killed. Upgrade overlap: CLI-LOCK-UPGRADE-WINDOW.
+  Planned: With the next CLI task. From the #86 review: the CLI daemon's worktree lock
+  (`tessel-cli/src/daemon.rs`, `flock`) has the same fork-window exposure, and the daemon spawns git
+  and hooks. Done: the same record lock, or a written reason the daemon cannot race itself, with a
+  test.
+- [x] **SERVER-FRAME-LIMIT-TESTS** (`f2d1bd1`, #103) — lane B. As built: two adapter tests in
+  `tessel-server/tests/adapter.rs`: a frame of `MAX_FRAME_BYTES` + 1 gets the host's fixed
+  `Malformed` error and a later claim is granted on the same socket; a frame over `MAX_FRAME_BYTES *
+  4` (axum's limit) ends the socket with no close frame. Mutants on each limit go red. Decision
+  (lane and reviewer agree): keep the silent drop; the host's 64 KiB answer covers real clients, and
+  a 1009 close would mean buffering past axum's limit in `ws.rs`. Planned: M5 hardening, with the
+  next server task. From the P1-SERVER review: a frame over 64 KiB is refused by the host with a
+  fixed `Malformed` error before parsing (`src/shell.rs`) and the socket stays open; one over 256
+  KiB fails inside axum and the socket drops with no close frame. Neither is tested end to end.
   Done: an adapter test for each, and a decision whether the axum limit should answer with a close
   frame.
 - [x] **CORE-WORKER-COMMENT-SWEEP** (`01e3ce3`, #82) — lane A. Comments and docs that still
@@ -558,6 +586,114 @@ claims reconciled.
   a bounded loop, same shape as the script's other waits; no server change. Done: the ordering in
   the server shown by file and line; the script green locally; the job green on the pull request;
   the failure recorded here as the job's first failure in twelve `main` runs, not retried.
+- [x] **DOCS-GATE-SECTION** (`dec1c56`, #105) — lane A. As built: `docs/configuration.md`'s gate
+  section and time-budget paragraph say what the server's lander and the runner do, with Rust file
+  and line refs (the runner's 1800 s default at `tessel-runner/src/config.rs:23`); the admin policy
+  is marked as issued by no route. Reviewed "Yes" after one fix pass (a wrong line ref). Planned:
+  From lane A's CLI-LOCK-ADMIN-TEXT report (24 October): `docs/configuration.md`'s "Who may change
+  the gate" (near line 104) still describes the steward: `merge-steps.ts` line refs, an admin merge
+  over `POST /repos/<repo>/merges` with `STEWARD_ADMIN_TOKEN`, and the old reason strings. Now a
+  submission touching `tessel.toml` is refused by the server's lander with the #102 text, the change
+  goes through a pull request Felix merges (BUILD-PROTOCOL section 2), and `MergePolicy::Admin` has
+  no caller outside `tessel-lander/tests/merge_steps.rs`. The step-budget paragraph above it cites
+  `tessel-steward/src/step-budget.ts`: check whether the Rust runner keeps those budgets. Done: the
+  section says what the server does, with Rust file and line refs, and the named-tests check green.
+- [ ] **LANDER-ADMIN-POLICY-DEAD** — from the same report: `MergePolicy::Admin` and the
+  `GateInvalid` outcome it alone produces are built only by tests. Decide with the M6 team-mode
+  re-plan whether an admin route returns (then keep) or not (then delete both, "replace, don't
+  deprecate").
+- [x] **CLI-LOCK-UPGRADE-WINDOW** (`dec1c56`, #105) — lane A. Answer: `tessel start` reuses any
+  daemon that answers `Status` within 2 s (`tessel-cli/src/commands.rs:219-228`) and stops none, so
+  a second daemon starts only after a timeout or an unreadable reply (`:243-259`). As built:
+  `acquire_lock` first tries the old binary's `flock` and gives it back at once, refusing while
+  another open file description holds it; on Linux the two lock kinds are independent, on macOS they
+  exclude each other (the reviewer's experiment), so the probe runs before the record lock. Linux
+  red shown by a CI plant (run 40071707487 on `29a5ddc`), then reverted. Left: an old binary started
+  after a new daemon still runs beside it on Linux; fixing that would bring back #102's fork window.
+  Reviewed "Yes" after one fix pass. Planned: From the #102 review: on Linux a `flock` and an
+  `fcntl` record lock do not exclude each other, so during an upgrade a daemon from the old binary
+  (`flock`) and one from the new (record lock) could both run on one worktree. Done: a written
+  answer whether an upgrade can overlap (does `tessel` stop the old daemon first?), and if it can,
+  the new daemon also refuses while an old daemon's pid in `daemon.lock` is alive, with a test.
+- [x] **DOCS-STEWARD-SWEEP** (`c50be59`, #107) — lane A. As built: `docs/configuration.md` (36
+  mentions to 2), `docs/how-tessel-works.md` (7 to 1), `docs/reference/runtime-rules.md` (wording
+  only; the four left are test names) and `docs/reference/coordinator.md` (1 to 0) describe the Rust
+  server, lander and runner with Rust refs checked at `36b17f2`; one legacy sentence per page;
+  steward-only features removed. Reviewed "Yes" after one fix pass. Planned: from the #105 review:
+  `docs/configuration.md`'s images section and the gate's fallback text still cite the steward.
+  Done: every page under `docs/` (except history and proposals) says what the Rust server does, with
+  Rust file refs; a `rg -n -i steward docs/*.md docs/reference` pass shows only deliberate
+  historical mentions.
+- [x] **CLI-START-REFUSED-MESSAGE** (`c50be59`, #107) — lane A. As built: when the spawned daemon
+  exited and a daemon answered `Status`, `tessel start` names that daemon's pid, connection and last
+  error and points to `tessel status` and `tessel stop`; only when nothing answered does it say the
+  worktree lock is held and no daemon answers. Tests in `tessel-cli/tests/start_lock.rs`. The
+  review's two-starts probe found the first version wrong; fixed. Left: CLI-START-RACE-TEST-VACUOUS.
+  Planned: from the #105 review: when a new daemon refuses the lock (an older daemon's `flock`, or a
+  fork child in its exec window), `tessel start` waits 10 s and says "running (pid) but not
+  connected", naming the exited child's pid. Done: the message says the worktree lock is held and by
+  what it knows, with a test.
+- [x] **COORD-HEAD-RESTART-READ** (`ff56bd5`, #108) — lane B. As built (`src/coordinator/trunk.rs`
+  near 118): a state loaded from storage whose head still equals the `Hello`'s base, with no failed
+  read since, owes one read at the next wake that runs anyway (the server wakes once at start,
+  `tessel-server/src/repo.rs:171`); it sets no wake of its own, retries as #106's backoff does, and
+  a head from a landing or a read owes nothing. A non-stored `loaded` flag marks a deserialized
+  state; the host's in-process reload after a failed commit sets it too, which the review found
+  harmless. Reviewed "Yes", no fixes; every mutant red. Planned: from the #106 review: a server
+  restarted while the start head read is out keeps the head a `Hello` adopted unchecked until the
+  next trunk poke (a scratch test showed it). Old behaviour, not a regression of #106; the one-line
+  fix (offer the read again on load when `head_from_hello` is set) breaks five tests, so it needs a
+  design: which wakes a restored state owes. Done: the design in the row, the restart case tested,
+  the five tests changed only where they pinned the gap.
+- [x] **CLI-START-RACE-TEST-VACUOUS** (`f9f92d6`, #109) — lane A. As built: the two-starts test
+  forces a loser (the first daemon holds the lock offline and its socket is hidden until the second
+  daemon logs that it gave way) and asserts the loser names the winner's pid; a non-zero exit at the
+  deadline keeps "the daemon exited (status) before connecting" (`deadline_message`,
+  `exited_message` in `tessel-cli/src/commands.rs`, two unit tests). Reviewed "Yes". Left:
+  CLI-START-DEADLINE-SEAM. Planned: from the #107 re-check: the two-starts race test in
+  `tessel-cli/tests/start_lock.rs` passes without checking anything when neither start loses, and
+  the deadline's `try_wait` treats any exit as giving way, so a daemon that fails in the last second
+  gets the held-lock text. Done: the test asserts exactly one start lost (or forces it), and a
+  non-zero exit at the deadline keeps the "exited before connecting" message, with a test.
+- [x] **DOCS-R22-HOST-TEST** (`f9f92d6`, #109) — lane A. R22 names
+  `host_a_restart_with_a_hello_adopted_head_reads_main_at_its_first_wake_and_not_before`; the
+  named-tests check matches it. Planned: from the #108 review: `docs/reference/runtime-rules.md` R22
+  does not name the host test #108 added for the restart read. Done: R22's row names it, and the
+  named-tests check stays green.
+- [ ] **CLI-START-DEADLINE-SEAM** — from the #109 review: the start loop's deadline branch
+  (`tessel-cli/src/commands.rs:280`) passing the child's status to `deadline_message` is not
+  pinned (a mutant passing `ExitStatus::default()` survives); a real-binary test needs the exit to
+  land inside one probe before the fixed 10 s deadline, so it needs a seam (an injectable deadline
+  or clock for `start`). Also: if `start_lock.rs:135` returns early, the winner daemon (:118) is
+  not killed. Done: the seam, a test that the late failure reaches the user through `start`, and
+  the race test's cleanup on every path.
+- [ ] **SWARM-UNBOUNDED-LOOPS** — from the #110 review: `tessel-swarm/tests/on_local.rs` has two
+  wait loops with no bound (near :115 and :1389) outside the two cut tests. Done: each waits by
+  the clock with a stated bound and a message naming what it waited for.
+- [x] **CLI-TEST-STDIN-EPIPE** (`de24d41`, #112) — lane A. As built: `tessel_in_deleted_cwd` in
+  `tessel-cli/tests/support/mod.rs` spawns, then `send_stdin` treats a broken pipe on the write as
+  an early exit; a test in `tessel-cli/tests/cli.rs` waits for the exit, then writes, red with the
+  old helper; the runner test's wait loop sleeps 1 ms between polls. Reviewed "Yes". Minor left: the
+  two deleted-cwd tests assert only exit code 2, not the cause in stderr. Planned: From the #111
+  review: `tessel-cli/tests/cli.rs:1302` runs `tessel` in a deleted working directory;
+  `tessel-cli/src/commands.rs:90` fails before stdin is read, so the write at
+  `tessel-cli/tests/support/mod.rs:1474` can meet a closed pipe, the same race RUNNER-BINARY-EPIPE
+  fixed in the runner's tests. Done: the support helper treats a broken pipe on the write as an
+  early exit (as `tessel-runner/tests/runner/binary.rs` does), with a test that forces the exit
+  before the write; the runner helper's busy wait sleeps between polls.
+- [x] **RUNNER-BINARY-EPIPE** (`35d1124`, #111) — lane A. As built: the runner binary tests'
+  `send_request` treats a broken pipe on the write as the runner having exited early (it refuses a
+  missing config at `tessel-runner/src/main.rs:57`, before reading stdin at :58); a test waits for
+  the exit, then writes, red with the old helper. #110's failed job was re-run once with this row
+  cited (attempt 2 green). Reviewed "Yes". The same race in the CLI's test support:
+  CLI-TEST-STDIN-EPIPE. Found: flake seen on #110's CI (run 40083221329, 24 October, Linux):
+  `tessel-runner/tests/runner/binary.rs:34`
+  `the_binary_exits_2_with_a_fixed_message_when_the_config_is_missing` panicked with "send the
+  request: Broken pipe": the runner exits 2 on the missing config before it reads stdin, so the
+  test's `write_all` can meet a closed pipe. Failed on both nextest attempts in that run; #110 does
+  not touch the runner. Done: the helper treats a broken pipe on the write as the runner having
+  exited early and still checks the exit code and message; a test that forces the early exit before
+  the write.
 - [x] **SERVER-FORK-CASE** (`9334aaf`, #95) — lane B. As
   built: the server accepts only lowercase agent names (the verifier, `admin token`, `reviewers`
   and the fork template each refuse any other; the protocol's rule is unchanged); a store that
@@ -579,14 +715,26 @@ claims reconciled.
   nor `zizmor`, which only the lanes' gates run; once landings bypass the orchestrator's gate
   nothing on `main` checks the workflows. Done: both in the fast lane, pinned by SHA, red on a
   planted workflow fault.
-- [ ] **MERGE-ADMIN-MERGE-TEXT** — lane A, dispatched 24 October from `0833c8f`. With the next core
-  task. From the same review: `src/merge.rs:327` still says a change to `tessel.toml` needs "an
-  admin merge", a steward route that no longer exists; the lander refuses the change and it goes
-  through a pull request. Done: the text says that, with its test.
-- [ ] **SERVER-KILL-AFTER-PUSH-TEST** — lane B, dispatched 24 October from `0833c8f`. M5 hardening,
-  with the next server task. From the same review: `restart.rs` kills the server during the runner's
-  command; a kill between the push and the answer is untested (it should end as already merged,
-  counted once). Done: that test.
+- [x] **MERGE-ADMIN-MERGE-TEXT** (`3b19099`, #102) — lane A. As built: a submission touching
+  `tessel.toml` is refused with "changes the gate (tessel.toml); the server's lander refuses it, so
+  change it in a pull request that the repository's owner merges", and `GateInvalid` names the
+  lander; two tests pin the texts, red on the old strings; no protocol type changed.
+  `MergePolicy::Admin` has no caller outside `tessel-lander/tests/merge_steps.rs`
+  (LANDER-ADMIN-POLICY-DEAD); `docs/configuration.md` still quotes the old texts
+  (DOCS-GATE-SECTION). Planned: With the next core task. From the same review: `src/merge.rs:327`
+  still says a change to `tessel.toml` needs "an admin merge", a steward route that no longer
+  exists; the lander refuses the change and it goes through a pull request. Done: the text says
+  that, with its test.
+- [x] **SERVER-KILL-AFTER-PUSH-TEST** (`f2d1bd1`, #103) — lane B. As built: a `post-receive` hook on
+  the trunk holds the lander's push open, the real server is SIGKILLed there (main moved, no
+  `Merged` in the store), restarted on the same directories, and the claim lands once as already
+  merged: `recover_merge` (`src/coordinator/merging.rs:173`) keeps `unanswered_from`, the
+  re-dispatch reads main fresh and the rebase gives head equal to base, answered `Prepared` and read
+  as `AlreadyMerged`. About 12 s a run, stable over the lane's and reviewer's runs; one fix pass
+  made the hook's wait end when the test's directory is gone. A second `Merged` mutant goes red.
+  Planned: M5 hardening, with the next server task. From the same review: `restart.rs` kills the
+  server during the runner's command; a kill between the push and the answer is untested (it should
+  end as already merged, counted once). Done: that test.
 - [x] **P1-LOCAL-SETUP** (`725834c`, #87; first half `af595c5`, #80) — lane A. Second half:
   `docs/local-setup.md` (86 lines) walks to a commit landed on the developer's remote, the CI job
   "Slow lane, quickstart" runs the page's own fenced blocks from a clean checkout (5 s after the
