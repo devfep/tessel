@@ -116,18 +116,19 @@ a new check can fail (mutant or deliberate break, then restore); exit codes deci
 11. Reports and verdicts stay under about 3,000 characters; longer ones are cut off in delivery.
 12. Once lanes claim again (section 2): claims cover symbols, not files. A lane claims
     `--mode create` on every new file before creating it and on every existing file in which it adds
-    an exported symbol (function, type, const or test helper): `edit-body` and `edit-signature` do not
-    cover a new symbol, and `tessel submit` refuses the commit locally as uncovered. On 9 October
-    2026 REVIEW-CARD (54 new symbols in seven steward files) and CLI-INIT (one function in
+    an exported symbol (function, type, const or test helper): `edit-body` and `edit-signature` do
+    not cover a new symbol, and `tessel submit` refuses the commit locally as uncovered. On 9
+    October 2026 REVIEW-CARD (54 new symbols in seven steward files) and CLI-INIT (one function in
     `commands.rs`) were both refused until the orchestrator amended the claim. When in doubt, add
     `create` on every owned source and test file up front; the amend is cheap.
 
 ## 5. Resources
 
 Felix runs other sessions on the same Mac. At most two lanes build or test at once, and only in
-disjoint areas. One heavy job per lane at a time (one cargo build, one docker build, one dev server).
-Kill only PIDs you started, after reading `ps -o args -p <pid>`; no pattern kills. Leave nothing
-running: dev servers, log tails and containers are stopped and confirmed gone before a report.
+disjoint areas. One heavy job per lane at a time (one cargo build, one docker build, one dev
+server). Kill only PIDs you started, after reading `ps -o args -p <pid>`; no pattern kills. Leave
+nothing running: dev servers, log tails and containers are stopped and confirmed gone before a
+report.
 Docker Desktop is quit when no image build needs it. Use `trash`, never `rm -rf`.
 
 ## 6. Autonomy
