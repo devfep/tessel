@@ -398,6 +398,14 @@ pub async fn run(worktree: Worktree, config: Config, args: Args) -> anyhow::Resu
     result
 }
 
+/// Takes the worktree's daemon lock, or returns `None` when another daemon holds it.
+///
+/// The lock is a POSIX record lock, not `flock`. `flock` locks the open file description, and a
+/// child the daemon forks (git, a hook) shares it until the child execs, so a daemon that
+/// exited could still refuse its successor for that window. A record lock belongs to the process
+/// and a fork child does not inherit it. Its two hazards cannot arise here: one process runs one
+/// daemon (`commands.rs` calls `run` once), and nothing else opens `daemon.lock`, so no second
+/// holder takes the lock inside this process and no other descriptor closes it early.
 fn acquire_lock(worktree: &Worktree) -> anyhow::Result<Option<std::fs::File>> {
     let path = worktree.lock_path();
     let file = std::fs::OpenOptions::new()
@@ -406,12 +414,34 @@ fn acquire_lock(worktree: &Worktree) -> anyhow::Result<Option<std::fs::File>> {
         .write(true)
         .open(&path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => {
-            Err(e).with_context(|| format!("cannot lock {}", path.display()))
-        }
+    match try_record_lock(&file) {
+        Ok(true) => Ok(Some(file)),
+        Ok(false) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot lock {}", path.display())),
+    }
+}
+
+/// Takes a write lock over the whole file without waiting. `Ok(false)` means another process
+/// holds it.
+fn try_record_lock(file: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: an all-zero `flock` is a valid value (zero integers). Zero in `l_whence`, `l_start`
+    // and `l_len` is `SEEK_SET`, offset 0, length 0, which locks the whole file; only the lock
+    // type is set below.
+    let mut request: libc::flock = unsafe { std::mem::zeroed() };
+    request.l_type = libc::c_short::try_from(libc::F_WRLCK)
+        .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
+    // SAFETY: `fcntl` with `F_SETLK` reads `request`, which is live for the call, and the
+    // descriptor is open for as long as `file` is borrowed.
+    let status = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw mut request) };
+    if status == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EACCES | libc::EAGAIN) => Ok(false),
+        Some(_) | None => Err(error),
     }
 }
 
@@ -3662,5 +3692,61 @@ mod tests {
             );
             assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_A), "{head:?}");
         }
+    }
+
+    /// A child between `fork` and `exec` holds a copy of every descriptor the daemon had open. A
+    /// lock that lives in an open file description (`flock`) then outlives the daemon's own
+    /// release, so a daemon started in that window is refused. The child here sleeps in that
+    /// window and the lock is taken again inside it.
+    #[test]
+    fn a_forked_child_before_exec_does_not_hold_the_worktree_lock() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+
+        const WINDOW_NANOS: libc::c_long = 300_000_000;
+
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q"])
+            .status();
+        assert!(init.is_ok_and(|status| status.success()));
+        let worktree = Worktree::discover(dir.path()).unwrap();
+        worktree.prepare_dir().unwrap();
+        let first = acquire_lock(&worktree).unwrap();
+        assert!(first.is_some(), "the first daemon takes the lock");
+
+        let (mut forked, signal) = std::io::pipe().unwrap();
+        let signal_fd = signal.as_raw_fd();
+        let spawner = std::thread::spawn(move || {
+            let mut command = std::process::Command::new("true");
+            // SAFETY: the closure runs between fork and exec and calls only `write` and
+            // `nanosleep`, which POSIX lists as async-signal-safe; the `timespec` is built on the
+            // child's stack from zeroed memory and no memory another thread owns is touched.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut window: libc::timespec = std::mem::zeroed();
+                    window.tv_nsec = WINDOW_NANOS;
+                    libc::write(signal_fd, b"x".as_ptr().cast(), 1);
+                    libc::nanosleep(&raw const window, std::ptr::null_mut());
+                    Ok(())
+                });
+            }
+            let status = command.status();
+            drop(signal);
+            status
+        });
+        let mut byte = [0_u8; 1];
+        forked.read_exact(&mut byte).unwrap();
+        drop(first);
+        let second = acquire_lock(&worktree).unwrap();
+        let status = spawner.join().unwrap().unwrap();
+        assert!(status.success(), "the child ran: {status}");
+        assert!(
+            second.is_some(),
+            "a daemon started inside the exec window is refused by the released lock"
+        );
     }
 }
