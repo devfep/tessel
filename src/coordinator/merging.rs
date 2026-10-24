@@ -1301,7 +1301,7 @@ mod tests {
             (tests_failed(), "tests failed (exit code 1)"),
             (
                 MergeOutcome::CommitNotInFork {},
-                "not on your fork's default branch",
+                "not on any branch of your fork",
             ),
         ] {
             let mut c = core();

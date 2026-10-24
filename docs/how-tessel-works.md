@@ -178,7 +178,7 @@ trunk. The change keeps the behaviour, and the tests pass.
 
 [a1] $ tessel submit --evidence "node --test passed (12 tests)"
 accepted: claim 1 (2bfdf735f84f9310e07683f8366ee017b82ed874) is in the merge queue at position 1.
-The server's lander fetches every branch of your fork, so the commit must already be pushed to one. The runner runs the trunk's test command before it lands.
+The server's lander fetches the branches of your fork, so the commit must already be pushed to one of them. The runner runs the trunk's test command before it lands.
 The outcome arrives in `tessel inbox` (merged, submit_rejected, uncovered or review_required); `tessel status` shows the claim as submitted until then. A submitted claim cannot be released.
 ```
 
@@ -190,9 +190,9 @@ evidence attached. So the work goes straight to the merge queue.
 **5. The merge lands it.** The local stand-in cherry-picked the commit onto the trunk and ran
 `node --test`. The real merge path is the server's lander (`tessel-lander/`, called from
 `tessel-server/src/landing/mod.rs`). It clones `main`, fetches the fork, checks that a fork
-branch contains the commit, rebases it, and checks that the claim covers every file the rebased change
-touches. The runner then runs the trunk's test commands on a clone of the rebased head. The lander
-pushes `main` with a compare-and-swap on the head it read and confirms by reading `main` back. The
+branch contains the commit, rebases it, and checks that the claim covers every file the rebased
+change touches. The runner then runs the trunk's test commands on a clone of the rebased head.
+The lander pushes `main` with a compare-and-swap on the head it read and confirms by reading `main` back. The
 lander runs git and never repo code; the runner runs the tests and never git.
 
 ```

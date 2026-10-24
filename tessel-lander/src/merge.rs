@@ -9,7 +9,7 @@
 //! 1. Clone main and fetch the fork with read credentials, then revoke them before anything else
 //!    runs (if the revocation fails, nothing runs and the merge is an error).
 //! 2. Check the cloned main is the commit whose gate was read (else `MainMoved`), then verify the
-//!    commit is reachable from the fork's default branch.
+//!    commit is contained in a fork branch.
 //! 3. Rebase `merge-base..commit` onto main with a fixed committer.
 //! 4. Check that the claim covers every file the rebased range changes (invariant 11) and what
 //!    the range does to `tessel.toml`. This is file level; see [`crate::coverage`].

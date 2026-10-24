@@ -91,6 +91,7 @@ fn fetches_every_fork_branch_into_refs_remotes_fork_without_tags() {
     let sources = sources();
     let argv = argv(&git().fetch_fork_command(&workspace(), &sources));
     assert!(argv.contains(&"--no-tags".to_owned()));
+    assert!(argv.contains(&"--quiet".to_owned()));
     assert_eq!(
         argv[argv.len() - 2..],
         [

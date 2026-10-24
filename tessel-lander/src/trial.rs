@@ -10,7 +10,7 @@
 //! 1. Clone main and fetch the fork with read credentials, then revoke them before anything else
 //!    runs (if the revocation fails, nothing runs and the trial is an error).
 //! 2. Check that `main` is on main's history, else `MainUnreachable`.
-//! 3. Verify that the commit is reachable from the fork's default branch.
+//! 3. Verify that some fork branch contains the commit.
 //! 4. Rebase `merge-base..commit` onto `main` with the fixed committer, as a merge does.
 //! 5. Run the dependency check and the tests. No credential is live.
 //!

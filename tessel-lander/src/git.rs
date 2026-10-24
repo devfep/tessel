@@ -292,11 +292,14 @@ impl Git {
 
     /// Fetches every branch of the fork, into `refs/remotes/fork/`. The workspace is a fresh
     /// clone, so only this fetch's refs are there. An empty fork fetches nothing and succeeds.
+    /// `--quiet` keeps ref names out of progress output; a failed fetch's stderr can still name
+    /// refs, and its reader treats it as quoted data.
     pub fn fetch_fork_command(&self, workspace: &Workspace, sources: &MergeSources) -> GitCommand {
         self.local(
             workspace,
             &[
                 "fetch",
+                "--quiet",
                 "--no-tags",
                 "--",
                 &sources.fork_remote,
@@ -337,7 +340,7 @@ impl Git {
     }
 
     /// Stdout is empty when no fork branch contains the commit. Fork ref names are the agent's
-    /// data: they are only ever matched by git, never printed, logged or put in argv.
+    /// data: git matches them inside this command, and they are never put in argv or printed by it.
     pub fn reachable_command(&self, workspace: &Workspace, commit: &Sha) -> GitCommand {
         self.local(
             workspace,

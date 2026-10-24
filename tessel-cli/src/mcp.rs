@@ -211,8 +211,8 @@ impl Tessel {
     }
 
     #[tool(
-        description = "Hand finished work to the server's lander. Commit and push it to your \
-                          fork's main first, and give the evidence that it works."
+        description = "Hand finished work to the server's lander. Commit and push it to a \
+                          new branch of your fork first, and give the evidence that it works."
     )]
     async fn tessel_submit(&self, Parameters(args): Parameters<SubmitArgs>) -> CallToolResult {
         let work = SubmitWork {

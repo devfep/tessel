@@ -85,7 +85,8 @@ enum Command {
     },
     /// Release one claim, or all of them.
     Release { claim: Option<u64> },
-    /// Hand finished work to the server's lander. Commit and push it to your fork's main first.
+    /// Hand finished work to the server's lander. Commit and push it to a new branch of your fork
+    /// first.
     Submit {
         /// The claim to submit; required when you hold several.
         #[arg(long)]
