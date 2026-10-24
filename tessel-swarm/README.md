@@ -167,10 +167,10 @@ target/debug/tessel-swarm tasks --seed 1 --tasks 10      # print the generated t
 ```
 
 The default target is `local`: the real coordinator core behind a WebSocket on 127.0.0.1, and a
-steward that cherry-picks each submitted commit onto a trunk, runs `node --test`, and reports
-`Merged`, `Conflict` or `TestsFailed`. It needs `git` and Node 22.18 or newer. The local steward
-does not re-check the merged diff against the claim; the core still checks the submitted
-`touched` list.
+steward that cherry-picks each submitted commit onto a trunk, runs `node --test` under its TAP
+reporter, and reports `Merged`, `Conflict` or `TestsFailed`. It needs `git` and Node 22.18 or
+newer, 24 included. The local steward does not re-check the merged diff against the claim; the
+core still checks the submitted `touched` list.
 
 Files written to `--out`: `seed<N>-off.json`, `seed<N>-on.json`, `seed<N>-on-events.json` (the
 event log the numbers came from) and `seed<N>-ab.md`.
