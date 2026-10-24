@@ -170,9 +170,17 @@ git --git-dir="$main" show main:src/lib.rs | grep -q 'hello from a1' || fail "ma
 [ -f "$work/tmp/tessel-ran" ] || fail "the runner's command did not run (no marker)"
 [ "$(cat "$work/tmp/tessel-ran")" = "hello from a1" ] ||
   fail "the runner's command ran on something other than the landed change"
-grep -q "landed: main was read back at the head" "$work/server.log" ||
-  fail "the server did not log a read-back landing"
-grep -q "$landed" "$work/server.log" || fail "the server log does not name the head it landed"
+
+# The server logs the read-back line after it pushed main and read it back, so main moves first.
+readback=""
+for _ in $(seq 1 60); do
+  readback=$(grep "landed: main was read back at the head" "$work/server.log" || true)
+  [ -n "$readback" ] && break
+  kill -0 "$server_pid" 2>/dev/null || fail "the server exited before it logged the landing"
+  sleep 0.5
+done
+[ -n "$readback" ] || fail "the server did not log a read-back landing"
+grep -q "$landed" <<<"$readback" || fail "the server log does not name the head it landed"
 
 # a1's claim is released by the landing, so a2 can have the file.
 granted=""
