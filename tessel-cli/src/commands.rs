@@ -4,7 +4,7 @@
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command as Process, ExitCode, Stdio};
+use std::process::{Command as Process, ExitCode, ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::{bail, Context};
@@ -280,8 +280,8 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
             answered = Some(state);
         }
         if tokio::time::Instant::now() >= deadline {
-            if child.try_wait()?.is_some() {
-                bail!(gave_way_message(&worktree, answered.as_deref()));
+            if let Some(status) = child.try_wait()? {
+                bail!(deadline_message(&worktree, status, answered.as_deref()));
             }
             let reason = match State::read(&worktree) {
                 Ok(Some(state)) => state.last_error.unwrap_or_else(|| "no answer yet".into()),
@@ -294,6 +294,11 @@ pub async fn start(cwd: &Path, summary: String, task: Option<String>) -> anyhow:
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// What `start` says when its daemon has exited by the deadline.
+fn deadline_message(worktree: &Worktree, _status: ExitStatus, answered: Option<&State>) -> String {
+    gave_way_message(worktree, answered)
 }
 
 /// What `start` says when its daemon exited cleanly and none came online: it gave way to a holder
@@ -759,4 +764,50 @@ fn install(cwd: &Path) -> anyhow::Result<ExitCode> {
     };
     say(&format!("{word} in .claude/settings.local.json\n"));
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    use super::*;
+
+    fn worktree_with_log(log: &str) -> (tempfile::TempDir, Worktree) {
+        let dir = tempfile::tempdir().unwrap();
+        let init = Process::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q"])
+            .status();
+        assert!(init.unwrap().success());
+        let worktree = Worktree::discover(dir.path()).unwrap();
+        worktree.prepare_dir().unwrap();
+        std::fs::write(worktree.log_path(), log).unwrap();
+        (dir, worktree)
+    }
+
+    #[test]
+    fn a_daemon_that_failed_by_the_deadline_is_reported_as_failed_with_its_log() {
+        let (_dir, worktree) = worktree_with_log("connecting\nrefused: bad token\n");
+        let status = ExitStatus::from_raw(3 << 8);
+
+        let message = deadline_message(&worktree, status, None);
+
+        assert!(
+            message.contains("exited (exit status: 3) before connecting"),
+            "{message}"
+        );
+        assert!(message.contains("refused: bad token"), "{message}");
+        assert!(!message.contains("lock"), "{message}");
+    }
+
+    #[test]
+    fn a_daemon_that_exited_cleanly_by_the_deadline_gave_way_to_the_lock_holder() {
+        let (_dir, worktree) = worktree_with_log("another daemon holds the lock; exiting\n");
+
+        let message = deadline_message(&worktree, ExitStatus::from_raw(0), None);
+
+        assert!(message.contains("held by another process"), "{message}");
+        assert!(!message.contains("before connecting"), "{message}");
+    }
 }
