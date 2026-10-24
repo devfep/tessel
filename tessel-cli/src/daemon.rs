@@ -3663,4 +3663,60 @@ mod tests {
             assert_eq!(persisted_head(&daemon).as_deref(), Some(HEAD_A), "{head:?}");
         }
     }
+
+    /// A child between `fork` and `exec` holds a copy of every descriptor the daemon had open. A
+    /// lock that lives in an open file description (`flock`) then outlives the daemon's own
+    /// release, so a daemon started in that window is refused. The child here sleeps in that
+    /// window and the lock is taken again inside it.
+    #[test]
+    fn a_forked_child_before_exec_does_not_hold_the_worktree_lock() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+
+        const WINDOW_NANOS: libc::c_long = 300_000_000;
+
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q"])
+            .status();
+        assert!(init.is_ok_and(|status| status.success()));
+        let worktree = Worktree::discover(dir.path()).unwrap();
+        worktree.prepare_dir().unwrap();
+        let first = acquire_lock(&worktree).unwrap();
+        assert!(first.is_some(), "the first daemon takes the lock");
+
+        let (mut forked, signal) = std::io::pipe().unwrap();
+        let signal_fd = signal.as_raw_fd();
+        let spawner = std::thread::spawn(move || {
+            let mut command = std::process::Command::new("true");
+            // SAFETY: the closure runs between fork and exec and calls only `write` and
+            // `nanosleep`, which POSIX lists as async-signal-safe; the `timespec` is built on the
+            // child's stack from zeroed memory and no memory another thread owns is touched.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut window: libc::timespec = std::mem::zeroed();
+                    window.tv_nsec = WINDOW_NANOS;
+                    libc::write(signal_fd, b"x".as_ptr().cast(), 1);
+                    libc::nanosleep(&raw const window, std::ptr::null_mut());
+                    Ok(())
+                });
+            }
+            let status = command.status();
+            drop(signal);
+            status
+        });
+        let mut byte = [0_u8; 1];
+        forked.read_exact(&mut byte).unwrap();
+        drop(first);
+        let second = acquire_lock(&worktree).unwrap();
+        let status = spawner.join().unwrap().unwrap();
+        assert!(status.success(), "the child ran: {status}");
+        assert!(
+            second.is_some(),
+            "a daemon started inside the exec window is refused by the released lock"
+        );
+    }
 }
