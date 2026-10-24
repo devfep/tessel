@@ -1510,10 +1510,17 @@ impl Drop for Agent {
 }
 
 /// Writes `stdin` to the child, closes its input and waits for it to finish.
+///
+/// A broken pipe means the child exited without reading its input, which callers see in the exit
+/// code and output. Any other write error fails.
 pub fn send_stdin(mut child: Child, stdin: &str) -> Result<Done> {
-    use std::io::Write;
+    use std::io::{ErrorKind, Write};
     if let Some(mut pipe) = child.stdin.take() {
-        pipe.write_all(stdin.as_bytes())?;
+        match pipe.write_all(stdin.as_bytes()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => {}
+            Err(error) => return Err(error).context("write the child's stdin"),
+        }
     }
     Ok(Done::from(child.wait_with_output()?))
 }
