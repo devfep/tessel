@@ -3793,7 +3793,7 @@ mod tests {
 
         older.unlock().unwrap();
         assert!(!held_by_flock(&probe).unwrap(), "released, so free");
-        assert!(!held_by_flock(&probe).unwrap(), "the probe kept nothing");
+        assert!(!held_by_flock(&open()).unwrap(), "the probe kept nothing");
     }
 
     #[test]
