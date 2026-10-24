@@ -114,7 +114,7 @@ commit changes before it runs any repo code and before it checks the claim's sco
 
 | Path | Result | Code |
 |---|---|---|
-| A submission that touches `tessel.toml` | Refused as `GateChanged` | `mod.rs:341`, `answer.rs:87-89` |
+| A submission touching `tessel.toml` | Refused as `GateChanged` | `mod.rs:341`, `answer.rs:87-89` |
 | A change to `tessel.toml` | A pull request the owner merges | `BUILD-PROTOCOL.md` §2 |
 
 In the table, `mod.rs` and `answer.rs` are in `tessel-server/src/landing/`, and
