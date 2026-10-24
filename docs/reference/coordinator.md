@@ -21,8 +21,8 @@ precedes the sends it carries). For what these terms mean, read
 | Shell helpers | `src/shell.rs` | What can be decided without I/O: path routes, settings parsing, delivery plans, the summary tally. |
 | Host | `src/host/` | The sans-IO step machine around the core. Adapters turn what happens into an `Input` and carry out each `Output`. |
 | Server | `tessel-server/` | One host per repository, served over WebSocket on a SQLite file per repository, with Ed25519 identity tokens. [Local setup](../local-setup.md) runs it. |
-| Runner | `tessel-runner/` | Runs a repository's test commands for one trusted user. Nothing calls it yet. |
-| Lander | `tessel-lander/` | The merge path in Rust, ported from the steward. A library until the server calls it. |
+| Runner | `tessel-runner/` | Runs a repository's tests for one trusted user. The server calls it. |
+| Lander | `tessel-lander/` | The merge path in Rust: rebase, coverage, gate, push. The server calls it. |
 | CLI | `tessel-cli/` | The `tessel` binary and per-worktree daemon. Its tests run it against a fake coordinator that drives the real host. |
 | Swarm | `tessel-swarm/` | Scripted agents against the real core on 127.0.0.1. |
 
