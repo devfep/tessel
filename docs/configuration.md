@@ -1,99 +1,88 @@
 # Configuration reference
 
-This page covers the settings in this tree. The Cloudflare Worker and its `wrangler.toml` are
-deleted; the local server, `tessel-server`, has its [own section](#server-tessel-server). The
-steward (`tessel-steward/`) stays until M6 as the reference for the lander, so its settings are
-listed as they are in its own files.
+This page covers the settings the Rust code reads: the host, `tessel-server`, the lander, the
+runner and the CLI. The Cloudflare Worker and its `wrangler.toml` are deleted. The steward
+(`tessel-steward/`) is the legacy TypeScript Worker that stays in the repository until M6 deletes
+it; nothing on this page configures it.
 
 Every setting Tessel reads, where it is set, its default, what it does, and the code that reads it.
-The code references were written against commit `9e363c1` and the `src/shell.rs` ones re-checked
-after the Worker's deletion. A setting that is not on this page is not configurable: the limits in
-[Fixed limits](#fixed-limits) are constants in the code.
+The code references were checked against commit `36b17f2`; the `src/shell.rs` ones were also
+re-checked after the Worker's deletion. A setting that is not on this page is not configurable:
+the limits in [Fixed limits](#fixed-limits) are constants in the code.
 
 Contents: [`tessel.toml`](#per-repository-tesseltoml-the-gate) ·
 [Host settings](#host-settings) · [Server](#server-tessel-server) ·
-[Steward](#steward-tessel-stewardwranglerjsonc) · [Agent and worktree](#agent-and-worktree) ·
+[Runner](#runner-tessel-runner) · [Agent and worktree](#agent-and-worktree) ·
 [CLI commands and flags](#cli-commands-and-flags) · [Fixed limits](#fixed-limits) ·
 [What is pluggable](#what-is-pluggable)
 
 ## Per repository: `tessel.toml` (the gate)
 
-The gate is the install and test commands run before a submission merges. The rules below are
-the steward's, which the lander ports. A
-repository declares it in `tessel.toml` at the root. The steward reads the file from the trunk
-commit a run is based on, never from the agent's fork (`tessel-steward/src/gate-plan.ts:39`).
+The gate is the test commands run before a submission merges. A repository declares it in
+`tessel.toml` at the root. The server reads the file from the clone of the rebased commit. A
+submission that touches the file is refused before any test runs, so that copy is main's and an
+agent's fork can neither supply nor change it (`tessel-server/src/landing/ports.rs:57-60`,
+`tessel-lander/src/merge.rs:337-375`).
 
 The file is strict. An unknown key, a file over 4096 bytes, invalid TOML, or a command outside the
-allowed list makes the whole file invalid (`tessel-steward/src/tessel-config.ts:179`).
+allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:226-257`).
 
 ### Keys
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `instance` | string, required | none | Container size for the run. One of `standard-1`, `standard-2`, `standard-3`, `standard-4`. |
-| `[install]` | table, optional | no install step | Only the keys `cargo` and `pnpm`. |
-| `install.cargo` | boolean | `false` | When `true`, the steward runs `cargo fetch --locked --offline` in the repo root before the tests. |
-| `install.pnpm` | array of directories, at most 4 | `[]` | In each directory the steward runs `pnpm install --offline --frozen-lockfile --ignore-scripts`. |
+| `instance` | string, required | none | One of `standard-1` to `standard-4`. Checked, never used. |
+| `[install]` | table, optional | none | Only `cargo` and `pnpm`. Checked, never run. |
+| `install.cargo` | boolean | `false` | Checked, never run. |
+| `install.pnpm` | array of at most 4 directories | `[]` | Checked, never run. |
 | `[[test]]` | 1 to 6 tables, required | none | The test commands, run in order. The first non-zero exit ends the run. |
 | `test.argv` | array of 1 to 24 strings, required | none | The command, run without a shell. |
 | `test.dir` | directory | `"."` | Working directory, relative to the repo root. |
 
-Code: keys and limits `tessel-steward/src/tessel-config.ts:5-46`, install parsing `:114`, test
-parsing `:141`. The install argv arrays are fixed by the steward, so the file chooses where to
-install, not how (`tessel-steward/src/gate-steps.ts:12-19,25`).
+Code: keys and limits `tessel-lander/src/gate.rs:13-35`, install parsing `:160-189`, test
+parsing `:191-212`. The install step passes without running anything
+(`tessel-server/src/landing/ports.rs:126-139`), so the keys under `[install]` have no effect.
 
 ### Instances
 
-| `instance` | Memory | Source |
-|---|---|---|
-| `standard-1` | 4 GiB | `tessel-steward/src/tessel-config.ts:14` |
-| `standard-2` | 6 GiB | same |
-| `standard-3` | 8 GiB | same |
-| `standard-4` | 12 GiB | same |
-
-`lite` is not accepted. It is the instance a repository without `tessel.toml` gets
-(`tessel-steward/src/tessel-config.ts:7`, `gate-plan.ts:102`).
+`instance` must be one of `standard-1` to `standard-4`, and `lite` is not accepted
+(`tessel-lander/src/gate.rs:37-53,246-248`). The Rust server has no container sizes. It checks the
+name and reads it nowhere else, so the tests get the resources of the machine the server runs on.
 
 ### Allowed commands
 
-A `test.argv` must be one of (`tessel-steward/src/tessel-config.ts:76`):
+A `test.argv` must be one of (`tessel-lander/src/gate.rs:90-96`):
 
 - `["pnpm", "test"]` exactly;
 - `["npm", "test"]` exactly;
-- `["cargo", "test", ...flags]` where every flag is in this list (`:27`): `--workspace`,
+- `["cargo", "test", ...flags]` where every flag is in this list (`:19-30`): `--workspace`,
   `--locked`, `--offline`, `--no-fail-fast`, `--all-targets`, `--all-features`, `--release`,
   `--lib`, `--bins`, `--tests`.
 
 Not allowed: a `+toolchain` argument, `--config`, `-Z`, `--manifest-path`, `--target`, a `--`
 passthrough, environment assignments, and a shell. Each argument must match
-`^[A-Za-z0-9._/=:@+,%-]+$` and be at most 200 characters (`:43-45`). A directory must be `.` or
+`^[A-Za-z0-9._/=:@+,%-]+$` and be at most 200 characters (`:35,111-119`). A directory must be `.` or
 `/`-separated segments that start with a letter, digit or `_` and continue with `A-Z a-z 0-9 . _ -`,
-so `..` is refused (`:46`).
+so `..` is refused (`:98-109`).
 
 ### Without the file
 
-A repository with no `tessel.toml` on its trunk gets the legacy gate (`gate-plan.ts:17`,
-`container-step.ts:246-272`):
+The Rust server has no fallback gate. A trunk with no `tessel.toml` cannot be tested: the landing
+fails with "the trunk has no tessel.toml to say how to test it"
+(`tessel-server/src/landing/ports.rs:60-70`). A trunk with an invalid `tessel.toml` fails the same
+way, with the parser's reason (`ports.rs:76-84`). Either failure is an infrastructure failure that
+the core retries, and after three retries the agent sees `submit_rejected` ([Landing](#landing),
+`tessel-server/src/landing/answer.rs:5`). Nothing lands and nothing falls back to another gate.
+`GatePlan` and `read_gate_plan` (`tessel-lander/src/gate.rs:259-297`) model the missing-file case,
+and the server does not call them.
 
-| Part | Value |
-|---|---|
-| Image | `tests` (`tessel-steward/Dockerfile`: Node 22.23.3, `git`, `ca-certificates`) |
-| Instance | `lite` |
-| Network | off |
-| Dependency check | The run is refused if `package.json` is missing, is not a JSON object, or declares any of `dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies`, `bundleDependencies`, `bundledDependencies`, `workspaces` (`dependency-check.ts:16-44`). |
-| Test | `npm test` in the repo root |
+### Toolchain and dependencies
 
-A repository with an invalid `tessel.toml` does not fall back to this gate. Every run fails at the
-install step with reason `config` (`gate-plan.ts:19`).
-
-### Images
-
-With a `tessel.toml` the steward uses the `toolchain` image (`gate-plan.ts:13`). The Internet is off
-in both images (`gate-plan.ts:68-103`), so every dependency must already be in the image. It holds
-the Rust toolchain and the crates of `Cargo.lock`, and the pnpm store of
-`tessel-steward/pnpm-lock.yaml` (`tessel-steward/toolchain.Dockerfile`). A repository other than
-Tessel needs its own toolchain image built from its lockfiles, and the steward's
-`containers[].images.toolchain` entry pointed at it.
+The Rust server runs no container. The runner runs the tests with the toolchain and dependencies
+already on the machine, as the runner's user ([Runner](#runner-tessel-runner)), and it does not
+install or fetch anything. A repository that the server lands needs its dependencies present on
+that machine. The runner opens no network connection itself and does not block one for the tests
+it runs.
 
 ### Time budget
 
@@ -131,14 +120,15 @@ callers outside `tessel-lander/tests/merge_steps.rs` build `MergePolicy::Submiss
 
 ### Example
 
-This is Tessel's own `tessel.toml`, without its comments:
+A `tessel.toml` for a Rust workspace with a web directory. The server checks the `[install]`
+table and runs no install:
 
 ```toml
 instance = "standard-4"
 
 [install]
 cargo = true
-pnpm = ["tessel-steward"]
+pnpm = ["web"]
 
 [[test]]
 argv = ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast"]
@@ -213,6 +203,10 @@ table, makes it invalid, and an error names the file and the key.
 Without an `[identity]` table the server logs one warning at start and answers 401 on every
 authenticated route. A `[lander]` table without a repository that names a `remote` makes the file
 invalid, and so does a `remote` without the table; the error names the file, the table and the key.
+
+The server has no dashboard, review page, sign-in provider or HTTP admin route. Its routes are
+`ws`, `summary` and `trunk-moved` (`tessel-server/src/ws.rs:1-13`), `tessel-server admin` runs on
+the command line, and a reviewer decides with `tessel review`.
 
 ### Landing
 
@@ -331,7 +325,7 @@ The commands run in order, each in `tree/dir`, and the run stops at the first on
 exit 0. The whole run, reading the output included, is under one timeout; on timeout the process
 group is killed and no child is left behind. A command gets standard input closed and exactly
 this environment, taken from the runner's own: `PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME` and
-`TMPDIR`. Nothing else reaches it, `TESSEL_TOKEN` and `STEWARD_ADMIN_TOKEN` included.
+`TMPDIR`. Nothing else reaches it, `TESSEL_TOKEN` included.
 
 The result is `{ "step": "test", "exit_code", "passed", "timed_out", "stdout", "stderr",
 "stdout_truncated", "stderr_truncated", "first_failure", "wall_ms" }`. `passed` is true only for
@@ -351,34 +345,6 @@ to pass or fail.
 There is no sandbox. The commands run with the privileges of the user who started the runner, and
 a command that leaves its process group outlives the kill. The sandbox is M5. Until then the
 runner is for one trusted user running their own repository.
-
-## Steward: `tessel-steward/wrangler.jsonc`
-
-| Name | Where | Value in repo | If unset | Effect |
-|---|---|---|---|---|
-| `ACCESS_TEAM_DOMAIN` | `vars` | `fepdev.cloudflareaccess.com` | `/dashboard` and `/review` answer 503 "sign-in not configured" | Cloudflare Access team domain that signs the viewer's JWT. `https://` is stripped (`src/access.ts:54`). |
-| `ACCESS_AUD` | `vars` | the Access application's AUD tag | same | The audience a JWT must carry (`src/access.ts:55`). |
-| `DASHBOARD_VIEWERS` | `vars` | `*` | No account passes: every signed-in user gets 403 | Comma-separated emails allowed to open `/dashboard` and `/review`, compared case-insensitively. A `*` entry admits any email the Access policy lets sign in; `REVIEWER_EMAILS` still decides who may approve or reject (`src/access.ts:59-64,178`). |
-| `REVIEWER_EMAILS` | `vars` | one `email=agent` pair | Nobody may decide; viewing is unaffected | Comma-separated `email=agent` pairs. A person signed in as `email` approves or rejects on `/review` as `agent`. An entry that is not a pair with a valid agent id is dropped (`src/review-csrf.ts:10-23`, `src/review.ts:346`). |
-| `STEWARD_ADMIN_TOKEN` | secret | required | Every admin route answers 401 | Bearer token for the admin routes: create repo, fork, mint tokens, run tests, admin merge, mint identity (`src/index.ts:47-58,198-200`). |
-| `IDENTITY_SIGNING_KEY` | secret | required | Identity minting throws | Signs agent identity tokens, the review page's anti-forgery tokens and the steward's own calls to the coordinator (`src/identity.ts:45`, `src/review.ts:94`, `src/coordinator-link.ts:16`). |
-
-The agent named in `REVIEWER_EMAILS` must also be in the host's `REVIEWERS`. The steward does
-not check this. A decision for an agent that is not in `REVIEWERS` is refused by the coordinator
-with `not_owner` (`src/coordinator/merging.rs:201`).
-
-Only the `/dashboard` and `/review` paths use Access. Every other route needs
-`Authorization: Bearer $STEWARD_ADMIN_TOKEN` (`src/index.ts:190-200`).
-
-### Container images and bindings
-
-| Setting | Value | Note |
-|---|---|---|
-| `containers[].images.tests` | `./Dockerfile` | Legacy gate. Node and `git`. |
-| `containers[].images.toolchain` | `./toolchain.Dockerfile`, `build_context: ".."` | Rust 1.98.0, Node 22.23.3, pnpm 12.8.1, `gcc`, `git`, `procps`, `time`, `tini`. Dependencies come from the committed lockfiles, so a lockfile change needs a rebuilt image before it can merge. |
-| `services[COORDINATOR]` | `tessel-coordinator` | Names the Worker that served the coordinator. The Worker is deleted and nothing in the tree serves it, so the steward has no coordinator to call. |
-| `artifacts[ARTIFACTS]` | namespace `tessel` | The git host for trunks and forks. |
-| `queues.consumers` | `tessel-artifacts-events` | Push events; a push to a trunk's `main` makes the steward poke the coordinator (`src/trunk-poke.ts`). |
 
 ## Agent and worktree
 
@@ -518,19 +484,14 @@ None of these is configurable.
 |---|---|---|
 | Claim lease | 30 s, renewed by each heartbeat | `src/shell.rs:16`, `src/coordinator.rs:857` |
 | Heartbeat interval | lease / 3 (10 s) | `tessel-cli/src/daemon.rs:806` |
-| Agent id and repo name | 1 to 128 bytes | `src/shell.rs:20`, `tessel-steward/src/identity.ts:8` |
-| Identity token lifetime | 24 h | `tessel-steward/src/identity.ts:2` |
-| Fork write token lifetime | 1 h | `tessel-steward/src/index.ts:16` |
-| Read token (`/read-tokens`) | 10 min | `tessel-steward/src/index.ts:18` |
-| Review page anti-forgery token | 1 h | `tessel-steward/src/review-csrf.ts:4` |
+| Agent id and repo name | 1 to 128 bytes | `src/shell.rs:20` |
 | WebSocket text frame | 64 KiB | `src/shell.rs:23` |
 | Scopes in one Claim, Amend or Submit | 256 | `src/coordinator.rs:1631` |
 | Stored state per repo | A client call that would grow the state past 1 MiB, or log one event over 1 MiB, is refused; nothing is stored above 2 MiB minus 64 KiB | `src/shell.rs:27,31`, `STATE_LIMIT_MESSAGE` |
 | Review note | 1024 bytes | `src/coordinator.rs:1628` |
 | Symbols of one file before the hook and `submit` claim the file instead | 4 | `tessel-cli/src/plan.rs:14` |
-| Steward call (one merge) | 13 min | `src/merge.rs:31`, `tessel-steward/src/step-budget.ts:6` |
-| Push body the steward forwards to main | 16 MiB | `tessel-steward/src/receive-pack-policy.ts:4` |
-| `tessel.toml` size, tests, pnpm directories, argv length, argument length | 4096 bytes, 6, 4, 24, 200 | `tessel-steward/src/tessel-config.ts:5,40-43` |
+| Merge call (one landing) | 13 min | `src/merge.rs:37`, `src/host/calls.rs:50` |
+| `tessel.toml` size, tests, pnpm directories, argv length, argument length | 4096 bytes, 6, 4, 24, 200 | `tessel-lander/src/gate.rs:15,32-35` |
 | Merges in flight per repo | 1, in submission order | `src/coordinator/merging.rs:3` |
 | Protocol version | 1 | `src/protocol.rs:72` |
 | The conflict table | as above, not extensible | `src/protocol.rs:215-232` |
@@ -546,6 +507,6 @@ None of these is configurable.
 | Clients | Anything that speaks JSON over WebSocket | A socket for one agent of one repo, first message `{"type":"hello","agent":"…","base":"…"}`. The `agent` must be the one the adapter verified. The summary route returns the evidence summary (`src/shell.rs:488-492`, `src/protocol.rs:459-466`). |
 | Languages for symbol claims | Rust (`.rs`), TypeScript (`.ts`, `.mts`, `.cts`), TSX (`.tsx`) | tree-sitter in the CLI (`tessel-cli/src/symbols.rs:55-63`). Every other file is claimed at file level. |
 | Test commands | `pnpm test`, `npm test`, `cargo test` with the listed flags | `tessel.toml`. See [Allowed commands](#allowed-commands). |
-| Not pluggable | Artifacts as the steward's git host | The steward uses the Artifacts binding for trunks, forks and tokens. It goes with the steward in M6. |
-| | The host's shape | The host is sans-IO: it takes `Input`s and returns `Output`s, and an adapter does the I/O. The adapters in this tree are the CLI's and the swarm's test hosts. |
+| Git host | Any remote git reaches by a path or an `https`, `ssh` or `file` URL | `remote` and `fork` of a [`[[repository]]`](#server-tessel-server); transports in `tessel-lander/src/git.rs:28`. |
+| Not pluggable | The host's shape | The host is sans-IO: it takes `Input`s and returns `Output`s, and an adapter does the I/O. The adapters in this tree are the CLI's and the swarm's test hosts. |
 | | The CLI's platform | The CLI is Unix-only (`tessel-cli/src/init.rs:10` uses Unix file modes). |

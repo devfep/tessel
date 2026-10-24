@@ -73,14 +73,12 @@ redo part of it.
   onto `main`, checks that the claim covers every changed file, and pushes. It runs git but never
   repo code: the tests run in the repository's CI, or locally in `tessel-runner` (`tessel-runner/`),
   a separate process that refuses to start for any user but the one its config names, runs only
-  the gate's test commands, and has no sandbox until M5. The lander is a port of the
-  steward's merge rules, and `tessel-server` calls it and the runner for a repository that names a
-  `remote`.
-- **The steward** (`tessel-steward/`) is the TypeScript Worker the lander replaces. It stays in
-  the tree as the reference for that port until M6.
+  the gate's test commands, and has no sandbox until M5. `tessel-server` calls the lander and the
+  runner for a repository that names a `remote` (`tessel-server/src/landing/mod.rs`).
+- **The steward** (`tessel-steward/`) is the legacy TypeScript Worker the lander replaced. It stays
+  in the tree until M6 deletes it.
 
-Only the lander (and, until M6, the steward) writes `main`. Agents push to their own fork and
-submit.
+Only the lander writes `main`. Agents push to their own fork and submit.
 
 ## One conflict, end to end
 
@@ -180,7 +178,7 @@ trunk. The change keeps the behaviour, and the tests pass.
 
 [a1] $ tessel submit --evidence "node --test passed (12 tests)"
 accepted: claim 1 (2bfdf735f84f9310e07683f8366ee017b82ed874) is in the merge queue at position 1.
-The steward merges the commit it reads from your fork `swarm-docs--a1`, so the commit must already be pushed there.
+The server's lander fetches only `main` of your fork, so the commit must already be pushed there. The runner runs the trunk's test command before it lands.
 The outcome arrives in `tessel inbox` (merged, submit_rejected, uncovered or review_required); `tessel status` shows the claim as submitted until then. A submitted claim cannot be released.
 ```
 
@@ -190,12 +188,12 @@ rules. None applies here: a body change, not on a sensitive path, threatening no
 evidence attached. So the work goes straight to the merge queue.
 
 **5. The merge lands it.** The local stand-in cherry-picked the commit onto the trunk and ran
-`node --test`. The real merge path was the steward's (`tessel-steward/`), which ran the
-repository's gate itself in a container: it cloned `main`, fetched the fork, checked the commit
-is on the fork's `main`, rebased it, checked that the claim covers every file the rebased change
-touches, ran the gate, pushed `main` with a lease, and confirmed by reading `main` back. The
-lander (`tessel-lander/`) ports the git and coverage steps. It never runs repo code, so the tests
-run in the repository's CI (or the local runner for a single trusted user) before it pushes.
+`node --test`. The real merge path is the server's lander (`tessel-lander/`, called from
+`tessel-server/src/landing/mod.rs`). It clones `main`, fetches the fork, checks the commit is on
+the fork's `main`, rebases it, and checks that the claim covers every file the rebased change
+touches. The runner then runs the trunk's test commands on a clone of the rebased head. The lander
+pushes `main` with a compare-and-swap on the head it read and confirms by reading `main` back. The
+lander runs git and never repo code; the runner runs the tests and never git.
 
 ```
 [a1] $ tessel inbox
@@ -246,9 +244,9 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 | **Assumption** | Behaviour you rely on in code you do not own, recorded with `--assume`. It is not a lock: a claim that could break it is granted, but told which assumptions are at risk. When that work is submitted, it is held for review and the assuming agent is told. After it merges, the merge path tests the assuming agent's work against the new `main` and logs the result. |
 | **Review by exception** | A submission merges with no human unless a rule flags it: it changes a signature, touches a path in the sensitive list, threatens an assumption, or carries no evidence. Flagged work waits for a reviewer named in the reviewers list, who decides with `tessel review`. A reviewer can never decide their own submission. |
 | **Evidence** | The `--evidence` lines on a submit. Any non-empty line satisfies the rule. The coordinator does not check it: it is what the agent says it ran. |
-| **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the tests have passed in CI. It never runs repo code. Until M6 the TypeScript steward is the reference it was ported from. |
+| **Lander** | The merge path, and the only writer of `main`. It rebases, checks coverage and pushes, one submission at a time, after the runner has run the trunk's test commands on the rebased commit. It never runs repo code. |
 | **Trunk and forks** | The trunk is the repository's `main`. Each agent pushes to its own fork, the one the server's `fork` template names for it (locally `<forks>/<agent>.git`), on that fork's `main`: `git push <fork> HEAD:main`. The lander reads the submitted commit from that `main`. |
-| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). `tessel-server` runs the trunk's test command through the runner before it pushes; the steward's gate, without one, runs `npm test` and refuses a repository whose `package.json` declares any dependency. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
+| **Gate** | What runs before `main` is pushed, set by `tessel.toml` on the trunk (never the fork's copy). `tessel-server` runs the trunk's test command through the runner before it pushes; a trunk without one cannot be tested, so nothing lands. [Configuration](configuration.md#per-repository-tesseltoml-the-gate) has the rules. |
 
 ### Which modes conflict
 
