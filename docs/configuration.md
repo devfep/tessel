@@ -102,8 +102,9 @@ The server's landing path does not run the install step, so `[install]` costs no
 the call's remaining time less 5 seconds and at least 1 second
 (`tessel-server/src/landing/deadline.rs:43-48`), cut to `timeout_secs` of `tessel-runner.toml` if
 that is smaller (`tessel-runner/src/request.rs:83`; the default is at
-`tessel-runner/src/config.rs:46`). There is no separate share per command. A run that reaches the deadline is killed and reported with exit
-code 137 and `timed_out` set, not as a failing test (`tessel-runner/src/supervise.rs:26,86-100`).
+`tessel-runner/src/config.rs:46`). There is no separate share per command. A run that reaches the
+deadline is killed and reported with exit code 137 and `timed_out` set, not as a failing test
+(`tessel-runner/src/supervise.rs:26,86-100`).
 
 ### Who may change the gate
 
@@ -113,8 +114,13 @@ commit changes before it runs any repo code and before it checks the claim's sco
 
 | Path | Result | Code |
 |---|---|---|
-| A submission whose rebased diff touches `tessel.toml` | Refused as `GateChanged` before the tests run. The agent gets `submit_rejected` with "changes the gate (tessel.toml); the server's lander refuses it, so change it in a pull request that the repository's owner merges". | `tessel-server/src/landing/mod.rs:341`, `answer.rs:87-89`, `src/merge.rs:328-333` |
-| A change to `tessel.toml` | A pull request that the repository's owner merges. | `docs/BUILD-PROTOCOL.md`, section 2 |
+| A submission that touches `tessel.toml` | Refused as `GateChanged` | `mod.rs:341`, `answer.rs:87-89` |
+| A change to `tessel.toml` | A pull request the owner merges | `BUILD-PROTOCOL.md` §2 |
+
+In the table, `mod.rs` and `answer.rs` are in `tessel-server/src/landing/`, and
+`BUILD-PROTOCOL.md` is in `docs/`. A refused submission runs no tests. The agent gets
+`submit_rejected` with the reason "changes the gate (tessel.toml); the server's lander refuses it,
+so change it in a pull request that the repository's owner merges" (`src/merge.rs:328-333`).
 
 The lander also has an admin policy, `MergePolicy::Admin` (`tessel-lander/src/merge.rs:86-89`).
 It would accept a valid new `tessel.toml`, refuse an invalid one as `GateInvalid`, and skip the
