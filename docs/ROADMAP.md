@@ -7,13 +7,17 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 12:00 EDT. Main at `91785b2`, the first commit landed by the dogfood
-`tessel-server` (M4-FIRST-LANDINGS 1 of 5). The server runs on Felix's Mac from
+**As of:** 2026-10-24 13:30 EDT. Main at `768383e`. M4's done-check is met: five landings by the
+dogfood `tessel-server` (`91785b2`, `3f4278b`, `9701abf`, `0c0f119`, `768383e`), each with its
+claims released by `Merged`, and a server restart while a submitted claim was held, that claim
+landed afterwards (M4-RESTART-HELD). Main's CI green on all five. The landed commits carry their
+notes: the rebased ones by hand (LANDER-REBASE-DROPS-NOTES). The server runs on Felix's Mac from
 `~/tessel-dogfood/bin` at `4382641` (#114), listening on `127.0.0.1:7878`; agent tokens are valid
-to 31 October (re-run `scripts/dogfood/setup.sh` and re-init each worktree after). Merged today by
-Felix: #104, #113 (DOGFOOD-HARDENING), #114 (LANDER-FORK-ANY-BRANCH); the orchestrator's gate is
-green on `4382641` (1962 tests, none failed) and main's CI on `91785b2`. Nothing is dispatched; the
-orchestrator's checkout `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the
+to 31 October (re-run `scripts/dogfood/setup.sh` and re-init each worktree after). Lanes cannot
+push (Felix's `~/.claude/hooks/block-lane-push.sh`: "let the orchestrator push"), so the
+orchestrator pushes each lane commit to a new branch of its fork; the Opus reviewer reads it there;
+the orchestrator runs `tessel submit` in the lane's worktree and decides holds as `orchestrator`.
+Nothing is dispatched; `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the
 detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
@@ -47,10 +51,10 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** M4-FIRST-LANDINGS 2 to 5 from lanes A and B, one lane's gate at a time while a landing
-runs, the server log watched; M4-RESTART-HELD with the server idle. Candidates:
-GATE-INVALID-RETRIED, STEWARD-LOG-WORDING, SWARM-UNBOUNDED-LOOPS, CLI-START-DEADLINE-SEAM,
-GATE-INSTANCE-REQUIRED.
+**Next:** M5's re-plan (hardening: the simulator, invariants I1-I12, the staged landing, the
+server as its own macOS user) is Felix's to open; until then the open rows land through the
+server: LANDER-REBASE-DROPS-NOTES first, then GATE-INSTANCE-REQUIRED, STEWARD-WORDING-REST,
+TRIAL-UNSUBMITTED-READS-FORK-MAIN, CLI-START-DEADLINE-SEAM and DOCS-LONG-PROSE-LINES.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -799,11 +803,16 @@ reviews (security, operations) and the sandbox trial.
   reviews held submissions with `tessel review`; the adversarial reviewer reads the submitted
   commit on the fork; the server's landing replaces Felix's merge; the runner's run replaces the
   orchestrator's gate. Done: Felix approves the text before the first landing.
-- [ ] **M4-FIRST-LANDINGS** — both lanes, after step 4, D1 and the protocol rewrite. The five
-  landings of the done-check, each counted here with its note. Landed: 1. `91785b2`
-  DOCS-REFLOW-LONG-LINES (lane A; held for `docs/BUILD-PROTOCOL.md`, approved with `tessel
-  review` after an Opus "Yes"; `merged` in lane A's inbox). The lane committed but never ran its
-  fork push (nothing refused it; a dry run passed), so the orchestrator pushed it.
+- [x] **M4-FIRST-LANDINGS** (24 October) — both lanes and the orchestrator. Landed by the server:
+  1. `91785b2` DOCS-REFLOW-LONG-LINES (lane A; held for `docs/BUILD-PROTOCOL.md`, approved).
+  2. `3f4278b` this file's STATE (orchestrator; not held).
+  3. `9701abf` SWARM-UNBOUNDED-LOOPS (lane A; not held).
+  4. `c41051a`..`0c0f119` GATE-INVALID-RETRIED (lane B; held, approved after a restart).
+  5. `2a7c560`..`768383e` STEWARD-LOG-WORDING (lane A; held, approved).
+  Each had an Opus "Yes" on the commit read from the fork before its submission; four needed one
+  fix pass. While lane B held `src/merge.rs` with `edit-signature`, the coordinator denied lane A's
+  claim on it, and lane A narrowed its scope (STEWARD-WORDING-REST): the first real denial
+  between two lanes.
 - [x] **DOGFOOD-HARDENING** (`5864fe2`, #113) — lane A. From the two adversarial reviews of
   D1-D4: `sensitive` grew to 20 gate and infrastructure prefixes; `setup.sh` copies the binaries
   to `<server dir>/bin` and writes the 6-job cap; `docs/dogfood.md` gained the ruleset split, the
@@ -817,20 +826,33 @@ reviews (security, operations) and the sandbox trial.
 - [x] **DOCS-REFLOW-LONG-LINES** (`91785b2`, landed by the server) — lane A. Two prose lines #114
   left over 100 characters. Others remain at `docs/BUILD-PROTOCOL.md:16,119,128` and
   `docs/how-tessel-works.md:181,182` (DOCS-LONG-PROSE-LINES).
-- [ ] **GATE-INVALID-RETRIED** — from the sandbox trial: an invalid trunk `tessel.toml` is
-  answered `Unknown` and retried as infrastructure (four tries, then a generic "submit again")
-  instead of refused with its reason. Done: a refusal naming the gate's error, with a test.
+- [x] **GATE-INVALID-RETRIED** (`0c0f119`, landed by the server) — lane B. A missing, invalid or
+  non-UTF-8 trunk `tessel.toml` is refused once as `RuleKind::GateInvalid`; a failed read stays
+  infrastructure. The agent sees a fixed reason (rule messages are untrusted and never sent to
+  agents); the parser error, quoted and cut at 1200 characters, is in the server log. Opus "Yes"
+  after one fix pass.
 - [ ] **GATE-INSTANCE-REQUIRED** — from the sandbox trial: the gate parser requires `instance`
   (one of `standard-1..4`), which `tessel.toml` and the docs say the lander ignores. Done: the
   parser and the docs agree (optional for the lander, or documented as required).
-- [ ] **STEWARD-LOG-WORDING** — host log lines still say "steward head call failed" and "steward
-  merge call failed" (`src/host/calls.rs:257`, tests in `src/host/tests.rs`). Sensitive path.
+- [x] **STEWARD-LOG-WORDING** (`768383e`, landed by the server) — lane A. The host's calls are
+  "head call", "lander merge call" and "lander trial call", with test names and runtime-rules rows
+  to match. Opus "Yes" after one fix pass.
+- [ ] **STEWARD-WORDING-REST** — what STEWARD-LOG-WORDING could not claim: the constant
+  `STEWARD_CALL_TIMEOUT_MS` (`src/merge.rs`), doc lines in `src/coordinator.rs`,
+  `src/coordinator/merging.rs` (two asserts and a test name), `src/coordinator/verifying.rs:37-40`,
+  `src/merge.rs:32-37`, `tessel-server/src/repo.rs:597`, `tests/runtime_rules.rs:417` and
+  `docs/reference/runtime-rules.md:61` (`ask_steward_for_head`, a name not in code).
+- [ ] **LANDER-REBASE-DROPS-NOTES** — a landing that rebases gives the landed commits new shas, and
+  the git notes stay on the submitted ones (landings 4 and 5: eight commits, copied by the
+  orchestrator by subject and patch id). Done: the landed commits carry their notes without a hand
+  step (the CLI copies them on its `merged` notice, which names the landed head).
 - [ ] **TRIAL-UNSUBMITTED-READS-FORK-MAIN** — from the #114 design review: a trial with no commit
   reads the fork's `main` (`tessel-server/src/landing/trial.rs:39`, `src/host/call.rs:53`), which
   since #114 is never updated by lanes. Sensitive path.
 - [ ] **DOCS-LONG-PROSE-LINES** — the prose lines over 100 characters listed above.
-- [ ] **M4-RESTART-HELD** — lane B. The done-check's restart with a submitted claim held, on the
-  real server, that claim landed afterwards.
+- [x] **M4-RESTART-HELD** (24 October) — lane B's claim 4 (GATE-INVALID-RETRIED) held for review;
+  the server stopped and started at 16:54 with nothing running; the claim stayed submitted, was
+  approved after the restart and landed (`0c0f119`).
 - [ ] **M5-PROOF-CANDIDATE** — M5, to weigh at its re-plan. GitHub Next and Microsoft Research's
   Proof Driven Development Kit (21 October) proves Rust against a Verus spec and falls back to
   tests. The core's invariants that proptests pin (one `Merged` per claim, fences persisted before
