@@ -161,6 +161,14 @@ impl Repos {
         commit
     }
 
+    /// Removes `path` in a commit on the work tree's head and pushes it to main.
+    pub fn main_remove(&self, path: &str) -> String {
+        git(&self.work, &["rm", "--quiet", path]);
+        git(&self.work, &["commit", "--quiet", "-m", "remove"]);
+        self.push(&self.main);
+        self.head()
+    }
+
     pub fn show_on_main(&self, path: &str) -> String {
         git(&self.main, &["show", &format!("main:{path}")])
     }

@@ -298,6 +298,62 @@ async fn a_change_to_the_gate_is_refused_before_any_test_runs() -> TestResult {
     Ok(())
 }
 
+/// The message of a rule refusal, which the server logs and never sends to an agent.
+fn rule_message(answer: &CallAnswer) -> Result<&str, String> {
+    if let CallAnswer::Refused {
+        refusal: Refusal::Rule { message, .. },
+    } = answer
+    {
+        return Ok(message);
+    }
+    Err(format!("expected a rule refusal, got {answer:?}"))
+}
+
+#[tokio::test]
+async fn a_trunk_whose_gate_is_invalid_is_refused_once_and_not_retried() -> TestResult {
+    let repos = Repos::new();
+    repos.main_commit(&[(
+        "tessel.toml",
+        "instance = \"standard-1\"\nunknown_key = 1\n",
+    )]);
+    let before = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let runner = passing();
+    let landing = landing(&repos, "landing-gate-invalid", runner.clone());
+
+    let answer = prepare(&landing, &commit, whole_repo()).await;
+
+    let message = rule_message(&answer)?;
+    assert!(
+        message.contains("not a valid gate") && message.contains("unknown_key"),
+        "the message names the parser's error: {message}"
+    );
+    assert_eq!((runner.runs(), repos.main_head()), (0, before));
+    assert_no_call_dirs(&repos, "landing-gate-invalid");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_trunk_with_no_gate_is_refused_once_and_not_retried() -> TestResult {
+    let repos = Repos::new();
+    repos.main_remove("tessel.toml");
+    let before = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let runner = passing();
+    let landing = landing(&repos, "landing-gate-missing", runner.clone());
+
+    let answer = prepare(&landing, &commit, whole_repo()).await;
+
+    let message = rule_message(&answer)?;
+    assert!(
+        message.contains("no tessel.toml"),
+        "the message says the gate is missing: {message}"
+    );
+    assert_eq!((runner.runs(), repos.main_head()), (0, before));
+    assert_no_call_dirs(&repos, "landing-gate-missing");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_commit_that_is_not_in_the_fork_is_refused() -> TestResult {
     let repos = Repos::new();
