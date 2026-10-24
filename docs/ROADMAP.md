@@ -19,9 +19,9 @@ on the Mac only, so Linux differences show on main's CI after the landing. The s
 agent tokens are valid to 31 October. Lanes cannot push (Felix's
 `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
 of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
-worktree and decides holds as `orchestrator`. Two lanes ran at once; the coordinator denied lane A
-three claims on files lane B held (`src/merge.rs`, then `docs/configuration.md` twice), and lane A
-left them out until lane B's landing released them. Nothing is dispatched;
+worktree and decides holds as `orchestrator`. Two lanes ran at once twice; the coordinator denied
+lane A `src/merge.rs` (left to STEWARD-WORDING-REST) and later `docs/configuration.md` twice,
+which lane A claimed once lane B's landing released it. Nothing is dispatched;
 `.claude/worktrees/orchestrator` holds this commit, `gate-main` is the detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
