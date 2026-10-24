@@ -353,3 +353,116 @@ async fn a_server_killed_mid_merge_and_restarted_lands_the_claim_once() -> TestR
     second.kill9()?;
     Ok(())
 }
+
+/// A `post-receive` hook on the trunk that records each push and holds the first one open until
+/// the test releases it. `git push` returns only when the hook exits, so the lander is inside its
+/// push call, after the trunk moved and before it reads the trunk back or the server answers.
+fn hold_pushes_open(deployment: &Deployment) -> TestResult {
+    let marks = deployment.marks.display();
+    let hook = format!(
+        "#!/bin/sh\necho push >> {marks}/pushes\n: > {marks}/hook-started\nwhile [ ! -e \
+         {marks}/hook-release ]; do /bin/sleep 0.1; done\n: > {marks}/hook-done\nexit 0\n"
+    );
+    let path = deployment.repos.main.join("hooks/post-receive");
+    std::fs::create_dir_all(path.parent().ok_or("no hooks dir")?)?;
+    std::fs::write(&path, hook)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+fn pushes_seen(deployment: &Deployment) -> usize {
+    let log = std::fs::read_to_string(deployment.marks.join("pushes")).unwrap_or_default();
+    log.lines().count()
+}
+
+/// A server killed with `SIGKILL` after the lander's push reached the trunk and before the server
+/// answered the submission. The restart dispatches the same submission again. Its rebase finds
+/// the work already on the trunk, so the lander answers `AlreadyMerged` (`head == base` in
+/// `tessel-lander/src/merge.rs`), the host reads that as `Prepared` at the trunk, and the core
+/// lands the claim with the trunk as it was at the first dispatch as `before`
+/// (`Submission::unanswered_from`). The claim ends landed exactly once: one new commit on the
+/// trunk, one `Merged` event naming it, one release, and no second push.
+#[tokio::test]
+async fn a_server_killed_after_the_push_and_restarted_counts_the_landing_once() -> TestResult {
+    let deployment = Deployment::new()?;
+    std::fs::write(deployment.marks.join("release"), "go")?;
+    hold_pushes_open(&deployment)?;
+    let before = deployment.repos.main_head();
+    let commit = deployment.repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let first = deployment.start()?;
+    submit(&first, &deployment.token, &commit).await?;
+    let pushing = deployment.marks.join("hook-started");
+    wait_for("the push to reach the trunk's hook", || pushing.exists()).await?;
+    let landed = deployment.repos.main_head();
+    assert_ne!(landed, before, "post-receive runs after the trunk moved");
+    assert_eq!(pushes_seen(&deployment), 1);
+
+    first.kill9()?;
+    let unanswered = deployment.events()?;
+    assert!(
+        !unanswered
+            .iter()
+            .any(|kind| matches!(kind, EventKind::Merged { .. })),
+        "the killed server never recorded the landing: {unanswered:?}"
+    );
+    std::fs::write(deployment.marks.join("hook-release"), "go")?;
+    let finished = deployment.marks.join("hook-done");
+    wait_for("the held push to finish", || finished.exists()).await?;
+
+    let second = deployment.start()?;
+    let recorded = wait_for("the landing to be recorded", || {
+        deployment.events().is_ok_and(|events| {
+            events.iter().any(|kind| {
+                matches!(
+                    kind,
+                    EventKind::Merged { .. } | EventKind::SubmitRejected { .. }
+                )
+            })
+        })
+    })
+    .await;
+    if let Err(error) = recorded {
+        return Err(format!("{error}; the second server logged {:#?}", second.log()).into());
+    }
+    let events = deployment.events()?;
+    let mut merged = Vec::new();
+    for kind in &events {
+        if let EventKind::Merged { head, .. } = kind {
+            merged.push(head.0.as_str());
+        }
+    }
+    assert_eq!(merged, [landed.as_str()], "one landing, at the pushed head");
+    let released = events
+        .iter()
+        .filter(|kind| matches!(kind, EventKind::ClaimReleased { .. }))
+        .count();
+    assert_eq!(released, 1, "the claim was released once: {events:?}");
+    let rejected = events
+        .iter()
+        .any(|kind| matches!(kind, EventKind::SubmitRejected { .. }));
+    assert!(!rejected, "nothing was rejected: {events:?}");
+    assert_eq!(
+        deployment.repos.main_head(),
+        landed,
+        "main did not move again"
+    );
+    assert_eq!(
+        git(
+            &deployment.repos.main,
+            &["rev-list", "--count", &format!("{before}..main")]
+        ),
+        "1",
+        "main took one commit"
+    );
+    assert_eq!(
+        pushes_seen(&deployment),
+        1,
+        "the restart did not push again"
+    );
+    wait_for("the clones to be removed", || {
+        deployment.calls_left().is_empty()
+    })
+    .await?;
+    second.kill9()?;
+    Ok(())
+}
