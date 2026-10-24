@@ -279,6 +279,7 @@ impl TrialPorts for Ports<'_> {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
     use crate::repo::now_ms;
@@ -297,6 +298,61 @@ mod tests {
             base: sha("a"),
             head: sha("b"),
         }
+    }
+
+    fn trunk_with(bytes: Option<&[u8]>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(bytes) = bytes {
+            fs::write(dir.path().join(TESSEL_TOML_PATH), bytes).unwrap();
+        }
+        dir
+    }
+
+    fn assert_unusable(result: Result<GateConfig, GateFault>, expected: &str) {
+        match result {
+            Err(GateFault::Unusable(message)) => {
+                assert!(message.contains(expected), "{message}");
+            }
+            other => panic!("expected an unusable gate, got {other:?}"),
+        }
+    }
+
+    fn assert_unreadable(result: Result<GateConfig, GateFault>) {
+        assert!(
+            matches!(result, Err(GateFault::Unreadable(_))),
+            "expected a failed read, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_trunk_with_no_gate_file_is_unusable() {
+        let dir = trunk_with(None);
+        assert_unusable(read_gate_in(dir.path()), "has no tessel.toml");
+    }
+
+    #[test]
+    fn a_gate_file_that_is_not_utf8_is_unusable_not_a_failed_read() {
+        let dir = trunk_with(Some(b"instance = \"\xff\xfe\"\n"));
+        assert_unusable(read_gate_in(dir.path()), "not a valid gate");
+    }
+
+    #[test]
+    fn a_gate_file_the_server_cannot_open_is_a_failed_read() {
+        let dir = trunk_with(Some(b"instance = \"standard-1\"\n"));
+        let file = dir.path().join(TESSEL_TOML_PATH);
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = read_gate_in(dir.path());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_unreadable(result);
+    }
+
+    #[test]
+    fn a_gate_file_in_a_directory_the_server_cannot_search_is_a_failed_read_not_a_missing_one() {
+        let dir = trunk_with(Some(b"instance = \"standard-1\"\n"));
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o000)).unwrap();
+        let result = read_gate_in(dir.path());
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert_unreadable(result);
     }
 
     #[test]
