@@ -1610,9 +1610,10 @@ fn driven(seed: u64) -> Sim {
 }
 
 #[test]
-fn eight_fixed_seeds_send_every_kind_of_request_and_strike_every_kind_of_fault() {
+fn eight_fixed_seeds_send_every_kind_of_request_and_cause_every_kind_of_fault() {
     let mut kinds = Vec::new();
-    let (mut failed_commits, mut closed_by_client, mut crashes) = (0, 0, 0);
+    let (mut failed_commits, mut closed_by_client) = (0, 0);
+    let (mut crashes, mut apply_crashes) = (0, 0);
     for seed in 0..8 {
         let sim = driven(seed);
         for sent in sim.sent() {
@@ -1631,6 +1632,7 @@ fn eight_fixed_seeds_send_every_kind_of_request_and_strike_every_kind_of_fault()
             .filter(|l| l.starts_with("in Closed"))
             .count();
         crashes += sim.crashes();
+        apply_crashes += sim.crashes_after_apply();
     }
     for kind in [
         RequestKind::Other,
@@ -1644,5 +1646,14 @@ fn eight_fixed_seeds_send_every_kind_of_request_and_strike_every_kind_of_fault()
     }
     assert!(failed_commits > 0, "no commit failed");
     assert!(closed_by_client > 0, "no client dropped its socket");
-    assert!(crashes > 0, "no crash struck");
+    assert!(apply_crashes > 0, "no crash struck right after a commit");
+    assert!(crashes > apply_crashes, "no crash struck after an output");
+}
+
+#[test]
+fn a_watcher_cut_off_before_it_got_an_event_is_not_a_cut_off_replay() {
+    let cuts: Vec<usize> = (0..sim::DEFAULT_SEEDS)
+        .map(|seed| sim::run_seed(seed, Variant::Correct, &[]).cut_off_replays)
+        .collect();
+    assert!(cuts.contains(&0), "every seed cut a replay off: {cuts:?}");
 }
