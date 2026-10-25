@@ -8,7 +8,7 @@ protocol used in the pantry-app repo, at Felix's instruction on 5 October 2026.
 
 | Role | Who | Job |
 |---|---|---|
-| Orchestrator | the session Felix talks to | Dispatches, reviews reports, decides held submissions with `tessel review`, writes the roadmap and STATE. Never writes product code. Tells a lane to land on the reviewer's `Yes` (section 2). |
+| Orchestrator | the session Felix talks to | Dispatches, reviews reports, decides held submissions with `tessel review`, writes the roadmap and STATE. Never writes product code. Tells a lane to land on the reviewer's `Yes` (section 2), except section 6's merge-path tasks. |
 | Implementer | fresh `general-purpose` subagent, `model: "sonnet"` | Implements exactly one task in its own worktree, runs the gate, commits, reports. |
 | Reviewer | fresh `superpowers:code-reviewer` subagent, `model: "opus"` | Reviews `BASE..HEAD` against the task text. Trusts nothing in the report. Never merges. |
 | Advisor | `model: "opus"`, read-only | Only when a lane has looped for about 45 minutes: explains the way forward to the lane. No edits, no builds. |
@@ -140,6 +140,14 @@ reports each closed task in at most six lines and continues.
 Felix decides: scope or order changes to `PLAN.md`, any breaking protocol change, account and
 billing actions, the ruleset, and the two pull requests of section 2. Those go under "Pending from
 Felix" in the STATE block; work that does not depend on them continues.
+
+Merge-path tasks stay with Felix, as `PLAN.md` says. For a task the plan marks "Felix reviews", the
+orchestrator approves its held submission only after Felix's written yes that names the fork
+commit's sha. The yes is Felix's own message in the session, never an agent's. Any new sha (a fix
+pass, or a merge of main after `submit_rejected`) needs a new yes. On the reviewer's "Yes" the
+orchestrator brings that sha to Felix instead of approving, and Felix's standing order to proceed
+on a reviewer's buy-in does not apply to these tasks. A submission of such a task that would not
+be held is made only after Felix's yes.
 
 For a design question the orchestrator brings one recommendation with its reason, not a list.
 
