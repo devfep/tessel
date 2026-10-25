@@ -296,17 +296,31 @@ fn i5_flags_state_that_does_not_decode() {
     assert!(found[0].contains("does not decode"), "{found:?}");
 }
 
-/// Every field the state can lack, as the trial finds them: the top level, `config`, and the
-/// fields of a claim. A field that gains or loses `#[serde(default)]` changes this set, and the
-/// change to this list is where that gets decided.
+/// The fields of the state sorted by what the core does without them (the top level, `config`
+/// and a claim). Each new field must be placed here, which makes its author decide whether it
+/// needs a default; a default that changes moves its field between the last two lists.
+const REQUIRED_FIELDS: &[&str] = &[
+    "claims",
+    "claims.1.agent",
+    "claims.1.expires_at_ms",
+    "claims.1.fence",
+    "claims.1.intent",
+    "claims.1.scopes",
+    "clock_ms",
+    "config",
+    "config.lease_ms",
+    "config.run",
+    "next_claim",
+    "next_fence",
+    "next_seq",
+    "waiting",
+];
 const DEFAULTED_FIELDS: &[&str] = &[
     "claims.1.denial",
     "claims.1.kind",
     "claims.1.submitted",
     "claims.1.work",
     "config.shadow_enabled",
-    "head",
-    "head_from_hello",
     "head_pokes",
     "head_start_failures",
     "head_start_retry_ms",
@@ -324,16 +338,21 @@ const DEFAULTED_FIELDS: &[&str] = &[
     "verification_in_flight",
     "verifications",
 ];
+const DIFFERING_FIELDS: &[&str] = &["head", "head_from_hello"];
+
+fn names(paths: &[Vec<String>]) -> Vec<String> {
+    let mut names: Vec<String> = paths.iter().map(|path| path.join(".")).collect();
+    names.sort();
+    names
+}
 
 #[test]
-fn i5_pins_the_fields_the_state_can_lack() {
+fn i5_pins_which_fields_the_state_requires_defaults_or_changes() {
     let sim = script();
-    let mut fields: Vec<String> = check::defaulted_fields(&state_of(&sim))
-        .iter()
-        .map(|path| path.join("."))
-        .collect();
-    fields.sort();
-    assert_eq!(fields, DEFAULTED_FIELDS);
+    let trial = check::field_trial(&state_of(&sim));
+    assert_eq!(names(&trial.required), REQUIRED_FIELDS, "required");
+    assert_eq!(names(&trial.defaulted), DEFAULTED_FIELDS, "defaulted");
+    assert_eq!(names(&trial.differing), DIFFERING_FIELDS, "differing");
 }
 
 // ---- I9 ----

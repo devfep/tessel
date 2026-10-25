@@ -218,13 +218,23 @@ fn encode_decode(state: &Value) -> Result<Value, String> {
     serde_json::to_value(&decoded).map_err(|e| format!("does not encode: {e}"))
 }
 
-/// The fields of the state that can be absent, found by trial: strip each field in turn and
-/// keep those with which the state still decodes. These are the `#[serde(default)]` fields,
-/// which is where an older build's state differs from this one's. The trial is costly, so a
-/// run does not repeat it: a test pins the set, so a field that gains or loses its default
-/// shows as a change to that set.
-pub fn defaulted_fields(state: &Value) -> Vec<Vec<String>> {
-    let mut found = Vec::new();
+/// What stripping each field of the state in turn showed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct FieldTrial {
+    /// The state no longer decodes without the field.
+    pub required: Vec<Vec<String>>,
+    /// The state decodes without it and the core fills in the value that was stored.
+    pub defaulted: Vec<Vec<String>>,
+    /// The state decodes without it and the core fills in another value.
+    pub differing: Vec<Vec<String>>,
+}
+
+/// Strip each field in turn (the top level, `config`, and a claim) and sort the fields by what
+/// the core does without them. The `#[serde(default)]` fields are the ones that decode. The trial
+/// is costly, so a run does not repeat it: a test pins the three sets, so a field that gains or
+/// loses its default, or whose default changes, or a new field, shows as a change to a set.
+pub fn field_trial(state: &Value) -> FieldTrial {
+    let mut trial = FieldTrial::default();
     for container in containers(state) {
         let Some(object) = at(state, &container).and_then(Value::as_object) else {
             continue;
@@ -232,12 +242,16 @@ pub fn defaulted_fields(state: &Value) -> Vec<Vec<String>> {
         for key in object.keys() {
             let mut path = container.clone();
             path.push(key.clone());
-            if encode_decode(&without(state, &path)).is_ok() {
-                found.push(path);
+            match encode_decode(&without(state, &path)) {
+                Err(_) => trial.required.push(path),
+                Ok(encoded) if at(&encoded, &path) == at(state, &path) => {
+                    trial.defaulted.push(path);
+                }
+                Ok(_) => trial.differing.push(path),
             }
         }
     }
-    found
+    trial
 }
 
 /// I5: the stored state decodes and encodes back to what is stored.
