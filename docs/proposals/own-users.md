@@ -61,7 +61,8 @@ taken as a user or a group. Neither account is in `staff` or any other group.
 |---|---|---|
 | `/opt/tessel/bin/` (`tessel-server`, `tessel`, `tessel-runner`) | root:wheel 0755 | no account can replace a binary the other runs |
 | `/opt/tessel/sbin/` (the scripts) | root:wheel 0755 | run from here, never a checkout |
-| `/var/tessel/` | `_tessel` 0711 | traversal to `handoff/` only |
+| `/var/tessel/` | root:wheel 0755 | root creates the `_tessel`-owned directories below it, so `_tessel` cannot swap one for a link |
+| `/opt/tessel/tmp/` | root:wheel 0700 | root's scratch: the toolchain download, the sudoers candidate, the staged binaries |
 | `/var/tessel/{github-token,keys/,stores/,lander/,tmp/}` | `_tessel` 0600 (dirs 0700) | secrets, clones, `_tessel`'s `TMPDIR` |
 | `/var/tessel/tessel-server.toml` | `_tessel` 0600 | names the paths above |
 | `/var/tessel/handoff/` | `_tessel:_tessel-runner` 0750 | test trees; private forks are not public |
@@ -73,6 +74,12 @@ taken as a user or a group. Neither account is in `staff` or any other group.
 | `/var/log/tessel-server.log` | `_tessel` 0644 | quoted untrusted text, never the token |
 | `/etc/sudoers.d/tessel` | root:wheel 0440 | section 2 |
 | `/Library/LaunchDaemons/dev.tessel.server.plist` | root:wheel 0644 | `UserName` `_tessel`, `TMPDIR` `/var/tessel/tmp` |
+
+A root script never writes inside a directory that `_tessel` can rename entries in: it creates a
+`_tessel`-owned directory below a root-owned one only when it is missing, stops when one exists
+with another owner or as a link, and leaves what is inside to `_tessel`. The launchd plist is
+installed disabled (`launchctl disable`), so a reboot before the move does not start a second
+server; the move enables it and a rollback disables it again.
 
 The configuration is root-owned because it names `PATH`, `CARGO_HOME` and the timeout. If the
 runner owned it, a test could point those at directories it writes, and every later submission
