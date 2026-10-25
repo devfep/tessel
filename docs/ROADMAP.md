@@ -7,8 +7,9 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-25 13:20 UTC. Main at `b067c58` (docs only since `cd68555`), CI green; the
-orchestrator's gate is green on `cd68555` (2008 tests). M4 is done (M4-FIRST-LANDINGS,
+**As of:** 2026-10-25 14:05 UTC. Main at `455c889`, CI green; the dogfood server runs
+`455c889` since 13:54 UTC (redeployed for GATE-PARITY-FMT; the old binaries are in
+`~/tessel-dogfood/bin.prev`). M4 is done (M4-FIRST-LANDINGS,
 M4-RESTART-HELD).
 Seventeen server landings on 24 October, each read by an Opus reviewer on the commit from the
 fork first; main's CI is green on every one but
@@ -16,17 +17,19 @@ fork first; main's CI is green on every one but
 notes with no hand step. Every open row from 24 October's reviews is closed but
 LANDER-ADMIN-POLICY-DEAD, which waits for M6's team-mode re-plan; the remaining "steward" names in
 `src/` are serialized, the TypeScript steward's, or read by its tests, and go with it in Phase 1.
-The server runs from `~/tessel-dogfood/bin` at `cd68555`, started from inside `~/tessel-dogfood`,
+The server runs from `~/tessel-dogfood/bin` at `455c889`, started from inside `~/tessel-dogfood`,
 on `127.0.0.1:7878`; agent tokens are valid to 31 October. Lanes cannot push (Felix's
 `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
 of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
 worktree and decides holds as `orchestrator`. Two lanes ran at once four times; the coordinator
 denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
-claimed the file after the holder landed or left it to a follow-up. Lane A is on P1-SIM-CORE's
-first half (`.claude/worktrees/sim-core`, second fix pass), lane B on GATE-PARITY-FMT
-(`.claude/worktrees/gate-fmt`); `.claude/worktrees/orchestrator` holds this commit, `gate-main`
-is the detached gate worktree.
+claimed the file after the holder landed or left it to a follow-up. P1-SIM-CORE's first half has
+the reviewer's "Yes" (lane A's fork, `660ba92`) and waits for #115; lane A builds the second half
+on top of it (`.claude/worktrees/sim-core`). Lane B is on RUNNER-OWN-UID's first part, the scripts
+and the dogfood page's steps (`.claude/worktrees/own-uid-scripts`), a pull request for Felix.
+`.claude/worktrees/orchestrator` holds this commit, `gate-main` (at `455c889`) is the gate
+worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
 classifier still refuses the orchestrator's own pull request merges ("Merge Without Review"), so
@@ -60,10 +63,9 @@ sandbox commits use his GitHub noreply address.
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
 **Next:** Felix merges #115 (the simulator's seed count in the mutants jobs), which must merge
-before P1-SIM-CORE's code lands, and #116 (MERGE-PATH-REVIEW), which P1-SERVER-STAGED waits for.
-Lane B runs GATE-PARITY-FMT ahead of its slot meanwhile; its `tessel.toml` change is a pull
-request for Felix. After P1-SIM-CORE lands, a pull request adds `src/sim/` to `CLAUDE.md`'s
-Layout. LANDER-ADMIN-POLICY-DEAD waits for M6.
+before P1-SIM-CORE's code lands; #116 (MERGE-PATH-REVIEW), which P1-SERVER-STAGED waits for; and
+#117 (`cargo fmt --all --check` in `tessel.toml`). After P1-SIM-CORE lands, a pull request adds
+`src/sim/` to `CLAUDE.md`'s Layout. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -970,8 +972,12 @@ Lane B:
 - [ ] **P1-CORE-RECONCILE** — M, Felix reviews, after P1-CORE-STAGED-LANDING. `Unknown` and
   `Reconcile` (flips R24), a `Land` in doubt shown with its age, offline `tessel-server admin
   resolve` (M5-3), and DOGFOOD-UPGRADE's fixture test.
-- [ ] **GATE-PARITY-FMT** — S, after P1-CORE-RECONCILE. The gate accepts `cargo fmt --all
-  --check`; Felix's pull request adds it to `tessel.toml`.
+- [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for its signature change and
+  approved) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
+  exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
+  failure. A repository config alias can still make `cargo fmt` run repo code, as `cargo test`
+  does, so the check holds for cooperating agents. Opus "Yes" after one fix pass. The
+  `tessel.toml` entry is #117, for Felix; the dogfood server was redeployed from `455c889` first.
 - [ ] **RUNNER-OWN-UID** — M to L, after OWN-USERS-DESIGN and GATE-PARITY-FMT. The runner binary
   through the sudo rule, a Linux CI job for the boundary (a workflow pull request), then the
   dogfood server on its own users. Closes RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE.
