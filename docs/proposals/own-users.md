@@ -76,10 +76,10 @@ taken as a user or a group. Neither account is in `staff` or any other group.
 
 The configuration is root-owned because it names `PATH`, `CARGO_HOME` and the timeout. If the
 runner owned it, a test could point those at directories it writes, and every later submission
-would build with a toolchain it chose (rule 6). `RunnerConfig::load` (`tessel-runner/src/
-config.rs`) today demands the effective user as owner and mode exactly 0600; RUNNER-OWN-UID
-changes it to accept an owner of root or the effective user, with no group or other write bit,
-and still `WrongUser` for a login that is not its own.
+would build with a toolchain it chose (rule 6). `RunnerConfig::load` in
+`tessel-runner/src/config.rs` today demands the effective user as owner and mode exactly 0600;
+RUNNER-OWN-UID changes it to accept an owner of root or the effective user, with no group or
+other write bit, and still `WrongUser` for a login that is not its own.
 
 The agents' tokens are not secrets from the lanes. Felix's shell makes them:
 `sudo -u _tessel /opt/tessel/bin/tessel-server admin token ... > ~/.tessel/tokens/<agent>` with
@@ -229,7 +229,8 @@ reads of the token, key, store, `lander/`, Felix's `~/repos`, `~/.config/gh` and
 opens, and the handshake needs an agent token it cannot read, S1); the full
 `cargo test --workspace` with `HOME=/var/empty`; a fork bomb (bounded by `RLIMIT_NPROC`, the run
 timeout and the kill); a piped round trip through `sudo`; and `#includedir` in `/etc/sudoers`.
-A route that works is a finding, fixed before RUNNER-OWN-UID closes.
+A route that works is a finding: it stops the order in section 8 before any secret moves, and
+is fixed before RUNNER-OWN-UID closes.
 
 **Loopback services.** Felix's Mac runs services that listen on loopback and trust local
 connections: a Homebrew postgres on 5432 defaults to `trust`, and a superuser there can run a
@@ -257,8 +258,8 @@ Code (lane B):
 Order, as `docs/dogfood.md` will list it: the scripts are merged, read and installed root-owned
 first; then the accounts and the probes that need only accounts; then the install (directories,
 toolchain, cargo cache, binaries, plist unloaded, rule checked with `visudo -cf`) and the probes
-that need it; and only then, with the server stopped and nothing in flight, the store, key and
-token move to `/var/tessel` (a move, so no fence is reissued, C11), the daemon loads, and one
+that need it. A failing probe stops the order here, before the store, key and token move.
+Only then, with the server stopped and nothing in flight, they move to `/var/tessel` (a move, so no fence is reissued, C11), the daemon loads, and one
 landing on `tessel-sandbox/m4-trunk` (DOGFOOD-UPGRADE (e)) runs on the exposed token. Rotate
 last: a new GitHub token and signing key (`kid` `2026-11`), the old key file deleted, the old
 `github-token` trashed, new agent tokens. The old token and key were readable by every lane
