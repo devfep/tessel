@@ -73,11 +73,15 @@ fn seeds_from(
     Ok(first..end)
 }
 
+/// The test that sweeps the seeds (`tests/simulator.rs`), so a rerun runs only it.
+pub const SWEEP_TEST: &str =
+    "the_real_host_keeps_every_invariant_on_every_seed_and_each_seed_reproduces";
+
 /// How to rerun `seed` alone.
 pub fn rerun_hint(seed: u64) -> String {
     format!(
         "rerun with: {FIRST_SEED_VAR}={seed} {SEEDS_VAR}=1 cargo test -p tessel-coordinator \
-         --test simulator"
+         --test simulator {SWEEP_TEST}"
     )
 }
 
@@ -140,7 +144,7 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
 pub fn check_seed(seed: u64) -> Result<Run, String> {
     let first = run_seed(seed, Variant::Correct, &Checker::ALL);
     let second = run_seed(seed, Variant::Correct, &[]);
-    let hint = format!("{}\n  {}", rerun_hint(seed), keep_hint(seed));
+    let hint = rerun_hint(seed);
     if !first.violations.is_empty() {
         let found: Vec<String> = first
             .violations
@@ -161,6 +165,28 @@ pub fn check_seed(seed: u64) -> Result<Run, String> {
         ));
     }
     Ok(first)
+}
+
+/// How many failing seeds a report lists before it only counts the rest.
+pub const REPORTED_FAILURES: usize = 20;
+
+/// The report of a sweep's failures: at most `REPORTED_FAILURES` of them, each with a line for
+/// keeping the seed unless it is already a regression case, then a count of the rest.
+pub fn failure_report(failures: &[(u64, String)], regressions: &[u64]) -> String {
+    let mut report = format!("{} seeds failed:", failures.len());
+    for (seed, message) in failures.iter().take(REPORTED_FAILURES) {
+        report.push('\n');
+        report.push_str(message);
+        if !regressions.contains(seed) {
+            report.push_str("\n  ");
+            report.push_str(&keep_hint(*seed));
+        }
+    }
+    if failures.len() > REPORTED_FAILURES {
+        let rest = failures.len() - REPORTED_FAILURES;
+        report.push_str(&format!("\nand {rest} more failing seeds"));
+    }
+    report
 }
 
 /// How to keep `seed` as a regression case.
@@ -287,6 +313,28 @@ mod tests {
     fn a_failing_seed_says_how_to_rerun_and_keep_it() {
         let keep = keep_hint(9);
         assert!(keep.contains("9  # what it found") && keep.contains("simulator-regressions.txt"));
+        assert!(
+            rerun_hint(9).ends_with(SWEEP_TEST),
+            "the rerun runs only the sweep"
+        );
+    }
+
+    #[test]
+    fn a_report_lists_twenty_failures_counts_the_rest_and_skips_kept_seeds() {
+        let failures: Vec<(u64, String)> = (0..25)
+            .map(|seed| (seed, format!("seed {seed} broke")))
+            .collect();
+        let report = failure_report(&failures, &[3]);
+        assert!(report.starts_with("25 seeds failed:"), "{report}");
+        assert!(report.contains("seed 19 broke") && !report.contains("seed 20 broke"));
+        assert!(report.ends_with("and 5 more failing seeds"), "{report}");
+        assert_eq!(
+            report.matches("keep it:").count(),
+            19,
+            "seed 3 is already kept"
+        );
+        let few = failure_report(&failures[..2], &[]);
+        assert!(!few.contains("more failing seeds"));
     }
 
     #[test]

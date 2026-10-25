@@ -30,6 +30,12 @@ fn first_caught(variant: Variant, checker: Checker) -> Option<(u64, Run)> {
 const REGRESSIONS: &str = include_str!("simulator-regressions.txt");
 
 #[test]
+fn the_rerun_line_names_the_sweep_test() {
+    let declared = format!("fn {}()", sim::SWEEP_TEST);
+    assert!(include_str!("simulator.rs").contains(&declared));
+}
+
+#[test]
 fn the_regression_list_parses() {
     sim::parse_regressions(REGRESSIONS).unwrap_or_else(|e| panic!("simulator-regressions.txt {e}"));
 }
@@ -40,17 +46,16 @@ fn the_real_host_keeps_every_invariant_on_every_seed_and_each_seed_reproduces() 
         .unwrap_or_else(|e| panic!("simulator-regressions.txt {e}"));
     let seeds = sim::seeds().unwrap_or_else(|e| panic!("{e}"));
     let (mut failures, mut crashes) = (Vec::new(), 0);
-    for seed in regressions.into_iter().chain(seeds) {
+    for seed in regressions.iter().copied().chain(seeds) {
         match sim::check_seed(seed) {
             Ok(run) => crashes += run.crashes,
-            Err(failure) => failures.push(failure),
+            Err(failure) => failures.push((seed, failure)),
         }
     }
     assert!(
         failures.is_empty(),
-        "{} seeds failed:\n{}",
-        failures.len(),
-        failures.join("\n")
+        "{}",
+        sim::failure_report(&failures, &regressions)
     );
     assert!(
         crashes > 0,
