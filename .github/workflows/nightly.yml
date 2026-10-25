@@ -49,6 +49,27 @@ jobs:
           PROPTEST_CASES: "10000"
         run: cargo nextest run -p tessel-coordinator --lib
 
+  simulator:
+    name: Nightly, simulator sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # 20,000 seeds take about 15 minutes in release on a laptop. The base is the day number
+      # times the count, so each night sweeps seeds no earlier night did. A pull request that
+      # changes this file runs a hundred.
+      - name: Simulator, seeds from the date
+        env:
+          TESSEL_SIM_SEEDS: ${{ github.event_name == 'pull_request' && '100' || '20000' }}
+        run: |
+          day=$(( $(date -u +%s) / 86400 ))
+          TESSEL_SIM_FIRST_SEED=$(( day * TESSEL_SIM_SEEDS ))
+          export TESSEL_SIM_FIRST_SEED
+          echo "Seeds $TESSEL_SIM_FIRST_SEED to $((TESSEL_SIM_FIRST_SEED + TESSEL_SIM_SEEDS - 1))"
+          cargo test -p tessel-coordinator --release --test simulator
+
   comparison-test:
     name: Nightly, comparison script test
     runs-on: ubuntu-latest

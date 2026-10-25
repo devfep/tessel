@@ -81,6 +81,31 @@ jobs:
       - name: Runtime rules table names real tests
         run: scripts/ci/check-named-tests.sh
 
+  simulator:
+    name: Fast lane, simulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: fast-simulator
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # 1,000 seeds take about 45 s in release on a laptop (debug is 8 times slower), about two
+      # minutes here with the build. The base is the commit's own number, so every commit sweeps
+      # different seeds; a failing seed prints its rerun line.
+      - name: Simulator, 1,000 seeds from the commit
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          TESSEL_SIM_SEEDS: "1000"
+        run: |
+          TESSEL_SIM_FIRST_SEED=$((16#${COMMIT_SHA:0:8}))
+          export TESSEL_SIM_FIRST_SEED
+          echo "Seeds $TESSEL_SIM_FIRST_SEED to $((TESSEL_SIM_FIRST_SEED + TESSEL_SIM_SEEDS - 1))"
+          cargo test -p tessel-coordinator --release --test simulator
+
   rust-workspace:
     name: Slow lane, Rust workspace
     runs-on: ubuntu-latest
