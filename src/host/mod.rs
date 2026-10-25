@@ -174,6 +174,8 @@ pub struct HostConfig {
     pub sensitive: Option<String>,
     /// The protocol versions `Welcome` announces; `None` announces the one this build speaks.
     pub protocol_range: Option<ProtocolRange>,
+    /// How long a claim lives without a heartbeat, in milliseconds; `None` is `shell::LEASE_MS`.
+    pub lease_ms: Option<u64>,
 }
 
 /// A client message to handle: the expiry step that precedes it runs as its own write first.

@@ -229,6 +229,58 @@ mod tests {
         assert!(!slot.is_loaded(), "the core is ahead of storage");
     }
 
+    fn lease_of(config: &HostConfig, stored: Option<&str>) -> Result<u64, shell::LoadError> {
+        let mut reports = Vec::new();
+        let core = build_core(config, stored, &mut reports)?;
+        let state = serde_json::to_value(&core).unwrap();
+        Ok(state["config"]["lease_ms"].as_u64().unwrap())
+    }
+
+    fn config_with(lease_ms: Option<u64>) -> HostConfig {
+        HostConfig {
+            repo: "r".to_string(),
+            run: Some("t".to_string()),
+            lease_ms,
+            ..HostConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_repo_with_no_lease_setting_keeps_the_thirty_second_lease() {
+        assert_eq!(lease_of(&config_with(None), None), Ok(shell::LEASE_MS));
+    }
+
+    #[test]
+    fn the_lease_setting_sets_the_lease_of_a_new_repo_and_of_a_stored_one() {
+        assert_eq!(lease_of(&config_with(Some(5_000)), None), Ok(5_000));
+        let stored = serde_json::to_string(&loaded_core()).unwrap();
+        assert_eq!(
+            lease_of(&config_with(Some(5_000)), Some(&stored)),
+            Ok(5_000)
+        );
+        assert_eq!(
+            lease_of(&config_with(None), Some(&stored)),
+            Ok(shell::LEASE_MS)
+        );
+    }
+
+    fn loaded_core() -> Core {
+        shell::load_core(None, Some("t"), None, Vec::new(), Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn a_lease_below_a_second_or_above_ten_minutes_is_refused() {
+        for lease in [0, 999, 600_001] {
+            let result = lease_of(&config_with(Some(lease)), None);
+            assert!(
+                matches!(result, Err(shell::LoadError::InvalidConfig(_))),
+                "{lease} ms was accepted: {result:?}"
+            );
+        }
+        assert_eq!(lease_of(&config_with(Some(1_000)), None), Ok(1_000));
+        assert_eq!(lease_of(&config_with(Some(600_000)), None), Ok(600_000));
+    }
+
     #[test]
     fn a_step_on_an_unloaded_slot_is_an_error() {
         let mut slot = CoreSlot::default();
