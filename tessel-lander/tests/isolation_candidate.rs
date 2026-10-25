@@ -235,7 +235,7 @@ fn a_head_with_a_git_directory_in_its_tree_makes_no_test_tree_and_leaves_the_con
 }
 
 #[test]
-fn a_head_with_a_git_directory_is_never_pushed_to_main() {
+fn a_head_with_no_history_is_not_landed_because_the_base_is_not_its_ancestor() {
     let scene = Scene::new();
     let head = head_with_a_git_directory(&scene);
     let sources = scene.repos.sources();

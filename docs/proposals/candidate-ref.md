@@ -162,8 +162,8 @@ core abandoned (main moved, a new `Prepare`).
   dispatches no `Prepare`, and an earlier submission's head is dead once its stage is over.
 - **Parsing:** lines are accepted only as `<40-hex> refs/tessel/candidate/<40-hex>`; anything else
   is skipped, since another writer controls those names (rule 3).
-- **Bound:** the sweep reads at most 1000 listed lines and deletes at most 50 refs per `Prepare`, so a damaged remote cannot
-  push one call past its deadline; the rest go on later calls. In steady state `remote` holds one
+- **Bound:** the sweep reads at most 1000 listed lines and deletes at most 50 refs per `Prepare`,
+  so a damaged remote cannot push one call past its deadline; the rest go on later calls. In steady state `remote` holds one
   candidate after a rejected or abandoned submission and none after a landing.
 - **Not done:** `Reconcile` and `Test` delete nothing. A read that writes would make a status
   probe a mutation, and `Test` should hold no write path while repo code runs.

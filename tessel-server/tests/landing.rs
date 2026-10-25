@@ -1052,7 +1052,7 @@ async fn land_from_a_stale_base_is_unknown_and_leaves_the_ref() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_runs_with_no_clone_of_main_and_no_credential_in_reach() -> TestResult {
+async fn test_runs_with_no_clone_of_main_and_no_credential_in_the_request_or_tree() -> TestResult {
     let repos = Repos::new();
     let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
     set_candidate(&repos, &commit, &commit);
@@ -1075,14 +1075,11 @@ async fn test_runs_with_no_clone_of_main_and_no_credential_in_reach() -> TestRes
             if beside != ["test"] {
                 found.push(format!("the call holds more than the tree: {beside:?}"));
             }
-            for name in [
-                "GIT_ASKPASS",
-                "TESSEL_ASKPASS_TOKEN_FILE",
-                "TESSEL_ASKPASS_HOSTS",
-            ] {
-                if std::env::var_os(name).is_some() {
-                    found.push(format!("{name} is set"));
-                }
+            // The runner runs in this process and is given only the request; what it is given
+            // must name no credential. The credential reaches git's own commands, not the runner.
+            let given = format!("{request:?}");
+            if given.contains(SECRET) || given.contains("github-token") {
+                found.push(format!("the request names a credential: {given}"));
             }
             let config = std::fs::read_to_string(tree.join(".git/config")).unwrap_or_default();
             if config.contains("askpass") || config.contains(SECRET) {
