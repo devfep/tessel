@@ -121,6 +121,13 @@ impl Traffic {
             .push(what);
     }
 
+    fn clear_in_flight(&self) {
+        self.outstanding
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
     fn in_flight(&self) -> usize {
         self.outstanding
             .lock()
@@ -615,6 +622,9 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
         let (store, events) = stored(&file)?;
         let found = violations(&traffic, &store, &events);
         assert!(found.is_empty(), "after kill {round}: {found:#?}");
+        // A request sent to the server that was just killed will never be answered: it must not
+        // count as in flight at the next kill.
+        traffic.clear_in_flight();
         let (now_grants, now_events) = (grants(&traffic), events.len());
         assert!(
             now_grants > last_grants && now_events > last_events,
@@ -647,7 +657,7 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
 )]
 fn report(rounds: u64, mid_request: u64, refused: usize, grants: usize, events: usize) {
     println!(
-        "{rounds} kills, {mid_request} of them with a claim or amend unanswered; {grants} grants \
-         received, {events} events stored, {refused} stale releases refused"
+        "{rounds} kills, {mid_request} of them with a claim or amend that had no answer yet; \
+         {grants} grants received, {events} events stored, {refused} stale releases refused"
     );
 }
