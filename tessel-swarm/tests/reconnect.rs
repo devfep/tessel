@@ -457,7 +457,7 @@ async fn a_claim_that_lapsed_while_the_agent_was_gone_is_that_tasks_lapsed_outco
     let tasks = [body(1, "unitPrice")];
     let cfg = config(1, 1500, PATIENT);
     let mut lifted = None;
-    let run = run_with(&tasks, &cfg, 400, |server| {
+    let run = run_with(&tasks, &cfg, 1000, |server| {
         let granted = |e: &Event| matches!(e.kind, EventKind::ClaimGranted { .. });
         let cutter = server.cutter();
         cutter.reset_on(granted, vec!["a01".to_string()]);

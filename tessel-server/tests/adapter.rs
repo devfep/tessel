@@ -90,6 +90,8 @@ fn config(dir: &Path, repos: &[(&str, &str)]) -> Config {
                 sensitive: Vec::new(),
                 remote: None,
                 fork: None,
+                lease_ms: None,
+                shadow_enabled: false,
             })
             .collect(),
     }

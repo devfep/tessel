@@ -183,6 +183,8 @@ impl Repos {
             sensitive: Vec::new(),
             remote: Some(self.main.display().to_string()),
             fork: Some(format!("{}/{{agent}}.git", self.forks.display())),
+            lease_ms: None,
+            shadow_enabled: false,
         }
     }
 

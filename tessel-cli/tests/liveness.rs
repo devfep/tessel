@@ -97,7 +97,7 @@ async fn a_healthy_link_is_kept_and_the_local_expiry_follows_the_heartbeats() ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_claim_lost_on_a_silent_link_is_reported_not_assumed_live() -> Result<()> {
-    let (fake, a1) = claimed(900).await?;
+    let (fake, a1) = claimed(1_000).await?;
     fake.go_silent();
     fake.set_accepting(false);
     eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(())))

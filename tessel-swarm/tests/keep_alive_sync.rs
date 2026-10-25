@@ -81,14 +81,30 @@ async fn a_claim_survives_a_checkout_and_a_push_slower_than_its_lease() {
         func: "unitPrice".into(),
         kind: Kind::Body,
     };
-    let result = on::run_on(
-        &server.endpoint,
-        &[task],
-        &scratch.path().join("agents"),
-        &config,
-    )
-    .await
-    .unwrap();
+    // The coordinator's clock is frozen and moves three quarters of a lease after each heartbeat
+    // the agent sends, however long the real time between heartbeats is. The slow fetch and push
+    // last 2.5 s of real time, which is many leases of the coordinator's time, so the claim
+    // survives only if the heartbeats renew it; a loaded machine cannot lapse it by being slow.
+    server.freeze_clock();
+    let agent = names[0].clone();
+    let drive = async {
+        let mut seen = server.heartbeats(&agent);
+        loop {
+            while server.heartbeats(&agent) <= seen {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            server.advance_clock(LEASE_MS * 3 / 4);
+            server.settle_expiry().await;
+            server.settle_heartbeats().await;
+            seen = server.heartbeats(&agent);
+        }
+    };
+    let (tasks, agents) = ([task], scratch.path().join("agents"));
+    let run = on::run_on(&server.endpoint, &tasks, &agents, &config);
+    let result = tokio::select! {
+        result = run => result.unwrap(),
+        () = drive => unreachable!("the driver never ends"),
+    };
     assert_eq!(
         result.results[0].result,
         Resolution::Merged,

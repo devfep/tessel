@@ -590,6 +590,8 @@ mod tests {
             sensitive: Vec::new(),
             remote: Some("/srv/main.git".to_owned()),
             fork: Some("/srv/forks/{agent}.git".to_owned()),
+            lease_ms: None,
+            shadow_enabled: false,
         };
         let lander = LanderConfig {
             work_dir: work.path().to_owned(),

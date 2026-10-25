@@ -10,8 +10,12 @@ name = "tessel-swarm"
 path = "src/main.rs"
 
 [dependencies]
-# Shared wire types, `Summary::from_events` and the real coordinator core for the local target.
+# Shared wire types, `Summary::from_events` and the seeded generator.
 tessel-coordinator = { path = ".." }
+# The local target drives a real server, started in process, with its own lander and runner.
+tessel-server = { path = "../tessel-server" }
+# `effective_login`: the user the runner config names, as the server's own tests find it.
+tessel-runner = { path = "../tessel-runner" }
 anyhow = "=1.0.104"
 clap = { version = "=4.6.7", features = ["derive"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["sink", "std"] }

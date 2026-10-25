@@ -239,6 +239,10 @@ impl Func {
     }
 }
 
+/// The gate a `tessel-server` lander reads from the trunk: the command it runs on every rebased
+/// head.
+pub const GATE: &str = "instance = \"standard-1\"\n\n[[test]]\nargv = [\"npm\", \"test\"]\n";
+
 /// The repository every run starts from.
 pub fn base_tree() -> Tree {
     let mut tree = Tree::new();
@@ -249,6 +253,7 @@ pub fn base_tree() -> Tree {
             .into(),
     );
     tree.insert(".gitignore".into(), "node_modules/\n".into());
+    tree.insert("tessel.toml".into(), GATE.into());
     tree.insert("LICENSE".into(), include_str!("../../LICENSE").into());
     for f in &CATALOG {
         let file = tree

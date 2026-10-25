@@ -1,5 +1,5 @@
-//! Mode `on` against the local target: the real coordinator core behind a WebSocket server, with
-//! a steward that lands work with real git and the demo repository's real tests.
+//! Mode `on` against the local target: a real tessel-server that lands work with real git and
+//! the demo repository's real tests.
 
 #![expect(clippy::unwrap_used, reason = "test code")]
 
@@ -673,7 +673,7 @@ async fn shutdown_closes_open_connections() {
     })
     .await
     .unwrap();
-    let addr = server.addr().unwrap();
+    let addr = server.addr();
     // A client that connected and never finished the handshake must not outlive the server.
     let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -981,13 +981,15 @@ impl<'a> Beats<'a> {
     /// which is shorter than the lease the grant just started.
     async fn advance(&mut self, ms: u64) {
         self.server.advance_clock(ms);
-        // Counted after the advance: a heartbeat handled before it has not renewed at the new time.
+        self.server.settle_expiry().await;
+        // Counted after the advance, and only once every heartbeat handled before it is counted: a
+        // heartbeat handled before it has not renewed at the new time.
+        self.server.settle_heartbeats().await;
         self.seen = self
             .agents
             .iter()
             .map(|a| self.server.heartbeats(a))
             .collect();
-        self.server.settle_expiry().await;
     }
 }
 
@@ -996,7 +998,7 @@ fn logged_at(events: &[Event], pick: impl Fn(&EventKind) -> bool) -> u64 {
     events.iter().find(|e| pick(&e.kind)).unwrap().at_ms
 }
 
-const LEASE_MS: u64 = 400;
+const LEASE_MS: u64 = 1000;
 
 /// A step of the coordinator's clock: less than the lease, so that one heartbeat between two
 /// steps is enough to keep a claim, however long the real time between the heartbeats is.
@@ -1084,7 +1086,7 @@ async fn a_claim_is_kept_alive_while_its_agent_works() {
 async fn a_lapsed_claim_is_that_tasks_outcome_and_the_run_goes_on() {
     let tasks = [body(1, "unitPrice"), body(2, "restock")];
     let never = Duration::from_secs(3600);
-    let run = run_with_lease(&tasks, lease_config(never, 1500), 600).await;
+    let run = run_with_lease(&tasks, lease_config(never, 2500), 1000).await;
     let results = &run.result.results;
     assert_eq!(results.len(), 2, "{results:?}");
     for r in results {
@@ -1219,7 +1221,7 @@ async fn an_agent_whose_connection_the_coordinator_closes_while_it_waits_ends_on
         ..config(2, Policy::Wait, 1500)
     };
     let scratch = tempfile::tempdir().unwrap();
-    let lease_ms = 600;
+    let lease_ms = 1000;
     let server = start_server(&config, scratch.path(), lease_ms).await;
     server.freeze_clock();
     let gate = PushGate::install(&server);
@@ -1373,7 +1375,7 @@ async fn an_agent_cut_off_while_it_works_has_its_work_time_counted_as_work() {
         ..config(1, Policy::Wait, 1500)
     };
     let scratch = tempfile::tempdir().unwrap();
-    let lease_ms = 600;
+    let lease_ms = 1000;
     let server = start_server(&config, scratch.path(), lease_ms).await;
     server.freeze_clock();
     let gate = PushGate::install(&server);

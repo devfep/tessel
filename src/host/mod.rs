@@ -162,8 +162,9 @@ pub enum Output {
 }
 
 /// The repo the host serves and the deployment settings it reads when it builds the core (the
-/// server's `[[repository]]` entry). `run` and `shadow_enabled` matter only for a repo with nothing
-/// stored; `reviewers`, `sensitive` and `protocol_range` are applied on every load.
+/// server's `[[repository]]` entry). `run` matters only for a repo with nothing stored;
+/// `reviewers`, `sensitive`, `protocol_range`, `lease_ms` and `shadow_enabled` are applied on every
+/// load.
 #[derive(Debug, Clone, Default)]
 pub struct HostConfig {
     /// Named in log lines.
@@ -174,6 +175,8 @@ pub struct HostConfig {
     pub sensitive: Option<String>,
     /// The protocol versions `Welcome` announces; `None` announces the one this build speaks.
     pub protocol_range: Option<ProtocolRange>,
+    /// How long a claim lives without a heartbeat, in milliseconds; `None` is `shell::LEASE_MS`.
+    pub lease_ms: Option<u64>,
 }
 
 /// A client message to handle: the expiry step that precedes it runs as its own write first.

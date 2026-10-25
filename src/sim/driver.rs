@@ -123,6 +123,7 @@ pub struct Sim {
     fail_next_commit: bool,
     executed: u64,
     crashes: u64,
+    crashes_after_apply: u64,
     faults: Vec<String>,
     /// Indexes into `sent` of stale releases not yet settled.
     unsettled: Vec<usize>,
@@ -166,6 +167,7 @@ impl Sim {
             fail_next_commit: false,
             executed: 0,
             crashes: 0,
+            crashes_after_apply: 0,
             faults: Vec::new(),
             unsettled: Vec::new(),
             watches: Vec::new(),
@@ -245,6 +247,11 @@ impl Sim {
 
     pub fn crashes(&self) -> u64 {
         self.crashes
+    }
+
+    /// How many of the crashes struck right after a commit was made durable.
+    pub fn crashes_after_apply(&self) -> u64 {
+        self.crashes_after_apply
     }
 
     /// Every input and output in order: two runs of one seed must produce the same lines.
@@ -514,6 +521,7 @@ impl Sim {
                     return true;
                 }
                 if self.crash == Some(Crash::AfterApply) {
+                    self.crashes_after_apply += 1;
                     self.crash_now();
                     return true;
                 }
