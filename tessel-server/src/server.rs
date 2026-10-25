@@ -9,9 +9,11 @@ use tessel_coordinator::host::HostConfig;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::config::{Config, RepositoryConfig};
+use crate::config::{Config, LanderConfig, RepositoryConfig};
 use crate::id::{IdError, RepoId};
-use crate::landing::{Landing, LandingError, LocalRunner, TestRunner};
+use crate::landing::{
+    Landing, LandingError, LocalRunner, SudoError, SudoRunner, SudoRunnerSettings, TestRunner,
+};
 use crate::paths::ResolveError;
 use crate::repo::{self, CallPort, RunningRepo};
 use crate::store::{StoreDir, StoreError};
@@ -53,6 +55,8 @@ pub enum StartError {
     Resolve(#[from] ResolveError),
     #[error("the [lander] table: {0}")]
     Runner(#[from] tessel_runner::RunnerError),
+    #[error("the [lander.sudo_runner] table: {0}")]
+    Sudo(#[from] SudoError),
 }
 
 /// A server that is listening.
@@ -90,14 +94,31 @@ impl RunningServer {
 pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartError> {
     let config = &config.with_absolute_paths()?;
     let runner = match &config.lander {
-        Some(lander) => {
-            let runner: Arc<dyn TestRunner> =
-                Arc::new(LocalRunner::new(lander.runner_config.clone())?);
-            Some(runner)
-        }
+        Some(lander) => Some(runner_of(lander)?),
         None => None,
     };
     start_repositories(config, deps, runner).await
+}
+
+/// The runner the `[lander]` table names: one that starts `tessel-runner` as another account
+/// through `sudo` when it has a `[lander.sudo_runner]` table, else the in-process runner of the
+/// user who runs the server. One runner serves every repository: the sudo-started one has a single
+/// gate, because it kills every process of its account after each run.
+pub fn runner_of(lander: &LanderConfig) -> Result<Arc<dyn TestRunner>, StartError> {
+    let Some(sudo) = &lander.sudo_runner else {
+        return Ok(Arc::new(LocalRunner::new(lander.runner_config.clone())?));
+    };
+    let settings = SudoRunnerSettings {
+        user: sudo.user.clone(),
+        sudo: sudo.sudo.clone(),
+        runner: sudo.runner.clone(),
+        runner_config: lander.runner_config.clone(),
+        kill: sudo.kill.clone(),
+        ps: sudo.ps.clone(),
+        handoff_dir: sudo.handoff_dir.clone(),
+        settle: std::time::Duration::from_secs(sudo.settle_secs),
+    };
+    Ok(Arc::new(SudoRunner::new(settings)?))
 }
 
 /// Like [`start`], with the tests run by `runner`: the means to run a landing without repo code.

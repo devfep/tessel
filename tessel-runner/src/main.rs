@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use tessel_runner::{
-    run, RequestRefusal, RunRequest, RunnerConfig, RunnerError, CONFIG_FILE_NAME, MAX_REQUEST_BYTES,
+    apply_limits, make_undumpable, run, RequestRefusal, RunRequest, RunnerConfig, RunnerError,
+    CONFIG_FILE_NAME, MAX_REQUEST_BYTES,
 };
 
 const USAGE: &str = "usage: tessel-runner [--config <file>] < request.json > result.json";
@@ -55,6 +56,8 @@ fn main() -> ExitCode {
 fn execute() -> Result<(), Failure> {
     let path = config_path(&std::env::args().skip(1).collect::<Vec<_>>())?;
     let config = RunnerConfig::load(&path).map_err(Failure::Runner)?;
+    make_undumpable();
+    apply_limits(&config).map_err(Failure::Runner)?;
     let request = read_request().map_err(Failure::Runner)?;
     let result = run(&config, &request).map_err(Failure::Runner)?;
     let line = serde_json::to_string(&result).map_err(|_| Failure::ResultNotWritten)?;

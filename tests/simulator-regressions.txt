@@ -1,0 +1,7 @@
+# Seeds that once broke an invariant, one per line: `seed  # what it found`.
+# Every run of tests/simulator.rs replays these before its sweep.
+#
+# To keep a failing seed, add its line here in the change that fixes the bug. A seed's script
+# depends on the traffic in src/sim/traffic.rs (the order and weights of `act`) and on the host,
+# so after a change to either, re-find the case by sweeping and replace the seed. Blank lines and
+# `#` comments are allowed. No seed has failed yet.

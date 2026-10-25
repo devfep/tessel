@@ -18,6 +18,7 @@ mod git_read;
 mod head;
 mod names;
 mod ports;
+mod sudo;
 mod trial;
 mod workdir;
 
@@ -48,6 +49,7 @@ use ports::Ports;
 use workdir::CallDir;
 
 pub use ports::{LocalRunner, TestRunner};
+pub use sudo::{SudoError, SudoRunner, SudoRunnerSettings};
 
 /// Why a lander could not be set up.
 #[derive(Debug, thiserror::Error)]
@@ -92,12 +94,29 @@ struct Inner {
     token_file: Option<PathBuf>,
     runner: Arc<dyn TestRunner>,
     sequence: AtomicU64,
+    /// Where the trees to test are made when the runner is another account's
+    /// (`[lander.sudo_runner]` `handoff_dir`); a tree is a directory the runner can read, outside
+    /// the call's clones.
+    handoff: Option<PathBuf>,
 }
 
 /// What one call works with: its directory and the signal to stop.
 struct Work {
     dir: Arc<CallDir>,
+    /// This call's directory in the handoff directory, when the runner is another account.
+    handoff: Option<Arc<CallDir>>,
     stop: Stop,
+}
+
+impl Work {
+    /// Where a tree that repo code will run in is made: in the handoff directory when the runner
+    /// is another account, else beside the call's other clones.
+    fn tree_dir(&self, name: &str) -> PathBuf {
+        match &self.handoff {
+            Some(handoff) => handoff.child(name),
+            None => self.dir.child(name),
+        }
+    }
 }
 
 impl Landing {
@@ -119,7 +138,14 @@ impl Landing {
         let dir = absolute(&lander.work_dir)?
             .join(repo.tenant())
             .join(repo.repo());
+        let handoff = lander
+            .sudo_runner
+            .as_ref()
+            .map(|sudo| sudo.handoff_dir.clone());
         clear_leftovers(&dir)?;
+        if let Some(handoff) = &handoff {
+            clear_handoff_leftovers(handoff, &handoff_prefix(&repo))?;
+        }
         let git = credentialed_git(
             Git::create_in(&dir.join("git"))?,
             &repo,
@@ -136,6 +162,7 @@ impl Landing {
                 token_file,
                 runner,
                 sequence: AtomicU64::new(1),
+                handoff,
             }),
         })
     }
@@ -188,6 +215,28 @@ fn clear_leftovers(dir: &std::path::Path) -> Result<(), LandingError> {
     Ok(())
 }
 
+/// The start of the names of this repository's directories in the handoff directory, which every
+/// repository of the server shares. The separator is a dot, which a tenant or a repository name
+/// cannot hold, so no two repositories share a prefix (`a-b`/`c` and `a`/`b-c` would, with a dash).
+fn handoff_prefix(repo: &RepoId) -> String {
+    format!("{}.{}.call-", repo.tenant(), repo.repo())
+}
+
+/// Removes the trees a killed server left in the handoff directory for this repository.
+fn clear_handoff_leftovers(handoff: &std::path::Path, prefix: &str) -> Result<(), LandingError> {
+    let fail = |source| LandingError::WorkDir {
+        path: handoff.display().to_string(),
+        source,
+    };
+    for entry in std::fs::read_dir(handoff).map_err(fail)? {
+        let entry = entry.map_err(fail)?;
+        if entry.file_name().to_string_lossy().starts_with(prefix) {
+            std::fs::remove_dir_all(entry.path()).map_err(fail)?;
+        }
+    }
+    Ok(())
+}
+
 impl CallPort for Landing {
     fn answer(&self, call: Call) -> BoxFuture<CallAnswer> {
         let inner = Arc::clone(&self.inner);
@@ -214,10 +263,28 @@ impl Inner {
                 return CallAnswer::Unknown;
             }
         };
+        let handoff = match &self.handoff {
+            None => None,
+            Some(root) => {
+                let name = format!("{}{number}", handoff_prefix(&self.repo));
+                match CallDir::create_private(root.join(name)) {
+                    Ok(handoff) => Some(Arc::new(handoff)),
+                    Err(error) => {
+                        tracing::error!(
+                            repo = %self.repo,
+                            error = %error,
+                            "cannot make the call's directory in the handoff directory"
+                        );
+                        return CallAnswer::Unknown;
+                    }
+                }
+            }
+        };
         let stop = Stop::new(call.deadline_ms);
         let remaining = stop.remaining();
         let work = Work {
             dir: Arc::clone(&dir),
+            handoff: handoff.clone(),
             stop: stop.clone(),
         };
         let inner = Arc::clone(&self);
@@ -232,6 +299,9 @@ impl Inner {
             Err(_elapsed) => {
                 stop.abandon();
                 dir.remove();
+                if let Some(handoff) = &handoff {
+                    handoff.remove();
+                }
                 tracing::warn!(
                     repo = %self.repo,
                     call = id,
@@ -331,7 +401,7 @@ impl Inner {
             main_remote: self.remote.clone(),
             fork_remote,
         };
-        let (clone_dir, test_dir) = (work.dir.child("main"), work.dir.child("test"));
+        let (clone_dir, test_dir) = (work.dir.child("main"), work.tree_dir("test"));
         let ctx = MergeContext {
             git: &self.git,
             runner: &SystemRunner,
@@ -525,6 +595,7 @@ mod tests {
             work_dir: work.path().to_owned(),
             runner_config: "runner.toml".into(),
             token_file: Some(relative),
+            sudo_runner: None,
         };
         let runner = Arc::new(LocalRunnerStub);
 

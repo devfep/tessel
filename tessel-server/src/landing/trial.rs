@@ -47,9 +47,8 @@ impl Inner {
         let ports = self.ports(work);
         let runs = AtomicU64::new(0);
         let run = |on: &Sha, commit: &Sha| -> Result<TrialOutcome, MergeError> {
-            let clone_dir = work
-                .dir
-                .child(&format!("trial-{}", runs.fetch_add(1, Ordering::SeqCst)));
+            let clone_dir =
+                work.tree_dir(&format!("trial-{}", runs.fetch_add(1, Ordering::SeqCst)));
             let ctx = TrialContext {
                 git: &self.git,
                 runner: &SystemRunner,

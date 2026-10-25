@@ -224,6 +224,9 @@ jobs:
       - name: Mutants on changed lines
         env:
           SHARD: ${{ matrix.shard }}
+          # The simulator's default seed set would add about 30 s to every mutant's test run, which
+          # the shard time limit cannot absorb. Two seeds keep its tests meaningful at a few seconds.
+          TESSEL_SIM_SEEDS: "2"
         run: |
           if [ ! -s "$RUNNER_TEMP/pr.diff" ]; then
             echo "Empty diff: no mutants to test."

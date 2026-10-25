@@ -56,14 +56,6 @@ fn a_config_naming_the_current_user_loads_with_the_default_timeout() {
 }
 
 #[test]
-fn the_runner_refuses_a_config_with_mode_0644() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = write_config(dir.path(), &own_config_text(), 0o644);
-    let error = RunnerConfig::load(&path).unwrap_err();
-    assert_eq!(config_reason(&error), ConfigReason::WrongMode);
-}
-
-#[test]
 fn the_runner_refuses_a_config_that_is_a_link() {
     let dir = tempfile::tempdir().unwrap();
     let real = write_config(dir.path(), &own_config_text(), 0o600);
@@ -288,4 +280,84 @@ fn the_runner_refuses_a_tree_another_user_owns() {
         .plan(&config())
         .unwrap_err();
     assert_eq!(request_refusal(refused), RequestRefusal::TreeNotOwned);
+}
+
+#[test]
+fn a_config_file_may_be_readable_by_others_when_nobody_but_its_owner_can_write_it() {
+    for mode in [0o600, 0o644, 0o640, 0o444] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), &own_config_text(), mode);
+        assert!(RunnerConfig::load(&path).is_ok(), "mode {mode:o}");
+    }
+}
+
+#[test]
+fn a_config_file_that_group_or_other_can_write_is_refused() {
+    for mode in [0o664, 0o666, 0o620, 0o602, 0o4644, 0o2644, 0o1644] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), &own_config_text(), mode);
+        let error = RunnerConfig::load(&path).unwrap_err();
+        assert_eq!(
+            config_reason(&error),
+            ConfigReason::WrongMode,
+            "mode {mode:o}"
+        );
+    }
+}
+
+fn sandbox_text(dir: &std::path::Path) -> String {
+    format!(
+        "{}path = \"/opt/toolchain/bin:/usr/bin:/bin\"\ncargo_home = \"/var/cargo\"\n\
+         tmpdir = \"{tmp}\"\nwork_dir = \"{work}\"\nhandoff_dir = \"{handoff}\"\n\
+         max_processes = 2000\nsweep_dirs = []\n",
+        own_config_text(),
+        tmp = dir.join("tmp").display(),
+        work = dir.join("work").display(),
+        handoff = dir.join("handoff").display(),
+    )
+}
+
+#[test]
+fn a_sandbox_config_takes_the_environment_from_the_file_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_config(dir.path(), &sandbox_text(dir.path()), 0o644);
+    let loaded = RunnerConfig::load(&path).unwrap();
+    let sandbox = loaded
+        .sandbox()
+        .expect("work_dir and handoff_dir make a sandbox");
+    assert_eq!(sandbox.max_processes(), 2000);
+    assert_eq!(sandbox.work_dir(), dir.path().join("work"));
+    assert_eq!(sandbox.handoff_dir(), dir.path().join("handoff"));
+    let env = loaded.env();
+    let get = |name: &str| {
+        env.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
+    assert_eq!(get("PATH"), Some("/opt/toolchain/bin:/usr/bin:/bin"));
+    assert_eq!(get("CARGO_HOME"), Some("/var/cargo"));
+    assert_eq!(get("HOME"), Some("/var/empty"));
+    assert_eq!(
+        get("TMPDIR"),
+        Some(dir.path().join("tmp").to_str().unwrap())
+    );
+    assert_eq!(env.len(), 4, "{env:?}");
+}
+
+#[test]
+fn a_sandbox_config_needs_both_directories_a_path_and_absolute_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let full = sandbox_text(dir.path());
+    let broken = [
+        full.replace("work_dir", "unused_work"),
+        full.replace("handoff_dir", "unused_handoff"),
+        full.replace("path = ", "unused_path = "),
+        full.replace("cargo_home = \"/var/cargo\"", "cargo_home = \"relative\""),
+        full.replace("max_processes = 2000", "max_processes = 0"),
+    ];
+    for text in broken {
+        let path = write_config(dir.path(), &text, 0o644);
+        let error = RunnerConfig::load(&path).unwrap_err();
+        assert_eq!(config_reason(&error), ConfigReason::Invalid, "{text}");
+    }
 }

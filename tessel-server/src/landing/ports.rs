@@ -22,6 +22,18 @@ use super::names::{quote, MAX_LOGGED_CHARS};
 /// Runs a repository's test commands. The one boundary where repository code runs (rule 4).
 pub trait TestRunner: Send + Sync + 'static {
     fn run(&self, request: &RunRequest) -> Result<RunResult, RunnerError>;
+
+    /// Like [`run`](TestRunner::run), for a runner that must stop a run from outside: `cancelled`
+    /// turns true once the call's deadline passed or the call was given up. The default ignores it,
+    /// because the in-process runner has its own timeout.
+    fn run_cancellable(
+        &self,
+        request: &RunRequest,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<RunResult, RunnerError> {
+        let _ = cancelled;
+        self.run(request)
+    }
 }
 
 /// The runner library, started for the user its configuration file names. The file is read and
@@ -208,7 +220,7 @@ impl<'a> Ports<'a> {
         };
         let result = self
             .runner
-            .run(&request)
+            .run_cancellable(&request, &|| self.stop.requested())
             .map_err(|error| boundary("run_package_step", error.to_string()))?;
         if let Some(block) = &result.first_failure {
             *self
