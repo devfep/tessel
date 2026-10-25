@@ -7,8 +7,8 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-25 20:20 UTC. Main at `12d77b9`, CI green (it was red from `20cd5fd` to
-`e8fbaa8`, see RUNNER-OWN-UID); the dogfood server runs `455c889` since 13:54 UTC (redeployed for
+**As of:** 2026-10-25 20:20 UTC. Main at `12d77b9`, CI green (it was red from `20cd5fd` until
+`bf07498`, see RUNNER-OWN-UID); the dogfood server runs `455c889` since 13:54 UTC (redeployed for
 GATE-PARITY-FMT; the old binaries are in `~/tessel-dogfood/bin.prev`). M4 is done
 (M4-FIRST-LANDINGS, M4-RESTART-HELD).
 Eighteen server landings on 24 October, each read by an Opus reviewer on the commit from the
@@ -63,8 +63,9 @@ SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-L
 cannot see the flake (see its entry).
 **Next:** Felix merges #119 (the runner accounts job), #120 (the simulator on CI), then ruleset
 step 3, and #121 (`src/sim/` in `CLAUDE.md`). Lane A runs P1-ADAPTER-SUITE's first part, lane B
-P1-SERVER-STAGED, which lands only after Felix's written yes. LANDER-ADMIN-POLICY-DEAD waits for
-M6.
+P1-SERVER-STAGED, which lands only after Felix's written yes. SIM-MUTANTS is with a third lane; the
+nightly on main fails on the simulator's mutants until it lands. LANDER-ADMIN-POLICY-DEAD waits
+for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -931,6 +932,12 @@ Lane A:
   `TESSEL_SIM_FIRST_SEED`, every failing seed printed with its rerun line (at most 20), kept seeds
   in `tests/simulator-regressions.txt` replayed first. The workflow is #120 (1,000 seeds per pull
   request and push, 2 min 4 s on a GitHub runner; 20,000 nightly), for Felix; then ruleset step 3.
+  Its nightly full mutants found 61 missed mutants beyond the baseline, all in `src/sim/`; the
+  scheduled nightly on main fails on them until SIM-MUTANTS lands.
+- [ ] **SIM-MUTANTS** — from #120's nightly. The simulator's harness (traffic, driver, plumbing)
+  kept out of cargo-mutants in `.cargo/mutants.toml`, with the reason; the checkers in
+  `src/sim/check.rs` stay under mutation and their misses are killed by tests. The baseline
+  does not grow.
 - [x] **P1-SWARM-ON-SERVER** (`12d77b9`, landed by the server) — lane A. The swarm's local
   target drives a real `tessel-server`; no swarm code calls the core's merge functions. Additive
   `lease_ms` (1 s to 10 min) and `shadow_enabled`, applied on every load; a test clock only in the
@@ -989,7 +996,7 @@ Lane B:
   by the server): `SudoRunner` behind `[lander.sudo_runner]`, the in-process runner still the
   default; the runner's config rules, sweep, limits, one-line reply and `rustc -V` check. It broke
   main's Linux build (glibc's `RLIMIT_*` are `u32`) and two dash-only tests; `e8fbaa8` and
-  `bf07498` fixed both, and main was red from `20cd5fd` to `e8fbaa8`. The Linux job is #119 (all
+  `bf07498` fixed both, and main was red from `20cd5fd` until `bf07498`. The Linux job is #119 (all
   checks pass on real accounts), for Felix. Left: the move of the dogfood server, Felix's sudo
   steps in `docs/dogfood.md`; that closes RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE.
 
