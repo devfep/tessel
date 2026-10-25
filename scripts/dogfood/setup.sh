@@ -3,6 +3,9 @@
 #
 # Usage: scripts/dogfood/setup.sh <server dir>
 #
+# This is the setup before the move to the service accounts (docs/dogfood.md, "Moving to the
+# service accounts"). The move replaces it, and the move's last step deletes this script.
+#
 # Makes <server dir>/{keys,stores,lander,tokens}, writes tessel-runner.toml and tessel-server.toml,
 # makes the signing key unless it exists, and mints a token for each of lane-a, lane-b and
 # orchestrator. Safe to run again: it rewrites the two configurations and the tokens, and keeps

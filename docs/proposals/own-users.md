@@ -61,7 +61,8 @@ taken as a user or a group. Neither account is in `staff` or any other group.
 |---|---|---|
 | `/opt/tessel/bin/` (`tessel-server`, `tessel`, `tessel-runner`) | root:wheel 0755 | no account can replace a binary the other runs |
 | `/opt/tessel/sbin/` (the scripts) | root:wheel 0755 | run from here, never a checkout |
-| `/var/tessel/` | `_tessel` 0711 | traversal to `handoff/` only |
+| `/var/tessel/` | root:wheel 0755 | root creates the `_tessel`-owned directories below it, so `_tessel` cannot swap one for a link |
+| `/opt/tessel/tmp/` | root:wheel 0700 | root's scratch: the toolchain download, the sudoers candidate, the staged binaries |
 | `/var/tessel/{github-token,keys/,stores/,lander/,tmp/}` | `_tessel` 0600 (dirs 0700) | secrets, clones, `_tessel`'s `TMPDIR` |
 | `/var/tessel/tessel-server.toml` | `_tessel` 0600 | names the paths above |
 | `/var/tessel/handoff/` | `_tessel:_tessel-runner` 0750 | test trees; private forks are not public |
@@ -73,6 +74,12 @@ taken as a user or a group. Neither account is in `staff` or any other group.
 | `/var/log/tessel-server.log` | `_tessel` 0644 | quoted untrusted text, never the token |
 | `/etc/sudoers.d/tessel` | root:wheel 0440 | section 2 |
 | `/Library/LaunchDaemons/dev.tessel.server.plist` | root:wheel 0644 | `UserName` `_tessel`, `TMPDIR` `/var/tessel/tmp` |
+
+A root script never writes inside a directory that `_tessel` can rename entries in: it creates a
+`_tessel`-owned directory below a root-owned one only when it is missing, stops when one exists
+with another owner or as a link, and leaves what is inside to `_tessel`. The launchd plist is
+installed disabled (`launchctl disable`), so a reboot before the move does not start a second
+server; the move enables it and a rollback disables it again.
 
 The configuration is root-owned because it names `PATH`, `CARGO_HOME` and the timeout. If the
 runner owned it, a test could point those at directories it writes, and every later submission
@@ -265,9 +272,9 @@ toolchain, cargo cache, binaries, plist unloaded, rule checked with `visudo -cf`
 that need it. A failing probe stops the order here, before the store, key and token move. Only then,
 with the server stopped and nothing in flight, they move to `/var/tessel` (a move, so no fence is
 reissued, C11), the daemon loads, and one landing on `tessel-sandbox/m4-trunk` (DOGFOOD-UPGRADE (e))
-runs on the exposed token. Rotate last: a new GitHub token and signing key (`kid` `2026-11`), the
-old key file deleted, the old `github-token` trashed, new agent tokens. The old token and key were
-readable by every lane process until then.
+runs on the exposed token. Rotate last: a new GitHub token and signing key (`kid` `2026-11`), both
+old key files (`.key` and `.pub`) deleted, the old `github-token` trashed, new agent tokens. The
+old token and key were readable by every lane process until then.
 
 Rollback, with an idle queue (DOGFOOD-UPGRADE (d)): `launchctl bootout`; move the current store,
 key and token back to `~/tessel-dogfood` (never an older store: restoring one can reissue
