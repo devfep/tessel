@@ -255,6 +255,29 @@ fn accepts_cargo_test_with_each_listed_flag_and_pnpm_test_and_npm_test() {
 }
 
 #[test]
+fn accepts_cargo_fmt_all_check_and_only_that_argv_of_cargo_fmt() {
+    assert!(
+        parse_gate_config(&gate_with_argv(&["cargo", "fmt", "--all", "--check"])).is_ok(),
+        "cargo fmt --all --check checks formatting and writes nothing"
+    );
+    let refused: [&[&str]; 9] = [
+        &["cargo", "fmt"],
+        &["cargo", "fmt", "--all"],
+        &["cargo", "fmt", "--check"],
+        &["cargo", "fmt", "--check", "--all"],
+        &["cargo", "fmt", "--all", "--check", "--"],
+        &["cargo", "fmt", "--all", "--check", "--verbose"],
+        &["cargo", "fmt", "--all", "--check", "--config=x=y"],
+        &["cargo", "fmt", "--all", "--check", "--all"],
+        &["cargo", "+nightly", "fmt", "--all", "--check"],
+    ];
+    for argv in refused {
+        let reason = rejected(&gate_with_argv(argv));
+        assert!(reason.contains("must be pnpm test"), "{argv:?}: {reason}");
+    }
+}
+
+#[test]
 fn rejects_directories_that_leave_the_repo_or_are_not_plain_paths() {
     for dir in [
         "..", "../x", "/etc", "a/../b", ".git", "a//b", "a/", "a b", "~", "",
