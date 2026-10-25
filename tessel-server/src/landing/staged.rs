@@ -35,22 +35,19 @@ impl Inner {
             Err(error) => return unfinished(&repo, "read the candidate ref", &error),
         }
         let destination = work.tree_dir("test");
-        let tree = match fetch_candidate_tree(
-            &self.git,
-            &SystemRunner,
-            &self.remote,
-            &head,
-            &destination,
-        ) {
-            Ok(CandidateTreeOutcome::Fetched(tree)) => tree,
-            Ok(CandidateTreeOutcome::Failed(output)) => {
-                let note = quote(&output.stderr, MAX_LOGGED_CHARS);
-                tracing::warn!(repo, exit = ?output.exit_code, note, "the candidate was not fetched");
-                return CallAnswer::Unknown;
-            }
-            Err(CloneError::TestTreeNotAtHead { .. }) => return missing(&repo, &head),
-            Err(error) => return unfinished(&repo, "make the test tree", &error),
-        };
+        let tree =
+            match fetch_candidate_tree(&self.git, &SystemRunner, &self.remote, &head, &destination)
+            {
+                Ok(CandidateTreeOutcome::Fetched(tree)) => tree,
+                Ok(CandidateTreeOutcome::Failed(output)) => {
+                    let note = quote(&output.stderr, MAX_LOGGED_CHARS);
+                    let exit = output.exit_code;
+                    tracing::warn!(repo, ?exit, note, "the candidate was not fetched");
+                    return CallAnswer::Unknown;
+                }
+                Err(CloneError::TestTreeNotAtHead { .. }) => return missing(&repo, &head),
+                Err(error) => return unfinished(&repo, "make the test tree", &error),
+            };
         let ports = self.ports(work);
         match MergePorts::run_package_step(&ports, PackageStep::Test, &tree) {
             Ok(step) if step.timed_out => {

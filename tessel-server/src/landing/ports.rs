@@ -272,15 +272,28 @@ impl MergePorts for Ports<'_> {
     /// deadline, or given up, must write nothing.
     fn with_candidate_access<T>(
         &self,
-        _write: &CandidateWrite<'_>,
+        write: &CandidateWrite<'_>,
         use_access: impl FnOnce() -> T,
     ) -> Result<T, BoundaryError> {
+        let (kind, reference) = match write {
+            CandidateWrite::Push { head } => {
+                ("push", tessel_lander::candidate::candidate_ref(head))
+            }
+            CandidateWrite::Delete { reference, .. } => ("delete", (*reference).to_owned()),
+        };
         if self.stop.requested() {
+            tracing::warn!(
+                kind,
+                reference,
+                "the call is over; the candidate write is refused"
+            );
             return Err(boundary(
                 "with_candidate_access",
-                "the call's deadline passed or the call was given up, so no candidate ref was written",
+                "the call's deadline passed or the call was given up, so no candidate ref was \
+                 written",
             ));
         }
+        tracing::info!(kind, reference, "writing a candidate ref");
         Ok(use_access())
     }
 
@@ -413,6 +426,39 @@ mod tests {
             let outcome = ports.with_push_access(&update(), || pushed.set(true));
             assert!(outcome.is_err(), "a call that is over is refused the push");
             assert!(!pushed.get(), "and the push is never attempted");
+        }
+    }
+
+    #[test]
+    fn no_candidate_ref_is_written_once_the_call_is_over() {
+        let git = Git::new("home".into(), "hooks".into());
+        let PushUpdate { base: tip, head } = update();
+        let reference = format!("refs/tessel/candidate/{head}");
+        let writes = [
+            CandidateWrite::Push { head: &head },
+            CandidateWrite::Delete {
+                reference: &reference,
+                sha: &tip,
+            },
+        ];
+        for write in &writes {
+            let live = Stop::new(now_ms() + 60_000);
+            let ports = Ports::new(&git, "remote", &NeverRuns, &live);
+            let written = Cell::new(false);
+            let outcome = ports.with_candidate_access(write, || written.set(true));
+            assert!(
+                outcome.is_ok() && written.get(),
+                "a live call writes: {write:?}"
+            );
+
+            live.abandon();
+            let ports = Ports::new(&git, "remote", &NeverRuns, &live);
+            let written = Cell::new(false);
+            let outcome = ports.with_candidate_access(write, || written.set(true));
+            assert!(
+                outcome.is_err() && !written.get(),
+                "an over call writes nothing"
+            );
         }
     }
 

@@ -128,8 +128,9 @@ pub fn merge_answer(repo: &str, outcome: MergeOutcome, first_failure: Option<&st
 }
 
 /// The answer to `Land`. Only `Merged` is landed, and the lander returns it only after it found
-/// the head on main. A head on neither the candidate ref nor main is [`CallAnswer::CandidateMissing`].
-/// Main moved under the push, or any infrastructure failure, is `Unknown`: the core reconciles.
+/// the head on main. A head on neither the candidate ref nor main is
+/// [`CallAnswer::CandidateMissing`]. Main moved under the push, or any infrastructure failure, is
+/// `Unknown`: the core reconciles.
 pub fn land_answer(repo: &str, outcome: MergeOutcome) -> CallAnswer {
     match outcome {
         MergeOutcome::Merged { base, head, .. } => {
@@ -140,7 +141,7 @@ pub fn land_answer(repo: &str, outcome: MergeOutcome) -> CallAnswer {
         }
         MergeOutcome::CandidateMissing => CallAnswer::CandidateMissing,
         MergeOutcome::MainMoved { expected, actual } => {
-            tracing::info!(repo, %expected, %actual, "main moved under the push; the core reconciles");
+            tracing::info!(repo, %expected, %actual, "main moved under the push; core reconciles");
             CallAnswer::Unknown
         }
         MergeOutcome::Clone { result } => infrastructure(repo, "clone", &git_note(&result)),

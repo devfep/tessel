@@ -1052,6 +1052,169 @@ async fn land_from_a_stale_base_is_unknown_and_leaves_the_ref() -> TestResult {
 }
 
 #[tokio::test]
+async fn test_runs_with_no_clone_of_main_and_no_credential_in_reach() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let token = token_file(&repos, 0o600, &format!("{SECRET}\n"));
+    let problems = Arc::new(Mutex::new(Vec::new()));
+    let runner = {
+        let problems = Arc::clone(&problems);
+        Scripted::new(move |request| {
+            let tree = Path::new(&request.tree);
+            let mut found = Vec::new();
+            let call_dir = tree.parent().map(Path::to_path_buf).unwrap_or_default();
+            let beside: Vec<String> = std::fs::read_dir(&call_dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if beside != ["test"] {
+                found.push(format!("the call holds more than the tree: {beside:?}"));
+            }
+            for name in [
+                "GIT_ASKPASS",
+                "TESSEL_ASKPASS_TOKEN_FILE",
+                "TESSEL_ASKPASS_HOSTS",
+            ] {
+                if std::env::var_os(name).is_some() {
+                    found.push(format!("{name} is set"));
+                }
+            }
+            let config = std::fs::read_to_string(tree.join(".git/config")).unwrap_or_default();
+            if config.contains("askpass") || config.contains(SECRET) {
+                found.push("the tree's config names a credential".to_string());
+            }
+            problems
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend(found);
+            Ok(result(0, None))
+        })
+    };
+    capture_logs();
+    let id = RepoId::new("acme", "landing-test-bare")?;
+    let landing = Landing::new(
+        id,
+        &repos.repository("landing-test-bare"),
+        &lander_with(&repos, &token),
+        runner.clone(),
+    )?;
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::Tested);
+    assert_eq!(runner.runs(), 1);
+    let problems = problems
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    assert_eq!(problems, Vec::<String>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_refuses_a_trunk_whose_gate_is_invalid_and_runs_nothing() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("tessel.toml", "this is not a gate\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let runner = passing();
+    let landing = landing(&repos, "landing-test-gate", runner.clone());
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    gate_message(&answer)?;
+    assert_eq!(runner.runs(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_that_times_out_is_unknown() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let runner = Scripted::new(|_| {
+        Ok(tessel_runner::RunResult {
+            timed_out: true,
+            ..result(1, None)
+        })
+    });
+    let landing = landing(&repos, "landing-test-timeout", runner);
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::Unknown);
+    Ok(())
+}
+
+/// Moves main's repository away, so the read of the candidate ref fails.
+fn lose_the_remote(repos: &Repos) -> TestResult {
+    std::fs::rename(&repos.main, repos.root.path().join("gone.git"))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_and_land_are_unknown_when_the_candidate_ref_cannot_be_read() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let runner = passing();
+    let landing = landing(&repos, "landing-unreadable", runner.clone());
+    lose_the_remote(&repos)?;
+
+    let tested = ask(&landing, test_request(&commit), 120_000).await;
+    let landed = ask(&landing, land_request(&base, &commit), 120_000).await;
+
+    assert_eq!((tested, landed), (CallAnswer::Unknown, CallAnswer::Unknown));
+    assert_eq!(runner.runs(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_is_unknown_when_the_ref_is_listed_but_its_commit_cannot_be_fetched() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let object = repos
+        .main
+        .join("objects")
+        .join(&commit[..2])
+        .join(&commit[2..]);
+    std::fs::remove_file(&object)?;
+    let runner = passing();
+    let landing = landing(&repos, "landing-test-broken", runner.clone());
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::Unknown);
+    assert_eq!(runner.runs(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_abandoned_land_writes_nothing_to_main_or_the_ref() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let landing = landing(&repos, "landing-land-abandoned", passing());
+
+    let answer = ask(&landing, land_request(&base, &commit), 0).await;
+
+    assert_eq!(answer, CallAnswer::Unknown);
+    assert_eq!(repos.main_head(), base, "main is untouched");
+    assert_eq!(
+        candidate_tip(&repos, &commit),
+        Some(commit),
+        "and so is the ref"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_trial_runs_the_fork_commit_on_main_and_reports_each_side() -> TestResult {
     let repos = Repos::new();
     let base = CommitId(repos.main_head());

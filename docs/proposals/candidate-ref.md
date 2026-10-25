@@ -162,7 +162,7 @@ core abandoned (main moved, a new `Prepare`).
   dispatches no `Prepare`, and an earlier submission's head is dead once its stage is over.
 - **Parsing:** lines are accepted only as `<40-hex> refs/tessel/candidate/<40-hex>`; anything else
   is skipped, since another writer controls those names (rule 3).
-- **Bound:** the sweep lists and deletes at most 50 refs per `Prepare`, so a damaged remote cannot
+- **Bound:** the sweep reads at most 1000 listed lines and deletes at most 50 refs per `Prepare`, so a damaged remote cannot
   push one call past its deadline; the rest go on later calls. In steady state `remote` holds one
   candidate after a rejected or abandoned submission and none after a landing.
 - **Not done:** `Reconcile` and `Test` delete nothing. A read that writes would make a status
@@ -211,7 +211,7 @@ M4-SANDBOX-WORKSPACE asked whether `tessel_lander::merge::{prepare, land}` stay 
   `land_candidate` (reads the ref, clones main, fetches it, checks the tip, calls `land`, deletes
   the ref) and, until the flip, `run_merge`.
 - New `pub` functions: `push_candidate`, `sweep_candidates`, `read_candidate` (tip or absent) and
-  `clone_candidate_tree` (`git init`, fetch the ref, check out the head; returns a `TestTree`, so
+  `fetch_candidate_tree` (`git init`, fetch the ref, check out the head; returns a `TestTree`, so
   its configuration is the one git wrote, as for a clone). New `Git` commands: fetch, push,
   listing and delete of the candidate ref. `MergeSources` needs no new field.
 - `run_merge`, `STAND_IN_MESSAGE` and the stand-in branch in `run` are deleted when `Prepare`
@@ -219,10 +219,17 @@ M4-SANDBOX-WORKSPACE asked whether `tessel_lander::merge::{prepare, land}` stay 
   compile-fail doctests pin is unchanged.
 
 Tests: a compile-fail doctest that `land` is not callable outside the crate; the isolation tests
-(`tessel-lander/tests/isolation.rs`) re-run on `land_candidate` and `clone_candidate_tree` with
+(`tessel-lander/tests/isolation.rs`) re-run on `land_candidate` and `fetch_candidate_tree` with
 hooks, filters and a malicious `.git/config` in the fetched history (S3); a `Land` whose ref has
 the wrong tip answers `CandidateMissing` and pushes nothing; an abandoned call performs no
 remote write.
+
+As built (P1-SERVER-STAGED): `land` is still `pub`, because `tessel-swarm` and the lander's
+integration tests call it; it becomes `pub(crate)`, with the compile-fail doctest, in
+P1-CORE-STAGED-LANDING, which removes those callers. Until then `land_candidate` is the only
+caller that takes a head from the candidate ref, and it requires the base to be an ancestor of the
+head before it pushes, because the lease push rewinds or replaces main when the pair is wrong. The
+isolation tests are `tessel-lander/tests/isolation_candidate.rs`.
 
 ## 6. Alternatives considered
 
