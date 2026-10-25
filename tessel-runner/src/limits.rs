@@ -5,6 +5,13 @@ use std::io;
 use crate::config::RunnerConfig;
 use crate::error::RunnerError;
 
+/// The type of a resource argument to `getrlimit` and `setrlimit`: glibc declares an unsigned
+/// enum type for it, every other libc (macOS, musl) a plain `c_int`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+type Resource = libc::__rlimit_resource_t;
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+type Resource = libc::c_int;
+
 /// Makes this process refuse to be inspected or written into by other processes of the same
 /// account: on Linux, `/proc/<pid>/fd/1` of a dumpable process can be opened by its owner's other
 /// processes, and a line written there would pass for the runner's reply. On other systems this
@@ -35,13 +42,13 @@ pub fn apply_limits(config: &RunnerConfig) -> Result<(), RunnerError> {
     set(libc::RLIMIT_CORE, 0).map_err(|error| RunnerError::unsupervised("limit", &error))
 }
 
-fn hard_limit(resource: libc::c_int) -> io::Result<u64> {
+fn hard_limit(resource: Resource) -> io::Result<u64> {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
     // SAFETY: `limit` is a valid `rlimit` that lives for the call, and `getrlimit` writes only it.
-    let status = unsafe { libc::getrlimit(resource as _, &raw mut limit) };
+    let status = unsafe { libc::getrlimit(resource, &raw mut limit) };
     if status == 0 {
         Ok(limit.rlim_max)
     } else {
@@ -49,13 +56,13 @@ fn hard_limit(resource: libc::c_int) -> io::Result<u64> {
     }
 }
 
-fn set(resource: libc::c_int, value: u64) -> io::Result<()> {
+fn set(resource: Resource, value: u64) -> io::Result<()> {
     let limit = libc::rlimit {
         rlim_cur: value,
         rlim_max: value,
     };
     // SAFETY: `limit` is a valid `rlimit` that lives for the call.
-    let status = unsafe { libc::setrlimit(resource as _, &raw const limit) };
+    let status = unsafe { libc::setrlimit(resource, &raw const limit) };
     if status == 0 {
         Ok(())
     } else {
