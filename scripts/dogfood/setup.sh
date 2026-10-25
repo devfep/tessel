@@ -77,7 +77,8 @@ reviewers = ["orchestrator"]
 sensitive = [
 	"src/protocol.rs", "src/host/", ".github/", "docs/BUILD-PROTOCOL.md", "docs/dogfood.md",
 	"scripts/", "tessel-server/ci/", "tessel-server/src/landing/", "tessel-server/src/credential.rs",
-	"tessel-runner/src/", "tessel-lander/src/", "src/coordinator/merging.rs", "src/shell.rs",
+	"tessel-runner/src/", "tessel-lander/src/", "src/merge.rs", "src/coordinator.rs",
+	"src/coordinator/", "src/shell.rs",
 	".cargo/", "rust-toolchain.toml", "Cargo.lock", "CLAUDE.md", "PLAN.md", "skills/", ".claude/",
 ]
 TOML

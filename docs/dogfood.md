@@ -9,8 +9,8 @@ Four settings are proposals until you confirm them. D1: the lander pushes `main`
 token read from a 0600 file. D2: each lane has its own private fork. D3: the tests run on this Mac,
 with landing builds capped at 6 jobs (accepted). D4: the tokens are per lane, `orchestrator` is the
 only reviewer, and `sensitive` holds the paths the script writes (the protocol, the host, the
-landing and runner code, the workflows, `scripts/`, the build and agent configuration, and the
-process documents). Until the move in [Moving to the service
+core's merge path, the landing and runner code, the workflows, `scripts/`, the build and agent
+configuration, and the process documents). Until the move in [Moving to the service
 accounts](#moving-to-the-service-accounts), D4 is a process control, not a security boundary: any
 process running as you can read every token and the signing key. After the move the claim is
 narrower, and it is this: the token, the key and the store are unreadable to repo code under test.
