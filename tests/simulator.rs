@@ -1245,3 +1245,415 @@ fn some_default_seeds_cut_a_replay_off_part_way() {
         .sum();
     assert!(cut > 0, "no watcher was cut off after receiving events");
 }
+
+#[test]
+fn i10_counts_only_this_claims_grant_reopening_and_race_win_as_a_renewal() {
+    let late = |seq: u64, at_ms: u64, kind: EventKind| at(seq, at_ms, kind);
+    let other_grant = |seq: u64| {
+        let mut event = granted_event(
+            seq,
+            "agent-b",
+            2,
+            claim_on("src/b.rs", Mode::EditBody),
+            None,
+        );
+        event.at_ms = 5_000;
+        event
+    };
+    let state = |expires_at_ms: u64| {
+        serde_json::json!({
+            "config": {"lease_ms": 1_000},
+            "claims": {"1": {"agent": "agent-a", "submitted": null, "expires_at_ms": expires_at_ms}}
+        })
+    };
+    let granted = granted_event(0, "agent-a", 1, claim_on("src/a.rs", Mode::EditBody), None);
+
+    // Claim 2 is granted at 5 000, long after claim 1's only renewal at 100: a lease of claim 1
+    // running to 1 101 is one millisecond too long, whatever else happened since.
+    let log = [granted.clone(), other_grant(1)];
+    let found = check::i10(&log, Some(&state(1_101)), &[], &[]);
+    assert_eq!(
+        found.len(),
+        1,
+        "another claim's grant renews nothing: {found:?}"
+    );
+    assert!(found[0].starts_with("claim 1 expires at 1101"), "{found:?}");
+    assert!(check::i10(&log, Some(&state(1_100)), &[], &[]).is_empty());
+
+    let rejected = late(
+        1,
+        3_000,
+        EventKind::SubmitRejected {
+            claim: ClaimId(1),
+            reason: "tests failed".to_string(),
+        },
+    );
+    let log = [granted.clone(), rejected, other_grant(2)];
+    assert!(check::i10(&log, Some(&state(4_000)), &[], &[]).is_empty());
+    assert_eq!(check::i10(&log, Some(&state(4_001)), &[], &[]).len(), 1);
+
+    let won = late(
+        1,
+        3_500,
+        EventKind::RaceDecided {
+            race: RaceId(1),
+            winner: Some(ClaimId(1)),
+            ranking: vec![ClaimId(1)],
+        },
+    );
+    let log = [granted.clone(), won, other_grant(2)];
+    assert!(check::i10(&log, Some(&state(4_500)), &[], &[]).is_empty());
+    assert_eq!(check::i10(&log, Some(&state(4_501)), &[], &[]).len(), 1);
+
+    let lost = late(
+        1,
+        3_500,
+        EventKind::RaceDecided {
+            race: RaceId(1),
+            winner: Some(ClaimId(2)),
+            ranking: vec![ClaimId(2), ClaimId(1)],
+        },
+    );
+    let log = [granted, lost, other_grant(2)];
+    assert_eq!(
+        check::i10(&log, Some(&state(4_500)), &[], &[]).len(),
+        1,
+        "another claim winning a race renews nothing for this one"
+    );
+}
+
+// ---- The driver's wiring: what the checkers read must reach them ----
+
+fn submit_msg(req: u64, claim: u64, fence: u64, path: &str) -> ClientMsg {
+    ClientMsg::Submit {
+        req: RequestId(req),
+        claim: ClaimId(claim),
+        fence: Fence(fence),
+        fork_commit: CommitId(format!("{req:040x}")),
+        touched: vec![file(path, Mode::EditBody)],
+        decisions: DecisionRecord {
+            rejected: Vec::new(),
+            evidence: vec!["tests passed".to_string()],
+            transcript: None,
+        },
+    }
+}
+
+fn claim_msg(req: u64, path: &str) -> ClientMsg {
+    ClientMsg::Claim {
+        req: RequestId(req),
+        intent: intent(),
+        scopes: vec![file(path, Mode::EditBody)],
+        on_conflict: OnConflict::Fail,
+    }
+}
+
+fn agent_socket(sim: &Sim, agent: &str) -> SocketId {
+    sim.view(agent)
+        .and_then(|view| view.sock)
+        .expect("connected")
+}
+
+#[test]
+fn a_dispatch_records_the_log_length_the_host_had_when_it_asked() {
+    let mut sim = script();
+    assert!(sim.dispatches().is_empty() || sim.dispatches().iter().all(|d| d.events_len > 0));
+    let stored_before = sim.stored_events();
+    assert!(
+        stored_before > 1,
+        "the script stored {stored_before} events"
+    );
+    let a = agent_socket(&sim, "agent-a");
+    sim.send(
+        a,
+        &submit_msg(10, 1, 3, "src/a.rs"),
+        RequestKind::Submit,
+        Some(ClaimId(1)),
+    );
+    assert!(sim.quiet());
+    sim.jump_to_wake();
+    assert!(sim.quiet());
+    let prepares: Vec<_> = sim
+        .dispatches()
+        .iter()
+        .filter(|dispatch| matches!(dispatch.request, Request::Prepare { .. }))
+        .collect();
+    assert_eq!(prepares.len(), 1, "{:?}", sim.dispatches());
+    let events_len = prepares[0].events_len;
+    assert!(
+        events_len > stored_before,
+        "the submit was stored before the call: {events_len} vs {stored_before}"
+    );
+    assert!(events_len <= sim.stored_events());
+    let (events, _) = sim.store().events();
+    assert!(
+        matches!(events[events_len - 1].kind, EventKind::Submitted { .. }),
+        "the log at dispatch ends with the submission"
+    );
+}
+
+#[test]
+fn a_crash_after_apply_kills_the_process_once_and_a_disarmed_one_never_strikes() {
+    let mut sim = script();
+    assert_eq!(sim.crashes(), 0);
+    sim.crash_after_apply();
+    sim.disarm();
+    let a = agent_socket(&sim, "agent-a");
+    sim.send(a, &claim_msg(20, "src/d.rs"), RequestKind::Claim, None);
+    assert!(sim.quiet());
+    assert_eq!(sim.crashes(), 0, "a disarmed fault does not strike");
+
+    sim.crash_after_apply();
+    sim.send(a, &claim_msg(21, "src/e.rs"), RequestKind::Claim, None);
+    assert!(sim.quiet());
+    assert_eq!(sim.crashes(), 1);
+    assert!(!sim.is_open(a), "a crash closes every socket");
+    assert!(sim.view("agent-a").expect("agent").sock.is_none());
+}
+
+#[test]
+fn a_failed_commit_is_answered_as_failed_and_disarm_clears_it() {
+    let failed = |sim: &Sim| {
+        sim.log()
+            .iter()
+            .filter(|l| l.contains("CommitFailed"))
+            .count()
+    };
+    let mut sim = script();
+    let a = agent_socket(&sim, "agent-a");
+    sim.fail_next_commit();
+    sim.disarm();
+    sim.send(a, &claim_msg(30, "src/d.rs"), RequestKind::Claim, None);
+    assert!(sim.quiet());
+    assert_eq!(failed(&sim), 0);
+    sim.fail_next_commit();
+    sim.send(a, &claim_msg(31, "src/e.rs"), RequestKind::Claim, None);
+    assert!(sim.quiet());
+    assert_eq!(failed(&sim), 1);
+}
+
+#[test]
+fn the_clock_moves_with_advance_and_jumps_to_the_held_wake() {
+    let mut sim = script();
+    let now = sim.now_ms();
+    sim.advance(500);
+    assert_eq!(sim.now_ms(), now + 500);
+    let wake = sim.wake().expect("leases are held, so a wake is pending");
+    assert!(wake > sim.now_ms());
+    sim.jump_to_wake();
+    assert_eq!(sim.now_ms(), wake);
+}
+
+#[test]
+fn a_disconnect_closes_the_socket_and_clears_the_agents_socket() {
+    let mut sim = script();
+    let a = agent_socket(&sim, "agent-a");
+    let b = agent_socket(&sim, "agent-b");
+    sim.disconnect(a);
+    assert!(!sim.is_open(a));
+    assert!(sim.is_open(b));
+    assert!(sim.view("agent-a").expect("agent").sock.is_none());
+    assert_eq!(sim.view("agent-b").expect("agent").sock, Some(b));
+    sim.disconnect(a);
+    assert!(!sim.is_open(a), "closing twice is harmless");
+}
+
+#[test]
+fn a_view_keeps_every_scope_a_claim_and_its_amends_asked_for() {
+    let sim = script();
+    let scopes = &sim.view("agent-a").expect("agent").scopes[&1];
+    assert_eq!(
+        scopes,
+        &[
+            file("src/a.rs", Mode::EditBody),
+            file("src/c.rs", Mode::Create)
+        ]
+    );
+}
+
+#[test]
+fn an_error_drops_a_claim_from_the_view_unless_it_answered_a_stale_probe() {
+    let release = |req: u64, fence: u64| ClientMsg::Release {
+        claim: ClaimId(1),
+        fence: Fence(fence),
+        req: Some(RequestId(req)),
+    };
+    let mut sim = script();
+    let a = agent_socket(&sim, "agent-a");
+    sim.send(
+        a,
+        &release(40, 1),
+        RequestKind::StaleRelease,
+        Some(ClaimId(1)),
+    );
+    assert!(sim.quiet());
+    assert!(sim.view("agent-a").expect("agent").held.contains_key(&1));
+    sim.send(a, &release(41, 1), RequestKind::Release, Some(ClaimId(1)));
+    assert!(sim.quiet());
+    assert!(
+        !sim.view("agent-a").expect("agent").held.contains_key(&1),
+        "a stale fence on a real release means the claim is gone"
+    );
+    // A send's label names the claim an error is about, so each case aims one error code at a
+    // claim the sender holds (agent-a holds claim 1, agent-b claim 2).
+    let aimed = |agent: &str, msg: ClientMsg, label: u64| {
+        let mut sim = script();
+        let sock = agent_socket(&sim, agent);
+        sim.send(sock, &msg, RequestKind::Release, Some(ClaimId(label)));
+        assert!(sim.quiet());
+        let code = sim.transcript().iter().rev().find_map(|d| {
+            if let ServerMsg::Error { code, .. } = &d.msg {
+                return Some(*code);
+            }
+            None
+        });
+        let held = sim.view(agent).expect("agent").held.contains_key(&label);
+        (code, held)
+    };
+    let release_of = |claim: u64, fence: u64| ClientMsg::Release {
+        claim: ClaimId(claim),
+        fence: Fence(fence),
+        req: Some(RequestId(70)),
+    };
+    assert_eq!(
+        aimed("agent-a", release_of(99, 3), 1),
+        (Some(ErrorCode::UnknownClaim), false)
+    );
+    assert_eq!(
+        aimed("agent-a", release_of(1, 1), 1),
+        (Some(ErrorCode::StaleFence), false)
+    );
+    assert_eq!(
+        aimed("agent-b", release_of(1, 3), 2),
+        (Some(ErrorCode::NotOwner), false)
+    );
+    let join = ClientMsg::JoinRace {
+        req: RequestId(70),
+        race: RaceId(99),
+    };
+    assert_eq!(
+        aimed("agent-a", join, 1),
+        (Some(ErrorCode::UnknownRace), true),
+        "any other refusal leaves the claim held"
+    );
+}
+
+#[test]
+fn a_stale_probe_counts_as_accepted_only_for_an_agent_release_of_its_own_claim() {
+    let mut sim = script();
+    let (a, b) = (agent_socket(&sim, "agent-a"), agent_socket(&sim, "agent-b"));
+    let probe = ClientMsg::Release {
+        claim: ClaimId(1),
+        fence: Fence(1),
+        req: Some(RequestId(50)),
+    };
+    let other = ClientMsg::Release {
+        claim: ClaimId(2),
+        fence: Fence(2),
+        req: Some(RequestId(51)),
+    };
+    sim.send(a, &probe, RequestKind::StaleRelease, Some(ClaimId(1)));
+    sim.send(b, &other, RequestKind::Release, Some(ClaimId(2)));
+    assert!(sim.quiet());
+    let (events, _) = sim.store().events();
+    assert!(events.iter().any(|e| matches!(
+        &e.kind,
+        EventKind::ClaimReleased { claim, reason: ReleaseReason::Agent } if claim.0 == 2
+    )));
+    let probe_sent = sim.sent().iter().find(|s| s.req.0 == 50).expect("sent");
+    assert!(!probe_sent.accepted, "claim 2's release is not claim 1's");
+}
+
+#[test]
+fn a_lease_expiry_is_not_an_agent_release() {
+    let mut sim = script();
+    let a = agent_socket(&sim, "agent-a");
+    let probe = ClientMsg::Release {
+        claim: ClaimId(1),
+        fence: Fence(1),
+        req: Some(RequestId(60)),
+    };
+    sim.send(a, &probe, RequestKind::StaleRelease, Some(ClaimId(1)));
+    sim.advance(100_000);
+    assert!(sim.quiet());
+    sim.advance(2_000);
+    assert!(sim.quiet());
+    let (events, _) = sim.store().events();
+    assert!(events.iter().any(|e| matches!(
+        &e.kind,
+        EventKind::ClaimReleased { claim, reason } if claim.0 == 1 && *reason != ReleaseReason::Agent
+    )));
+    let probe_sent = sim.sent().iter().find(|s| s.req.0 == 60).expect("sent");
+    assert!(!probe_sent.accepted);
+}
+
+// ---- The traffic: every kind of request and fault must be generated ----
+
+/// A sim driven by `seed`'s traffic for the sweep's number of steps, whatever `TESSEL_SIM_SEEDS` says.
+fn driven(seed: u64) -> Sim {
+    let config = HostConfig {
+        repo: "sim".to_string(),
+        run: Some("sim".to_string()),
+        reviewers: Some(sim::traffic::REVIEWER.to_string()),
+        sensitive: Some("lib/".to_string()),
+        ..HostConfig::default()
+    };
+    let mut sim = Sim::new(config, Variant::Correct);
+    let mut traffic = sim::traffic::Traffic::new(seed);
+    for _ in 0..sim::STEPS {
+        assert!(
+            traffic.step(&mut sim),
+            "seed {seed}: the host never finished"
+        );
+    }
+    sim
+}
+
+#[test]
+fn eight_fixed_seeds_send_every_kind_of_request_and_cause_every_kind_of_fault() {
+    let mut kinds = Vec::new();
+    let (mut failed_commits, mut closed_by_client) = (0, 0);
+    let (mut crashes, mut apply_crashes) = (0, 0);
+    for seed in 0..8 {
+        let sim = driven(seed);
+        for sent in sim.sent() {
+            if !kinds.contains(&sent.kind) {
+                kinds.push(sent.kind);
+            }
+        }
+        failed_commits += sim
+            .log()
+            .iter()
+            .filter(|l| l.contains("CommitFailed"))
+            .count();
+        closed_by_client += sim
+            .log()
+            .iter()
+            .filter(|l| l.starts_with("in Closed"))
+            .count();
+        crashes += sim.crashes();
+        apply_crashes += sim.crashes_after_apply();
+    }
+    for kind in [
+        RequestKind::Other,
+        RequestKind::Claim,
+        RequestKind::Amend,
+        RequestKind::Release,
+        RequestKind::Submit,
+        RequestKind::StaleRelease,
+    ] {
+        assert!(kinds.contains(&kind), "no seed sent a {kind:?}");
+    }
+    assert!(failed_commits > 0, "no commit failed");
+    assert!(closed_by_client > 0, "no client dropped its socket");
+    assert!(apply_crashes > 0, "no crash struck right after a commit");
+    assert!(crashes > apply_crashes, "no crash struck after an output");
+}
+
+#[test]
+fn a_watcher_cut_off_before_it_got_an_event_is_not_a_cut_off_replay() {
+    let cuts: Vec<usize> = (0..sim::DEFAULT_SEEDS)
+        .map(|seed| sim::run_seed(seed, Variant::Correct, &[]).cut_off_replays)
+        .collect();
+    assert!(cuts.contains(&0), "every seed cut a replay off: {cuts:?}");
+}

@@ -47,6 +47,27 @@ mod tests {
     }
 
     #[test]
+    fn a_fixed_seed_gives_the_splitmix64_sequence() {
+        let mut rng = Rng::new(0);
+        let values: Vec<u64> = (0..4).map(|_| rng.next_u64()).collect();
+        // The published SplitMix64 outputs for seed 0.
+        let expected = [
+            0xE220_A839_7B1D_CDAF,
+            0x6E78_9E6A_A1B9_65F4,
+            0x06C4_5D18_8009_454F,
+            0xF88B_B8A8_724C_81EC,
+        ];
+        assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn chance_is_true_below_its_rate_and_false_at_it() {
+        let unit = (Rng::new(0).next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        assert!(Rng::new(0).chance(unit + 1e-9));
+        assert!(!Rng::new(0).chance(unit));
+    }
+
+    #[test]
     fn below_stays_in_range_and_chance_respects_its_extremes() {
         let mut rng = Rng::new(1);
         for _ in 0..200 {

@@ -249,6 +249,15 @@ fn cut_off_replays(sim: &Sim) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_simulated_host_names_its_repo_run_reviewer_and_sensitive_path() {
+        let config = host_config();
+        assert_eq!(config.repo, "sim");
+        assert_eq!(config.run.as_deref(), Some("sim"));
+        assert_eq!(config.reviewers.as_deref(), Some(traffic::REVIEWER));
+        assert_eq!(config.sensitive.as_deref(), Some("lib/"));
+    }
+
     fn set(text: &str) -> Result<String, std::env::VarError> {
         Ok(text.to_string())
     }

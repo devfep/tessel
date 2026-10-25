@@ -10,6 +10,7 @@
 //! merged, and no lease is extended without a heartbeat.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 use serde_json::Value;
 
@@ -585,7 +586,10 @@ pub fn i8(events: &[Event]) -> Vec<String> {
     let live = live_claims(events);
     let mut found = Vec::new();
     for (a, left) in &live {
-        for (b, right) in live.range(a + 1..) {
+        // An exclusive bound, not `a + 1..`: a claim paired with itself is always skipped below (same
+        // race, or its own agent with no race), so that range and `a * 1..` behave alike and the
+        // mutant could never be killed.
+        for (b, right) in live.range((Bound::Excluded(*a), Bound::Unbounded)) {
             let same_race = left.race.is_some() && left.race == right.race;
             let own = left.agent == right.agent && left.race.is_none() && right.race.is_none();
             if same_race || own {
