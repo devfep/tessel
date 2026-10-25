@@ -240,8 +240,12 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    design (root creates a `_tessel`-owned directory only when it is missing, and stops if one
    exists with another owner or as a link), installs the toolchain (its installer is checked
    against `toolchain.sha256`), writes the sudoers rule (checked with `visudo -cf`), the launchd
-   plist, which it also disables so that a reboot does not load it, and the cargo setting. It
-   moves no secret.
+   plist, which it also disables so that a reboot does not load it, the cargo setting, and the
+   runner's configuration (`/var/tessel-runner/tessel-runner.toml`, root-owned) and the server's
+   (`/var/tessel/tessel-server.toml`, only if absent). It moves no secret. The server's
+   `runner_config` stays in that file: with `[lander.sudo_runner]` the server does not read the
+   runner's file, but its path is the one argument the sudoers rule allows the runner to be given,
+   so both name the same file.
 
    Fill the cargo cache now, so that every probe that needs crates runs before any secret moves.
    `fetch.sh` fetches a landed `main` commit (`$sha`) as `_tessel` with Apple's git, shows the
@@ -282,8 +286,10 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    If `chown-tree.sh` refuses (it names the entry), do not go on: leave the daemon stopped, move
    the files back to `<server dir>` as the rollback says, and find who made that entry. It is a
    move, not a copy, so no fence is reissued. The old binaries and configuration stay in
-   `<server dir>`. Write `/var/tessel/tessel-server.toml` from the configuration there with the
-   paths changed to `/var/tessel` (RUNNER-OWN-UID's part 2 adds it to `install.sh`), then
+   `<server dir>`. Compare `/var/tessel/tessel-server.toml`, which step 3 wrote with the dogfood
+   defaults, with `<server dir>/tessel-server.toml`: `listen`, `[[repository]]`, `reviewers` and
+   `sensitive` should agree, and a difference is edited by hand as `_tessel`
+   (`/usr/bin/sudo -u _tessel /usr/bin/vi /var/tessel/tessel-server.toml`). Then
    `/usr/bin/sudo /bin/launchctl enable system/dev.tessel.server`,
    `/usr/bin/sudo /bin/launchctl bootstrap system /Library/LaunchDaemons/dev.tessel.server.plist`,
    and tail `/var/log/tessel-server.log`. Mint the agent tokens as yourself with

@@ -370,6 +370,8 @@ check_installed() {
 	expect_mode /var/tessel/cargo/config.toml "$tessel_name:$tessel_name" 644
 	expect_mode /var/tessel/toolchain root:wheel 755
 	expect_mode /var/tessel-runner root:wheel 755
+	expect_mode /var/tessel-runner/tessel-runner.toml root:wheel 644
+	expect_mode /var/tessel/tessel-server.toml "$tessel_name:$tessel_name" 600
 	expect_mode /var/tessel-runner/work "$runner_name:$runner_name" 700
 	expect_mode /var/tessel-runner/tmp "$runner_name:$runner_name" 700
 	expect_mode /var/log/tessel-server.log "$tessel_name:$tessel_name" 644

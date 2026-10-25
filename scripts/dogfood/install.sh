@@ -17,9 +17,11 @@
 # written by _tessel. Root's own scratch work (the sudoers candidate, the toolchain download)
 # happens in /opt/tessel/tmp, which only root can enter.
 #
-# It does not write tessel-server.toml or tessel-runner.toml: their keys change with
-# RUNNER-OWN-UID's server code (the runner reads PATH and CARGO_HOME from its configuration, and
-# the server loses `runner_config`), so RUNNER-OWN-UID's part 2 adds them here.
+# It writes the runner's configuration, /var/tessel-runner/tessel-runner.toml (root-owned, so the
+# runner's account cannot rewrite it), and, only when it is absent, the server's,
+# /var/tessel/tessel-server.toml. The server's `[lander] runner_config` stays: with
+# `[lander.sudo_runner]` the server does not read that file, but its path is the one argument the
+# sudoers rule allows the runner to be given, so the two must name the same file.
 #
 # The script refuses to run unless it is the copy in /opt/tessel/sbin. --dry-run prints each step
 # and needs neither root nor that location; the accounts must exist first (accounts.sh).
@@ -116,8 +118,13 @@ check_prerequisites() {
 	/usr/bin/grep -Eq "^[0-9a-f]{64}  $installer\$" "$here/toolchain.sha256" ||
 		fail "toolchain.sha256 has no line for $installer"
 	if [ -r /etc/sudoers ]; then
-		/usr/bin/grep -qx '#includedir /private/etc/sudoers.d' /etc/sudoers ||
-			fail "/etc/sudoers does not include sudoers.d"
+		if ! /usr/bin/grep -qx '#includedir /private/etc/sudoers.d' /etc/sudoers; then
+			if [ "$dry" = 1 ]; then
+				echo "note: /etc/sudoers has no macOS sudoers.d include"
+			else
+				fail "/etc/sudoers does not include sudoers.d"
+			fi
+		fi
 	elif [ "$dry" != 1 ]; then
 		fail "cannot read /etc/sudoers"
 	fi
@@ -279,6 +286,49 @@ install_cargo_config() {
 	as_server /bin/chmod 0644 "$path"
 }
 
+install_configurations() {
+	put_root /var/tessel-runner/tessel-runner.toml root wheel 0644 <<RUNNER
+[runner]
+user = "$runner"
+timeout_secs = 720
+path = "$prefix/bin:/usr/bin:/bin"
+cargo_home = "/var/tessel/cargo"
+tmpdir = "/var/tessel-runner/tmp"
+work_dir = "/var/tessel-runner/work"
+handoff_dir = "/var/tessel/handoff"
+RUNNER
+	if [ -e /var/tessel/tessel-server.toml ]; then
+		echo "/var/tessel/tessel-server.toml is in place"
+		return
+	fi
+	put_root /var/tessel/tessel-server.toml "$server" "$server" 0600 <<'SERVER'
+listen = "127.0.0.1:7878"
+store_dir = "/var/tessel/stores"
+identity = { keys = "/var/tessel/keys", audience = "dogfood" }
+
+[lander]
+work_dir = "/var/tessel/lander"
+runner_config = "/var/tessel-runner/tessel-runner.toml"
+token_file = "/var/tessel/github-token"
+
+[lander.sudo_runner]
+
+[[repository]]
+tenant = "devfep"
+name = "tessel"
+run = "dogfood"
+remote = "https://github.com/devfep/tessel.git"
+fork = "https://github.com/devfep/tessel-{agent}.git"
+reviewers = ["orchestrator"]
+sensitive = [
+	"src/protocol.rs", "src/host/", ".github/", "docs/BUILD-PROTOCOL.md", "docs/dogfood.md",
+	"scripts/", "tessel-server/ci/", "tessel-server/src/landing/", "tessel-server/src/credential.rs",
+	"tessel-runner/src/", "tessel-lander/src/", "src/coordinator/merging.rs", "src/shell.rs",
+	".cargo/", "rust-toolchain.toml", "Cargo.lock", "CLAUDE.md", "PLAN.md", "skills/", ".claude/",
+]
+SERVER
+}
+
 check_prerequisites
 make_directories
 install_binaries
@@ -286,4 +336,5 @@ install_toolchain
 install_sudoers
 install_plist
 install_cargo_config
+install_configurations
 echo "install: done. The plist is disabled and no secret has moved; run check-own-users.sh --installed"

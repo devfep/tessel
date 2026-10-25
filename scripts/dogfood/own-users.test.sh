@@ -137,7 +137,14 @@ expect "install writes the sudoers rule with the two commands" 0 "/bin/kill -KIL
 	"$install_sh" --binaries "$bins" --dry-run
 expect "install disables the plist until the move" 0 "launchctl disable system/dev.tessel.server" \
 	"$install_sh" --binaries "$bins" --dry-run
-expect_absent "install writes no server or runner configuration" "would write /var/tessel/tessel-server.toml"
+expect "install writes the runner configuration, root-owned, with the sandbox keys" 0 \
+	"would write /var/tessel-runner/tessel-runner.toml (root:wheel 0644)" "$install_sh" --binaries "$bins" --dry-run
+expect "the runner configuration names the work and handoff directories" 0 'handoff_dir = "/var/tessel/handoff"' \
+	"$install_sh" --binaries "$bins" --dry-run
+expect "install writes the server configuration with the sudo runner table" 0 '\[lander.sudo_runner\]' \
+	"$install_sh" --binaries "$bins" --dry-run
+expect "the server configuration keeps runner_config as the sudo argument" 0 \
+	'runner_config = "/var/tessel-runner/tessel-runner.toml"' "$install_sh" --binaries "$bins" --dry-run
 expect "install writes the cargo config as _tessel" 0 "would write /var/tessel/cargo/config.toml as _tessel" \
 	"$install_sh" --binaries "$bins" --dry-run
 expect "install refuses a missing binary" 1 "is not an executable regular file" \
