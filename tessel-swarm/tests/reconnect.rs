@@ -457,7 +457,7 @@ async fn a_claim_that_lapsed_while_the_agent_was_gone_is_that_tasks_lapsed_outco
     let tasks = [body(1, "unitPrice")];
     let cfg = config(1, 1500, PATIENT);
     let mut lifted = None;
-    let run = run_with(&tasks, &cfg, 400, |server| {
+    let run = run_with(&tasks, &cfg, 1000, |server| {
         let granted = |e: &Event| matches!(e.kind, EventKind::ClaimGranted { .. });
         let cutter = server.cutter();
         cutter.reset_on(granted, vec!["a01".to_string()]);
@@ -699,7 +699,10 @@ async fn a_network_that_keeps_failing_ends_the_task_after_a_bounded_number_of_re
     .await;
     let r = &run.result.results[0];
     assert_eq!(r.result, Resolution::Disconnected, "{r:?}");
-    assert_eq!(r.reconnects, MAX_RESETS_PER_TASK, "{r:?}");
+    // The log reader trips the wire from outside the server's step, so a reset can land while the
+    // agent reads the log instead of on the hello, and the task may end on the log-read bound
+    // before it reaches the reset bound: the count is at most the bound, no longer exactly it.
+    assert!((1..=MAX_RESETS_PER_TASK).contains(&r.reconnects), "{r:?}");
     run.server.shutdown().await;
 }
 

@@ -92,9 +92,12 @@ fn a_local_run_writes_its_evidence_and_leaves_nothing_behind() {
     assert_eq!(on["summary_from_event_log"]["merges"], 3);
     let events = std::fs::read_to_string(out.join("seed7-on-events.json")).unwrap();
     assert!(!events.contains("local-a01"));
-    assert_eq!(
-        std::fs::read_dir(&scratch).unwrap().count(),
-        0,
-        "temp directories were removed"
-    );
+    // `npm test`, the gate the server's runner runs, makes node's compile cache in TMPDIR; that is
+    // node's directory, not one of the swarm's.
+    let left: Vec<String> = std::fs::read_dir(&scratch)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "node-compile-cache")
+        .collect();
+    assert_eq!(left, Vec::<String>::new(), "temp directories were removed");
 }

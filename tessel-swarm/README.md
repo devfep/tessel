@@ -70,7 +70,7 @@ harness.
 - Waiting is the time from a claim being sent to its answer, summed over attempts.
 - Agent-minutes on both sides are the configured `--work-ms` per task plus the measured time to
   edit, test and commit.
-- In `on`, the steward reports a failed test run for both build and test failures, and the log
+- In `on`, the server reports a failed test run for both build and test failures, and the log
   keeps the rejection reason as text that the harness does not parse, so `on` has no per-kind
   split of its rejections.
 
@@ -142,7 +142,7 @@ claim is logged or can no longer run, up to `--task-timeout-s`. Its next push re
 Landed counts under `shadow` are not comparable with `wait` and `skip`: a denied task becomes
 shadow work and never lands. The table says so, and only the shadow policy has these rows.
 
-When the blocking work merges, the steward tries each submitted shadow commit against it, first
+When the blocking work merges, the server's lander tries each submitted shadow commit against it, first
 on the trunk as it was before the merge (work that already fails there is inconclusive) and then
 after, and the coordinator logs `DenialVerified`. One extra connection follows the log for the
 whole run (the waiting agents read what it has seen, so waiting adds no polling to the
@@ -166,11 +166,13 @@ target/debug/tessel-swarm run --seed 1 --tasks 10 --agents 4 --overlap 0.5 --out
 target/debug/tessel-swarm tasks --seed 1 --tasks 10      # print the generated tasks
 ```
 
-The default target is `local`: the real coordinator core behind a WebSocket on 127.0.0.1, and a
-steward that cherry-picks each submitted commit onto a trunk, runs `node --test` under its TAP
-reporter, and reports `Merged`, `Conflict` or `TestsFailed`. It needs `git` and Node 22.18 or
-newer, 24 included. The local steward does not re-check the merged diff against the claim; the
-core still checks the submitted `touched` list.
+The default target is `local`: a real `tessel-server` started in this process, with its own lander
+and runner, on a git remote the scripted agents fork from. The server rebases each submitted
+commit onto the trunk, runs the trunk's `tessel.toml` test command (`npm test`, which is
+`node --test`) on the rebased head and moves the trunk by compare-and-swap; the agents reach it
+through a small relay on 127.0.0.1 that tests use to reset or cut a socket. It needs `git` and
+Node 22.18 or newer, 24 included. The lander checks the rebased diff against the claim (invariant
+11).
 
 Files written to `--out`: `seed<N>-off.json`, `seed<N>-on.json`, `seed<N>-on-events.json` (the
 event log the numbers came from) and `seed<N>-ab.md`.
