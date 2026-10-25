@@ -11,4 +11,5 @@ pub mod paths;
 pub mod repo;
 pub mod server;
 pub mod store;
+pub mod testing;
 pub mod ws;
