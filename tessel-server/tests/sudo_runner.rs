@@ -67,7 +67,9 @@ ok) cat STATE/result.json ;;
 slow) sleep 0.4; cat STATE/result.json ;;
 sleep) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; wait ;;
 leaves-a-child) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; cat STATE/result.json ;;
-refuse) exit 2 ;;
+two-lines) cat STATE/result.json; echo; echo garbage ;;
+huge) cat STATE/huge.json ;;
+refuse) echo "tessel-runner: request refused: the compiler is not the channel" >&2; exit 2 ;;
 unsupervised) exit 3 ;;
 flood) head -c 6000000 /dev/zero | tr '\0' x ;;
 esac
@@ -82,8 +84,10 @@ while read -r pid; do kill -9 "$pid" 2>/dev/null; done < STATE/procs
         );
         rig.script(
             "ps",
-            r#"while read -r pid; do kill -0 "$pid" 2>/dev/null && echo "$pid"; done < STATE/procs
-exit 0"#,
+            r#"if [ -f STATE/psfail ]; then echo "ps: no such user" >&2; exit 2; fi
+found=1
+while read -r pid; do kill -0 "$pid" 2>/dev/null && echo "$pid" && found=0; done < STATE/procs
+exit $found"#,
         );
         rig
     }
@@ -119,6 +123,7 @@ exit 0"#,
             runner_config: PathBuf::from("/var/tessel-runner/tessel-runner.toml"),
             kill: self.dir.path().join("kill"),
             ps: self.dir.path().join("ps"),
+            handoff_dir: self.dir.path().join("handoff"),
             settle: Duration::from_secs(3),
         }
     }
@@ -126,6 +131,35 @@ exit 0"#,
     fn runner(&self) -> SudoRunner {
         SudoRunner::new(self.settings()).expect("a runner")
     }
+}
+
+/// A call directory in the handoff directory, private as the lander makes it, with a tree in it.
+fn call_dir(rig: &Rig, name: &str) -> PathBuf {
+    let dir = rig.dir.path().join("handoff").join(name);
+    fs::create_dir_all(dir.join("test")).expect("a call directory");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("chmod");
+    dir
+}
+
+fn mode_of(path: &Path) -> u32 {
+    fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+}
+
+fn request_in(dir: &Path) -> RunRequest {
+    RunRequest {
+        tree: dir.join("test").display().to_string(),
+        ..request()
+    }
+}
+
+fn wait_until_started(rig: &Rig) {
+    for _ in 0..200 {
+        if rig.read("timeline").contains("start") {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    unreachable!("the runner never started");
 }
 
 fn request() -> RunRequest {
@@ -407,4 +441,194 @@ fn without_a_sudo_runner_table_the_in_process_runner_is_built_as_before() {
         matches!(error, tessel_server::server::StartError::Runner(_)),
         "{error}"
     );
+}
+
+#[test]
+fn a_call_directory_is_open_to_the_group_only_while_its_run_holds_the_gate() {
+    let rig = Rig::new();
+    rig.set_mode("slow");
+    let first = call_dir(&rig, "a.b.call-1");
+    let second = call_dir(&rig, "c.d.call-2");
+    let runner = Arc::new(rig.runner());
+    let asked = request_in(&first);
+    let thread = std::thread::spawn(move || runner.run_cancellable(&asked, &never));
+    wait_until_started(&rig);
+    assert_eq!(
+        mode_of(&first),
+        0o750,
+        "the run's own directory is open to the group"
+    );
+    assert_eq!(
+        mode_of(&second),
+        0o700,
+        "another call's directory stays closed"
+    );
+    assert!(thread.join().expect("thread").is_ok());
+    assert_eq!(
+        mode_of(&first),
+        0o700,
+        "closed again before the gate is let go"
+    );
+}
+
+#[test]
+fn a_call_directory_is_closed_again_after_a_cancelled_run() {
+    let rig = Rig::new();
+    rig.set_mode("sleep");
+    let dir = call_dir(&rig, "a.b.call-1");
+    let runner = rig.runner();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let timer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        flag.store(true, Ordering::SeqCst);
+    });
+    let error = runner
+        .run_cancellable(&request_in(&dir), &|| stop.load(Ordering::SeqCst))
+        .unwrap_err();
+    timer.join().expect("timer");
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    assert_eq!(mode_of(&dir), 0o700);
+}
+
+#[test]
+fn a_ps_that_fails_is_not_read_as_nothing_left() {
+    let rig = Rig::new();
+    rig.touch("psfail");
+    assert!(
+        SudoRunner::new(rig.settings()).is_err(),
+        "a failing ps stops the start"
+    );
+    let rig = Rig::new();
+    let runner = rig.runner();
+    rig.touch("psfail");
+    assert!(
+        runner.run_cancellable(&request(), &never).is_ok(),
+        "the run's own result stands"
+    );
+    let started = rig.read("timeline").matches("start").count();
+    let next = runner.run_cancellable(&request(), &never).unwrap_err();
+    assert!(matches!(next, RunnerError::Unsupervised { .. }), "{next}");
+    assert_eq!(
+        rig.read("timeline").matches("start").count(),
+        started,
+        "no later run starts"
+    );
+}
+
+#[test]
+fn a_kill_that_fails_on_a_cancelled_call_closes_the_gate_and_the_wait_is_bounded() {
+    let rig = Rig::new();
+    let runner = rig.runner();
+    rig.set_mode("sleep");
+    rig.touch("stubborn");
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let timer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        flag.store(true, Ordering::SeqCst);
+    });
+    let started = Instant::now();
+    let error = runner
+        .run_cancellable(&request(), &|| stop.load(Ordering::SeqCst))
+        .unwrap_err();
+    timer.join().expect("timer");
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "bounded: {:?}",
+        started.elapsed()
+    );
+    let again = runner.run_cancellable(&request(), &never).unwrap_err();
+    assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+    for pid in rig.read("procs").lines() {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-9", pid])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+#[test]
+fn a_call_given_up_before_it_starts_runs_nothing() {
+    let rig = Rig::new();
+    let runner = rig.runner();
+    let error = runner.run_cancellable(&request(), &|| true).unwrap_err();
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    assert_eq!(rig.read("timeline"), "", "the runner never started");
+    assert!(
+        runner.run_cancellable(&request(), &never).is_ok(),
+        "and the gate is not closed"
+    );
+}
+
+#[test]
+fn only_the_first_line_of_the_reply_counts_and_what_it_holds_is_bounded_again() {
+    let rig = Rig::new();
+    let runner = rig.runner();
+    rig.set_mode("two-lines");
+    assert_eq!(
+        runner
+            .run_cancellable(&request(), &never)
+            .expect("a result"),
+        result(0, None)
+    );
+    let mut huge = result(1, Some(&"f".repeat(5000)));
+    huge.stdout = "o".repeat(300_000);
+    huge.stderr = "e".repeat(300_000);
+    fs::write(
+        rig.state().join("huge.json"),
+        serde_json::to_string(&huge).expect("json"),
+    )
+    .expect("write");
+    rig.set_mode("huge");
+    let got = runner
+        .run_cancellable(&request(), &never)
+        .expect("a result");
+    assert!(got.stdout.len() <= tessel_runner::MAX_TAIL_BYTES && got.stdout_truncated);
+    assert!(got.stderr.len() <= tessel_runner::MAX_TAIL_BYTES && got.stderr_truncated);
+    assert!(got
+        .first_failure
+        .is_some_and(|text| text.len() <= tessel_runner::MAX_FIRST_FAILURE_BYTES));
+}
+
+#[derive(Clone, Default)]
+struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_refusal_logs_what_the_runner_said() {
+    let captured = Captured::default();
+    let sink = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || sink.clone())
+        .with_ansi(false)
+        .finish();
+    let rig = Rig::new();
+    let runner = rig.runner();
+    rig.set_mode("refuse");
+    // Global, because a callsite that first ran with no subscriber would stay silent for a scoped one.
+    tracing::subscriber::set_global_default(subscriber).expect("the one subscriber of this binary");
+    let error = runner.run_cancellable(&request(), &never).unwrap_err();
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    let log = String::from_utf8_lossy(
+        &captured
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .into_owned();
+    assert!(log.contains("the compiler is not the channel"), "{log}");
 }

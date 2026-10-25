@@ -1230,7 +1230,7 @@ async fn with_a_sudo_runner_the_tree_to_test_is_in_the_handoff_directory_and_goe
     );
     assert!(is_the_tree, "the tree holds the rebased head");
     assert_eq!(names.len(), 1);
-    assert!(names[0].starts_with("acme-handoff-case-call-"), "{names:?}");
+    assert!(names[0].starts_with("acme.handoff-case.call-"), "{names:?}");
     assert_eq!(
         entries(&handoff),
         Vec::<String>::new(),
@@ -1249,9 +1249,9 @@ async fn a_server_start_removes_the_handoff_trees_a_killed_server_left_for_its_r
     let repos = Repos::new();
     let (lander, handoff) = sudo_lander(&repos);
     for name in [
-        "acme-leftover-case-call-3",
-        "acme-leftover-case-call-9",
-        "acme-someone-else-call-3",
+        "acme.leftover-case.call-3",
+        "acme.leftover-case.call-9",
+        "acme.someone-else.call-3",
         "unrelated",
     ] {
         std::fs::create_dir_all(handoff.join(name).join("inner"))?;
@@ -1259,6 +1259,61 @@ async fn a_server_start_removes_the_handoff_trees_a_killed_server_left_for_its_r
     capture_logs();
     let id = RepoId::new("acme", "leftover-case")?;
     let _landing = Landing::new(id, &repos.repository("leftover-case"), &lander, passing())?;
-    assert_eq!(entries(&handoff), ["acme-someone-else-call-3", "unrelated"]);
+    assert_eq!(entries(&handoff), ["acme.someone-else.call-3", "unrelated"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_repositories_whose_names_join_alike_keep_their_handoff_trees_apart() -> TestResult {
+    let repos = Repos::new();
+    let (lander, handoff) = sudo_lander(&repos);
+    // `a-b`/`c` and `a`/`b-c` both read `a-b-c` with a dash between the parts.
+    for name in ["a-b.c.call-1", "a.b-c.call-1"] {
+        std::fs::create_dir_all(handoff.join(name))?;
+    }
+    capture_logs();
+    let first = RepoId::new("a-b", "c")?;
+    let _landing = Landing::new(first, &repos.repository("c"), &lander, passing())?;
+    assert_eq!(
+        entries(&handoff),
+        ["a.b-c.call-1"],
+        "only its own tree was removed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_call_directory_in_the_handoff_directory_is_private_until_a_run_opens_it() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let (lander, handoff) = sudo_lander(&repos);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runner = {
+        let (seen, handoff) = (Arc::clone(&seen), handoff.clone());
+        Scripted::new(move |_| {
+            let modes: Vec<u32> = std::fs::read_dir(&handoff)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| entry.metadata().ok())
+                .map(|meta| meta.permissions().mode() & 0o777)
+                .collect();
+            seen.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend(modes);
+            Ok(result(0, None))
+        })
+    };
+    capture_logs();
+    let id = RepoId::new("acme", "private-case")?;
+    let landing = Landing::new(id, &repos.repository("private-case"), &lander, runner)?;
+    let answer = prepare(&landing, &commit, whole_repo()).await;
+    assert!(prepared(&answer).is_ok(), "{answer:?}");
+    let modes = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(
+        modes,
+        [0o700],
+        "the call's directory is 0700 when the lander hands it over"
+    );
     Ok(())
 }

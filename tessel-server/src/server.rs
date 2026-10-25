@@ -115,6 +115,7 @@ pub fn runner_of(lander: &LanderConfig) -> Result<Arc<dyn TestRunner>, StartErro
         runner_config: lander.runner_config.clone(),
         kill: sudo.kill.clone(),
         ps: sudo.ps.clone(),
+        handoff_dir: sudo.handoff_dir.clone(),
         settle: std::time::Duration::from_secs(sudo.settle_secs),
     };
     Ok(Arc::new(SudoRunner::new(settings)?))

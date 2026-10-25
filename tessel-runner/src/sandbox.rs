@@ -25,35 +25,20 @@ pub(crate) fn run(
     request: &RunRequest,
 ) -> Result<RunResult, RunnerError> {
     let plan = request.plan(config)?;
-    let handoff = fs::canonicalize(sandbox.handoff_dir())
-        .map_err(|error| RunnerError::unsupervised("handoff", &error))?;
-    let from_handoff = plan.root.starts_with(&handoff);
-    let in_work =
-        fs::canonicalize(sandbox.work_dir()).is_ok_and(|work| plan.root.starts_with(work));
-    prepare_directories(config, sandbox, !in_work)
+    prepare_directories(config, sandbox)
         .map_err(|error| RunnerError::unsupervised("sweep", &error))?;
-    let plan = if from_handoff {
-        let copy = sandbox.work_dir().join(COPY_NAME);
-        copy_tree(&plan.root, &copy).map_err(|error| RunnerError::unsupervised("copy", &error))?;
-        rebase(plan, &copy)
-    } else {
-        plan
-    };
+    let copy = sandbox.work_dir().join(COPY_NAME);
+    copy_tree(&plan.root, &copy).map_err(|error| RunnerError::unsupervised("copy", &error))?;
+    let plan = rebase(plan, &copy);
     toolchain::check(config, sandbox, &plan.root)?;
     supervise::run_plan(config.env(), &plan)
 }
 
-/// Empties the work directory (unless the tree to test is inside it) and the temporary directory,
-/// and clears the account's files out of the shared directories.
-fn prepare_directories(
-    config: &RunnerConfig,
-    sandbox: &Sandbox,
-    empty_work: bool,
-) -> io::Result<()> {
+/// Empties the work directory and the temporary directory, and clears the account's files out of
+/// the shared directories.
+fn prepare_directories(config: &RunnerConfig, sandbox: &Sandbox) -> io::Result<()> {
     fs::create_dir_all(sandbox.work_dir())?;
-    if empty_work {
-        sweep::empty_dir(sandbox.work_dir())?;
-    }
+    sweep::empty_dir(sandbox.work_dir())?;
     if let Some((_, tmpdir)) = config.env().iter().find(|(name, _)| name == "TMPDIR") {
         let tmpdir = PathBuf::from(tmpdir);
         if tmpdir.is_dir() {

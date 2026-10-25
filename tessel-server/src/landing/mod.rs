@@ -94,8 +94,9 @@ struct Inner {
     token_file: Option<PathBuf>,
     runner: Arc<dyn TestRunner>,
     sequence: AtomicU64,
-    /// Where the trees to test are made when the runner is another account's (`[lander.sudo_runner]`
-    /// `handoff_dir`); a tree is a directory the runner can read, outside the call's clones.
+    /// Where the trees to test are made when the runner is another account's
+    /// (`[lander.sudo_runner]` `handoff_dir`); a tree is a directory the runner can read, outside
+    /// the call's clones.
     handoff: Option<PathBuf>,
 }
 
@@ -215,9 +216,10 @@ fn clear_leftovers(dir: &std::path::Path) -> Result<(), LandingError> {
 }
 
 /// The start of the names of this repository's directories in the handoff directory, which every
-/// repository of the server shares.
+/// repository of the server shares. The separator is a dot, which a tenant or a repository name
+/// cannot hold, so no two repositories share a prefix (`a-b`/`c` and `a`/`b-c` would, with a dash).
 fn handoff_prefix(repo: &RepoId) -> String {
-    format!("{}-{}-call-", repo.tenant(), repo.repo())
+    format!("{}.{}.call-", repo.tenant(), repo.repo())
 }
 
 /// Removes the trees a killed server left in the handoff directory for this repository.
@@ -265,7 +267,7 @@ impl Inner {
             None => None,
             Some(root) => {
                 let name = format!("{}{number}", handoff_prefix(&self.repo));
-                match CallDir::create(root.join(name)) {
+                match CallDir::create_private(root.join(name)) {
                     Ok(handoff) => Some(Arc::new(handoff)),
                     Err(error) => {
                         tracing::error!(

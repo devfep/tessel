@@ -114,7 +114,7 @@ fn toml_string(text: &str) -> String {
 
 /// A tree to run in. Without a sandbox it is a directory the runner's user owns. In a sandbox it
 /// is a directory strictly inside the handoff directory, which the lander made and the runner only
-/// reads, or inside the work directory, which the runner owns.
+/// reads; the server never names one in the work directory.
 fn checked_tree(tree: &str, config: &RunnerConfig) -> Result<PathBuf, RequestRefusal> {
     let path = Path::new(tree);
     if !path.is_absolute() {
@@ -134,11 +134,6 @@ fn checked_tree(tree: &str, config: &RunnerConfig) -> Result<PathBuf, RequestRef
     let inside =
         |dir: &Path| fs::canonicalize(dir).is_ok_and(|dir| real != dir && real.starts_with(dir));
     if inside(sandbox.handoff_dir()) {
-        Ok(real)
-    } else if inside(sandbox.work_dir()) {
-        if meta.uid() != effective_uid() {
-            return Err(RequestRefusal::TreeNotOwned);
-        }
         Ok(real)
     } else {
         Err(RequestRefusal::TreeNotInSandbox)

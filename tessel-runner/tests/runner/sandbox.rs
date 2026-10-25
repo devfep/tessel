@@ -432,3 +432,105 @@ fn the_binary_limits_the_processes_of_the_account_before_it_runs_anything() {
     let seen = result["stdout"].as_str().expect("stdout");
     assert_eq!(seen, format!("soft={limit} hard={limit} core=0\n"));
 }
+
+/// A chain of `depth` directories below `top`, made by a shell that `cd`s one level at a time, so
+/// that the path is longer than the system allows in one call.
+fn deep_chain(top: &Path, depth: usize) {
+    let name = "d".repeat(100);
+    let script = format!(
+        "i=0; while [ $i -lt {depth} ]; do mkdir {name} && cd {name} || exit 1; i=$((i+1)); done; echo x > leaf"
+    );
+    let made = Command::new("/bin/sh")
+        .args(["-c", &script])
+        .current_dir(top)
+        .status()
+        .expect("sh runs");
+    assert!(made.success());
+}
+
+#[test]
+fn a_chain_of_directories_longer_than_a_path_may_be_cannot_wedge_later_runs() {
+    let sandbox = Sandbox::new("true");
+    let base = sandbox.base.path();
+    fs::create_dir_all(sandbox.work().join("chain")).expect("work chain");
+    deep_chain(&sandbox.work().join("chain"), 60);
+    fs::create_dir_all(base.join("shared/chain")).expect("shared chain");
+    deep_chain(&base.join("shared/chain"), 60);
+    let locked = sandbox.work().join("locked");
+    fs::create_dir_all(locked.join("inner")).expect("locked dir");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("chmod");
+    for _ in 0..2 {
+        let result = run(
+            &sandbox.config(),
+            &request(
+                &sandbox.handoff_tree(),
+                "",
+                &["cargo", "test", "--workspace"],
+            ),
+        )
+        .expect("a later run is not wedged by the chain");
+        assert!(result.passed);
+    }
+    assert!(!sandbox.work().join("chain").exists());
+    assert!(!sandbox.work().join("locked").exists());
+    assert!(!base.join("shared/chain").exists());
+}
+
+#[test]
+fn a_tree_inside_the_work_directory_is_refused_because_the_server_never_sends_one() {
+    let sandbox = Sandbox::new("true");
+    fs::create_dir_all(sandbox.work().join("tree")).expect("a tree in work");
+    let refused = run(
+        &sandbox.config(),
+        &request(
+            &sandbox.work().join("tree"),
+            "",
+            &["cargo", "test", "--workspace"],
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(refusal(refused), RequestRefusal::TreeNotInSandbox);
+}
+
+#[test]
+fn a_limit_above_the_inherited_hard_limit_is_lowered_to_it_and_the_run_still_starts() {
+    let sandbox = Sandbox::new("echo hard=$(ulimit -Hu)");
+    let inherited = Command::new("/bin/sh")
+        .args(["-c", "ulimit -Hu"])
+        .output()
+        .expect("sh runs");
+    let text = sandbox.config_text("max_processes = 5000000\n");
+    let config = write_config(sandbox.base.path(), &text, 0o644);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tessel-runner"))
+        .arg("--config")
+        .arg(&config)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the runner");
+    let asked = serde_json::to_string(&request(
+        &sandbox.handoff_tree(),
+        "",
+        &["cargo", "test", "--workspace"],
+    ))
+    .expect("serialize");
+    std::io::Write::write_all(&mut child.stdin.take().expect("stdin"), asked.as_bytes())
+        .expect("send");
+    let output = child.wait_with_output().expect("wait");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let seen = result["stdout"].as_str().expect("stdout").trim().to_owned();
+    let hard: u64 = String::from_utf8_lossy(&inherited.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(u64::MAX);
+    let got: u64 = seen.trim_start_matches("hard=").parse().expect("a number");
+    assert!(got <= hard, "{got} is within the inherited {hard}");
+}

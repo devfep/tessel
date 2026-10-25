@@ -1,12 +1,17 @@
 //! Emptying the runner's work area and clearing its account's files out of shared directories.
 //!
 //! Everything the account leaves behind must not reach the next run (docs/proposals/own-users.md,
-//! section 3): an immutable flag (`uchg`), an ACL that denies deleting, a read-only directory and a
-//! file in `/tmp` are all removed. Nothing is followed through a link: a link is removed as a link.
+//! section 3): an immutable flag (`uchg`), an ACL that denies deleting, a read-only directory, a
+//! chain of directories longer than a path may be, and a file in `/tmp` are all removed. Nothing is
+//! followed through a link: a link is removed as a link.
+//!
+//! The shared directories are swept at their top level only: an entry of the account inside a
+//! directory that belongs to another user survives (and so does a file the account made in a
+//! world-writable directory below one). Only the directories the account owns are cleared whole.
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Removes everything inside `dir`, and leaves `dir`.
@@ -20,37 +25,50 @@ pub(crate) fn empty_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Removes `path` and what is below it, without following a link. The order matters: a flag can
-/// stop an ACL from being cleared, and an ACL can stop a removal, so every flag goes first, then
-/// every ACL, then the entries.
+/// Removes `path` and what is below it, without following a link. `remove_dir_all` works from
+/// directory descriptors, so a chain of directories longer than a path may be is removed like any
+/// other. If the removal fails (an immutable flag, an ACL that denies deletion, a directory with no
+/// permissions), `make_removable` clears what blocks it with the system's own tree walkers, which
+/// also work from descriptors, and the removal is tried again.
 fn remove_all(path: &Path) -> io::Result<()> {
-    unlock(path)?;
-    clear_acls(path);
-    remove_entry(path)
+    let is_dir = fs::symlink_metadata(path)?.is_dir();
+    let attempt = || {
+        if is_dir {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        }
+    };
+    if attempt().is_ok() {
+        return Ok(());
+    }
+    make_removable(path);
+    attempt()
 }
 
-/// Clears the flags below `path` and makes every directory there readable and writable.
-fn unlock(path: &Path) -> io::Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    clear_flags(path);
-    if meta.is_dir() {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-        for entry in fs::read_dir(path)? {
-            unlock(&entry?.path())?;
-        }
+/// Clears, below `path`, the permissions, the user flags and the ACLs that stop a removal. Each
+/// tool is best effort: what it could not change shows when the removal is tried again.
+fn make_removable(path: &Path) {
+    // Permissions first, so that a directory with none can be walked; then the flags and the ACLs,
+    // which an immutable file would have refused; then the permissions again for what they refused.
+    run_tool("/bin/chmod", &["-R", "u+rwx"], path);
+    #[cfg(target_os = "macos")]
+    {
+        run_tool("/usr/bin/chflags", &["-R", "-P", "0"], path);
+        run_tool("/bin/chmod", &["-R", "-N"], path);
+        run_tool("/bin/chmod", &["-R", "u+rwx"], path);
     }
-    Ok(())
 }
 
-fn remove_entry(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() {
-        for entry in fs::read_dir(path)? {
-            remove_entry(&entry?.path())?;
-        }
-        fs::remove_dir(path)
-    } else {
-        fs::remove_file(path)
-    }
+/// `path` is always absolute here, so it cannot be read as a flag (the BSD tools take no `--`).
+fn run_tool(program: &str, flags: &[&str], path: &Path) {
+    let _ = std::process::Command::new(program)
+        .args(flags)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Removes, from each of `dirs`, the entries that belong to `uid`, except those that hold one of
@@ -125,42 +143,4 @@ fn darwin_user_dirs() -> Vec<PathBuf> {
         return Vec::new();
     };
     vec![temp.clone(), hash_dir.join("C"), hash_dir.join("0")]
-}
-
-/// Clears the user flags (`uchg`) of `path`; nothing else can be cleared without privilege.
-fn clear_flags(path: &Path) {
-    #[cfg(target_os = "macos")]
-    {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-
-        if let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) {
-            // SAFETY: `c_path` is a NUL-terminated path that lives for the call.
-            unsafe {
-                libc::lchflags(c_path.as_ptr(), 0);
-            }
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-    }
-}
-
-/// Removes every ACL below `path`, so that one denying deletion cannot keep an entry.
-fn clear_acls(path: &Path) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("/bin/chmod")
-            .arg("-RN")
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-    }
 }
