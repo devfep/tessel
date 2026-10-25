@@ -47,7 +47,65 @@ pub struct LanderConfig {
     /// the askpass hook at every command of a landing. Without it, landings use no credential.
     #[serde(default)]
     pub token_file: Option<PathBuf>,
+    /// Run the tests as the runner's own account through `sudo` (docs/proposals/own-users.md)
+    /// instead of in this process. Absent, the in-process runner `runner_config` names is used.
+    /// With it, `runner_config` is the path the sudoers rule allows the runner to be given.
+    #[serde(default)]
+    pub sudo_runner: Option<SudoRunnerConfig>,
 }
+
+/// The `[lander.sudo_runner]` table: the programs the server runs to start the runner as its own
+/// account, and where it leaves the trees to test. The defaults are the layout `install.sh` makes.
+/// Every path is absolute, because the sudoers rule pins them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SudoRunnerConfig {
+    /// The runner's account.
+    #[serde(default = "default_runner_user")]
+    pub user: String,
+    #[serde(default = "default_sudo")]
+    pub sudo: PathBuf,
+    /// The `tessel-runner` binary the rule allows.
+    #[serde(default = "default_runner")]
+    pub runner: PathBuf,
+    /// Where each call leaves its tree for the runner to copy. The server creates and removes the
+    /// entries; the runner reads them.
+    #[serde(default = "default_handoff_dir")]
+    pub handoff_dir: PathBuf,
+    /// The program run as the account with `-KILL -1`.
+    #[serde(default = "default_kill")]
+    pub kill: PathBuf,
+    #[serde(default = "default_ps")]
+    pub ps: PathBuf,
+    /// How long processes of the account may take to disappear after a kill, in seconds.
+    #[serde(default = "default_settle_secs")]
+    pub settle_secs: u64,
+}
+
+fn default_runner_user() -> String {
+    "_tessel-runner".to_owned()
+}
+fn default_sudo() -> PathBuf {
+    PathBuf::from("/usr/bin/sudo")
+}
+fn default_runner() -> PathBuf {
+    PathBuf::from("/opt/tessel/bin/tessel-runner")
+}
+fn default_handoff_dir() -> PathBuf {
+    PathBuf::from("/var/tessel/handoff")
+}
+fn default_kill() -> PathBuf {
+    PathBuf::from("/bin/kill")
+}
+fn default_ps() -> PathBuf {
+    PathBuf::from("/bin/ps")
+}
+fn default_settle_secs() -> u64 {
+    10
+}
+
+/// The longest `settle_secs`: a minute is long for processes to die after a `SIGKILL`.
+const MAX_SETTLE_SECS: u64 = 60;
 
 /// The `[identity]` table: where the Ed25519 keys are and which audience a token must name.
 ///
@@ -203,6 +261,46 @@ impl RepositoryConfig {
     }
 }
 
+impl SudoRunnerConfig {
+    fn check(&self, shown: &str) -> Result<(), ConfigError> {
+        let refuse = |key: &'static str, reason: &'static str| {
+            Err(ConfigError::Landing {
+                path: shown.to_string(),
+                table: "[lander.sudo_runner]".to_string(),
+                key,
+                reason,
+            })
+        };
+        let account = !self.user.is_empty()
+            && !self.user.starts_with('-')
+            && self
+                .user
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+        if !account {
+            return refuse(
+                "user",
+                "must be an account name: letters, digits, '_', '.' and '-', not starting with '-'",
+            );
+        }
+        for (key, path) in [
+            ("sudo", &self.sudo),
+            ("runner", &self.runner),
+            ("handoff_dir", &self.handoff_dir),
+            ("kill", &self.kill),
+            ("ps", &self.ps),
+        ] {
+            if !path.is_absolute() {
+                return refuse(key, "must be an absolute path");
+            }
+        }
+        if self.settle_secs == 0 || self.settle_secs > MAX_SETTLE_SECS {
+            return refuse("settle_secs", "must be between 1 and 60");
+        }
+        Ok(())
+    }
+}
+
 impl LanderConfig {
     fn check(&self, shown: &str, any_remote: bool) -> Result<(), ConfigError> {
         let refuse = |key: &'static str, reason: &'static str| {
@@ -231,6 +329,9 @@ impl LanderConfig {
                 "[lander]",
                 "is read only when a [[repository]] names a remote",
             );
+        }
+        if let Some(sudo) = &self.sudo_runner {
+            sudo.check(shown)?;
         }
         Ok(())
     }
@@ -584,6 +685,69 @@ mod tests {
         let unused = load(&format!("{BASE}{LANDER}")).unwrap_err();
         assert!(matches!(unused, ConfigError::Landing { .. }), "{unused}");
         assert!(unused.to_string().contains("[lander]"), "{unused}");
+    }
+
+    const LANDED: &str = "remote = \"/r.git\"\nfork = \"/f/{agent}\"\n";
+
+    #[test]
+    fn a_lander_without_a_sudo_runner_table_runs_the_tests_in_process() {
+        let config = load(&format!("{BASE}{LANDED}{LANDER}")).unwrap();
+        assert_eq!(config.lander.unwrap().sudo_runner, None);
+    }
+
+    #[test]
+    fn an_empty_sudo_runner_table_names_the_defaults_of_the_dogfood_layout() {
+        let config = load(&format!("{BASE}{LANDED}{LANDER}\n[lander.sudo_runner]\n")).unwrap();
+        let sudo = config.lander.unwrap().sudo_runner.unwrap();
+        assert_eq!(sudo.user, "_tessel-runner");
+        assert_eq!(sudo.sudo, Path::new("/usr/bin/sudo"));
+        assert_eq!(sudo.runner, Path::new("/opt/tessel/bin/tessel-runner"));
+        assert_eq!(sudo.handoff_dir, Path::new("/var/tessel/handoff"));
+        assert_eq!(sudo.kill, Path::new("/bin/kill"));
+        assert_eq!(sudo.ps, Path::new("/bin/ps"));
+        assert_eq!(sudo.settle_secs, 10);
+    }
+
+    #[test]
+    fn a_sudo_runner_table_may_name_every_key() {
+        let table = "\n[lander.sudo_runner]\nuser = \"runner\"\nsudo = \"/usr/local/bin/sudo\"\n\
+                     runner = \"/x/tessel-runner\"\nhandoff_dir = \"/h\"\nkill = \"/k\"\n\
+                     ps = \"/p\"\nsettle_secs = 3\n";
+        let config = load(&format!("{BASE}{LANDED}{LANDER}{table}")).unwrap();
+        let sudo = config.lander.unwrap().sudo_runner.unwrap();
+        assert_eq!(
+            (
+                sudo.user.as_str(),
+                sudo.settle_secs,
+                sudo.handoff_dir.as_path()
+            ),
+            ("runner", 3, Path::new("/h"))
+        );
+    }
+
+    #[test]
+    fn a_bad_sudo_runner_table_is_refused_naming_the_file_the_table_and_the_key() {
+        for (table, key) in [
+            ("user = \"\"\n", "user"),
+            ("user = \"a b\"\n", "user"),
+            ("user = \"-u\"\n", "user"),
+            ("sudo = \"sudo\"\n", "sudo"),
+            ("runner = \"tessel-runner\"\n", "runner"),
+            ("handoff_dir = \"handoff\"\n", "handoff_dir"),
+            ("kill = \"\"\n", "kill"),
+            ("ps = \"ps\"\n", "ps"),
+            ("settle_secs = 0\n", "settle_secs"),
+            ("settle_secs = 100000\n", "settle_secs"),
+        ] {
+            let text = format!("{BASE}{LANDED}{LANDER}\n[lander.sudo_runner]\n{table}");
+            let error = load(&text).unwrap_err();
+            let shown = error.to_string();
+            assert!(shown.contains("tessel-server.toml"), "{table}: {shown}");
+            assert!(shown.contains("sudo_runner"), "{table}: {shown}");
+            assert!(shown.contains(key), "{table}: {shown}");
+        }
+        let unknown = format!("{BASE}{LANDED}{LANDER}\n[lander.sudo_runner]\nvia = \"su\"\n");
+        assert!(matches!(load(&unknown), Err(ConfigError::Parse { .. })));
     }
 
     #[test]

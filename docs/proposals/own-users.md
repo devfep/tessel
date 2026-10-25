@@ -134,9 +134,13 @@ server runs `sudo -n -u _tessel-runner /bin/kill -KILL -1`. On macOS `kill(-1)` 
 process of the caller's uid and no one else's. `pkill -U` from outside is not used: `_tessel`
 could not signal another account's processes. The server then polls `ps -U _tessel-runner -o
 pid=`, which needs no privilege, until it is empty for up to 10 s, repeating the kill. If it is
-not empty, or `launchctl print user/<uid>` shows a job, the gate stays closed: the call answers
-`Unknown` and no run starts. If `launchctl print` needs root (to probe), the check moves into the
-runner: at start it lists its own domain's jobs and exits 3 if any exist.
+not empty, the gate stays closed: the call answers `Unknown` and no run starts. The server's
+gate does not look at launchd. A `StartInterval` or `WatchPaths` job that is not running when `ps`
+polls would survive into the next submission, so what keeps it out is `check-own-users.sh`'s
+`launchctl` probe (a job the account can submit must fail, and one that succeeds is removed with
+`launchctl remove`) and the cron and at denial below, run by Felix after the install and after any
+change. A runner-side listing of its own launchd domain was considered and deferred until the
+probe shows it is needed.
 
 `cron` and `at` are denied unconditionally, a Felix step: `_tessel-runner` goes into
 `/usr/lib/cron/cron.deny` and `at.deny`. Neither can be inspected without root, so denial and

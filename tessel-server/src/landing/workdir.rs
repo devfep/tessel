@@ -1,6 +1,7 @@
 //! The directory one call works in, and its removal.
 
 use std::io;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
 /// A call's directory under `<work_dir>/<tenant>/<repo>/`. The clones of a call are made below
@@ -13,6 +14,13 @@ pub struct CallDir {
 impl CallDir {
     pub fn create(path: PathBuf) -> io::Result<Self> {
         std::fs::create_dir(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Like [`CallDir::create`], for a directory that is not the server's alone: mode 0700, so
+    /// nobody else can enter it until it is opened on purpose.
+    pub fn create_private(path: PathBuf) -> io::Result<Self> {
+        std::fs::DirBuilder::new().mode(0o700).create(&path)?;
         Ok(Self { path })
     }
 

@@ -207,6 +207,10 @@ affect the server. `[identity]` `keys` is read only at start.
 | `[[repository]]` `fork` | path or URL with `{agent}` | required with `remote` | Where an agent's fork is, `{agent}` standing for the agent's name, as in the swarm's `<forks>/<agent>.git`: `/srv/forks/{agent}.git`. `{agent}` must appear exactly once, never in the host of a URL, and `fork` without `remote` is invalid; the error names the file and the key. The name is substituted only if it passes the server's agent-name rule (the one the verifier enforces: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 128 bytes), checked again at every call; any other name is refused as a missing fork and no path is made. Agent names are lowercase at this server (the verifier, `admin token`, `reviewers` and the fork template all refuse any other), so two names can never share a fork on a case-insensitive filesystem or a git host that folds case. The agent pushes the commit to a branch of the fork before `tessel submit`. A URL is validated like a path, and the fetch of a private fork uses `token_file`. |
 | `[lander]` `work_dir` | path | required with a `remote` | Where clones live while a call runs, under `<work_dir>/<tenant>/<repo>/`. The directory is the server's: it removes what a killed server left there when it starts. |
 | `[lander]` `runner_config` | path | required with a `remote` | The `tessel-runner.toml` the tests run under ([Runner](#runner-tessel-runner)). It is checked when the server starts, so a file the runner would refuse stops the server, and again before every run. |
+| `[lander.sudo_runner]` | table | none | Run the tests as another account through `sudo` ([Runner](#runner-tessel-runner)) instead of in this process. With it, `runner_config` is the path the sudoers rule allows the runner to be given, and the server stops at start if `sudo` refuses or a process of the account survives a `kill -KILL -1`. |
+| `[lander.sudo_runner]` `user`, `sudo`, `runner`, `kill`, `ps` | account name, paths | `_tessel-runner`, `/usr/bin/sudo`, `/opt/tessel/bin/tessel-runner`, `/bin/kill`, `/bin/ps` | The account and the programs. Every path is absolute, because the sudoers rule pins them. |
+| `[lander.sudo_runner]` `handoff_dir` | path | `/var/tessel/handoff` | Where each call makes the tree to test, in a directory named `<tenant>-<repo>-call-<n>`. The server removes it with the call and removes a killed server's at start. |
+| `[lander.sudo_runner]` `settle_secs` | seconds | 10 | How long processes of the account may take to disappear after a kill, from 1 to 60. |
 | `[lander]` `token_file` | path | none | A file holding the git host's token, for a `remote` or `fork` that is a URL which needs one. At start, and again before every call, the file must exist, be a regular file with no group or other permission bits (mode 0600) and be non-empty after one trailing newline is dropped; otherwise the server does not start, or the call ends as `Unknown`, and the error names the file and the key, never any content. Git reads it through its askpass hook: the user name `x-access-token` and the file's content, read when git asks, so a replaced file takes effect on the next git command. The token is in no argument, URL, environment value, log line or error; the environment carries only the file's path. The hook answers only a prompt whose host (the URL's authority without user information, lowercased) equals the host of the `remote` or the `fork`, so a look-alike such as `github.com.evil.com` gets nothing, and a token with a line break inside is refused. The file's owner and its directory's mode are not checked: only the file's mode, re-checked on the open handle at each prompt (the target's mode for a symlink). On Linux the hook is named by the server's executable path, so a server left running across a binary upgrade cannot answer prompts until it is restarted. The tests the runner runs are the server's user and can read the file ([Landing](#landing)). |
 | `[identity]` `keys` | path | none | The directory of Ed25519 keys. |
 | `[identity]` `audience` | name | none | The `aud` a token must carry. |
@@ -321,24 +325,40 @@ directory unless `--config` names another. An unknown key makes it invalid.
 |---|---|---|---|
 | `[runner]` `user` | login name | required | The one user the runner starts for. |
 | `[runner]` `timeout_secs` | seconds | 1800 | The longest any run may take, from 1 to 86400; a request may ask for less. |
+| `[runner]` `work_dir`, `handoff_dir` | absolute paths | none | Together, they make a sandbox: the runner copies the tree from `handoff_dir` into `work_dir` and runs the tests there. |
+| `[runner]` `path` | `PATH` value | required in a sandbox | The `PATH` of a test command. |
+| `[runner]` `cargo_home`, `tmpdir` | absolute paths | none | The `CARGO_HOME` and `TMPDIR` of a test command, in a sandbox. |
+| `[runner]` `max_processes` | number | 1024 | In a sandbox, the ceiling on the account's processes, soft and hard. Core files are turned off. |
+| `[runner]` `sweep_dirs` | absolute paths | `/tmp`, `/var/tmp`, `/Users/Shared`, the per-user temporary directories | In a sandbox, the directories the runner clears of its own account's files at the start of each run. |
 
-The runner refuses to start unless the file exists, is a regular file (not a link) owned by the
-effective user with mode 0600, and `user` equals the login of the effective uid. The login comes
+The runner refuses to start unless the file exists, is a regular file (not a link) owned by root
+or by the effective user that group and other cannot write (and with no setuid, setgid or sticky
+bit), and `user` equals the login of the effective uid. A root-owned file is the one a service
+account cannot rewrite. A sandbox does not start as root. The login comes
 from the password database (`getpwuid_r`), never from `$USER`. A refusal exits 2 with one fixed
 line on standard error that names the file and, where it applies, the key.
 
 The request is `{ "tree": "<absolute path>", "tests": [{ "dir": "<relative or empty>", "argv":
 [...] }], "timeout_secs": n }`. `tests` is the `[[test]]` list of the trunk's `tessel.toml`, parsed
 by the sender. The runner checks every entry again with the lander's parser, so only the commands
-the gate allows run. `tree` must be a directory the effective user owns, and every `dir` must stay
-inside it: `..`, an absolute `dir` and a link out of the tree are refused. A refused request runs
+the gate allows run. `tree` must be a directory the effective user owns, or, in a sandbox, a
+directory inside `handoff_dir` or `work_dir`, and every `dir` must stay inside it: `..`, an absolute `dir` and a link out of the tree are refused. A refused request runs
 nothing and exits 2.
 
 The commands run in order, each in `tree/dir`, and the run stops at the first one that does not
 exit 0. The whole run, reading the output included, is under one timeout; on timeout the process
 group is killed and no child is left behind. A command gets standard input closed and exactly
 this environment, taken from the runner's own: `PATH`, `HOME`, `CARGO_HOME`, `RUSTUP_HOME` and
-`TMPDIR`. Nothing else reaches it, `TESSEL_TOKEN` included.
+`TMPDIR`. Nothing else reaches it, `TESSEL_TOKEN` included. In a sandbox the environment comes
+from the configuration file alone: `PATH`, `CARGO_HOME` and `TMPDIR` as it names them, and
+`HOME=/var/empty`.
+
+In a sandbox, each run first empties `work_dir` and the temporary directory (clearing `uchg`
+flags and ACLs), and removes its account's files from `sweep_dirs`. It copies the tree from
+`handoff_dir` into `work_dir/tree` with plain file copies (links stay links and are not followed),
+checks that the `rustc` on its `PATH` is the version named by the tree's `rust-toolchain.toml` (a
+different version is refused, exit 2; a channel that is not a version is not compared), and runs
+there. The binary lowers the account's process limit before it reads the request.
 
 The result is `{ "step": "test", "exit_code", "passed", "timed_out", "stdout", "stderr",
 "stdout_truncated", "stderr_truncated", "first_failure", "wall_ms" }`. `passed` is true only for
@@ -355,9 +375,21 @@ to pass or fail.
 | 2 | Refused before anything ran: the configuration, the user or the request. |
 | 3 | The run could not be supervised, for example the command could not start. |
 
-There is no sandbox. The commands run with the privileges of the user who started the runner, and
-a command that leaves its process group outlives the kill. The sandbox is M5. Until then the
-runner is for one trusted user running their own repository.
+Without a sandbox, the commands run with the privileges of the user who started the runner, and a
+command that leaves its process group outlives the kill. With `[lander.sudo_runner]` the server
+starts the runner as its own account through `sudo -n -u <user> <runner> --config <runner_config>`
+(`docs/proposals/own-users.md`), one run at a time across every repository, and after each run it
+runs `kill -KILL -1` as that account and polls `ps -U <user>` until nothing is left. If a process
+survives, or `ps` or the kill fails, the gate stays closed and no later run starts. The gate does
+not see launchd, cron or at jobs that are not running; `scripts/dogfood/check-own-users.sh` denies
+and probes those. The runner's reply must be exactly one line followed by the end of its output; a second line, from
+a process of the same account writing into the stream, fails the reply (on Linux the runner also
+makes itself undumpable at start). Removing the account's files from `sweep_dirs` is best effort: an
+entry it cannot delete, in a directory of another user's that it cannot write, stays and does not
+fail the run. A call's directory in `handoff_dir` is mode 0700, opened to the runner's group
+(0750) only while its own run holds the gate, and closed again before the gate is let go; on
+Linux give `handoff_dir` the setgid bit so that the group is inherited. A call past its deadline kills the
+account itself. The layout and the sudoers rule are `scripts/dogfood/install.sh`'s.
 
 ## Agent and worktree
 

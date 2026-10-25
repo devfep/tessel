@@ -69,7 +69,7 @@ impl RunRequest {
             return Err(RequestRefusal::ZeroTimeout.into());
         }
         let tests = allowed_tests(&self.tests)?;
-        let root = checked_tree(&self.tree)?;
+        let root = checked_tree(&self.tree, config)?;
         let mut commands = Vec::with_capacity(tests.len());
         for test in tests {
             commands.push(PlannedCommand {
@@ -112,7 +112,10 @@ fn toml_string(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_default()
 }
 
-fn checked_tree(tree: &str) -> Result<PathBuf, RequestRefusal> {
+/// A tree to run in. Without a sandbox it is a directory the runner's user owns. In a sandbox it
+/// is a directory strictly inside the handoff directory, which the lander made and the runner only
+/// reads; the server never names one in the work directory.
+fn checked_tree(tree: &str, config: &RunnerConfig) -> Result<PathBuf, RequestRefusal> {
     let path = Path::new(tree);
     if !path.is_absolute() {
         return Err(RequestRefusal::TreeNotAbsolute);
@@ -121,10 +124,20 @@ fn checked_tree(tree: &str) -> Result<PathBuf, RequestRefusal> {
     if !meta.file_type().is_dir() {
         return Err(RequestRefusal::TreeNotDirectory);
     }
-    if meta.uid() != effective_uid() {
-        return Err(RequestRefusal::TreeNotOwned);
+    let real = fs::canonicalize(path).map_err(|_| RequestRefusal::TreeNotDirectory)?;
+    let Some(sandbox) = config.sandbox() else {
+        if meta.uid() != effective_uid() {
+            return Err(RequestRefusal::TreeNotOwned);
+        }
+        return Ok(real);
+    };
+    let inside =
+        |dir: &Path| fs::canonicalize(dir).is_ok_and(|dir| real != dir && real.starts_with(dir));
+    if inside(sandbox.handoff_dir()) {
+        Ok(real)
+    } else {
+        Err(RequestRefusal::TreeNotInSandbox)
     }
-    fs::canonicalize(path).map_err(|_| RequestRefusal::TreeNotDirectory)
 }
 
 fn resolve_dir(root: &Path, dir: &str) -> Result<PathBuf, RequestRefusal> {
