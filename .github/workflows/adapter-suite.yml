@@ -1,8 +1,9 @@
 name: Adapter suite
 
 # Two checks of the server that kill a process or build an old release, so they live apart from
-# the fast lane. On a laptop the kill loop takes about a second a kill (25 kills: half a minute)
-# and the old-CLI landing four seconds; the builds are what take the time. That fits a pull
+# the fast lane. On a laptop the kill loop took 2.3 s for 2 kills (about 1.2 s a kill, so 25 kills
+# take half a minute and the nightly 200 about four) and the old-CLI landing four seconds; the
+# builds are what take the time. That fits a pull
 # request that touches the server, the host or the CLI, so they run there (with a path filter),
 # on every push to main, and nightly with a longer loop.
 
@@ -16,7 +17,10 @@ on:
       - src/coordinator.rs
       - src/shell.rs
       - src/protocol.rs
+      - src/sim/**
+      - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
       - .github/workflows/adapter-suite.yml
   push:
     branches: [main]
@@ -69,22 +73,27 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The old release is unpacked first so that the cache can key on its lockfile and keep its
+      # build directory; it is built on its own, never in `cargo test`, with this repository's
+      # toolchain (its toolchain file also asks for a wasm target that nothing here needs).
+      - name: Unpack the CLI before the protocol range field
+        run: |
+          old="$RUNNER_TEMP/old-cli-src"
+          mkdir -p "$old"
+          git archive "$OLD_CLI_COMMIT" | tar -x -C "$old"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           shared-key: adapter-old-cli
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: |
+            . -> target
+            ${{ runner.temp }}/old-cli-src -> ${{ runner.temp }}/old-cli-target
       - name: Build the current server and CLI
         run: cargo build -p tessel-server -p tessel-cli
-      # Built here and never in `cargo test`: the old release has its own lockfile, so it is
-      # unpacked and built on its own, with this repository's toolchain (the old toolchain file
-      # also asks for a wasm target that nothing here needs).
       - name: Build the CLI before the protocol range field
         run: |
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
-          old="$RUNNER_TEMP/old-cli-src"
-          mkdir -p "$old"
-          git archive "$OLD_CLI_COMMIT" | tar -x -C "$old"
-          (cd "$old" && RUSTUP_TOOLCHAIN="$channel" \
+          (cd "$RUNNER_TEMP/old-cli-src" && RUSTUP_TOOLCHAIN="$channel" \
             CARGO_TARGET_DIR="$RUNNER_TEMP/old-cli-target" \
             cargo build --locked -p tessel-cli)
           echo "TESSEL_OLD_CLI=$RUNNER_TEMP/old-cli-target/debug/tessel" >> "$GITHUB_ENV"
