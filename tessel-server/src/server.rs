@@ -92,12 +92,33 @@ impl RunningServer {
 /// Take the lock, open every store, start every repository and listen. A repository that names a
 /// `remote` is answered by the lander, with the runner `[lander] runner_config` names.
 pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartError> {
+    start_with(config, deps, None, Clock::default()).await
+}
+
+/// Like [`start`], with the tests run by `runner`: the means to run a landing without repo code.
+pub async fn start_with_runner(
+    config: &Config,
+    deps: Deps,
+    runner: Arc<dyn TestRunner>,
+) -> Result<RunningServer, StartError> {
+    start_with(config, deps, Some(runner), Clock::default()).await
+}
+
+/// The one way a server starts: `runner` if given, else the one the `[lander]` table names, and
+/// the repositories reading `clock`. Only `testing` passes a clock other than the system's.
+pub(crate) async fn start_with(
+    config: &Config,
+    deps: Deps,
+    runner: Option<Arc<dyn TestRunner>>,
+    clock: Clock,
+) -> Result<RunningServer, StartError> {
     let config = &config.with_absolute_paths()?;
-    let runner = match &config.lander {
-        Some(lander) => Some(runner_of(lander)?),
-        None => None,
+    let runner = match (runner, &config.lander) {
+        (Some(runner), _) => Some(runner),
+        (None, Some(lander)) => Some(runner_of(lander)?),
+        (None, None) => None,
     };
-    start_repositories(config, deps, runner, Clock::default()).await
+    start_repositories(config, deps, runner, clock).await
 }
 
 /// The runner the `[lander]` table names: one that starts `tessel-runner` as another account
@@ -119,15 +140,6 @@ pub fn runner_of(lander: &LanderConfig) -> Result<Arc<dyn TestRunner>, StartErro
         settle: std::time::Duration::from_secs(sudo.settle_secs),
     };
     Ok(Arc::new(SudoRunner::new(settings)?))
-}
-
-/// Like [`start`], with the tests run by `runner`: the means to run a landing without repo code.
-pub async fn start_with_runner(
-    config: &Config,
-    deps: Deps,
-    runner: Arc<dyn TestRunner>,
-) -> Result<RunningServer, StartError> {
-    start_repositories(config, deps, Some(runner), Clock::default()).await
 }
 
 /// The port that answers the calls of `repository`: the lander when it names a `remote`.
@@ -155,7 +167,7 @@ fn calls_of(
     Ok(Arc::new(lander))
 }
 
-pub(crate) async fn start_repositories(
+async fn start_repositories(
     config: &Config,
     deps: Deps,
     runner: Option<Arc<dyn TestRunner>>,

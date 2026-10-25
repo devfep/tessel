@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    AgentId, ClientMsg, CommitId, Intent, Mode, OnConflict, RequestId, Scope, ScopeClaim,
-    ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClaimId, ClientMsg, CommitId, EventKind, Fence, Intent, Mode, OnConflict,
+    ReleaseReason, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 use tessel_server::config::{Config, RepositoryConfig};
 use tessel_server::id::RepoId;
@@ -180,6 +180,58 @@ async fn without_a_setting_a_grant_lives_thirty_seconds() -> TestResult {
         return Err("expected a grant".into());
     };
     assert_eq!(expires_at_ms, clock.now_ms() + 30_000);
+    server.stop().await;
+    Ok(())
+}
+
+/// A call frame is answered after the expiry step it ran: the lease that ran out is logged, and
+/// sent to a watcher, before the answer to the frame is sent to the same socket. The swarm's
+/// `settle_expiry` is built on this.
+#[tokio::test]
+async fn a_call_frame_sent_after_the_clock_moved_is_answered_after_the_expiry_it_ran() -> TestResult
+{
+    let dir = tempfile::tempdir()?;
+    let clock = TestClock::new();
+    clock.freeze();
+    let server = start(dir.path(), Some(5_000), &clock).await?;
+    let mut holder = welcomed(server.local_addr(), "a1").await?;
+    let ServerMsg::Granted { claim: held, .. } = claim(&mut holder).await? else {
+        return Err("expected a grant".into());
+    };
+    let mut reader = welcomed(server.local_addr(), "a2").await?;
+    let watch = ClientMsg::Watch { from_seq: 0 };
+    reader
+        .send(Message::text(serde_json::to_string(&watch)?))
+        .await?;
+    clock.advance(6_000);
+    let probe = ClientMsg::Release {
+        claim: ClaimId(u64::MAX),
+        fence: Fence(1),
+        req: Some(RequestId(77)),
+    };
+    reader
+        .send(Message::text(serde_json::to_string(&probe)?))
+        .await?;
+    let mut expired_before_the_answer = false;
+    loop {
+        match next(&mut reader).await? {
+            ServerMsg::Event { event } => {
+                if let EventKind::ClaimReleased { claim, reason } = event.kind {
+                    expired_before_the_answer |=
+                        claim == held && reason == ReleaseReason::LeaseExpired;
+                }
+            }
+            ServerMsg::Error {
+                req: Some(RequestId(77)),
+                ..
+            } => break,
+            _ => {}
+        }
+    }
+    assert!(
+        expired_before_the_answer,
+        "the answer came before the expiry was logged"
+    );
     server.stop().await;
     Ok(())
 }

@@ -49,10 +49,5 @@ pub async fn start_with_clock(
     runner: Option<Arc<dyn TestRunner>>,
     clock: &TestClock,
 ) -> Result<RunningServer, StartError> {
-    let runner = match (runner, &config.lander) {
-        (Some(runner), _) => Some(runner),
-        (None, Some(lander)) => Some(server::runner_of(lander)?),
-        (None, None) => None,
-    };
-    server::start_repositories(config, deps, runner, Clock::shared(Arc::clone(&clock.0))).await
+    server::start_with(config, deps, runner, Clock::shared(Arc::clone(&clock.0))).await
 }
