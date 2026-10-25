@@ -1,298 +1,319 @@
 # Own users: the server and the runner as separate macOS accounts
 
-Status: design note (OWN-USERS-DESIGN, M5), for an adversarial security review and then Felix.
-No code, and nothing in it was run: no account, `dscl` or `sudo` command was executed to write
-it. Facts about macOS that this note could not check are marked "to probe" and become the first
-step of RUNNER-OWN-UID. Rows and decisions are those of `docs/proposals/phase-1.md`; D4 is the
-dogfood setting in `docs/dogfood.md`.
+Status: design note (OWN-USERS-DESIGN, M5), reviewed once by an adversarial security review, for
+Felix's decision. No code, and nothing in it was run: no account, `dscl` or `sudo` command was
+executed to write it. Facts about macOS that this note could not check are marked "to probe" and
+are the first step of RUNNER-OWN-UID. Rows and decisions are those of `docs/proposals/phase-1.md`;
+D4 is the dogfood setting in `docs/dogfood.md`.
 
-## Scope
+## Scope and the claim this design makes
 
-In scope: keeping the lander's GitHub token, the signing key, the store and the lander's
-workspace away from repo code under test. Today the server, the lander's git commands, the
-runner and every lane agent run as Felix, so a test (or a hostile `build.rs`) can read
-`<server dir>/github-token`, mint agent tokens from the key, and edit the store (D4 says so).
+Today the server, the lander's git commands, the runner and every lane agent run as Felix, so a
+test (or a hostile `build.rs`) can read `<server dir>/github-token`, mint agent tokens from the
+signing key, and edit the store (D4 says so).
 
-Not in scope: keeping `main` safe from the lanes. They run as Felix with `gh`'s credential, and
-Felix is the admin bypass actor of ruleset B, so a lane can push `main` without the server. That
-is a process control (`docs/BUILD-PROTOCOL.md`), and this design does not change it. What it
-does change is that the lanes lose the token, the key and the store, which makes the server
-the only holder of the lander's credential.
+**The claim is: the token, key and store are unreadable to repo code under test.** Repo code then
+runs as an account that owns nothing the server trusts. The claim is not that the lanes cannot
+reach them. The lanes run as Felix, and every sudo step below runs code that was built, checked
+out or fetched in Felix's account: binaries from his `target/`, scripts from a checkout, tools
+from his `PATH` (`/opt/homebrew/bin` is writable by him). What the design does about that:
+- the lanes cannot read the secrets at rest, which today they can;
+- the scripts are read by Felix once, installed root-owned under `/opt/tessel/sbin`, and run
+  from there, never from a checkout; they call tools by absolute root-owned paths under `env -i`;
+- the launchd plist pins `PATH=/usr/bin:/bin`.
+
+What remains: every upgrade installs binaries built in Felix's account, so a lane that can write
+a file that build reads can get code running as `_tessel` at the next upgrade. The later fix is
+binaries built in CI and checked by sha256 before they are installed (M6, with the hosted
+server); it is not part of this design. The assumptions Felix holds: sudo has no Touch ID (there
+is no `sudo_local` here), the steps are run in a shell no lane controls, and the password is
+never typed into a prompt a lane raised (`sudo -A`).
+
+Not in scope: keeping `main` safe from the lanes. They push with `gh`'s credential, and Felix is
+the admin bypass actor of ruleset B (`docs/BUILD-PROTOCOL.md` keeps that a process control).
 
 ## Decision in one paragraph
 
 Two hidden accounts. `_tessel` runs the server and the lander and alone reads the token, key and
-store. `_tessel-runner` runs repo code. The server starts the existing `tessel-runner` binary
-with `sudo -n -u _tessel-runner`, one run at a time, through a sudoers rule that allows exactly
-three commands. After each run the server kills everything the runner account owns and wipes its
-work area. The binaries are root-owned, so an upgrade is a sudo step for Felix. The runner's
-toolchain and dependency cache are read-only to it and filled by someone who is not repo code.
+store. `_tessel-runner` runs repo code. The server starts the existing `tessel-runner` binary with
+`sudo -n -u _tessel-runner`, one run at a time, through a sudoers rule of two commands. After each
+run the server kills everything the runner account owns, and the runner empties its work area at
+the start of the next. Everything the runner's behaviour depends on (binaries, configuration,
+toolchain, dependency cache) is root-owned or `_tessel`-owned and read-only to it.
 
 ## 1. Accounts, files and modes
 
 Made with `dscl`, not `sysadminctl`. `sysadminctl -addUser` makes a login-capable standard user
-with a UID of 501 or more, a home in `/Users`, and membership of `staff` (gid 20). `staff` is
-the group of Felix's own account and gives read access under his home and to shared directories,
-the one thing the runner must not have. `dscl` makes exactly the record asked for.
+with a UID of 501 or more, a home in `/Users`, and membership of `staff`, the group of Felix's
+account. `dscl` makes exactly the record asked for.
 
 ```
-sudo dscl . -create /Groups/_tessel PrimaryGroupID <gid>
-sudo dscl . -create /Groups/_tessel-runner PrimaryGroupID <gid2>
-sudo dscl . -create /Users/_tessel UniqueID <uid>      # same for _tessel-runner
-sudo dscl . -create /Users/_tessel PrimaryGroupID <gid>
+sudo dscl . -create /Groups/_tessel PrimaryGroupID 481
+sudo dscl . -create /Groups/_tessel-runner PrimaryGroupID 482
+sudo dscl . -create /Users/_tessel UniqueID 481        # same for _tessel-runner, 482
+sudo dscl . -create /Users/_tessel PrimaryGroupID 481
 sudo dscl . -create /Users/_tessel UserShell /usr/bin/false
 sudo dscl . -create /Users/_tessel NFSHomeDirectory /var/empty
 sudo dscl . -create /Users/_tessel Password '*'
 sudo dscl . -create /Users/_tessel IsHidden 1
 ```
 
-Each account has its own group and no other membership. The UIDs and gids are the first free ones
-below 500 in the range the setup script checks with `dscl . -list /Users UniqueID`; to probe
-whether 300 to 399 is free on the dogfood Mac (Apple keeps parts of the range). `/usr/bin/false`
+The pair 481 and 482 is fixed, in the 480s that Apple's own accounts do not use on this Mac
+(users 200 to 308 and 441 and groups 395 to 400 are taken, and OS updates add numbers, so "the
+first free one" would collide). `accounts.sh` aborts if either number is taken as a user or a
+group. Each account has its own group and no other membership; neither is in `staff`.
+`/usr/bin/false`
 and a password of `*` mean no login, `su` or screen sharing; `sudo -u` needs neither.
-
-Layout. `/opt/tessel` is the code, `/var/tessel` the server's data, `/var/tessel-runner` the
-runner's own area. Nothing lives in Felix's home.
 
 | Path | Owner and mode | Why |
 |---|---|---|
-| `/opt/tessel/bin/` (`tessel-server`, `tessel`, `tessel-runner`) | root:wheel 0755, parent root-owned | no account can replace a binary the other runs; sudo matches this path |
-| `/var/tessel/` | `_tessel` 0755 | traversal to `handoff/` only |
-| `/var/tessel/{github-token,keys/,stores/,lander/}` | `_tessel` 0600 (dirs 0700) | the secrets and the lander's clones |
+| `/opt/tessel/bin/` (`tessel-server`, `tessel`, `tessel-runner`) | root:wheel 0755 | no account can replace a binary the other runs |
+| `/opt/tessel/sbin/` (the scripts) | root:wheel 0755 | run from here, never a checkout |
+| `/var/tessel/` | `_tessel` 0711 | traversal to `handoff/` only |
+| `/var/tessel/{github-token,keys/,stores/,lander/,tmp/}` | `_tessel` 0600 (dirs 0700) | secrets, clones, `_tessel`'s `TMPDIR` |
 | `/var/tessel/tessel-server.toml` | `_tessel` 0600 | names the paths above |
-| `/var/tessel/handoff/` | `_tessel` 0755 | test trees, built with umask 022; public repo content only |
+| `/var/tessel/handoff/` | `_tessel:_tessel-runner` 0750 | test trees; private forks are not public |
 | `/var/tessel/cargo/` | `_tessel` 0755 | the runner reads it; only the fetch step writes |
 | `/var/tessel/rustup/` | root:wheel 0755 | the runner reads, nothing it runs writes |
-| `/var/tessel-runner/` and `work/`, `tmp/` | `_tessel-runner` 0700 | the runner's copy of a tree and its `TMPDIR` |
-| `/var/tessel-runner/tessel-runner.toml` | `_tessel-runner` 0600 | `RunnerConfig::load` already demands owner and 0600 |
-| `/var/log/tessel-server.log` | `_tessel` 0644 | quoted untrusted text, never the token (`credential.rs`) |
+| `/var/tessel-runner/` | root:wheel 0755 | the runner cannot rename what it depends on |
+| `/var/tessel-runner/tessel-runner.toml` | root:wheel 0644 | repo code cannot edit it (below) |
+| `/var/tessel-runner/{work,tmp}/` | `_tessel-runner` 0700 | the only things the runner owns |
+| `/var/log/tessel-server.log` | `_tessel` 0644 | quoted untrusted text, never the token |
 | `/etc/sudoers.d/tessel` | root:wheel 0440 | section 2 |
-| `/Library/LaunchDaemons/dev.tessel.server.plist` | root:wheel 0644 | `UserName` `_tessel`, runs from `/opt/tessel/bin` |
+| `/Library/LaunchDaemons/dev.tessel.server.plist` | root:wheel 0644 | `UserName` `_tessel`, `TMPDIR` `/var/tessel/tmp` |
 
-The agents' tokens leave `<server dir>/tokens`: `tessel-server admin token` runs as `_tessel`
-and writes to a Felix-owned directory (0600 each). They are not secrets from the lanes, which need
-them. The key stays with `_tessel`. The server's `jobs = 6` cap moves from `<server dir>/.cargo`,
-which cargo would no longer find above the runner's tree, to `/var/tessel/cargo/config.toml`.
+The configuration is root-owned because it names `PATH`, `CARGO_HOME`, `RUSTUP_HOME` and the
+timeout. If the runner owned it, a test could point those at directories it writes, and every
+later submission would build with a toolchain it chose (rule 6). `RunnerConfig::load`
+(`tessel-runner/src/config.rs`) today demands the effective user as owner and mode exactly 0600;
+RUNNER-OWN-UID changes it to accept an owner of root or the effective user, with no group or
+other write bit, and still `WrongUser` for a login that is not its own.
+
+The agents' tokens are not secrets from the lanes. Felix's shell makes them:
+`sudo -u _tessel /opt/tessel/bin/tessel-server admin token ... > ~/.tessel/tokens/<agent>` with
+`umask 077`, because `_tessel` cannot write under his home and a file it made there would be
+unreadable to him. The key stays with `_tessel`. The `jobs = 6` cap moves to
+`/var/tessel/cargo/config.toml`, since cargo would not find `<server dir>/.cargo` above the
+runner's tree.
 
 Tests: a Linux CI job (section 8) checks each row's owner and mode and that the runner account
-cannot read the token, key, store or `lander/`, nor write anything under `/opt/tessel`,
-`/var/tessel`, `cargo` or `rustup`. A unit test in `credential.rs` already refuses a token file
-with group or other bits.
+cannot read the token, key, store or `lander/`, nor write under `/opt/tessel`, `/var/tessel`,
+`cargo`, `rustup` or `/var/tessel-runner` except `work/` and `tmp/`; `RunnerConfig::load` tests
+for a root-owned 0644 file, a runner-owned file with group write, and a wrong login.
 
 ## 2. The runner channel
 
 The server runs `/usr/bin/sudo -n -u _tessel-runner -- /opt/tessel/bin/tessel-runner --config
 /var/tessel-runner/tessel-runner.toml`, writes the request JSON to its standard input and reads
-one result line, as `tessel-runner` does today (`main.rs`; exit 0 ran, 2 refused, 3 unsupervised).
-`LocalRunner` is replaced by a `SudoRunner` behind the same `TestRunner` trait (replace, don't
-keep both), and the `[lander] runner_config` key goes. The only authentication is who may run
-sudo; there is no socket and nothing listening.
+one result line, as `main.rs` does today (exit 0 ran, 2 refused, 3 unsupervised). `SudoRunner`
+replaces `LocalRunner` behind the same `TestRunner` trait, and `[lander] runner_config` goes. The
+only authentication is who may run sudo; there is no socket and nothing listening.
 
 ```
 Defaults:_tessel env_reset, !setenv, !use_pty, secure_path="/usr/bin:/bin"
 Cmnd_Alias TESSEL_RUN = \
   /opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml, \
-  /opt/tessel/bin/tessel-runner --reset --config /var/tessel-runner/tessel-runner.toml, \
   /bin/kill -KILL -1
 _tessel ALL = (_tessel-runner) NOPASSWD: TESSEL_RUN
 ```
 
-What the rule pins, and why it cannot be widened by `_tessel`:
-- **Path and arguments.** A sudoers command with arguments allows exactly those arguments, so
-  `_tessel` cannot add a flag, a second config, or a different binary. No wildcard is used: in
-  sudoers `*` also matches `/` and spaces.
-- **Environment.** `env_reset` with `!setenv` rejects `sudo VAR=x` and keeps nothing from the
-  server. The runner no longer reads `PATH`, `CARGO_HOME`, `RUSTUP_HOME` or `TMPDIR` from its
-  environment (`INHERITED_ENV` in `config.rs`): they come from its own 0600 configuration file,
-  so sudo's environment cannot matter. A test starts it with `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`
-  and a hostile `PATH` and shows the test command sees none.
-- **Who can edit it.** The binary, its directory, the rule file and the configuration are owned by
-  root or by `_tessel-runner`, never by `_tessel`. A configuration owned by the runner is the
-  runner's own check (`NotOwned`, `WrongMode`, `WrongUser`).
-- **What the rule gives `_tessel`.** Running any test command as the runner is already the
-  runner's job (the request names the commands), so the rule adds no power beyond that. The
-  reverse direction is what matters: nothing the runner owns can make `_tessel` run anything.
+What the rule pins, and why `_tessel` cannot widen it:
+- **Path and arguments.** A sudoers command with arguments allows exactly those, so `_tessel`
+  cannot add a flag, a second config or another binary. No wildcard: `*` also matches `/`.
+- **Environment.** `env_reset` with `!setenv` rejects `sudo VAR=x`. The runner no longer reads
+  `PATH`, `CARGO_HOME`, `RUSTUP_HOME` or `TMPDIR` from its environment (`INHERITED_ENV` in
+  `config.rs`): they come from the root-owned file. A test starts it with `LD_PRELOAD`,
+  `DYLD_INSERT_LIBRARIES` and a hostile `PATH` and shows the test command sees none.
+- **Who can edit it.** The binary, its directories, the rule and the configuration are owned by
+  root. `_tessel` cannot change what it can run, and the runner cannot change what it is.
+- **Request trees.** `checked_tree` (`tessel-runner/src/request.rs`) demands a tree owned by the
+  runner; it now accepts only a path under `/var/tessel/handoff/` or `work/`.
+- **Limits.** The runner sets `RLIMIT_NPROC` and `RLIMIT_CORE` before it spawns anything.
 
-The runner and `sudo` pass exit codes and bytes through. To probe: that `sudo` on the dogfood Mac
-adds nothing to a piped standard input and output (`!use_pty` is there for that), and that its
-`timestamp` and log files are not written under `/var/tessel`.
+To probe: that `sudo` adds nothing to a piped standard input and output; that `/etc/sudoers`
+has the `#includedir` for `sudoers.d`. `sudo` is the only privileged hop; the server never gains
+root, and `-n` reads no password.
 
-Tests: a round trip through the real `sudo` with a request of 1 MiB and a result at the tail
-limit; each of the exit codes 0, 2 and 3 arrives; `sudo -n -u _tessel-runner` with another
-argument, another binary, `VAR=x`, or `-i` fails as `_tessel`; `sudo -l -U _tessel` lists exactly
-the three commands.
+Tests: a round trip through the real `sudo` with a request at `MAX_REQUEST_BYTES` (64 KiB) and a
+result at the tail limit; the exit codes 0, 2 and 3 arrive; `sudo -n -u _tessel-runner` with
+another argument, another binary, `VAR=x` or `-i` fails as `_tessel`; `sudo -l -U _tessel` lists
+exactly the two commands.
 
-## 3. Cleanup and serialisation
+## 3. Cleanup, serialisation and the deadline
 
-The runner's process-group kill misses a child that calls `setsid` (RUNNER-SANDBOX,
-`supervise.rs`). The account boundary replaces it: after every run, and also when the server
-gave the call up at its deadline, the server runs `sudo -n -u _tessel-runner /bin/kill -KILL -1`.
-`kill(-1)` signals every process the account may signal, so it takes the runner's children
-wherever their group is, and cannot touch `_tessel`'s or Felix's. `pkill -U` from outside is not
-used: `_tessel` could not signal another account's processes without root.
+The runner's process-group kill misses a child that calls `setsid` (RUNNER-SANDBOX). The account
+boundary replaces it: after every run, and when the server gave the call up at its deadline, the
+server runs `sudo -n -u _tessel-runner /bin/kill -KILL -1`. On macOS `kill(-1)` signals every
+process of the caller's uid and no one else's. `pkill -U` from outside is not used: `_tessel`
+could not signal another account's processes. The server then polls `ps -U _tessel-runner -o
+pid=`, which needs no privilege, until it is empty for up to 10 s, repeating the kill. If it is
+not empty, or `launchctl print user/<uid>` shows a job (to probe whether that runs unprivileged),
+the gate stays closed: the call answers `Unknown` and no run starts.
 
-Then the server waits for `ps -U _tessel-runner -o pid=` to be empty, which needs no privilege,
-for up to 10 s, repeating the kill. If processes remain, the runner gate stays closed: the call
-answers `Unknown` and the next run does not start. `sudo` itself is root-owned and survives the
-kill; it exits when its command does, so a server that gives up at its deadline kills the
-runner account first, and does not try to signal `sudo`.
+`cron` and `at` are denied unconditionally, a Felix step: `_tessel-runner` goes into
+`/usr/lib/cron/cron.deny` and `at.deny`. Neither can be inspected without root, so denial and
+the check script's probe, not the poll, are what stop a job that is not running when checked.
 
-Because `kill -1` takes the whole account, no other run may be live. One process-wide async
-mutex, the runner gate, covers `{run, kill, wait, reset}` across every repository of the server.
-Test and trial runs both take it. A second server on the same Mac would break this and is not
-supported; a lock file `/var/tessel-runner/lock`, held by flock, refuses it.
+`kill -1` takes the whole account, so no other run may be live. One process-wide async mutex, the
+runner gate, covers `{run, kill, wait}` across every repository of the server. The gate holder
+is the `SudoRunner` itself: it runs `sudo` as a child it owns, polls the call's `Stop`
+(`landing/deadline.rs`), and when the deadline passes or the call is given up it does the kill
+itself, waits for the child (which exits once its command died), and releases the gate. It cannot
+wait on `sudo` inside `spawn_blocking` without polling: that thread is not cancelled by the call's
+timeout (`landing/mod.rs`), and `sudo` exits only after the kill, so waiting first would deadlock.
+One server per Mac is supported; two would break the serialisation.
 
-The server also runs kill and reset at start, before it answers a call. A stop in the middle of a
-test no longer orphans the cargo process group, which `docs/dogfood.md` warns about today.
+At start the server kills and polls before answering a call, so a stop in the middle of a test
+no longer orphans the cargo process group (`docs/dogfood.md` warns of it today). The runner
+empties `work/` and `tmp/` at the start of every run, clears `uchg` flags and ACLs first, and
+deletes files owned by its uid in `/tmp`, `/var/tmp`, `/Users/Shared` and its
+`DARWIN_USER_TEMP_DIR` under `/var/folders`. On Linux the same contract is a cgroup scope per run.
 
-On Linux (a hosted server, later) the same contract is a cgroup scope per run:
-`systemd-run --scope --uid _tessel-runner`, then `systemctl kill`.
-
-Tests: a test command that forks a `setsid` child sleeping 60 s leaves no process after the run;
-two overlapping calls never have two runner processes alive at once (a test double that records
-start and end times); the gate stays closed when the kill leaves a survivor; the mutex is
-released when a call is dropped mid-run.
+Tests: a command that forks a `setsid` child sleeping 60 s leaves no process after the run; two
+overlapping calls never have two runner processes alive (a double recording start and end); a
+call past its deadline frees the gate and leaves none alive; the gate stays closed when a kill
+leaves a survivor; the next run starts with `work/` empty even with a `uchg` file and an ACL.
 
 ## 4. Toolchain and dependencies
 
-The runner's `HOME` is `/var/empty`, so a user-level `~/.cargo` and `~/.rustup` cannot exist.
-- **Toolchain.** `RUSTUP_HOME=/var/tessel/rustup`, installed by Felix with `sudo` for the channel
-  in `rust-toolchain.toml`, owned by root. The runner's `PATH` names that toolchain's `bin`, so
-  `rustup` proxies, which would try to download, are not used. Before each `Test` the lander
-  compares the toolchain directory's name with the channel in the head's `rust-toolchain.toml`;
-  a mismatch is logged and answered `Unknown`, not a test failure (the file is a sensitive path,
-  so a change is reviewed and Felix installs the new channel first).
-- **Dependencies.** `CARGO_HOME=/var/tessel/cargo`, owned by `_tessel`, read-only to the runner. The
-  runner tests with `--offline`, so the crates must be there. Repo code (a dependency's
-  `build.rs`) could poison a cache it can write, and the poisoned crate would be compiled into a
-  later submission's tests; a read-only cache closes that.
-- **Who runs `cargo fetch`.** Not the runner, not repo code. `Cargo.lock`, `.cargo/` and
-  `rust-toolchain.toml` are sensitive paths, so any submission that changes them is held and the
-  orchestrator has read the change. Before approving such a submission the orchestrator runs
-  `scripts/dogfood/fetch.sh <fork commit>`, which checks the commit out in a scratch directory and
-  runs `sudo -u _tessel env CARGO_HOME=/var/tessel/cargo cargo fetch --locked` there. Fetch builds
-  and runs nothing, and the config it reads is the reviewed one. A fetch that
-  was skipped shows as a failing offline build, which the agent reads as failing tests; the
-  script prints the reminder, and automating it is M6.
+The runner's `HOME` is `/var/empty`, so no `~/.cargo` or `~/.rustup` exists.
+- **Toolchain.** `RUSTUP_HOME=/var/tessel/rustup`, root-owned, for the channel in
+  `rust-toolchain.toml`. It is installed from the standalone installer of that channel by root,
+  with the installer's sha256 pinned in `scripts/dogfood/toolchain.sha256` (to probe that the
+  installer unpacks without `rustup`), not by Felix's `rustup`, which lives in a directory he
+  and the lanes can write. The runner's `PATH` names that toolchain's `bin`, so no `rustup` proxy
+  tries to download. Before each `Test` the lander compares the directory's name with the channel
+  in the head's `rust-toolchain.toml`; a mismatch is logged and answered `Unknown`, not a test
+  failure. The file is a sensitive path, so Felix installs the new channel before approving.
+- **Dependencies.** `CARGO_HOME=/var/tessel/cargo`, owned by `_tessel`, read-only to the runner.
+  The runner tests with `--offline`, so the crates must be there. Repo code could poison a cache
+  it can write, and the poisoned crate would be compiled into later submissions' tests.
+- **Who runs `cargo fetch`.** Not the runner. `Cargo.lock`, `.cargo/` and `rust-toolchain.toml`
+  are sensitive paths, so a submission that changes them is held and read. Before approving it
+  the orchestrator runs `/opt/tessel/sbin/fetch.sh <fork commit>`: it checks the commit out in a
+  scratch directory and runs, under `env -i`, the root-owned toolchain's `cargo` by absolute
+  path as `_tessel` with `CARGO_HOME=/var/tessel/cargo` and `fetch --locked`. Fetch builds and
+  runs nothing. A fetch that was skipped shows as a failing offline build, which the agent reads
+  as failing tests; the script says so, and automating it is M6.
 - **No warm `CARGO_TARGET_DIR`.** Each run builds in its own copy of the tree, so one submission
-  cannot leave artefacts that another's tests link (rule 6). The cost is a cold build per
-  landing, 237 s on 22 October, which is what a fresh clone costs today: no change. A cache
-  shared between runs would be faster and is refused for that reason.
+  cannot leave artefacts another's tests link (rule 6). The cost is a cold build per landing,
+  237 s on 22 October, which a fresh clone costs today: no change.
 
-To probe: whether cargo builds with a read-only `CARGO_HOME` (it takes a lock file there). If it
-does not, the runner copies `/var/tessel/cargo` into its work area at the start of each run, which
-costs seconds, and leaves the rest of this section unchanged.
+To probe: whether cargo builds with a read-only `CARGO_HOME` (it takes a lock file there). If
+not, the runner copies `/var/tessel/cargo` into `work/` at the start of each run, which costs
+seconds. Also whether the whole `cargo test --workspace` passes as `_tessel-runner` with
+`HOME=/var/empty`: the repo's real-git tests need `/usr/bin/git` and `cc` through `xcrun`.
 
-Tests: a `build.rs` that tries to write to `CARGO_HOME` and `RUSTUP_HOME` fails; a second
-submission does not see a file the first wrote to `tmp/` or `work/`; a run with a missing crate
-reports the fetch reminder in the server log.
+Tests: a `build.rs` that writes to `CARGO_HOME`, `RUSTUP_HOME` or the configuration fails; a
+second submission does not see a file the first wrote to `tmp/` or `work/`.
 
 ## 5. The test tree across accounts
 
-Three directories, three owners. `Test` (see `candidate-ref.md`) fetches the candidate ref into a
-fresh repository with no credential. That repository is made by the lander as `_tessel` in
-`/var/tessel/handoff/call-N/` and is world-readable, because it holds the repo's public tree.
+`Test` (`docs/proposals/candidate-ref.md`) fetches the candidate ref into a fresh repository.
+The fetch uses the token through the askpass hook, but the repository stores no credential. The
+lander makes it as `_tessel` in `/var/tessel/handoff/call-N/`, group `_tessel-runner` read-only.
 
-The request's `tree` names it. The runner, as `_tessel-runner`, first copies it into
-`/var/tessel-runner/work/` with plain `std::fs` (symbolic links copied as links, never followed;
-no git, so rule 4 holds), then runs the test commands in the copy. The runner owns the copy and
-everything the tests write in it; `_tessel` never needs to touch it.
+The request's `tree` names it. The runner, as `_tessel-runner`, copies it into `work/` with plain
+`std::fs` (links copied as links, never followed; no git, so rule 4 holds) and runs the commands
+in the copy, which it owns with everything the tests write there. `_tessel` never touches it.
 
-Removal follows ownership:
-- `_tessel` removes `handoff/call-N` (`CallDir.remove`, `clear_leftovers`), as it created it.
-  Nothing the runner does can add a file there, because the runner cannot write that directory.
-- `tessel-runner --reset --config ...`, the third sudo command, removes the contents of `work/`
-  and `tmp/` as the runner. The server calls it after the kill, inside the runner gate. It refuses
-  to follow symbolic links out of those two directories, and it takes no path argument.
+Removal follows ownership. `_tessel` removes `handoff/call-N` (`CallDir.remove`,
+`clear_leftovers`), as it created it; the runner cannot write there. The runner removes the
+contents of `work/` and `tmp/` itself at its next start (section 3). No sudo command removes
+anything, so the rule has no path argument to widen. Because the tests run on a copy, they cannot
+reach the lander's clones, and the `TestTree` types in `workspace.rs` keep their meaning. This
+closes M4-SANDBOX-WORKSPACE.
 
-Because the tests run on a copy, they cannot reach the lander's clones, and the `TestTree` types
-in `workspace.rs` keep their meaning: the tree is never a `Workspace`. This also closes
-M4-SANDBOX-WORKSPACE, which was about code finding the workspace by path.
-
-Tests: the runner cannot write `handoff/`; after a run, `_tessel` can remove `handoff/call-N`
-while `work/` is still full of runner-owned files; `--reset` empties a tree that contains a
-read-only directory and a symlink to `/var/tessel`, and leaves `/var/tessel` untouched.
+Tests: the runner cannot write `handoff/`; `_tessel` can remove `handoff/call-N` while `work/` is
+full of runner-owned files; the start-up sweep empties a `work/` holding a read-only directory
+and a symlink to `/var/tessel`, and leaves `/var/tessel` untouched.
 
 ## 6. Upgrades
 
-Once `/opt/tessel/bin` belongs to root, each upgrade is a sudo step. The alternative, a `bin/`
-that stays writable by Felix, is refused: the lanes run as Felix, so any lane could replace
-`tessel-server`, which then runs as `_tessel` and reads the token. That would undo the boundary
-in one command.
+Once `/opt/tessel/bin` belongs to root, each upgrade is a sudo step. A `bin/` that stays writable
+by Felix is refused: the lanes run as Felix, so any lane could replace `tessel-server`, which
+then runs as `_tessel` and reads the token.
 
-Recommended: `sudo scripts/dogfood/upgrade.sh <built binaries>` (a Felix-run script, a sensitive
-path, so a pull request he merges). It stops the daemon (`launchctl bootout system/dev.tessel
-.server`), keeps the old binaries as `/opt/tessel/bin.prev`, installs the new ones, and starts
-the daemon again. The rest of DOGFOOD-UPGRADE (f) stands: built only from a landed main with green
-CI, and only with no dispatch in flight. Its words "from inside `~/tessel-dogfood`" change to
-this script. A fix that cannot land through the server still goes through a pull request.
+Recommended: `sudo /opt/tessel/sbin/upgrade.sh <built binaries>`. It stops the daemon
+(`launchctl bootout system/dev.tessel.server`), keeps the old binaries as `/opt/tessel/bin.prev`,
+installs the new ones and starts it. The scripts reach `/opt/tessel/sbin` by Felix's reading
+them once and installing them with `sudo install -o root`; a changed script is read again. The
+rest of DOGFOOD-UPGRADE (f) stands, and its words "from inside `~/tessel-dogfood`" change to this
+script. The binaries are still built in Felix's account (scope section): the residual risk.
 
 ## 7. Escape routes, tested from the runner account
 
-A one-off script, `scripts/dogfood/check-own-users.sh`, run by Felix once after the migration and
-after any change to the rule or the layout, runs each probe as `_tessel-runner` through the real
-sudo rule and prints pass or fail. The Linux CI job (section 8) runs the portable subset.
+`/opt/tessel/sbin/check-own-users.sh` is run by Felix after the accounts exist and before any
+code is installed (section 8, step 2), and again after any change. It runs each probe as
+`_tessel-runner` through the real rule; the Linux job runs the portable subset.
 
-| Route | Probe, as the runner account | Expected |
+| Route | Probe | Expected |
 |---|---|---|
-| `at` | `echo id \| at now` | refused, or `atrun` is not loaded (to probe) |
-| `cron` | `crontab -e` with a job | refused; if not, `cron.deny` names the account (to probe) |
-| `launchctl` | `launchctl submit -l x -- /usr/bin/id` and `launchctl bootstrap` into its own domain | no job runs, or only as itself with no persistence beyond the kill (to probe) |
-| Shared directories | write to `/tmp`, `/var/tmp`, `/Users/Shared` and find a file left by a previous run | writes allowed, but the kill and the reset remove what it owns; nothing it leaves is read by `_tessel` |
-| The server socket | connect to `127.0.0.1:7878` | the connection opens, the handshake needs an agent token it cannot read (S1) |
-| Felix's home | read `~/repos`, `~/.config/gh`, `~/.ssh` | denied; today `~` is 0755 on a default macOS account, so Felix's step 6 is `chmod go-rx ~` |
-| The secrets | read `/var/tessel/github-token`, `keys/`, `stores/`, `lander/` | denied |
-| The binaries | write `/opt/tessel/bin` | denied |
-| Another account | `sudo -n -l`, `sudo -n -u _tessel` | denied |
-| Process limits | fork bomb | not bounded; `kern.maxprocperuid` is global. The run timeout and the kill end it |
-| Network egress | connect outward | allowed: a test can read the source and send it out. A `pf` rule by `user` is an option, to probe, not part of M5 |
+| `at`, `cron` | `echo id \| at now`; `crontab -e` | refused (denied unconditionally) |
+| `launchd` | `launchctl submit -l x -- /usr/bin/id`; a job with `StartInterval` or `WatchPaths` | no job runs, or none survives the kill (to probe) |
+| Shared directories | write `/tmp`, `/var/tmp`, `/Users/Shared`, `/var/folders/<uid>`, leave a file | allowed; the next start deletes what it owns |
+| `sudoers` | `#includedir` present; `sudo -n -l`, `sudo -n -u _tessel` as the runner | denied |
+| The secrets | read `/var/tessel/{github-token,keys,stores,lander}` | denied |
+| The binaries and config | write `/opt/tessel`, `/var/tessel-runner/tessel-runner.toml`, `cargo`, `rustup` | denied |
+| Felix's home | read `~/repos`, `~/.config/gh`, `~/.ssh` | denied: `~` is 0750 and the runner is not in `staff`; the script checks the mode has no other bits |
+| The server socket | connect to `127.0.0.1:7878` | opens; the handshake needs an agent token it cannot read (S1) |
+| Loopback services | list listeners (`lsof -iTCP -sTCP:LISTEN`), connect to each | see below |
+| The full test suite | `cargo test --workspace` as the runner, `HOME=/var/empty` | passes |
+| Process limits | a fork bomb | bounded by `RLIMIT_NPROC`, the run timeout and the kill |
+| Network egress | connect outward | allowed: a test can send the source out. A `pf` rule is optional |
 
-Persistence is the point of the first three rows: whatever the account starts must not outlive
-the kill and the reset. The probe for each leaves a marker and checks it after the next run's
-cleanup. A route that works is a finding, not a pass: it gets a mitigation (`cron.deny`, an
-unloaded `atrun`) added to the setup before RUNNER-OWN-UID closes.
+**Loopback services.** Felix's Mac runs services that listen on loopback and trust local
+connections: a Homebrew postgres on 5432 defaults to `trust`, and a superuser there can run a
+command as Felix with `COPY ... TO PROGRAM`, which reaches `gh`'s credential and, through the
+bypass, `main`: worse than the lander token. This design does not block loopback by user, because
+this repository's own tests bind and connect to loopback. It does two things: the check script
+lists every listener and fails until Felix has marked each as authenticated or stopped for
+landings, and a `pf` rule per known port (`block out quick on lo0 proto tcp to port 5432 user
+_tessel-runner`) is the option where a service must stay open (to probe that `pf` matches the
+user on `lo0`). Any listener Felix starts later is a residual risk he must check.
 
 ## 8. What RUNNER-OWN-UID builds, and Felix's steps
 
-Code (lane B; the files are its own, plus `tessel-server/src/{main,server,config}.rs` which the
-phase plan already lists for this task):
-1. `tessel-runner`: the environment from the configuration file; the work-area copy of the tree;
-   `--reset`. Tests as above.
-2. `tessel-server/src/landing`: `SudoRunner`, the runner gate, the kill, wait and reset, the
-   start-up cleanup, and the `handoff` directory in place of `call-N/test`.
-3. `scripts/dogfood/{accounts,install,upgrade,fetch,check-own-users}.sh`; `setup.sh` splits into
-   the Felix-run part (the tokens) and the root-run part. `docs/dogfood.md` loses D4's caveat
-   and gains the steps below. These are sensitive paths, so one pull request Felix merges.
-4. A Linux CI job (a workflow pull request Felix merges, after the others in the M5 order): it
-   creates the two users with `useradd`, installs the rule with `visudo -cf`, and checks that the
-   token is unreadable, the workspace unwritable, a `setsid` child killed, and the rule refuses
-   every widened command of section 2. GitHub's runners have passwordless sudo.
+Order, so that the probes run before any code depends on them.
 
-Felix's sudo steps on the Mac, in order, each with its check:
-1. Read the output of `accounts.sh --dry-run`, then run it: the two groups and users. Check with
+Felix's steps on the Mac (sudo), each with its check:
+1. Read `accounts.sh`, install it root-owned in `/opt/tessel/sbin`, run it (the two accounts,
+   481 and 482), and add the runner to `cron.deny` and `at.deny`. Check with
    `dscl . -read /Users/_tessel`.
-2. `install.sh` creates `/opt/tessel`, `/var/tessel`, `/var/tessel-runner` with the modes of
-   section 1 and installs the toolchain and `config.toml`. Check with `check-own-users.sh --modes`.
-3. Install the binaries and the rule: `visudo -cf /etc/sudoers.d/tessel` before the move.
-4. `chmod go-rx /Users/<felix>`.
-5. With the server stopped and no dispatch in flight, move the store, the key and the token to
-   `/var/tessel`. A move, not a snapshot restore (C11), so no fence is reissued.
-6. Rotate. The old token and key were readable by every lane process: make a new GitHub token
-   and a new signing key (`kid` `2026-11`), revoke the old token, and mint new agent tokens.
-7. Load the LaunchDaemon, run `check-own-users.sh`, then land once on `tessel-sandbox/m4-trunk`
-   (DOGFOOD-UPGRADE (e)).
+2. Run `check-own-users.sh --accounts`: every probe that needs only the accounts (section 7).
+   A route that works is a finding to fix before step 3.
+3. RUNNER-OWN-UID's code lands through the server. Then `install.sh`: the directories of
+   section 1, the toolchain, the cargo cache, the binaries, the plist and the rule
+   (`visudo -cf /etc/sudoers.d/tessel` before it is moved into place).
+4. Stop the server with nothing in flight and move the store, key and token to `/var/tessel`. A
+   move, not a snapshot restore (C11), so no fence is reissued. Start the daemon.
+5. Run `check-own-users.sh` in full, then land once on `tessel-sandbox/m4-trunk` (DOGFOOD-UPGRADE
+   (e)) on the exposed token.
+6. Rotate last: make a new GitHub token and a new signing key (`kid` `2026-11`), delete the old
+   key file, `trash` the old `github-token`, and mint new agent tokens. The old token and key
+   were readable by every lane process; until now they were the live ones.
 
-D4's sentence "process control, not a security boundary" is replaced by what this gives: the
-token, key and store are unreadable to repo code and to the lanes. It keeps the out-of-scope
-paragraph above.
+Rollback: `launchctl bootout`, move the store back to `~/tessel-dogfood`, and put a new token in
+place. That token is exposed again, so it is rotated at the next migration. Nothing else needs
+undoing: the accounts and files are inert while the daemon is stopped.
+
+Code (lane B):
+1. `tessel-runner`: the configuration rules above, its environment from the file, the copy of
+   the tree, the start-of-run sweep, the rlimits, `checked_tree`. Tests as above.
+2. `tessel-server/src/landing`: `SudoRunner`, the gate, the kill, the poll, the start-up
+   cleanup, and the `handoff` directory in place of `call-N/test`.
+3. `scripts/dogfood/{accounts,install,upgrade,fetch,check-own-users}.sh`; `setup.sh` splits into
+   the Felix part (agent tokens) and the root part; `docs/dogfood.md` loses D4's caveat and gains
+   the steps. Sensitive paths, so one pull request Felix merges.
+4. A Linux CI job (a workflow pull request Felix merges): `useradd` for the two users, the rule
+   installed with `visudo -cf`, and the checks that the token is unreadable, the workspace
+   unwritable, a `setsid` child killed, and each widened command of section 2 refused.
 
 ## 9. Alternatives considered
 
 | Alternative | Why not |
 |---|---|
-| `sandbox-exec` with a profile that denies the token path | Same account, so everything the profile misses is open; Apple documents the tool as deprecated; kills still need a group |
-| A VM or container per run | Docker on macOS needs a VM on a Mac already at load 55 to 75 (D3); heavy for one developer; right for the hosted server (M6) |
-| launchd `UserName` and no sudo | The server could run as `_tessel`, but a one-shot child as another account needs a persistent runner daemon with a socket, its own authentication and its own cleanup |
+| `sandbox-exec` with a profile that denies the token path | Same account, so what the profile misses is open; Apple documents the tool as deprecated |
+| A VM or container per run | Needs a VM on a Mac already at load 55 to 75 (D3); right for the hosted server (M6) |
+| launchd `UserName` and no sudo | The server could run as `_tessel`, but a one-shot child as another account needs a persistent runner daemon with a socket, its own authentication and cleanup |
 | One extra account for both | The server's token would be readable by the tests |
-| `sudo` with `NOPASSWD: ALL` for `_tessel` | Makes `_tessel` root-equivalent and moves the problem |
-| Run the runner as root and drop privileges | A bug before the drop is a root bug |
