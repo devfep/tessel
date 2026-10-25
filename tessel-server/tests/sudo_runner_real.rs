@@ -149,9 +149,11 @@ fn nothing_one_run_leaves_in_the_temporary_or_work_directory_reaches_the_next() 
     let listing = runner
         .run(&tree("real-tmp-2", "tmp-list"))
         .expect("a result");
+    // The stand-in `cargo` ends every run with `ran`; anything the first run left in the temporary
+    // directory would be listed before it.
     assert_eq!(
         listing.stdout.trim(),
-        "",
+        "ran",
         "the next run saw {}",
         listing.stdout
     );

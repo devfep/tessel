@@ -1,0 +1,70 @@
+name: Own users
+
+# The account boundary of docs/proposals/own-users.md, with real accounts on a Linux runner: the
+# runner account cannot read the token or write what it runs from, the sudoers rule allows two
+# commands, a child that leaves its process group dies to `kill -KILL -1`, and `SudoRunner` works
+# through the real rule (tessel-server/tests/sudo_runner_real.rs).
+
+on:
+  pull_request:
+    paths:
+      - tessel-runner/**
+      - tessel-lander/**
+      - tessel-server/src/landing/**
+      - tessel-server/tests/sudo_runner_real.rs
+      - Cargo.lock
+      - rust-toolchain.toml
+      - scripts/ci/own-users-linux.sh
+      - scripts/dogfood/**
+      - .github/workflows/own-users.yml
+  push:
+    branches: [main]
+    paths:
+      - tessel-runner/**
+      - tessel-lander/**
+      - tessel-server/src/landing/**
+      - tessel-server/tests/sudo_runner_real.rs
+      - Cargo.lock
+      - rust-toolchain.toml
+      - scripts/ci/own-users-linux.sh
+      - scripts/dogfood/**
+      - .github/workflows/own-users.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: own-users-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  accounts:
+    name: Runner accounts, Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: own-users
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the runner and the real-sudo test
+        run: |
+          cargo build --release --locked -p tessel-runner
+          cargo test --locked -p tessel-server --test sudo_runner_real --no-run \
+            --message-format=json |
+            jq -r 'select(.profile.test == true and .target.name == "sudo_runner_real") | .executable // empty' \
+              >"$RUNNER_TEMP/test-binary"
+          test -s "$RUNNER_TEMP/test-binary"
+      - name: Shell lint
+        run: shellcheck -s bash scripts/ci/own-users-linux.sh
+      - name: Check the account boundary
+        run: |
+          sudo scripts/ci/own-users-linux.sh target/release/tessel-runner \
+            "$(cat "$RUNNER_TEMP/test-binary")"
