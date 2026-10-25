@@ -673,7 +673,7 @@ async fn shutdown_closes_open_connections() {
     })
     .await
     .unwrap();
-    let addr = server.addr().unwrap();
+    let addr = server.addr();
     // A client that connected and never finished the handshake must not outlive the server.
     let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;

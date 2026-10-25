@@ -142,8 +142,8 @@ claim is logged or can no longer run, up to `--task-timeout-s`. Its next push re
 Landed counts under `shadow` are not comparable with `wait` and `skip`: a denied task becomes
 shadow work and never lands. The table says so, and only the shadow policy has these rows.
 
-When the blocking work merges, the server's lander tries each submitted shadow commit against it, first
-on the trunk as it was before the merge (work that already fails there is inconclusive) and then
+When the blocking work merges, the server's lander tries each submitted shadow commit against it,
+first on the trunk as it was before the merge (work that already fails there is inconclusive) and then
 after, and the coordinator logs `DenialVerified`. One extra connection follows the log for the
 whole run (the waiting agents read what it has seen, so waiting adds no polling to the
 coordinator). After the agents finish, the run waits until every trial the log still owes is

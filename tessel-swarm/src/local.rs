@@ -20,7 +20,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tessel_coordinator::protocol::{AgentId, ClientMsg, ErrorCode, Event, ServerMsg};
+use tessel_coordinator::protocol::{
+    AgentId, ClaimId, ClientMsg, CommitId, ErrorCode, Event, Fence, RequestId, ServerMsg,
+    PROTOCOL_VERSION,
+};
 use tessel_server::config::{Config, LanderConfig, RepositoryConfig};
 use tessel_server::id::RepoId;
 use tessel_server::repo::NoLander;
@@ -28,7 +31,7 @@ use tessel_server::server::{Deps, RunningServer};
 use tessel_server::testing::{self, TestClock};
 use tessel_server::ws::{Refusal, Verifier};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -94,10 +97,14 @@ struct Relay {
     heartbeats: HashMap<String, usize>,
     /// The events the log reader has seen.
     events: Vec<Event>,
+    /// Why the log reader ended, if it did before the target was shut down.
+    dead: Option<String>,
 }
 
 struct Hub {
     relay: Mutex<Relay>,
+    /// Asks the log reader for a barrier; see `Hub::barrier`.
+    barriers: mpsc::UnboundedSender<oneshot::Sender<()>>,
     /// Token to agent name.
     tokens: HashMap<String, String>,
     path: String,
@@ -224,7 +231,9 @@ impl Cutter {
 
 impl LogReader {
     pub fn events(&self) -> Vec<Event> {
-        lock(&self.0.relay).events.clone()
+        let relay = lock(&self.0.relay);
+        assert!(relay.dead.is_none(), "{}", dead_message(&relay));
+        relay.events.clone()
     }
 }
 
@@ -266,7 +275,8 @@ fn lay_out(setup: &LocalSetup<'_>) -> Result<Layout> {
         Git::new(&fork).run(&["init", "-q", "--bare", "-b", "main"])?;
     }
     let runner = setup.scratch.join("tessel-runner.toml");
-    let user = std::env::var("USER").context("USER is not set; the runner needs the user")?;
+    let user = tessel_runner::effective_login()
+        .context("the effective user has no login name; the runner needs one")?;
     std::fs::write(&runner, format!("[runner]\nuser = \"{user}\"\n"))?;
     std::fs::set_permissions(&runner, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     let config = Config {
@@ -317,8 +327,10 @@ impl LocalServer {
         let clock = TestClock::new();
         let server = testing::start_with_clock(&layout.config, deps, None, &clock).await?;
         let backend = server.local_addr();
+        let (barriers, requests) = mpsc::unbounded_channel();
         let hub = Arc::new(Hub {
             relay: Mutex::new(Relay::default()),
+            barriers,
             tokens,
             path: path.clone(),
         });
@@ -326,11 +338,30 @@ impl LocalServer {
         let relay_addr = listener.local_addr()?;
         let (stop, stop_rx) = watch::channel(false);
         let log_token = format!("local-{LOG_READER}");
+        let (ready, subscribed) = oneshot::channel();
         let tasks = vec![
             tokio::spawn(accept(listener, Arc::clone(&hub), backend, stop_rx)),
-            tokio::spawn(read_log(Arc::clone(&hub), backend, log_token)),
+            tokio::spawn(read_log(
+                Arc::clone(&hub),
+                (backend, log_token),
+                requests,
+                ready,
+            )),
         ];
         issued.remove(LOG_READER);
+        let subscribed = match tokio::time::timeout(BARRIER_WAIT, subscribed).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(why))) => Err(anyhow::anyhow!("the log reader could not subscribe: {why}")),
+            Ok(Err(_)) => Err(anyhow::anyhow!("the log reader ended before it subscribed")),
+            Err(_) => Err(anyhow::anyhow!("the log reader did not subscribe in time")),
+        };
+        if let Err(error) = subscribed {
+            for task in &tasks {
+                task.abort();
+            }
+            server.stop().await;
+            return Err(error);
+        }
         Ok(Self {
             hub,
             clock,
@@ -376,30 +407,11 @@ impl LocalServer {
         self.clock.advance(ms);
     }
 
-    /// Waits until the server has acted on the latest clock move: the log stops growing for
-    /// `QUIET` after a first pause. The server wakes at once when the clock moves, so this is
-    /// only how long its answer takes to reach the log reader.
+    /// Waits until the server has acted on the latest clock move: a frame sent on the log socket
+    /// now runs the expiry step first, as its own write, so every expiry it logged has reached
+    /// the log reader by the time that frame is answered (see `Hub::barrier`).
     pub async fn settle_expiry(&self) {
-        const QUIET: Duration = Duration::from_millis(120);
-        const POLL: Duration = Duration::from_millis(20);
-        const GIVE_UP: Duration = Duration::from_secs(10);
-        let started = tokio::time::Instant::now();
-        let mut last = self.log().len();
-        let mut steady = tokio::time::Instant::now();
-        loop {
-            tokio::time::sleep(POLL).await;
-            let now = self.log().len();
-            if now != last {
-                (last, steady) = (now, tokio::time::Instant::now());
-            }
-            if steady.elapsed() >= QUIET {
-                return;
-            }
-            assert!(
-                started.elapsed() < GIVE_UP,
-                "the log kept growing for {GIVE_UP:?} after the clock moved"
-            );
-        }
+        self.hub.barrier().await;
     }
 
     /// How many heartbeats the relay has passed on from `agent`.
@@ -411,8 +423,8 @@ impl LocalServer {
             .unwrap_or(0)
     }
 
-    pub fn addr(&self) -> Option<SocketAddr> {
-        Some(self.relay_addr)
+    pub fn addr(&self) -> SocketAddr {
+        self.relay_addr
     }
 
     /// Closes every socket and the relay, stops the server and ends the background tasks.
@@ -441,30 +453,126 @@ async fn accept(
     }
 }
 
-/// Reads the log through a Watch socket that bypasses the relay, and fires the tripwire.
-async fn read_log(hub: Arc<Hub>, backend: SocketAddr, token: String) {
-    let Ok(mut request) = format!("ws://{backend}{}", hub.path).into_client_request() else {
-        return;
-    };
-    let Ok(bearer) = format!("Bearer {token}").parse() else {
-        return;
-    };
-    request.headers_mut().insert("authorization", bearer);
-    let Ok((mut socket, _)) = tokio_tungstenite::connect_async(request).await else {
-        return;
-    };
-    let watch = serde_json::to_string(&ClientMsg::Watch { from_seq: 0 }).unwrap_or_default();
-    if socket.send(Message::text(watch)).await.is_err() {
-        return;
+fn dead_message(relay: &Relay) -> String {
+    format!(
+        "the log reader ended: {}",
+        relay.dead.as_deref().unwrap_or("unknown")
+    )
+}
+
+/// How long a barrier waits for the log socket's answer.
+const BARRIER_WAIT: Duration = Duration::from_secs(10);
+
+impl Hub {
+    /// Returns once the server has handled everything it was sent before this call and the log
+    /// reader has seen every event that produced. The log socket sends a call frame; the server
+    /// runs the expiry step before it handles one, so any expiry already due is logged first, and
+    /// it answers on the same socket after the events it wrote to it, in order.
+    async fn barrier(&self) {
+        let (ack, answered) = oneshot::channel();
+        let sent = self.barriers.send(ack).is_ok();
+        let answered = sent
+            && tokio::time::timeout(BARRIER_WAIT, answered)
+                .await
+                .is_ok_and(|a| a.is_ok());
+        assert!(answered, "{}", dead_message(&lock(&self.relay)));
     }
-    while let Some(Ok(frame)) = socket.next().await {
-        let Message::Text(text) = frame else { continue };
-        let Ok(ServerMsg::Event { event }) = serde_json::from_str(&text) else {
-            continue;
-        };
-        let mut relay = lock(&hub.relay);
-        relay.check(&event);
-        relay.events.push(event);
+}
+
+/// The frame the log socket sends for a barrier: a release of a claim that cannot exist, which
+/// the server answers with an error carrying the request id.
+fn barrier_frame(req: u64) -> Message {
+    let release = ClientMsg::Release {
+        claim: ClaimId(u64::MAX),
+        fence: Fence(0),
+        req: Some(RequestId(req)),
+    };
+    Message::text(serde_json::to_string(&release).unwrap_or_default())
+}
+
+/// Reads the log through a socket that bypasses the relay: it says hello as the log reader,
+/// watches from the start, tells `ready` when a first barrier came back, then records events,
+/// fires the tripwire and answers barrier requests. When it ends it says why in `Relay::dead`.
+async fn read_log(
+    hub: Arc<Hub>,
+    (backend, token): (SocketAddr, String),
+    mut requests: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
+    ready: oneshot::Sender<Result<(), String>>,
+) {
+    let outcome = log_session(&hub, backend, &token, &mut requests, ready).await;
+    let why = match outcome {
+        Ok(()) => "its socket closed".to_string(),
+        Err(why) => why,
+    };
+    lock(&hub.relay).dead = Some(why);
+}
+
+async fn log_session(
+    hub: &Arc<Hub>,
+    backend: SocketAddr,
+    token: &str,
+    requests: &mut mpsc::UnboundedReceiver<oneshot::Sender<()>>,
+    ready: oneshot::Sender<Result<(), String>>,
+) -> Result<(), String> {
+    let mut socket = connect_backend(backend, &hub.path, token)
+        .await
+        .ok_or("it could not connect")?;
+    let hello = ClientMsg::Hello {
+        agent: AgentId(LOG_READER.to_string()),
+        base: CommitId("0".repeat(40)),
+        protocol: PROTOCOL_VERSION,
+    };
+    for msg in [hello, ClientMsg::Watch { from_seq: 0 }] {
+        let text = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+        socket
+            .send(Message::text(text))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let mut ready = Some(ready);
+    let mut next_req = 1_u64;
+    let mut waiting: VecDeque<(u64, oneshot::Sender<()>)> = VecDeque::new();
+    // The first barrier: the replay of the log is done when its answer comes.
+    let (first, _) = oneshot::channel();
+    waiting.push_back((0, first));
+    socket
+        .send(barrier_frame(0))
+        .await
+        .map_err(|e| e.to_string())?;
+    loop {
+        tokio::select! {
+            request = requests.recv() => {
+                let Some(ack) = request else { return Ok(()) };
+                waiting.push_back((next_req, ack));
+                socket.send(barrier_frame(next_req)).await.map_err(|e| e.to_string())?;
+                next_req += 1;
+            }
+            frame = socket.next() => {
+                let message = match frame {
+                    Some(Ok(message)) => message,
+                    Some(Err(error)) => return Err(error.to_string()),
+                    None => return Ok(()),
+                };
+                let Message::Text(text) = message else { continue };
+                match serde_json::from_str(&text) {
+                    Ok(ServerMsg::Event { event }) => {
+                        let mut relay = lock(&hub.relay);
+                        relay.check(&event);
+                        relay.events.push(event);
+                    }
+                    Ok(ServerMsg::Error { req: Some(RequestId(req)), .. }) => {
+                        if waiting.front().is_some_and(|(wanted, _)| *wanted == req) {
+                            let (_, ack) = waiting.pop_front().ok_or("no barrier waits")?;
+                            let _ = ack.send(());
+                            if let Some(ready) = ready.take() {
+                                let _ = ready.send(Ok(()));
+                            }
+                        }
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+            }
+        }
     }
 }
 
@@ -550,6 +658,34 @@ async fn relay(
     lock(&hub.relay).conns.retain(|conn| conn.id != id);
 }
 
+/// Ends a connection by its fate. First it passes the agent whatever the server has already sent
+/// it (everything before a junk frame's answer), so that a reset after a step finds the answer
+/// that step sent already delivered.
+async fn end_connection(
+    client: &mut ClientSocket,
+    server: &mut ServerSocket,
+    fate: Option<Fate>,
+    stop: &mut watch::Receiver<bool>,
+) {
+    if server.send(Message::text(SENTINEL)).await.is_ok() {
+        let flush = async {
+            while let Some(Ok(message)) = server.next().await {
+                if is_sentinel_answer(&message) {
+                    return;
+                }
+                if client.send(message).await.is_err() {
+                    return;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(1), flush).await;
+    }
+    if let Some(Fate::Cut) = fate {
+        cut(client).await;
+        park(server, stop).await;
+    }
+}
+
 /// Sends `message` to the server; a heartbeat is followed by the junk frame whose answer shows the
 /// server handled it. False when the server's socket is gone.
 async fn forward(server: &mut ServerSocket, message: Message, unanswered: &mut usize) -> bool {
@@ -576,35 +712,28 @@ async fn pump(
     mut stop: watch::Receiver<bool>,
 ) {
     let mut unanswered = 0_usize;
-    let mut held: VecDeque<(tokio::time::Instant, Message)> = VecDeque::new();
     loop {
-        let due = held.front().map(|(at, _)| *at);
         tokio::select! {
             biased;
             _ = stop.changed() => return,
             end = fates.recv() => {
-                if let Some(Fate::Cut) = end {
-                    cut(client).await;
-                    park(server, &mut stop).await;
-                }
+                end_connection(client, server, end, &mut stop).await;
                 return;
-            }
-            () = async { tokio::time::sleep_until(due.unwrap_or_else(tokio::time::Instant::now)).await }, if due.is_some() => {
-                if let Some((_, message)) = held.pop_front() {
-                    if !forward(server, message, &mut unanswered).await {
-                        return;
-                    }
-                }
             }
             frame = client.next() => {
                 let Some(Ok(message)) = frame else { return };
-                if lock(&hub.relay).tripwire.is_some() || !held.is_empty() {
-                    // The log reader is a socket of its own; holding the agent's next frame for a
-                    // moment lets it see an event and trip the wire first, so the agent gets the
-                    // answer the step sent and then finds the connection gone, as it would if the
-                    // cut were inside the step.
-                    held.push_back((tokio::time::Instant::now() + TRIP_HOLD, message));
-                } else if !forward(server, message, &mut unanswered).await {
+                if lock(&hub.relay).tripwire.is_some() {
+                    // Everything the server has logged so far reaches the log reader, and so the
+                    // tripwire, before this frame goes on: the agent keeps the answer the step
+                    // sent and then finds the connection gone, as it would if the cut were inside
+                    // the step.
+                    hub.barrier().await;
+                    if let Ok(end) = fates.try_recv() {
+                        end_connection(client, server, Some(end), &mut stop).await;
+                        return;
+                    }
+                }
+                if !forward(server, message, &mut unanswered).await {
                     return;
                 }
             }
@@ -634,9 +763,6 @@ async fn connect_backend(backend: SocketAddr, path: &str, token: &str) -> Option
         .ok()
         .map(|(socket, _)| socket)
 }
-
-/// How long a frame from an agent is held back while a tripwire is armed.
-const TRIP_HOLD: Duration = Duration::from_millis(40);
 
 /// A frame the server cannot parse; its `Malformed` answer marks that everything sent before it
 /// has been handled.

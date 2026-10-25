@@ -635,6 +635,7 @@ impl Fake {
             run: Some("test".to_string()),
             shadow_enabled: Some("false".to_string()),
             protocol_range: range,
+            lease_ms: Some(lease_ms),
             ..HostConfig::default()
         };
         let store = BTreeMap::from([(STATE_KEY.to_string(), initial_state(lease_ms)?)]);

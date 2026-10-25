@@ -214,18 +214,19 @@ async fn a_call_frame_sent_after_the_clock_moved_is_answered_after_the_expiry_it
         .await?;
     let mut expired_before_the_answer = false;
     loop {
-        match next(&mut reader).await? {
-            ServerMsg::Event { event } => {
-                if let EventKind::ClaimReleased { claim, reason } = event.kind {
-                    expired_before_the_answer |=
-                        claim == held && reason == ReleaseReason::LeaseExpired;
-                }
+        let message = next(&mut reader).await?;
+        if let ServerMsg::Event { event } = &message {
+            if let EventKind::ClaimReleased { claim, reason } = &event.kind {
+                expired_before_the_answer |=
+                    *claim == held && *reason == ReleaseReason::LeaseExpired;
             }
-            ServerMsg::Error {
-                req: Some(RequestId(77)),
-                ..
-            } => break,
-            _ => {}
+        }
+        if let ServerMsg::Error {
+            req: Some(RequestId(77)),
+            ..
+        } = message
+        {
+            break;
         }
     }
     assert!(
