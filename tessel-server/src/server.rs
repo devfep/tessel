@@ -15,7 +15,7 @@ use crate::landing::{
     Landing, LandingError, LocalRunner, SudoError, SudoRunner, SudoRunnerSettings, TestRunner,
 };
 use crate::paths::ResolveError;
-use crate::repo::{self, CallPort, RunningRepo};
+use crate::repo::{self, CallPort, Clock, RunningRepo};
 use crate::store::{StoreDir, StoreError};
 use crate::ws::{self, App, Verifier};
 
@@ -97,7 +97,7 @@ pub async fn start(config: &Config, deps: Deps) -> Result<RunningServer, StartEr
         Some(lander) => Some(runner_of(lander)?),
         None => None,
     };
-    start_repositories(config, deps, runner).await
+    start_repositories(config, deps, runner, Clock::default()).await
 }
 
 /// The runner the `[lander]` table names: one that starts `tessel-runner` as another account
@@ -127,7 +127,7 @@ pub async fn start_with_runner(
     deps: Deps,
     runner: Arc<dyn TestRunner>,
 ) -> Result<RunningServer, StartError> {
-    start_repositories(config, deps, Some(runner)).await
+    start_repositories(config, deps, Some(runner), Clock::default()).await
 }
 
 /// The port that answers the calls of `repository`: the lander when it names a `remote`.
@@ -155,10 +155,11 @@ fn calls_of(
     Ok(Arc::new(lander))
 }
 
-async fn start_repositories(
+pub(crate) async fn start_repositories(
     config: &Config,
     deps: Deps,
     runner: Option<Arc<dyn TestRunner>>,
+    clock: Clock,
 ) -> Result<RunningServer, StartError> {
     let config = &config.with_absolute_paths()?;
     let dir = StoreDir::open(&config.store_dir)?;
@@ -188,7 +189,14 @@ async fn start_repositories(
             shadow_enabled: repository.shadow_enabled.then(|| "true".to_string()),
             ..HostConfig::default()
         };
-        let running = repo::spawn(id.clone(), store, dir.repo_file(&id), host, calls);
+        let running = repo::spawn(
+            id.clone(),
+            store,
+            dir.repo_file(&id),
+            host,
+            calls,
+            clock.clone(),
+        );
         tracing::info!(repo = %id, "serving");
         handles.insert(id, running.handle.clone());
         repos.push(running);

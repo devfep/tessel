@@ -49,6 +49,78 @@ pub fn now_ms() -> u64 {
     u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Where a repository task reads the time: the system clock, or, in a test that built it through
+/// `testing::TestClock`, a clock the test moves. `server::start` always passes the system clock,
+/// and nothing in the configuration or on the wire can choose another.
+#[derive(Clone, Default)]
+pub struct Clock(Option<Arc<Shared>>);
+
+/// The clock a test controls: frozen at an instant plus an added skew, and a counter that tells
+/// the repository tasks it moved.
+pub(crate) struct Shared {
+    state: std::sync::Mutex<(Option<u64>, u64)>,
+    moved: tokio::sync::watch::Sender<u64>,
+}
+
+impl Shared {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new((None, 0)),
+            moved: tokio::sync::watch::channel(0).0,
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, (Option<u64>, u64)> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn now_ms(&self) -> u64 {
+        let (frozen_at, skew) = *self.lock();
+        frozen_at.unwrap_or_else(now_ms).saturating_add(skew)
+    }
+
+    pub(crate) fn freeze(&self) {
+        self.lock().0 = Some(now_ms());
+        self.moved.send_modify(|moves| *moves += 1);
+    }
+
+    pub(crate) fn advance(&self, ms: u64) {
+        self.lock().1 += ms;
+        self.moved.send_modify(|moves| *moves += 1);
+    }
+}
+
+impl Clock {
+    pub(crate) fn shared(shared: Arc<Shared>) -> Self {
+        Self(Some(shared))
+    }
+
+    pub fn now_ms(&self) -> u64 {
+        self.0
+            .as_ref()
+            .map_or_else(now_ms, |shared| shared.now_ms())
+    }
+
+    /// A receiver that wakes when a test moves the clock; `None` for the system clock.
+    fn subscribe(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.0.as_ref().map(|shared| shared.moved.subscribe())
+    }
+}
+
+/// Resolves when the test clock moves, never for the system clock.
+async fn clock_moved(changes: &mut Option<tokio::sync::watch::Receiver<u64>>) {
+    match changes {
+        Some(receiver) => {
+            if receiver.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
 /// A boxed future, so the port can be a trait object without another dependency.
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
@@ -165,11 +237,12 @@ pub fn spawn(
     file: PathBuf,
     config: HostConfig,
     calls: Arc<dyn CallPort>,
+    clock: Clock,
 ) -> RunningRepo {
     let (tx, inbox) = mpsc::channel(INBOX_QUEUE);
     let (jobs, queue) = std_mpsc::channel();
     let wake_on_start = holds_state(&id, &store) || calls.reads_trunk_head();
-    let thread = spawn_storage(id.clone(), store, queue, tx.clone());
+    let thread = spawn_storage(id.clone(), store, queue, tx.clone(), clock.clone());
     let handle = RepoHandle {
         id: id.clone(),
         file: Arc::new(file),
@@ -187,6 +260,8 @@ pub fn spawn(
         wake_at: None,
         wake_on_start,
         calls,
+        changes: clock.subscribe(),
+        clock,
     };
     RunningRepo {
         handle,
@@ -302,19 +377,20 @@ fn spawn_storage(
     mut store: Store,
     queue: std_mpsc::Receiver<StoreJob>,
     tx: mpsc::Sender<Msg>,
+    clock: Clock,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for job in queue {
             let answer = match job {
                 StoreJob::Load => match store.load() {
                     Ok(stored) => Msg::Host(Input::Loaded {
-                        now_ms: now_ms(),
+                        now_ms: clock.now_ms(),
                         stored,
                     }),
                     Err(error) => Msg::Unreadable(error.to_string()),
                 },
                 StoreJob::Commit { batch, entries } => {
-                    Msg::Host(committed(&id, &mut store, batch, &entries))
+                    Msg::Host(committed(&id, &mut store, batch, &entries, &clock))
                 }
                 StoreJob::ReadEvents {
                     sock,
@@ -335,8 +411,9 @@ fn committed(
     store: &mut Store,
     batch: BatchId,
     entries: &[(String, String)],
+    clock: &Clock,
 ) -> Input {
-    let now_ms = now_ms();
+    let now_ms = clock.now_ms();
     match store.commit(entries) {
         Ok(()) => Input::Committed { now_ms, batch },
         Err(error) => {
@@ -399,18 +476,23 @@ struct RepoTask {
     /// main's head, and a wake reads it.
     wake_on_start: bool,
     calls: Arc<dyn CallPort>,
+    clock: Clock,
+    /// Wakes the loop when a test moves the clock, so the wake timer is set again.
+    changes: Option<tokio::sync::watch::Receiver<u64>>,
 }
 
 impl RepoTask {
     async fn run(mut self) {
         if self.wake_on_start {
-            self.feed(Input::Wake { now_ms: now_ms() });
+            self.feed(Input::Wake {
+                now_ms: self.clock.now_ms(),
+            });
         }
         let timer = tokio::time::sleep(Duration::from_secs(3_600));
         tokio::pin!(timer);
         loop {
             if let Some(at_ms) = self.wake_at {
-                let wait = Duration::from_millis(at_ms.saturating_sub(now_ms()));
+                let wait = Duration::from_millis(at_ms.saturating_sub(self.clock.now_ms()));
                 timer.as_mut().reset(Instant::now() + wait);
             }
             tokio::select! {
@@ -420,9 +502,10 @@ impl RepoTask {
                         break;
                     }
                 }
+                () = clock_moved(&mut self.changes) => {}
                 () = &mut timer, if self.wake_at.is_some() => {
                     self.wake_at = None;
-                    self.feed(Input::Wake { now_ms: now_ms() });
+                    self.feed(Input::Wake { now_ms: self.clock.now_ms() });
                 }
             }
         }
@@ -451,28 +534,30 @@ impl RepoTask {
                 };
                 self.sockets.insert(sock, entry);
                 self.feed(Input::Opened {
-                    now_ms: now_ms(),
+                    now_ms: self.clock.now_ms(),
                     sock,
                     verified,
                 });
             }
             Msg::Frame { sock, text } => self.feed(Input::Frame {
-                now_ms: now_ms(),
+                now_ms: self.clock.now_ms(),
                 sock,
                 text,
             }),
             Msg::Binary { sock } => self.feed(Input::Binary {
-                now_ms: now_ms(),
+                now_ms: self.clock.now_ms(),
                 sock,
             }),
             Msg::Closed { sock } => {
                 self.sockets.remove(&sock);
                 self.feed(Input::Closed {
-                    now_ms: now_ms(),
+                    now_ms: self.clock.now_ms(),
                     sock,
                 });
             }
-            Msg::Poke => self.feed(Input::TrunkPoked { now_ms: now_ms() }),
+            Msg::Poke => self.feed(Input::TrunkPoked {
+                now_ms: self.clock.now_ms(),
+            }),
             Msg::Host(input) => self.feed(input),
             Msg::Unreadable(cause) => {
                 tracing::error!(
@@ -551,7 +636,7 @@ impl RepoTask {
         };
         if !delivered {
             pending.push_back(Input::SendFailed {
-                now_ms: now_ms(),
+                now_ms: self.clock.now_ms(),
                 sock,
             });
         }
@@ -573,12 +658,13 @@ impl RepoTask {
         let id = call.id;
         let answer = self.calls.answer(call);
         let tx = self.tx.clone();
+        let clock = self.clock.clone();
         tokio::spawn(async move {
             let (input, moved) = match tokio::spawn(answer).await {
                 Ok(answer) => {
                     let moved = moves_main(&answer);
                     let replied = Input::Replied {
-                        now_ms: now_ms(),
+                        now_ms: clock.now_ms(),
                         call: id,
                         answer,
                     };
@@ -586,7 +672,7 @@ impl RepoTask {
                 }
                 Err(_) => (
                     Input::CallLost {
-                        now_ms: now_ms(),
+                        now_ms: clock.now_ms(),
                         call: id,
                     },
                     false,
@@ -696,7 +782,14 @@ mod tests {
             ..HostConfig::default()
         };
         let id = RepoId::new("acme", "demo").unwrap();
-        let running = spawn(id, store, file.clone(), config, Arc::new(NoLander));
+        let running = spawn(
+            id,
+            store,
+            file.clone(),
+            config,
+            Arc::new(NoLander),
+            Clock::default(),
+        );
         (running, file)
     }
 

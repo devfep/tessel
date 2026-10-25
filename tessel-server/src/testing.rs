@@ -6,28 +6,39 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::landing::TestRunner;
+use crate::repo::{Clock, Shared};
 use crate::server::{self, Deps, RunningServer, StartError};
 
 /// A clock a test controls. While it is frozen the server sees the instant it was frozen at, plus
-/// whatever `advance` has added.
-#[derive(Clone, Default)]
-pub struct TestClock;
+/// whatever `advance` has added. Clones share one clock; build one per server.
+#[derive(Clone)]
+pub struct TestClock(Arc<Shared>);
+
+impl Default for TestClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TestClock {
     pub fn new() -> Self {
-        Self
+        Self(Arc::new(Shared::new()))
     }
 
     /// The time the server sees, in milliseconds.
     pub fn now_ms(&self) -> u64 {
-        0
+        self.0.now_ms()
     }
 
     /// Stop the clock at the present instant: from now on it moves only with `advance`.
-    pub fn freeze(&self) {}
+    pub fn freeze(&self) {
+        self.0.freeze();
+    }
 
     /// Move the clock forward by `ms`; the server notices at once.
-    pub fn advance(&self, _ms: u64) {}
+    pub fn advance(&self, ms: u64) {
+        self.0.advance(ms);
+    }
 }
 
 /// Like `server::start` (or `server::start_with_runner` when `runner` is given), with the
@@ -36,10 +47,12 @@ pub async fn start_with_clock(
     config: &Config,
     deps: Deps,
     runner: Option<Arc<dyn TestRunner>>,
-    _clock: &TestClock,
+    clock: &TestClock,
 ) -> Result<RunningServer, StartError> {
-    match runner {
-        Some(runner) => server::start_with_runner(config, deps, runner).await,
-        None => server::start(config, deps).await,
-    }
+    let runner = match (runner, &config.lander) {
+        (Some(runner), _) => Some(runner),
+        (None, Some(lander)) => Some(server::runner_of(lander)?),
+        (None, None) => None,
+    };
+    server::start_repositories(config, deps, runner, Clock::shared(Arc::clone(&clock.0))).await
 }
