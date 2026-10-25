@@ -1,17 +1,37 @@
 # cargo-mutants configuration, read by every `cargo mutants` run (nightly, per pull request with
-# `--in-diff`, and the manual dispatch), because no run passes `--exclude` on the command line.
+# `--in-diff`, and the manual dispatch), because no run passes `--exclude-re` on the command line.
 #
-# The simulator's harness is left out: it generates and plumbs the random traffic the checkers
-# judge. A mutant there changes which traffic a seed produces, and no test can see that without
-# asserting the traffic's shape; the planted-bug tests (tests/simulator.rs) pin what matters, that
-# each checker catches the bug it was written for. The checkers, src/sim/check.rs, stay under
-# mutation.
-exclude_globs = [
-    "src/sim/driver.rs",
-    "src/sim/traffic.rs",
-    "src/sim/rng.rs",
-    "src/sim/clock.rs",
-    "src/sim/store.rs",
-    "src/sim/variant.rs",
-    "src/sim/mod.rs",
+# The simulator (src/sim) is under mutation: its checkers, generator, clock, store, variants,
+# driver and traffic. These patterns leave out only mutants the simulator tests missed on CI at
+# two seeds and that nothing short of asserting a seed's random traffic could kill, or that need
+# a state the host never produces. The listed mutants are the only ones: no mutant the tests
+# kill today is excluded.
+# - driver.rs: `faults` (a harness mistake cannot be provoked from outside), `entrants` and
+#   `awaiting_review` (they only steer which races and reviews the traffic picks), the
+#   `wakes_set` counter in `set_wake` and `with_drift` (both feed a planted variant whose test
+#   catches it by other means), and the lander port's `answer_call` (its `Reconcile` answer).
+# - traffic.rs: the fault mix in `arm_fault`, the length of a clock step, the dice in `claim`,
+#   `jump`, `watch` and `step`, and the clock-advance arm of `act`. They change which traffic a
+#   seed runs, not whether a kind of request or fault occurs, which tests/simulator.rs pins for
+#   every kind.
+# - mod.rs: the run counters `cut_off_replays` and `failure_report`'s count line, which only
+#   describe a run.
+# The patterns match the names `cargo mutants --list` prints: re-check with it after any edit.
+exclude_re = [
+    'src/sim/driver\.rs:.*replace Sim::awaiting_review -> .* with Box::leak\(Box::new\(BTreeSet::from_iter',
+    'src/sim/driver\.rs:.*replace Sim::entrants -> ',
+    'src/sim/driver\.rs:.*replace Sim::faults -> &\[String\] with Vec::leak\(Vec::new\(\)\)$',
+    'src/sim/driver\.rs:.*replace \+= with \*= in Sim::set_wake$',
+    'src/sim/driver\.rs:.*replace with_drift -> ',
+    'src/sim/driver\.rs:.* in Sim::answer_call$',
+    'src/sim/traffic\.rs:.*delete match arm (0 \| 1|2) in Traffic::arm_fault$',
+    'src/sim/traffic\.rs:.*replace \+ with \* in Traffic::arm_fault$',
+    'src/sim/traffic\.rs:.*delete match arm 87\.\.= 91 in Traffic::act$',
+    'src/sim/traffic\.rs:.*replace \+ with [-*] in Traffic::act$',
+    'src/sim/traffic\.rs:.*replace \+ with \* in Traffic::(jump|watch)$',
+    'src/sim/traffic\.rs:.*replace && with \|\| in Traffic::(claim|jump)$',
+    'src/sim/traffic\.rs:.*replace &= with \|= in Traffic::step$',
+    'src/sim/mod\.rs:.*replace (&& with \|\||== with !=) in cut_off_replays$',
+    'src/sim/mod\.rs:.*replace cut_off_replays -> usize with 1$',
+    'src/sim/mod\.rs:.*replace > with >= in failure_report$',
 ]

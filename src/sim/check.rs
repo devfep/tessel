@@ -586,6 +586,9 @@ pub fn i8(events: &[Event]) -> Vec<String> {
     let live = live_claims(events);
     let mut found = Vec::new();
     for (a, left) in &live {
+        // An exclusive bound, not `a + 1..`: a claim paired with itself is always skipped below (same
+        // race, or its own agent with no race), so that range and `a * 1..` behave alike and the
+        // mutant could never be killed.
         for (b, right) in live.range((Bound::Excluded(*a), Bound::Unbounded)) {
             let same_race = left.race.is_some() && left.race == right.race;
             let own = left.agent == right.agent && left.race.is_none() && right.race.is_none();
