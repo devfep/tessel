@@ -1,0 +1,92 @@
+name: Adapter suite
+
+# Two checks of the server that kill a process or build an old release, so they live apart from
+# the fast lane. On a laptop the kill loop takes about a second a kill (25 kills: half a minute)
+# and the old-CLI landing four seconds; the builds are what take the time. That fits a pull
+# request that touches the server, the host or the CLI, so they run there (with a path filter),
+# on every push to main, and nightly with a longer loop.
+
+on:
+  pull_request:
+    paths:
+      - tessel-server/**
+      - tessel-cli/**
+      - src/host/**
+      - src/coordinator/**
+      - src/coordinator.rs
+      - src/shell.rs
+      - src/protocol.rs
+      - Cargo.lock
+      - .github/workflows/adapter-suite.yml
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    adapter-suite-${{ github.event_name == 'pull_request' &&
+    github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kill-loop:
+    name: Adapter suite, kill -9 loop
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: adapter-kill-loop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The real server binary is killed with SIGKILL and started again on its store that many
+      # times, under client traffic; after each kill every client transcript is checked against
+      # the stored state and log (I1, I5 and I9 of the simulator's checkers).
+      - name: Kill loop
+        env:
+          TESSEL_KILL_LOOP_ITERATIONS: ${{ github.event_name == 'schedule' && '200' || '25' }}
+        run: cargo test -p tessel-server --test kill_loop -- --ignored --nocapture
+
+  old-cli:
+    name: Adapter suite, CLI before the protocol range
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The parent of "Announce the protocol range in Welcome and warn in the CLI": the last
+      # commit whose CLI does not know the `protocol_range` field of `Welcome`.
+      OLD_CLI_COMMIT: e9df98cd45badbfca5bf4cea792d00a6ccf8765e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: adapter-old-cli
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the current server and CLI
+        run: cargo build -p tessel-server -p tessel-cli
+      # Built here and never in `cargo test`: the old release has its own lockfile, so it is
+      # unpacked and built on its own, with this repository's toolchain (the old toolchain file
+      # also asks for a wasm target that nothing here needs).
+      - name: Build the CLI before the protocol range field
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          old="$RUNNER_TEMP/old-cli-src"
+          mkdir -p "$old"
+          git archive "$OLD_CLI_COMMIT" | tar -x -C "$old"
+          (cd "$old" && RUSTUP_TOOLCHAIN="$channel" \
+            CARGO_TARGET_DIR="$RUNNER_TEMP/old-cli-target" \
+            cargo build --locked -p tessel-cli)
+          echo "TESSEL_OLD_CLI=$RUNNER_TEMP/old-cli-target/debug/tessel" >> "$GITHUB_ENV"
+      - name: Land a commit with the old CLI
+        run: tessel-server/ci/old-cli.sh
