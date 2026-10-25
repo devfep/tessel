@@ -193,6 +193,7 @@ fn the_command_sees_only_the_environment_of_the_file() {
 
 /// Makes `path` hard to remove: an ACL that denies deleting it, then user-immutable (which blocks
 /// any later change of the ACL).
+#[cfg(target_os = "macos")]
 fn make_stubborn(path: &Path) {
     let acl = Command::new("/bin/chmod")
         .args(["+a", "everyone deny delete"])
