@@ -4,48 +4,70 @@
 #
 # Usage: check-own-users.sh [--accounts | --installed | --all]
 #
-# --accounts   the two accounts (numbers, shell, home, groups), cron.deny and at.deny, and the
-#              mode of your home. Needs nothing installed.
-# --installed  the owner and mode of every path in section 1, the toolchain, and what the runner
-#              account can and cannot read or write. Needs install.sh to have run.
+# --accounts   the two accounts (numbers, shell, home, password, groups), cron.deny and at.deny,
+#              the mode of your home, and what the runner account can reach: your private
+#              directories, the loopback services and the world-writable unix sockets.
+# --installed  the owner and mode of every path in section 1, the toolchain, the sudoers rule, the
+#              launchd plist, and what the runner account can and cannot read or write.
 # --all        both (the default).
 #
 # Probes that run as _tessel-runner use `sudo -n -u _tessel-runner`, which needs your sudo
-# password already given (`sudo -v` first). Without it those probes are skipped, and the script
-# says so. Exit 0: every check passed. Exit 1: a check failed. Exit 2: nothing failed, but
-# something was skipped. A skipped probe is not a pass; a failing or skipped check stops the order
-# in docs/dogfood.md. The probes only test access (`test -r`, `test -w`), and write nothing.
+# password already given (`sudo -v` first). Each probe prints a token from inside the sudo
+# (TESSEL_CAN, TESSEL_CANNOT), so a sudo that failed is a skipped probe and never a pass. Exit 0:
+# every check passed. Exit 1: a check failed. Exit 2: nothing failed, but something was skipped.
+# A failing or skipped check stops the order in docs/dogfood.md. The probes only test access
+# (`test -r`, `test -w`, a TCP connect) and write nothing.
 #
-# It also lists the processes that listen on a TCP port: a service that trusts local connections
-# is reachable from the runner account (own-users.md, section 7), and only you can judge it.
+# --test-tools lets a test replace dscl, id, sudo, lsof and the deny files through TESSEL_DSCL,
+# TESSEL_ID, TESSEL_SUDO, TESSEL_LSOF, TESSEL_CRON_DENY and TESSEL_AT_DENY. Without it those
+# variables must not be set.
 set -euo pipefail
 
-dscl=${TESSEL_DSCL:-/usr/bin/dscl}
-sudo=${TESSEL_SUDO:-/usr/bin/sudo}
-id=${TESSEL_ID:-/usr/bin/id}
-cron_deny=${TESSEL_CRON_DENY:-/var/at/cron.deny}
-at_deny=${TESSEL_AT_DENY:-/var/at/at.deny}
-mode=all
+usage="usage: check-own-users.sh [--accounts | --installed | --all] [--test-tools]"
+mode=""
+test_tools=0
+for arg in "$@"; do
+	case "$arg" in
+	--all | --accounts | --installed)
+		[ -z "$mode" ] || {
+			echo "$usage" >&2
+			exit 64
+		}
+		mode=${arg#--}
+		;;
+	--test-tools) test_tools=1 ;;
+	*)
+		echo "$usage" >&2
+		exit 64
+		;;
+	esac
+done
+mode=${mode:-all}
+
+dscl=/usr/bin/dscl
+sudo=/usr/bin/sudo
+id=/usr/bin/id
+lsof=/usr/sbin/lsof
+cron_deny=/var/at/cron.deny
+at_deny=/var/at/at.deny
+if [ "$test_tools" = 1 ]; then
+	dscl=${TESSEL_DSCL:-$dscl}
+	sudo=${TESSEL_SUDO:-$sudo}
+	id=${TESSEL_ID:-$id}
+	lsof=${TESSEL_LSOF:-$lsof}
+	cron_deny=${TESSEL_CRON_DENY:-$cron_deny}
+	at_deny=${TESSEL_AT_DENY:-$at_deny}
+elif [ -n "${TESSEL_DSCL:-}${TESSEL_SUDO:-}${TESSEL_ID:-}${TESSEL_LSOF:-}${TESSEL_CRON_DENY:-}${TESSEL_AT_DENY:-}" ]; then
+	echo "check-own-users: TESSEL_* tool overrides are set; they are accepted only with --test-tools" >&2
+	exit 64
+fi
+
 pass=0
 failed=0
 skipped=0
 tessel_name=_tessel
 runner_name=_tessel-runner
 channel=1.99.1
-
-case "${1:-}" in
-"" | --all) mode=all ;;
---accounts) mode=accounts ;;
---installed) mode=installed ;;
-*)
-	echo "usage: check-own-users.sh [--accounts | --installed | --all]" >&2
-	exit 64
-	;;
-esac
-[ "$#" -le 1 ] || {
-	echo "usage: check-own-users.sh [--accounts | --installed | --all]" >&2
-	exit 64
-}
 
 ok() {
 	pass=$((pass + 1))
@@ -60,7 +82,7 @@ skip() {
 	echo "SKIP: $*"
 }
 
-# Prints "owner:group mode" of $1, or nothing when it does not exist.
+# Prints "owner:group mode" of $1 (not following a link), or nothing when it does not exist.
 stat_of() {
 	if [ "$(/usr/bin/uname -s)" = Darwin ]; then
 		/usr/bin/stat -f '%Su:%Sg %Lp' "$1" 2>/dev/null || true
@@ -71,6 +93,10 @@ stat_of() {
 
 expect_mode() {
 	local path=$1 want_owner=$2 want_mode=$3 got
+	if [ -L "$path" ]; then
+		bad "$path is a symbolic link"
+		return
+	fi
 	got=$(stat_of "$path")
 	if [ "$got" = "$want_owner $want_mode" ]; then
 		ok "$path is $want_owner $want_mode"
@@ -95,20 +121,26 @@ is() {
 }
 
 check_account() {
-	local name=$1 number=$2 groups
+	local name=$1 number=$2 member group
 	is "$(attribute "/Users/$name" UniqueID)" "$number" "$name UID"
 	is "$(attribute "/Users/$name" PrimaryGroupID)" "$number" "$name GID"
 	is "$(attribute "/Groups/$name" PrimaryGroupID)" "$number" "group $name GID"
 	is "$(attribute "/Users/$name" UserShell)" /usr/bin/false "$name shell"
 	is "$(attribute "/Users/$name" NFSHomeDirectory)" /var/empty "$name home"
 	is "$(attribute "/Users/$name" IsHidden)" 1 "$name IsHidden"
-	groups=$("$id" -Gn "$name" 2>/dev/null || true)
-	if [ -z "$groups" ]; then
-		bad "$name is unknown to id"
-	elif [ "$groups" = "$name" ]; then
-		ok "$name is in no group but its own"
+	is "$(attribute "/Users/$name" Password)" '*' "$name password"
+	for group in staff admin; do
+		if "$dscl" . -read "/Groups/$group" GroupMembership 2>/dev/null | /usr/bin/grep -qw -- "$name"; then
+			bad "$name is a member of $group"
+		else
+			ok "$name is not a member of $group"
+		fi
+	done
+	member=$("$dscl" . -search /Groups GroupMembership "$name" 2>/dev/null | /usr/bin/awk 'NF { print $1 }' | /usr/bin/paste -sd, - || true)
+	if [ -z "$member" ]; then
+		ok "$name is a member of no group"
 	else
-		bad "$name is in the groups: $groups"
+		bad "$name is a member of: $member"
 	fi
 }
 
@@ -122,11 +154,11 @@ check_deny() {
 }
 
 check_home() {
-	local got
+	local got bits
 	got=$(stat_of "$HOME")
-	case "${got##* }" in
-	*[0-7][0-7][0-7])
-		local bits=${got##* }
+	bits=${got##* }
+	case "$bits" in
+	[0-7][0-7][0-7])
 		if [ "${bits: -1}" = 0 ]; then
 			ok "$HOME has no bits for other users ($bits)"
 		else
@@ -137,21 +169,26 @@ check_home() {
 	esac
 }
 
-runner_can_sudo=unknown
+# run_as_runner <shell script> <argument>...: prints what the script prints, run by the runner.
+run_as_runner() {
+	"$sudo" -n -u "$runner_name" /bin/sh -c "$@" 2>/dev/null || true
+}
+
+runner_ready=unknown
 as_runner_ready() {
-	if [ "$runner_can_sudo" = unknown ]; then
-		if "$sudo" -n -u "$runner_name" /usr/bin/true >/dev/null 2>&1; then
-			runner_can_sudo=yes
+	if [ "$runner_ready" = unknown ]; then
+		if [ "$(run_as_runner 'echo TESSEL_READY' sh)" = TESSEL_READY ]; then
+			runner_ready=yes
 		else
-			runner_can_sudo=no
+			runner_ready=no
 		fi
 	fi
-	[ "$runner_can_sudo" = yes ]
+	[ "$runner_ready" = yes ]
 }
 
 # probe <description> <r|w> <path> <can|cannot>: the runner account's access to a path.
 probe() {
-	local description=$1 test_flag=$2 path=$3 expect=$4 result
+	local description=$1 flag=$2 path=$3 expect=$4 token
 	if [ ! -e "$path" ]; then
 		skip "$description: $path does not exist"
 		return
@@ -160,15 +197,81 @@ probe() {
 		skip "$description: needs 'sudo -v' and an existing $runner_name"
 		return
 	fi
-	if "$sudo" -n -u "$runner_name" /bin/test "-$test_flag" "$path" >/dev/null 2>&1; then
-		result=can
+	# The script is for the runner's shell, which expands its own arguments.
+	# shellcheck disable=SC2016
+	token=$(run_as_runner 'if test "-$1" "$2"; then echo TESSEL_CAN; else echo TESSEL_CANNOT; fi' sh "$flag" "$path")
+	case "$token" in
+	TESSEL_CAN) token=can ;;
+	TESSEL_CANNOT) token=cannot ;;
+	*)
+		skip "$description: the probe did not run"
+		return
+		;;
+	esac
+	if [ "$token" = "$expect" ]; then
+		ok "$description: $runner_name $token"
 	else
-		result=cannot
+		bad "$description: $runner_name $token, want $expect"
 	fi
-	if [ "$result" = "$expect" ]; then
-		ok "$description: $runner_name $result"
+}
+
+# probe_connect <port>: whether the runner account can open a TCP connection to 127.0.0.1:<port>.
+probe_connect() {
+	local port=$1 token
+	# shellcheck disable=SC2016
+	token=$(run_as_runner 'if /usr/bin/nc -z -w 2 127.0.0.1 "$1" >/dev/null 2>&1; then echo TESSEL_CAN; else echo TESSEL_CANNOT; fi' sh "$port")
+	case "$token" in
+	TESSEL_CAN) echo can ;;
+	TESSEL_CANNOT) echo cannot ;;
+	*) echo unknown ;;
+	esac
+}
+
+check_loopback() {
+	local out="" port process seen=" " result
+	if "$sudo" -n /usr/bin/true >/dev/null 2>&1; then
+		out=$("$sudo" -n "$lsof" -nP -iTCP -sTCP:LISTEN 2>/dev/null || true)
 	else
-		bad "$description: $runner_name $result, want $expect"
+		out=$("$lsof" -nP -iTCP -sTCP:LISTEN 2>/dev/null || true)
+		echo "note: lsof ran as you and lists only your processes; 'sudo -v' first to list every user's"
+	fi
+	echo "TCP listeners:"
+	echo "$out" | /usr/bin/awk 'NR == 1 || /LISTEN/ { print "  " $1, $3, $9 }'
+	while read -r process port; do
+		case "$seen" in *" $port "*) continue ;; esac
+		seen="$seen$port "
+		[ "$port" != 7878 ] || continue
+		if ! as_runner_ready; then
+			skip "connect to 127.0.0.1:$port ($process): needs 'sudo -v'"
+			continue
+		fi
+		result=$(probe_connect "$port")
+		case "$result" in
+		cannot) ok "$runner_name cannot connect to 127.0.0.1:$port ($process)" ;;
+		can) bad "$runner_name can connect to 127.0.0.1:$port ($process): stop it, require a password, or block it with pf" ;;
+		*) skip "connect to 127.0.0.1:$port: the probe did not run" ;;
+		esac
+	done < <(echo "$out" | /usr/bin/awk '/LISTEN/ { n = split($9, a, ":"); print $1, a[n] }')
+}
+
+check_unix_sockets() {
+	local socket count=0 reached=0 token
+	if ! as_runner_ready; then
+		skip "unix sockets that you own and anyone may write: needs 'sudo -v'"
+		return
+	fi
+	while IFS= read -r socket; do
+		count=$((count + 1))
+		# shellcheck disable=SC2016
+		token=$(run_as_runner 'if test -w "$1"; then echo TESSEL_CAN; else echo TESSEL_CANNOT; fi' sh "$socket")
+		if [ "$token" = TESSEL_CAN ]; then
+			reached=$((reached + 1))
+			bad "$runner_name can connect to the unix socket $socket: stop its service or make it private"
+		fi
+	done < <(/usr/bin/find /tmp /var/tmp /var/run /Users/Shared -maxdepth 2 -type s -perm -0002 \
+		-user "$(/usr/bin/id -un)" 2>/dev/null || true)
+	if [ "$reached" = 0 ]; then
+		ok "$runner_name reaches none of the $count unix sockets that you own and anyone may write"
 	fi
 }
 
@@ -182,31 +285,65 @@ check_accounts() {
 	for path in "$HOME/repos" "$HOME/.ssh" "$HOME/.config/gh"; do
 		probe "read $path" r "$path" cannot
 	done
+	check_loopback
+	check_unix_sockets
+}
+
+check_plist() {
+	local plist=/Library/LaunchDaemons/dev.tessel.server.plist
+	[ -f "$plist" ] || return 0
+	is "$(/usr/bin/plutil -extract UserName raw -o - "$plist" 2>/dev/null || true)" "$tessel_name" "the plist's UserName"
+	is "$(/usr/bin/plutil -extract EnvironmentVariables.PATH raw -o - "$plist" 2>/dev/null || true)" /usr/bin:/bin "the plist's PATH"
+	if /bin/launchctl print-disabled system 2>/dev/null | /usr/bin/grep -q '"dev.tessel.server" => disabled'; then
+		echo "note: dev.tessel.server is disabled; the move enables it (docs/dogfood.md, step 4)"
+	else
+		echo "note: dev.tessel.server is not disabled: it loads at boot"
+	fi
+}
+
+check_sudo_rule() {
+	local out
+	if ! "$sudo" -n /usr/bin/true >/dev/null 2>&1; then
+		skip "the sudoers rule of $tessel_name: needs 'sudo -v'"
+		return
+	fi
+	out=$("$sudo" -n -l -U "$tessel_name" 2>/dev/null || true)
+	if echo "$out" | /usr/bin/grep -q 'NOPASSWD: ALL'; then
+		bad "$tessel_name may run ALL commands without a password"
+	elif echo "$out" | /usr/bin/grep -qF '/opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml' &&
+		echo "$out" | /usr/bin/grep -qF '/bin/kill -KILL -1'; then
+		ok "$tessel_name may run the runner and kill -KILL -1"
+	else
+		bad "the sudoers rule of $tessel_name is not the two commands of the design"
+	fi
 }
 
 check_installed() {
 	expect_mode /opt/tessel root:wheel 755
 	expect_mode /opt/tessel/bin root:wheel 755
 	expect_mode /opt/tessel/sbin root:wheel 755
+	expect_mode /opt/tessel/tmp root:wheel 700
 	local binary
 	for binary in tessel-server tessel tessel-runner; do
 		expect_mode "/opt/tessel/bin/$binary" root:wheel 755
 	done
-	expect_mode /var/tessel "$tessel_name:$tessel_name" 711
+	expect_mode /var/tessel root:wheel 755
 	local dir
 	for dir in keys stores lander tmp; do
 		expect_mode "/var/tessel/$dir" "$tessel_name:$tessel_name" 700
 	done
 	expect_mode /var/tessel/handoff "$tessel_name:$runner_name" 750
 	expect_mode /var/tessel/cargo "$tessel_name:$tessel_name" 755
+	expect_mode /var/tessel/cargo/config.toml "$tessel_name:$tessel_name" 644
 	expect_mode /var/tessel/toolchain root:wheel 755
-	expect_mode /var/tessel/tessel-server.toml "$tessel_name:$tessel_name" 600
 	expect_mode /var/tessel-runner root:wheel 755
-	expect_mode /var/tessel-runner/tessel-runner.toml root:wheel 644
 	expect_mode /var/tessel-runner/work "$runner_name:$runner_name" 700
 	expect_mode /var/tessel-runner/tmp "$runner_name:$runner_name" 700
+	expect_mode /var/log/tessel-server.log "$tessel_name:$tessel_name" 644
 	expect_mode /etc/sudoers.d/tessel root:wheel 440
 	expect_mode /Library/LaunchDaemons/dev.tessel.server.plist root:wheel 644
+	check_plist
+	check_sudo_rule
 	if [ -e /var/tessel/github-token ]; then
 		expect_mode /var/tessel/github-token "$tessel_name:$tessel_name" 600
 	else
@@ -232,19 +369,14 @@ check_installed() {
 	probe "read /var/tessel/handoff" r /var/tessel/handoff can
 	probe "write /var/tessel-runner/work" w /var/tessel-runner/work can
 	if as_runner_ready; then
-		if "$sudo" -n -u "$runner_name" "$sudo" -n -l >/dev/null 2>&1; then
-			bad "$runner_name can run sudo"
-		else
+		if [ "$(run_as_runner '/usr/bin/sudo -n -l >/dev/null 2>&1 && echo TESSEL_CAN || echo TESSEL_CANNOT' sh)" = TESSEL_CANNOT ]; then
 			ok "$runner_name cannot run sudo"
+		else
+			bad "$runner_name can run sudo, or the probe did not run"
 		fi
 	else
 		skip "$runner_name and sudo: needs 'sudo -v'"
 	fi
-}
-
-list_listeners() {
-	echo "TCP listeners (judge each: a service that trusts local connections is open to the runner):"
-	/usr/sbin/lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | /usr/bin/awk 'NR == 1 || /LISTEN/ { print "  " $1, $3, $9 }' || true
 }
 
 case "$mode" in
@@ -255,7 +387,6 @@ all)
 	check_installed
 	;;
 esac
-list_listeners
 echo "check-own-users: $pass ok, $failed failed, $skipped skipped"
 if [ "$failed" -gt 0 ]; then
 	exit 1

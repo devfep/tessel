@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
-# Sets up what coordinates devfep/tessel on this machine (docs/dogfood.md).
+# Sets up the server directory that coordinates devfep/tessel on this machine (docs/dogfood.md).
 #
-# Usage: scripts/dogfood/setup.sh tokens --kid <kid>
-#        scripts/dogfood/setup.sh legacy <server dir>
+# Usage: scripts/dogfood/setup.sh <server dir>
 #
-# `tokens` is Felix's part of the own-users layout (docs/proposals/own-users.md): it mints an
-# agent token for each of lane-a, lane-b and orchestrator with `sudo -u _tessel`, and writes each
-# to ~/.tessel/tokens/<agent> (mode 0600, made by this shell, so Felix can read it). The root part
-# is install.sh. `legacy` is the setup before the move to those accounts and stays only until
-# that move is done (docs/dogfood.md, "Moving to the service accounts"); then it is deleted.
-#
-# What `legacy` does:
+# This is the setup before the move to the service accounts (docs/dogfood.md, "Moving to the
+# service accounts"). The move replaces it, and the move's last step deletes this script.
 #
 # Makes <server dir>/{keys,stores,lander,tokens}, writes tessel-runner.toml and tessel-server.toml,
 # makes the signing key unless it exists, and mints a token for each of lane-a, lane-b and
@@ -22,47 +16,6 @@
 # <server dir>/.cargo/config.toml caps landing builds at 6 jobs, as cargo reads it upward from the
 # runner's clone; a submission's own .cargo/ is held as sensitive. Tokens are never printed.
 set -euo pipefail
-
-tokens() {
-	local kid="" agent
-	[ "$#" -eq 2 ] && [ "$1" = "--kid" ] && kid=$2
-	[ -n "$kid" ] || {
-		echo "usage: setup.sh tokens --kid <kid>" >&2
-		exit 1
-	}
-	case "$kid" in
-	*[!A-Za-z0-9._-]*)
-		echo "setup: the kid may hold only letters, digits, '.', '_' and '-'" >&2
-		exit 1
-		;;
-	esac
-	PATH=/usr/bin:/bin
-	umask 077
-	/bin/mkdir -p "$HOME/.tessel/tokens"
-	for agent in lane-a lane-b orchestrator; do
-		# The redirect is meant to be Felix's: _tessel cannot write under his home.
-		# shellcheck disable=SC2024
-		/usr/bin/sudo -u _tessel /opt/tessel/bin/tessel-server admin token \
-			--config /var/tessel/tessel-server.toml --kid "$kid" \
-			--tenant devfep --repo tessel --agent "$agent" --ttl 7d \
-			>"$HOME/.tessel/tokens/$agent.new"
-		/bin/mv "$HOME/.tessel/tokens/$agent.new" "$HOME/.tessel/tokens/$agent"
-		echo "minted a token for $agent in $HOME/.tessel/tokens/$agent"
-	done
-}
-
-case "${1:-}" in
-tokens)
-	shift
-	tokens "$@"
-	exit 0
-	;;
-legacy) shift ;;
-*)
-	echo "usage: setup.sh tokens --kid <kid> | setup.sh legacy <server dir>" >&2
-	exit 1
-	;;
-esac
 
 kid="2026-10"
 tenant="devfep"

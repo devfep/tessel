@@ -54,6 +54,8 @@ echo "$commit" | /usr/bin/grep -Eq '^[0-9a-f]{40}$' || fail "the commit must be 
 if [ "$dry" != 1 ]; then
 	[ "$(/usr/bin/uname -s)" = Darwin ] || fail "this script runs on the Mac that hosts the server"
 	[ "$(/usr/bin/id -u)" = 0 ] || fail "run it as root: sudo /opt/tessel/sbin/fetch.sh"
+	here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+	[ "$here" = /opt/tessel/sbin ] || fail "run the installed copy, /opt/tessel/sbin/fetch.sh, not $here"
 	[ -n "${SUDO_USER:-}" ] || fail "run it through sudo from your own terminal, not from a root shell"
 	[ -t 0 ] && [ -t 1 ] || fail "run it in a terminal: it asks you to read a diff"
 	[ -x "$toolchain/bin/cargo" ] || fail "$toolchain/bin/cargo is missing: run install.sh"
@@ -89,7 +91,7 @@ git init -q
 git fetch -q --no-tags --depth=1 "$remote" main
 main=$(git rev-parse FETCH_HEAD)
 git fetch -q --no-tags --depth=1 "$fork" "$commit"
-diff=$(git diff "$main" "$commit" -- .cargo | /usr/bin/tr -cd '\11\12\40-\176' | /usr/bin/head -n 200)
+diff=$(git diff "$main" "$commit" -- .cargo | /usr/bin/tr -cd '\11\12\40-\176' | /usr/bin/awk 'NR <= 200')
 if [ -n "$diff" ]; then
 	echo "$commit changes .cargo/ (shown as untrusted text, at most 200 lines):"
 	echo "$diff" | /usr/bin/sed 's/^/  | /'
@@ -98,5 +100,7 @@ if [ -n "$diff" ]; then
 	[ "$answer" = yes ] || fail "not confirmed; nothing was fetched"
 fi
 git checkout -q --detach "$commit"
-as_tessel "$toolchain/bin/cargo" fetch --locked --manifest-path "$dir/Cargo.toml"
+# Cargo reads .cargo/config.toml from its working directory and the ones above it, not from
+# --manifest-path, so it runs from inside the directory whose .cargo/ diff was just shown.
+(cd "$dir" && as_tessel "$toolchain/bin/cargo" fetch --locked)
 echo "fetch: done for $commit"

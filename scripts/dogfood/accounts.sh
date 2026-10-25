@@ -7,7 +7,8 @@
 # _tessel (481) runs the server and the lander; _tessel-runner (482) runs repo code. Each has a
 # group of its own with the same number, shell /usr/bin/false, home /var/empty, password '*', and
 # is hidden. The script aborts if either number is taken, as a user or as a group, by another
-# name. It is safe to run again: what exists with the right numbers is left alone.
+# name. It is safe to run again, also after a run that stopped half way: every attribute of an
+# account that exists is set again.
 # --dry-run changes nothing and needs no root; --dscl is accepted only with it, so a test can
 # put a fake dscl in front of the real one.
 set -euo pipefail
@@ -22,8 +23,8 @@ tessel_name=_tessel
 tessel_id=481
 runner_name=_tessel-runner
 runner_id=482
-cron_deny=${TESSEL_CRON_DENY:-/var/at/cron.deny}
-at_deny=${TESSEL_AT_DENY:-/var/at/at.deny}
+cron_deny=/var/at/cron.deny
+at_deny=/var/at/at.deny
 
 fail() {
 	echo "accounts: $*" >&2
@@ -45,9 +46,16 @@ done
 if [ "$dscl" != /usr/bin/dscl ] && [ "$dry" != 1 ]; then
 	fail "--dscl is only accepted with --dry-run"
 fi
+if [ "$dry" = 1 ]; then
+	# Only a test points these elsewhere, and only in a dry run, which writes nothing.
+	cron_deny=${TESSEL_CRON_DENY:-$cron_deny}
+	at_deny=${TESSEL_AT_DENY:-$at_deny}
+fi
 if [ "$dry" != 1 ]; then
 	[ "$(/usr/bin/uname -s)" = Darwin ] || fail "this script makes macOS accounts"
 	[ "$(/usr/bin/id -u)" = 0 ] || fail "run it as root: sudo /opt/tessel/sbin/accounts.sh"
+	here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+	[ "$here" = /opt/tessel/sbin ] || fail "run the installed copy, /opt/tessel/sbin/accounts.sh, not $here"
 fi
 
 # Prints the name that holds number $3 in the dscl list of record type $1 and number key $2.
@@ -86,15 +94,10 @@ do_dscl() {
 
 make_account() {
 	local name=$1 number=$2
-	if "$dscl" . -read "/Groups/$name" PrimaryGroupID >/dev/null 2>&1; then
-		echo "group $name ($number) is in place"
-	else
-		do_dscl -create "/Groups/$name" PrimaryGroupID "$number"
-		do_dscl -create "/Groups/$name" Password '*'
-	fi
+	do_dscl -create "/Groups/$name" PrimaryGroupID "$number"
+	do_dscl -create "/Groups/$name" Password '*'
 	if "$dscl" . -read "/Users/$name" UniqueID >/dev/null 2>&1; then
-		echo "user $name ($number) is in place"
-		return
+		echo "user $name ($number) exists; setting every attribute again"
 	fi
 	do_dscl -create "/Users/$name" UniqueID "$number"
 	do_dscl -create "/Users/$name" PrimaryGroupID "$number"
@@ -112,6 +115,10 @@ deny_file() {
 	elif [ "$dry" = 1 ]; then
 		echo "would append $name to $file"
 	else
+		# A file that does not end in a newline would merge the name into its last line.
+		if [ -s "$file" ] && [ "$(/usr/bin/tail -c 1 "$file" | /usr/bin/wc -l)" -eq 0 ]; then
+			echo >>"$file"
+		fi
 		echo "$name" >>"$file"
 		echo "appended $name to $file"
 	fi
