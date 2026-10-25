@@ -9,9 +9,8 @@ are in git history (`78bcb9a` and earlier).
 
 **As of:** 2026-10-25 14:05 UTC. Main at `455c889`, CI green; the dogfood server runs
 `455c889` since 13:54 UTC (redeployed for GATE-PARITY-FMT; the old binaries are in
-`~/tessel-dogfood/bin.prev`). M4 is done (M4-FIRST-LANDINGS,
-M4-RESTART-HELD).
-Seventeen server landings on 24 October, each read by an Opus reviewer on the commit from the
+`~/tessel-dogfood/bin.prev`). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD).
+Eighteen server landings on 24 October, each read by an Opus reviewer on the commit from the
 fork first; main's CI is green on every one but
 `d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept their
 notes with no hand step. Every open row from 24 October's reviews is closed but
@@ -972,8 +971,8 @@ Lane B:
 - [ ] **P1-CORE-RECONCILE** — M, Felix reviews, after P1-CORE-STAGED-LANDING. `Unknown` and
   `Reconcile` (flips R24), a `Land` in doubt shown with its age, offline `tessel-server admin
   resolve` (M5-3), and DOGFOOD-UPGRADE's fixture test.
-- [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for its signature change and
-  approved) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
+- [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
+  orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
   failure. A repository config alias can still make `cargo fmt` run repo code, as `cargo test`
   does, so the check holds for cooperating agents. Opus "Yes" after one fix pass. The
