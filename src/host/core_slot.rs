@@ -171,9 +171,10 @@ impl CoreSlot {
 }
 
 /// Build the core from what `Output::Load` read (R14). Fails loudly on corrupt state or a bad
-/// config and never starts empty over stored data. `run` and `shadow_enabled` matter only when
-/// nothing is stored yet; the reviewers, the sensitive paths, the protocol range and the lease are
-/// applied on every load. A bad
+/// config and never starts empty over stored data. `run` matters only when nothing is
+/// stored yet; the reviewers, the sensitive paths, the protocol range, the lease and
+/// `shadow_enabled` are applied on every load, so a setting taken out of the configuration
+/// returns to its default. A bad
 /// reviewers list leaves nobody able to review and a bad sensitive list holds every submission:
 /// each is reported in `reports`.
 pub fn build_core(
@@ -198,10 +199,11 @@ pub fn build_core(
     if let Some(range) = config.protocol_range {
         core.set_protocol_range(range);
     }
-    if let Some(lease_ms) = config.lease_ms {
-        core.set_lease_ms(lease_ms)
-            .map_err(LoadError::InvalidConfig)?;
-    }
+    core.set_lease_ms(config.lease_ms.unwrap_or(shell::LEASE_MS))
+        .map_err(LoadError::InvalidConfig)?;
+    core.set_shadow_enabled(shell::parse_shadow_enabled(
+        config.shadow_enabled.as_deref(),
+    )?);
     Ok(core)
 }
 
@@ -271,6 +273,55 @@ mod tests {
 
     fn loaded_core() -> Core {
         shell::load_core(None, Some("t"), None, Vec::new(), Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn a_lease_taken_out_of_the_configuration_returns_a_stored_repo_to_thirty_seconds() {
+        let stored = serde_json::to_string(&loaded_core()).unwrap();
+        let five = lease_of(&config_with(Some(5_000)), Some(&stored)).unwrap();
+        assert_eq!(five, 5_000);
+        let mut reports = Vec::new();
+        let core = build_core(&config_with(Some(5_000)), Some(&stored), &mut reports).unwrap();
+        let kept = serde_json::to_string(&core).unwrap();
+        assert_eq!(
+            lease_of(&config_with(None), Some(&kept)),
+            Ok(shell::LEASE_MS)
+        );
+    }
+
+    fn shadow_of(shadow: Option<&str>, stored: Option<&str>) -> Result<bool, shell::LoadError> {
+        let config = HostConfig {
+            shadow_enabled: shadow.map(str::to_string),
+            ..config_with(None)
+        };
+        let mut reports = Vec::new();
+        let core = build_core(&config, stored, &mut reports)?;
+        let state = serde_json::to_value(&core).unwrap();
+        Ok(state["config"]["shadow_enabled"].as_bool().unwrap())
+    }
+
+    #[test]
+    fn the_shadow_setting_follows_the_deployment_on_every_load() {
+        let on = serde_json::to_string(
+            &shell::load_core(None, Some("t"), Some("true"), Vec::new(), Vec::new()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(shadow_of(Some("true"), None), Ok(true));
+        assert_eq!(
+            shadow_of(None, Some(&on)),
+            Ok(false),
+            "the key was taken out"
+        );
+        let off = serde_json::to_string(&loaded_core()).unwrap();
+        assert_eq!(
+            shadow_of(Some("true"), Some(&off)),
+            Ok(true),
+            "the key was put in"
+        );
+        assert_eq!(
+            shadow_of(Some("yes"), Some(&off)),
+            Err(shell::LoadError::InvalidShadowEnabled)
+        );
     }
 
     #[test]

@@ -218,7 +218,7 @@ pub fn is_agent_id(agent: &str) -> bool {
 }
 
 /// `SHADOW_ENABLED`: exactly "true" or "false"; unset means false. Anything else is an error.
-fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
+pub fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
     match shadow {
         None | Some("false") => Ok(false),
         Some("true") => Ok(true),
@@ -227,7 +227,8 @@ fn parse_shadow_enabled(shadow: Option<&str>) -> Result<bool, LoadError> {
 }
 
 /// Restore the core from its stored state, or create it when nothing is stored yet. `RUN` and
-/// `SHADOW_ENABLED` are read only in the second case: a repo keeps the config it was created with.
+/// `SHADOW_ENABLED` are read only in the second case here; the host applies `SHADOW_ENABLED` again
+/// on every load (`host::core_slot::build_core`).
 /// `reviewers` and `sensitive` are applied in both: who may review and which paths need review are
 /// deployment settings, not part of the run.
 pub fn load_core(

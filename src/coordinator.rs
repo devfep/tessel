@@ -489,6 +489,13 @@ impl Coordinator {
         self.state.sensitive = sensitive;
     }
 
+    /// Replace whether `OnConflict::Shadow` is allowed (invariant 10). It comes from the host's
+    /// `shadow_enabled` setting and is applied on every load, so a stored state follows the
+    /// deployment.
+    pub fn set_shadow_enabled(&mut self, enabled: bool) {
+        self.state.config.shadow_enabled = enabled;
+    }
+
     /// Replace how long a claim lives without a heartbeat. It comes from the host's `lease_ms`
     /// setting (`HostConfig`) and is applied on every load, so a stored state follows the
     /// deployment; claims already granted keep the expiry they were given. Fails outside
