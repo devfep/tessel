@@ -430,7 +430,7 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   hostile repo code run as the same OS user. The tree names the workspace path (`remote.origin.url`,
   `.git/logs/HEAD`), so such code can write the workspace's `.git/config` directly. Done: the
   sandbox denies the package step the workspace directory and kills its leftover processes
-  before `land`, with a test of each; `prepare` and `land` being public is weighed there too.
+  before `land`, with a test of each; whether `prepare` and `land` stay public is CANDIDATE-REF's.
 - [x] **SERVER-CONFLICT-NAMES** (`9b2533f`, #84) — capped at 50, quoted, the real total carried
   and read by the agent's reason. From the
   P1-LANDER-ISOLATION review: `Conflict.files` (merge and trial) carries fork-chosen file names
@@ -439,8 +439,9 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   Done: before any agent or log sees them, the names are capped at 50 with a total and quoted
   (rule 3), with a test using control characters.
 
-Carried-over tasks with slots in the plan: COORD-HEAD-FROM-AGENT and COORD-UNDELIVERED-GRANT
-(see "Carried-over tasks" in the plan). COORD-WAKE-WHILE-VERIFYING was decided by P1-MOVE-WAKE.
+Carried-over tasks with slots in the plan: COORD-UNDELIVERED-GRANT (P1-HOST-HARDENING) and
+COORD-HEAD-FROM-AGENT's simulator check (P1-SIM-MERGE; its `ReadHead` half is done, #106); see
+"Carried-over tasks" in the plan. COORD-WAKE-WHILE-VERIFYING was decided by P1-MOVE-WAKE.
 
 ### M3. The local server (done 21 October)
 
@@ -924,7 +925,8 @@ Lane A:
 - [ ] **P1-HOST-HARDENING** — M, after P1-CORE-STAGED-LANDING. P1-PERSIST-RETRY (C8, flips R30),
   exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
 - [ ] **P1-SIM-MERGE** — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING. The asynchronous merge
-  path; checkers I3, I6, I7, I11, I12.
+  path; checkers I3, I6, I7, I11, I12; COORD-HEAD-FROM-AGENT's check that no dispatch uses an
+  agent-declared base.
 - [ ] **P1-FAILPOINTS** — M, after P1-SIM-MERGE and P1-CORE-RECONCILE. The crash windows of a
   landing, the candidate ref's included.
 - [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
@@ -962,6 +964,12 @@ Orchestrator:
   upgrade: rules (a) to (f) of the plan.
 - [ ] **M5-DOGFOOD-STAGED** — after the upgrade, three landings through the staged path, with
   notes and claims released by `Merged`.
+
+Moved to M6:
+- [ ] **P1-LANDER-OUT** — M6, lane B, XL, after RUNNER-OWN-UID and P1-CORE-RECONCILE (decision
+  M5-6). The lander's calls and the askpass hook move to a `tessel-lander` binary behind a local
+  authenticated channel; `cargo tree -p tessel-server` has no lander crate, checked by a fast-lane
+  step in a workflow pull request (the phase's done-check 8).
 
 Moved to Phase 3:
 - [ ] **M5-PROOF-CANDIDATE** — Phase 3 (decision M5-5, 25 October). GitHub Next and Microsoft
