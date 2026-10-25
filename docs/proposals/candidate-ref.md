@@ -23,54 +23,68 @@ by something that outlives a process. The core never runs git (rule 4), so the l
 
 ## Decision
 
-1. **`Prepare`** rebases as today, then pushes the head to the lander's candidate repository:
-   `refs/heads/tessel/candidate/<head>`, where `<head>` is the 40-hex sha. One candidate
-   repository per landing repository, owned by the lander, never an agent's fork.
-2. **`Test`** makes a single-branch clone of that ref, checks `HEAD == head`, and runs the runner
-   on it. It holds no workspace that has ever been pushed from.
-3. **`Land`** reads main and the ref, clones main, fetches the ref, checks the tip is `head`,
-   pushes `head` to main with the lease on `base`, reads main back by ancestry (P1-LANDER-ANCESTRY),
-   and deletes the ref.
+1. **`Prepare`** rebases as today, then pushes the head to `refs/tessel/candidate/<head>` on
+   `remote`, the repository it lands on, where `<head>` is the 40-hex sha.
+2. **`Test`** makes a repository with `git init`, fetches that ref into it, checks `HEAD == head`,
+   and runs the runner on it. It holds no workspace that has ever been pushed from.
+3. **`Land`** reads the ref first. If it is present: clone main, fetch the ref, check the tip is
+   `head`, push `head` to main with the lease on `base`, read main back by ancestry
+   (P1-LANDER-ANCESTRY), delete the ref.
 4. **A kill anywhere leaves the ref.** A retried `Land` pushes the same head.
-5. **A `Land` (or `Test`) whose ref is gone** answers `Landed` if main already contains the head,
-   and otherwise the new answer `CandidateMissing`. The core sends the submission back to
+5. **A `Land` (or `Test`) whose ref is gone** reads main only then: `Landed` if it contains the
+   head, otherwise the new answer `CandidateMissing`. The core sends the submission back to
    `Prepare` under a new dispatch id.
 
-One correction to the shape in `phase-1.md`: the ref is named by the head, not by the dispatch id.
-Reasons, from the code:
+Two corrections to the shape in `phase-1.md`.
 
-- `Test` and `Land` carry `{base, head}`, not the dispatch id of the `Prepare` that made the
-  ref, and the plan gives each stage its own dispatch id. Naming by dispatch id needs a new field
-  on both requests, which is a `Call` change (decision 12) for no gain. The head is already there.
-- Dispatch ids restart in a fresh store, and DOGFOOD-UPGRADE (d) makes a fresh store the rollback.
-  `candidate/7` from before the rollback would collide with the new dispatch 7. A sha cannot.
-- C7 makes the head a function of the commit and main, so a re-`Prepare` after a kill pushes the
-  same sha to the same name: an idempotent push. A tip other than the name is tampering or damage,
-  and is read as a missing ref.
-- The cost is that an operator cannot read the dispatch from the ref name. `Prepare` logs
-  `dispatch`, `claim`, `base`, `head` when it pushes, which `P1-CORE-RECONCILE`'s status line
-  can quote.
+**The ref is named by the head, not the dispatch id.**
+- `Test` and `Land` carry `{base, head}`, not the dispatch id of the `Prepare` that made the ref,
+  and the plan gives each stage its own dispatch id. Naming by dispatch id needs a new field on
+  both requests, which is a `Call` change (decision 12) for no gain.
+- Dispatch ids restart in a fresh store, and DOGFOOD-UPGRADE (d) makes a fresh store the
+  rollback. `candidate/7` from before would collide with the new dispatch 7. A sha cannot.
+- C7 makes the head a function of the commit and main (the committer and its date are fixed in
+  `git.rs`), so a re-`Prepare` after a kill pushes the same sha to the same name. A tip other
+  than the name is damage or tampering, and is read as a missing ref.
+- The cost: an operator cannot read the dispatch from the name. `Prepare` logs `dispatch`,
+  `claim`, `base` and `head` when it pushes.
 
-Everything else in the recommended shape stands. `refs/heads/` rather than a private namespace
-keeps Phase 2's shape: the same ref becomes the head of the candidate pull request.
+**The ref lives on `remote` itself, not in a repository of the lander's.**
+- The objects are shared with main, so there is nothing to seed, a push carries only the agent's
+  own commits, and nothing new is needed from Felix: the token already covers `remote`. A separate
+  repository would gain every main commit after its seed as new, and the token has no Workflows
+  permission (`docs/dogfood.md`), so each merged workflow pull request would make every `Prepare`
+  push fail until Felix re-seeded it.
+- A ref outside `refs/heads` triggers no push workflow (`ci.yml` runs `push` for `main` only),
+  matches neither ruleset (both target `~DEFAULT_BRANCH`) and is not fetched by a default clone.
+- A commit that touches workflows is refused by GitHub at the candidate push, as it is at the main
+  push today. The push fails, the lander answers `Unknown`, the core retries and then rejects as
+  infrastructure; only the point moves, to before the tests.
+- The first step of P1-SERVER-STAGED checks, against `tessel-sandbox` over HTTPS through the
+  askpass hook, that GitHub accepts a push to `refs/tessel/*`. If it does not, the ref is
+  `refs/heads/tessel/candidate/<head>` on the same repository; the rest of this note is unchanged,
+  because the name is one constant and the fetch refspecs name it. The probe is a task step, not
+  something this note ran.
 
 ## 1. Each call: inputs, effects, answers, what survives a kill
 
 The core persists the head in its in-flight record before it sends `Test` (rule 5 applies to
 calls), and each stage is its own dispatch id. The lander keeps nothing between calls: its
-`work_dir` holds only throwaway clones, and the candidate repository is the one durable store.
+`work_dir` holds only throwaway clones, and the ref on `remote` is the one durable store.
 
 | Call | Inputs | Effects | Answers |
 |---|---|---|---|
-| `Prepare` | claim, agent, fork commit, scopes | read main; clone main; fetch the agent's fork (read); verify, rebase, coverage, gate; list stale candidates; one atomic push to the candidate repository | `Prepared { base, head }` after the push; `Refused` (conflict, uncovered, gate, not in fork, rule); `Unknown` for anything that did not finish |
-| `Test` | base, head | list the ref; clone it, tip must be `head`; run the runner; no write | `Tested`; `Refused { TestsFailed }`; `CandidateMissing`; `Unknown` |
-| `Land` | base, head | read main; read the ref; clone main; fetch the ref; push main with the lease; read back by ancestry; delete the ref | `Landed { head }`; `CandidateMissing`; `Unknown` (lease lost, push or read failed); `Refused { Rule }` |
-| `Reconcile` | head | read main, ancestry of head. Reads only; deletes nothing | `Reconciled { main, landed }`; `Unknown` |
+| `Prepare` | claim, agent, fork commit, scopes | clone main, fetch the agent's fork (read), verify, rebase, coverage, gate; push the candidate; then sweep | `Prepared { base, head }` after the push; `Refused`; `Unknown` for anything that did not finish |
+| `Test` | base, head | read the ref; fetch it into a new repository, tip must be `head`; run the runner; no write | `Tested`; `Refused { TestsFailed }`; `CandidateMissing`; `Unknown` |
+| `Land` | base, head | read the ref; clone main; fetch the ref; push main with the lease; read back by ancestry; delete the ref | `Landed { head }`; `CandidateMissing`; `Unknown` (lease lost, push or read failed); `Refused { Rule }` |
+| `Reconcile` | head | read main, ancestry of head. Reads only | `Reconciled { main, landed }`; `Unknown` |
 
-`Prepare` with a head equal to the base is `AlreadyMerged` today (no push needed); that stays and
-pushes nothing. Under the stand-in the core reads `Prepared` with `base != head` as a merge that
-landed, so `Prepare`'s behaviour and the core's reading of it must flip in one commit (see task
-order).
+A rebase whose head equals the base is `AlreadyMerged` today (no push); that stays and pushes
+nothing. Under the stand-in the core reads `Prepared` with `base != head` as a merge that landed,
+so `Prepare`'s behaviour and the core's reading of it must flip in one commit (section 7).
+
+If `Land` finds the ref present and the head already an ancestor of main (a kill after the push),
+it answers `Landed` without pushing and deletes the ref.
 
 What survives a kill, by window (each becomes a P1-FAILPOINTS window, section 7):
 
@@ -78,30 +92,31 @@ What survives a kill, by window (each becomes a P1-FAILPOINTS window, section 7)
 |---|---|---|
 | in `Prepare`, before the push | nothing | the core re-dispatches `Prepare`; same head by C7 |
 | after the push, before the answer is persisted | the ref; core has no head | re-`Prepare` pushes the same name; stale refs swept |
-| after the head is journaled, before `Test` answers | the ref, the head | recovery re-sends `Test` (it counts as before `Land`: an infra attempt) |
-| in `Test` | a clone in `call-N` (removed at start) | same |
+| after the head is journaled, before `Test` answers | the ref, the head | recovery re-sends `Test` (before `Land`: an infra attempt) |
+| in `Test` | a repository in `call-N` (removed at start) | same |
 | after `Land` pushed main, before the read-back | main at the head, the ref | `Unknown`; `Reconcile` says landed; the sweep removes the ref |
-| after the read-back, before the delete | main at the head, the ref | the answer is lost: the same, via `Reconcile` |
-| after the delete, before the answer persists | main at the head, no ref | `Reconcile` says landed; nothing else |
-| `Land` sent twice (late copy) | none | main contains the head: `Landed`, no push |
+| after the read-back, before the delete | main at the head, the ref | the answer is lost: the same |
+| after the delete, before the answer persists | main at the head, no ref | `Reconcile` says landed |
+| `Land` sent twice (late copy) | none | the ref is gone and main has the head: `Landed`, no push |
 
-Two properties carry the table. What is tested is what lands: `Test` checks the clone's tip is
-`head` (the existing `TestTreeNotAtHead` check), `Land` checks the fetched tip is `head`, and
-`Land` pushes that sha, so I3 (checks on exactly the landed commit) holds across processes. And a
-`Land` never relies on state in memory: it clones main afresh, so a restart changes nothing.
+What is tested is what lands: `Test` checks the tree's tip is `head`, `Land` checks the fetched
+tip is `head` and pushes that sha, so I3 holds across processes. And a `Land` never relies on
+memory: it clones main afresh, so a restart changes nothing.
 
 ## 2. The missing-ref outcome
 
 **Name:** `CallAnswer::CandidateMissing`, a unit variant, stored as `{"kind":"candidate_missing"}`.
-Only `Test` and `Land` give it. The lander gives it only when it positively read the ref as absent
+Only `Test` and `Land` give it, and only when the lander positively read the ref as absent
 (`ls-remote` exits 0 with no line) or with a different tip, and, for `Land`, main does not contain
-the head. A failed read is `Unknown`, never `CandidateMissing`.
+the head. A failed read is `Unknown`. `Land` reads the ref before main: a late, abandoned `Land`
+can push and delete the ref after a retry has read main, and reading main first would then answer
+`CandidateMissing` for a head that is on main. With the ref read first, a ref absent at that
+moment means any earlier `Land` had already pushed, so the main read that follows sees the head.
 
 **It changes `Call`.** `CallAnswer` is part of the frozen design, so decision 12 applies and Felix
 approves the variant with this note (M5-7). Alternatives, all worse:
-
-- `Refused { Rule { .. } }` (`RuleKind` is also a closed enum, so also a `Call` change) and a
-  refusal rejects the work: the core never retries a refusal, and the work was good.
+- `Refused { Rule { rule: Other } }` needs no `Call` change, but a refusal rejects the work and
+  the core never retries it, so the first lost ref would reject good work.
 - `Unknown`: the core reconciles; main is still at `base` and the head is not on it, so it re-sends
   `Land`, which finds the ref gone again. Nothing after `Land` counts toward `MAX_INFRA_RETRIES`
   (real-use.md, "Calls"), so the loop never ends and the queue is blocked behind it.
@@ -109,26 +124,27 @@ approves the variant with this note (M5-7). Alternatives, all worse:
   and it gives `Land` the coverage and gate checks `Prepare` owns.
 
 **Rollback is safe.** `#[serde(other)]` reads a variant an older build does not know as `Unknown`,
-the one answer that decides nothing. DOGFOOD-UPGRADE (d) already allows rollback only with an idle
-queue, so no `Test` or `Land` is outstanding to receive it.
+the one answer that decides nothing. DOGFOOD-UPGRADE (d) allows rollback only with an idle queue,
+so no `Test` or `Land` is outstanding to receive it.
 
 **Before P1-CORE-STAGED-LANDING** the core never sends `Test` or `Land`, so nothing can answer
 `CandidateMissing`. Its arms are still required (rule 2): `merge_outcome_of` and `trial_report_of`
 read it as the service being unavailable, like every answer of the wrong kind; `head_of` gives
-`None`; `moves_main` in `tessel-server/src/repo.rs` gives `false`. The existing tests at
-`src/host/tests.rs` for "an answer of another kind" gain it.
+`None`; `moves_main` in `tessel-server/src/repo.rs` gives `false`. The "an answer of another kind"
+tests in `src/host/tests.rs` gain it.
 
-**After:** `MergeOutcome` gains `CandidateMissing`. The core treats it as a fact, not a doubt:
-the lander has read that main does not contain the head, and one server per repository is the only
-writer, so nothing can land the head afterwards (`Stop` already blocks an abandoned call from
-pushing). So `in_doubt` stays false and `unanswered_from` is not set. The core clears the journaled
-head and re-dispatches `Prepare` with a new dispatch id, counting it as an infrastructure failure:
-`infra_failures` rises, the backoff applies, and the fourth rejects ("infrastructure, not a code
-failure; submit again"). That bounds a ref that keeps vanishing (a second server on the same
-fork, a push that succeeds without writing) without ever rejecting on the first loss. It does
-not use `MAX_MAIN_MOVED`, which counts contention. The core test: `CandidateMissing` after a
-journaled head re-dispatches `Prepare` under a new id, is not in doubt, and the fourth consecutive
-one rejects.
+**After:** `MergeOutcome` gains `CandidateMissing`, and the core treats it as a fact, not a doubt.
+Two things back that: the lander read that main did not contain the head, and `Stop` blocks an
+abandoned call from pushing. Once the lander is its own process (P1-LANDER-OUT, M6), the backstop
+is C7: if the head did land unseen, the re-`Prepare` rebases onto a main that has it, gets
+`head == base` and answers `AlreadyMerged` (`merge.rs`, `prepare`), which the core already reads
+as landed. So `in_doubt` stays false and `unanswered_from` is not set. The core clears the
+journaled head and re-dispatches `Prepare` with a new dispatch id, counting an infrastructure
+failure: `infra_failures` rises, the backoff applies, and the fourth rejects ("infrastructure,
+not a code failure; submit again"). That bounds a ref that keeps vanishing (a lane agent with
+Felix's credential can write any non-main ref) without rejecting on the first loss. It does not
+use `MAX_MAIN_MOVED`, which counts contention. The core test: `CandidateMissing` after a journaled
+head re-dispatches `Prepare` under a new id, is not in doubt, and the fourth in a row rejects.
 
 ## 3. Cleanup of orphaned refs
 
@@ -137,150 +153,115 @@ core abandoned (main moved, a new `Prepare`).
 
 - **Normal path:** `Land` deletes its ref after the read-back found the head on main. A failed
   delete is logged and does not change the answer: the landing is the truth.
-- **The sweep:** every `Prepare` removes the candidate refs it does not need, in the same atomic
-  push that creates the new one (`git push --atomic`, one refspec per deletion). It lists with
-  `ls-remote refs/heads/tessel/candidate/*` first. This is safe because the merge queue is
-  serial: while a `Land` is in flight or in doubt the core dispatches no `Prepare`, and an
-  earlier submission's head is dead once its stage is over. The one live ref at `Prepare` time is
-  the same head being re-pushed, which the sweep keeps.
-- **Bound:** at most 50 deletions per `Prepare`, and the listing is capped at 1,000 lines, so a
-  fork damaged by hand cannot make one call run past its deadline; the rest go on later calls.
-  In steady state the candidate repository holds one ref after a rejected or abandoned
-  submission and none after a landing. An idle repository keeps at most that one.
+- **The sweep:** each `Prepare`, after its candidate push succeeded, lists
+  `ls-remote refs/tessel/candidate/*` and deletes the other refs in a separate, best-effort push:
+  one refspec per ref, each with `--force-with-lease=<ref>:<listed sha>`, not atomic, so a ref
+  that vanished meanwhile fails only itself. Its failure is logged, never an answer. This is
+  safe because the merge queue is serial: while a `Land` is in flight or in doubt the core
+  dispatches no `Prepare`, and an earlier submission's head is dead once its stage is over.
+- **Parsing:** lines are accepted only as `<40-hex> refs/tessel/candidate/<40-hex>`; anything else
+  is skipped, since another writer controls those names (rule 3).
+- **Bound:** at most 50 deletions per `Prepare` and 1,000 listed lines, so a damaged remote cannot
+  push one call past its deadline; the rest go on later calls. In steady state `remote` holds one
+  candidate after a rejected or abandoned submission and none after a landing.
 - **Not done:** `Reconcile` and `Test` delete nothing. A read that writes would make a status
   probe a mutation, and `Test` should hold no write path while repo code runs.
-- **Why one repository per landing repository:** the sweep deletes every candidate it does not
-  recognise, so two landing repositories sharing a candidate repository would delete each other's
-  refs. A second server on one repository degrades to `CandidateMissing` and a retry, not to a
-  wrong landing.
 
-Tests: a kill after the push leaves exactly one ref and the next `Prepare` ends with one; 60
-stale refs take two `Prepare`s to clear; a `Prepare` for the same head keeps its ref; `Land`
-deletes the ref and a failed delete still answers `Landed`; two landing repositories configured
-with the same candidate location are refused at startup.
+Tests: a kill after the push leaves one ref and the next `Prepare` ends with one; 60 stale refs
+take two `Prepare`s to clear; a `Prepare` for the same head keeps its ref; a ref deleted between
+the listing and the sweep does not fail the `Prepare`; a listing with a malformed name deletes
+nothing; `Land` deletes the ref and a failed delete still answers `Landed`.
 
 ## 4. The credential
 
-The candidate push, the ref reads and the delete use the lander's existing token through the
-askpass hook (`tessel-server/src/credential.rs`): the hook answers for the hosts of `remote` and
-`fork` in `Landing::new`, so the host of the candidate repository joins that list, and the push
-carries the same `x-access-token`. No new secret, no new code path for credentials.
+Nothing new: the candidate push, the reads and the deletes use the lander's existing token through
+the askpass hook (`tessel-server/src/credential.rs`) on the host of `remote`, already in the hook's
+list. No config key and no step for Felix.
 
-Config: a `candidates` key beside `remote` and `fork` in `[[repositories]]`
-(`tessel-server/src/config.rs`), required with `remote`, validated like `fork` (no `{agent}`
-placeholder), and refused when it equals `remote` or any agent fork. A path or a URL, so local and
-adapter tests use bare repositories and need no GitHub.
-
-Felix's steps for the dogfood server (M5-7), before the first staged landing:
-
-1. Create a private repository for it with `gh repo create devfep/tessel-candidates --private`.
-   A GitHub fork of `devfep/tessel` is not possible on the same account, so it holds no shared
-   objects: seed it with the whole of main, and turn Actions off as for the lane forks
-   (`docs/dogfood.md`), because a push of a workflow file would otherwise run it.
-2. Add it to the repositories of the fine-grained token "tessel-dogfood-lander": Contents read and
-   write, Metadata read, nothing else (never Workflows or Administration). One more repository for
-   the sandbox landing of DOGFOOD-UPGRADE (e), which needs its own candidate repository.
-3. Add `candidates = "https://github.com/devfep/tessel-candidates.git"` to the server config.
-   `scripts/dogfood/setup.sh` writes that file and `docs/dogfood.md` documents it, both sensitive
-   paths, so those two edits are a pull request Felix merges.
-
-Two risks to check against the real host in P1-SERVER-STAGED, not assumed here:
-
-- **Workflows.** The token has no Workflows permission, so GitHub refuses a push whose new commits
-  change `.github/workflows`. A `Prepare` push also sends every main commit the candidate
-  repository lacks. If main gained a workflow change since the seed, that push is refused.
-  Mitigation: `Prepare` pushes `base` to the candidate repository's `main` in the same atomic push,
-  which keeps the delta small, and Felix re-seeds after merging a workflow pull request (one more
-  step in his list). If GitHub refuses the mirror too, the failure is a `Refused { Rule }` naming
-  it, found on the first staged landing in the sandbox, not on this repository.
-- **Size.** Without shared objects, the first push is the whole history; later ones are small only
-  while the mirror keeps up. Measured in the adapter test with a path remote, then once over HTTPS.
+`merge.rs` documents `PushUpdate` as "the one update the write credential may be used for:
+main", and `with_push_access` guards it. The candidate writes would use the same credential
+outside that port. So `MergePorts` gains `with_candidate_access`, which checks `Stop` and then
+runs the closure, and the contract is reworded: the write credential is used for two things,
+the main push and the candidate writes, each only inside its port method. `Stop` is checked
+before every remote write (the candidate push, each sweep push and the delete), not only on
+entry to the call. `with_push_access` today checks it only before the closure.
 
 **No credential is live while repo code runs.** The only process that runs repo code is the
 runner, inside `Test`, after the lander's git commands for that call have exited. Git reads the
-token only through the askpass hook, which exists only in the environment of a lander git command
-(`TESSEL_ASKPASS_TOKEN_FILE` is not in the runner's). The test tree's `origin` is the candidate
-URL without credentials. This is a sequencing guarantee, as in `ports.rs` (`revoke_read_access`
-is a no-op): the token file is still readable by anything running as the server's user, which is
-RUNNER-OWN-UID's job (D4). What this design adds is that no `Workspace` exists during `Test`: the
-tree is a clone of the remote, so the note in `workspace.rs` ("the tree's `origin` and reflog name
-[the workspace]") stops applying, and repo code has no path to the clone that `Land` pushes from.
-`Land` makes that clone later, after the runner returned. Test: a runner test double that, while
-it runs, asserts no `Workspace` directory exists under the call and the environment of its process
-has neither `GIT_ASKPASS` nor the token path.
+token only through the askpass hook, which exists only in the environment of a lander git command,
+and the runner clears its environment (`tessel-runner/src/supervise.rs`). The test repository's
+`origin` is `remote`'s URL without a credential. This is a sequencing guarantee: the token file is
+still readable by anything running as the server's user, which RUNNER-OWN-UID closes (D4). What
+this design adds is that no `Workspace` exists during `Test`, so the note in `workspace.rs` ("the
+tree's `origin` and reflog name [the workspace]") stops applying and repo code has no path to the
+clone `Land` pushes from; `Land` makes that clone after the runner returned. Test: a runner test
+double asserts, while it runs, that no `Workspace` directory exists under the call and its
+environment has neither `GIT_ASKPASS` nor the token path.
 
 ## 5. `prepare` and `land` in the lander crate
 
-M4-SANDBOX-WORKSPACE asked whether `tessel_lander::merge::{prepare, land}` stay public. They do
-not all stay as they are:
-
+M4-SANDBOX-WORKSPACE asked whether `tessel_lander::merge::{prepare, land}` stay public.
 - `prepare` stays `pub`: the server calls it, in its own crate, as `Prepare`. It still returns
   `Ready` with a `Workspace`; the server pushes the candidate from that workspace and drops it.
 - `land` becomes `pub(crate)`. A caller could pass it any `Workspace` and any `PushUpdate`, so the
-  push of main would not be tied to a head that was tested. Its callers are two new `pub`
-  functions: `land_candidate` (reads, clones main, fetches the ref, checks the tip, calls `land`,
-  reads back by ancestry, deletes the ref) and, until the flip, `run_merge`.
-- New `pub` functions: `push_candidate` (the atomic push and sweep), `clone_candidate_tree` (the
-  `Test` clone; returns a `TestTree`), and `read_candidate` (present with tip, or absent). New
-  `Git` commands in `git.rs`: fetch and push of the candidate ref, `ls-remote` listing, and a
-  deletion; `MergeSources` gains `candidate_remote`.
+  push of main would not be tied to a head that was tested. Its callers are a new `pub`
+  `land_candidate` (reads the ref, clones main, fetches it, checks the tip, calls `land`, deletes
+  the ref) and, until the flip, `run_merge`.
+- New `pub` functions: `push_candidate`, `sweep_candidates`, `read_candidate` (tip or absent) and
+  `clone_candidate_tree` (`git init`, fetch the ref, check out the head; returns a `TestTree`, so
+  its configuration is the one git wrote, as for a clone). New `Git` commands: fetch, push,
+  listing and delete of the candidate ref. `MergeSources` needs no new field.
 - `run_merge`, `STAND_IN_MESSAGE` and the stand-in branch in `run` are deleted when `Prepare`
-  flips, not kept (replace, don't deprecate). `MergePorts::run_package_step` keeps taking a
-  `&TestTree`, so the boundary the compile-fail doctests pin is unchanged.
+  flips, not kept. `run_package_step` keeps taking a `&TestTree`, so the boundary the
+  compile-fail doctests pin is unchanged.
 
-Tests: the compile-fail doctest that `land` is not callable from outside the crate; the existing
-isolation tests (`tessel-lander/tests/isolation.rs`) re-run on `land_candidate` with hooks,
-filters and a malicious `.git/config` in the candidate (S3); a `Land` with a ref whose tip is not
-the head answers `CandidateMissing` and pushes nothing.
+Tests: a compile-fail doctest that `land` is not callable outside the crate; the isolation tests
+(`tessel-lander/tests/isolation.rs`) re-run on `land_candidate` and `clone_candidate_tree` with
+hooks, filters and a malicious `.git/config` in the fetched history (S3); a `Land` whose ref has
+the wrong tip answers `CandidateMissing` and pushes nothing; an abandoned call performs no
+remote write.
 
 ## 6. Alternatives considered
 
 | Alternative | Why not |
 |---|---|
-| A local ref or bundle in the lander's workspace | Dies with the disk or the container: the hosted server (M6) and Phase 2 have no durable lander disk. It also keeps the `Workspace` that `Land` pushes from alive across `Test`, which repo code runs beside |
+| A local ref or bundle in the lander's workspace or a bare repository | Dies with the disk, and the hosted server (M6) has no durable lander disk. During `Test`, repo code as the same uid could write it by path, and it keeps a pushable `Workspace` beside the tests |
+| A separate candidates repository | Every main commit after its seed is new to it, and the token has no Workflows permission: each merged workflow pull request breaks every `Prepare` until Felix re-seeds. It also needs a config key, seeding and a second sandbox repository |
+| `refs/heads/tessel/candidate/<head>` on `remote` | The fallback if the probe shows GitHub refuses `refs/tessel/*`. It is a branch, so a default clone fetches it and a branch-triggered workflow could see it |
 | Keep the head in the core's state as a bundle | The core never runs git (rule 4) and the state would hold a repository |
-| Push the head to the agent's fork | The agent can rewrite its own branch between `Test` and `Land`; S1 and I3 need a store the agent cannot write |
-| Push the head to main's repository as a branch | The lander's token then writes branches there, ruleset A and B apply to them, and a dispatch leaks refs into the real repository |
-| A single branch `tessel/candidate` per repository | Cannot hold the head a retried `Land` needs while a new `Prepare` overwrites it; and a late `Land` could not tell its head from the next one |
-| Name by dispatch id (the first recommendation) | Needs new fields on `Test` and `Land`; collides after a fresh store (section Decision) |
-| Skip the store: re-`Prepare` inside `Land` | Needs the fork commit, agent and scopes in `Land`; duplicates the checks |
+| Push the head to the agent's fork | The agent can rewrite its own branch between `Test` and `Land` |
+| One branch per repository | A new `Prepare` would overwrite the head a retried `Land` needs |
+| Name by dispatch id | Needs new fields on `Test` and `Land`; collides after a fresh store |
+| Skip the store: re-`Prepare` inside `Land` | Needs the fork commit, agent and scopes in `Land` |
 | `Unknown` for a missing ref | Loops forever (section 2) |
 
 ## 7. Failpoints and the order of tasks
 
-Windows this adds to P1-FAILPOINTS, each with a test that the claim still lands once or is
-re-prepared and the candidate repository ends with no ref but at most one stale one:
-
+Windows this adds to P1-FAILPOINTS, each with a test that the claim lands once or is re-prepared
+and `remote` ends with no ref, or at most one stale one:
 1. `Prepare` killed after the candidate push, before the answer is persisted.
-2. `Prepare` killed between the push's deletions and its creation (atomic: neither happens).
-3. `Land` killed after the main push, before the read-back.
-4. `Land` killed after the read-back, before the ref delete.
-5. The ref removed (by hand) between `Prepare` and `Test`, and between `Test` and `Land`, with main
-   at `base` (`CandidateMissing`) and with main at the head (`Landed`).
-6. The ref moved to another commit between `Prepare` and `Test`.
-7. A late `Land` for a head that landed: `Landed`, no second push.
-
-P1-SIM-MERGE gains two checks beside I3: no `Land` answer is `Landed` unless main contains the
-head, and a candidate ref never outlives two further `Prepare`s.
+2. `Land` killed after the main push, before the read-back.
+3. `Land` killed after the read-back, before the ref delete.
+4. The ref removed between `Prepare` and `Test`, and between `Test` and `Land`, with main at
+   `base` (`CandidateMissing`) and with main at the head (`Landed`).
+5. The ref moved to another commit between `Prepare` and `Test`.
+6. A late `Land` for a head that landed: `Landed`, no second push.
 
 Order, with the corrections this note makes to `phase-1.md`:
-
 1. CANDIDATE-REF (this note), then MERGE-PATH-REVIEW.
-2. **P1-SERVER-STAGED** gains `tessel-lander/src/{merge,git,workspace}.rs`,
-   `tessel-server/src/config.rs` (lane A's file; lane A stays out while it runs) and
-   `docs/configuration.md`, beside `call.rs`, `calls.rs`, `repo.rs`. It adds the variant, the
-   lander functions with their lander tests, `Test` and `Land`, and keeps `Prepare` the whole
-   merge. Adapter tests make the candidate ref with plain git, so no function is dead.
-3. Felix's steps from section 4, and the pull request for `setup.sh` and `dogfood.md`.
-4. **P1-CORE-STAGED-LANDING** gains `tessel-server/src/landing/mod.rs`: the server's `Prepare`
-   becomes rebase-and-push-candidate in the same commit that makes the core stage the landing.
-   Server and core are one binary, so one commit flips both and there is no skew; two commits
-   would let a core that still treats `Prepared` as landed read a candidate push as a merge, a
-   false `Merged` (rule 6). `run_merge` and the stand-in message go in that commit.
-5. P1-CORE-RECONCILE: its "candidate ref" in the in-flight record is the head (the name derives
+2. **P1-SERVER-STAGED** starts with the probe above. It then adds the variant, the lander
+   functions with their tests and the `with_candidate_access` port method (a signature change in
+   `tessel-lander/src/merge.rs`), plus `Test` and `Land`, beside `call.rs`, `calls.rs` and
+   `repo.rs`. `Prepare` stays the whole merge. The adapter tests make the ref with plain git, so
+   no function is dead. It edits no lane A file beyond the three the plan lists.
+3. **P1-CORE-STAGED-LANDING** also edits `tessel-server/src/landing/mod.rs` (lane B's): the
+   server's `Prepare` becomes rebase-and-push-candidate in the same commit that makes the core
+   stage the landing. Server and core are one binary, so one commit flips both. Two commits would
+   let a core that still treats `Prepared` as landed read a candidate push as a merge, a false
+   `Merged` (rule 6). `run_merge` and the stand-in message go in that commit.
+4. P1-CORE-RECONCILE: the "candidate ref" in its in-flight record is the head (the name derives
    from it); the `CandidateMissing` core test and the fixture test (c) are part of it.
-6. P1-FAILPOINTS, the section 7 windows. P1-SIM-MERGE gains a lost-ref fault.
+5. P1-FAILPOINTS: the windows above.
 
-Not decided here: how long `Test` and `Land` deadlines are (the stage split of
-`STEWARD_CALL_TIMEOUT_MS`, P1-CORE-STAGED-LANDING), and whether Phase 2 keeps a candidate
-repository at all or pushes to an agent's org fork.
+Not decided here: the `Test` and `Land` deadlines (the stage split of `STEWARD_CALL_TIMEOUT_MS`,
+P1-CORE-STAGED-LANDING).
