@@ -382,7 +382,11 @@ starts the runner as its own account through `sudo -n -u <user> <runner> --confi
 runs `kill -KILL -1` as that account and polls `ps -U <user>` until nothing is left. If a process
 survives, or `ps` or the kill fails, the gate stays closed and no later run starts. The gate does
 not see launchd, cron or at jobs that are not running; `scripts/dogfood/check-own-users.sh` denies
-and probes those. A call's directory in `handoff_dir` is mode 0700, opened to the runner's group
+and probes those. The runner's reply must be exactly one line followed by the end of its output; a second line, from
+a process of the same account writing into the stream, fails the reply (on Linux the runner also
+makes itself undumpable at start). Removing the account's files from `sweep_dirs` is best effort: an
+entry it cannot delete, in a directory of another user's that it cannot write, stays and does not
+fail the run. A call's directory in `handoff_dir` is mode 0700, opened to the runner's group
 (0750) only while its own run holds the gate, and closed again before the gate is let go; on
 Linux give `handoff_dir` the setgid bit so that the group is inherited. A call past its deadline kills the
 account itself. The layout and the sudoers rule are `scripts/dogfood/install.sh`'s.
