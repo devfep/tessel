@@ -75,8 +75,8 @@ jobs:
           persist-credentials: false
       # The old release is unpacked first so that the cache can key on its lockfile and keep its
       # `target` directory (rust-cache joins a workspace's target onto the workspace, so the build
-      # goes into old-cli-src/target); it is built on its own, never in `cargo test`, with this repository's
-      # toolchain (its toolchain file also asks for a wasm target that nothing here needs).
+      # goes into old-cli-src/target). It is built on its own, never in `cargo test`, with this
+      # repository's toolchain (its toolchain file also asks for a wasm target nothing here needs).
       - name: Unpack the CLI before the protocol range field
         run: |
           old="$RUNNER_TEMP/old-cli-src"
