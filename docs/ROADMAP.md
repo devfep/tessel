@@ -7,10 +7,11 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-25 23:30 UTC. Main at `785bbee` (#120 merged), CI green (it was red from
-`20cd5fd` until `bf07498`, see RUNNER-OWN-UID); the dogfood server runs `455c889`, restarted
-23:13 UTC with the merge path held (redeployed for GATE-PARITY-FMT at 13:54; the old binaries are
-in `~/tessel-dogfood/bin.prev`). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD).
+**As of:** 2026-10-25 23:30 UTC. Main at `785bbee` (#119-#123 merged; #121 lists `src/sim/` in
+`CLAUDE.md`), CI green (it was red from `20cd5fd` until `bf07498`, see RUNNER-OWN-UID); the
+dogfood server runs `455c889`, restarted 23:13 UTC with the merge path held (redeployed for
+GATE-PARITY-FMT at 13:54; the old binaries are in `~/tessel-dogfood/bin.prev`). M4 is done
+(M4-FIRST-LANDINGS, M4-RESTART-HELD).
 Eighteen server landings on 24 October, each read by an Opus reviewer on the commit from the
 fork first; main's CI is green on every one but
 `d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept their
@@ -946,9 +947,9 @@ Lane A:
   keep-alive tests are now driven by the clock. Opus "Yes" after two fix passes.
 - [ ] **P1-ADAPTER-SUITE** — M. First part done (`9a2a044`, landed by the server; workflow #122,
   merged): an `#[ignore]` kill -9 loop run by the "Adapter suite" job, checking every client
-  transcript against I1 and I9 after each reload (1 min 11 s on its first GitHub run), and the CLI
-  of `e9df98c` landing through the current server. The rest after P1-HOST-HARDENING: a slow watcher,
-  a panicking repo task, injected store errors.
+  transcript against I1, I5 and I9 after each reload (1 min 11 s on its first GitHub run), and the
+  CLI of `e9df98c` landing through the current server. The rest after P1-HOST-HARDENING: a slow
+  watcher, a panicking repo task, injected store errors.
 - [ ] **P1-HOST-HARDENING** — M, after P1-CORE-RECONCILE. P1-PERSIST-RETRY (C8, flips R30),
   exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
 - [ ] **P1-SIM-MERGE** — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING. The asynchronous merge
@@ -997,15 +998,15 @@ Lane B:
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
   failure. A repository config alias can still make `cargo fmt` run repo code, as `cargo test`
   does, so the check holds for cooperating agents. Opus "Yes" after one fix pass. The
-  `tessel.toml` entry is #117, for Felix; the dogfood server was redeployed from `455c889` first.
+  `tessel.toml` entry is #117, merged; the dogfood server was redeployed from `455c889` first.
 - [ ] **RUNNER-OWN-UID** — lane B. Part 1, the scripts and the dogfood page's steps: #118, merged
-  (security review: six, five, then no root-safety findings). Part 2, the code (`20cd5fd`, landed
-  by the server): `SudoRunner` behind `[lander.sudo_runner]`, the in-process runner still the
-  default; the runner's config rules, sweep, limits, one-line reply and `rustc -V` check. It broke
-  main's Linux build (glibc's `RLIMIT_*` are `u32`) and two dash-only tests; `e8fbaa8` and
-  `bf07498` fixed both, and main was red from `20cd5fd` until `bf07498`. The Linux job is #119 (all
-  checks pass on real accounts), for Felix. Left: the move of the dogfood server, Felix's sudo
-  steps in `docs/dogfood.md`; that closes RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE.
+  (security review: six, five, then no root-safety findings). Part 2, the code (`20cd5fd`, landed by
+  the server): `SudoRunner` behind `[lander.sudo_runner]`, the in-process runner still the default;
+  the runner's config rules, sweep, limits, one-line reply and `rustc -V` check. It broke main's
+  Linux build (glibc's `RLIMIT_*` are `u32`) and two dash-only tests; `e8fbaa8` and `bf07498` fixed
+  both, and main was red from `20cd5fd` until `bf07498`. The Linux job is #119, merged (all checks
+  pass on real accounts). Left: the move of the dogfood server, Felix's sudo steps in
+  `docs/dogfood.md`; that closes RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE.
 
 Orchestrator:
 - [x] **MERGE-PATH-REVIEW** (#116, merged) — `docs/BUILD-PROTOCOL.md` section 6: a "Felix
