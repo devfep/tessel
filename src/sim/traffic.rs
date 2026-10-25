@@ -1,6 +1,8 @@
 //! Client traffic: a seeded script of agents that connect, claim, amend, release, heartbeat and
 //! probe retired fences while the clock moves and faults strike. The races, reviews and watchers
-//! of the second half join `Traffic::act`.
+//! of the second half join `Traffic::act`. A seed's script depends on the order and weights of
+//! `act`'s actions, so changing them changes what every seed does: seeds kept as regression cases
+//! must be re-found after such a change.
 
 use crate::protocol::{
     ClaimId, ClientMsg, Fence, Intent, Mode, OnConflict, RequestId, Scope, ScopeClaim,
@@ -70,9 +72,9 @@ impl Traffic {
             30..=44 => self.amend(sim, agent),
             45..=59 => self.release(sim, agent),
             60..=71 => self.heartbeat(sim, agent),
-            72..=79 => self.stale_release(sim, agent),
-            80..=87 => sim.advance(self.rng.below(5_000) as u64 + 1),
-            88..=95 => self.jump(sim),
+            72..=83 => self.stale_release(sim, agent),
+            84..=89 => sim.advance(self.rng.below(5_000) as u64 + 1),
+            90..=96 => self.jump(sim),
             _ => self.disconnect(sim, agent),
         }
     }
@@ -157,7 +159,7 @@ impl Traffic {
 
     fn heartbeat(&mut self, sim: &mut Sim, agent: &str) {
         if let Some(sock) = sim.view(agent).and_then(|view| view.sock) {
-            sim.send(sock, &ClientMsg::Heartbeat, RequestKind::Release, None);
+            sim.send(sock, &ClientMsg::Heartbeat, RequestKind::Other, None);
         }
     }
 
@@ -168,7 +170,20 @@ impl Traffic {
         if view.retired.is_empty() {
             return;
         }
-        let (claim, fence) = view.retired[self.rng.below(view.retired.len())];
+        // Most probes use a fence an amend retired on a claim still held: a host that ignores
+        // the fence would release it.
+        let live: Vec<(ClaimId, Fence)> = view
+            .retired
+            .iter()
+            .filter(|(claim, _)| view.held.contains_key(&claim.0))
+            .copied()
+            .collect();
+        let pool = if live.is_empty() {
+            &view.retired
+        } else {
+            &live
+        };
+        let (claim, fence) = pool[self.rng.below(pool.len())];
         let msg = ClientMsg::Release {
             claim,
             fence,

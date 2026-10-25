@@ -1,7 +1,6 @@
 //! The simulated store. A commit is first staged: it is a write the adapter has accepted and not
 //! yet made durable. Only `apply` makes it durable, and a crash loses every staged write. A commit
-//! can also fail without a crash, which drops its staged write and leaves the durable store as it
-//! was.
+//! that fails without a crash is never staged, so the durable store stays as it was.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +8,7 @@ use crate::host::BatchId;
 use crate::protocol::Event;
 use crate::shell::{EVENT_PREFIX, STATE_KEY};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Store {
     durable: BTreeMap<String, String>,
     staged: Option<(BatchId, Vec<(String, String)>)>,
@@ -40,28 +39,18 @@ impl Store {
 
     /// Acknowledge the staged write of `batch` without writing it: it is written when the next
     /// commit is acknowledged. A write-behind adapter's behaviour.
-    pub fn defer(&mut self, batch: BatchId) {
+    pub fn defer(&mut self, batch: BatchId) -> bool {
         let Some((staged, entries)) = self.staged.take() else {
-            return;
+            return false;
         };
         if staged != batch {
             self.staged = Some((staged, entries));
-            return;
+            return false;
         }
         let earlier = std::mem::take(&mut self.unflushed);
         self.write(earlier);
         self.unflushed = entries;
-    }
-
-    /// Drop the staged write of `batch`: its commit failed.
-    pub fn abandon(&mut self, batch: BatchId) {
-        if self
-            .staged
-            .as_ref()
-            .is_some_and(|(staged, _)| *staged == batch)
-        {
-            self.staged = None;
-        }
+        true
     }
 
     /// The process died: every write that is not durable is gone.
@@ -79,9 +68,9 @@ impl Store {
         }
     }
 
-    /// Write directly, as a migration or a drifting codec would.
-    pub fn put(&mut self, key: &str, json: String) {
-        self.durable.insert(key.to_string(), json);
+    /// Everything durable, key by key.
+    pub fn entries(&self) -> &BTreeMap<String, String> {
+        &self.durable
     }
 
     pub fn state(&self) -> Option<&str> {
@@ -128,14 +117,6 @@ mod tests {
         store.crash();
         assert_eq!(store.state(), Some("one"));
         assert!(!store.apply(BatchId(2)));
-    }
-
-    #[test]
-    fn a_failed_commit_leaves_the_store_as_it_was() {
-        let mut store = Store::default();
-        store.stage(BatchId(1), entry(STATE_KEY, "one"));
-        store.abandon(BatchId(1));
-        assert_eq!(store.state(), None);
     }
 
     #[test]

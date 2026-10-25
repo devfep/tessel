@@ -33,8 +33,13 @@ pub const SEEDS_VAR: &str = "TESSEL_SIM_SEEDS";
 /// The environment variable that moves the first seed, so a failing seed reruns alone.
 pub const FIRST_SEED_VAR: &str = "TESSEL_SIM_FIRST_SEED";
 
-fn number_from_env(var: &str, default: u64) -> Result<u64, String> {
-    match std::env::var(var) {
+/// `text` as a whole number, or `default` when the variable is not set.
+fn parse_number(
+    var: &str,
+    text: Result<String, std::env::VarError>,
+    default: u64,
+) -> Result<u64, String> {
+    match text {
         Ok(text) => text
             .trim()
             .parse()
@@ -47,9 +52,24 @@ fn number_from_env(var: &str, default: u64) -> Result<u64, String> {
 /// The seeds to run: `TESSEL_SIM_SEEDS` of them (or `DEFAULT_SEEDS`) from `TESSEL_SIM_FIRST_SEED`
 /// (or 0).
 pub fn seeds() -> Result<std::ops::Range<u64>, String> {
-    let count = number_from_env(SEEDS_VAR, DEFAULT_SEEDS)?;
-    let first = number_from_env(FIRST_SEED_VAR, 0)?;
-    Ok(first..first.saturating_add(count))
+    seeds_from(std::env::var(SEEDS_VAR), std::env::var(FIRST_SEED_VAR))
+}
+
+fn seeds_from(
+    count: Result<String, std::env::VarError>,
+    first: Result<String, std::env::VarError>,
+) -> Result<std::ops::Range<u64>, String> {
+    let count = parse_number(SEEDS_VAR, count, DEFAULT_SEEDS)?;
+    let first = parse_number(FIRST_SEED_VAR, first, 0)?;
+    if count == 0 {
+        return Err(format!("{SEEDS_VAR} must be at least 1: no seed would run"));
+    }
+    let Some(end) = first.checked_add(count) else {
+        return Err(format!(
+            "{FIRST_SEED_VAR}={first} and {SEEDS_VAR}={count} run past the largest seed"
+        ));
+    };
+    Ok(first..end)
 }
 
 /// How to rerun `seed` alone.
@@ -92,11 +112,15 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
         steps += 1;
         if !traffic.step(&mut sim) {
             violations.push(Violation {
-                checker: Checker::Stuck,
+                checker: Checker::Harness,
                 detail: "the host kept asking the adapter past any bound".to_string(),
             });
         }
         violations.extend(check::run(&sim, enabled));
+        violations.extend(sim.faults().iter().map(|fault| Violation {
+            checker: Checker::Harness,
+            detail: fault.clone(),
+        }));
         if !violations.is_empty() {
             break;
         }
@@ -125,27 +149,44 @@ pub fn first_difference(a: &[String], b: &[String]) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn set(text: &str) -> Result<String, std::env::VarError> {
+        Ok(text.to_string())
+    }
+
+    fn unset() -> Result<String, std::env::VarError> {
+        Err(std::env::VarError::NotPresent)
+    }
+
     #[test]
-    fn a_count_in_the_environment_is_read_and_a_missing_one_takes_the_default() {
-        let var = "TESSEL_SIM_TEST_COUNT_READ";
-        assert_eq!(number_from_env(var, 7), Ok(7));
-        std::env::set_var(var, " 3 ");
-        assert_eq!(number_from_env(var, 7), Ok(3));
-        std::env::remove_var(var);
+    fn a_count_is_read_and_a_missing_one_takes_the_default() {
+        assert_eq!(seeds_from(unset(), unset()), Ok(0..DEFAULT_SEEDS));
+        assert_eq!(seeds_from(set(" 3 "), set("10")), Ok(10..13));
     }
 
     #[test]
     fn a_count_that_is_not_a_number_is_refused_with_its_name() {
-        let var = "TESSEL_SIM_TEST_COUNT_BAD";
-        std::env::set_var(var, "many");
-        let refused = number_from_env(var, 7);
-        std::env::remove_var(var);
-        let Err(message) = refused else {
+        let Err(message) = seeds_from(set("many"), unset()) else {
             panic!("a bad count was accepted");
         };
         assert!(
-            message.contains(var) && message.contains("many"),
+            message.contains(SEEDS_VAR) && message.contains("many"),
             "{message}"
+        );
+    }
+
+    #[test]
+    fn no_seeds_and_seeds_past_the_largest_are_refused() {
+        let Err(none) = seeds_from(set("0"), unset()) else {
+            panic!("zero seeds were accepted");
+        };
+        assert!(none.contains("at least 1"), "{none}");
+        let Err(past) = seeds_from(set("2"), set(&u64::MAX.to_string())) else {
+            panic!("a range past u64::MAX was accepted");
+        };
+        assert!(past.contains("largest seed"), "{past}");
+        assert_eq!(
+            seeds_from(set("1"), set(&(u64::MAX - 1).to_string())),
+            Ok(u64::MAX - 1..u64::MAX)
         );
     }
 

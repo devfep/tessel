@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::host::call::{Call, CallAnswer, Request};
 use crate::host::{BatchId, Host, HostConfig, Input, Output, SocketId};
 use crate::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, ErrorCode, Fence, RequestId, ServerMsg,
+    AgentId, ClaimId, ClientMsg, CommitId, ErrorCode, EventKind, Fence, ReleaseReason, RequestId,
+    ServerMsg,
 };
 use crate::shell::STATE_KEY;
 use crate::sim::clock::Clock;
@@ -47,6 +48,8 @@ pub struct Delivery {
 /// What a request asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestKind {
+    /// A message with no request id of its own: a hello or a heartbeat.
+    Other,
     Claim,
     Amend,
     Release,
@@ -61,6 +64,13 @@ pub struct Sent {
     pub req: RequestId,
     pub kind: RequestKind,
     pub claim: Option<ClaimId>,
+    /// For a stale release: how many releases by the agent the stored log held for the claim
+    /// when it was sent. A successful release sends the requester nothing, so the log is where
+    /// an accepted one shows; `quiet` settles it into `accepted` before anything else is sent.
+    pub releases_before: usize,
+    /// Set when the host has finished with a stale release and the log holds a release the
+    /// probe did not have before it.
+    pub accepted: bool,
 }
 
 /// What one agent knows from what it received.
@@ -92,6 +102,9 @@ pub struct Sim {
     fail_next_commit: bool,
     executed: u64,
     crashes: u64,
+    faults: Vec<String>,
+    /// Indexes into `sent` of stale releases not yet settled.
+    unsettled: Vec<usize>,
 }
 
 impl Sim {
@@ -115,6 +128,8 @@ impl Sim {
             fail_next_commit: false,
             executed: 0,
             crashes: 0,
+            faults: Vec::new(),
+            unsettled: Vec::new(),
         }
     }
 
@@ -138,6 +153,11 @@ impl Sim {
     /// Whether `sock` is still open: neither side has closed it and no crash has.
     pub fn is_open(&self, sock: SocketId) -> bool {
         self.sock_agent.contains_key(&sock) && !self.closed.contains(&sock)
+    }
+
+    /// Mistakes of the harness itself, such as acknowledging a commit that is not staged.
+    pub fn faults(&self) -> &[String] {
+        &self.faults
     }
 
     pub fn crashes(&self) -> u64 {
@@ -202,12 +222,15 @@ impl Sim {
             sock,
             verified: AgentId(agent.to_string()),
         });
+        if !self.is_open(sock) {
+            return sock;
+        }
         let hello = ClientMsg::Hello {
             agent: AgentId(agent.to_string()),
             base: CommitId(BASE.to_string()),
             protocol: crate::protocol::PROTOCOL_VERSION,
         };
-        self.send(sock, &hello, RequestKind::Claim, None);
+        self.send(sock, &hello, RequestKind::Other, None);
         sock
     }
 
@@ -241,17 +264,35 @@ impl Sim {
         kind: RequestKind,
         claim: Option<ClaimId>,
     ) {
+        if !self.is_open(sock) {
+            return;
+        }
         if let Some(req) = request_of(msg) {
+            let releases_before = claim.map_or(0, |claim| self.agent_releases(claim));
             self.sent.push(Sent {
                 sock,
                 req,
                 kind,
                 claim,
+                releases_before,
+                accepted: false,
             });
+            if kind == RequestKind::StaleRelease {
+                self.unsettled.push(self.sent.len() - 1);
+            }
         }
-        let text = serde_json::to_string(msg).unwrap_or_default();
+        let text = serde_json::to_string(msg).expect("a client message serializes");
         let now_ms = self.now_ms();
         self.input(Input::Frame { now_ms, sock, text });
+    }
+
+    /// How many releases by an agent the stored log holds for `claim`.
+    fn agent_releases(&self, claim: ClaimId) -> usize {
+        let (events, _) = self.store.events();
+        events
+            .iter()
+            .filter(|event| is_agent_release(&event.kind, claim))
+            .count()
     }
 
     fn input(&mut self, input: Input) {
@@ -263,6 +304,16 @@ impl Sim {
     /// Deliver the adapter's answers and fire due wakes until the host waits for nothing. False
     /// when the host kept asking past `QUIET_LIMIT` rounds.
     pub fn quiet(&mut self) -> bool {
+        let finished = self.drain();
+        for index in std::mem::take(&mut self.unsettled) {
+            let probe = self.sent[index];
+            let releases = probe.claim.map_or(0, |claim| self.agent_releases(claim));
+            self.sent[index].accepted = releases > probe.releases_before;
+        }
+        finished
+    }
+
+    fn drain(&mut self) -> bool {
         for _ in 0..QUIET_LIMIT {
             if self.deliver_next() {
                 continue;
@@ -286,11 +337,16 @@ impl Sim {
         match answer {
             Answer::Input(input) => self.input(input),
             Answer::Commit(batch) => {
-                match self.variant {
+                let stored = match self.variant {
                     Variant::WriteBehind => self.store.defer(batch),
                     Variant::Correct | Variant::StaleLoad | Variant::DriftingCodec => {
-                        self.store.apply(batch);
+                        self.store.apply(batch)
                     }
+                };
+                if !stored {
+                    let fault = format!("batch {} was acknowledged with nothing staged", batch.0);
+                    self.faults.push(fault);
+                    return true;
                 }
                 if self.crash == Some(Crash::AfterApply) {
                     self.crash_now();
@@ -477,4 +533,16 @@ fn with_drift(json: &str) -> String {
         object.insert("writer_note".to_string(), serde_json::Value::from(1));
     }
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
+}
+
+/// Whether `kind` is an agent's release of `claim`.
+pub fn is_agent_release(kind: &EventKind, claim: ClaimId) -> bool {
+    if let EventKind::ClaimReleased {
+        claim: released,
+        reason,
+    } = kind
+    {
+        return *released == claim && *reason == ReleaseReason::Agent;
+    }
+    false
 }

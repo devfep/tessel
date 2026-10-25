@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::coordinator::Coordinator;
 use crate::host::SocketId;
-use crate::protocol::{ClaimId, Event, EventKind, Fence, ServerMsg};
+use crate::protocol::{ClaimId, ErrorCode, Event, EventKind, Fence, ServerMsg};
 use crate::sim::driver::{Delivery, RequestKind, Sent, Sim};
 use crate::sim::store::Store;
 
@@ -23,8 +23,9 @@ pub enum Checker {
     I1,
     I5,
     I9,
-    /// The harness itself: the host kept asking the adapter past any bound.
-    Stuck,
+    /// The harness itself: the host kept asking the adapter past any bound, or the driver
+    /// made a mistake.
+    Harness,
 }
 
 impl Checker {
@@ -46,7 +47,7 @@ pub fn run(sim: &Sim, enabled: &[Checker]) -> Vec<Violation> {
             Checker::I1 => i1(sim.transcript(), sim.store()),
             Checker::I5 => i5(sim.store()),
             Checker::I9 => i9(sim.transcript(), sim.sent(), &|sock| sim.is_open(sock)),
-            Checker::Stuck => Vec::new(),
+            Checker::Harness => sim.faults().to_vec(),
         };
         for detail in details {
             found.push(Violation {
@@ -175,110 +176,133 @@ fn logs_grant(kind: &EventKind, claim: ClaimId, fence: Fence) -> bool {
     false
 }
 
-/// An older shape of the stored state: removes the fields that build did not write. False when a
-/// field holds something other than the default the old build implied, so the shape does not
-/// apply to this state.
-type OlderShape = fn(&mut Value) -> bool;
+/// The places in the state where a field can sit: the top level, `config`, and a claim.
+fn containers(state: &Value) -> Vec<Vec<String>> {
+    let mut found = vec![Vec::new(), vec!["config".to_string()]];
+    // Every claim has the same fields: the first is enough, and strips are costly.
+    if let Some(id) = state
+        .get("claims")
+        .and_then(Value::as_object)
+        .and_then(|claims| claims.keys().next())
+    {
+        found.push(vec!["claims".to_string(), id.clone()]);
+    }
+    found
+}
 
-fn remove_if(object: &mut serde_json::Map<String, Value>, key: &str, default: &Value) -> bool {
-    match object.get(key) {
-        Some(value) if value != default => false,
-        Some(_) => {
-            object.remove(key);
-            true
+fn at<'a>(state: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter().try_fold(state, |value, key| value.get(key))
+}
+
+fn without(state: &Value, path: &[String]) -> Value {
+    let mut stripped = state.clone();
+    let Some((key, parents)) = path.split_last() else {
+        return stripped;
+    };
+    let mut at = &mut stripped;
+    for parent in parents {
+        let Some(next) = at.get_mut(parent) else {
+            return stripped;
+        };
+        at = next;
+    }
+    if let Some(object) = at.as_object_mut() {
+        object.remove(key);
+    }
+    stripped
+}
+
+fn encode_decode(state: &Value) -> Result<Value, String> {
+    let decoded: Coordinator =
+        serde_json::from_value(state.clone()).map_err(|e| format!("does not decode: {e}"))?;
+    serde_json::to_value(&decoded).map_err(|e| format!("does not encode: {e}"))
+}
+
+/// What stripping each field in turn showed.
+struct Stripped {
+    /// Fields that can be absent and hold the value the core fills in when they are: every
+    /// `#[serde(default)]` field, found with no list to keep.
+    defaulted: Vec<Vec<String>>,
+    /// Those of them whose absence changes what the state encodes back to.
+    drifting: Vec<Vec<String>>,
+}
+
+fn strip_each(state: &Value) -> Stripped {
+    let mut found = Stripped {
+        defaulted: Vec::new(),
+        drifting: Vec::new(),
+    };
+    for container in containers(state) {
+        let Some(object) = at(state, &container).and_then(Value::as_object) else {
+            continue;
+        };
+        for key in object.keys() {
+            let mut path = container.clone();
+            path.push(key.clone());
+            let Ok(encoded) = encode_decode(&without(state, &path)) else {
+                continue;
+            };
+            if at(&encoded, &path) != at(state, &path) {
+                continue;
+            }
+            if encoded != *state {
+                found.drifting.push(path.clone());
+            }
+            found.defaulted.push(path);
         }
-        None => true,
     }
+    found
 }
 
-/// Before submissions and shadow claims: no `next_submission`, `config.shadow_enabled`, claim
-/// `kind` or `submitted`.
-fn before_submit_and_shadow(state: &mut Value) -> bool {
-    let Some(object) = state.as_object_mut() else {
-        return false;
-    };
-    let mut applies = remove_if(object, "next_submission", &Value::from(0));
-    if let Some(config) = object.get_mut("config").and_then(Value::as_object_mut) {
-        applies &= remove_if(config, "shadow_enabled", &Value::from(false));
-    }
-    for claim in claims_of(object) {
-        applies &= remove_if(claim, "kind", &Value::from("real"));
-        applies &= remove_if(claim, "submitted", &Value::Null);
-    }
-    applies
+/// The fields an older build did not write, as `strip_each` finds them.
+pub fn defaulted_fields(state: &Value) -> Vec<Vec<String>> {
+    strip_each(state).defaulted
 }
 
-/// Before denials were kept: no claim `denial`.
-fn before_denials(state: &mut Value) -> bool {
-    let Some(object) = state.as_object_mut() else {
-        return false;
-    };
-    let mut applies = true;
-    for claim in claims_of(object) {
-        applies &= remove_if(claim, "denial", &Value::Null);
-    }
-    applies
-}
-
-fn claims_of(
-    state: &mut serde_json::Map<String, Value>,
-) -> impl Iterator<Item = &mut serde_json::Map<String, Value>> {
-    state
-        .get_mut("claims")
-        .and_then(Value::as_object_mut)
-        .into_iter()
-        .flat_map(|claims| claims.values_mut().filter_map(Value::as_object_mut))
-}
-
-/// Every older shape the core still loads.
-const OLDER_SHAPES: [(&str, OlderShape); 2] = [
-    (
-        "before submissions and shadow claims",
-        before_submit_and_shadow,
-    ),
-    ("before denials were kept", before_denials),
-];
-
-/// I5: the stored state decodes and encodes back to what is stored, and so does each older shape
-/// of it that applies.
+/// I5: the stored state decodes and encodes back to what is stored, and so does the state with
+/// each defaulted field absent, and with all of them absent at once.
 pub fn i5(store: &Store) -> Vec<String> {
     let state = match stored_state(store) {
         Ok(Some(state)) => state,
         Ok(None) => return Vec::new(),
         Err(e) => return vec![e],
     };
+    i5_state(&state)
+}
+
+pub fn i5_state(state: &Value) -> Vec<String> {
     let mut found = Vec::new();
-    if let Some(drift) = round_trip_drift(&state, &state) {
-        found.push(format!("the stored state {drift}"));
+    match encode_decode(state) {
+        Ok(encoded) if encoded == *state => {}
+        Ok(encoded) => found.push(format!(
+            "the stored state does not round-trip: {} differ",
+            differing_keys(&encoded, state)
+        )),
+        Err(e) => return vec![format!("the stored state {e}")],
     }
-    for (name, shape) in OLDER_SHAPES {
-        let mut older = state.clone();
-        if !shape(&mut older) {
-            continue;
-        }
-        if let Some(drift) = round_trip_drift(&older, &state) {
-            found.push(format!("the stored state {name} {drift}"));
-        }
+    let stripped = strip_each(state);
+    for path in &stripped.drifting {
+        found.push(format!(
+            "the stored state without {} does not round-trip",
+            path.join(".")
+        ));
+    }
+    let mut all_absent = state.clone();
+    for path in &stripped.defaulted {
+        all_absent = without(&all_absent, path);
+    }
+    match encode_decode(&all_absent) {
+        Ok(encoded) if encoded == *state => {}
+        Ok(_) | Err(_) => found.push(
+            "the stored state with every defaulted field absent does not round-trip".to_string(),
+        ),
     }
     found
 }
 
-/// How decoding `stored` and encoding it again differs from `expected`, if it does.
-fn round_trip_drift(stored: &Value, expected: &Value) -> Option<String> {
-    let decoded: Coordinator = match serde_json::from_value(stored.clone()) {
-        Ok(decoded) => decoded,
-        Err(e) => return Some(format!("does not decode: {e}")),
-    };
-    let encoded = match serde_json::to_value(&decoded) {
-        Ok(encoded) => encoded,
-        Err(e) => return Some(format!("does not encode: {e}")),
-    };
-    (encoded != *expected).then(|| differing_keys(&encoded, expected))
-}
-
 fn differing_keys(encoded: &Value, expected: &Value) -> String {
     let (Some(encoded), Some(expected)) = (encoded.as_object(), expected.as_object()) else {
-        return "does not round-trip".to_string();
+        return "the whole state".to_string();
     };
     let mut keys: BTreeSet<&String> = encoded.keys().collect();
     keys.extend(expected.keys());
@@ -287,10 +311,18 @@ fn differing_keys(encoded: &Value, expected: &Value) -> String {
         .filter(|key| encoded.get(*key) != expected.get(*key))
         .map(String::as_str)
         .collect();
-    format!("does not round-trip: {} differ", differing.join(", "))
+    differing.join(", ")
 }
 
-/// I9: nothing a client has seen is issued again, and a retired fence is refused.
+/// The codes that refuse a retired fence: the claim is live under a newer fence, or it has ended.
+fn refuses_retired_fence(code: ErrorCode) -> bool {
+    code == ErrorCode::StaleFence || code == ErrorCode::UnknownClaim
+}
+
+/// I9: nothing a client has seen is issued again, and a retired fence is refused. A release that
+/// succeeds sends the requester nothing, so a retired fence that was accepted shows in the stored
+/// log as one more release by the agent than there was when the probe was sent; one that was
+/// refused shows as a `StaleFence` or `UnknownClaim` error, unless the socket ended first.
 pub fn i9(
     transcript: &[Delivery],
     sent: &[Sent],
@@ -347,8 +379,6 @@ pub fn i9(
     found
 }
 
-/// A probe is answered with a refusal, unless its socket ended first (a crash, or a failed commit
-/// that closes it).
 fn unrefused_probes(
     transcript: &[Delivery],
     sent: &[Sent],
@@ -356,17 +386,15 @@ fn unrefused_probes(
 ) -> Vec<String> {
     let mut found = Vec::new();
     for probe in sent.iter().filter(|s| s.kind == RequestKind::StaleRelease) {
-        let mut refused = false;
-        for delivery in transcript.iter().filter(|d| d.sock == probe.sock) {
-            if let ServerMsg::Error { req: Some(req), .. } = &delivery.msg {
-                refused |= *req == probe.req;
-            }
-            if let ServerMsg::Granted { req, .. } = &delivery.msg {
-                if *req == probe.req {
-                    found.push(format!("retired fence accepted (request {})", req.0));
-                }
-            }
+        if probe.accepted {
+            found.push(format!("retired fence accepted (request {})", probe.req.0));
+            continue;
         }
+        let refused = transcript.iter().any(|delivery| {
+            delivery.sock == probe.sock
+                && matches!(&delivery.msg, ServerMsg::Error { req: Some(req), code, .. }
+                    if *req == probe.req && refuses_retired_fence(*code))
+        });
         if !refused && is_open(probe.sock) {
             found.push(format!(
                 "retired fence not refused (request {})",
