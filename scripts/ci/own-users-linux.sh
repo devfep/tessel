@@ -96,7 +96,8 @@ install -o root -g root -m 0755 /dev/stdin /var/tessel/toolchain/bin/cargo <<'SH
 #!/bin/sh
 case "$(cat marker 2>/dev/null)" in
 setsid) setsid sleep 300 >/dev/null 2>&1 </dev/null & ;;
-limits) echo "nproc=$(ulimit -Hu) core=$(ulimit -Sc)" ;;
+# dash (the Ubuntu /bin/sh) names the process limit -p where bash names it -u.
+limits) echo "nproc=$(ulimit -Hu 2>/dev/null || ulimit -Hp) core=$(ulimit -Sc)" ;;
 env) env ;;
 big) head -c 600000 /dev/zero | tr '\0' x ;;
 tmp-write) echo x > "$TMPDIR/seen" ;;
