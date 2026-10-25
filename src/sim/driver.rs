@@ -130,7 +130,8 @@ pub struct Sim {
     dispatches: Vec<Dispatch>,
     /// When each agent sent a heartbeat.
     heartbeats: Vec<(String, u64)>,
-    failed_sends: BTreeSet<SocketId>,
+    /// Sockets whose sends are to fail, with how many more succeed first.
+    send_budget: BTreeMap<SocketId, usize>,
     awaiting_review: BTreeSet<u64>,
     open_races: BTreeSet<u64>,
     race_entrants: BTreeMap<u64, Vec<u64>>,
@@ -153,7 +154,7 @@ impl Sim {
             clock: Clock::default(),
             store: Store::default(),
             answers: VecDeque::new(),
-            wake: None,
+            wake: Some(crate::sim::clock::START_MS),
             sock_agent: BTreeMap::new(),
             closed: Vec::new(),
             agents: BTreeMap::new(),
@@ -170,7 +171,7 @@ impl Sim {
             watches: Vec::new(),
             dispatches: Vec::new(),
             heartbeats: Vec::new(),
-            failed_sends: BTreeSet::new(),
+            send_budget: BTreeMap::new(),
             awaiting_review: BTreeSet::new(),
             open_races: BTreeSet::new(),
             race_entrants: BTreeMap::new(),
@@ -340,7 +341,13 @@ impl Sim {
 
     /// Every later send to `sock` fails, as to a slow or dropped socket.
     pub fn drop_sends(&mut self, sock: SocketId) {
-        self.failed_sends.insert(sock);
+        self.drop_sends_after(sock, 0);
+    }
+
+    /// The next `allowed` sends to `sock` succeed, every later one fails: a socket that dies in
+    /// the middle of a replay.
+    pub fn drop_sends_after(&mut self, sock: SocketId, allowed: usize) {
+        self.send_budget.insert(sock, allowed);
         for watch in self.watches.iter_mut().filter(|w| w.sock == sock) {
             watch.dropped = true;
         }
@@ -518,7 +525,8 @@ impl Sim {
 
     /// The process dies and restarts: the host forgets everything, staged writes are lost and
     /// every socket closes. The wake lived in the process, so it is gone; a restarted adapter
-    /// that finds stored state wakes once at once, as `tessel-server` does (`wake_on_start`).
+    /// wakes once at once, as `tessel-server` does (`wake_on_start`: it holds state, or its port
+    /// reads main's head, which the simulated lander port does).
     fn crash_now(&mut self) {
         self.log.push("crash".to_string());
         self.crashes += 1;
@@ -526,7 +534,7 @@ impl Sim {
         self.host = Host::new(self.config.clone());
         self.answers.clear();
         self.store.crash();
-        self.wake = self.store.state().map(|_| self.clock.now_ms());
+        self.wake = Some(self.clock.now_ms());
         for sock in self.sock_agent.keys() {
             if !self.closed.contains(sock) {
                 self.closed.push(*sock);
@@ -692,12 +700,14 @@ impl Sim {
         let Some(agent) = self.sock_agent.get(&sock).cloned() else {
             return;
         };
-        if self.failed_sends.contains(&sock) {
+        let budget = self.send_budget.entry(sock).or_insert(usize::MAX);
+        if *budget == 0 {
             let now_ms = self.now_ms();
             let failed = Input::SendFailed { now_ms, sock };
             self.answers.push_back(Answer::Input(failed));
             return;
         }
+        *budget = budget.saturating_sub(1);
         self.learn(&agent, &msg);
         let agent = AgentId(agent);
         self.transcript.push(Delivery { sock, agent, msg });

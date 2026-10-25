@@ -6,8 +6,8 @@ use serde_json::Value;
 use tessel_coordinator::host::call::Request;
 use tessel_coordinator::host::{HostConfig, SocketId};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind, Fence,
-    Intent, Mode, OnConflict, RaceId, ReleaseReason, RequestId, RunId, Scope, ScopeClaim,
+    AgentId, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, ErrorCode, Event, EventKind,
+    Fence, Intent, Mode, OnConflict, RaceId, ReleaseReason, RequestId, RunId, Scope, ScopeClaim,
     ServerMsg,
 };
 use tessel_coordinator::sim::check::{self, Checker};
@@ -69,6 +69,8 @@ fn i5_alone_sees_state_the_codec_does_not_round_trip() {
     assert!(first_caught(Variant::DriftingCodec, Checker::I5).is_some());
 }
 
+// The order check is pinned by `i2_flags_a_gap_a_duplicate_and_a_wrong_start`; the seed run
+// catches this bug through the order check or the tail check, whichever comes first.
 #[test]
 fn i2_alone_sees_a_watcher_miss_an_event() {
     assert!(first_caught(Variant::SkipsReplayEvent, Checker::I2).is_some());
@@ -730,7 +732,7 @@ fn i2_flags_a_missing_tail_unless_the_socket_ended_or_was_dropped() {
 // ---- I4 ----
 
 #[test]
-fn i4_wants_a_wake_later_than_now_while_work_is_due() {
+fn i4_wants_a_wake_later_than_now_and_not_long_after_the_work() {
     let sim = script();
     let now = sim.now_ms();
     assert!(sim.wake().is_some_and(|at| at > now), "the host set a wake");
@@ -744,6 +746,15 @@ fn i4_wants_a_wake_later_than_now_while_work_is_due() {
             "the pending wake {now} is not later than now ({now})"
         )]
     );
+    // The leases fall due at now + 30 000; a failed wake may put the next one 2 000 later.
+    let due = now + 30_000;
+    assert!(check::i4(sim.store(), Some(due + 2_000), now).is_empty());
+    assert!(check::i4(sim.store(), Some(due - 5_000), now).is_empty());
+    let late = check::i4(sim.store(), Some(due + 2_001), now);
+    assert_eq!(late.len(), 1, "{late:?}");
+    assert!(late[0].contains("after the work due at"), "{late:?}");
+    let hour = check::i4(sim.store(), Some(due + 3_600_000), now);
+    assert_eq!(hour.len(), 1, "{hour:?}");
 }
 
 #[test]
@@ -1083,4 +1094,145 @@ fn the_traffic_reaches_what_the_checkers_need() {
     for (needle, count) in wanted.iter().zip(&seen) {
         assert!(*count > 0, "twelve seeds never produced {needle}");
     }
+}
+
+// ---- Review of the second half ----
+
+#[test]
+fn i8_sees_the_locks_of_a_race_that_has_no_entrant_yet() {
+    let opened = at(
+        0,
+        50,
+        EventKind::RaceOpened {
+            race: RaceId(1),
+            scopes: claim_on("src/a.rs", Mode::EditBody),
+            criteria: vec![Criterion::FirstSubmitted],
+        },
+    );
+    let outsider = granted_event(1, "b", 2, claim_on("src/a.rs", Mode::EditBody), None);
+    let found = check::i8(&[opened.clone(), outsider.clone()]);
+    assert_eq!(
+        found,
+        ["claims 2 (b) and 18446744073709551614 (race 1) are both granted and conflict"]
+    );
+    let entrant = granted_event(1, "b", 2, claim_on("src/a.rs", Mode::EditBody), Some(1));
+    assert!(
+        check::i8(&[opened.clone(), entrant]).is_empty(),
+        "an entrant shares the race's locks"
+    );
+    let decided = at(
+        2,
+        60,
+        EventKind::RaceDecided {
+            race: RaceId(1),
+            winner: None,
+            ranking: Vec::new(),
+        },
+    );
+    assert!(
+        check::i8(&[opened, decided, outsider]).is_empty(),
+        "a decided race holds nothing"
+    );
+}
+
+#[test]
+fn i10_keeps_a_rejected_submission_held_until_it_is_sent_back() {
+    let rejected = at(
+        4,
+        170,
+        EventKind::SubmitRejected {
+            claim: ClaimId(1),
+            reason: "no".into(),
+        },
+    );
+    let mut log = vec![
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        submitted(1, 1, claim_on("src/a.rs", Mode::EditBody)),
+        review_requested(2, 1),
+        review_decided(3, 1, false),
+    ];
+    let found = check::i10(&log, None, &[prepare(1, 4)], &[]);
+    assert_eq!(
+        found,
+        ["claim 1 was dispatched while it was held for review"]
+    );
+    log.push(rejected);
+    assert!(check::i10(&log, None, &[prepare(1, 5)], &[]).is_empty());
+}
+
+#[test]
+fn i10_decides_coverage_the_way_the_core_does() {
+    let paths = ["", "src", "src/a", "src/a.rs", "lib", "lib/d.rs"];
+    let modes = [
+        Mode::Depend,
+        Mode::EditBody,
+        Mode::EditSignature,
+        Mode::Create,
+    ];
+    let mut scopes = Vec::new();
+    for path in paths {
+        let dir = Scope::Dir { path: path.into() };
+        scopes.push(dir);
+        if !path.is_empty() {
+            scopes.push(Scope::File { path: path.into() });
+            scopes.push(Scope::Symbol(tessel_coordinator::protocol::SymbolId {
+                path: path.into(),
+                qualified_name: "f".into(),
+            }));
+        }
+    }
+    let mut cases = 0;
+    for held in &scopes {
+        for held_mode in modes {
+            let claimed = [ScopeClaim {
+                scope: held.clone(),
+                mode: held_mode,
+            }];
+            for work in &scopes {
+                for work_mode in modes {
+                    let touched = ScopeClaim {
+                        scope: work.clone(),
+                        mode: work_mode,
+                    };
+                    let core = tessel_coordinator::protocol::uncovered(
+                        &claimed,
+                        std::slice::from_ref(&touched),
+                    )
+                    .is_empty();
+                    assert_eq!(
+                        check::covered(&claimed, &touched),
+                        core,
+                        "{claimed:?} against {touched:?}"
+                    );
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert!(cases > 4_000);
+}
+
+#[test]
+fn a_socket_cut_off_mid_replay_keeps_the_prefix_it_got() {
+    let mut sim = script();
+    let sock = sim.watch("watcher-a", 0, false);
+    sim.drop_sends_after(sock, 2);
+    assert!(sim.quiet());
+    assert_eq!(seqs_received(&sim, sock), [0, 1]);
+    assert!(sim.watches().iter().any(|w| w.sock == sock && w.dropped));
+    let found = check::i2(
+        sim.transcript(),
+        sim.watches(),
+        &sim.store().event_values(),
+        &|s| sim.is_open(s),
+    );
+    assert_eq!(found, Vec::<String>::new());
+}
+
+#[test]
+fn some_default_seeds_cut_a_replay_off_part_way() {
+    let cut: usize = (0..sim::DEFAULT_SEEDS)
+        .map(|seed| sim::run_seed(seed, Variant::Correct, &[]).cut_off_replays)
+        .sum();
+    assert!(cut > 0, "no watcher was cut off after receiving events");
 }

@@ -17,7 +17,7 @@ use crate::coordinator::Coordinator;
 use crate::host::call::Request;
 use crate::host::SocketId;
 use crate::protocol::{
-    uncovered, ClaimId, ErrorCode, Event, EventKind, RaceId, ScopeClaim, ServerMsg,
+    ClaimId, ErrorCode, Event, EventKind, Mode, RaceId, Scope, ScopeClaim, ServerMsg,
 };
 use crate::sim::driver::{Delivery, Dispatch, RequestKind, Sent, Sim, Watch};
 use crate::sim::store::Store;
@@ -467,8 +467,18 @@ pub fn i2(
 
 // ---- I4 ----
 
-/// I4: if the core has work due, a wake is pending and it is later than now. (A failed wake
-/// retries after a delay, so a wake later than the work is allowed.)
+/// How long after the work a failed wake may put the next one: the host's `wake::RETRY_MS`,
+/// which that private module does not export. A host that retries later would show as a
+/// violation at its first failed wake.
+const WAKE_RETRY_MS: u64 = 2_000;
+
+/// I4: if the core has work due, a wake is pending, later than now and at most `WAKE_RETRY_MS`
+/// after the work (a failed wake retries after that delay; a later wake leaves the work waiting).
+///
+/// "Exactly one wake" holds by construction: the platform keeps the wake in a single slot that
+/// each `SetWake` replaces. The "not later than now" branch cannot fire in a run, because
+/// `Sim::quiet` fires every wake at or before now before the checkers look (a host that sets
+/// such wakes shows as a stuck harness); only its unit case pins it.
 pub fn i4(store: &Store, wake: Option<u64>, now_ms: u64) -> Vec<String> {
     let state = match stored_state(store) {
         Ok(Some(state)) => state,
@@ -487,6 +497,11 @@ pub fn i4(store: &Store, wake: Option<u64>, now_ms: u64) -> Vec<String> {
         Some(at) if at <= now_ms => {
             vec![format!(
                 "the pending wake {at} is not later than now ({now_ms})"
+            )]
+        }
+        Some(at) if at > due + WAKE_RETRY_MS => {
+            vec![format!(
+                "the pending wake {at} is more than {WAKE_RETRY_MS} ms after the work due at {due}"
             )]
         }
         Some(_) => Vec::new(),
@@ -531,17 +546,29 @@ fn live_claims(events: &[Event]) -> BTreeMap<u64, Live> {
         {
             live.remove(&claim.0);
         }
-        if let EventKind::RaceDecided {
-            winner: Some(winner),
-            ..
-        } = &event.kind
-        {
-            if let Some(held) = live.get_mut(&winner.0) {
+        if let EventKind::RaceOpened { race, scopes, .. } = &event.kind {
+            // The race's own locks block everyone else, entrants of the race apart, from the
+            // moment it opens. They stand in the table under an id no claim has.
+            let held = Live {
+                agent: format!("race {}", race.0),
+                scopes: scopes.clone(),
+                race: Some(*race),
+            };
+            live.insert(race_lock_id(*race), held);
+        }
+        if let EventKind::RaceDecided { race, winner, .. } = &event.kind {
+            live.remove(&race_lock_id(*race));
+            if let Some(held) = winner.and_then(|winner| live.get_mut(&winner.0)) {
                 held.race = None;
             }
         }
     }
     live
+}
+
+/// The id a race's locks go under: above any claim id.
+fn race_lock_id(race: RaceId) -> u64 {
+    u64::MAX - race.0
 }
 
 /// Whether two claims hold locks that conflict (`Lock::conflicts_with`).
@@ -597,16 +624,25 @@ pub fn i10(
     found
 }
 
-/// Whether the log up to `events` holds `claim` for review: asked for and not approved.
+/// Whether the log up to `events` holds `claim` for review: asked for, and neither approved nor
+/// sent back.
 fn held_for_review(events: &[Event], claim: ClaimId) -> bool {
     let mut held = false;
     for event in events {
         if let EventKind::ReviewRequested { claim: c, .. } = &event.kind {
             held |= *c == claim;
         }
-        if let EventKind::ReviewDecided { claim: c, .. }
-        | EventKind::Submitted { claim: c, .. }
-        | EventKind::SubmitRejected { claim: c, .. } = &event.kind
+        if let EventKind::ReviewDecided {
+            claim: c, approve, ..
+        } = &event.kind
+        {
+            // A rejection holds the claim until the core sends the work back (`SubmitRejected`).
+            if *c == claim && *approve {
+                held = false;
+            }
+        }
+        if let EventKind::Submitted { claim: c, .. } | EventKind::SubmitRejected { claim: c, .. } =
+            &event.kind
         {
             if *c == claim {
                 held = false;
@@ -650,7 +686,7 @@ fn merged_uncovered(events: &[Event]) -> Vec<String> {
         }
         if let EventKind::Submitted { claim, touched, .. } = &event.kind {
             let held = claimed.get(&claim.0).map_or(&[][..], Vec::as_slice);
-            if uncovered(held, touched).is_empty() {
+            if touched.iter().all(|work| covered(held, work)) {
                 uncovered_now.remove(&claim.0);
             } else {
                 uncovered_now.insert(claim.0);
@@ -728,4 +764,45 @@ pub fn event_values(events: &[Event]) -> BTreeMap<u64, Value> {
         .iter()
         .filter_map(|event| Some((event.seq, serde_json::to_value(event).ok()?)))
         .collect()
+}
+
+/// Whether `work` is covered by some claimed scope that permits its mode (invariant 11), worked
+/// out here on paths and a table of its own, so a mistake in `protocol::uncovered` shows as a
+/// disagreement (a test compares the two).
+pub fn covered(claimed: &[ScopeClaim], work: &ScopeClaim) -> bool {
+    claimed
+        .iter()
+        .any(|held| scope_covers(&held.scope, &work.scope) && mode_permits(held.mode, work.mode))
+}
+
+fn path_of(scope: &Scope) -> &str {
+    match scope {
+        Scope::Dir { path } | Scope::File { path } => path,
+        Scope::Symbol(symbol) => &symbol.path,
+    }
+}
+
+fn scope_covers(held: &Scope, work: &Scope) -> bool {
+    if held == work {
+        return true;
+    }
+    let (held_path, work_path) = (path_of(held), path_of(work));
+    match held {
+        Scope::Dir { .. } => {
+            held_path.is_empty() || work_path.starts_with(&format!("{held_path}/"))
+        }
+        Scope::File { .. } => matches!(work, Scope::Symbol(_)) && work_path == held_path,
+        Scope::Symbol(_) => false,
+    }
+}
+
+fn mode_permits(held: Mode, work: Mode) -> bool {
+    if held == work {
+        return true;
+    }
+    match work {
+        Mode::Depend => true,
+        Mode::EditBody => held == Mode::EditSignature,
+        Mode::EditSignature | Mode::Create => false,
+    }
 }

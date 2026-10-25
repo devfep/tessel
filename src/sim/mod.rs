@@ -90,6 +90,8 @@ pub struct Run {
     pub steps: usize,
     /// Crashes injected.
     pub crashes: u64,
+    /// Watchers whose socket died after some of the replay had reached it.
+    pub cut_off_replays: usize,
     /// Every input and output, in order.
     pub transcript: Vec<String>,
 }
@@ -128,6 +130,7 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
         violations,
         steps,
         crashes: sim.crashes(),
+        cut_off_replays: cut_off_replays(&sim),
         transcript: sim.log().to_vec(),
     }
 }
@@ -142,6 +145,19 @@ pub fn first_difference(a: &[String], b: &[String]) -> Option<String> {
         }
     }
     (a.len() != b.len()).then(|| format!("one run has {} lines, the other {}", a.len(), b.len()))
+}
+
+fn cut_off_replays(sim: &Sim) -> usize {
+    let received = |sock| {
+        sim.transcript()
+            .iter()
+            .filter(|delivery| delivery.sock == sock)
+            .any(|delivery| matches!(delivery.msg, crate::protocol::ServerMsg::Event { .. }))
+    };
+    sim.watches()
+        .iter()
+        .filter(|watch| watch.dropped && received(watch.sock))
+        .count()
 }
 
 #[cfg(test)]

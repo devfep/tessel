@@ -347,7 +347,7 @@ impl Traffic {
     }
 
     /// Start a watcher: from the start of the log or from somewhere in it, sometimes with a hello
-    /// right behind the watch, sometimes on a socket whose sends fail.
+    /// right behind the watch, sometimes on a socket whose sends fail at once or part-way through the replay.
     fn watch(&mut self, sim: &mut Sim) {
         let name = WATCHERS[self.rng.below(WATCHERS.len())];
         let from = if self.rng.chance(0.5) {
@@ -357,8 +357,10 @@ impl Traffic {
         };
         let hello_mid_replay = self.rng.chance(0.5);
         let sock = sim.watch(name, from, hello_mid_replay);
-        if self.rng.chance(0.3) {
+        if self.rng.chance(0.15) {
             sim.drop_sends(sock);
+        } else if self.rng.chance(0.2) {
+            sim.drop_sends_after(sock, 1 + self.rng.below(6));
         }
     }
 }
