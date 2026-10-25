@@ -145,6 +145,13 @@ pub struct RepositoryConfig {
     /// `/srv/forks/{agent}.git`. Required with `remote`.
     #[serde(default)]
     pub fork: Option<String>,
+    /// How long a claim lives without a heartbeat, in milliseconds, from 1 000 to 600 000.
+    /// Absent: 30 000.
+    #[serde(default)]
+    pub lease_ms: Option<u64>,
+    /// Experiment runs only: allow `OnConflict::Shadow` (invariant 10). Absent: false.
+    #[serde(default)]
+    pub shadow_enabled: bool,
 }
 
 /// The placeholder in `fork` that the agent's name replaces.
@@ -538,6 +545,29 @@ mod tests {
         for name in ["tessel-server.toml", "acme/demo", "reviewers"] {
             assert!(shown.contains(name), "{name}: {shown}");
         }
+    }
+
+    #[test]
+    fn a_repository_may_set_its_lease_and_shadow_claims() {
+        let bare = load(BASE).unwrap();
+        assert_eq!(bare.repositories[0].lease_ms, None);
+        assert!(!bare.repositories[0].shadow_enabled);
+        let set = load(&format!("{BASE}lease_ms = 5000\nshadow_enabled = true\n")).unwrap();
+        assert_eq!(set.repositories[0].lease_ms, Some(5_000));
+        assert!(set.repositories[0].shadow_enabled);
+    }
+
+    #[test]
+    fn a_lease_outside_one_second_to_ten_minutes_is_refused_naming_file_repository_and_key() {
+        for lease in ["0", "999", "600001"] {
+            let error = load(&format!("{BASE}lease_ms = {lease}\n")).unwrap_err();
+            let shown = error.to_string();
+            for name in ["tessel-server.toml", "acme/demo", "lease_ms", lease] {
+                assert!(shown.contains(name), "{name}: {shown}");
+            }
+        }
+        assert!(load(&format!("{BASE}lease_ms = 1000\n")).is_ok());
+        assert!(load(&format!("{BASE}lease_ms = 600000\n")).is_ok());
     }
 
     const LANDER: &str = "\n[lander]\nwork_dir = \"/var/lib/tessel/work\"\n\

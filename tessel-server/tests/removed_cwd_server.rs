@@ -69,6 +69,8 @@ async fn a_relative_store_dir_still_serves_the_summary_after_the_working_directo
             sensitive: Vec::new(),
             remote: None,
             fork: None,
+            lease_ms: None,
+            shadow_enabled: false,
         }],
     };
     let verifier: Option<Arc<dyn Verifier>> =

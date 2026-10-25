@@ -205,6 +205,8 @@ async fn start_over(
                 sensitive: Vec::new(),
                 remote: None,
                 fork: None,
+                lease_ms: None,
+                shadow_enabled: false,
             })
             .collect(),
     };
@@ -282,6 +284,8 @@ async fn adapter_a_summary_read_without_a_valid_token_is_unauthorized() -> TestR
             sensitive: Vec::new(),
             remote: None,
             fork: None,
+            lease_ms: None,
+            shadow_enabled: false,
         }],
     };
     let unconfigured = server::start(
