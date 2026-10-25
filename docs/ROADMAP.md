@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-25. Main at `14d272c` (STATE only since `cd68555`), green; the orchestrator's
+**As of:** 2026-10-25 08:15 UTC. Main at `a451766` (docs only since `cd68555`); the orchestrator's
 gate is green on `cd68555` (2008 tests). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD).
 Seventeen server landings on 24 October, each read by an Opus reviewer on the commit from the
 fork first; main's CI is green on every one but
@@ -22,8 +22,9 @@ of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` 
 worktree and decides holds as `orchestrator`. Two lanes ran at once four times; the coordinator
 denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
-claimed the file after the holder landed or left it to a follow-up. Nothing is dispatched;
-`.claude/worktrees/orchestrator` holds this commit, `gate-main` is the detached gate worktree.
+claimed the file after the holder landed or left it to a follow-up. Lane A is on P1-SIM-CORE's
+first half (`.claude/worktrees/sim-core`, under review); `.claude/worktrees/orchestrator` holds
+this commit, `gate-main` is the detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
 classifier still refuses the orchestrator's own pull request merges ("Merge Without Review"), so
@@ -56,9 +57,12 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** M5, re-planned and decided (below): dispatch P1-SIM-CORE (lane A) and CANDIDATE-REF
-(lane B); P1-SIM-CORE's workflow pull request (the seed count in the mutants jobs) goes to Felix
-before its code lands. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** P1-SIM-CORE's workflow pull request (the seed count in the mutants jobs) goes to Felix
+and merges before its code lands; MERGE-PATH-REVIEW goes to Felix before P1-SERVER-STAGED; lane B
+writes OWN-USERS-DESIGN meanwhile. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
+`CandidateMissing` as a `Call` change (decision 12); the plan's lander fork and its account steps
+are dropped.
 **Decided by Felix (25 October), M5's re-plan:** M5-1 to M5-8 as recommended
 (`docs/proposals/phase-1.md`, "Decided at M5's re-plan"), after an adversarial Opus review of
 the re-plan; decision 7 and proposed change A's `resolve` are decided with them.
@@ -933,12 +937,17 @@ Lane A:
   renewal persisted below half the lease (C10).
 
 Lane B:
-- [ ] **CANDIDATE-REF** — S; an adversarial review, then Felix (M5-7). Design note: the prepared
-  head on `refs/heads/tessel/candidate/<dispatch id>` of a fork the lander owns, and the outcome
-  for a `Land` whose ref is gone. Felix's steps: the fork repository and its token access.
+- [x] **CANDIDATE-REF** (`a451766`, landed by the server) — lane B.
+  `docs/proposals/candidate-ref.md`: `Prepare` pushes the head to `refs/tessel/candidate/<head sha>`
+  on `remote` itself (fallback `refs/heads/tessel/candidate/*`), `Test` fetches it, `Land` reads the
+  ref first, pushes main by compare-and-swap, reads back by ancestry and deletes the ref; a missing
+  ref answers the new `CandidateMissing` (a `Call` change), which sends the submission back to
+  `Prepare`. No new repository or token step. Opus "Yes" after two fix passes; Felix approved the
+  shape (M5-7) on 25 October.
 - [ ] **P1-SERVER-STAGED** — M, Felix reviews, after CANDIDATE-REF and MERGE-PATH-REVIEW. The
   server answers `Test` and `Land`, with the ancestry read-back (P1-LANDER-ANCESTRY folded in)
-  and the missing-ref outcome.
+  and `CandidateMissing`. First step: a probe on `tessel-sandbox` that GitHub accepts the
+  candidate ref push with the lander's token.
 - [ ] **OWN-USERS-DESIGN** — S; an adversarial security review, then Felix. Service accounts
   `_tessel` and `_tessel-runner`, the sudoers one-shot runner, cleanup, toolchain and upgrades.
 - [ ] **P1-CORE-STAGED-LANDING** — L, Felix reviews, after P1-SERVER-STAGED, P1-SWARM-ON-SERVER and
