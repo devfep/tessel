@@ -31,9 +31,10 @@ by something that outlives a process. The core never runs git (rule 4), so the l
    `head`, push `head` to main with the lease on `base`, read main back by ancestry
    (P1-LANDER-ANCESTRY), delete the ref.
 4. **A kill anywhere leaves the ref.** A retried `Land` pushes the same head.
-5. **A `Land` (or `Test`) whose ref is gone** reads main only then: `Landed` if it contains the
-   head, otherwise the new answer `CandidateMissing`. The core sends the submission back to
-   `Prepare` under a new dispatch id.
+5. **A `Test` whose ref is gone** answers the new `CandidateMissing`, never `Landed`. **A `Land`
+   whose ref is gone** reads main then: `Landed` if it contains the head, otherwise
+   `CandidateMissing`. The core sends the submission back to `Prepare` under a new dispatch id. A
+   head that landed unseen comes back as `AlreadyMerged` on that `Prepare` (C7).
 
 Two corrections to the shape in `phase-1.md`.
 
@@ -46,8 +47,7 @@ Two corrections to the shape in `phase-1.md`.
 - C7 makes the head a function of the commit and main (the committer and its date are fixed in
   `git.rs`), so a re-`Prepare` after a kill pushes the same sha to the same name. A tip other
   than the name is damage or tampering, and is read as a missing ref.
-- The cost: an operator cannot read the dispatch from the name. `Prepare` logs `dispatch`,
-  `claim`, `base` and `head` when it pushes.
+- The cost: an operator cannot read the dispatch from the name.
 
 **The ref lives on `remote` itself, not in a repository of the lander's.**
 - The objects are shared with main, so there is nothing to seed, a push carries only the agent's
@@ -161,15 +161,15 @@ core abandoned (main moved, a new `Prepare`).
   dispatches no `Prepare`, and an earlier submission's head is dead once its stage is over.
 - **Parsing:** lines are accepted only as `<40-hex> refs/tessel/candidate/<40-hex>`; anything else
   is skipped, since another writer controls those names (rule 3).
-- **Bound:** at most 50 deletions per `Prepare` and 1,000 listed lines, so a damaged remote cannot
+- **Bound:** the sweep lists and deletes at most 50 refs per `Prepare`, so a damaged remote cannot
   push one call past its deadline; the rest go on later calls. In steady state `remote` holds one
   candidate after a rejected or abandoned submission and none after a landing.
 - **Not done:** `Reconcile` and `Test` delete nothing. A read that writes would make a status
   probe a mutation, and `Test` should hold no write path while repo code runs.
 
-Tests: a kill after the push leaves one ref and the next `Prepare` ends with one; 60 stale refs
-take two `Prepare`s to clear; a `Prepare` for the same head keeps its ref; a ref deleted between
-the listing and the sweep does not fail the `Prepare`; a listing with a malformed name deletes
+Tests: a kill after the push leaves one ref and the next `Prepare` ends with one; a `Prepare`
+for the same head keeps its ref; a ref deleted between the listing and the sweep does not fail
+the `Prepare`; a listing with a malformed name deletes
 nothing; `Land` deletes the ref and a failed delete still answers `Landed`.
 
 ## 4. The credential
@@ -180,11 +180,13 @@ list. No config key and no step for Felix.
 
 `merge.rs` documents `PushUpdate` as "the one update the write credential may be used for:
 main", and `with_push_access` guards it. The candidate writes would use the same credential
-outside that port. So `MergePorts` gains `with_candidate_access`, which checks `Stop` and then
-runs the closure, and the contract is reworded: the write credential is used for two things,
-the main push and the candidate writes, each only inside its port method. `Stop` is checked
-before every remote write (the candidate push, each sweep push and the delete), not only on
-entry to the call. `with_push_access` today checks it only before the closure.
+outside that port. So `MergePorts` gains `with_candidate_access`, which takes a typed
+`CandidateWrite` (`Push { head }` or `Delete { ref, sha }`, as `with_push_access` takes
+`&PushUpdate`), checks `Stop` and then runs the closure. The contract is reworded: the write
+credential is used for two things, the main push and the candidate writes, each only inside its
+port method. `Stop` is checked before every remote write (the candidate push, each sweep push and
+the delete), not only on entry to the call. `with_push_access` today checks it only before
+the closure.
 
 **No credential is live while repo code runs.** The only process that runs repo code is the
 runner, inside `Test`, after the lander's git commands for that call have exited. Git reads the
@@ -225,14 +227,13 @@ remote write.
 
 | Alternative | Why not |
 |---|---|
-| A local ref or bundle in the lander's workspace or a bare repository | Dies with the disk, and the hosted server (M6) has no durable lander disk. During `Test`, repo code as the same uid could write it by path, and it keeps a pushable `Workspace` beside the tests |
-| A separate candidates repository | Every main commit after its seed is new to it, and the token has no Workflows permission: each merged workflow pull request breaks every `Prepare` until Felix re-seeds. It also needs a config key, seeding and a second sandbox repository |
-| `refs/heads/tessel/candidate/<head>` on `remote` | The fallback if the probe shows GitHub refuses `refs/tessel/*`. It is a branch, so a default clone fetches it and a branch-triggered workflow could see it |
-| Keep the head in the core's state as a bundle | The core never runs git (rule 4) and the state would hold a repository |
-| Push the head to the agent's fork | The agent can rewrite its own branch between `Test` and `Land` |
+| A local ref, bundle or bare repository | Dies with the disk (M6 has none), is writable by repo code as the same uid, and keeps a pushable `Workspace` beside the tests |
+| A separate candidates repository | Each merged workflow pull request breaks every `Prepare` (no Workflows permission) until Felix re-seeds it |
+| `refs/heads/tessel/candidate/<head>` | The fallback if GitHub refuses `refs/tessel/*`; a branch is fetched by a default clone |
+| The head in the core's state, or in the agent's fork | The core never runs git (rule 4); the agent can rewrite its fork |
 | One branch per repository | A new `Prepare` would overwrite the head a retried `Land` needs |
 | Name by dispatch id | Needs new fields on `Test` and `Land`; collides after a fresh store |
-| Skip the store: re-`Prepare` inside `Land` | Needs the fork commit, agent and scopes in `Land` |
+| Re-`Prepare` inside `Land` | Needs the fork commit, agent and scopes in `Land` |
 | `Unknown` for a missing ref | Loops forever (section 2) |
 
 ## 7. Failpoints and the order of tasks
