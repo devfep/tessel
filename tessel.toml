@@ -9,10 +9,10 @@
 # - The file changes through a pull request that Felix merges.
 # - The lander ignores `instance` and `[install]`: the runner uses the machine's own toolchain and
 #   dependencies. The steward still reads both until M6.
-# - Clippy, the named-tests check, actionlint, zizmor and the steward's tests run on CI, which
-#   runs on main after a landing. Each lane also runs actionlint and zizmor in its gate before it
-#   submits. The steward's tests are not here because the runner's test tree is a fresh clone
-#   without node_modules.
+# - fmt runs here and on CI. Clippy, the named-tests check, actionlint, zizmor and the steward's
+#   tests run on CI, which runs on main after a landing. Each lane also runs actionlint and zizmor
+#   in its gate before it submits. The steward's tests are not here because the runner's test tree
+#   is a fresh clone without node_modules.
 # Commands are checked strictly: `pnpm test`, `npm test`, exactly `cargo fmt --all --check`, or
 # `cargo test` with only these flags: --workspace --locked --offline --no-fail-fast --all-targets
 # --all-features --release --lib --bins --tests.
