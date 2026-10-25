@@ -27,6 +27,8 @@ pub enum ConfigReason {
     ZeroTimeout,
     #[error("[runner] timeout_secs must be at most 86400")]
     TimeoutTooLong,
+    #[error("a sandboxed runner must not run as root")]
+    RootSandbox,
     #[error("the login of the user who runs the runner cannot be determined")]
     LoginUnknown,
     #[error("[runner] user must be the login of the user who runs the runner")]
@@ -52,6 +54,10 @@ pub enum RequestRefusal {
     TreeNotDirectory,
     #[error("tree must be owned by the user who runs the runner")]
     TreeNotOwned,
+    #[error("tree must be a directory inside the handoff or the work directory")]
+    TreeNotInSandbox,
+    #[error("the compiler on the runner's PATH is not the channel the tree names")]
+    ToolchainMismatch,
     #[error("a test dir must be a directory inside the tree")]
     DirNotDirectory,
     #[error("a test dir leaves the tree")]

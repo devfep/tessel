@@ -164,6 +164,9 @@ impl RunnerConfig {
             Ok(None) => (inherited_env(), None),
             Err(reason) => return Err(refuse(reason)),
         };
+        if sandbox.is_some() && effective_uid() == 0 {
+            return Err(refuse(ConfigReason::RootSandbox));
+        }
         Ok(RunnerConfig {
             user: raw.runner.user,
             timeout_secs: raw.runner.timeout_secs,
@@ -180,7 +183,9 @@ fn absolute(value: &str) -> Option<PathBuf> {
 
 /// The sandbox and its environment, when the file asks for one: `work_dir` and `handoff_dir`
 /// together, then a `path`, and every directory absolute. `Ok(None)` when it asks for neither.
-fn sandbox_of(raw: &RawRunner) -> Result<Option<(Vec<(String, String)>, Sandbox)>, ConfigReason> {
+type SandboxEnv = (Vec<(String, String)>, Sandbox);
+
+fn sandbox_of(raw: &RawRunner) -> Result<Option<SandboxEnv>, ConfigReason> {
     let (Some(work), Some(handoff)) = (&raw.work_dir, &raw.handoff_dir) else {
         let any = raw.work_dir.is_some()
             || raw.handoff_dir.is_some()
