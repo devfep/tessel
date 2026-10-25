@@ -203,8 +203,8 @@ while the task that edits it runs:
 - P1-CORE-STAGED-LANDING: `src/host/calls.rs`, `src/host/mod.rs`, `src/host/tests.rs` and
   `tessel-cli/tests/support/mod.rs`.
 - P1-CORE-RECONCILE: `src/host/calls.rs` (the `Reconcile` on `Loaded`) and R24's named tests in
-  `src/host/tests.rs`, `tests/runtime_rules.rs` and `src/shell.rs`. P1-HOST-HARDENING, which runs
-  beside it, waits for it before editing those files.
+  `src/host/tests.rs`, `tests/runtime_rules.rs` and `src/shell.rs`. P1-HOST-HARDENING, whose tests
+  are in the same files, therefore runs after it.
 - RUNNER-OWN-UID: `tessel-server/src/{main,server,config}.rs` and `Cargo.toml`.
 
 Workflow changes cannot land through the server (the lander's token has no Workflows
@@ -244,10 +244,10 @@ Lane A:
   the server, P1-CORE-STAGED-LANDING does not touch it. The swarm tests then start a real server
   inside the runner's `cargo test`, so the task measures a landing's time against the runner's
   720 s limit and reports it.
-- P1-HOST-HARDENING (M, after P1-CORE-STAGED-LANDING lands): P1-PERSIST-RETRY (C8,
-  `src/host/batch.rs`: a failed commit retried with the batch still in memory instead of dropping
-  the core; flips R30's test); exact replay without stalling the repo (C3, flips R36's test);
-  COORD-UNDELIVERED-GRANT (decision 7: the claim kept until its lease lapses, one test).
+- P1-HOST-HARDENING (M, after P1-CORE-RECONCILE lands): P1-PERSIST-RETRY (C8, `src/host/batch.rs`: a
+  failed commit retried with the batch still in memory instead of dropping the core; flips R30's
+  test); exact replay without stalling the repo (C3, flips R36's test); COORD-UNDELIVERED-GRANT
+  (decision 7: the claim kept until its lease lapses, one test).
 - P1-ADAPTER-SUITE (M; first part after P1-SWARM-ON-SERVER, the rest after P1-HOST-HARDENING):
   the parts of the phase's done-check 3 with no test yet. First part, which does not touch
   `src/host/`: a kill -9 loop with client transcripts checked against I1, in a job that runs only
@@ -363,11 +363,11 @@ Orchestrator rows (no lane):
 - M5-DOGFOOD-STAGED: after the upgrade, three landings of this repository through the staged
   path, with notes and claims released by `Merged`.
 
-Order: lane A runs P1-SIM-CORE, P1-CI-SIM, P1-SWARM-ON-SERVER, P1-ADAPTER-SUITE's first part,
-then (after P1-CORE-STAGED-LANDING) P1-HOST-HARDENING, P1-SIM-MERGE, the rest of
-P1-ADAPTER-SUITE, and (after P1-CORE-RECONCILE) P1-FAILPOINTS and P1-ONE-BATCH. Lane B runs
-CANDIDATE-REF, P1-SERVER-STAGED, OWN-USERS-DESIGN, P1-CORE-STAGED-LANDING, P1-CORE-RECONCILE,
-GATE-PARITY-FMT and RUNNER-OWN-UID; it may sit idle for a few days waiting for
+Order: lane A runs P1-SIM-CORE, P1-CI-SIM, P1-SWARM-ON-SERVER, P1-ADAPTER-SUITE's first part, then
+(after P1-CORE-STAGED-LANDING) P1-SIM-MERGE, which is `src/sim/**` only, and (after
+P1-CORE-RECONCILE) P1-HOST-HARDENING, the rest of P1-ADAPTER-SUITE, P1-FAILPOINTS and P1-ONE-BATCH.
+Lane B runs CANDIDATE-REF, P1-SERVER-STAGED, OWN-USERS-DESIGN, P1-CORE-STAGED-LANDING,
+P1-CORE-RECONCILE, GATE-PARITY-FMT and RUNNER-OWN-UID; it may sit idle for a few days waiting for
 P1-SWARM-ON-SERVER, which is accepted rather than putting lane B in lane A's `local.rs`. The
 critical path is P1-SIM-CORE → P1-CI-SIM → P1-SWARM-ON-SERVER → P1-CORE-STAGED-LANDING →
 P1-CORE-RECONCILE → P1-FAILPOINTS and P1-ONE-BATCH. Lane A comes to about 20 to 24 lane-days and

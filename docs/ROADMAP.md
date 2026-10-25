@@ -922,7 +922,7 @@ Lane A:
 - [ ] **P1-ADAPTER-SUITE** — M. First part after P1-SWARM-ON-SERVER: the CI-only kill -9 loop
   checked against I1, and the CLI release before the protocol range field against the new server.
   The rest after P1-HOST-HARDENING: a slow watcher, a panicking repo task, injected store errors.
-- [ ] **P1-HOST-HARDENING** — M, after P1-CORE-STAGED-LANDING. P1-PERSIST-RETRY (C8, flips R30),
+- [ ] **P1-HOST-HARDENING** — M, after P1-CORE-RECONCILE. P1-PERSIST-RETRY (C8, flips R30),
   exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
 - [ ] **P1-SIM-MERGE** — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING. The asynchronous merge
   path; checkers I3, I6, I7, I11, I12; COORD-HEAD-FROM-AGENT's check that no dispatch uses an
