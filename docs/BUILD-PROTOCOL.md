@@ -141,6 +141,12 @@ Felix decides: scope or order changes to `PLAN.md`, any breaking protocol change
 billing actions, the ruleset, and the two pull requests of section 2. Those go under "Pending from
 Felix" in the STATE block; work that does not depend on them continues.
 
+Merge-path tasks stay with Felix, as `PLAN.md` says. For a task the plan marks "Felix reviews", the
+orchestrator approves its held submission only after Felix's written yes that names the fork
+commit's sha; a fix pass needs a new yes. On the reviewer's "Yes" the orchestrator brings that sha
+to Felix instead of approving, and Felix's standing order to proceed on a reviewer's buy-in does
+not apply to these tasks.
+
 For a design question the orchestrator brings one recommendation with its reason, not a list.
 
 ## 7. State
