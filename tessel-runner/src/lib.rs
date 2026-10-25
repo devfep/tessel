@@ -2,7 +2,7 @@
 //!
 //! It is for one trusted user on their own machine. The lander runs git and never repo code
 //! (CLAUDE.md rule 4); this is the separate process that runs repo code, and it refuses to start
-//! unless its configuration file names the user who started it. It runs no git, opens no network
+//! unless its configuration file names the user who started it. It runs no git and opens no network
 //! connection. Started as its own account through the sudo rule, with a configuration that names
 //! a `work_dir` and a `handoff_dir`, it copies the tree into its own directory, empties what the
 //! account left behind, limits its processes and takes its environment from the file alone
