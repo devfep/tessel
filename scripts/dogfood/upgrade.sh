@@ -106,6 +106,7 @@ restore() {
 	/bin/launchctl bootout "$label" >/dev/null 2>&1 || true
 	/bin/rm -r /opt/tessel/bin 2>/dev/null || true
 	/bin/mv /opt/tessel/bin.prev /opt/tessel/bin
+	/bin/launchctl enable "$label" || true
 	/bin/launchctl bootstrap system "$plist" || echo "upgrade: the old daemon did not start either" >&2
 	exit 1
 }
@@ -115,12 +116,14 @@ if [ "$dry" = 1 ]; then
 	for binary in tessel-server tessel tessel-runner; do
 		echo "would run: /usr/bin/install -o root -g wheel -m 0755 <the copy of $binary> /opt/tessel/bin/$binary"
 	done
+	act /bin/launchctl enable "$label"
 	act /bin/launchctl bootstrap system "$plist"
 else
 	/usr/bin/install -d -o root -g wheel -m 0755 /opt/tessel/bin || restore
 	for binary in tessel-server tessel tessel-runner; do
 		/usr/bin/install -o root -g wheel -m 0755 "$work/$binary" "/opt/tessel/bin/$binary" || restore
 	done
+	/bin/launchctl enable "$label"
 	/bin/launchctl bootstrap system "$plist" || restore
 fi
 echo "upgrade: done. The old binaries are in /opt/tessel/bin.prev; tail /var/log/tessel-server.log"

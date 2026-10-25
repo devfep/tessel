@@ -259,8 +259,14 @@ install_plist() {
 </plist>
 PLIST
 	# Disabled until the move: otherwise launchd loads it at the next boot, before the secrets are
-	# here, and a second server would start beside the one that runs from the old directory.
-	act /bin/launchctl disable system/dev.tessel.server
+	# here, and a second server would start beside the one that runs from the old directory. The
+	# token's arrival in /var/tessel is the mark that the move is done; after it, a re-run (a new
+	# channel) must not disable the live daemon.
+	if [ -e /var/tessel/github-token ]; then
+		echo "the move is done (the token is in /var/tessel): the daemon is left as it is"
+	else
+		act /bin/launchctl disable system/dev.tessel.server
+	fi
 }
 
 install_cargo_config() {

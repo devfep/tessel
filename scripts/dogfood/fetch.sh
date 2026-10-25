@@ -30,10 +30,16 @@ fail() {
 	exit 1
 }
 
-usage="usage: fetch.sh <fork url> <commit> [--dry-run]"
+remote=""
+usage="usage: fetch.sh <fork url> <commit> [--remote <url>] [--dry-run]"
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--dry-run) dry=1 ;;
+	--remote)
+		[ "$#" -ge 2 ] || fail "$usage"
+		remote=$2
+		shift
+		;;
 	-*) fail "$usage" ;;
 	*)
 		if [ -z "$fork" ]; then
@@ -61,8 +67,10 @@ if [ "$dry" != 1 ]; then
 	[ -x "$toolchain/bin/cargo" ] || fail "$toolchain/bin/cargo is missing: run install.sh"
 fi
 
-if [ "$dry" = 1 ]; then
+if [ -z "$remote" ] && [ -r "$config" ]; then
 	remote=$(/usr/bin/awk -F'"' '/^remote = /{ print $2 }' "$config" 2>/dev/null || true)
+fi
+if [ "$dry" = 1 ]; then
 	echo "would, as _tessel under env -i with the lander token through the askpass hook:"
 	echo "  fetch main from ${remote:-<remote in $config>} and $commit from $fork into /var/tessel/tmp/fetch.*"
 	echo "  print the .cargo/ diff between them and ask for yes if it is not empty"
@@ -70,9 +78,9 @@ if [ "$dry" = 1 ]; then
 	exit 0
 fi
 
-remote=$(/usr/bin/awk -F'"' '/^remote = /{ print $2 }' "$config")
+[ -n "$remote" ] || fail "no remote: $config has none; pass --remote <url>"
 echo "$remote" | /usr/bin/grep -Eq '^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\.git$' ||
-	fail "cannot read a github remote from $config"
+	fail "the remote must be an https://github.com/<owner>/<name>.git URL"
 
 as_tessel() {
 	/usr/bin/sudo -n -u _tessel /usr/bin/env -i HOME=/var/empty \

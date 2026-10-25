@@ -2,7 +2,11 @@
 # Changes the owner of the files that move between your home and /var/tessel, and nothing else
 # (docs/proposals/own-users.md, section 8: the move and the rollback).
 #
-# Usage: sudo /opt/tessel/sbin/chown-tree.sh --from <user> --to <user:group> [--dry-run] <path>...
+# Usage: sudo /opt/tessel/sbin/chown-tree.sh --from <user> --to <user:group> [--contents]
+#        [--dry-run] <path>...
+#
+# --contents treats each path as a directory and changes what is below it, not the directory,
+# which keeps its owner. Use it inside /var/tessel, where your shell cannot glob.
 #
 # `chown -R` follows nothing but it does change a hard link: a lane that plants a link to
 # /etc/sudoers in a tree that root then chowns makes sudoers the owner's. So this script refuses a
@@ -19,6 +23,7 @@ if [ "${TESSEL_CLEAN:-}" != 1 ]; then
 fi
 
 dry=0
+contents=0
 from=""
 to=""
 paths=()
@@ -28,10 +33,11 @@ fail() {
 	exit 1
 }
 
-usage="usage: chown-tree.sh --from <user> --to <user:group> [--dry-run] <path>..."
+usage="usage: chown-tree.sh --from <user> --to <user:group> [--contents] [--dry-run] <path>..."
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--dry-run) dry=1 ;;
+	--contents) contents=1 ;;
 	--from)
 		[ "$#" -ge 2 ] || fail "$usage"
 		from=$2
@@ -84,7 +90,11 @@ for path in "${paths[@]}"; do
 	*) fail "$path is not an absolute path" ;;
 	esac
 	[ -e "$path" ] || [ -L "$path" ] || fail "$path does not exist"
-	vet "$path"
+	if [ "$contents" = 1 ]; then
+		[ -d "$path" ] && [ ! -L "$path" ] || fail "$path is not a directory"
+	else
+		vet "$path"
+	fi
 	if [ -d "$path" ] && [ ! -L "$path" ]; then
 		while IFS= read -r -d '' entry; do
 			vet "$entry"
@@ -92,6 +102,10 @@ for path in "${paths[@]}"; do
 	fi
 done
 
+depth=()
+if [ "$contents" = 1 ]; then
+	depth=(-mindepth 1)
+fi
 count=0
 for path in "${paths[@]}"; do
 	while IFS= read -r -d '' entry; do
@@ -102,7 +116,7 @@ for path in "${paths[@]}"; do
 			/usr/sbin/chown -h "$to" "$entry"
 		fi
 		count=$((count + 1))
-	done < <(/usr/bin/find "$path" -xdev -print0)
+	done < <(/usr/bin/find "$path" -xdev "${depth[@]+"${depth[@]}"}" -print0)
 done
 if [ "$dry" = 1 ]; then
 	echo "chown-tree: $count entries would change to $to"

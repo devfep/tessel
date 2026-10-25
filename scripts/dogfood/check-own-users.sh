@@ -215,11 +215,12 @@ probe() {
 	fi
 }
 
-# probe_connect <port>: whether the runner account can open a TCP connection to 127.0.0.1:<port>.
+# probe_connect <port>: whether the runner account can open a TCP connection to <port> on
+# 127.0.0.1 or on [::1].
 probe_connect() {
 	local port=$1 token
 	# shellcheck disable=SC2016
-	token=$(run_as_runner 'if /usr/bin/nc -z -w 2 127.0.0.1 "$1" >/dev/null 2>&1; then echo TESSEL_CAN; else echo TESSEL_CANNOT; fi' sh "$port")
+	token=$(run_as_runner 'if /usr/bin/nc -z -w 2 127.0.0.1 "$1" >/dev/null 2>&1 || /usr/bin/nc -z -w 2 ::1 "$1" >/dev/null 2>&1; then echo TESSEL_CAN; else echo TESSEL_CANNOT; fi' sh "$port")
 	case "$token" in
 	TESSEL_CAN) echo can ;;
 	TESSEL_CANNOT) echo cannot ;;
@@ -227,31 +228,35 @@ probe_connect() {
 	esac
 }
 
+# Loopback is open to every account by design, and most listeners are harmless (ControlCenter,
+# Dropbox, the simulators). They are listed for you to judge. Only the database ports below are
+# probed and can fail the check: a database that trusts local connections gives the runner a
+# superuser, and a superuser can run a command as you.
+risky_ports=" 5432 3306 6379 27017 "
+
 check_loopback() {
-	local out="" port process seen=" " result
+	local out="" port process result
 	if "$sudo" -n /usr/bin/true >/dev/null 2>&1; then
 		out=$("$sudo" -n "$lsof" -nP -iTCP -sTCP:LISTEN 2>/dev/null || true)
 	else
 		out=$("$lsof" -nP -iTCP -sTCP:LISTEN 2>/dev/null || true)
 		echo "note: lsof ran as you and lists only your processes; 'sudo -v' first to list every user's"
 	fi
-	echo "TCP listeners:"
+	echo "TCP listeners (for you to judge; only database ports are probed):"
 	echo "$out" | /usr/bin/awk 'NR == 1 || /LISTEN/ { print "  " $1, $3, $9 }'
 	while read -r process port; do
-		case "$seen" in *" $port "*) continue ;; esac
-		seen="$seen$port "
-		[ "$port" != 7878 ] || continue
+		case "$risky_ports" in *" $port "*) ;; *) continue ;; esac
 		if ! as_runner_ready; then
-			skip "connect to 127.0.0.1:$port ($process): needs 'sudo -v'"
+			skip "connect to port $port ($process): needs 'sudo -v'"
 			continue
 		fi
 		result=$(probe_connect "$port")
 		case "$result" in
-		cannot) ok "$runner_name cannot connect to 127.0.0.1:$port ($process)" ;;
-		can) bad "$runner_name can connect to 127.0.0.1:$port ($process): stop it, require a password, or block it with pf" ;;
-		*) skip "connect to 127.0.0.1:$port: the probe did not run" ;;
+		cannot) ok "$runner_name cannot connect to port $port ($process)" ;;
+		can) bad "$runner_name can connect to port $port ($process): stop it, require a password, or block it with pf" ;;
+		*) skip "connect to port $port: the probe did not run" ;;
 		esac
-	done < <(echo "$out" | /usr/bin/awk '/LISTEN/ { n = split($9, a, ":"); print $1, a[n] }')
+	done < <(echo "$out" | /usr/bin/awk '/LISTEN/ { n = split($9, a, ":"); print $1, a[n] }' | /usr/bin/sort -u)
 }
 
 check_unix_sockets() {
@@ -268,7 +273,7 @@ check_unix_sockets() {
 			reached=$((reached + 1))
 			bad "$runner_name can connect to the unix socket $socket: stop its service or make it private"
 		fi
-	done < <(/usr/bin/find /tmp /var/tmp /var/run /Users/Shared -maxdepth 2 -type s -perm -0002 \
+	done < <(/usr/bin/find /private/tmp /private/var/tmp /private/var/run /Users/Shared -maxdepth 2 -type s -perm -0002 \
 		-user "$(/usr/bin/id -un)" 2>/dev/null || true)
 	if [ "$reached" = 0 ]; then
 		ok "$runner_name reaches none of the $count unix sockets that you own and anyone may write"
@@ -302,19 +307,40 @@ check_plist() {
 }
 
 check_sudo_rule() {
-	local out
+	local out rules want
+	want="(_tessel-runner) NOPASSWD: /opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml, /bin/kill -KILL -1"
 	if ! "$sudo" -n /usr/bin/true >/dev/null 2>&1; then
 		skip "the sudoers rule of $tessel_name: needs 'sudo -v'"
 		return
 	fi
 	out=$("$sudo" -n -l -U "$tessel_name" 2>/dev/null || true)
-	if echo "$out" | /usr/bin/grep -q 'NOPASSWD: ALL'; then
-		bad "$tessel_name may run ALL commands without a password"
-	elif echo "$out" | /usr/bin/grep -qF '/opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml' &&
-		echo "$out" | /usr/bin/grep -qF '/bin/kill -KILL -1'; then
-		ok "$tessel_name may run the runner and kill -KILL -1"
+	# The lines after "may run the following commands" are the whole rule, and must be this one.
+	rules=$(echo "$out" | /usr/bin/awk '/may run the following commands/ { on = 1; next } on && NF { sub(/^[ \t]+/, ""); print }')
+	if [ "$rules" = "$want" ]; then
+		ok "$tessel_name may run exactly the runner and kill -KILL -1"
 	else
-		bad "the sudoers rule of $tessel_name is not the two commands of the design"
+		bad "the sudoers rule of $tessel_name is not exactly the two commands of the design; it is: $rules"
+	fi
+}
+
+# The server trusts every .pub in keys/. Exactly one key pair must be there, so a rotated key
+# is really gone and a planted .pub is not trusted.
+check_keys() {
+	local listing names
+	if ! "$sudo" -n /usr/bin/true >/dev/null 2>&1; then
+		skip "the key files: needs 'sudo -v'"
+		return
+	fi
+	listing=$("$sudo" -n /bin/ls -1 /var/tessel/keys 2>/dev/null || true)
+	names=$(echo "$listing" | /usr/bin/sed -e 's/\.key$//' -e 's/\.pub$//' | /usr/bin/sort -u)
+	if [ -n "$listing" ] && [ "$(echo "$names" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 1 ] &&
+		[ "$(echo "$listing" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 2 ] &&
+		echo "$listing" | /usr/bin/grep -qx "$names.key" && echo "$listing" | /usr/bin/grep -qx "$names.pub"; then
+		ok "/var/tessel/keys holds exactly $names.key and $names.pub"
+	elif [ -z "$listing" ]; then
+		skip "/var/tessel/keys is empty: the key has not moved yet"
+	else
+		bad "/var/tessel/keys must hold exactly one key pair; it holds: $(echo "$listing" | /usr/bin/paste -sd' ' -)"
 	fi
 }
 
@@ -344,6 +370,7 @@ check_installed() {
 	expect_mode /Library/LaunchDaemons/dev.tessel.server.plist root:wheel 644
 	check_plist
 	check_sudo_rule
+	check_keys
 	if [ -e /var/tessel/github-token ]; then
 		expect_mode /var/tessel/github-token "$tessel_name:$tessel_name" 600
 	else

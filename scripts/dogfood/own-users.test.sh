@@ -157,6 +157,8 @@ fetch_sh=$d/fetch.sh
 sha=0123456789012345678901234567890123456789
 expect "fetch plans the cargo fetch from inside the checkout" 0 "cargo fetch --locked" \
 	"$fetch_sh" https://github.com/devfep/tessel-lane-b.git "$sha" --dry-run
+expect "fetch takes the remote from --remote when there is no configuration" 0 "from https://github.com/devfep/tessel.git" \
+	"$fetch_sh" https://github.com/devfep/tessel.git "$sha" --remote https://github.com/devfep/tessel.git --dry-run
 expect "fetch refuses a URL that is not a github https URL" 1 "must be an https://github.com" \
 	"$fetch_sh" http://example.com/x.git "$sha" --dry-run
 expect "fetch refuses a commit that is not 40 hex digits" 1 "40 lowercase hex digits" \
@@ -176,6 +178,10 @@ if [ "$(uname -s)" = Darwin ]; then
 	chown_tree=$d/chown-tree.sh
 	expect "chown-tree lists every entry of a clean tree" 0 "4 entries would change" \
 		"$chown_tree" --from "$me" --to _tessel:_tessel --dry-run "$tree"
+	expect "chown-tree --contents leaves the directory itself out" 0 "3 entries would change" \
+		"$chown_tree" --from "$me" --to _tessel:_tessel --contents --dry-run "$tree"
+	expect "chown-tree --contents refuses a file" 1 "is not a directory" \
+		"$chown_tree" --from "$me" --to _tessel:_tessel --contents --dry-run "$tree/a"
 	expect "chown-tree refuses a different owner" 1 "is owned by $me, not nobody" \
 		"$chown_tree" --from nobody --to _tessel:_tessel --dry-run "$tree"
 	ln "$tree/a" "$tree/a-link"
@@ -208,6 +214,7 @@ cat >"$work/lsof" <<'SCRIPT'
 echo "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME"
 echo "postgres 1 felix 5u IPv4 0 0t0 TCP 127.0.0.1:5432 (LISTEN)"
 echo "tessel-se 2 felix 6u IPv4 0 0t0 TCP 127.0.0.1:7878 (LISTEN)"
+echo "node 3 felix 7u IPv4 0 0t0 TCP 127.0.0.1:50512 (LISTEN)"
 SCRIPT
 # The fake sudo answers `sudo -n /usr/bin/true` from sudo-ready, and a script run as the runner
 # with the token in sudo-answer (TESSEL_CAN or TESSEL_CANNOT), or TESSEL_READY for the readiness
@@ -234,7 +241,7 @@ expect "good accounts, denials, a private home and a closed loopback pass" 0 "0 
 echo TESSEL_CAN >"$work/sudo-answer"
 expect "a runner that can read a private directory fails" 1 "FAIL: read $home/repos: _tessel-runner can, want cannot" \
 	run_check --accounts
-expect "a runner that can connect to a loopback service fails" 1 "FAIL: _tessel-runner can connect to 127.0.0.1:5432" \
+expect "a runner that can connect to a database port fails" 1 "FAIL: _tessel-runner can connect to port 5432" \
 	run_check --accounts
 echo TESSEL_CANNOT >"$work/sudo-answer"
 chmod 755 "$home"
