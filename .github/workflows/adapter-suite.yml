@@ -74,7 +74,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # The old release is unpacked first so that the cache can key on its lockfile and keep its
-      # build directory; it is built on its own, never in `cargo test`, with this repository's
+      # `target` directory (rust-cache joins a workspace's target onto the workspace, so the build
+      # goes into old-cli-src/target); it is built on its own, never in `cargo test`, with this repository's
       # toolchain (its toolchain file also asks for a wasm target that nothing here needs).
       - name: Unpack the CLI before the protocol range field
         run: |
@@ -87,15 +88,15 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
-            ${{ runner.temp }}/old-cli-src -> ${{ runner.temp }}/old-cli-target
+            ${{ runner.temp }}/old-cli-src -> target
       - name: Build the current server and CLI
         run: cargo build -p tessel-server -p tessel-cli
       - name: Build the CLI before the protocol range field
         run: |
           channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
           (cd "$RUNNER_TEMP/old-cli-src" && RUSTUP_TOOLCHAIN="$channel" \
-            CARGO_TARGET_DIR="$RUNNER_TEMP/old-cli-target" \
+            CARGO_TARGET_DIR="$RUNNER_TEMP/old-cli-src/target" \
             cargo build --locked -p tessel-cli)
-          echo "TESSEL_OLD_CLI=$RUNNER_TEMP/old-cli-target/debug/tessel" >> "$GITHUB_ENV"
+          echo "TESSEL_OLD_CLI=$RUNNER_TEMP/old-cli-src/target/debug/tessel" >> "$GITHUB_ENV"
       - name: Land a commit with the old CLI
         run: tessel-server/ci/old-cli.sh
