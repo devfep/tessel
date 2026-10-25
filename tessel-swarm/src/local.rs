@@ -720,15 +720,18 @@ async fn forward(
     unanswered: &mut usize,
 ) -> bool {
     let beat = matches!(&message, Message::Text(text) if is_heartbeat(text));
+    if beat {
+        // Pending before the heartbeat leaves, so no moment exists in which the server may have
+        // it and `settle_heartbeats` sees none. If a send fails the connection ends, and its
+        // cleanup takes `unanswered` back out of the pending count.
+        *unanswered += 1;
+        lock(&hub.relay).pending_beats += 1;
+    }
     if server.send(message).await.is_err() {
         return false;
     }
-    if beat {
-        *unanswered += 1;
-        lock(&hub.relay).pending_beats += 1;
-        if server.send(Message::text(SENTINEL)).await.is_err() {
-            return false;
-        }
+    if beat && server.send(Message::text(SENTINEL)).await.is_err() {
+        return false;
     }
     true
 }
