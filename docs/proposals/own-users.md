@@ -268,9 +268,9 @@ toolchain, cargo cache, binaries, plist unloaded, rule checked with `visudo -cf`
 that need it. A failing probe stops the order here, before the store, key and token move. Only then,
 with the server stopped and nothing in flight, they move to `/var/tessel` (a move, so no fence is
 reissued, C11), the daemon loads, and one landing on `tessel-sandbox/m4-trunk` (DOGFOOD-UPGRADE (e))
-runs on the exposed token. Rotate last: a new GitHub token and signing key (`kid` `2026-11`), the
-old key file deleted, the old `github-token` trashed, new agent tokens. The old token and key were
-readable by every lane process until then.
+runs on the exposed token. Rotate last: a new GitHub token and signing key (`kid` `2026-11`), both
+old key files (`.key` and `.pub`) deleted, the old `github-token` trashed, new agent tokens. The
+old token and key were readable by every lane process until then.
 
 Rollback, with an idle queue (DOGFOOD-UPGRADE (d)): `launchctl bootout`; move the current store,
 key and token back to `~/tessel-dogfood` (never an older store: restoring one can reissue

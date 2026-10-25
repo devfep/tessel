@@ -22,10 +22,12 @@ the source of an unlanded private-fork submission out over the network, a servic
 trusts local connections is open to the runner account (a Homebrew postgres allows its superuser on
 loopback TCP and on `/tmp/.s.PGSQL.5432` without a password, and a superuser there can run a command
 as you), and you hold three assumptions: sudo has no Touch ID, the steps are run in a shell no lane
-controls, and you never type the password into a prompt a lane raised. Keeping `main` safe from the
-lanes is not in this scope: they push with `gh`'s credential and you are the bypass actor of ruleset
-B. The orchestrator cannot decide its own held submissions, so its changes to sensitive paths go by
-pull request.
+controls, and you never type the password into a prompt a lane raised. The new GitHub token is on
+the clipboard between the copy and the paste of step 6, where any process of yours, a lane included,
+can read it; paste it at once and clear the clipboard. Keeping `main` safe from the lanes is not in
+this scope: they push with `gh`'s credential and you are the bypass actor of ruleset B. The
+orchestrator cannot decide its own held submissions, so its changes to sensitive paths go by pull
+request.
 
 ## What runs where
 
@@ -186,27 +188,31 @@ Every command below that runs under sudo names its program by absolute path, and
 under sudo from a checkout. `sudo` on this Mac has no `secure_path`, so a bare `install` or `mv`
 would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
 
-0. Install the scripts from the commit that merged them, `$sha`, which cannot change under you.
-   Read each one first with `git show "$sha:scripts/dogfood/<name>.sh" | less`, for `accounts`,
-   `install`, `upgrade`, `fetch`, `chown-tree`, `tokens` and `check-own-users`, and
-   `toolchain.sha256`. Then:
+0. First run `scripts/dogfood/own-users.test.sh` in your checkout. It uses fake tools, needs no
+   root, and checks the scripts' argument handling and dry runs; a failure stops here. (CI should
+   run it too, which is a later workflow pull request.) Then install the scripts from the commit
+   that merged them, `$sha`. Use Apple's git, with replace refs off, so that what you read is what
+   is installed: `/usr/bin/git --no-replace-objects show "$sha:scripts/dogfood/<name>.sh"`. Read
+   each one first, for `accounts`, `install`, `upgrade`, `fetch`, `chown-tree`, `tokens` and
+   `check-own-users`, and `toolchain.sha256`. Then:
 
    ```
    /usr/bin/sudo /usr/bin/install -d -o root -g wheel -m 0755 /opt/tessel /opt/tessel/sbin
    for name in accounts install upgrade fetch chown-tree tokens check-own-users; do
-     git show "$sha:scripts/dogfood/$name.sh" |
+     /usr/bin/git --no-replace-objects show "$sha:scripts/dogfood/$name.sh" |
        /usr/bin/sudo /usr/bin/tee "/opt/tessel/sbin/$name.sh" >/dev/null
    done
-   git show "$sha:scripts/dogfood/toolchain.sha256" |
+   /usr/bin/git --no-replace-objects show "$sha:scripts/dogfood/toolchain.sha256" |
      /usr/bin/sudo /usr/bin/tee /opt/tessel/sbin/toolchain.sha256 >/dev/null
    /usr/bin/sudo /usr/sbin/chown root:wheel /opt/tessel/sbin/*
    /usr/bin/sudo /bin/chmod 0755 /opt/tessel/sbin/*.sh
    /usr/bin/sudo /bin/chmod 0644 /opt/tessel/sbin/toolchain.sha256
    ```
 
-   Each script refuses to make a change unless it is the copy in `/opt/tessel/sbin`. Read the
-   installed copies again if you want to be sure what runs; a lane cannot write them. A script
-   that changes is installed again the same way, from a new `$sha`.
+   Each script refuses to make a change unless it is the copy in `/opt/tessel/sbin`. Then read the
+   installed copies, `/bin/cat /opt/tessel/sbin/<name>.sh`, before the first run: a lane cannot
+   write them, so this is the text that runs as root. A script that changes is installed again the
+   same way, from a new `$sha`, and read again.
 1. `/usr/bin/sudo /opt/tessel/sbin/accounts.sh --dry-run`, read the plan, then run it without the
    flag. It aborts if 481 or 482 is taken as a user or a group, sets every attribute of an account
    each time, and adds `_tessel-runner` to `/var/at/cron.deny` and `/var/at/at.deny`.
@@ -237,37 +243,30 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    plist, which it also disables so that a reboot does not load it, and the cargo setting. It
    moves no secret.
 
-   The cargo cache is empty. Fill it from a reviewed commit of `main`, as `_tessel`, before the
-   runner's offline build needs it (`$sha` is a landed `main`):
-
-   ```
-   /usr/bin/sudo -u _tessel /bin/mkdir /var/tessel/tmp/seed
-   git archive "$sha" | /usr/bin/sudo -u _tessel /usr/bin/tar -x -C /var/tessel/tmp/seed
-   /usr/bin/sudo -u _tessel /usr/bin/env -i HOME=/var/empty CARGO_HOME=/var/tessel/cargo \
-     PATH=/var/tessel/toolchain/bin:/usr/bin:/bin \
-     /bin/sh -c 'cd /var/tessel/tmp/seed && cargo fetch --locked'
-   /usr/bin/sudo -u _tessel /bin/rm -r /var/tessel/tmp/seed
-   ```
-
-   Then `/opt/tessel/sbin/check-own-users.sh --installed`, and the probes only you can run, as
-   the runner account, in `/var/tessel-runner/work`: `cargo test --workspace --offline` of a
-   checkout with `HOME=/var/empty` (it needs `/usr/bin/git` and `cc` through `xcrun`), whether
-   cargo builds with a read-only `CARGO_HOME`, and `at`, `crontab -e` and
-   `launchctl submit -l x -- /usr/bin/id`, each of which must fail. If the `launchctl submit` probe
-   succeeds, remove its job: `/usr/bin/sudo -u _tessel-runner /bin/launchctl remove x`. Anything
-   that fails stops here.
+   The cargo cache is empty until step 5 fills it. Then
+   `/opt/tessel/sbin/check-own-users.sh --installed`, and the probes that need no crates, as the
+   runner account: `at`, `crontab -e` and `launchctl submit -l x -- /usr/bin/id`, each of which
+   must fail. If the `launchctl submit` probe succeeds, remove its job:
+   `/usr/bin/sudo -u _tessel-runner /bin/launchctl remove x`. Anything that fails stops here.
 4. With the server stopped and nothing in flight (`kill "$(cat <server dir>/server.pid)"`) and the
-   lanes idle, hand the store, key and token to `_tessel` and move them. `chown-tree.sh` first
-   refuses anything that is not a regular file or a directory, a file with more than one link, and
-   anything not owned by you, for the whole tree, then changes owners entry by entry; a plain
-   `chown -R` would follow a hard link a lane planted to `/etc/sudoers`:
+   lanes idle, move the store, the key pair and the token into `/var/tessel`, and only then hand
+   them to `_tessel`. Move only the pair you minted, `2026-10.key` and `2026-10.pub`: the server
+   trusts every `.pub` in the directory, so a file a lane planted in `<server dir>/keys` must not
+   come along. The ownership change happens inside `/var/tessel`, which the lanes cannot reach, so
+   nothing can be swapped under it. `chown-tree.sh` refuses anything there that is not a regular
+   file or a directory, any file with more than one link (a link a lane planted to `/etc/sudoers`
+   is caught here), and anything not owned by you, for the whole tree first, then changes owners
+   entry by entry:
 
    ```
-   /usr/bin/sudo /opt/tessel/sbin/chown-tree.sh --from "$USER" --to _tessel:_tessel \
-     <server dir>/stores <server dir>/keys <server dir>/github-token
    /usr/bin/sudo /bin/mv <server dir>/stores/* /var/tessel/stores/
-   /usr/bin/sudo /bin/mv <server dir>/keys/* /var/tessel/keys/
+   /usr/bin/sudo /bin/mv <server dir>/keys/2026-10.key <server dir>/keys/2026-10.pub \
+     /var/tessel/keys/
    /usr/bin/sudo /bin/mv <server dir>/github-token /var/tessel/github-token
+   /usr/bin/sudo /opt/tessel/sbin/chown-tree.sh --from "$USER" --to _tessel:_tessel --contents \
+     /var/tessel/stores /var/tessel/keys
+   /usr/bin/sudo /opt/tessel/sbin/chown-tree.sh --from "$USER" --to _tessel:_tessel \
+     /var/tessel/github-token
    ```
 
    It is a move, not a copy, so no fence is reissued. The old binaries and configuration stay in
@@ -278,7 +277,13 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    and tail `/var/log/tessel-server.log`. Mint the agent tokens as yourself with
    `/opt/tessel/sbin/tokens.sh --kid 2026-10` (the key you moved), then run `tessel init` in each
    worktree again with the new token (`~/.tessel/tokens/<agent>`).
-5. `/opt/tessel/sbin/check-own-users.sh` with no flag, then one landing on
+5. Fill the cargo cache through `fetch.sh`, which uses Apple's git against GitHub with the lander
+   token and shows the `.cargo/` diff (none, for a commit of `main`): with `$sha` a landed `main`,
+   `/usr/bin/sudo /opt/tessel/sbin/fetch.sh https://github.com/devfep/tessel.git "$sha"`. Then the
+   probes that need the crates, as the runner account, in `/var/tessel-runner/work`: `cargo test
+   --workspace --offline` of a checkout with `HOME=/var/empty` (it needs `/usr/bin/git` and `cc`
+   through `xcrun`), and whether cargo builds with a read-only `CARGO_HOME`. If one fails, roll
+   back (below). Then `/opt/tessel/sbin/check-own-users.sh` with no flag, and one landing on
    `tessel-sandbox/m4-trunk` over HTTPS through the askpass hook, on the old token.
 6. Rotate last, because the old token and key were readable by every lane process until now. Make
    a new GitHub token as in [Build and GitHub, by hand](#build-and-github-by-hand), copy it, and:
@@ -289,13 +294,16 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    /usr/bin/sudo -u _tessel /bin/chmod 0600 /var/tessel/github-token
    /usr/bin/sudo -u _tessel /opt/tessel/bin/tessel-server admin keygen \
      --config /var/tessel/tessel-server.toml --kid 2026-11
+   /usr/bin/sudo -u _tessel /bin/rm /var/tessel/keys/2026-10.key /var/tessel/keys/2026-10.pub
    /opt/tessel/sbin/tokens.sh --kid 2026-11
-   /usr/bin/sudo -u _tessel /bin/rm /var/tessel/keys/2026-10.key
    /usr/bin/sudo /bin/launchctl kickstart -k system/dev.tessel.server
+   /opt/tessel/sbin/check-own-users.sh --installed
    ```
 
-   Then delete the old GitHub token on GitHub, and delete `scripts/dogfood/setup.sh` and its
-   mentions on this page in a pull request.
+   Both old key files go: the server trusts every `.pub` in the directory, so a `.pub` left behind
+   keeps the old tokens valid. The check then requires `/var/tessel/keys` to hold exactly
+   `2026-11.key` and `2026-11.pub`. Then delete the old GitHub token on GitHub, and delete
+   `scripts/dogfood/setup.sh` and its mentions on this page in a pull request.
 
 After the move: stop with `/usr/bin/sudo /bin/launchctl bootout system/dev.tessel.server` and start
 with `launchctl bootstrap system /Library/LaunchDaemons/dev.tessel.server.plist` (the same sudo and
@@ -313,11 +321,13 @@ prints the commit's `.cargo/` diff and asks for a yes, because cargo reads that 
 Rollback, with an idle queue and the lanes idle:
 `/usr/bin/sudo /bin/launchctl bootout system/dev.tessel.server`, then
 `/usr/bin/sudo /bin/launchctl disable system/dev.tessel.server`, so that a reboot does not start it.
-Move the current store, key and token back (`/usr/bin/sudo /bin/mv /var/tessel/stores/*
-<server dir>/stores/`, the same for `keys` and `github-token`) and hand them to yourself:
+Hand the current store, key and token back to yourself while they are still in `/var/tessel`, where
+the lanes cannot reach them, then move them back:
 `/usr/bin/sudo /opt/tessel/sbin/chown-tree.sh --from _tessel --to "$USER:$(/usr/bin/id -gn)"
-<server dir>/stores <server dir>/keys <server dir>/github-token`. Never put an older store back: a
-restored store can reissue fences. Start the old binary from `<server dir>/bin` with the old
+--contents /var/tessel/stores /var/tessel/keys`, the same without `--contents` for
+`/var/tessel/github-token`, then `/usr/bin/sudo /bin/mv /var/tessel/stores/* <server dir>/stores/`
+and the same for the `2026-1*.key` and `.pub` files and the token. Never put an older store back:
+a restored store can reissue fences. Start the old binary from `<server dir>/bin` with the old
 configuration. That token is exposed again, so rotate it at the next migration. The accounts and
 files stay; they do nothing while the daemon is disabled.
 
