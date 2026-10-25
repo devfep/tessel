@@ -198,8 +198,9 @@ fn the_runner_refuses_an_empty_test_list_and_a_zero_timeout() {
 fn the_runner_accepts_the_gates_own_commands() {
     let tree = tempfile::tempdir().unwrap();
     std::fs::create_dir(tree.path().join("web")).unwrap();
-    let accepted: [(&str, &[&str]); 3] = [
+    let accepted: [(&str, &[&str]); 4] = [
         ("", &TEST_ARGV),
+        ("", &["cargo", "fmt", "--all", "--check"]),
         ("web", &["pnpm", "test"]),
         (
             "",
@@ -223,7 +224,7 @@ fn the_runner_accepts_the_gates_own_commands() {
 fn in_grammar(words: &[String]) -> bool {
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
     match words.as_slice() {
-        ["pnpm" | "npm", "test"] => true,
+        ["pnpm" | "npm", "test"] | ["cargo", "fmt", "--all", "--check"] => true,
         ["cargo", "test", flags @ ..] => flags.iter().all(|flag| CARGO_TEST_FLAGS.contains(flag)),
         _ => false,
     }
@@ -236,6 +237,9 @@ fn word() -> impl Strategy<Value = String> {
         Just("npm".to_owned()),
         Just("pnpm".to_owned()),
         Just("sh".to_owned()),
+        Just("fmt".to_owned()),
+        Just("--all".to_owned()),
+        Just("--check".to_owned()),
         Just("--workspace".to_owned()),
         Just("--locked".to_owned()),
         Just("--manifest-path".to_owned()),

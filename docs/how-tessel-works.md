@@ -297,7 +297,7 @@ queued.
 - **Symbol claims cover Rust and TypeScript** (`.rs`, `.ts`, `.mts`, `.cts`, `.tsx`). Other files
   are claimed whole. The CLI turns more than four symbol claims in one file into one file claim.
 - **The gate runs only allowed commands.** With a `tessel.toml`, the only test commands are
-  `npm test`, `pnpm test` or `cargo test` with a fixed set of flags
+  `npm test`, `pnpm test`, `cargo fmt --all --check` or `cargo test` with a fixed set of flags
   ([Configuration](configuration.md#allowed-commands)).
 - **The CLI is Unix-only.** It uses Unix-only APIs to protect its config file and to start its
   daemon.

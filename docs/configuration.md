@@ -52,10 +52,11 @@ name and reads it nowhere else, so the tests get the resources of the machine th
 
 ### Allowed commands
 
-A `test.argv` must be one of (`tessel-lander/src/gate.rs:91-97`):
+A `test.argv` must be one of (`tessel-lander/src/gate.rs:91-100`):
 
 - `["pnpm", "test"]` exactly;
 - `["npm", "test"]` exactly;
+- `["cargo", "fmt", "--all", "--check"]` exactly (it checks formatting and writes nothing);
 - `["cargo", "test", ...flags]` where every flag is in this list (`:19-30`): `--workspace`,
   `--locked`, `--offline`, `--no-fail-fast`, `--all-targets`, `--all-features`, `--release`,
   `--lib`, `--bins`, `--tests`.
@@ -519,7 +520,7 @@ None of these is configurable.
 | | Any agent, through git | `tessel hook install --git` installs `pre-commit` and `pre-push` hooks that refuse changes outside unsubmitted claims (`tessel-cli/src/githook.rs`). |
 | Clients | Anything that speaks JSON over WebSocket | A socket for one agent of one repo, first message `{"type":"hello","agent":"…","base":"…"}`. The `agent` must be the one the adapter verified. The summary route returns the evidence summary (`src/shell.rs:488-492`, `src/protocol.rs:459-466`). |
 | Languages for symbol claims | Rust (`.rs`), TypeScript (`.ts`, `.mts`, `.cts`), TSX (`.tsx`) | tree-sitter in the CLI (`tessel-cli/src/symbols.rs:55-63`). Every other file is claimed at file level. |
-| Test commands | `pnpm test`, `npm test`, `cargo test` with the listed flags | `tessel.toml`. See [Allowed commands](#allowed-commands). |
+| Test commands | `pnpm test`, `npm test`, `cargo fmt --all --check`, `cargo test` with the listed flags | `tessel.toml`. See [Allowed commands](#allowed-commands). |
 | Git host | Any remote git reaches by a path or an `https`, `ssh` or `file` URL | `remote` and `fork` of a [`[[repository]]`](#server-tessel-server); transports in `tessel-lander/src/git.rs:28`. |
 | Not pluggable | The host's shape | The host is sans-IO: it takes `Input`s and returns `Output`s, and an adapter does the I/O. The adapters in this tree are the CLI's and the swarm's test hosts. |
 | | The CLI's platform | The CLI is Unix-only (`tessel-cli/src/init.rs:10` uses Unix file modes). |
