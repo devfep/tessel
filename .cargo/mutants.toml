@@ -1,0 +1,17 @@
+# cargo-mutants configuration, read by every `cargo mutants` run (nightly, per pull request with
+# `--in-diff`, and the manual dispatch), because no run passes `--exclude` on the command line.
+#
+# The simulator's harness is left out: it generates and plumbs the random traffic the checkers
+# judge. A mutant there changes which traffic a seed produces, and no test can see that without
+# asserting the traffic's shape; the planted-bug tests (tests/simulator.rs) pin what matters, that
+# each checker catches the bug it was written for. The checkers, src/sim/check.rs, stay under
+# mutation.
+exclude_globs = [
+    "src/sim/driver.rs",
+    "src/sim/traffic.rs",
+    "src/sim/rng.rs",
+    "src/sim/clock.rs",
+    "src/sim/store.rs",
+    "src/sim/variant.rs",
+    "src/sim/mod.rs",
+]

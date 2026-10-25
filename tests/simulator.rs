@@ -1245,3 +1245,79 @@ fn some_default_seeds_cut_a_replay_off_part_way() {
         .sum();
     assert!(cut > 0, "no watcher was cut off after receiving events");
 }
+
+#[test]
+fn i10_counts_only_this_claims_grant_reopening_and_race_win_as_a_renewal() {
+    let late = |seq: u64, at_ms: u64, kind: EventKind| at(seq, at_ms, kind);
+    let other_grant = |seq: u64| {
+        let mut event = granted_event(
+            seq,
+            "agent-b",
+            2,
+            claim_on("src/b.rs", Mode::EditBody),
+            None,
+        );
+        event.at_ms = 5_000;
+        event
+    };
+    let state = |expires_at_ms: u64| {
+        serde_json::json!({
+            "config": {"lease_ms": 1_000},
+            "claims": {"1": {"agent": "agent-a", "submitted": null, "expires_at_ms": expires_at_ms}}
+        })
+    };
+    let granted = granted_event(0, "agent-a", 1, claim_on("src/a.rs", Mode::EditBody), None);
+
+    // Claim 2 is granted at 5 000, long after claim 1's only renewal at 100: a lease of claim 1
+    // running to 1 101 is one millisecond too long, whatever else happened since.
+    let log = [granted.clone(), other_grant(1)];
+    let found = check::i10(&log, Some(&state(1_101)), &[], &[]);
+    assert_eq!(
+        found.len(),
+        1,
+        "another claim's grant renews nothing: {found:?}"
+    );
+    assert!(found[0].starts_with("claim 1 expires at 1101"), "{found:?}");
+    assert!(check::i10(&log, Some(&state(1_100)), &[], &[]).is_empty());
+
+    let rejected = late(
+        1,
+        3_000,
+        EventKind::SubmitRejected {
+            claim: ClaimId(1),
+            reason: "tests failed".to_string(),
+        },
+    );
+    let log = [granted.clone(), rejected, other_grant(2)];
+    assert!(check::i10(&log, Some(&state(4_000)), &[], &[]).is_empty());
+    assert_eq!(check::i10(&log, Some(&state(4_001)), &[], &[]).len(), 1);
+
+    let won = late(
+        1,
+        3_500,
+        EventKind::RaceDecided {
+            race: RaceId(1),
+            winner: Some(ClaimId(1)),
+            ranking: vec![ClaimId(1)],
+        },
+    );
+    let log = [granted.clone(), won, other_grant(2)];
+    assert!(check::i10(&log, Some(&state(4_500)), &[], &[]).is_empty());
+    assert_eq!(check::i10(&log, Some(&state(4_501)), &[], &[]).len(), 1);
+
+    let lost = late(
+        1,
+        3_500,
+        EventKind::RaceDecided {
+            race: RaceId(1),
+            winner: Some(ClaimId(2)),
+            ranking: vec![ClaimId(2), ClaimId(1)],
+        },
+    );
+    let log = [granted, lost, other_grant(2)];
+    assert_eq!(
+        check::i10(&log, Some(&state(4_500)), &[], &[]).len(),
+        1,
+        "another claim winning a race renews nothing for this one"
+    );
+}
