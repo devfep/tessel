@@ -9,7 +9,8 @@ pub const MAX_FIRST_FAILURE_BYTES: usize = 1500;
 /// The first failing test's block, from its `---- <name> stdout ----` line to the next such line or
 /// the `failures:` line, without the blank lines that end it. Real output has a blank line right
 /// after the header, so the block cannot end at the first blank line.
-/// Without a block, the first line that says `FAILED` or `panicked`. Standard output is searched
+/// Without a block, the first line that says `FAILED` or `panicked`, or that starts `Diff in `
+/// (`cargo fmt --check` names the file it flagged that way). Standard output is searched
 /// before standard error. `None` when neither holds anything.
 pub fn first_failure(stdout: &str, stderr: &str) -> Option<String> {
     let found = block(stdout)
@@ -41,7 +42,9 @@ fn block(text: &str) -> Option<String> {
 
 fn marker_line(text: &str) -> Option<String> {
     text.lines()
-        .find(|line| line.contains("FAILED") || line.contains("panicked"))
+        .find(|line| {
+            line.contains("FAILED") || line.contains("panicked") || line.starts_with("Diff in ")
+        })
         .map(str::to_owned)
 }
 
@@ -90,6 +93,21 @@ mod tests {
         let quoted = first_failure("ok\nsomething panicked here\nFAILED later\n", "").unwrap();
         assert_eq!(quoted, "something panicked here");
         assert_eq!(first_failure("", "error: FAILED").unwrap(), "error: FAILED");
+    }
+
+    #[test]
+    fn a_fmt_diff_header_is_the_first_failure() {
+        let fmt =
+            "Diff in /tree/src/lib.rs:3:\n-let x=1;\n+let x = 1;\nDiff in /tree/src/b.rs:9:\n";
+        assert_eq!(
+            first_failure(fmt, "").unwrap(),
+            "Diff in /tree/src/lib.rs:3:"
+        );
+        assert_eq!(
+            first_failure("", fmt).unwrap(),
+            "Diff in /tree/src/lib.rs:3:"
+        );
+        assert_eq!(first_failure("a Diff in b\n", ""), None);
     }
 
     #[test]
