@@ -665,7 +665,7 @@ async fn a_runner_that_refuses_to_start_is_infrastructure_and_is_logged() -> Tes
     let repos = Repos::new();
     let before = repos.main_head();
     let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
-    repos.write_runner_config(0o644);
+    repos.write_runner_config(0o666);
     let loose = LocalRunner::new(repos.lander().runner_config);
     assert!(
         loose.is_err(),
@@ -675,7 +675,7 @@ async fn a_runner_that_refuses_to_start_is_infrastructure_and_is_logged() -> Tes
     let runner = Arc::new(LocalRunner::new(repos.lander().runner_config)?);
     std::fs::set_permissions(
         repos.lander().runner_config,
-        std::fs::Permissions::from_mode(0o644),
+        std::fs::Permissions::from_mode(0o666),
     )?;
     let landing = landing(&repos, "landing-refused", runner);
 
@@ -695,7 +695,9 @@ async fn a_runner_that_refuses_to_start_is_infrastructure_and_is_logged() -> Tes
         "the refusal names the file: {lines:?}"
     );
     assert!(
-        lines.iter().any(|l| l.contains("mode must be 0600")),
+        lines
+            .iter()
+            .any(|l| l.contains("must not be writable by group or other")),
         "{lines:?}"
     );
     Ok(())
@@ -1148,5 +1150,115 @@ async fn a_rebase_over_another_landing_keeps_what_a_note_follows_a_commit_by() -
         patch_id(&repos.main, &landed[0])?,
         "the first patch changed with its context, so a patch id would not find it"
     );
+    Ok(())
+}
+
+// ---- the sudo-started runner: trees are made in the handoff directory ----
+
+/// `repos.lander()` with `[lander.sudo_runner]` naming a handoff directory under the root.
+#[expect(clippy::expect_used, reason = "a failed expect is a failed test")]
+fn sudo_lander(repos: &Repos) -> (tessel_server::config::LanderConfig, std::path::PathBuf) {
+    let handoff = repos.root.path().join("handoff");
+    std::fs::create_dir_all(&handoff).expect("handoff dir");
+    let lander = tessel_server::config::LanderConfig {
+        sudo_runner: Some(tessel_server::config::SudoRunnerConfig {
+            user: "_tessel-runner".to_owned(),
+            sudo: "/usr/bin/sudo".into(),
+            runner: "/opt/tessel/bin/tessel-runner".into(),
+            handoff_dir: handoff.clone(),
+            kill: "/bin/kill".into(),
+            ps: "/bin/ps".into(),
+            settle_secs: 10,
+        }),
+        ..repos.lander()
+    };
+    (lander, handoff)
+}
+
+fn entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn with_a_sudo_runner_the_tree_to_test_is_in_the_handoff_directory_and_goes_with_the_call(
+) -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let (lander, handoff) = sudo_lander(&repos);
+    let seen_during_the_run = Arc::new(Mutex::new(Vec::new()));
+    let runner = {
+        let seen = Arc::clone(&seen_during_the_run);
+        let handoff = handoff.clone();
+        Scripted::new(move |request| {
+            let tree = Path::new(&request.tree);
+            seen.lock().unwrap_or_else(PoisonError::into_inner).push((
+                tree.starts_with(&handoff),
+                tree.join(".git").exists() && tree.join("src/a.rs").exists(),
+                entries(&handoff),
+            ));
+            Ok(result(0, None))
+        })
+    };
+    capture_logs();
+    let id = RepoId::new("acme", "handoff-case")?;
+    let landing = Landing::new(
+        id,
+        &repos.repository("handoff-case"),
+        &lander,
+        runner.clone(),
+    )?;
+    let answer = prepare(&landing, &commit, whole_repo()).await;
+    assert!(prepared(&answer).is_ok(), "{answer:?}");
+
+    let seen = seen_during_the_run
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(seen.len(), 1);
+    let (in_handoff, is_the_tree, names) = &seen[0];
+    assert!(
+        in_handoff,
+        "the runner was given a tree in the handoff directory"
+    );
+    assert!(is_the_tree, "the tree holds the rebased head");
+    assert_eq!(names.len(), 1);
+    assert!(names[0].starts_with("acme-handoff-case-call-"), "{names:?}");
+    assert_eq!(
+        entries(&handoff),
+        Vec::<String>::new(),
+        "the call's tree is gone with the call"
+    );
+    assert!(
+        !repos.clones("handoff-case").join("call-1/test").exists(),
+        "no tree was made in the call directory"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_server_start_removes_the_handoff_trees_a_killed_server_left_for_its_repository_only(
+) -> TestResult {
+    let repos = Repos::new();
+    let (lander, handoff) = sudo_lander(&repos);
+    for name in [
+        "acme-leftover-case-call-3",
+        "acme-leftover-case-call-9",
+        "acme-someone-else-call-3",
+        "unrelated",
+    ] {
+        std::fs::create_dir_all(handoff.join(name).join("inner"))?;
+    }
+    capture_logs();
+    let id = RepoId::new("acme", "leftover-case")?;
+    let _landing = Landing::new(id, &repos.repository("leftover-case"), &lander, passing())?;
+    assert_eq!(entries(&handoff), ["acme-someone-else-call-3", "unrelated"]);
     Ok(())
 }
