@@ -981,13 +981,15 @@ impl<'a> Beats<'a> {
     /// which is shorter than the lease the grant just started.
     async fn advance(&mut self, ms: u64) {
         self.server.advance_clock(ms);
-        // Counted after the advance: a heartbeat handled before it has not renewed at the new time.
+        self.server.settle_expiry().await;
+        // Counted after the advance, and only once every heartbeat handled before it is counted: a
+        // heartbeat handled before it has not renewed at the new time.
+        self.server.settle_heartbeats().await;
         self.seen = self
             .agents
             .iter()
             .map(|a| self.server.heartbeats(a))
             .collect();
-        self.server.settle_expiry().await;
     }
 }
 

@@ -99,6 +99,8 @@ struct Relay {
     events: Vec<Event>,
     /// Why the log reader ended, if it did before the target was shut down.
     dead: Option<String>,
+    /// Heartbeats passed on to the server whose handling has not been confirmed yet.
+    pending_beats: usize,
 }
 
 struct Hub {
@@ -414,6 +416,20 @@ impl LocalServer {
         self.hub.barrier().await;
     }
 
+    /// Waits until the server has confirmed handling every heartbeat the relay passed on, so that
+    /// `heartbeats` counts the ones it handled before now. A test that moves the clock after a
+    /// heartbeat calls it, or a heartbeat handled before the move could be counted after it.
+    pub async fn settle_heartbeats(&self) {
+        let started = tokio::time::Instant::now();
+        while lock(&self.hub.relay).pending_beats > 0 {
+            assert!(
+                started.elapsed() < BARRIER_WAIT,
+                "heartbeats passed to the server were never confirmed"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
     /// How many heartbeats the relay has passed on from `agent`.
     pub fn heartbeats(&self, agent: &str) -> usize {
         lock(&self.hub.relay)
@@ -654,8 +670,18 @@ async fn relay(
         });
         id
     };
-    pump(&mut client, &mut server, fates, (&hub, &agent), stop).await;
-    lock(&hub.relay).conns.retain(|conn| conn.id != id);
+    let unanswered = pump(&mut client, &mut server, fates, (&hub, &agent), stop).await;
+    let mut relay = lock(&hub.relay);
+    relay.pending_beats = relay.pending_beats.saturating_sub(unanswered);
+    relay.conns.retain(|conn| conn.id != id);
+}
+
+/// A connection that is about to end will not confirm the heartbeats it has passed on: they stop
+/// counting as pending, so `settle_heartbeats` does not wait for a connection that is parked.
+fn forget_heartbeats(hub: &Hub, unanswered: &mut usize) {
+    let mut relay = lock(&hub.relay);
+    relay.pending_beats = relay.pending_beats.saturating_sub(*unanswered);
+    *unanswered = 0;
 }
 
 /// Ends a connection by its fate. First it passes the agent whatever the server has already sent
@@ -688,21 +714,27 @@ async fn end_connection(
 
 /// Sends `message` to the server; a heartbeat is followed by the junk frame whose answer shows the
 /// server handled it. False when the server's socket is gone.
-async fn forward(server: &mut ServerSocket, message: Message, unanswered: &mut usize) -> bool {
+async fn forward(
+    (server, hub): (&mut ServerSocket, &Hub),
+    message: Message,
+    unanswered: &mut usize,
+) -> bool {
     let beat = matches!(&message, Message::Text(text) if is_heartbeat(text));
     if server.send(message).await.is_err() {
         return false;
     }
     if beat {
+        *unanswered += 1;
+        lock(&hub.relay).pending_beats += 1;
         if server.send(Message::text(SENTINEL)).await.is_err() {
             return false;
         }
-        *unanswered += 1;
     }
     true
 }
 
-/// Passes messages both ways. A heartbeat is followed by a junk frame to the server, whose answer
+/// Passes messages both ways, and returns how many heartbeats it passed on that the server had not
+/// confirmed handling. A heartbeat is followed by a junk frame to the server, whose answer
 /// marks that the server has handled the heartbeat, and the heartbeat counts then.
 async fn pump(
     client: &mut ClientSocket,
@@ -710,18 +742,19 @@ async fn pump(
     mut fates: mpsc::UnboundedReceiver<Fate>,
     (hub, agent): (&Arc<Hub>, &str),
     mut stop: watch::Receiver<bool>,
-) {
+) -> usize {
     let mut unanswered = 0_usize;
     loop {
         tokio::select! {
             biased;
-            _ = stop.changed() => return,
+            _ = stop.changed() => return unanswered,
             end = fates.recv() => {
+                forget_heartbeats(hub, &mut unanswered);
                 end_connection(client, server, end, &mut stop).await;
-                return;
+                return unanswered;
             }
             frame = client.next() => {
-                let Some(Ok(message)) = frame else { return };
+                let Some(Ok(message)) = frame else { return unanswered };
                 if lock(&hub.relay).tripwire.is_some() {
                     // Everything the server has logged so far reaches the log reader, and so the
                     // tripwire, before this frame goes on: the agent keeps the answer the step
@@ -729,24 +762,27 @@ async fn pump(
                     // the step.
                     hub.barrier().await;
                     if let Ok(end) = fates.try_recv() {
+                        forget_heartbeats(hub, &mut unanswered);
                         end_connection(client, server, Some(end), &mut stop).await;
-                        return;
+                        return unanswered;
                     }
                 }
-                if !forward(server, message, &mut unanswered).await {
-                    return;
+                if !forward((server, hub), message, &mut unanswered).await {
+                    return unanswered;
                 }
             }
             frame = server.next() => {
                 let Some(Ok(message)) = frame else {
                     let _ = client.close(None).await;
-                    return;
+                    return unanswered;
                 };
                 if unanswered > 0 && is_sentinel_answer(&message) {
                     unanswered -= 1;
-                    *lock(&hub.relay).heartbeats.entry(agent.to_string()).or_default() += 1;
+                    let mut relay = lock(&hub.relay);
+                    relay.pending_beats = relay.pending_beats.saturating_sub(1);
+                    *relay.heartbeats.entry(agent.to_string()).or_default() += 1;
                 } else if client.send(message).await.is_err() {
-                    return;
+                    return unanswered;
                 }
             }
         }
