@@ -248,13 +248,13 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    `.cargo/` diff (none, for `main`), and needs neither the token nor the server configuration for
    the public repository:
    `/usr/bin/sudo /opt/tessel/sbin/fetch.sh https://github.com/devfep/tessel.git "$sha" --remote
-   https://github.com/devfep/tessel.git`. Then
-   `/opt/tessel/sbin/check-own-users.sh --installed`. Before the move it exits 2, with exactly two
-   skips that are expected: `/var/tessel/github-token has not been moved yet` and
-   `/var/tessel/keys is empty`. Any other skip or any failure stops here. Then the probes only you
-   can run, as the runner account, in `/var/tessel-runner/work`: `cargo test --workspace
-   --offline` of a checkout with `HOME=/var/empty` (it needs `/usr/bin/git` and `cc` through
-   `xcrun`), whether cargo builds with a read-only `CARGO_HOME`, and `at`, `crontab -e` and
+   https://github.com/devfep/tessel.git`. Then `/opt/tessel/sbin/check-own-users.sh --installed`.
+   Before the move it exits 2, with exactly three skips that are expected: `/var/tessel/github-token
+   has not been moved yet`, `read /var/tessel/github-token: /var/tessel/github-token does not
+   exist`, and `/var/tessel/keys is empty`. Any other skip or any failure stops here. Then the
+   probes only you can run, as the runner account, in `/var/tessel-runner/work`: `cargo test
+   --workspace --offline` of a checkout with `HOME=/var/empty` (it needs `/usr/bin/git` and `cc`
+   through `xcrun`), whether cargo builds with a read-only `CARGO_HOME`, and `at`, `crontab -e` and
    `launchctl submit -l x -- /usr/bin/id`, each of which must fail. If the `launchctl submit` probe
    succeeds, remove its job: `/usr/bin/sudo -u _tessel-runner /bin/launchctl remove x`. Anything
    that fails stops here.
