@@ -1,7 +1,10 @@
 //! The sandboxed runner: trees arrive in a handoff directory, are copied into the runner's own
 //! work directory, and run there with an environment taken from the configuration file.
 
+use std::ffi::CString;
 use std::fs;
+use std::io;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -193,6 +196,7 @@ fn the_command_sees_only_the_environment_of_the_file() {
 
 /// Makes `path` hard to remove: an ACL that denies deleting it, then user-immutable (which blocks
 /// any later change of the ACL).
+#[cfg(target_os = "macos")]
 fn make_stubborn(path: &Path) {
     let acl = Command::new("/bin/chmod")
         .args(["+a", "everyone deny delete"])
@@ -385,14 +389,21 @@ fn a_tree_without_a_toolchain_file_runs_without_the_compiler_check() {
     assert_eq!(result.stdout, "ran\n");
 }
 
+/// The hard limit on processes, as a shell reports it: dash has `-p` where bash has `-u`.
+const HARD_PROCESS_LIMIT: &str = "ulimit -Hu 2>/dev/null || ulimit -Hp";
+/// The soft limit on processes, the same way.
+const SOFT_PROCESS_LIMIT: &str = "ulimit -Su 2>/dev/null || ulimit -Sp";
+
 /// The soft and hard limits of the sandbox's processes, as the stand-in `cargo` reads them.
 #[test]
 fn the_binary_limits_the_processes_of_the_account_before_it_runs_anything() {
-    let sandbox = Sandbox::new("echo soft=$(ulimit -Su) hard=$(ulimit -Hu) core=$(ulimit -Sc)");
+    let sandbox = Sandbox::new(&format!(
+        "echo soft=$({SOFT_PROCESS_LIMIT}) hard=$({HARD_PROCESS_LIMIT}) core=$(ulimit -Sc)"
+    ));
     // The hard limit a process may set without privilege is the current one, so the test lowers
     // nothing below it and the numbers are portable.
     let current = Command::new("/bin/sh")
-        .args(["-c", "ulimit -Hu"])
+        .args(["-c", HARD_PROCESS_LIMIT])
         .output()
         .expect("sh runs");
     let hard: u64 = String::from_utf8_lossy(&current.stdout)
@@ -433,20 +444,29 @@ fn the_binary_limits_the_processes_of_the_account_before_it_runs_anything() {
     assert_eq!(seen, format!("soft={limit} hard={limit} core=0\n"));
 }
 
-/// A chain of `depth` directories below `top`, made by a shell that `cd`s one level at a time, so
-/// that the path is longer than the system allows in one call.
+/// A chain of `depth` directories below `top`, made one level at a time through descriptors, so
+/// that the path is longer than the system allows in one call and no shell's `cd` is involved.
 fn deep_chain(top: &Path, depth: usize) {
-    let name = "d".repeat(100);
-    let script = format!(
-        "i=0; while [ $i -lt {depth} ]; do mkdir {name} && cd {name} || exit 1; \
-         i=$((i+1)); done; echo x > leaf"
-    );
-    let made = Command::new("/bin/sh")
-        .args(["-c", &script])
-        .current_dir(top)
-        .status()
-        .expect("sh runs");
-    assert!(made.success());
+    let name = CString::new("d".repeat(100)).expect("no NUL");
+    let mut dir = fs::File::open(top).expect("open top");
+    for _ in 0..depth {
+        // SAFETY: `dir` is an open directory and `name` is a NUL-terminated string.
+        let made = unsafe { libc::mkdirat(dir.as_raw_fd(), name.as_ptr(), 0o700) };
+        assert_eq!(made, 0, "{}", io::Error::last_os_error());
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY;
+        // SAFETY: as above.
+        let next = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags) };
+        assert!(next >= 0, "{}", io::Error::last_os_error());
+        // SAFETY: `next` is a fresh descriptor that nothing else owns.
+        dir = unsafe { fs::File::from_raw_fd(next) };
+    }
+    let leaf = CString::new("leaf").expect("no NUL");
+    let flags = libc::O_WRONLY | libc::O_CREAT;
+    // SAFETY: as above; the mode argument of a variadic `openat` is an unsigned int.
+    let file = unsafe { libc::openat(dir.as_raw_fd(), leaf.as_ptr(), flags, 0o600_u32) };
+    assert!(file >= 0, "{}", io::Error::last_os_error());
+    // SAFETY: `file` is a fresh descriptor that nothing else owns.
+    drop(unsafe { fs::File::from_raw_fd(file) });
 }
 
 #[test]
@@ -495,9 +515,9 @@ fn a_tree_inside_the_work_directory_is_refused_because_the_server_never_sends_on
 
 #[test]
 fn a_limit_above_the_inherited_hard_limit_is_lowered_to_it_and_the_run_still_starts() {
-    let sandbox = Sandbox::new("echo hard=$(ulimit -Hu)");
+    let sandbox = Sandbox::new(&format!("echo hard=$({HARD_PROCESS_LIMIT})"));
     let inherited = Command::new("/bin/sh")
-        .args(["-c", "ulimit -Hu"])
+        .args(["-c", HARD_PROCESS_LIMIT])
         .output()
         .expect("sh runs");
     let text = sandbox.config_text("max_processes = 5000000\n");

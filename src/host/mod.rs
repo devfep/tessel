@@ -24,7 +24,7 @@ mod core_slot;
 mod replay;
 mod sockets;
 pub mod testkit;
-mod wake;
+pub(crate) mod wake;
 
 #[cfg(test)]
 mod tests;
