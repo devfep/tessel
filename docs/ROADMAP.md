@@ -7,9 +7,10 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-25 14:05 UTC. Main at `455c889`, CI green; the dogfood server runs
-`455c889` since 13:54 UTC (redeployed for GATE-PARITY-FMT; the old binaries are in
-`~/tessel-dogfood/bin.prev`). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD).
+**As of:** 2026-10-25 20:20 UTC. Main at `12d77b9`, CI green (it was red from `20cd5fd` to
+`e8fbaa8`, see RUNNER-OWN-UID); the dogfood server runs `455c889` since 13:54 UTC (redeployed for
+GATE-PARITY-FMT; the old binaries are in `~/tessel-dogfood/bin.prev`). M4 is done
+(M4-FIRST-LANDINGS, M4-RESTART-HELD).
 Eighteen server landings on 24 October, each read by an Opus reviewer on the commit from the
 fork first; main's CI is green on every one but
 `d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept their
@@ -23,10 +24,9 @@ of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` 
 worktree and decides holds as `orchestrator`. Two lanes ran at once four times; the coordinator
 denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
-claimed the file after the holder landed or left it to a follow-up. P1-SIM-CORE's first half has
-the reviewer's "Yes" (lane A's fork, `660ba92`) and waits for #115; lane A builds the second half
-on top of it (`.claude/worktrees/sim-core`). Lane B is on RUNNER-OWN-UID's first part, the scripts
-and the dogfood page's steps (`.claude/worktrees/own-uid-scripts`), a pull request for Felix.
+claimed the file after the holder landed or left it to a follow-up. Lane A is on
+P1-ADAPTER-SUITE's first part (`.claude/worktrees/adapter-suite`), lane B on P1-SERVER-STAGED
+(`.claude/worktrees/server-staged`).
 `.claude/worktrees/orchestrator` holds this commit, `gate-main` (at `455c889`) is the gate
 worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
@@ -61,10 +61,10 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** Felix merges #115 (the simulator's seed count in the mutants jobs), which must merge
-before P1-SIM-CORE's code lands; #116 (MERGE-PATH-REVIEW), which P1-SERVER-STAGED waits for; and
-#117 (`cargo fmt --all --check` in `tessel.toml`). After P1-SIM-CORE lands, a pull request adds
-`src/sim/` to `CLAUDE.md`'s Layout. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** Felix merges #119 (the runner accounts job), #120 (the simulator on CI), then ruleset
+step 3, and #121 (`src/sim/` in `CLAUDE.md`). Lane A runs P1-ADAPTER-SUITE's first part, lane B
+P1-SERVER-STAGED, which lands only after Felix's written yes. LANDER-ADMIN-POLICY-DEAD waits for
+M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -920,16 +920,23 @@ M5-PROOF-CANDIDATE. Merge-path tasks ("Felix reviews") are approved only after F
 naming the fork commit's sha (MERGE-PATH-REVIEW).
 
 Lane A:
-- [ ] **P1-SIM-CORE** — L. The simulator's driver, store, clock, crashes and client traffic;
-  checkers I1, I2, I4, I5, I8, I9, I10 with planted-bug tests; transcripts compared per seed;
-  wall-clock calls banned in `src/host` and `src/sim`. The short seed set is the default;
-  `TESSEL_SIM_SEEDS` raises it on CI and lowers it in the mutants jobs, through a workflow pull
-  request merged before the code lands.
-- [ ] **P1-CI-SIM** — S, after P1-SIM-CORE. "Fast lane, simulator" on pull requests and pushes
-  to main, and the nightly sweep (a workflow pull request); then ruleset step 3.
-- [ ] **P1-SWARM-ON-SERVER** — M, after P1-CI-SIM. `tessel-swarm/src/local.rs` drives a real
-  server instead of the core's merge functions; a landing's time measured against the runner's
-  720 s limit.
+- [x] **P1-SIM-CORE** (`cc59a08` stack, landed by the server; #115 first) — lane A, in two
+  halves. `src/sim/`: the driver, a store that loses staged writes or fails a commit, a jumping
+  clock, crashes after any output, and traffic with claims, amends, releases, heartbeats, races,
+  reviews and watchers; checkers I1, I2, I4, I5, I8, I9, I10, each catching its own planted bug
+  alone and pinned by hand-built cases; each seed run twice with transcripts compared; clock calls
+  banned in `src/host` and `src/sim`. 20 seeds by default (about 10 s in `cargo test`),
+  `TESSEL_SIM_SEEDS` 2 in the mutants jobs (#115). Opus "Yes" after three fix passes per half.
+- [ ] **P1-CI-SIM** — lane A. Code landed with the stack (`cc59a08`): seeds from
+  `TESSEL_SIM_FIRST_SEED`, every failing seed printed with its rerun line (at most 20), kept seeds
+  in `tests/simulator-regressions.txt` replayed first. The workflow is #120 (1,000 seeds per pull
+  request and push, 2 min 4 s on a GitHub runner; 20,000 nightly), for Felix; then ruleset step 3.
+- [x] **P1-SWARM-ON-SERVER** (`12d77b9`, landed by the server) — lane A. The swarm's local
+  target drives a real `tessel-server`; no swarm code calls the core's merge functions. Additive
+  `lease_ms` (1 s to 10 min) and `shadow_enabled`, applied on every load; a test clock only in the
+  server's test support. The workspace test takes about 305 s on this Mac against the runner's
+  720 s. Its first landing failed in the runner (a keep-alive test lapsed under load); the
+  keep-alive tests are now driven by the clock. Opus "Yes" after two fix passes.
 - [ ] **P1-ADAPTER-SUITE** — M. First part after P1-SWARM-ON-SERVER: the CI-only kill -9 loop
   checked against I1, and the CLI release before the protocol range field against the new server.
   The rest after P1-HOST-HARDENING: a slow watcher, a panicking repo task, injected store errors.
@@ -977,14 +984,19 @@ Lane B:
   failure. A repository config alias can still make `cargo fmt` run repo code, as `cargo test`
   does, so the check holds for cooperating agents. Opus "Yes" after one fix pass. The
   `tessel.toml` entry is #117, for Felix; the dogfood server was redeployed from `455c889` first.
-- [ ] **RUNNER-OWN-UID** — M to L, after OWN-USERS-DESIGN and GATE-PARITY-FMT. The runner binary
-  through the sudo rule, a Linux CI job for the boundary (a workflow pull request), then the
-  dogfood server on its own users. Closes RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE.
+- [ ] **RUNNER-OWN-UID** — lane B. Part 1, the scripts and the dogfood page's steps: #118, merged
+  (security review: six, five, then no root-safety findings). Part 2, the code (`20cd5fd`, landed
+  by the server): `SudoRunner` behind `[lander.sudo_runner]`, the in-process runner still the
+  default; the runner's config rules, sweep, limits, one-line reply and `rustc -V` check. It broke
+  main's Linux build (glibc's `RLIMIT_*` are `u32`) and two dash-only tests; `e8fbaa8` and
+  `bf07498` fixed both, and main was red from `20cd5fd` to `e8fbaa8`. The Linux job is #119 (all
+  checks pass on real accounts), for Felix. Left: the move of the dogfood server, Felix's sudo
+  steps in `docs/dogfood.md`; that closes RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE.
 
 Orchestrator:
-- [ ] **MERGE-PATH-REVIEW** — before P1-SERVER-STAGED; a pull request Felix merges.
-  `docs/BUILD-PROTOCOL.md` section 6: a "Felix reviews" submission is approved only after his
-  written yes naming the fork commit's sha; a fix pass needs a new yes.
+- [x] **MERGE-PATH-REVIEW** (#116, merged) — `docs/BUILD-PROTOCOL.md` section 6: a "Felix
+  reviews" submission is approved only after his own written yes naming the fork commit's sha; any
+  new sha needs a new yes; an unheld submission of such a task is made only after that yes.
 - [ ] **SENSITIVE-MERGE-PATH** — before P1-CORE-STAGED-LANDING; a pull request to
   `scripts/dogfood/setup.sh` Felix merges, then a restart with nothing in flight. `src/merge.rs`,
   `src/coordinator.rs` and `src/coordinator/` join `sensitive`.
