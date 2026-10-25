@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the landing end to end (landing-e2e.sh) with the last CLI release before `Welcome` carried
 # the protocol range, against the current server. That CLI does not know the field, so it must
-# connect, claim, submit, hear the landing and release its claim all the same.
+# connect, claim, submit, hear the landing and release its claim all the same. It cannot see the
+# field, so it prints no range warning and nothing here looks for one; it just has to work.
 #
 # TESSEL_OLD_CLI names that CLI's `tessel` binary; the CI job builds it from the commit before
 # "Announce the protocol range in Welcome and warn in the CLI" and never builds it in `cargo test`.
