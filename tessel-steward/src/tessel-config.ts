@@ -19,8 +19,8 @@ export const GATE_INSTANCE_MEMORY_BYTES: Record<GateInstance, number> = {
 };
 
 /**
- * The only gate commands: `pnpm test` and `npm test` exactly, and `cargo test` followed by flags
- * from this list. Nothing that can change which toolchain, config or compiler runs is on it: no
+ * The only gate commands: `pnpm test`, `npm test` and `cargo fmt --all --check` exactly, and
+ * `cargo test` followed by flags from this list. Nothing that can change which toolchain, config or compiler runs is on it: no
  * `+toolchain`, `--config`, `-Z`, `--manifest-path`, `--target`, no `--` passthrough, and no
  * environment (an argument such as `RUSTC_WRAPPER=x` is not a program). A shell is never allowed.
  */
@@ -78,6 +78,9 @@ function isAllowedCommand(argv: readonly string[]): boolean {
   if (program === "pnpm" || program === "npm") {
     return subcommand === "test" && rest.length === 0;
   }
+  if (program === "cargo" && subcommand === "fmt") {
+    return rest.length === 2 && rest[0] === "--all" && rest[1] === "--check";
+  }
   return (
     program === "cargo" &&
     subcommand === "test" &&
@@ -105,7 +108,7 @@ function parseArgv(value: unknown, where: string): string[] | { error: string } 
   }
   if (!isAllowedCommand(argv)) {
     return {
-      error: `${where} must be pnpm test, npm test, or cargo test with only ${CARGO_TEST_FLAGS.join(" ")}`,
+      error: `${where} must be pnpm test, npm test, cargo fmt --all --check, or cargo test with only ${CARGO_TEST_FLAGS.join(" ")}`,
     };
   }
   return argv;

@@ -144,6 +144,16 @@ describe("parseGateConfig", () => {
       ["pnpm"],
       ["npm", "test", "--ignore-scripts"],
       ["npm", "run", "test"],
+      ["cargo", "fmt"],
+      ["cargo", "fmt", "--all"],
+      ["cargo", "fmt", "--check"],
+      ["cargo", "fmt", "--check", "--all"],
+      ["cargo", "fmt", "--all", "--check", "--"],
+      ["cargo", "fmt", "--all", "--check", "--verbose"],
+      ["cargo", "fmt", "--all", "--check", "--all"],
+      ["cargo", "fmt", "--all", "--check", "--manifest-path=x"],
+      ["cargo", "fmt", "-p", "x", "--all", "--check"],
+      ["cargo", "+nightly", "fmt", "--all", "--check"],
     ];
     for (const argv of refused) {
       const text = `instance = "standard-4"\n[[test]]\nargv = ${JSON.stringify(argv)}\n`;
@@ -151,7 +161,7 @@ describe("parseGateConfig", () => {
     }
   });
 
-  it("accepts cargo test with each listed flag, and pnpm test and npm test", () => {
+  it("accepts cargo test with each listed flag, pnpm test, npm test and cargo fmt --all --check", () => {
     for (const argv of [
       ["cargo", "test"],
       ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast"],
@@ -167,6 +177,7 @@ describe("parseGateConfig", () => {
       ],
       ["pnpm", "test"],
       ["npm", "test"],
+      ["cargo", "fmt", "--all", "--check"],
     ]) {
       const text = `instance = "standard-4"\n[[test]]\nargv = ${JSON.stringify(argv)}\n`;
       expect(parseGateConfig(text).ok, argv.join(" ")).toBe(true);
