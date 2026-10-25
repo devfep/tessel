@@ -328,3 +328,67 @@ pub fn clone_test_tree(
     }
     Ok(TestTreeOutcome::Cloned(TestTree { path: cloned.path }))
 }
+
+/// How [`fetch_candidate_tree`] ended.
+#[derive(Debug)]
+pub enum CandidateTreeOutcome {
+    Fetched(TestTree),
+    /// A git command exited non-zero, or did not name a commit. There is no tree; the output is
+    /// untrusted data.
+    Failed(GitOutput),
+}
+
+/// Makes the tree the repo's tests run in from the candidate ref of `head` on `remote`: a
+/// repository git itself makes in `destination` (missing or an empty directory, checked as for
+/// [`clone_main`]), the one ref fetched into it by URL, and `head` checked out. It stores no
+/// remote and no credential. No workspace that was ever pushed from is involved, so repo code that
+/// runs in the tree can reach no clone the lander pushes from. The ref's tip must be `head`, and
+/// so must `HEAD`.
+pub fn fetch_candidate_tree(
+    git: &Git,
+    runner: &dyn GitRunner,
+    remote: &str,
+    head: &Sha,
+    destination: &Path,
+) -> Result<CandidateTreeOutcome, CloneError> {
+    let destination =
+        &std::path::absolute(destination).map_err(|source| CloneError::DestinationUnreadable {
+            path: destination.to_path_buf(),
+            source,
+        })?;
+    ensure_clonable(destination)?;
+    let init = runner.run(&git.init_command(destination))?;
+    if !init.success() {
+        return Ok(CandidateTreeOutcome::Failed(init));
+    }
+    let tree = Workspace::new(destination.clone());
+    let reference = crate::candidate::candidate_ref(head);
+    let fetched = runner.run(&git.fetch_ref_command(&tree, remote, &reference))?;
+    if !fetched.success() {
+        return Ok(CandidateTreeOutcome::Failed(fetched));
+    }
+    let not_at_head = |actual: Sha| CloneError::TestTreeNotAtHead {
+        path: destination.clone(),
+        expected: head.clone(),
+        actual,
+    };
+    let tip = runner.run(&git.ref_tip_command(&tree, &reference))?;
+    let Ok(tip_sha) = Sha::parse(tip.stdout.trim()) else {
+        return Ok(CandidateTreeOutcome::Failed(tip));
+    };
+    if tip_sha != *head {
+        return Err(not_at_head(tip_sha));
+    }
+    let checkout = runner.run(&git.checkout_detached_command(&tree, head))?;
+    if !checkout.success() {
+        return Ok(CandidateTreeOutcome::Failed(checkout));
+    }
+    let at_head = runner.run(&git.head_command(&tree))?;
+    let Ok(actual) = Sha::parse(at_head.stdout.trim()) else {
+        return Ok(CandidateTreeOutcome::Failed(at_head));
+    };
+    if actual != *head {
+        return Err(not_at_head(actual));
+    }
+    Ok(CandidateTreeOutcome::Fetched(TestTree { path: tree.path }))
+}

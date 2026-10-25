@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tessel_lander::git::{Git, GitCommand, MergeSources};
 use tessel_lander::merge::{
-    land, prepare, run_merge, BoundaryError, MergeContext, MergePolicy, MergePorts, MergeRequest,
-    Prepared, PushUpdate, Ready,
+    land, prepare, run_merge, BoundaryError, CandidateWrite, MergeContext, MergePolicy, MergePorts,
+    MergeRequest, Prepared, PushUpdate, Ready,
 };
 use tessel_lander::outcome::{
     EvidenceResult, LandedMerge, MergeOutcome, PackageStep, StepOutcome, TrialOutcome,
@@ -234,6 +234,15 @@ impl MergePorts for Ports<'_> {
         use_access: impl FnOnce() -> T,
     ) -> Result<T, BoundaryError> {
         self.log.borrow_mut().push("push access".to_owned());
+        Ok(use_access())
+    }
+
+    fn with_candidate_access<T>(
+        &self,
+        _write: &CandidateWrite<'_>,
+        use_access: impl FnOnce() -> T,
+    ) -> Result<T, BoundaryError> {
+        self.log.borrow_mut().push("candidate access".to_owned());
         Ok(use_access())
     }
 

@@ -107,6 +107,7 @@ pub fn merge_outcome_of(answer: &CallAnswer) -> MergeOutcome {
         | CallAnswer::Trialled { .. }
         | CallAnswer::Head { .. }
         | CallAnswer::Reconciled { .. }
+        | CallAnswer::CandidateMissing
         | CallAnswer::Unknown => MergeOutcome::ServiceUnavailable,
     }
 }
@@ -148,6 +149,7 @@ pub fn trial_report_of(answer: &CallAnswer) -> TrialReport {
         | CallAnswer::Landed { .. }
         | CallAnswer::Head { .. }
         | CallAnswer::Reconciled { .. }
+        | CallAnswer::CandidateMissing
         | CallAnswer::Unknown => TrialReport::stopped(TrialOutcome::ServiceUnavailable),
     }
 }
@@ -173,6 +175,7 @@ pub fn head_of(answer: &CallAnswer) -> Option<CommitId> {
         | CallAnswer::Landed { .. }
         | CallAnswer::Trialled { .. }
         | CallAnswer::Reconciled { .. }
+        | CallAnswer::CandidateMissing
         | CallAnswer::Refused { .. }
         | CallAnswer::Unknown => None,
     }
@@ -491,6 +494,7 @@ mod tests {
     fn a_merge_answer_that_is_not_a_merge_answer_is_the_service_unavailable() {
         let unusable = [
             CallAnswer::Tested,
+            CallAnswer::CandidateMissing,
             CallAnswer::Landed { head: commit("h") },
             CallAnswer::Trialled {
                 before: None,
@@ -557,7 +561,11 @@ mod tests {
             trial_report_of(&rule),
             TrialReport::stopped(TrialOutcome::Refused)
         );
-        for answer in [CallAnswer::Unknown, CallAnswer::Tested] {
+        for answer in [
+            CallAnswer::Unknown,
+            CallAnswer::Tested,
+            CallAnswer::CandidateMissing,
+        ] {
             assert_eq!(
                 trial_report_of(&answer),
                 TrialReport::stopped(TrialOutcome::ServiceUnavailable),

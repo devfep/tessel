@@ -89,6 +89,12 @@ pub enum CallAnswer {
         main: CommitId,
         landed: bool,
     },
+    /// The head a `Test` or a `Land` was asked about is not on the candidate ref the lander keeps
+    /// it on, and, for a `Land`, not on main either: the ref was lost, removed or overwritten, and
+    /// nothing landed. A fact about the lander's own store (`docs/proposals/candidate-ref.md`), so
+    /// the work goes back to `Prepare`; it is neither a refusal, which rejects good work, nor
+    /// `Unknown`, which a `Land` would answer again and again.
+    CandidateMissing,
     /// A fact about the work, never retried.
     Refused {
         refusal: Refusal,
@@ -307,6 +313,7 @@ mod tests {
             (commit(), any::<bool>())
                 .prop_map(|(main, landed)| CallAnswer::Reconciled { main, landed }),
             refusal().prop_map(|refusal| CallAnswer::Refused { refusal }),
+            Just(CallAnswer::CandidateMissing),
             Just(CallAnswer::Unknown),
         ]
     }
@@ -349,6 +356,14 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&typed).unwrap(),
             r#"{"kind":"rule","rule":"no_lander","message":"m"}"#
+        );
+    }
+
+    #[test]
+    fn a_missing_candidate_has_its_own_stored_form() {
+        assert_eq!(
+            serde_json::to_string(&CallAnswer::CandidateMissing).unwrap(),
+            r#"{"kind":"candidate_missing"}"#
         );
     }
 

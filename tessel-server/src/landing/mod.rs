@@ -1,8 +1,8 @@
 //! The local lander: answers the host's calls with the real lander and the real runner, in
 //! process, against a git remote reached by path.
 //!
-//! Until the core stages a landing (HOST-MERGE-STANDIN), the host's one `Prepare` call stands for
-//! the whole merge. Here it runs the lander's `run_merge`: clone main, fetch the agent's fork,
+//! Until the core stages a landing (P1-CORE-STAGED-LANDING), the host's one `Prepare` call stands
+//! for the whole merge. Here it runs the lander's `run_merge`: clone main, fetch the agent's fork,
 //! rebase, check coverage and the gate, run the trunk's test command on a clone of the rebased
 //! head, push main with a compare-and-swap, and read main back. `Prepared` is the answer only when
 //! that read found the head on main. The lander runs git and never repo code; the runner runs repo
@@ -18,6 +18,7 @@ mod git_read;
 mod head;
 mod names;
 mod ports;
+mod staged;
 mod sudo;
 mod trial;
 mod workdir;
@@ -75,10 +76,6 @@ pub enum LandingError {
 pub const BAD_AGENT_NAME_MESSAGE: &str =
     "the agent name is not lowercase letters, digits, '.', '_' and '-' of at most 128 bytes, \
      starting with a letter or digit";
-
-/// What `Test` and `Land` are refused with: they are never asked while `Prepare` is the merge.
-pub const STAND_IN_MESSAGE: &str = "this lander runs the whole merge in the Prepare call; \
-                                    Test and Land are not issued until the staged landing";
 
 /// Answers the calls of one repository against its git remote.
 pub struct Landing {
@@ -329,12 +326,8 @@ impl Inner {
                 scopes,
                 ..
             } => self.prepare(work, agent, fork_commit, scopes),
-            Request::Test { .. } | Request::Land { .. } => CallAnswer::Refused {
-                refusal: Refusal::Rule {
-                    rule: RuleKind::Other,
-                    message: STAND_IN_MESSAGE.to_string(),
-                },
-            },
+            Request::Test { head, .. } => self.test(work, head),
+            Request::Land { base, head } => self.land(work, base, head),
             Request::Trial {
                 agent,
                 commit,

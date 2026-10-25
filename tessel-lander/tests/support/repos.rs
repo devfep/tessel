@@ -12,8 +12,8 @@ use tempfile::TempDir;
 use tessel_coordinator::protocol::{Mode, Scope, ScopeClaim};
 use tessel_lander::git::{Git, MergeSources};
 use tessel_lander::merge::{
-    prepare, run_merge, BoundaryError, MergeContext, MergeError, MergePolicy, MergePorts,
-    MergeRequest, Prepared, PushUpdate,
+    prepare, run_merge, BoundaryError, CandidateWrite, MergeContext, MergeError, MergePolicy,
+    MergePorts, MergeRequest, Prepared, PushUpdate,
 };
 use tessel_lander::outcome::{
     EvidenceResult, LandedMerge, MergeOutcome, PackageStep, StepOutcome, TrialOutcome,
@@ -114,6 +114,75 @@ impl Repos {
             main_remote: self.main.display().to_string(),
             fork_remote: self.fork.display().to_string(),
         }
+    }
+
+    pub fn git(&self) -> &Git {
+        &self.git
+    }
+
+    /// Puts `sha` on main's candidate ref of `name`, as the lander's push would.
+    pub fn set_candidate(&self, name: &str, sha: &Sha) {
+        let target = format!("{sha}:refs/tessel/candidate/{name}");
+        let main = self.main.display().to_string();
+        self.work_git(&["push", "--quiet", "--force", &main, &target]);
+    }
+
+    /// The tip of `reference` in main's bare repository, or `None`.
+    pub fn main_ref(&self, reference: &str) -> Option<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.main)
+            .args(["rev-parse", "--verify", "--quiet", reference])
+            .output()
+            .expect("run git");
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    /// A clone of the work tree, which holds every commit a test made, in a directory of its own.
+    pub fn clone_of_work(&self) -> tessel_lander::workspace::Workspace {
+        let sources = MergeSources {
+            main_remote: self.work.display().to_string(),
+            fork_remote: String::new(),
+        };
+        let dir = self.next_clone_dir();
+        match tessel_lander::workspace::clone_main(&self.git, &SystemRunner, &sources, &dir)
+            .expect("clone step")
+        {
+            tessel_lander::workspace::CloneOutcome::Cloned(workspace) => workspace,
+            tessel_lander::workspace::CloneOutcome::Failed(output) => {
+                unreachable!("the clone failed: {}", output.stderr)
+            }
+        }
+    }
+
+    /// The `Land` of the staged landing for `head`, with main pinned at where it is now.
+    pub fn land_candidate(
+        &self,
+        ports: &impl MergePorts,
+        head: &Sha,
+    ) -> Result<MergeOutcome, MergeError> {
+        let (sources, pinned, clone_dir, test_dir) = (
+            self.sources(),
+            self.main_head(),
+            self.next_clone_dir(),
+            self.next_clone_dir(),
+        );
+        let ctx = MergeContext {
+            git: &self.git,
+            runner: &SystemRunner,
+            sources: &sources,
+            clone_dir: &clone_dir,
+            test_dir: &test_dir,
+            pinned_main: &pinned,
+        };
+        let update = PushUpdate {
+            base: pinned.clone(),
+            head: head.clone(),
+        };
+        tessel_lander::candidate::land_candidate(&ctx, ports, &update)
     }
 
     fn next_clone_dir(&self) -> PathBuf {
@@ -230,6 +299,10 @@ pub struct LocalPorts<'a> {
     /// Runs inside the push access, before the push.
     pub during_push_access: Box<dyn Fn() + 'a>,
     pub refuse_push_access: bool,
+    /// Refuses every write to the candidate refs, as a call that was given up would.
+    pub refuse_candidate_access: bool,
+    /// Runs when main is read back, after the push.
+    pub before_current_main: Box<dyn Fn() + 'a>,
 }
 
 impl<'a> LocalPorts<'a> {
@@ -239,6 +312,8 @@ impl<'a> LocalPorts<'a> {
             log: RefCell::new(Vec::new()),
             during_push_access: Box::new(|| {}),
             refuse_push_access: false,
+            refuse_candidate_access: false,
+            before_current_main: Box::new(|| {}),
         }
     }
 }
@@ -273,7 +348,27 @@ impl MergePorts for LocalPorts<'_> {
         Ok(use_access())
     }
 
+    fn with_candidate_access<T>(
+        &self,
+        write: &CandidateWrite<'_>,
+        use_access: impl FnOnce() -> T,
+    ) -> Result<T, BoundaryError> {
+        let what = match write {
+            CandidateWrite::Push { .. } => "candidate push",
+            CandidateWrite::Delete { .. } => "candidate delete",
+        };
+        self.log.borrow_mut().push(what.to_owned());
+        if self.refuse_candidate_access {
+            return Err(BoundaryError {
+                operation: "with_candidate_access",
+                message: "must not write".to_owned(),
+            });
+        }
+        Ok(use_access())
+    }
+
     fn current_main(&self) -> Option<Sha> {
+        (self.before_current_main)();
         Some(self.repos.main_head())
     }
 

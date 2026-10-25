@@ -55,6 +55,17 @@ pub struct PushUpdate {
     pub head: Sha,
 }
 
+/// A write to the candidate refs, the only other use of the write credential besides the push of
+/// main. Each is made inside [`MergePorts::with_candidate_access`], which checks that the call is
+/// still allowed to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateWrite<'a> {
+    /// Push `head` to its candidate ref.
+    Push { head: &'a Sha },
+    /// Delete `reference`, if it still points at `sha`.
+    Delete { reference: &'a str, sha: &'a Sha },
+}
+
 /// A port failed. `operation` names the port call, `message` says what went wrong.
 #[derive(Debug, thiserror::Error)]
 #[error("{operation} failed: {message}")]
@@ -112,6 +123,15 @@ pub trait MergePorts {
     fn with_push_access<T>(
         &self,
         update: &PushUpdate,
+        use_access: impl FnOnce() -> T,
+    ) -> Result<T, BoundaryError>;
+
+    /// Lets `use_access` make the candidate-ref write `write` and nothing else, with the credential
+    /// the platform gives such a write, and revokes it when `use_access` ends. A call that was
+    /// given up or is past its deadline must not write: return the error without running it.
+    fn with_candidate_access<T>(
+        &self,
+        write: &CandidateWrite<'_>,
         use_access: impl FnOnce() -> T,
     ) -> Result<T, BoundaryError>;
 
@@ -491,10 +511,22 @@ pub fn land(
             head: head.clone(),
             evidence: None,
         },
-        Some(actual) if actual != *base => MergeOutcome::MainMoved {
-            expected: base.clone(),
-            actual,
-        },
+        // Main is somewhere else. If a later landing built on the head, the head is an ancestor of
+        // main and it landed; equality alone would call that a move (C6, landing by ancestry).
+        Some(actual) if actual != *base => {
+            if head_is_on_main(ctx, workspace, head)? {
+                MergeOutcome::Merged {
+                    base: base.clone(),
+                    head: head.clone(),
+                    evidence: None,
+                }
+            } else {
+                MergeOutcome::MainMoved {
+                    expected: base.clone(),
+                    actual,
+                }
+            }
+        }
         Some(_) | None => MergeOutcome::PushFailed {
             base: base.clone(),
             head: head.clone(),
@@ -502,6 +534,22 @@ pub fn land(
         },
     };
     Ok(outcome)
+}
+
+/// Whether `head` is an ancestor of main as it is now: main is fetched into `workspace` again,
+/// then asked. A fetch or a question that does not answer reads as no, which the caller reports
+/// as a move and the core reconciles.
+fn head_is_on_main(
+    ctx: &MergeContext<'_>,
+    workspace: &Workspace,
+    head: &Sha,
+) -> Result<bool, MergeError> {
+    let fetched = ctx.run(&ctx.git.fetch_main_command(workspace, ctx.sources))?;
+    if !fetched.success() {
+        return Ok(false);
+    }
+    let answer = ctx.run(&ctx.git.on_main_command(workspace, head))?;
+    Ok(answer.success())
 }
 
 pub(crate) type StepRunner<'a> = &'a dyn Fn(PackageStep) -> Result<StepOutcome, BoundaryError>;

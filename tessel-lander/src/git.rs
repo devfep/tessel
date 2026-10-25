@@ -58,6 +58,7 @@ pub const LOCAL_GIT_COMMANDS_MAX: usize = 8;
 const REBASE_TIMEOUT: Duration = Duration::from_secs(30);
 const TEST_TREE_TIMEOUT: Duration = Duration::from_secs(30);
 const PUSH_TIMEOUT: Duration = Duration::from_secs(30);
+const LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One git invocation. `argv[0]` is `git`; the environment is the whole environment. `dir` is
 /// where the process starts: an absolute directory that exists, never the server's own working
@@ -480,6 +481,126 @@ impl Git {
             &["rev-parse", "--verify", "HEAD^{commit}"],
             LOCAL_TIMEOUT,
         )
+    }
+
+    /// `git init` of `destination`, which git refuses to use unless it is missing or empty. The
+    /// directory is the one a candidate tree is fetched into
+    /// ([`crate::workspace::fetch_candidate_tree`]).
+    pub fn init_command(&self, destination: &Path) -> GitCommand {
+        let mut command = self.command(&["init", "--quiet", "--"], LOCAL_TIMEOUT);
+        command.argv.push(destination.into());
+        command
+    }
+
+    /// `git ls-remote` for `pattern` of `remote`. It runs outside any workspace, so `GIT_DIR`
+    /// names the lander's empty `HOME`, which is also where it starts: git finds no repository,
+    /// and the config of whatever repository the server was started in cannot redirect the read.
+    pub fn ls_remote_command(&self, remote: &str, pattern: &str) -> GitCommand {
+        let mut command = self.command(&["ls-remote", "--"], LS_REMOTE_TIMEOUT);
+        let home = self.home.clone().into_os_string();
+        command.env.insert("GIT_DIR".to_owned(), home);
+        command.argv.push(remote.into());
+        command.argv.push(pattern.into());
+        command
+    }
+
+    /// Fetches `reference` of `remote` into the same name in `workspace`.
+    pub fn fetch_ref_command(
+        &self,
+        workspace: &Workspace,
+        remote: &str,
+        reference: &str,
+    ) -> GitCommand {
+        self.local(
+            workspace,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--",
+                remote,
+                &format!("+{reference}:{reference}"),
+            ],
+            FETCH_TIMEOUT,
+        )
+    }
+
+    /// Stdout is the commit `reference` names in `workspace`.
+    pub fn ref_tip_command(&self, workspace: &Workspace, reference: &str) -> GitCommand {
+        self.local(
+            workspace,
+            &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+            LOCAL_TIMEOUT,
+        )
+    }
+
+    /// Checks `commit` out with a detached HEAD.
+    pub fn checkout_detached_command(&self, workspace: &Workspace, commit: &Sha) -> GitCommand {
+        self.local(
+            workspace,
+            &["checkout", "--quiet", "--detach", commit.as_str()],
+            TEST_TREE_TIMEOUT,
+        )
+    }
+
+    /// Fetches main of the sources into `refs/remotes/origin/main` of `workspace`, so that
+    /// [`Git::on_main_command`] reads main as it is now.
+    pub fn fetch_main_command(&self, workspace: &Workspace, sources: &MergeSources) -> GitCommand {
+        self.local(
+            workspace,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--",
+                &sources.main_remote,
+                &format!("+refs/heads/{MAIN_BRANCH}:refs/remotes/origin/{MAIN_BRANCH}"),
+            ],
+            FETCH_TIMEOUT,
+        )
+    }
+
+    /// Pushes `head` to `reference` of `remote`, replacing what is there: the candidate refs are
+    /// the lander's own.
+    pub fn push_ref_command(
+        &self,
+        workspace: &Workspace,
+        remote: &str,
+        head: &Sha,
+        reference: &str,
+    ) -> GitCommand {
+        self.local(
+            workspace,
+            &[
+                "-c",
+                &format!("http.postBuffer={MAX_PUSH_BODY_BYTES}"),
+                "push",
+                "--porcelain",
+                "--",
+                remote,
+                &format!("+{head}:{reference}"),
+            ],
+            PUSH_TIMEOUT,
+        )
+    }
+
+    /// Deletes each `(reference, sha)` from `remote` if it still points at `sha`, one lease and
+    /// one refspec each. Not atomic: a ref that changed fails only itself.
+    pub fn delete_refs_command(
+        &self,
+        workspace: &Workspace,
+        remote: &str,
+        refs: &[(String, Sha)],
+    ) -> GitCommand {
+        let mut args: Vec<String> = vec!["push".to_owned(), "--porcelain".to_owned()];
+        for (reference, sha) in refs {
+            args.push(format!("--force-with-lease={reference}:{sha}"));
+        }
+        args.push("--".to_owned());
+        args.push(remote.to_owned());
+        args.extend(refs.iter().map(|(reference, _)| format!(":{reference}")));
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.local(workspace, &words, PUSH_TIMEOUT)
     }
 
     /// Pushes `head` to main only if main is still `base`. Never forces: `head` descends from

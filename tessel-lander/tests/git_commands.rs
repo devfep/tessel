@@ -483,3 +483,55 @@ fn without_an_added_variable_the_environment_is_the_fixed_one() {
         "GIT_DIR and GIT_WORK_TREE only"
     );
 }
+
+#[test]
+fn the_candidate_push_replaces_only_its_own_ref_and_never_touches_main() {
+    let reference = format!("refs/tessel/candidate/{}", "b".repeat(40));
+    let command = git().push_ref_command(
+        &workspace(),
+        "https://git.example/r.git",
+        &sha('b'),
+        &reference,
+    );
+    let words = argv(&command);
+    assert!(
+        words.contains(&format!("+{}:{reference}", "b".repeat(40))),
+        "{words:?}"
+    );
+    assert!(
+        !words.iter().any(|word| word.contains("refs/heads/main")),
+        "{words:?}"
+    );
+}
+
+#[test]
+fn each_candidate_delete_carries_its_own_lease_on_the_listed_tip() {
+    let (first, second) = (
+        format!("refs/tessel/candidate/{}", "1".repeat(40)),
+        format!("refs/tessel/candidate/{}", "2".repeat(40)),
+    );
+    let command = git().delete_refs_command(
+        &workspace(),
+        "https://git.example/r.git",
+        &[(first.clone(), sha('a')), (second.clone(), sha('b'))],
+    );
+    let words = argv(&command);
+    for (reference, tip) in [(&first, 'a'), (&second, 'b')] {
+        let lease = format!(
+            "--force-with-lease={reference}:{}",
+            tip.to_string().repeat(40)
+        );
+        assert!(words.contains(&lease), "{words:?}");
+        assert!(words.contains(&format!(":{reference}")), "{words:?}");
+    }
+    assert!(!words.contains(&"--force".to_owned()), "{words:?}");
+}
+
+#[test]
+fn a_listing_of_the_candidate_refs_runs_outside_any_repository() {
+    let command = git().ls_remote_command("https://git.example/r.git", "refs/tessel/candidate/*");
+    assert_eq!(
+        env_value(&command, "GIT_DIR").as_deref(),
+        Some("/lander/home")
+    );
+}

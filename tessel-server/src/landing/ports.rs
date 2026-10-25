@@ -8,7 +8,7 @@ use std::sync::{Mutex, PoisonError};
 
 use tessel_lander::gate::{parse_gate_config, GateConfig, MAX_CONFIG_BYTES, TESSEL_TOML_PATH};
 use tessel_lander::git::{Git, MAIN_BRANCH};
-use tessel_lander::merge::{BoundaryError, MergePorts, PushUpdate};
+use tessel_lander::merge::{BoundaryError, CandidateWrite, MergePorts, PushUpdate};
 use tessel_lander::outcome::{EvidenceResult, LandedMerge, PackageStep, StepOutcome};
 use tessel_lander::trial::TrialPorts;
 use tessel_lander::types::Sha;
@@ -263,6 +263,22 @@ impl MergePorts for Ports<'_> {
             return Err(boundary(
                 "with_push_access",
                 "the call's deadline passed or the call was given up, so main was not pushed",
+            ));
+        }
+        Ok(use_access())
+    }
+
+    /// Like the push of main: the credential is the token file git reads, and a call past its
+    /// deadline, or given up, must write nothing.
+    fn with_candidate_access<T>(
+        &self,
+        _write: &CandidateWrite<'_>,
+        use_access: impl FnOnce() -> T,
+    ) -> Result<T, BoundaryError> {
+        if self.stop.requested() {
+            return Err(boundary(
+                "with_candidate_access",
+                "the call's deadline passed or the call was given up, so no candidate ref was written",
             ));
         }
         Ok(use_access())

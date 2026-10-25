@@ -1866,7 +1866,7 @@ fn host_a_hello_before_the_read_is_answered_is_welcomed_with_its_base_and_the_an
 
 #[test]
 fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
-    let ends_in_none: [(&str, Option<CallAnswer>); 5] = [
+    let ends_in_none: [(&str, Option<CallAnswer>); 6] = [
         ("a failed call", Some(CallAnswer::Unknown)),
         ("a timeout", None),
         (
@@ -1883,6 +1883,7 @@ fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
             }),
         ),
         ("another answer", Some(CallAnswer::Tested)),
+        ("a missing candidate", Some(CallAnswer::CandidateMissing)),
     ];
     for (what, answer) in ends_in_none {
         let mut kit = kit();
@@ -1967,10 +1968,11 @@ fn host_a_marker_with_a_call_waiting_is_not_a_cut_off() {
 
 #[test]
 fn host_a_failed_or_timed_out_lander_call_is_service_unavailable() {
-    let unusable: [(&str, Option<CallAnswer>); 4] = [
+    let unusable: [(&str, Option<CallAnswer>); 5] = [
         ("a failed call", Some(CallAnswer::Unknown)),
         ("a timeout", None),
         ("an answer of another kind", Some(CallAnswer::Tested)),
+        ("a missing candidate", Some(CallAnswer::CandidateMissing)),
         (
             "a stale landing",
             Some(CallAnswer::Landed {

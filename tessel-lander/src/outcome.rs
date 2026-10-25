@@ -187,6 +187,9 @@ pub enum MergeOutcome {
         head: Sha,
         result: GitOutput,
     },
+    /// A `Land` found no candidate ref for its head (or one with another tip), and main does not
+    /// hold the head: nothing landed, and the head must be made again.
+    CandidateMissing,
 }
 
 /// The result of one trial, ported from the steward's `TrialOutcome`: `commit` replayed onto main

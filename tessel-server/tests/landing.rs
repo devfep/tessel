@@ -26,7 +26,7 @@ use tessel_server::id::RepoId;
 use tessel_server::identity::{self, Ed25519Verifier, Role, TokenRequest};
 use tessel_server::keys;
 use tessel_server::landing::{
-    Landing, LandingError, LocalRunner, TestRunner, BAD_AGENT_NAME_MESSAGE, STAND_IN_MESSAGE,
+    Landing, LandingError, LocalRunner, TestRunner, BAD_AGENT_NAME_MESSAGE,
 };
 use tessel_server::repo::{now_ms, CallPort};
 use tessel_server::ws::Verifier;
@@ -806,30 +806,248 @@ async fn an_empty_remote_has_no_head_to_read() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_and_land_are_refused_naming_the_stand_in() -> TestResult {
-    let repos = Repos::new();
-    let landing = landing(&repos, "landing-standin", passing());
-    let sha = CommitId("a".repeat(40));
-    for request in [
-        Request::Test {
-            base: sha.clone(),
-            head: sha.clone(),
-        },
-        Request::Land {
-            base: sha.clone(),
-            head: sha,
-        },
-    ] {
-        let answer = ask(&landing, request, 60_000).await;
-        assert_eq!(
-            answer,
-            refused(Refusal::Rule {
-                rule: RuleKind::Other,
-                message: STAND_IN_MESSAGE.to_string()
-            })
-        );
+/// Puts `tip` on main's candidate ref of `commit`, as the lander's push would.
+fn set_candidate(repos: &Repos, commit: &str, tip: &str) {
+    let main = repos.main.display().to_string();
+    let target = format!("{tip}:refs/tessel/candidate/{commit}");
+    git(&repos.work, &["push", "--quiet", "--force", &main, &target]);
+}
+
+/// Where main's candidate ref of `commit` points, or `None` when there is none.
+fn candidate_tip(repos: &Repos, commit: &str) -> Option<String> {
+    let reference = format!("refs/tessel/candidate/{commit}");
+    let listed = git(
+        &repos.main,
+        &["for-each-ref", "--format=%(objectname)", &reference],
+    );
+    (!listed.is_empty()).then_some(listed)
+}
+
+fn test_request(head: &str) -> Request {
+    Request::Test {
+        base: CommitId("b".repeat(40)),
+        head: CommitId(head.to_string()),
     }
+}
+
+fn land_request(base: &str, head: &str) -> Request {
+    Request::Land {
+        base: CommitId(base.to_string()),
+        head: CommitId(head.to_string()),
+    }
+}
+
+#[tokio::test]
+async fn test_runs_the_tests_on_a_tree_of_the_candidate_with_no_remote_in_it() -> TestResult {
+    let repos = Repos::new();
+    let before = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runner = {
+        let seen = Arc::clone(&seen);
+        Scripted::new(move |request| {
+            let tree = Path::new(&request.tree);
+            let config = std::fs::read_to_string(tree.join(".git/config")).unwrap_or_default();
+            seen.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((git(tree, &["rev-parse", "HEAD"]), config));
+            Ok(result(0, None))
+        })
+    };
+    let landing = landing(&repos, "landing-test-ok", runner.clone());
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::Tested);
+    let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(seen.len(), 1, "the tests ran once");
+    assert_eq!(seen[0].0, commit, "on the candidate's head");
+    assert!(
+        !seen[0].1.contains("url") && !seen[0].1.contains("[remote"),
+        "the tree can reach no remote: {}",
+        seen[0].1
+    );
+    assert_eq!(repos.main_head(), before, "a test writes nothing to main");
+    assert_eq!(
+        candidate_tip(&repos, &commit),
+        Some(commit),
+        "nor to the ref"
+    );
+    assert_no_call_dirs(&repos, "landing-test-ok");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_refuses_failing_tests_with_the_exit_code_only() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let runner = Scripted::new(|_| Ok(result(101, Some("test x ... FAILED"))));
+    let landing = landing(&repos, "landing-test-failed", runner);
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    assert_eq!(
+        answer,
+        refused(Refusal::TestsFailed {
+            failure: TestFailure {
+                exit_code: 101,
+                stdout: String::new(),
+                stderr: String::new()
+            }
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_answers_candidate_missing_without_running_anything_when_there_is_no_ref() -> TestResult
+{
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let runner = passing();
+    let landing = landing(&repos, "landing-test-missing", runner.clone());
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::CandidateMissing);
+    assert_eq!(runner.runs(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_answers_candidate_missing_when_the_ref_holds_another_commit() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &base);
+    let runner = passing();
+    let landing = landing(&repos, "landing-test-tampered", runner.clone());
+
+    let answer = ask(&landing, test_request(&commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::CandidateMissing);
+    assert_eq!(
+        runner.runs(),
+        0,
+        "nothing runs on a tip that is not the head"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_of_a_head_that_is_not_a_commit_id_is_unknown() -> TestResult {
+    let repos = Repos::new();
+    let landing = landing(&repos, "landing-test-bad-id", passing());
+    let answer = ask(&landing, test_request("not-a-sha"), 60_000).await;
+    assert_eq!(answer, CallAnswer::Unknown);
+    Ok(())
+}
+
+#[tokio::test]
+async fn land_pushes_the_candidate_to_main_and_deletes_the_ref() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let landing = landing(&repos, "landing-land-ok", passing());
+
+    let answer = ask(&landing, land_request(&base, &commit), 120_000).await;
+
+    assert_eq!(
+        answer,
+        CallAnswer::Landed {
+            head: CommitId(commit.clone())
+        }
+    );
+    assert_eq!(repos.main_head(), commit);
+    assert_eq!(candidate_tip(&repos, &commit), None, "the ref is deleted");
+    assert_no_call_dirs(&repos, "landing-land-ok");
+
+    let again = ask(&landing, land_request(&base, &commit), 120_000).await;
+    assert_eq!(
+        again,
+        CallAnswer::Landed {
+            head: CommitId(commit)
+        },
+        "a repeated Land finds the head on main and writes nothing"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn land_is_landed_when_main_moved_past_the_head_after_the_ref_was_deleted() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let landing = landing(&repos, "landing-land-past", passing());
+    let first = ask(&landing, land_request(&base, &commit), 120_000).await;
+    assert!(matches!(first, CallAnswer::Landed { .. }), "{first:?}");
+    git(&repos.work, &["reset", "--quiet", "--hard", &commit]);
+    let later = repos.main_commit(&[("README", "later\n")]);
+
+    let again = ask(&landing, land_request(&base, &commit), 120_000).await;
+
+    assert_eq!(
+        again,
+        CallAnswer::Landed {
+            head: CommitId(commit)
+        },
+        "the head is an ancestor of main, which is at {later}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn land_with_no_ref_and_the_head_not_on_main_is_candidate_missing() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let landing = landing(&repos, "landing-land-missing", passing());
+
+    let answer = ask(&landing, land_request(&base, &commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::CandidateMissing);
+    assert_eq!(repos.main_head(), base, "nothing landed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn land_with_the_ref_on_another_commit_is_candidate_missing_and_pushes_nothing() -> TestResult
+{
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &base);
+    let landing = landing(&repos, "landing-land-tampered", passing());
+
+    let answer = ask(&landing, land_request(&base, &commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::CandidateMissing);
+    assert_eq!(repos.main_head(), base);
+    Ok(())
+}
+
+#[tokio::test]
+async fn land_from_a_stale_base_is_unknown_and_leaves_the_ref() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    let moved = repos.main_commit(&[("README", "moved\n")]);
+    let landing = landing(&repos, "landing-land-stale", passing());
+
+    let answer = ask(&landing, land_request(&base, &commit), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::Unknown);
+    assert_eq!(repos.main_head(), moved, "main was not rewritten");
+    assert_eq!(
+        candidate_tip(&repos, &commit),
+        Some(commit),
+        "the ref stays"
+    );
     Ok(())
 }
 

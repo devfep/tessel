@@ -122,6 +122,42 @@ pub fn merge_answer(repo: &str, outcome: MergeOutcome, first_failure: Option<&st
             infrastructure(repo, "timeout", &step_note(&result))
         }
         MergeOutcome::PushFailed { result, .. } => infrastructure(repo, "push", &git_note(&result)),
+        // Only the staged landing finds a candidate ref missing, and `Prepare` is not that.
+        MergeOutcome::CandidateMissing => infrastructure(repo, "candidate", "no candidate ref"),
+    }
+}
+
+/// The answer to `Land`. Only `Merged` is landed, and the lander returns it only after it found
+/// the head on main. A head on neither the candidate ref nor main is [`CallAnswer::CandidateMissing`].
+/// Main moved under the push, or any infrastructure failure, is `Unknown`: the core reconciles.
+pub fn land_answer(repo: &str, outcome: MergeOutcome) -> CallAnswer {
+    match outcome {
+        MergeOutcome::Merged { base, head, .. } => {
+            tracing::info!(repo, %base, %head, "landed: main holds the head");
+            CallAnswer::Landed {
+                head: commit_id(&head),
+            }
+        }
+        MergeOutcome::CandidateMissing => CallAnswer::CandidateMissing,
+        MergeOutcome::MainMoved { expected, actual } => {
+            tracing::info!(repo, %expected, %actual, "main moved under the push; the core reconciles");
+            CallAnswer::Unknown
+        }
+        MergeOutcome::Clone { result } => infrastructure(repo, "clone", &git_note(&result)),
+        MergeOutcome::GitFailed { result } => infrastructure(repo, "git", &git_note(&result)),
+        MergeOutcome::PushFailed { result, .. } => infrastructure(repo, "push", &git_note(&result)),
+        // The rebase, the coverage check, the gate and the tests belong to `Prepare` and `Test`.
+        MergeOutcome::AlreadyMerged { .. }
+        | MergeOutcome::Conflict { .. }
+        | MergeOutcome::TestsFailed { .. }
+        | MergeOutcome::Uncovered { .. }
+        | MergeOutcome::GateChanged { .. }
+        | MergeOutcome::GateInvalid { .. }
+        | MergeOutcome::CommitNotInFork
+        | MergeOutcome::Install { .. }
+        | MergeOutcome::Timeout { .. } => {
+            infrastructure(repo, "land", "an outcome of another step")
+        }
     }
 }
 

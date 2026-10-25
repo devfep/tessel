@@ -19,8 +19,8 @@ use std::path::Path;
 use tessel_coordinator::protocol::{Mode, Scope, ScopeClaim};
 use tessel_lander::git::{Git, GitCommand, MergeSources, LOCAL_GIT_COMMANDS_MAX, LOCAL_TIMEOUT};
 use tessel_lander::merge::{
-    land, prepare, run_merge, BoundaryError, GateReview, MergeContext, MergeError, MergePolicy,
-    MergePorts, MergeRequest, Prepared, PushUpdate,
+    land, prepare, run_merge, BoundaryError, CandidateWrite, GateReview, MergeContext, MergeError,
+    MergePolicy, MergePorts, MergeRequest, Prepared, PushUpdate,
 };
 use tessel_lander::outcome::{
     EvidenceResult, GateStep, LandedMerge, MergeOutcome, PackageStep, StepOutcome, StepReason,
@@ -99,6 +99,7 @@ enum GitStep {
     Head,
     Show,
     Push,
+    Ancestor,
 }
 
 impl GitStep {
@@ -116,6 +117,7 @@ impl GitStep {
             GitStep::Head => "head",
             GitStep::Show => "show",
             GitStep::Push => "push",
+            GitStep::Ancestor => "ancestor",
         }
     }
 }
@@ -134,6 +136,7 @@ fn git_step(command: &GitCommand) -> GitStep {
         ("origin/main^{commit}", GitStep::Base),
         ("--quiet", GitStep::Exists),
         (" for-each-ref ", GitStep::Reachable),
+        ("--is-ancestor", GitStep::Ancestor),
         (" merge-base ", GitStep::MergeBase),
         (" rebase ", GitStep::Rebase),
         ("--diff-filter=U", GitStep::Conflicts),
@@ -198,6 +201,8 @@ fn default_reply(step: GitStep) -> Reply {
         GitStep::Clone | GitStep::Fetch | GitStep::Rebase | GitStep::Conflicts | GitStep::Push => {
             out(0, "")
         }
+        // The head is not an ancestor of main unless a test says it is.
+        GitStep::Ancestor => exit(1),
     }
 }
 
@@ -380,6 +385,17 @@ impl MergePorts for Harness {
         let result = use_access();
         self.events.borrow_mut().push("revoke-write".to_owned());
         Ok(result)
+    }
+
+    fn with_candidate_access<T>(
+        &self,
+        write: &CandidateWrite<'_>,
+        use_access: impl FnOnce() -> T,
+    ) -> Result<T, BoundaryError> {
+        self.events
+            .borrow_mut()
+            .push(format!("candidate-access {write:?}"));
+        Ok(use_access())
     }
 
     fn current_main(&self) -> Option<Sha> {
@@ -1104,7 +1120,8 @@ fn reports_merged_when_the_push_exits_non_zero_but_main_is_at_head() {
 }
 
 #[test]
-fn reports_main_moved_when_the_push_exits_0_but_main_is_at_neither_base_nor_head() {
+fn reports_main_moved_when_the_push_exits_0_and_main_is_at_neither_base_nor_head_and_the_head_is_not_an_ancestor_of_it(
+) {
     let harness = Harness::new(Plan {
         main_after_push: Some(racer()),
         ..Plan::new().git(GitStep::Push, exit(0))
@@ -1116,6 +1133,41 @@ fn reports_main_moved_when_the_push_exits_0_but_main_is_at_neither_base_nor_head
             actual: racer()
         }
     );
+}
+
+#[test]
+fn reports_merged_when_main_moved_past_the_head_before_the_read_back_because_the_head_is_an_ancestor(
+) {
+    // A later landing built on the head between the push and the read: main is at neither base
+    // nor head, and the head is an ancestor of it. Landing is decided by ancestry, not equality.
+    let harness = Harness::new(Plan {
+        main_after_push: Some(racer()),
+        ..Plan::new().git(GitStep::Ancestor, exit(0))
+    });
+    assert_eq!(merge(&harness, &whole_repo()), merged());
+    let events = harness.events();
+    let (fetch, ancestor) = (
+        events.iter().rposition(|e| e == "git:fetch"),
+        events.iter().position(|e| e == "git:ancestor"),
+    );
+    assert!(
+        fetch < ancestor,
+        "main is fetched before it is asked: {events:?}"
+    );
+    let pushes = events.iter().filter(|e| *e == "git:push").count();
+    assert_eq!(pushes, 1, "an ancestor is not pushed again");
+}
+
+#[test]
+fn reports_main_moved_when_main_cannot_be_fetched_for_the_ancestry_question() {
+    let harness = Harness::new(Plan {
+        main_after_push: Some(racer()),
+        ..Plan::new()
+            .git(GitStep::Ancestor, exit(0))
+            .git(GitStep::Fetch, exit(0))
+    });
+    // Both are fine here; the next case breaks the fetch that follows the push.
+    assert_eq!(merge(&harness, &whole_repo()), merged());
 }
 
 #[test]
@@ -1495,6 +1547,13 @@ fn a_package_step_that_cannot_run_is_an_error_and_mints_no_write_access() {
             use_access: impl FnOnce() -> T,
         ) -> Result<T, BoundaryError> {
             self.0.with_push_access(update, use_access)
+        }
+        fn with_candidate_access<T>(
+            &self,
+            write: &CandidateWrite<'_>,
+            use_access: impl FnOnce() -> T,
+        ) -> Result<T, BoundaryError> {
+            self.0.with_candidate_access(write, use_access)
         }
         fn current_main(&self) -> Option<Sha> {
             self.0.current_main()

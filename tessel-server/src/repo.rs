@@ -696,6 +696,7 @@ fn moves_main(answer: &CallAnswer) -> bool {
         | CallAnswer::Trialled { .. }
         | CallAnswer::Head { .. }
         | CallAnswer::Reconciled { .. }
+        | CallAnswer::CandidateMissing
         | CallAnswer::Refused { .. }
         | CallAnswer::Unknown => false,
     }

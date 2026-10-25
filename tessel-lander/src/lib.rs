@@ -8,6 +8,7 @@
 //! variable can reach it, and git commands that read a repository's own config run only in a
 //! [`workspace::Workspace`], which only the clone step makes.
 
+pub mod candidate;
 pub mod coverage;
 pub mod gate;
 pub mod git;
