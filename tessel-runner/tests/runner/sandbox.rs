@@ -438,7 +438,8 @@ fn the_binary_limits_the_processes_of_the_account_before_it_runs_anything() {
 fn deep_chain(top: &Path, depth: usize) {
     let name = "d".repeat(100);
     let script = format!(
-        "i=0; while [ $i -lt {depth} ]; do mkdir {name} && cd {name} || exit 1; i=$((i+1)); done; echo x > leaf"
+        "i=0; while [ $i -lt {depth} ]; do mkdir {name} && cd {name} || exit 1; \
+         i=$((i+1)); done; echo x > leaf"
     );
     let made = Command::new("/bin/sh")
         .args(["-c", &script])
@@ -533,4 +534,24 @@ fn a_limit_above_the_inherited_hard_limit_is_lowered_to_it_and_the_run_still_sta
         .unwrap_or(u64::MAX);
     let got: u64 = seen.trim_start_matches("hard=").parse().expect("a number");
     assert!(got <= hard, "{got} is within the inherited {hard}");
+}
+
+#[test]
+fn an_entry_the_account_cannot_remove_from_a_shared_directory_does_not_wedge_the_run() {
+    let sandbox = Sandbox::new("true");
+    let shared = sandbox.base.path().join("shared");
+    fs::write(shared.join("stuck"), "x").expect("write");
+    // A directory the account cannot delete from, as a 0777 directory of someone else's would be.
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o500)).expect("chmod");
+    let outcome = run(
+        &sandbox.config(),
+        &request(
+            &sandbox.handoff_tree(),
+            "",
+            &["cargo", "test", "--workspace"],
+        ),
+    );
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o700)).expect("restore");
+    let result = outcome.expect("an entry that stays is not a failed run");
+    assert!(result.passed);
 }

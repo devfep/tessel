@@ -24,9 +24,9 @@
 //! records that the server does not (docs/proposals/own-users.md, section 3).
 
 use std::fs;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex, PoisonError};
@@ -196,12 +196,23 @@ impl SudoRunner {
     }
 
     /// The call's own directory in the handoff directory, if the request's tree lies in one.
-    fn call_dir_of(&self, tree: &str) -> Option<PathBuf> {
-        let inside = Path::new(tree)
-            .strip_prefix(&self.settings.handoff_dir)
-            .ok()?;
-        let first = inside.components().next()?;
-        Some(self.settings.handoff_dir.join(first))
+    /// `Ok(None)` when the tree is not in the handoff directory. A path below it that climbs out
+    /// (a `..`, a root, a prefix) is refused: opening what it climbed to would open a directory
+    /// that is not a call's.
+    fn call_dir_of(&self, tree: &str) -> Result<Option<PathBuf>, RunnerError> {
+        let Ok(inside) = Path::new(tree).strip_prefix(&self.settings.handoff_dir) else {
+            return Ok(None);
+        };
+        let mut components = inside.components();
+        match components.next() {
+            None => Ok(None),
+            Some(Component::Normal(first))
+                if components.all(|c| matches!(c, Component::Normal(_))) =>
+            {
+                Ok(Some(self.settings.handoff_dir.join(first)))
+            }
+            Some(_) => Err(unsupervised("handoff")),
+        }
     }
 
     fn set_mode(dir: &Path, mode: u32) -> io::Result<()> {
@@ -259,7 +270,7 @@ impl SudoRunner {
                 stdin.write_all(text.as_bytes()).ok();
             }
         });
-        let reply = first_line(child.stdout.take());
+        let reply = whole_reply(child.stdout.take());
         let said = bounded_stderr(child.stderr.take());
         let status = loop {
             match child.try_wait() {
@@ -311,20 +322,23 @@ impl SudoRunner {
     }
 }
 
-/// The first line of the runner's standard output, at most [`MAX_REPLY_BYTES`] and a byte over, on
-/// a thread: the reply is one line, and nothing a process of the same account appends to the
-/// stream after it counts.
-fn first_line(stdout: Option<std::process::ChildStdout>) -> mpsc::Receiver<Vec<u8>> {
+/// The runner's standard output to its end, at most [`MAX_REPLY_BYTES`] and a byte over, on a
+/// thread. The reply is exactly one line followed by the end of the stream: a process of the same
+/// account can write into the runner's output (on Linux, through `/proc/<pid>/fd/1`), and a line
+/// it adds before or after the runner's own must fail the reply and not be taken for it. An output
+/// of more than one line is sent as empty, which does not parse.
+fn whole_reply(stdout: Option<std::process::ChildStdout>) -> mpsc::Receiver<Vec<u8>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(stdout) = stdout {
             let limit = u64::try_from(MAX_REPLY_BYTES + 1).unwrap_or(u64::MAX);
-            BufReader::new(stdout.take(limit))
-                .read_until(b'\n', &mut bytes)
-                .ok();
+            stdout.take(limit).read_to_end(&mut bytes).ok();
         }
-        if bytes.last() == Some(&b'\n') {
+        let line = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+        if line.contains(&b'\n') {
+            bytes.clear();
+        } else if bytes.len() > line.len() {
             bytes.pop();
         }
         sender.send(bytes).ok();
@@ -404,7 +418,7 @@ impl TestRunner for SudoRunner {
         if cancelled() {
             return Err(unsupervised("cancelled"));
         }
-        let call_dir = self.call_dir_of(&request.tree);
+        let call_dir = self.call_dir_of(&request.tree)?;
         if let Some(dir) = &call_dir {
             Self::set_mode(dir, OPEN_TO_GROUP).map_err(|error| RunnerError::Unsupervised {
                 what: "handoff",

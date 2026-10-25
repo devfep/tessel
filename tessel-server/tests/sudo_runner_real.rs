@@ -113,6 +113,15 @@ fn a_refusal_and_a_run_that_cannot_start_are_errors_and_output_past_the_tail_lim
         ),
         "{refused}"
     );
+    // The case needs a command the gate allows and the runner's PATH lacks: `npm` is on neither
+    // /var/tessel/toolchain/bin nor, on a runner image such as ubuntu-latest, /usr/bin or /bin.
+    // Fail loudly if an image ever puts it there, instead of passing for the wrong reason.
+    for dir in ["/var/tessel/toolchain/bin", "/usr/bin", "/bin"] {
+        assert!(
+            !PathBuf::from(dir).join("npm").exists(),
+            "npm is in {dir}: this case needs a gate-allowed command the runner cannot start"
+        );
+    }
     let mut no_npm = tree("real-nonpm", "plain");
     no_npm.tests[0].argv = ["npm", "test"].map(str::to_owned).to_vec();
     let unsupervised = runner.run(&no_npm).unwrap_err();

@@ -73,9 +73,13 @@ fn run_tool(program: &str, flags: &[&str], path: &Path) {
 
 /// Removes, from each of `dirs`, the entries that belong to `uid`, except those that hold one of
 /// `keep` (the directories the runner runs in). A directory that is missing is skipped, an entry of
-/// another user is left alone, and a failure on one entry does not stop the others.
-pub(crate) fn sweep_owned(dirs: &[PathBuf], keep: &[&Path], uid: u32) -> io::Result<()> {
-    let mut first_error = None;
+/// another user is left alone, and a failure on one entry does not stop the others. It returns how
+/// many entries stayed: an entry in a directory the account cannot delete from (a world-writable
+/// directory of another user's, say) cannot be removed by it, and one such entry must not fail
+/// every later run. What the account could remove inside such a directory is removed. The work and
+/// temporary directories are not swept this way: they are the account's own and must come out empty.
+pub(crate) fn sweep_owned(dirs: &[PathBuf], keep: &[&Path], uid: u32) -> usize {
+    let mut stayed = 0;
     for dir in dirs {
         // Resolved first, so that `/var/folders/..` and `/private/var/folders/..` are one path and
         // the `keep` check compares like with like.
@@ -93,12 +97,12 @@ pub(crate) fn sweep_owned(dirs: &[PathBuf], keep: &[&Path], uid: u32) -> io::Res
             if meta.uid() != uid || keep.iter().any(|kept| kept.starts_with(&path)) {
                 continue;
             }
-            if let Err(error) = remove_all(&path) {
-                first_error.get_or_insert(error);
+            if remove_all(&path).is_err() {
+                stayed += 1;
             }
         }
     }
-    first_error.map_or(Ok(()), Err)
+    stayed
 }
 
 /// The shared directories of this system, where a process of the account can leave files.

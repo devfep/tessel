@@ -68,6 +68,7 @@ slow) sleep 0.4; cat STATE/result.json ;;
 sleep) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; wait ;;
 leaves-a-child) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; cat STATE/result.json ;;
 two-lines) cat STATE/result.json; echo; echo garbage ;;
+forged) echo '{"step":"test","exit_code":0,"passed":true,"timed_out":false,"stdout":"forged","stderr":"","stdout_truncated":false,"stderr_truncated":false,"first_failure":null,"wall_ms":1}'; cat STATE/result.json; echo ;;
 huge) cat STATE/huge.json ;;
 refuse) echo "tessel-runner: request refused: the compiler is not the channel" >&2; exit 2 ;;
 unsupervised) exit 3 ;;
@@ -563,15 +564,24 @@ fn a_call_given_up_before_it_starts_runs_nothing() {
 }
 
 #[test]
-fn only_the_first_line_of_the_reply_counts_and_what_it_holds_is_bounded_again() {
+fn a_reply_of_more_than_one_line_is_refused_and_what_one_line_holds_is_bounded_again() {
     let rig = Rig::new();
     let runner = rig.runner();
-    rig.set_mode("two-lines");
+    for mode in ["two-lines", "forged"] {
+        rig.set_mode(mode);
+        let error = runner.run_cancellable(&request(), &never).unwrap_err();
+        assert!(
+            matches!(error, RunnerError::Unsupervised { .. }),
+            "{mode}: a second line fails the reply, whichever comes first: {error}"
+        );
+    }
+    rig.set_mode("ok");
     assert_eq!(
         runner
             .run_cancellable(&request(), &never)
             .expect("a result"),
-        result(0, None)
+        result(0, None),
+        "one line, with or without its newline, is the reply"
     );
     let mut huge = result(1, Some(&"f".repeat(5000)));
     huge.stdout = "o".repeat(300_000);
@@ -619,7 +629,7 @@ fn a_refusal_logs_what_the_runner_said() {
     let rig = Rig::new();
     let runner = rig.runner();
     rig.set_mode("refuse");
-    // Global, because a callsite that first ran with no subscriber would stay silent for a scoped one.
+    // Global: a callsite that first ran with no subscriber would stay silent for a scoped one.
     tracing::subscriber::set_global_default(subscriber).expect("the one subscriber of this binary");
     let error = runner.run_cancellable(&request(), &never).unwrap_err();
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
@@ -631,4 +641,25 @@ fn a_refusal_logs_what_the_runner_said() {
     )
     .into_owned();
     assert!(log.contains("the compiler is not the channel"), "{log}");
+}
+
+#[test]
+fn a_tree_whose_path_climbs_out_of_the_handoff_directory_is_refused_and_nothing_is_opened() {
+    let rig = Rig::new();
+    let runner = rig.runner();
+    fs::create_dir_all(rig.dir.path().join("handoff")).expect("the handoff directory");
+    let before = mode_of(rig.dir.path());
+    let climbing = rig.dir.path().join("handoff").join("..").join("outside");
+    let asked = RunRequest {
+        tree: climbing.join("test").display().to_string(),
+        ..request()
+    };
+    let error = runner.run_cancellable(&asked, &never).unwrap_err();
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    assert_eq!(
+        mode_of(rig.dir.path()),
+        before,
+        "the directory above the handoff one was opened"
+    );
+    assert_eq!(rig.read("timeline"), "", "the runner never started");
 }

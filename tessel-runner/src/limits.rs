@@ -5,6 +5,20 @@ use std::io;
 use crate::config::RunnerConfig;
 use crate::error::RunnerError;
 
+/// Makes this process refuse to be inspected or written into by other processes of the same
+/// account: on Linux, `/proc/<pid>/fd/1` of a dumpable process can be opened by its owner's other
+/// processes, and a line written there would pass for the runner's reply. On other systems this
+/// does nothing; the Mac has no `/proc`, and its `task_for_pid` needs privilege.
+pub fn make_undumpable() {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `prctl` with `PR_SET_DUMPABLE` takes two integers and touches no memory.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+        }
+    }
+}
+
 /// Lowers the process limit of this process and its children to the sandbox's `max_processes`,
 /// soft and hard, and turns core files off. A limit above the hard limit this process inherited
 /// cannot be set without privilege, so the lower of the two is used. (On Linux the limit counts
@@ -46,5 +60,16 @@ fn set(resource: libc::c_int, value: u64) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    #[test]
+    fn a_process_that_made_itself_undumpable_reports_it() {
+        super::make_undumpable();
+        // SAFETY: `prctl` with `PR_GET_DUMPABLE` takes integers and touches no memory.
+        let dumpable = unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) };
+        assert_eq!(dumpable, 0);
     }
 }

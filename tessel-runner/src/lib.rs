@@ -25,7 +25,7 @@ pub use config::{
 };
 pub use error::{ConfigReason, RequestRefusal, RunnerError};
 pub use failure::MAX_FIRST_FAILURE_BYTES;
-pub use limits::apply_limits;
+pub use limits::{apply_limits, make_undumpable};
 pub use request::{Plan, PlannedCommand, RequestTest, RunRequest, MAX_REQUEST_BYTES};
 pub use result::{ResultStep, RunResult};
 pub use supervise::MAX_TAIL_BYTES;

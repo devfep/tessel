@@ -53,7 +53,9 @@ fn prepare_directories(config: &RunnerConfig, sandbox: &Sandbox) -> io::Result<(
         fs::canonicalize(sandbox.handoff_dir())?,
     ];
     let keep_refs: Vec<&Path> = keep.iter().map(PathBuf::as_path).collect();
-    sweep::sweep_owned(&dirs, &keep_refs, effective_uid())
+    // Entries that stay are another user's to remove, or sit where the account cannot delete.
+    let _stayed = sweep::sweep_owned(&dirs, &keep_refs, effective_uid());
+    Ok(())
 }
 
 /// The plan with its tree and its commands' directories moved to the copy.

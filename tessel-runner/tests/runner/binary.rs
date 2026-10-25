@@ -228,3 +228,39 @@ fn the_binary_exits_2_for_an_argument_it_does_not_know() {
     assert_eq!(text(&output.stdout), "");
     assert!(text(&output.stderr).contains("usage"));
 }
+
+/// A request of exactly `size` bytes of JSON, padded in the tree's name.
+fn request_of_size(size: usize) -> String {
+    let wrap = |padding: usize| {
+        format!(
+            "{{\"tree\":\"/{}\",\"tests\":[{{\"dir\":\"\",\"argv\":[\"cargo\",\"test\"]}}],\
+             \"timeout_secs\":60}}",
+            "a".repeat(padding)
+        )
+    };
+    let bare = wrap(0).len();
+    wrap(size - bare)
+}
+
+#[test]
+fn a_request_of_exactly_the_limit_is_read_whole_and_one_byte_more_is_refused_unread() {
+    let rig = Rig::with_cargo("true");
+    let config = own_config(&rig);
+    let at_limit = request_of_size(tessel_runner::MAX_REQUEST_BYTES);
+    assert_eq!(at_limit.len(), tessel_runner::MAX_REQUEST_BYTES);
+    let output = run_binary(&rig, &config, &rig.path_value(), &at_limit);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        text(&output.stderr).contains("tree must be a directory"),
+        "read whole, and refused for what it names: {}",
+        text(&output.stderr)
+    );
+    let over = request_of_size(tessel_runner::MAX_REQUEST_BYTES + 1);
+    let output = run_binary(&rig, &config, &rig.path_value(), &over);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        text(&output.stderr).contains("the request must be one JSON object"),
+        "{}",
+        text(&output.stderr)
+    );
+}
