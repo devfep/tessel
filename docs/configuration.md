@@ -380,7 +380,11 @@ command that leaves its process group outlives the kill. With `[lander.sudo_runn
 starts the runner as its own account through `sudo -n -u <user> <runner> --config <runner_config>`
 (`docs/proposals/own-users.md`), one run at a time across every repository, and after each run it
 runs `kill -KILL -1` as that account and polls `ps -U <user>` until nothing is left. If a process
-survives, the gate stays closed and no later run starts. A call past its deadline kills the
+survives, or `ps` or the kill fails, the gate stays closed and no later run starts. The gate does
+not see launchd, cron or at jobs that are not running; `scripts/dogfood/check-own-users.sh` denies
+and probes those. A call's directory in `handoff_dir` is mode 0700, opened to the runner's group
+(0750) only while its own run holds the gate, and closed again before the gate is let go; on
+Linux give `handoff_dir` the setgid bit so that the group is inherited. A call past its deadline kills the
 account itself. The layout and the sudoers rule are `scripts/dogfood/install.sh`'s.
 
 ## Agent and worktree
