@@ -1,10 +1,10 @@
 # Own users: the server and the runner as separate macOS accounts
 
-Status: design note (OWN-USERS-DESIGN, M5), approved by Felix on 25 October after the
-adversarial security review. No code, and nothing in it was run: no account, `dscl` or `sudo` command was
-executed to write it. Facts about macOS that this note could not check are marked "to probe" and
-are the first step of RUNNER-OWN-UID. Rows and decisions are those of `docs/proposals/phase-1.md`;
-D4 is the dogfood setting in `docs/dogfood.md`.
+Status: design note (OWN-USERS-DESIGN, M5), approved by Felix on 25 October after the adversarial
+security review. No code, and nothing in it was run: no account, `dscl` or `sudo` command was
+executed to write it. Facts about macOS that this note could not check are marked "to probe" and are
+the first step of RUNNER-OWN-UID. Rows and decisions are those of `docs/proposals/phase-1.md`; D4 is
+the dogfood setting in `docs/dogfood.md`.
 
 ## Scope and the claim this design makes
 
