@@ -243,11 +243,21 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    plist, which it also disables so that a reboot does not load it, and the cargo setting. It
    moves no secret.
 
-   The cargo cache is empty until step 5 fills it. Then
-   `/opt/tessel/sbin/check-own-users.sh --installed`, and the probes that need no crates, as the
-   runner account: `at`, `crontab -e` and `launchctl submit -l x -- /usr/bin/id`, each of which
-   must fail. If the `launchctl submit` probe succeeds, remove its job:
-   `/usr/bin/sudo -u _tessel-runner /bin/launchctl remove x`. Anything that fails stops here.
+   Fill the cargo cache now, so that every probe that needs crates runs before any secret moves.
+   `fetch.sh` fetches a landed `main` commit (`$sha`) as `_tessel` with Apple's git, shows the
+   `.cargo/` diff (none, for `main`), and needs neither the token nor the server configuration for
+   the public repository:
+   `/usr/bin/sudo /opt/tessel/sbin/fetch.sh https://github.com/devfep/tessel.git "$sha" --remote
+   https://github.com/devfep/tessel.git`. Then
+   `/opt/tessel/sbin/check-own-users.sh --installed`. Before the move it exits 2, with exactly two
+   skips that are expected: `/var/tessel/github-token has not been moved yet` and
+   `/var/tessel/keys is empty`. Any other skip or any failure stops here. Then the probes only you
+   can run, as the runner account, in `/var/tessel-runner/work`: `cargo test --workspace
+   --offline` of a checkout with `HOME=/var/empty` (it needs `/usr/bin/git` and `cc` through
+   `xcrun`), whether cargo builds with a read-only `CARGO_HOME`, and `at`, `crontab -e` and
+   `launchctl submit -l x -- /usr/bin/id`, each of which must fail. If the `launchctl submit` probe
+   succeeds, remove its job: `/usr/bin/sudo -u _tessel-runner /bin/launchctl remove x`. Anything
+   that fails stops here.
 4. With the server stopped and nothing in flight (`kill "$(cat <server dir>/server.pid)"`) and the
    lanes idle, move the store, the key pair and the token into `/var/tessel`, and only then hand
    them to `_tessel`. Move only the pair you minted, `2026-10.key` and `2026-10.pub`: the server
@@ -269,7 +279,9 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
      /var/tessel/github-token
    ```
 
-   It is a move, not a copy, so no fence is reissued. The old binaries and configuration stay in
+   If `chown-tree.sh` refuses (it names the entry), do not go on: leave the daemon stopped, move
+   the files back to `<server dir>` as the rollback says, and find who made that entry. It is a
+   move, not a copy, so no fence is reissued. The old binaries and configuration stay in
    `<server dir>`. Write `/var/tessel/tessel-server.toml` from the configuration there with the
    paths changed to `/var/tessel` (RUNNER-OWN-UID's part 2 adds it to `install.sh`), then
    `/usr/bin/sudo /bin/launchctl enable system/dev.tessel.server`,
@@ -277,14 +289,9 @@ would be found through your `PATH`, which lanes can write (`/opt/homebrew/bin`).
    and tail `/var/log/tessel-server.log`. Mint the agent tokens as yourself with
    `/opt/tessel/sbin/tokens.sh --kid 2026-10` (the key you moved), then run `tessel init` in each
    worktree again with the new token (`~/.tessel/tokens/<agent>`).
-5. Fill the cargo cache through `fetch.sh`, which uses Apple's git against GitHub with the lander
-   token and shows the `.cargo/` diff (none, for a commit of `main`): with `$sha` a landed `main`,
-   `/usr/bin/sudo /opt/tessel/sbin/fetch.sh https://github.com/devfep/tessel.git "$sha"`. Then the
-   probes that need the crates, as the runner account, in `/var/tessel-runner/work`: `cargo test
-   --workspace --offline` of a checkout with `HOME=/var/empty` (it needs `/usr/bin/git` and `cc`
-   through `xcrun`), and whether cargo builds with a read-only `CARGO_HOME`. If one fails, roll
-   back (below). Then `/opt/tessel/sbin/check-own-users.sh` with no flag, and one landing on
-   `tessel-sandbox/m4-trunk` over HTTPS through the askpass hook, on the old token.
+5. `/opt/tessel/sbin/check-own-users.sh` with no flag (it should now exit 0), and one landing on
+   `tessel-sandbox/m4-trunk` over HTTPS through the askpass hook, on the old token. If either
+   fails, roll back (below).
 6. Rotate last, because the old token and key were readable by every lane process until now. Make
    a new GitHub token as in [Build and GitHub, by hand](#build-and-github-by-hand), copy it, and:
 
@@ -325,11 +332,19 @@ Hand the current store, key and token back to yourself while they are still in `
 the lanes cannot reach them, then move them back:
 `/usr/bin/sudo /opt/tessel/sbin/chown-tree.sh --from _tessel --to "$USER:$(/usr/bin/id -gn)"
 --contents /var/tessel/stores /var/tessel/keys`, the same without `--contents` for
-`/var/tessel/github-token`, then `/usr/bin/sudo /bin/mv /var/tessel/stores/* <server dir>/stores/`
-and the same for the `2026-1*.key` and `.pub` files and the token. Never put an older store back:
-a restored store can reissue fences. Start the old binary from `<server dir>/bin` with the old
-configuration. That token is exposed again, so rotate it at the next migration. The accounts and
-files stay; they do nothing while the daemon is disabled.
+`/var/tessel/github-token`. The globs of the move back must be expanded by root, because
+`/var/tessel/stores` is not readable by you, so run each under `sh -c`, with `<server dir>` written
+out in full:
+
+```
+/usr/bin/sudo /bin/sh -c '/bin/mv /var/tessel/stores/* <server dir>/stores/'
+/usr/bin/sudo /bin/sh -c '/bin/mv /var/tessel/keys/*.key /var/tessel/keys/*.pub <server dir>/keys/'
+/usr/bin/sudo /bin/mv /var/tessel/github-token <server dir>/github-token
+```
+
+Never put an older store back: a restored store can reissue fences. Start the old binary from
+`<server dir>/bin` with the old configuration. That token is exposed again, so rotate it at the
+next migration. The accounts and files stay; they do nothing while the daemon is disabled.
 
 ## Rules while landings run
 
