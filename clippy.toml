@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "the host and the simulator take time as input" },
+    { path = "std::time::Instant::now", reason = "the host and the simulator take time as input" },
+]

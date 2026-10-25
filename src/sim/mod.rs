@@ -1,0 +1,167 @@
+//! The deterministic simulator. A seed fixes the clock, the client traffic and the faults; the
+//! real `Host` runs against a simulated store; checkers read what clients received and what the
+//! store holds. Nothing here reads a wall clock or the OS (the clippy ban in `clippy.toml` holds
+//! it), so a seed reproduces on any machine, and every seed runs twice with the transcripts
+//! compared.
+//!
+//! This half builds the driver, the store, the clock and checkers I1, I5 and I9. The second half
+//! adds traffic for races, reviews and watchers, and checkers I2, I4, I8 and I10.
+
+pub mod check;
+pub mod clock;
+pub mod driver;
+pub mod rng;
+pub mod store;
+pub mod traffic;
+pub mod variant;
+
+use crate::host::HostConfig;
+pub use check::{Checker, Violation};
+pub use driver::Sim;
+pub use rng::Rng;
+pub use variant::Variant;
+
+/// How many seeds a run takes unless `TESSEL_SIM_SEEDS` says otherwise: the short set.
+pub const DEFAULT_SEEDS: u64 = 20;
+
+/// Steps of traffic per seed.
+pub const STEPS: usize = 120;
+
+/// The environment variable that overrides the number of seeds.
+pub const SEEDS_VAR: &str = "TESSEL_SIM_SEEDS";
+
+/// The environment variable that moves the first seed, so a failing seed reruns alone.
+pub const FIRST_SEED_VAR: &str = "TESSEL_SIM_FIRST_SEED";
+
+fn number_from_env(var: &str, default: u64) -> Result<u64, String> {
+    match std::env::var(var) {
+        Ok(text) => text
+            .trim()
+            .parse()
+            .map_err(|_| format!("{var} must be a whole number, got {text:?}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!("{var} is not valid text")),
+    }
+}
+
+/// The seeds to run: `TESSEL_SIM_SEEDS` of them (or `DEFAULT_SEEDS`) from `TESSEL_SIM_FIRST_SEED`
+/// (or 0).
+pub fn seeds() -> Result<std::ops::Range<u64>, String> {
+    let count = number_from_env(SEEDS_VAR, DEFAULT_SEEDS)?;
+    let first = number_from_env(FIRST_SEED_VAR, 0)?;
+    Ok(first..first.saturating_add(count))
+}
+
+/// How to rerun `seed` alone.
+pub fn rerun_hint(seed: u64) -> String {
+    format!(
+        "rerun with: {FIRST_SEED_VAR}={seed} {SEEDS_VAR}=1 cargo test -p tessel-coordinator \
+         --test simulator"
+    )
+}
+
+/// What one run of a seed produced.
+#[derive(Debug)]
+pub struct Run {
+    /// What the checks found at the first step that found anything.
+    pub violations: Vec<Violation>,
+    /// Steps completed.
+    pub steps: usize,
+    /// Crashes injected.
+    pub crashes: u64,
+    /// Every input and output, in order.
+    pub transcript: Vec<String>,
+}
+
+fn host_config() -> HostConfig {
+    HostConfig {
+        repo: "sim".to_string(),
+        run: Some("sim".to_string()),
+        ..HostConfig::default()
+    }
+}
+
+/// Run `seed` once against `variant`, checking `enabled` after every step. It stops at the first
+/// step that violates anything.
+pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
+    let mut sim = Sim::new(host_config(), variant);
+    let mut traffic = traffic::Traffic::new(seed);
+    let mut violations = Vec::new();
+    let mut steps = 0;
+    for _ in 0..STEPS {
+        steps += 1;
+        if !traffic.step(&mut sim) {
+            violations.push(Violation {
+                checker: Checker::Stuck,
+                detail: "the host kept asking the adapter past any bound".to_string(),
+            });
+        }
+        violations.extend(check::run(&sim, enabled));
+        if !violations.is_empty() {
+            break;
+        }
+    }
+    Run {
+        violations,
+        steps,
+        crashes: sim.crashes(),
+        transcript: sim.log().to_vec(),
+    }
+}
+
+/// The first line where two transcripts differ, if they do.
+pub fn first_difference(a: &[String], b: &[String]) -> Option<String> {
+    for (index, (left, right)) in a.iter().zip(b).enumerate() {
+        if left != right {
+            return Some(format!(
+                "line {index}:\n  first run:  {left}\n  second run: {right}"
+            ));
+        }
+    }
+    (a.len() != b.len()).then(|| format!("one run has {} lines, the other {}", a.len(), b.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_count_in_the_environment_is_read_and_a_missing_one_takes_the_default() {
+        let var = "TESSEL_SIM_TEST_COUNT_READ";
+        assert_eq!(number_from_env(var, 7), Ok(7));
+        std::env::set_var(var, " 3 ");
+        assert_eq!(number_from_env(var, 7), Ok(3));
+        std::env::remove_var(var);
+    }
+
+    #[test]
+    fn a_count_that_is_not_a_number_is_refused_with_its_name() {
+        let var = "TESSEL_SIM_TEST_COUNT_BAD";
+        std::env::set_var(var, "many");
+        let refused = number_from_env(var, 7);
+        std::env::remove_var(var);
+        let Err(message) = refused else {
+            panic!("a bad count was accepted");
+        };
+        assert!(
+            message.contains(var) && message.contains("many"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_rerun_hint_names_the_seed_and_one_seed_only() {
+        let hint = rerun_hint(41);
+        assert!(hint.contains("TESSEL_SIM_FIRST_SEED=41"), "{hint}");
+        assert!(hint.contains("TESSEL_SIM_SEEDS=1"), "{hint}");
+    }
+
+    #[test]
+    fn two_transcripts_that_differ_say_where() {
+        let a = vec!["x".to_string(), "y".to_string()];
+        let b = vec!["x".to_string(), "z".to_string()];
+        assert!(first_difference(&a, &b).is_some_and(|d| d.starts_with("line 1")));
+        assert!(first_difference(&a, &a[..1]).is_some());
+        assert!(first_difference(&a, &a).is_none());
+    }
+}

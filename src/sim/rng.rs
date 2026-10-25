@@ -1,4 +1,5 @@
 //! A small deterministic generator (`SplitMix64`), so a seed reproduces a workload on any machine.
+//! The simulator and the swarm both draw from it.
 
 #[derive(Debug, Clone)]
 pub struct Rng(u64);

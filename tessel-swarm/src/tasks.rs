@@ -12,10 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
 use tessel_coordinator::protocol::{Mode, Scope, ScopeClaim, SymbolId};
+use tessel_coordinator::sim::Rng;
 
 use crate::code::{self, add_call_arg, add_scale_param, name_the_result, rename_word};
 use crate::demo::{self, Tree, CATALOG};
-use crate::rng::Rng;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

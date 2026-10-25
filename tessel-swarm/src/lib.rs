@@ -14,6 +14,5 @@ pub mod local;
 pub mod off;
 pub mod on;
 pub mod report;
-pub mod rng;
 pub mod run;
 pub mod tasks;
