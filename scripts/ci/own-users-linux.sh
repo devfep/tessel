@@ -153,8 +153,10 @@ fi
 echo "-- the next run starts clean in a shared directory"
 as_runner touch /tmp/own-users-leftover
 # Any run sweeps it; the test binary's last run has already, so make one more.
+# The directory is 0750, open to the runner's group, as SudoRunner makes it while its run holds
+# the gate; these runs go through the rule directly, without SudoRunner.
 make_tree() {
-	as_server sh -c "umask 022 && mkdir -p /var/tessel/handoff/$1/test && printf %s '$2' > /var/tessel/handoff/$1/test/marker && chmod 0700 /var/tessel/handoff/$1"
+	as_server sh -c "umask 022 && mkdir -p /var/tessel/handoff/$1/test && printf %s '$2' > /var/tessel/handoff/$1/test/marker && chmod 0750 /var/tessel/handoff/$1"
 }
 make_tree sweep-check plain
 printf '{"tree":"/var/tessel/handoff/sweep-check/test","tests":[{"dir":"","argv":["cargo","test","--workspace"]}],"timeout_secs":60}' |
@@ -165,8 +167,8 @@ echo "-- the limits"
 make_tree limits-check limits
 reply=$(printf '{"tree":"/var/tessel/handoff/limits-check/test","tests":[{"dir":"","argv":["cargo","test","--workspace"]}],"timeout_secs":60}' |
 	through_rule /opt/tessel/bin/tessel-runner --config "$config") || reply=""
-check "the process limit is the configured one and core files are off" \
-	jq -e '.stdout | test("nproc=[0-9]+ core=0")' <<<"$reply"
+check "the process limit is the default, 1024, and core files are off" \
+	jq -e '.stdout | contains("nproc=1024 core=0")' <<<"$reply"
 
 if [ "$failures" -ne 0 ]; then
 	fail "$failures checks failed"
