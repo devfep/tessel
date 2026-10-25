@@ -7,8 +7,9 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-25 08:15 UTC. Main at `a451766` (docs only since `cd68555`); the orchestrator's
-gate is green on `cd68555` (2008 tests). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD).
+**As of:** 2026-10-25 13:20 UTC. Main at `b067c58` (docs only since `cd68555`), CI green; the
+orchestrator's gate is green on `cd68555` (2008 tests). M4 is done (M4-FIRST-LANDINGS,
+M4-RESTART-HELD).
 Seventeen server landings on 24 October, each read by an Opus reviewer on the commit from the
 fork first; main's CI is green on every one but
 `d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept their
@@ -23,8 +24,9 @@ worktree and decides holds as `orchestrator`. Two lanes ran at once four times; 
 denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up. Lane A is on P1-SIM-CORE's
-first half (`.claude/worktrees/sim-core`, under review); `.claude/worktrees/orchestrator` holds
-this commit, `gate-main` is the detached gate worktree.
+first half (`.claude/worktrees/sim-core`, second fix pass), lane B on GATE-PARITY-FMT
+(`.claude/worktrees/gate-fmt`); `.claude/worktrees/orchestrator` holds this commit, `gate-main`
+is the detached gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
 classifier still refuses the orchestrator's own pull request merges ("Merge Without Review"), so
@@ -57,9 +59,13 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** P1-SIM-CORE's workflow pull request (the seed count in the mutants jobs) goes to Felix
-and merges before its code lands; MERGE-PATH-REVIEW goes to Felix before P1-SERVER-STAGED; lane B
-writes OWN-USERS-DESIGN meanwhile. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** Felix merges #115 (the simulator's seed count in the mutants jobs), which must merge
+before P1-SIM-CORE's code lands, and #116 (MERGE-PATH-REVIEW), which P1-SERVER-STAGED waits for.
+Lane B runs GATE-PARITY-FMT ahead of its slot meanwhile; its `tessel.toml` change is a pull
+request for Felix. After P1-SIM-CORE lands, a pull request adds `src/sim/` to `CLAUDE.md`'s
+Layout. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
+(`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
 `CandidateMissing` as a `Call` change (decision 12); the plan's lander fork and its account steps
 are dropped.
@@ -948,8 +954,16 @@ Lane B:
   server answers `Test` and `Land`, with the ancestry read-back (P1-LANDER-ANCESTRY folded in)
   and `CandidateMissing`. First step: a probe on `tessel-sandbox` that GitHub accepts the
   candidate ref push with the lander's token.
-- [ ] **OWN-USERS-DESIGN** — S; an adversarial security review, then Felix. Service accounts
-  `_tessel` and `_tessel-runner`, the sudoers one-shot runner, cleanup, toolchain and upgrades.
+- [x] **OWN-USERS-DESIGN** (`b067c58`, landed by the server) — lane B.
+  `docs/proposals/own-users.md`: hidden accounts `_tessel` (server and lander; alone reads the
+  token, key and store) and `_tessel-runner` (repo code), UIDs 481 and 482; `/opt/tessel`
+  root-owned, `/var/tessel`; the runner through a two-command sudoers rule, everything the runner
+  account owns killed after each run; toolchain and dependency cache read-only to it; cron and at
+  denied; dependency fetches and toolchain installs are Felix's password steps; probes before any
+  secret moves, rotation last. The claim is that the secrets are unreadable to repo code under test;
+  a lane can still reach `_tessel` at the next upgrade until binaries are built on CI (M6), and
+  egress is not limited. Opus security review "Yes" after three fix passes; Felix approved it on 25
+  October.
 - [ ] **P1-CORE-STAGED-LANDING** — L, Felix reviews, after P1-SERVER-STAGED, P1-SWARM-ON-SERVER and
   SENSITIVE-MERGE-PATH. `Prepare` → head journaled → `Test` → `Land` in the core, with the host
   and the CLI's fake in the same commit. Closes HOST-MERGE-STANDIN's stand-in half.
