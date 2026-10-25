@@ -9,10 +9,13 @@ decisions. The detailed design, requirements and test strategy are in
 
 ## Layout
 - `src/protocol.rs`: the wire protocol, shared by CLI and coordinator. **Read its invariants (top of file) before changing anything that touches claims, fences, merging or evidence.**
-- `src/lib.rs`: crate root. `protocol`, `coordinator`, `shell`, `merge` and `host` are public and
-  build natively. The crate has no features.
-- `src/host/`: the portable sans-IO host around the core. Adapters do only I/O; `tessel-server`,
-  the adapter that serves it, is M3's work in progress.
+- `src/lib.rs`: crate root. `protocol`, `coordinator`, `shell`, `merge`, `host` and `sim` are public
+  and build natively. The crate has no features.
+- `src/host/`: the portable sans-IO host around the core. Adapters do only I/O; `tessel-server`
+  is the adapter that serves it.
+- `src/sim/`: the deterministic simulator: the real host against a simulated clock and store,
+  seeded client traffic and faults, and checkers for the invariants in `docs/proposals/phase-1.md`.
+  Its tests are `tests/simulator.rs`; `TESSEL_SIM_SEEDS` sets the seed count.
 - `tessel-cli/`: the native `tessel` CLI and per-worktree daemon (Cargo workspace member). Its tests run the real binary against a fake coordinator driving the real core.
 - `tessel-swarm/`: the scripted swarm and A/B harness; its local target runs the real core natively.
 - `tessel-steward/`: TypeScript Worker for merges, tests and the dashboard on Cloudflare. Removed in Phase 1 once the Rust lander in `tessel-server` replaces it; its merge rules (`merge-steps.ts`, `merge-coverage.ts`, `merge-commands.ts`) are the reference for that port.
