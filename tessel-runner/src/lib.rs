@@ -13,8 +13,8 @@ mod result;
 mod supervise;
 
 pub use config::{
-    effective_login, effective_uid, RunnerConfig, CONFIG_FILE_NAME, DEFAULT_TIMEOUT_SECS,
-    MAX_TIMEOUT_SECS,
+    effective_login, effective_uid, RunnerConfig, Sandbox, CONFIG_FILE_NAME, DEFAULT_MAX_PROCESSES,
+    DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS,
 };
 pub use error::{ConfigReason, RequestRefusal, RunnerError};
 pub use failure::MAX_FIRST_FAILURE_BYTES;

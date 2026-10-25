@@ -12,13 +12,15 @@ pub enum ConfigReason {
     Missing,
     #[error("it must be a regular file, not a link or a directory")]
     NotRegular,
-    #[error("it must be owned by the user who runs the runner")]
+    #[error("it must be owned by root or by the user who runs the runner")]
     NotOwned,
-    #[error("its mode must be 0600")]
+    #[error(
+        "it must not be writable by group or other, and must have no setuid, setgid or sticky bit"
+    )]
     WrongMode,
     #[error(
-        "it must be TOML of at most 4096 bytes with only the table [runner] and the keys user \
-         and timeout_secs"
+        "it must be TOML of at most 4096 bytes with only the table [runner] and its known keys; \
+         work_dir and handoff_dir go together with a path, and every directory is absolute"
     )]
     Invalid,
     #[error("[runner] timeout_secs must be at least 1")]
