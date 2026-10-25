@@ -184,6 +184,8 @@ async fn start_repositories(
             run: Some(repository.run.clone()),
             reviewers: repository.reviewers_list(),
             sensitive: repository.sensitive_list(),
+            lease_ms: repository.lease_ms,
+            shadow_enabled: repository.shadow_enabled.then(|| "true".to_string()),
             ..HostConfig::default()
         };
         let running = repo::spawn(id.clone(), store, dir.repo_file(&id), host, calls);

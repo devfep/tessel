@@ -2,7 +2,9 @@
 //! serve.
 
 use std::net::SocketAddr;
+
 use std::path::{Path, PathBuf};
+use tessel_coordinator::coordinator::{MAX_LEASE_MS, MIN_LEASE_MS};
 
 use serde::Deserialize;
 use tessel_coordinator::shell;
@@ -239,6 +241,16 @@ impl RepositoryConfig {
                 reason,
             })
         };
+        if let Some(lease) = self
+            .lease_ms
+            .filter(|lease| !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(lease))
+        {
+            return refuse(
+                "lease_ms",
+                &lease.to_string(),
+                "must be from 1000 to 600000 milliseconds",
+            );
+        }
         for entry in &self.reviewers {
             if !identity::is_server_agent_name(entry) {
                 return refuse(
