@@ -60,6 +60,8 @@ if [ "$dry" != 1 ]; then
 	[ "$(/usr/bin/id -u)" = 0 ] || fail "run it as root: sudo /opt/tessel/sbin/upgrade.sh"
 	[ "$here" = /opt/tessel/sbin ] || fail "run the installed copy, /opt/tessel/sbin/upgrade.sh, not $here"
 	[ -f "$plist" ] || fail "$plist is missing: run install.sh first"
+	[ -e /var/tessel/github-token ] ||
+		fail "the move is not done (no /var/tessel/github-token): upgrade.sh would enable a daemon that was disabled"
 fi
 
 act() {
@@ -123,7 +125,7 @@ else
 	for binary in tessel-server tessel tessel-runner; do
 		/usr/bin/install -o root -g wheel -m 0755 "$work/$binary" "/opt/tessel/bin/$binary" || restore
 	done
-	/bin/launchctl enable "$label"
+	/bin/launchctl enable "$label" || restore
 	/bin/launchctl bootstrap system "$plist" || restore
 fi
 echo "upgrade: done. The old binaries are in /opt/tessel/bin.prev; tail /var/log/tessel-server.log"

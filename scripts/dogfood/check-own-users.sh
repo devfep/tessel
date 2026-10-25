@@ -36,6 +36,7 @@ for arg in "$@"; do
 		mode=${arg#--}
 		;;
 	--test-tools) test_tools=1 ;;
+	--sudo-rule) mode="sudo-rule" ;;
 	*)
 		echo "$usage" >&2
 		exit 64
@@ -43,6 +44,10 @@ for arg in "$@"; do
 	esac
 done
 mode=${mode:-all}
+if [ "$mode" = sudo-rule ] && [ "$test_tools" != 1 ]; then
+	echo "$usage" >&2
+	exit 64
+fi
 
 dscl=/usr/bin/dscl
 sudo=/usr/bin/sudo
@@ -315,7 +320,9 @@ check_sudo_rule() {
 	fi
 	out=$("$sudo" -n -l -U "$tessel_name" 2>/dev/null || true)
 	# The lines after "may run the following commands" are the whole rule, and must be this one.
-	rules=$(echo "$out" | /usr/bin/awk '/may run the following commands/ { on = 1; next } on && NF { sub(/^[ \t]+/, ""); print }')
+	# sudo wraps long lines, so the lines are joined and the white space collapsed first.
+	rules=$(echo "$out" | /usr/bin/awk '/may run the following commands/ { on = 1; next } on && NF { sub(/\\$/, ""); print }' |
+		/usr/bin/tr '\n\t' '  ' | /usr/bin/tr -s ' ' | /usr/bin/sed -e 's/^ //' -e 's/ $//')
 	if [ "$rules" = "$want" ]; then
 		ok "$tessel_name may run exactly the runner and kill -KILL -1"
 	else
@@ -331,7 +338,7 @@ check_keys() {
 		skip "the key files: needs 'sudo -v'"
 		return
 	fi
-	listing=$("$sudo" -n /bin/ls -1 /var/tessel/keys 2>/dev/null || true)
+	listing=$("$sudo" -n /bin/ls -1A /var/tessel/keys 2>/dev/null || true)
 	names=$(echo "$listing" | /usr/bin/sed -e 's/\.key$//' -e 's/\.pub$//' | /usr/bin/sort -u)
 	if [ -n "$listing" ] && [ "$(echo "$names" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 1 ] &&
 		[ "$(echo "$listing" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 2 ] &&
@@ -407,6 +414,7 @@ check_installed() {
 }
 
 case "$mode" in
+sudo-rule) check_sudo_rule ;;
 accounts) check_accounts ;;
 installed) check_installed ;;
 all)

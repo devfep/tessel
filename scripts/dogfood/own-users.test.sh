@@ -226,6 +226,7 @@ case "\$*" in
 *"/usr/bin/true"*) exit 0 ;;
 *TESSEL_READY*) echo TESSEL_READY ;;
 *"-iTCP"*) "$work/lsof" ;;
+*"-l -U"*) cat "$work/sudo-listing" ;;
 *) cat "$work/sudo-answer" ;;
 esac
 SCRIPT
@@ -262,6 +263,22 @@ expect "a missing shell fails" 1 "FAIL: _tessel shell is 'none'" run_check --acc
 echo /usr/bin/false >"$done_dir/rec/Users/_tessel/UserShell"
 echo "no" >"$work/sudo-ready"
 expect "probes without sudo are skipped and exit 2" 2 "SKIP: read $home/repos" run_check --accounts
+echo yes >"$work/sudo-ready"
+# The rule listing as sudo prints it: wrapped to 80 columns, with a continuation indent.
+cat >"$work/sudo-listing" <<'LISTING'
+Matching Defaults entries for _tessel on host:
+    env_reset, !setenv, !use_pty, secure_path=/usr/bin\:/bin
+
+User _tessel may run the following commands on host:
+    (_tessel-runner) NOPASSWD: /opt/tessel/bin/tessel-runner --config
+        /var/tessel-runner/tessel-runner.toml, /bin/kill -KILL -1
+LISTING
+expect "a wrapped sudoers listing of the two commands passes" 0 "exactly the runner and kill" \
+	run_check --sudo-rule
+printf '%s\n' 'User _tessel may run the following commands on host:' \
+	'    (ALL) NOPASSWD: ALL' >"$work/sudo-listing"
+expect "a rule that allows more fails" 1 "is not exactly the two commands" run_check --sudo-rule
+expect "--sudo-rule needs --test-tools" 64 "usage" "$check" --sudo-rule
 expect "tool overrides without --test-tools are refused" 64 "only with --test-tools" \
 	env TESSEL_SUDO="$work/sudo" HOME="$home" "$check" --accounts
 expect "an unknown flag is refused by the check" 64 "usage" "$check" --bogus
