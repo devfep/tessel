@@ -55,26 +55,21 @@ on GitHub runners only, never on the Mac.
 
 | Lane | Owns |
 |---|---|
-| A, host and server | `src/host/**` (new), `src/sim/**` (new), `src/lib.rs`, `src/shell.rs`, `src/protocol.rs` (additive changes only), `src/coordinator.rs`, `src/coordinator/**` and `src/merge.rs` except in M5, `docs/reference/runtime-rules.md` (new), `tests/runtime_rules.rs` (new), `scripts/ci/check-named-tests.sh` (new), `tests/simulator.rs` (new), `tessel-cli/tests/support/mod.rs`, `tessel-cli/src/daemon.rs` (the range warning, M3), `tessel-swarm/src/local.rs`, `tessel-server/Cargo.toml` and `tessel-server/src/{main,repo,store,ws,metrics}.rs` (new; `main.rs` wires lane B's subcommands) |
+| A, host and server | `src/host/**` (new), `src/sim/**` (new), `src/lib.rs`, `src/shell.rs`, `src/protocol.rs` (additive changes only), `src/coordinator.rs`, `src/coordinator/**` and `src/merge.rs` except while lane B has them in M5, `docs/reference/runtime-rules.md` (new), `tests/runtime_rules.rs` (new), `scripts/ci/check-named-tests.sh` (new), `tests/simulator.rs` (new), `tessel-cli/tests/support/mod.rs`, `tessel-cli/src/daemon.rs` (the range warning, M3), `tessel-swarm/src/local.rs`, `tessel-server/Cargo.toml` and `tessel-server/src/{main,repo,store,ws,metrics}.rs` (new; `main.rs` wires lane B's subcommands) |
 | B, lander, merge path, CI and identity | `.github/workflows/**`, `.cargo/**` (new), `scripts/ci/**` (new) except the named-tests check, `tessel-lander/**` (new), in M5 `src/merge.rs`, `src/coordinator.rs` and `src/coordinator/**`, `tessel-server/src/{identity,admin,runner}.rs` (new), `tessel-cli/src/init.rs`, `deploy/dogfood/**` (new), the deletions and doc rewrites of P1-DROP-WORKER (M3: `src/runtime.rs`, `src/store.rs`, `src/identity.rs`, `wrangler.toml`, `tessel-swarm/src/{live,guard,main}.rs`, `README.md`, `docs/how-tessel-works.md`, `docs/reference/coordinator.md`, `docs/configuration.md`, a proposed `CLAUDE.md` edit) and of `tessel-steward/` (M6) |
 
 Shared files: the root `Cargo.toml` (workspace members, features) and `Cargo.lock`. A lane that
 adds a member or a dependency does it in its own small commit, and the orchestrator does not run
 two such commits at once. `.github/workflows/ci.yml` is lane B's, but lane A adds one step to it
 in P1-RULES and P1-CI-SIM; whichever of two such pull requests merges second merges `main` first.
-The core and `src/merge.rs` pass from lane A to lane B for M5 (the staged landing) and back when
-P1-CORE-RECONCILE merges. M5's cross edits, in order (P1-DROP-WORKER, lane B, has deleted the
-Cloudflare Rust glue in M3, before any core API change, decision 13):
+The core and `src/merge.rs` pass from lane A to lane B from P1-CORE-STAGED-LANDING until
+P1-CORE-RECONCILE lands, and some of lane B's M5 tasks edit lane A's files while they run; the
+M5 outline below lists those cross edits and their order (P1-DROP-WORKER, lane B, deleted the
+Cloudflare Rust glue in M3, before any core API change, decision 13).
 
-1. P1-CORE-STAGED-LANDING, then P1-CORE-RECONCILE (lane B). P1-CORE-RECONCILE also makes its own
-   edits in `src/host/calls.rs` (the `Reconcile` on `Loaded`, the flipped R24 test); lane A does
-   not touch that file or `src/host/wake.rs` until it merges. Meanwhile lane A works in
-   `src/sim/**` and `src/host/batch.rs` (P1-SIM-CORE, P1-PERSIST-RETRY).
-2. P1-ONE-BATCH (lane A) runs after P1-CORE-RECONCILE merges, when the core is lane A's again,
-   because it changes the core's `next_wake_ms` as well as `src/host/wake.rs`.
-
-The merge-path tasks (P1-CORE-STAGED-LANDING, P1-CORE-RECONCILE, P1-LANDER-ANCESTRY) go to Felix
-for review, as `PLAN.md` keeps merge-path changes with him. `src/runtime.rs` stays unchanged
+The merge-path tasks (P1-SERVER-STAGED with P1-LANDER-ANCESTRY, P1-CORE-STAGED-LANDING,
+P1-CORE-RECONCILE) go to Felix for review, as `PLAN.md` keeps merge-path changes with him
+(MERGE-PATH-REVIEW, M5). `src/runtime.rs` stays unchanged
 through M2, so the reference for the move stays readable and the wasm lane keeps checking it.
 
 ## Milestones
@@ -89,8 +84,8 @@ below, the rest in outline, re-planned at each milestone boundary.
 | M2. The move | 3-5 | `runtime.rs` moved step for step into `src/host/`, quirks included; the CLI's fake coordinator rebuilt on the host; lander `prepare`, `land` and `trial` ported | No host row of the rules list left "after move"; CLI suite green on the host; ported steward tests green |
 | M3. The local server | 6-8 | Cloudflare Rust glue deleted first (P1-DROP-WORKER); axum, one task per repo, SQLite store, store lock, `state_version`, protocol range; Ed25519 identity and token minting; local test runner; the host's one `Prepare` call answered by prepare, tests and land in process; the adapter rules R1-R5 and R49; `tessel init` against a local server; the single-developer quickstart | No rules-list row left "after move"; an end-to-end landing on CI: a local `tessel-server`, a bare git remote, two CLI agents, one commit landed by compare-and-swap after the runner's command ran on it; `tessel review` approves through the server; a kill -9 loop with claims reconciled |
 | M4. Dogfood on the local server | 8-9 | This repository coordinated and landed by a `tessel-server` on Felix's machine: lanes claim before editing, the runner runs the workspace gate, the lander lands `main`; the build protocol's section 2 rewritten | Five landings of this repository with their notes, claims released by `Merged`; one server restart while a submitted claim is held |
-| M5. Hardening: simulator, staged landing, reconciliation | 9-12 | Simulator in two tasks, I1-I12 checkers, failpoints; the core's landing split into `Prepare`, journaled head, `Test`, `Land`; `Unknown` and `Reconcile`; ancestry read-back; persist retry; one batch per wake; exact replay, half-lease persistence, two carried-over tasks; lander and runner as separate binaries over a local authenticated channel; swarm local target rebuilt on the server | Simulator lane required and green; each behaviour change flips its named test; `cargo tree -p tessel-server` has no lander crate |
-| M6. Team mode, then delete | 12-13 | Evidence records; metrics, logs, trace id; minimal advisory mode with head sync; hooks with the server unreachable; the hosted dogfood server; five merged pull requests in advisory mode and one redeploy with a claim held across it; the TypeScript steward deleted; ruleset changed in the same step | Advisory end-to-end test; metrics contract test; phase done-check above |
+| M5. Hardening: simulator, staged landing, reconciliation | 10-14 | Simulator in two tasks, I1-I12 checkers (evidence and advisory clauses in M6), failpoints; the core's landing split into `Prepare`, journaled head, `Test`, `Land`, the head kept on a candidate ref; `Unknown` and `Reconcile`; ancestry read-back; persist retry; one batch per wake; exact replay, half-lease persistence, COORD-UNDELIVERED-GRANT; the adapter suite; repo code under test as its own macOS user; swarm local target rebuilt on the server; the dogfood server upgraded to the staged landing | Simulator lane required and green, its short seed set in every landing; each behaviour change flips its named test; adapter suite green; a CI test of the runner's own uid; three staged landings of this repository |
+| M6. Team mode, then delete | 14-15 | The lander as its own binary; evidence records; metrics, logs, trace id; minimal advisory mode with head sync; hooks with the server unreachable; the hosted dogfood server; five merged pull requests in advisory mode and one redeploy with a claim held across it; the TypeScript steward deleted; ruleset changed in the same step | `cargo tree -p tessel-server` has no lander crate; advisory end-to-end test; metrics contract test; phase done-check above |
 
 ## M3 to M6, in outline
 
@@ -170,64 +165,211 @@ first landing. Done: five landings of this repository with their notes and claim
 `Merged`, none released by hand; one server restart while a submitted claim is held, that claim
 landed afterwards. The hosted server and advisory mode are M6.
 
-**M5. Hardening: simulator, staged landing, reconciliation.** Lane A in `src/sim/**` and
-`src/host/**`; lane B owns the core and `src/merge.rs` until P1-CORE-RECONCILE merges (order under
-"Lanes and file ownership").
-- P1-SIM-CORE (lane A): `src/sim/` (SplitMix64 moved from `tessel-swarm/src/rng.rs`); the driver
-  on the test kit; a clock that jumps; a store that loses uncommitted writes on crash and can fail
-  a commit without crashing; a crash after any output and a reload; client traffic (claims,
-  amends, releases, heartbeats, reviews, races, watchers); checkers I1, I2, I4, I5, I8, I9, I10.
-  Each seed runs twice and the two transcripts must be equal, which catches nondeterminism such
-  as iteration over the core's `HashMap` lock table (`coordinator.rs`, `LockTable`); a lint bans
-  `SystemTime::now` and `Instant::now` inside `src/host` and `src/sim` (clippy's
-  `disallowed_methods`, scoped in the task so other crates keep their clocks). Each checker has a
-  test with a planted bug in a host variant that the checker must catch.
-- P1-SIM-MERGE (lane A, after P1-SIM-CORE and P1-CORE-STAGED-LANDING): an asynchronous merge path
-  that delays, reorders, duplicates and drops answers, times out, pushes then loses its reply,
-  reports for stale commits, flips on re-run, returns rate-limit and compare-and-swap refusals,
-  answers `Unknown` (also to `Reconcile`, many times in a row), and delivers a late `Land` after a
-  later one has landed; checkers I3, I6, I7, I11, I12; the advisory mode variants (table below).
-- P1-FAILPOINTS (lane A): crash windows of a landing: dispatch persisted; `Prepare` running; head
+**M5. Hardening: simulator, staged landing, reconciliation.** Re-planned on 25 October against
+what M3 and M4 changed; Felix decided M5-1 to M5-8 (under "Decisions for Felix") as recommended,
+after an adversarial review of the re-plan.
+
+What changed since the outline:
+1. The server lands this repository, so a change to the merge path is also a change to the tool
+   that lands it. A landed change that breaks landing cannot have its fix landed through the
+   server; DOGFOOD-UPGRADE sets the rules for upgrades and rollbacks.
+2. Server landings use the ruleset bypass, so the per-pull-request mutants job does not run on
+   them; the nightly full-mutants run covers every landed line about a day late, and clippy and
+   fmt run on main's CI after the push. Only the runner's `cargo test --workspace` gates a
+   landing.
+3. D4 tied the server as its own macOS user to M5. RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE are
+   the same problem: lane agents, the server with the lander's token, and repo code under test
+   all run as one uid.
+4. `tessel-runner` is already a binary (one JSON request on stdin, one result on stdout), but the
+   server calls its library in process. The server links `tessel_lander` in seven files, and the
+   askpass hook is the server's own executable.
+5. A landing's state lives in throwaway `call-N` directories that `clear_leftovers` deletes at
+   start, and `Request::Land` carries only `{base, head}`. Under the staged landing the head that
+   `Prepare` makes must outlive the call and a restart (CANDIDATE-REF).
+6. Done since the outline: COORD-HEAD-FROM-AGENT (#106), SERVER-KILL-AFTER-PUSH-TEST and
+   SERVER-FRAME-LIMIT-TESTS (#103), HOST-CALL-DEADLINE-BACKSTOP (#84). The adapter already
+   answers `ReadHead` and `Reconcile` by ancestry, so P1-CORE-RECONCILE is core-only.
+7. Advisory mode and evidence records do not exist yet, so the simulator's advisory variants, the
+   evidence clauses of I3 and I11 and the failpoint "landed, evidence note not written" move to
+   M6, beside the code they check.
+
+Two lanes: lane A the host, the server adapter and the simulator; lane B the merge path, the
+lander, the runner and CI. The core (`src/coordinator.rs`, `src/coordinator/**`) and
+`src/merge.rs` are lane B's from P1-CORE-STAGED-LANDING until P1-CORE-RECONCILE lands, then lane
+A's again; `src/host/mod.rs` and `src/host/tests.rs` are lane B's for P1-CORE-STAGED-LANDING.
+P1-SERVER-STAGED edits lane A's `src/host/call.rs`, `src/host/calls.rs` and
+`tessel-server/src/repo.rs`; RUNNER-OWN-UID edits lane A's `tessel-server/src/{main,server,
+config}.rs` and `Cargo.toml`. Lane A stays out of each of those files while the task runs.
+Workflow changes cannot land through the server (the lander's token has no Workflows
+permission), so each task's workflow part is its own pull request that Felix merges, one at a
+time, in this order: P1-SIM-CORE (the seed count in the mutants jobs), P1-CI-SIM,
+P1-ADAPTER-SUITE (the CI-only kill loop and the old-CLI build), RUNNER-OWN-UID (the uid job). No
+pull request is merged while a landing is in flight. Sizes: S about a day of lane time, M two to
+three, L four or more, XL more than a week.
+
+Merge-path reviews: `PLAN.md` keeps merge-path changes with Felix, while in the dogfood setup the
+orchestrator is the only reviewer and decides held submissions alone. For tasks marked "Felix
+reviews", the orchestrator approves the held submission only after Felix's written yes naming
+the fork commit's sha, and a fix pass needs a new yes; the standing buy-in order does not apply
+to them (MERGE-PATH-REVIEW). SENSITIVE-MERGE-PATH makes sure those submissions are held.
+
+Lane A:
+- P1-SIM-CORE (L): `src/sim/` (SplitMix64 moved from `tessel-swarm/src/rng.rs`); the driver on
+  the test kit; a clock that jumps; a store that loses uncommitted writes on crash and can fail a
+  commit without crashing; a crash after any output and a reload; client traffic (claims, amends,
+  releases, heartbeats, reviews, races, watchers); checkers I1, I2, I4, I5, I8, I9, I10, each
+  with a test with a planted bug in a host variant that the checker must catch. Each seed runs
+  twice and the two transcripts must be equal, which catches nondeterminism such as iteration
+  over the core's `HashMap` lock table; clippy's `disallowed_methods` bans `SystemTime::now` and
+  `Instant::now` inside `src/host` and `src/sim`. Files: `src/sim/**`, `tests/simulator.rs`,
+  `src/lib.rs`, the clippy config. The default seed count is the short set (about 30 s), so
+  `cargo test --workspace`, and with it the runner, runs the simulator on every landing; a
+  `TESSEL_SIM_SEEDS` variable raises it on CI and lowers it in the mutants jobs, where 30 s more
+  per mutant would break the 30-minute pull-request shards and the 120-minute nightly ones. The
+  workflow pull request that sets it low there merges before any of the task's code lands. The
+  task records the nightly duration once its code has landed. If it runs long, it splits in two:
+  the driver and store with I1, I5 and I9, then the traffic checkers.
+- P1-CI-SIM (S, after P1-SIM-CORE): "Fast lane, simulator" on pull requests and on pushes to main
+  (the two-minute set, seeds from the commit sha, failing seeds printed for reproduction and kept
+  as regression cases, no path filter) and a nightly sweep.
+- P1-SWARM-ON-SERVER (M, after P1-CI-SIM; decision 14): `tessel-swarm/src/local.rs` rebuilt on
+  the server. It calls the core's `begin_merge` and `merge_outcome` itself today; once it drives
+  the server, P1-CORE-STAGED-LANDING does not touch it. The swarm tests then start a real server
+  inside the runner's `cargo test`, so the task measures a landing's time against the runner's
+  720 s limit and reports it.
+- P1-HOST-HARDENING (M, after P1-CORE-STAGED-LANDING lands): P1-PERSIST-RETRY (C8,
+  `src/host/batch.rs`: a failed commit retried with the batch still in memory instead of dropping
+  the core; flips R30's test); exact replay without stalling the repo (C3, flips R36's test);
+  COORD-UNDELIVERED-GRANT (decision 7: the claim kept until its lease lapses, one test).
+- P1-ADAPTER-SUITE (M; first part after P1-SWARM-ON-SERVER, the rest after P1-HOST-HARDENING):
+  the parts of the phase's done-check 3 with no test yet. First part, which does not touch
+  `src/host/`: a kill -9 loop with client transcripts checked against I1, in a job that runs only
+  on CI; the CLI release before the protocol range field run against the new server, that old
+  binary built only in a CI job, never in `cargo test`. The rest: a slow watcher, a panicking
+  repo task, injected store errors.
+- P1-SIM-MERGE (L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING): an asynchronous merge path that
+  delays, reorders, duplicates and drops answers, times out, pushes then loses its reply, reports
+  for stale commits, flips on re-run, returns rate-limit and compare-and-swap refusals, answers
+  `Unknown` (also to `Reconcile`, many times in a row), and delivers a late `Land` after a later
+  one has landed; checkers I3, I6, I7, I11, I12, without their evidence and advisory clauses.
+- P1-FAILPOINTS (M, after P1-SIM-MERGE and P1-CORE-RECONCILE): crash windows of a landing:
+  dispatch persisted; `Prepare` running; candidate ref pushed, head not journaled; head
   journaled; tested, not landed; `Land` sent, outcome not persisted; outcome persisted, not
-  delivered; rescheduling; landed, evidence note not written; and a `Trial` and a `ReadHead` in
-  flight.
-- P1-CI-SIM (lane A): "Fast lane, simulator" per pull request (a fixed number of seeds tuned to
-  about two minutes, seeded from the commit sha so each push explores new seeds, failing seeds
-  printed for reproduction; no path filter) and a nightly sweep; failing seeds are kept as
-  regression cases.
-- P1-CORE-STAGED-LANDING (lane B, Felix reviews): the core's one merge call (`begin_merge` and
-  `merge_outcome`, `merging.rs`; `MergeOutcome`, `merge.rs`) becomes `Prepare` → the head
-  journaled in the in-flight record → `Test` → `Land` (C6), each its own dispatch id. Done: a
-  core test that no `Land` is dispatched before its head is persisted, and the existing
-  merge-queue property tests rewritten for the stages and green at 10,000 cases on CI.
-- P1-CORE-RECONCILE (lane B, Felix reviews): `Unknown` and `Reconcile` (C5) as specified in the
-  proposal ("Calls"), using the core's `in_doubt` and `unanswered_from`. Done: core tests that a
-  retried `Land` reuses its dispatch id, base and head; that `Unknown` after `Land` never counts
-  toward `MAX_INFRA_RETRIES`; that a marker found on `Loaded` is reconciled, not counted as a
-  cut-off (the M2 rule R24 test is flipped in this commit); that a landing `Reconcile` finds
-  also gets its evidence note (P1-EVIDENCE writes it the same way, whichever call found it). A
-  `Land` in doubt is shown in status and metrics with how long it has been in doubt, and
-  `tessel-server admin resolve` (proposed change A) is the operator's way out.
-- P1-LANDER-ANCESTRY (lane B, Felix reviews): the read-back changes from main equal to the head
-  to the journaled head being an ancestor of main (C6). Done: a lander test where main moved past
-  the landed head before the read-back, answered `landed`, which fails under equality; the ported
+  delivered; rescheduling; and a `Trial` and a `ReadHead` in flight.
+- P1-ONE-BATCH (M, after P1-CORE-RECONCILE, when the core is lane A's again; `src/host/wake.rs`
+  and the core's `next_wake_ms`): expiry, recovery and dispatch folded into one batch per wake,
+  with a verification or head read that is due after a merge's answer getting a wake at once
+  instead of riding the suspended wake (flips R20's test); lease renewal persisted below half the
+  lease (C10, the core's `heartbeat`).
+
+Lane B:
+- CANDIDATE-REF (S; an adversarial review, then Felix, decision M5-7): a design note on where the
+  prepared head lives between `Prepare`, `Test` and `Land`. Recommended shape: `Prepare` pushes
+  the rebased head to `refs/heads/tessel/candidate/<dispatch id>` on a fork the lander owns, one
+  per repository and not an agent's; `Test` clones that ref; `Land` pushes the head by
+  compare-and-swap on main and deletes the ref once the ancestry read-back finds the head landed.
+  A kill at any point leaves the ref, so a retried `Land` pushes the same head. A `Land` whose
+  ref is gone answers `Landed` if main contains the head, and otherwise a new outcome that sends
+  the submission back to `Prepare`: `Refused` would reject good work, and `Unknown` would loop
+  (with main still at base, `Reconcile` resends `Land`, and nothing after `Land` counts toward
+  the retry limit). This is the shape of Phase 2's candidate pull request. The note also covers
+  cleanup of orphaned refs, the credential for the candidate push, and whether `prepare` and
+  `land` stay public in the lander crate.
+- P1-SERVER-STAGED (M, Felix reviews, after CANDIDATE-REF and MERGE-PATH-REVIEW): the server
+  answers `Test` (the runner on a clone of the candidate ref) and `Land` (the compare-and-swap
+  push and the ancestry read-back: the journaled head must be an ancestor of main, not equal to
+  it, which is P1-LANDER-ANCESTRY, folded in). It adds the new outcome for a missing candidate
+  ref as a variant in `src/host/call.rs` with its match arms (rule 2) in `src/host/calls.rs` and
+  `tessel-server/src/repo.rs` (`moves_main`); until P1-CORE-STAGED-LANDING the core reads it as
+  infrastructure, which is harmless because the core never sends `Land` before then, so neither
+  main's behaviour nor the dogfood server changes. Done: an adapter test for each call and
+  outcome, including a `Land` whose ref is missing; a lander test where main moved past the
+  landed head before the read-back, answered `landed`, which fails under equality; the ported
   case "main_moved when the push exits 0 but main is at neither base nor head" now needs the head
   not to be an ancestor, and says so in its name.
-- P1-PERSIST-RETRY (lane A, C8, `src/host/batch.rs`): a failed commit retried with the batch
-  still in memory instead of dropping the core. Flips R30's test.
-- P1-ONE-BATCH (lane A, after P1-CORE-RECONCILE merges; `src/host/wake.rs` and the core's
-  `next_wake_ms`): expiry, recovery and dispatch folded into one batch per wake, with a
-  verification or head read that is due after a merge's answer getting a wake at once instead of
-  riding the suspended wake. Flips R20's test.
-- Host changes (lane A): exact replay without stalling the repo (C3, flips R36's test); lease
-  renewal persisted below half the lease (C10); COORD-HEAD-FROM-AGENT (on `Loaded`, a `ReadHead`
-  call before any dispatch; a simulator check that no dispatch uses an agent-declared base);
-  COORD-UNDELIVERED-GRANT (decision 7).
-- Separate binaries (lane B): the lander and the runner as their own binaries (`tessel-lander`,
-  `tessel-runner`), started by `tessel-server` from configured paths, accepting work only from it
-  over a local authenticated channel and taking fork and scopes from the persisted dispatch (S1,
-  S3); `tessel-server` does not link the lander crate (done-check 8).
-- `tessel-swarm/src/local.rs` rebuilt on the server (lane A, decision 14).
+- P1-CORE-STAGED-LANDING (L, Felix reviews, after P1-SERVER-STAGED, P1-SWARM-ON-SERVER and
+  SENSITIVE-MERGE-PATH): the core's one merge call (`begin_merge` and `merge_outcome`,
+  `merging.rs`; `MergeOutcome`, `merge.rs`) becomes `Prepare` → the head journaled in the
+  in-flight record → `Test` → `Land` (C6), each its own dispatch id, and `Prepare` becomes
+  rebase-and-push-candidate only. In the same commit, so main is never red: `src/host/calls.rs`,
+  `src/host/mod.rs`, `src/host/tests.rs` and the CLI's fake coordinator
+  (`tessel-cli/tests/support/mod.rs`, which answers `Prepare` as the whole merge). Done: a core
+  test that no `Land` is dispatched before its head is persisted; the merge-queue property tests
+  rewritten for the stages and green at 10,000 cases on CI; the end-to-end and quickstart CI jobs
+  green on the staged path. HOST-MERGE-STANDIN's stand-in half closes here.
+- P1-CORE-RECONCILE (M, Felix reviews, after P1-CORE-STAGED-LANDING; core-only): `Unknown` and
+  `Reconcile` (C5) as specified in the proposal ("Calls"), using the core's `in_doubt` and
+  `unanswered_from`. Done: core tests that a retried `Land` reuses its dispatch id, base, head and
+  candidate ref; that `Unknown` after `Land` never counts toward `MAX_INFRA_RETRIES`; that a
+  marker found on `Loaded` is reconciled, not counted as a cut-off (R24's test flipped in this
+  commit); DOGFOOD-UPGRADE's fixture test (c). A `Land` in doubt is shown in status with how long
+  it has been in doubt, as an optional wire field with `#[serde(default)]` (rule 1), and
+  `tessel-server admin resolve`, run offline (stop, resolve, start), is the operator's way out
+  (decision M5-3).
+- GATE-PARITY-FMT (S, after P1-CORE-RECONCILE): the gate's strict command check
+  (`tessel-lander/src/gate.rs`) accepts `cargo fmt --all --check`, which compiles nothing, and
+  Felix's pull request adds it to `tessel.toml`. Clippy stays on CI: it would add a second full
+  compile per landing on a Mac already at load 55-75.
+- OWN-USERS-DESIGN (S, an adversarial security review, then Felix; while P1-SWARM-ON-SERVER
+  runs): a design note whose scope is keeping the lander's token and workspace away from repo
+  code under test; keeping main safe from the lanes, which still run as Felix, is not in scope.
+  It settles: hidden service accounts made with `dscl` (a UID below 500, their own group, shell
+  `/usr/bin/false`, home `/var/empty`; not `sysadminctl`, whose users join `staff` and can read
+  Felix's home), `_tessel` for the server and the lander and `_tessel-runner` for repo code; a
+  one-shot runner started through a narrow sudoers rule, its stdin and stdout JSON the channel;
+  cleanup by `sudo -u _tessel-runner kill -KILL -1`, with runner calls serialized across the
+  server; the runner uid's own `CARGO_HOME` and toolchain, and who runs `cargo fetch` when
+  `Cargo.lock` changes; who cleans the test tree across uids; upgrades as sudo steps for Felix;
+  escape routes tested on macOS (`at`, `cron`, `launchctl` in the runner uid's domain). Dropped:
+  a warm `CARGO_TARGET_DIR` (one submission could poison the next one's tests, rule 6) and
+  systemd units.
+- RUNNER-OWN-UID (M to L, after OWN-USERS-DESIGN and GATE-PARITY-FMT): the server runs the
+  existing `tessel-runner` binary through the sudo rule instead of its library. A Linux CI job,
+  where runners have passwordless sudo, creates the user and checks that the token is
+  unreadable, the workspace unwritable and a `setsid` child killed. Closes RUNNER-SANDBOX and
+  M4-SANDBOX-WORKSPACE. Then the dogfood server moves to its own users (sudo steps for Felix),
+  and D4's "process control, not a security boundary" is retired for the token.
+
+Orchestrator rows (no lane):
+- MERGE-PATH-REVIEW (before P1-SERVER-STAGED; a pull request Felix merges):
+  `docs/BUILD-PROTOCOL.md` section 6 gains the merge-path review rule above.
+- SENSITIVE-MERGE-PATH (before P1-CORE-STAGED-LANDING; a pull request to
+  `scripts/dogfood/setup.sh` Felix merges, then the server's config): `src/merge.rs`,
+  `src/coordinator.rs` and `src/coordinator/` join `sensitive`, done with no dispatch in flight
+  because it needs a restart. It also holds P1-ONE-BATCH, which the orchestrator decides as usual.
+- DOGFOOD-UPGRADE (a section of `docs/dogfood.md`, before the first upgrade): (a) no upgrade to
+  the staged landing until P1-SERVER-STAGED, P1-CORE-STAGED-LANDING and P1-CORE-RECONCILE have
+  all landed; (b) upgrade only with no dispatch in flight (held submissions are fine), since an
+  old whole-merge call may already have pushed and the new core would read it as a cut-off
+  before `Land`; (c) a fixture test, part of P1-CORE-RECONCILE: a store written before the staged
+  landing with a merge in flight is decoded by the new core and treated as in doubt (O1, I5);
+  (d) rollback only with an idle queue: M5 bumps `state_version` only if the old binary can still
+  read the new state, otherwise rollback means a fresh store and new claims, never a snapshot
+  restore, which can reissue fences (C11); (e) before the swap, the new binary lands once on
+  `tessel-sandbox/m4-trunk` over HTTPS through the askpass hook; (f) the binary is built only
+  from a landed main with green CI, the old `bin/` is kept as `bin.prev`, and a fix that cannot
+  land through the server goes through a pull request Felix merges.
+- M5-DOGFOOD-STAGED: after the upgrade, three landings of this repository through the staged
+  path, with notes and claims released by `Merged`.
+
+Order: lane A runs P1-SIM-CORE, P1-CI-SIM, P1-SWARM-ON-SERVER, P1-ADAPTER-SUITE's first part,
+then (after P1-CORE-STAGED-LANDING) P1-HOST-HARDENING, P1-SIM-MERGE, the rest of
+P1-ADAPTER-SUITE, and (after P1-CORE-RECONCILE) P1-FAILPOINTS and P1-ONE-BATCH. Lane B runs
+CANDIDATE-REF, P1-SERVER-STAGED, OWN-USERS-DESIGN, P1-CORE-STAGED-LANDING, P1-CORE-RECONCILE,
+GATE-PARITY-FMT and RUNNER-OWN-UID; it may sit idle for a few days waiting for
+P1-SWARM-ON-SERVER, which is accepted rather than putting lane B in lane A's `local.rs`. The
+critical path is P1-SIM-CORE → P1-CI-SIM → P1-SWARM-ON-SERVER → P1-CORE-STAGED-LANDING →
+P1-CORE-RECONCILE → P1-FAILPOINTS and P1-ONE-BATCH. Lane A comes to about 20 to 24 lane-days and
+lane B about 15 to 20, over the outline's three to four weeks.
+
+Done: (1) the simulator lane is green with all twelve checkers on, their evidence and advisory
+clauses in M6, and its short seed set runs in every landing's `cargo test --workspace`; (2) each
+behaviour change flips its named test: R20, R24, R30, R36; (3) P1-ADAPTER-SUITE passes on CI;
+(4) repo code under test runs as `_tessel-runner` on the dogfood server, with a CI test that the
+token is unreadable, the workspace unwritable and a `setsid` child killed (not claimed: that
+lanes cannot reach main); (5) M5-DOGFOOD-STAGED. Cut at the re-plan: running the
+pull-request checks on each landing (the nightly full mutants already covers every landed line),
+and M5-PROOF-CANDIDATE, moved to Phase 3 (decision M5-5).
 
 **M6. Team mode, then delete.** P1-EVIDENCE: after the read-back finds the head landed, the lander
 writes the landing's evidence record (the `MergeRecord` the dispatch carries, the runner's gate
@@ -246,6 +388,15 @@ landing (O3); minimal advisory mode (below); hook behaviour with the server unre
 repository in advisory mode with one redeploy while a submitted claim is held (decision 6); then one
 pull request that deletes `tessel-steward/` and the "Slow lane, steward" job, with ruleset step 6.
 Docs that describe the Cloudflare deployment are rewritten in the same pull request.
+P1-LANDER-OUT (lane B, XL, after RUNNER-OWN-UID and P1-CORE-RECONCILE; moved from M5, decision
+M5-6): `ReadHead`, `Reconcile`, `Trial`, `clone_main`, `Prepare`, `Test`, `Land` and the askpass
+hook move to a `tessel-lander` binary behind a local authenticated channel, which takes fork and
+scopes from the persisted dispatch (S1, S3); then `cargo tree -p tessel-server` has no lander
+crate, and a fast-lane step checks that and searches for `FLY_` (done-check 8). Also moved from
+M5: the simulator's advisory variants and the evidence clauses of I3 and I11, on P1-SIM-MERGE's
+merge path; the failpoint "landed, evidence note not written"; and the merge record's route, an
+optional `record` on the host's `Call::Land`, host-internal, added with P1-EVIDENCE with its free
+text bounded (rule 3; decision M5-1), which closes HOST-MERGE-STANDIN's record half.
 
 ## Invariants and the simulator checks that prove them
 
@@ -386,7 +537,8 @@ Each step is Felix's, made on the date its trigger is met, and recorded with tha
 2. At the start of M3, right before P1-DROP-WORKER merges, with no other pull request open:
    remove "Fast lane, wasm clippy" (decision 13). A required check that never reports blocks
    every pull request, the deleting one included.
-3. After P1-CI-SIM merges (M5): add "Fast lane, simulator".
+3. After P1-CI-SIM merges (M5): add "Fast lane, simulator". It applies only to pull requests;
+   server landings use the bypass (decision M5-4).
 4. In M4, before the local lander's first landing: add Felix's account as a bypass actor of the
    required-checks and update-restriction rules, so the lander's compare-and-swap push of `main`
    from his machine passes (decision 15); the runner has run the gate on that commit.
@@ -418,8 +570,8 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
 | Task | Slot | How |
 |---|---|---|
 | COORD-WAKE-WHILE-VERIFYING | M2, P1-MOVE-WAKE | an I4 host test pins the moved behaviour; a fix, if needed, is its own commit that removes the test's `#[ignore]` |
-| COORD-HEAD-FROM-AGENT | M5 | a `ReadHead` call on `Loaded`, before any dispatch; simulator check that no dispatch uses an agent-declared base |
-| COORD-UNDELIVERED-GRANT | M5 | decision 7; a host test that the scope is free again within one lease and the fence is refused after it |
+| COORD-HEAD-FROM-AGENT | done (#106) | a `ReadHead` call on `Loaded`, before any dispatch; simulator check that no dispatch uses an agent-declared base |
+| COORD-UNDELIVERED-GRANT | M5, P1-HOST-HARDENING | decision 7; a host test that the scope is free again within one lease and the fence is refused after it |
 
 ## Risks
 
@@ -437,7 +589,7 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
 | The dogfood server is down or loses its volume | hooks fail open in advisory mode (decision 10); claims reconcile on reconnect; a lost volume means a fresh state and new claims, never a snapshot restore |
 | The mutation check is slow or flaky | changed lines only, core crates only, sharded with a measured shard count, 30 minutes per shard; flakes are fixed, never retried |
 | The shared Mac is overloaded | heavy runs on CI only; at most two lanes; no local mutation or sweep runs |
-| Phase 1 runs past 12 weeks | re-plan at each milestone boundary; M3 and M5 carry the most and are re-sized first; the phase is sized at 13 weeks since decision 15 |
+| Phase 1 runs past 12 weeks | re-plan at each milestone boundary; M3 and M5 carry the most and are re-sized first; the phase is sized at 13 weeks since decision 15, and about 15 since M5's re-plan |
 
 ## Decisions for Felix
 
@@ -463,7 +615,8 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
 7. **COORD-UNDELIVERED-GRANT: keep the claim until its lease lapses** (30 s). The server cannot
    tell a grant that was never received from one whose write failed after the bytes left; keeping
    it lets an agent that did receive it heartbeat and carry on, and the cost of the other case is
-   at most one lease of a blocked scope.
+   at most one lease of a blocked scope. Decided by Felix on 25 October (M5-8): as
+   recommended.
 8. **The lander lane runs in parallel from M1.** Scheduling within the phase, not a scope change:
    the lander is the longest path to the deletion and shares no files with the host.
 9. **Evidence records as git notes** on the landed commit under `refs/notes/tessel-evidence`,
@@ -520,6 +673,28 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
     are reworded to say the local setup comes first. Decided by Felix on 20 October: as
     proposed (the single-call merge for the first local release included).
 
+**Decided at M5's re-plan.** Felix decided these on 25 October, as recommended, after an
+adversarial review of the re-plan:
+- **M5-1. The merge record's route:** an optional `record` on the host's `Call::Land`,
+  host-internal rather than wire protocol, added with P1-EVIDENCE in M6, its free text bounded
+  (rule 3).
+- **M5-2. The simulator in the gate:** the short seed set (about 30 s) is the default, so every
+  landing runs it inside `cargo test --workspace` with no `tessel.toml` change; CI runs the
+  two-minute set through `TESSEL_SIM_SEEDS`.
+- **M5-3. Proposed change A:** only `tessel-server admin resolve`, for a `Land` in doubt, run
+  offline (stop the server, resolve, start), since the store is exclusively locked while the
+  server runs; `release` waits.
+- **M5-4. Ruleset step 3** stays, after P1-CI-SIM lands. It applies only to pull requests.
+- **M5-5. M5-PROOF-CANDIDATE moves to Phase 3.** It is not Phase 1 scope in `PLAN.md`, and
+  Verus with Z3 is heavy on the shared Mac.
+- **M5-6. P1-LANDER-OUT goes in M6**, before the hosted server, which needs it most. The phase's
+  done-check 8 needs it before Phase 1 closes either way.
+- **M5-7. CANDIDATE-REF:** Felix approves the shape after its adversarial review, including the
+  new outcome for a missing candidate ref if it changes `Call` (decision 12). Creating the
+  lander's fork repository and adding it to the fine-grained token "tessel-dogfood-lander" are
+  his steps.
+- **M5-8. Decision 7** is accepted as written; P1-HOST-HARDENING adds its test.
+
 ## Proposed changes for Felix
 
 These change `PLAN.md` scope or order, so they wait for Felix (rule 10):
@@ -533,7 +708,8 @@ These change `PLAN.md` scope or order, so they wait for Felix (rule 10):
   only feeds the core the answer `Reconcile` would have given, so the core's rules still apply.
   If Felix declines `resolve`, a `Land` stuck in doubt holds the queue for good: no submission
   of that repository lands again until the git host answers, and the only other way out is
-  editing the database by hand.
+  editing the database by hand. Decided by Felix on 25 October (M5-3): `resolve` only, run
+  offline, in M5; `release` waits.
 - **B. A deployment for the dogfood server in Phase 1 (M6 after decision 15)**: a plain container
   build of the server binary, and `deploy/dogfood/fly.toml` as that instance's own configuration,
   ahead of Phase 3's signed image. It is not a release and is not signed.

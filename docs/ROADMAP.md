@@ -7,15 +7,16 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-24 17:40 EDT. Main at `cd68555`, green; the orchestrator's gate is green on it
-(2008 tests). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD). Seventeen server landings today, each
-read by an Opus reviewer on the commit from the fork first; main's CI is green on every one but
+**As of:** 2026-10-25. Main at `14d272c` (STATE only since `cd68555`), green; the orchestrator's
+gate is green on `cd68555` (2008 tests). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD).
+Seventeen server landings on 24 October, each read by an Opus reviewer on the commit from the
+fork first; main's CI is green on every one but
 `d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept their
-notes with no hand step. Every open row from today's reviews is closed but LANDER-ADMIN-POLICY-DEAD,
-which waits for M6's team-mode re-plan; the remaining "steward" names in `src/` are serialized, the
-TypeScript steward's, or read by its tests, and go with it in Phase 1. The server runs from
-`~/tessel-dogfood/bin` at `cd68555`, started from inside `~/tessel-dogfood`, on `127.0.0.1:7878`;
-agent tokens are valid to 31 October. Lanes cannot push (Felix's
+notes with no hand step. Every open row from 24 October's reviews is closed but
+LANDER-ADMIN-POLICY-DEAD, which waits for M6's team-mode re-plan; the remaining "steward" names in
+`src/` are serialized, the TypeScript steward's, or read by its tests, and go with it in Phase 1.
+The server runs from `~/tessel-dogfood/bin` at `cd68555`, started from inside `~/tessel-dogfood`,
+on `127.0.0.1:7878`; agent tokens are valid to 31 October. Lanes cannot push (Felix's
 `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
 of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
 worktree and decides holds as `orchestrator`. Two lanes ran at once four times; the coordinator
@@ -55,9 +56,12 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** M5's re-plan (hardening: the simulator, invariants I1-I12, the staged landing, the
-server as its own macOS user) is Felix's to open. No open row from today is left but
-LANDER-ADMIN-POLICY-DEAD (M6).
+**Next:** M5, re-planned and decided (below): dispatch P1-SIM-CORE (lane A) and CANDIDATE-REF
+(lane B); P1-SIM-CORE's workflow pull request (the seed count in the mutants jobs) goes to Felix
+before its code lands. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Decided by Felix (25 October), M5's re-plan:** M5-1 to M5-8 as recommended
+(`docs/proposals/phase-1.md`, "Decided at M5's re-plan"), after an adversarial Opus review of
+the re-plan; decision 7 and proposed change A's `resolve` are decided with them.
 **Found at dispatch (22 October):** `tessel.toml` allows only `cargo test`, `pnpm test` and `npm
 test`, so clippy, fmt and the named-tests check stay on CI after a landing, and `actionlint` and
 `zizmor` run nowhere but the lanes' gates until CI-ACTIONLINT-ZIZMOR; the runner inherits no
@@ -75,7 +79,8 @@ in M2 (P1-CLI-ON-HOST), and the swarm's test host in M5, as recommended in
 **Decided by Felix (19 October), M2's done-check:** it covers the host rows of the rules list.
 The adapter rows R2-R5 and R49 became "now" with P1-SERVER's named adapter tests, R1 with
 P1-IDENTITY.
-**Pending from Felix:** the plan's decisions 1-11 and proposed changes A-D (B now M6)
+**Pending from Felix:** the plan's decisions 1-6 and 8-11, proposed change A's `release`, and
+B-D (B now M6)
 (`docs/proposals/phase-1.md`); decision 13 was carried out as recommended (P1-DROP-WORKER merged).
 Tearing down the spike sandbox needs `gh auth refresh -s delete_repo`; it costs nothing and can
 stay until Phase 2.
@@ -399,7 +404,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   iterations, not time, so at a load near 50 the hook gave up after 256 s instead of 150 s. Done:
   both tests end on the cause under the frozen clock or state their real-time bound, and the loops
   wait by the clock.
-- [ ] **HOST-MERGE-STANDIN** — M5, with P1-CORE-STAGED-LANDING; its adapter half is done
+- [ ] **HOST-MERGE-STANDIN** — the stand-in half in P1-CORE-STAGED-LANDING (M5), the record
+  half with P1-EVIDENCE (M6; the route is decision M5-1); its adapter half is done
   (P1-SERVER-LANDING, `9b2533f`: `Prepare` is the whole merge, with tests); the merge record
   reaching the lander is open. From
   the P1-MOVE-WAKE review: until the staged landing, a merge is one `Prepare` call that stands for
@@ -418,8 +424,8 @@ host; the wasm lane is still green (`runtime.rs` unchanged); the ported steward 
   if the adapter never answers or sends `CallLost`. The host knows each call's `deadline_ms`.
   Done: a host test that a call past its deadline with no answer is treated as lost, or a
   written reason that the adapter's deadline is enough.
-- [ ] **M4-SANDBOX-WORKSPACE** — M5 (named before decision 15), with the local test runner's
-  sandbox. From the
+- [ ] **M4-SANDBOX-WORKSPACE** — M5, closed by RUNNER-OWN-UID (named before decision 15).
+  From the
   P1-LANDER-AFTER-TESTS review: the `TestTree` split stops the port API and accidental writes, not
   hostile repo code run as the same OS user. The tree names the workspace path (`remote.origin.url`,
   `.git/logs/HEAD`), so such code can write the workspace's `.git/config` directly. Done: the
@@ -549,7 +555,7 @@ claims reconciled.
   no-sandbox limit, stated in the docs). Exit 0 ran, 2 refused, 3 not supervised. No git, no
   network, no new dependencies. 1789 to 1843 tests; sixteen review mutants each red. Not verified:
   root or another uid. The sandbox is RUNNER-SANDBOX (M5, with M4-SANDBOX-WORKSPACE).
-- [ ] **RUNNER-SANDBOX** — M5, with M4-SANDBOX-WORKSPACE. From the P1-RUNNER review: a command
+- [ ] **RUNNER-SANDBOX** — M5, closed by RUNNER-OWN-UID. From the P1-RUNNER review: a command
   that calls `setsid` escapes the runner's process-group kill and the output drain gives up on it
   after 500 ms; the owner check of the config is reachable only as root. Done: the sandbox the
   M4-SANDBOX-WORKSPACE row describes also bounds the runner's children, with a test.
@@ -882,11 +888,87 @@ reviews (security, operations) and the sandbox trial.
 - [x] **M4-RESTART-HELD** (24 October) — lane B's claim 4 (GATE-INVALID-RETRIED) held for review;
   the server stopped and started at 16:54 UTC (12:54 EDT) with nothing running; the claim stayed
   submitted, was approved after the restart and landed (`0c0f119`).
-- [ ] **M5-PROOF-CANDIDATE** — M5, to weigh at its re-plan. GitHub Next and Microsoft Research's
-  Proof Driven Development Kit (21 October) proves Rust against a Verus spec and falls back to
-  tests. The core's invariants that proptests pin (one `Merged` per claim, fences persisted before
-  grants, a held submission never dispatched) are candidates for a proof. Done: a written answer
-  whether Verus fits the core, with one invariant tried.
+
+### M5. Hardening: simulator, staged landing, reconciliation
+
+Plan (`docs/proposals/phase-1.md`, M5, re-planned 25 October): the simulator with I1-I12 (their
+evidence and advisory clauses in M6) and failpoints; the core's landing split into `Prepare`, a
+journaled head on a candidate ref, `Test` and `Land`; `Unknown` and `Reconcile`; the host
+hardening and the adapter suite; repo code under test as its own macOS user; the swarm on the
+server; the dogfood server upgraded to the staged landing. Done when: the simulator lane is green
+with all twelve checkers on and its short seed set runs in every landing; R20, R24, R30 and R36
+flipped; P1-ADAPTER-SUITE green on CI; repo code under test runs as `_tessel-runner` on the
+dogfood server, with a CI test; M5-DOGFOOD-STAGED.
+
+**Decided by Felix (25 October):** M5-1 to M5-8 as recommended, after an adversarial Opus review
+of the re-plan (bought in on its sixth draft). Moved to M6: P1-LANDER-OUT (the lander out of the
+server's link graph, the phase's done-check 8), the simulator's advisory and evidence clauses,
+the failpoint "landed, evidence note not written" and the merge record's route. Moved to Phase 3:
+M5-PROOF-CANDIDATE. Merge-path tasks ("Felix reviews") are approved only after Felix's written yes
+naming the fork commit's sha (MERGE-PATH-REVIEW).
+
+Lane A:
+- [ ] **P1-SIM-CORE** — L. The simulator's driver, store, clock, crashes and client traffic;
+  checkers I1, I2, I4, I5, I8, I9, I10 with planted-bug tests; transcripts compared per seed;
+  wall-clock calls banned in `src/host` and `src/sim`. The short seed set is the default;
+  `TESSEL_SIM_SEEDS` raises it on CI and lowers it in the mutants jobs, through a workflow pull
+  request merged before the code lands.
+- [ ] **P1-CI-SIM** — S, after P1-SIM-CORE. "Fast lane, simulator" on pull requests and pushes
+  to main, and the nightly sweep (a workflow pull request); then ruleset step 3.
+- [ ] **P1-SWARM-ON-SERVER** — M, after P1-CI-SIM. `tessel-swarm/src/local.rs` drives a real
+  server instead of the core's merge functions; a landing's time measured against the runner's
+  720 s limit.
+- [ ] **P1-ADAPTER-SUITE** — M. First part after P1-SWARM-ON-SERVER: the CI-only kill -9 loop
+  checked against I1, and the CLI release before the protocol range field against the new server.
+  The rest after P1-HOST-HARDENING: a slow watcher, a panicking repo task, injected store errors.
+- [ ] **P1-HOST-HARDENING** — M, after P1-CORE-STAGED-LANDING. P1-PERSIST-RETRY (C8, flips R30),
+  exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
+- [ ] **P1-SIM-MERGE** — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING. The asynchronous merge
+  path; checkers I3, I6, I7, I11, I12.
+- [ ] **P1-FAILPOINTS** — M, after P1-SIM-MERGE and P1-CORE-RECONCILE. The crash windows of a
+  landing, the candidate ref's included.
+- [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
+  renewal persisted below half the lease (C10).
+
+Lane B:
+- [ ] **CANDIDATE-REF** — S; an adversarial review, then Felix (M5-7). Design note: the prepared
+  head on `refs/heads/tessel/candidate/<dispatch id>` of a fork the lander owns, and the outcome
+  for a `Land` whose ref is gone. Felix's steps: the fork repository and its token access.
+- [ ] **P1-SERVER-STAGED** — M, Felix reviews, after CANDIDATE-REF and MERGE-PATH-REVIEW. The
+  server answers `Test` and `Land`, with the ancestry read-back (P1-LANDER-ANCESTRY folded in)
+  and the missing-ref outcome.
+- [ ] **OWN-USERS-DESIGN** — S; an adversarial security review, then Felix. Service accounts
+  `_tessel` and `_tessel-runner`, the sudoers one-shot runner, cleanup, toolchain and upgrades.
+- [ ] **P1-CORE-STAGED-LANDING** — L, Felix reviews, after P1-SERVER-STAGED, P1-SWARM-ON-SERVER and
+  SENSITIVE-MERGE-PATH. `Prepare` → head journaled → `Test` → `Land` in the core, with the host
+  and the CLI's fake in the same commit. Closes HOST-MERGE-STANDIN's stand-in half.
+- [ ] **P1-CORE-RECONCILE** — M, Felix reviews, after P1-CORE-STAGED-LANDING. `Unknown` and
+  `Reconcile` (flips R24), a `Land` in doubt shown with its age, offline `tessel-server admin
+  resolve` (M5-3), and DOGFOOD-UPGRADE's fixture test.
+- [ ] **GATE-PARITY-FMT** — S, after P1-CORE-RECONCILE. The gate accepts `cargo fmt --all
+  --check`; Felix's pull request adds it to `tessel.toml`.
+- [ ] **RUNNER-OWN-UID** — M to L, after OWN-USERS-DESIGN and GATE-PARITY-FMT. The runner binary
+  through the sudo rule, a Linux CI job for the boundary (a workflow pull request), then the
+  dogfood server on its own users. Closes RUNNER-SANDBOX and M4-SANDBOX-WORKSPACE.
+
+Orchestrator:
+- [ ] **MERGE-PATH-REVIEW** — before P1-SERVER-STAGED; a pull request Felix merges.
+  `docs/BUILD-PROTOCOL.md` section 6: a "Felix reviews" submission is approved only after his
+  written yes naming the fork commit's sha; a fix pass needs a new yes.
+- [ ] **SENSITIVE-MERGE-PATH** — before P1-CORE-STAGED-LANDING; a pull request to
+  `scripts/dogfood/setup.sh` Felix merges, then a restart with nothing in flight. `src/merge.rs`,
+  `src/coordinator.rs` and `src/coordinator/` join `sensitive`.
+- [ ] **DOGFOOD-UPGRADE** — a section of `docs/dogfood.md` (a pull request) before the first
+  upgrade: rules (a) to (f) of the plan.
+- [ ] **M5-DOGFOOD-STAGED** — after the upgrade, three landings through the staged path, with
+  notes and claims released by `Merged`.
+
+Moved to Phase 3:
+- [ ] **M5-PROOF-CANDIDATE** — Phase 3 (decision M5-5, 25 October). GitHub Next and Microsoft
+  Research's Proof Driven Development Kit (21 October) proves Rust against a Verus spec and falls
+  back to tests. The core's invariants that proptests pin (one `Merged` per claim, fences persisted
+  before grants, a held submission never dispatched) are candidates for a proof. Done: a written
+  answer whether Verus fits the core, with one invariant tried.
 
 ## Carried over from the contest build
 
@@ -900,7 +982,7 @@ Kept, and scheduled where they fit:
 - [x] **SWARM-PUSH-PHRASES** — already done before Phase 0 (all four phrases are in the transient
   set with tests, `tessel-swarm/src/git.rs`); the contest roadmap had left the box open.
 - [ ] **COORD-UNDELIVERED-GRANT** — a `Granted` that fails to send closes the socket but leaves the
-  claim held until its lease lapses. Phase 1, in the host (send failure handling).
+  claim held until its lease lapses. M5, P1-HOST-HARDENING (decision 7).
 - [x] **COORD-APPLY-LOADED** — already done before Phase 0 (`apply_loaded` reloads the core before
   applying a steward outcome, `src/runtime.rs`); the contest roadmap had left the box open.
 - [x] **COORD-WAKE-WHILE-VERIFYING** (`35202e7`, #56) — from the P0-MQ-PROPTEST review:
