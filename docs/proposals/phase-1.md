@@ -272,39 +272,44 @@ Lane A:
 
 Lane B:
 - CANDIDATE-REF (S; an adversarial review, then Felix, decision M5-7): a design note on where the
-  prepared head lives between `Prepare`, `Test` and `Land`. Recommended shape: `Prepare` pushes
-  the rebased head to `refs/heads/tessel/candidate/<dispatch id>` on a fork the lander owns, one
-  per repository and not an agent's; `Test` clones that ref; `Land` pushes the head by
-  compare-and-swap on main and deletes the ref once the ancestry read-back finds the head landed.
-  A kill at any point leaves the ref, so a retried `Land` pushes the same head. A `Land` whose
-  ref is gone answers `Landed` if main contains the head, and otherwise a new outcome that sends
-  the submission back to `Prepare`: `Refused` would reject good work, and `Unknown` would loop
-  (with main still at base, `Reconcile` resends `Land`, and nothing after `Land` counts toward
-  the retry limit). This is the shape of Phase 2's candidate pull request. The note also covers
-  cleanup of orphaned refs, the credential for the candidate push, and whether `prepare` and
-  `land` stay public in the lander crate.
-- P1-SERVER-STAGED (M, Felix reviews, after CANDIDATE-REF and MERGE-PATH-REVIEW): the server
-  answers `Test` (the runner on a clone of the candidate ref) and `Land` (the compare-and-swap
-  push and the ancestry read-back: the journaled head must be an ancestor of main, not equal to
-  it, which is P1-LANDER-ANCESTRY, folded in). It adds the new outcome for a missing candidate
-  ref as a variant in `src/host/call.rs` with its match arms (rule 2) in `src/host/calls.rs` and
+  prepared head lives between `Prepare`, `Test` and `Land`; written as
+  `docs/proposals/candidate-ref.md` and approved on 25 October. `Prepare` pushes the rebased head
+  to `refs/tessel/candidate/<head sha>` on `remote` itself (fallback:
+  `refs/heads/tessel/candidate/<head sha>`, if the probe shows GitHub refuses the first); `Test`
+  fetches that ref into a new repository; `Land` pushes the head by compare-and-swap on main and
+  deletes the ref once the ancestry read-back finds the head landed. A kill at any point leaves
+  the ref, so a retried `Land` pushes the same head. A ref that is gone answers the new
+  `CandidateMissing` (`Land` answers `Landed` first if main contains the head), which sends the
+  submission back to `Prepare`: `Refused` would reject good work, and `Unknown` would loop (with
+  main still at base, `Reconcile` resends `Land`, and nothing after `Land` counts toward the
+  retry limit). The note also covers the sweep of orphaned refs, the credential for the candidate
+  writes, and that `prepare` stays public while `land` becomes `pub(crate)`.
+- P1-SERVER-STAGED (M, Felix reviews, after CANDIDATE-REF and MERGE-PATH-REVIEW): its first step
+  checks against `tessel-sandbox` over HTTPS that GitHub accepts a push to `refs/tessel/*`. The
+  server then answers `Test` (the runner on the candidate ref, fetched) and `Land` (the
+  compare-and-swap push and the ancestry read-back: the journaled head must be an ancestor of main,
+  not equal to it, which is P1-LANDER-ANCESTRY, folded in). It adds the lander's candidate functions
+  and the `with_candidate_access` port (taking a typed `CandidateWrite`, a signature change in
+  `tessel-lander/src/merge.rs`), and the new outcome `CandidateMissing` as a variant in
+  `src/host/call.rs` with its match arms (rule 2) in `src/host/calls.rs` and
   `tessel-server/src/repo.rs` (`moves_main`); until P1-CORE-STAGED-LANDING the core reads it as
   infrastructure, which is harmless because the core never sends `Land` before then, so neither
-  main's behaviour nor the dogfood server changes. Done: an adapter test for each call and
-  outcome, including a `Land` whose ref is missing; a lander test where main moved past the
-  landed head before the read-back, answered `landed`, which fails under equality; the ported
-  case "main_moved when the push exits 0 but main is at neither base nor head" now needs the head
-  not to be an ancestor, and says so in its name.
+  main's behaviour nor the dogfood server changes. Done: an adapter test for each call and outcome,
+  including a `Land` whose ref is missing; a lander test where main moved past the landed head
+  before the read-back, answered `landed`, which fails under equality; the ported case "main_moved
+  when the push exits 0 but main is at neither base nor head" now needs the head not to be an
+  ancestor, and says so in its name.
 - P1-CORE-STAGED-LANDING (L, Felix reviews, after P1-SERVER-STAGED, P1-SWARM-ON-SERVER and
-  SENSITIVE-MERGE-PATH): the core's one merge call (`begin_merge` and `merge_outcome`,
-  `merging.rs`; `MergeOutcome`, `merge.rs`) becomes `Prepare` → the head journaled in the
-  in-flight record → `Test` → `Land` (C6), each its own dispatch id, and `Prepare` becomes
-  rebase-and-push-candidate only. In the same commit, so main is never red: `src/host/calls.rs`,
-  `src/host/mod.rs`, `src/host/tests.rs` and the CLI's fake coordinator
-  (`tessel-cli/tests/support/mod.rs`, which answers `Prepare` as the whole merge). Done: a core
-  test that no `Land` is dispatched before its head is persisted; the merge-queue property tests
-  rewritten for the stages and green at 10,000 cases on CI; the end-to-end and quickstart CI jobs
-  green on the staged path. HOST-MERGE-STANDIN's stand-in half closes here.
+  SENSITIVE-MERGE-PATH): the core's one merge call (`begin_merge` and `merge_outcome`, `merging.rs`;
+  `MergeOutcome`, `merge.rs`) becomes `Prepare` → the head journaled in the in-flight record →
+  `Test` → `Land` (C6), each its own dispatch id, and `Prepare` becomes rebase-and-push-candidate
+  only. In the same commit, so main is never red: `tessel-server/src/landing/mod.rs` (the server's
+  `Prepare` flips with the core), `src/host/calls.rs`, `src/host/mod.rs`, `src/host/tests.rs` and
+  the CLI's fake coordinator (`tessel-cli/tests/support/mod.rs`, which answers `Prepare` as the
+  whole merge). Done: a core test that no `Land` is dispatched before its head is persisted; the
+  merge-queue property tests rewritten for the stages and green at 10,000 cases on CI; the
+  end-to-end and quickstart CI jobs green on the staged path. HOST-MERGE-STANDIN's stand-in half
+  closes here.
 - P1-CORE-RECONCILE (M, Felix reviews, after P1-CORE-STAGED-LANDING; the core and the host, no
   adapter change): `Unknown` and `Reconcile` (C5) as specified in the proposal ("Calls"), using the
   core's `in_doubt` and `unanswered_from`. Done: core tests that a retried `Land` reuses its
@@ -701,10 +706,9 @@ adversarial review of the re-plan:
   Verus with Z3 is heavy on the shared Mac.
 - **M5-6. P1-LANDER-OUT goes in M6**, before the hosted server, which needs it most. The phase's
   done-check 8 needs it before Phase 1 closes either way.
-- **M5-7. CANDIDATE-REF:** Felix approves the shape after its adversarial review, including the
-  new outcome for a missing candidate ref if it changes `Call` (decision 12). Creating the
-  lander's fork repository and adding it to the fine-grained token "tessel-dogfood-lander" are
-  his steps.
+- **M5-7. CANDIDATE-REF:** Felix decided on 25 October, after its adversarial review, the shape
+  `docs/proposals/candidate-ref.md` describes, including `CandidateMissing` as a change to `Call`
+  (decision 12). No lander repository or token change is needed: the refs live on `remote`.
 - **M5-8. Decision 7** is accepted as written; P1-HOST-HARDENING adds its test.
 
 ## Proposed changes for Felix
