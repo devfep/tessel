@@ -209,6 +209,8 @@ fn default_reply(step: GitStep) -> Reply {
 #[derive(Clone)]
 struct Plan {
     git: HashMap<GitStep, Reply>,
+    /// Replies that win over `git` once a push has run: the read-back after it.
+    after_push: HashMap<GitStep, Reply>,
     install: i32,
     test: i32,
     /// Outcomes the port reports as they are, instead of building one from the exit code.
@@ -224,6 +226,7 @@ impl Plan {
     fn new() -> Plan {
         Plan {
             git: HashMap::new(),
+            after_push: HashMap::new(),
             install: 0,
             test: 0,
             reported: Vec::new(),
@@ -237,6 +240,11 @@ impl Plan {
 
     fn git(mut self, step: GitStep, reply: Reply) -> Plan {
         self.git.insert(step, reply);
+        self
+    }
+
+    fn after_push(mut self, step: GitStep, reply: Reply) -> Plan {
+        self.after_push.insert(step, reply);
         self
     }
 
@@ -319,14 +327,14 @@ impl Harness {
 impl GitRunner for Harness {
     fn run(&self, command: &GitCommand) -> Result<GitOutput, RunError> {
         let step = git_step(command);
+        let pushed = self.has_event("git:push");
         self.events
             .borrow_mut()
             .push(format!("git:{}", step.label()));
         self.commands.borrow_mut().push(command.clone());
-        let reply = self
-            .plan
-            .git
-            .get(&step)
+        let later = pushed.then(|| self.plan.after_push.get(&step)).flatten();
+        let reply = later
+            .or_else(|| self.plan.git.get(&step))
             .cloned()
             .unwrap_or_else(|| default_reply(step));
         match reply.fault {
@@ -1120,8 +1128,7 @@ fn reports_merged_when_the_push_exits_non_zero_but_main_is_at_head() {
 }
 
 #[test]
-fn reports_main_moved_when_the_push_exits_0_and_main_is_at_neither_base_nor_head_and_the_head_is_not_an_ancestor_of_it(
-) {
+fn reports_main_moved_when_main_is_at_neither_base_nor_head_and_head_is_no_ancestor() {
     let harness = Harness::new(Plan {
         main_after_push: Some(racer()),
         ..Plan::new().git(GitStep::Push, exit(0))
@@ -1136,8 +1143,7 @@ fn reports_main_moved_when_the_push_exits_0_and_main_is_at_neither_base_nor_head
 }
 
 #[test]
-fn reports_merged_when_main_moved_past_the_head_before_the_read_back_because_the_head_is_an_ancestor(
-) {
+fn reports_merged_when_main_moved_past_the_head_because_the_head_is_an_ancestor() {
     // A later landing built on the head between the push and the read: main is at neither base
     // nor head, and the head is an ancestor of it. Landing is decided by ancestry, not equality.
     let harness = Harness::new(Plan {
@@ -1158,16 +1164,36 @@ fn reports_merged_when_main_moved_past_the_head_before_the_read_back_because_the
     assert_eq!(pushes, 1, "an ancestor is not pushed again");
 }
 
+fn moved_to_racer() -> MergeOutcome {
+    MergeOutcome::MainMoved {
+        expected: base(),
+        actual: racer(),
+    }
+}
+
 #[test]
 fn reports_main_moved_when_main_cannot_be_fetched_for_the_ancestry_question() {
+    // The head would be an ancestor, but the fetch that makes main current failed: not landed.
     let harness = Harness::new(Plan {
         main_after_push: Some(racer()),
         ..Plan::new()
             .git(GitStep::Ancestor, exit(0))
-            .git(GitStep::Fetch, exit(0))
+            .after_push(GitStep::Fetch, exit(128))
     });
-    // Both are fine here; the next case breaks the fetch that follows the push.
-    assert_eq!(merge(&harness, &whole_repo()), merged());
+    assert_eq!(merge(&harness, &whole_repo()), moved_to_racer());
+    assert!(
+        !harness.has_event("git:ancestor"),
+        "nothing is asked of a stale main"
+    );
+}
+
+#[test]
+fn reports_main_moved_when_the_ancestry_question_itself_fails() {
+    let harness = Harness::new(Plan {
+        main_after_push: Some(racer()),
+        ..Plan::new().git(GitStep::Ancestor, exit(128))
+    });
+    assert_eq!(merge(&harness, &whole_repo()), moved_to_racer());
 }
 
 #[test]

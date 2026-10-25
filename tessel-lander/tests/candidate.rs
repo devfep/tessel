@@ -9,8 +9,9 @@ use support::repos::{LocalPorts, Repos};
 use tessel_lander::candidate::{
     candidate_ref, push_candidate, read_candidate, sweep_candidates, CANDIDATE_NAMESPACE, MAX_SWEPT,
 };
+use tessel_lander::git::GitCommand;
 use tessel_lander::outcome::MergeOutcome;
-use tessel_lander::run::SystemRunner;
+use tessel_lander::run::{GitOutput, GitRunner, RunError, SystemRunner};
 use tessel_lander::types::Sha;
 use tessel_lander::workspace::{fetch_candidate_tree, CandidateTreeOutcome, CloneError};
 
@@ -324,4 +325,92 @@ fn land_is_merged_when_main_moved_past_the_head_before_the_read_back() {
     let outcome = repos.land_candidate(&ports, &head).expect("land");
     assert_eq!(merged_head(&outcome), Some(&head), "{outcome:?}");
     assert_ne!(repos.main_head(), head, "main is past the head");
+}
+
+/// Real git, except that what `git rev-parse` says of the candidate ref is replaced.
+struct SaysTip(String);
+
+impl GitRunner for SaysTip {
+    fn run(&self, command: &GitCommand) -> Result<GitOutput, RunError> {
+        let words: Vec<String> = command
+            .argv
+            .iter()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        let asks_for_the_ref = words.iter().any(|word| word == "rev-parse")
+            && words
+                .iter()
+                .any(|word| word.contains("refs/tessel/candidate/"));
+        if !asks_for_the_ref {
+            return SystemRunner.run(command);
+        }
+        Ok(GitOutput {
+            exit_code: Some(0),
+            stdout: format!("{}\n", self.0),
+            stderr: String::new(),
+        })
+    }
+}
+
+#[test]
+fn land_never_pushes_a_head_that_is_not_built_on_the_base() {
+    let repos = Repos::new();
+    let first = repos.main_head();
+    let head = new_head(&repos);
+    repos.set_candidate(head.as_str(), &head);
+    // Main moves on from the commit the head was prepared on: the head is a sibling of main.
+    repos.reset_to(first.as_str());
+    repos.commit("other.txt", "other\n");
+    repos.push(&repos.main);
+    let moved = repos.main_head();
+    let ports = LocalPorts::new(&repos);
+    let outcome = repos.land_candidate(&ports, &head).expect("land");
+    assert!(
+        matches!(outcome, MergeOutcome::GitFailed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(repos.main_head(), moved, "main is not rewritten");
+    assert!(ports.log.borrow().is_empty(), "no write was made");
+    assert!(repos.main_ref(&candidate_ref(&head)).is_some());
+}
+
+#[test]
+fn land_with_an_unreadable_fetched_tip_is_a_git_failure_not_a_missing_candidate() {
+    let repos = Repos::new();
+    let head = new_head(&repos);
+    repos.set_candidate(head.as_str(), &head);
+    let ports = LocalPorts::new(&repos);
+    let runner = SaysTip("not a sha".to_owned());
+    let outcome = repos
+        .land_candidate_with(&runner, &ports, &head)
+        .expect("land");
+    assert!(
+        matches!(outcome, MergeOutcome::GitFailed { .. }),
+        "{outcome:?}"
+    );
+    assert!(ports.log.borrow().is_empty());
+}
+
+#[test]
+fn land_with_a_fetched_tip_that_is_not_the_head_asks_main_before_giving_up() {
+    let repos = Repos::new();
+    let head = new_head(&repos);
+    repos.set_candidate(head.as_str(), &head);
+    let other = repos.main_head();
+    let ports = LocalPorts::new(&repos);
+    let runner = SaysTip(other.to_string());
+    let outcome = repos
+        .land_candidate_with(&runner, &ports, &head)
+        .expect("land");
+    assert!(
+        matches!(outcome, MergeOutcome::CandidateMissing),
+        "{outcome:?}"
+    );
+    assert!(ports.log.borrow().is_empty());
+
+    repos.push(&repos.main);
+    let landed = repos
+        .land_candidate_with(&runner, &ports, &head)
+        .expect("land");
+    assert_eq!(merged_head(&landed), Some(&head), "main holds the head");
 }

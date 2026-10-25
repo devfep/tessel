@@ -18,7 +18,7 @@ use tessel_lander::merge::{
 use tessel_lander::outcome::{
     EvidenceResult, LandedMerge, MergeOutcome, PackageStep, StepOutcome, TrialOutcome,
 };
-use tessel_lander::run::SystemRunner;
+use tessel_lander::run::{GitRunner, SystemRunner};
 use tessel_lander::trial::{run_trial, TrialContext, TrialPorts};
 use tessel_lander::types::Sha;
 use tessel_lander::workspace::TestTree;
@@ -164,6 +164,16 @@ impl Repos {
         ports: &impl MergePorts,
         head: &Sha,
     ) -> Result<MergeOutcome, MergeError> {
+        self.land_candidate_with(&SystemRunner, ports, head)
+    }
+
+    /// Like [`Repos::land_candidate`], with the git runner a test chooses.
+    pub fn land_candidate_with(
+        &self,
+        runner: &dyn GitRunner,
+        ports: &impl MergePorts,
+        head: &Sha,
+    ) -> Result<MergeOutcome, MergeError> {
         let (sources, pinned, clone_dir, test_dir) = (
             self.sources(),
             self.main_head(),
@@ -172,7 +182,7 @@ impl Repos {
         );
         let ctx = MergeContext {
             git: &self.git,
-            runner: &SystemRunner,
+            runner,
             sources: &sources,
             clone_dir: &clone_dir,
             test_dir: &test_dir,

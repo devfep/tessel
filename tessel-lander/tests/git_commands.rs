@@ -535,3 +535,14 @@ fn a_listing_of_the_candidate_refs_runs_outside_any_repository() {
         Some("/lander/home")
     );
 }
+
+#[test]
+fn the_ancestor_question_names_the_base_first_and_the_head_second() {
+    let command = git().ancestor_command(&workspace(), &sha('a'), &sha('b'));
+    let words = argv(&command);
+    let (ancestor, descendant) = ("a".repeat(40), "b".repeat(40));
+    assert!(
+        words.ends_with(&["--is-ancestor".to_owned(), ancestor, descendant]),
+        "{words:?}"
+    );
+}

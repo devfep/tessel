@@ -3,10 +3,10 @@
 //!
 //! `refs/tessel/candidate/<head sha>`: the name carries the head, so `Test` and `Land`, which are
 //! asked about `{base, head}` and nothing else, find it, and a retry pushes the same name. A ref
-//! outside `refs/heads` triggers no push workflow, matches no branch ruleset and is not fetched by a
-//! default clone. If the host refuses a push to it, [`CANDIDATE_NAMESPACE`] becomes
-//! `refs/heads/tessel/candidate/` and nothing else changes; the probe of
-//! `scripts/dogfood/probe-candidate-ref.sh` decides.
+//! outside `refs/heads` triggers no push workflow, matches no branch ruleset and is not fetched by
+//! a default clone. The probe of `scripts/dogfood/probe-candidate-ref.sh` showed the host accepts
+//! it; were that to change, [`CANDIDATE_NAMESPACE`] becomes `refs/heads/tessel/candidate/` and
+//! nothing else does.
 //!
 //! The ref's name and tip are untrusted: any account with push access to the repository can write
 //! under any non-main ref. A listing is parsed strictly, and a tip other than the head the name
@@ -48,8 +48,8 @@ impl Listed {
 }
 
 /// Reads `git ls-remote` output, keeping only lines that are exactly `<40 hex> TAB
-/// refs/tessel/candidate/<40 hex>`, at most [`MAX_LISTED`] of them. Anything else is skipped: another
-/// writer controls those names.
+/// refs/tessel/candidate/<40 hex>`, at most [`MAX_LISTED`] of them. Anything else is skipped:
+/// another writer controls those names.
 pub fn parse_listing(stdout: &str) -> Vec<Listed> {
     let mut listed = Vec::new();
     for line in stdout.lines().take(MAX_LISTED) {
@@ -129,12 +129,11 @@ fn delete_candidate(
 ) -> bool {
     let command =
         git.delete_refs_command(workspace, remote, &[(reference.to_owned(), sha.clone())]);
-    matches!(
-        ports.with_candidate_access(&CandidateWrite::Delete { reference, sha }, || {
-            runner.run(&command)
-        }),
-        Ok(Ok(output)) if output.success()
-    )
+    let write = CandidateWrite::Delete { reference, sha };
+    match ports.with_candidate_access(&write, || runner.run(&command)) {
+        Ok(Ok(output)) => output.success(),
+        Ok(Err(_)) | Err(_) => false,
+    }
 }
 
 /// Deletes the candidate refs of `remote` other than `keep`, at most [`MAX_SWEPT`], each with a
@@ -262,15 +261,21 @@ pub fn land_candidate(
     let local = ctx
         .runner
         .run(&ctx.git.ref_tip_command(&workspace, &reference))?;
-    if Sha::parse(local.stdout.trim()).ok().as_ref() != Some(&update.head) {
-        return Ok(MergeOutcome::CandidateMissing);
-    }
+    let Ok(tip) = Sha::parse(local.stdout.trim()) else {
+        return Ok(MergeOutcome::GitFailed { result: local });
+    };
+    // A tip that is not the head is no candidate; the head may still be on main.
     let outcome = if holds_in(ctx, &workspace, &update.head)? {
         merged(update)
+    } else if tip != update.head {
+        MergeOutcome::CandidateMissing
     } else {
-        land(ctx, ports, &workspace, update)?
+        match descends_from_base(ctx, &workspace, update)? {
+            Some(refused) => refused,
+            None => land(ctx, ports, &workspace, update)?,
+        }
     };
-    if matches!(outcome, MergeOutcome::Merged { .. }) {
+    if let MergeOutcome::Merged { .. } = outcome {
         // The landing is the truth; a ref that stays is swept by the next `Prepare`.
         delete_candidate(
             ctx.git,
@@ -282,6 +287,25 @@ pub fn land_candidate(
         );
     }
     Ok(outcome)
+}
+
+/// `None` when the head has the base in its history. The push of main is a lease, which rewinds
+/// or replaces main when the lease holds, so a head that is not built on the base it leases must
+/// never be pushed; the answer is then the git result that said so.
+fn descends_from_base(
+    ctx: &MergeContext<'_>,
+    workspace: &Workspace,
+    update: &PushUpdate,
+) -> Result<Option<MergeOutcome>, MergeError> {
+    let asked = ctx.runner.run(
+        &ctx.git
+            .ancestor_command(workspace, &update.base, &update.head),
+    )?;
+    Ok(if asked.success() {
+        None
+    } else {
+        Some(MergeOutcome::GitFailed { result: asked })
+    })
 }
 
 #[cfg(test)]

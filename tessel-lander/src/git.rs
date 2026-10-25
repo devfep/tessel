@@ -339,6 +339,25 @@ impl Git {
         )
     }
 
+    /// Exit 0 when `ancestor` is a commit on the history of `descendant`, 1 when it is not.
+    pub fn ancestor_command(
+        &self,
+        workspace: &Workspace,
+        ancestor: &Sha,
+        descendant: &Sha,
+    ) -> GitCommand {
+        self.local(
+            workspace,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                ancestor.as_str(),
+                descendant.as_str(),
+            ],
+            LOCAL_TIMEOUT,
+        )
+    }
+
     /// Exit 0 when the commit object was fetched, 1 when it was not.
     pub fn commit_exists_command(&self, workspace: &Workspace, commit: &Sha) -> GitCommand {
         let object = format!("{commit}^{{commit}}");
