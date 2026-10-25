@@ -328,7 +328,7 @@ directory unless `--config` names another. An unknown key makes it invalid.
 | `[runner]` `work_dir`, `handoff_dir` | absolute paths | none | Together, they make a sandbox: the runner copies the tree from `handoff_dir` into `work_dir` and runs the tests there. |
 | `[runner]` `path` | `PATH` value | required in a sandbox | The `PATH` of a test command. |
 | `[runner]` `cargo_home`, `tmpdir` | absolute paths | none | The `CARGO_HOME` and `TMPDIR` of a test command, in a sandbox. |
-| `[runner]` `max_processes` | number | 4096 | In a sandbox, the ceiling on the account's processes, soft and hard. Core files are turned off. |
+| `[runner]` `max_processes` | number | 1024 | In a sandbox, the ceiling on the account's processes, soft and hard. Core files are turned off. |
 | `[runner]` `sweep_dirs` | absolute paths | `/tmp`, `/var/tmp`, `/Users/Shared`, the per-user temporary directories | In a sandbox, the directories the runner clears of its own account's files at the start of each run. |
 
 The runner refuses to start unless the file exists, is a regular file (not a link) owned by root

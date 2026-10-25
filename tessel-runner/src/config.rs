@@ -32,9 +32,10 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 /// The largest `timeout_secs` a configuration may set: one day.
 pub const MAX_TIMEOUT_SECS: u64 = 86_400;
 const MAX_CONFIG_BYTES: u64 = 4096;
-/// The default ceiling on processes of the runner's account, in a sandbox. Sized above the peak of
-/// `cargo test --workspace` on the dogfood Mac (docs/proposals/own-users.md, section 2).
-pub const DEFAULT_MAX_PROCESSES: u64 = 4096;
+/// The default ceiling on processes of the runner's account, in a sandbox. `cargo test --workspace`
+/// raised a Mac's count of one user's processes by about 120 at its peak (sampled every half
+/// second on 25 October, other sessions included), so 1,024 leaves eight times that.
+pub const DEFAULT_MAX_PROCESSES: u64 = 1024;
 /// The home of a sandboxed test command: a directory nothing can write.
 const SANDBOX_HOME: &str = "/var/empty";
 /// The only variables a test command inherits from the runner, by name.
