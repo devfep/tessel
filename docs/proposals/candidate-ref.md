@@ -1,7 +1,8 @@
 # Candidate ref: where the staged landing keeps the prepared head
 
 Status: design note (CANDIDATE-REF, M5), approved by Felix on 25 October (decision M5-7),
-including the new `CandidateMissing` answer as a `Call` change (decision 12). No code. It settles where the head that `Prepare` makes lives until `Land`, so that
+including the new `CandidateMissing` answer as a `Call` change (decision 12). No code. It settles
+where the head that `Prepare` makes lives until `Land`, so that
 P1-SERVER-STAGED, P1-CORE-STAGED-LANDING and P1-CORE-RECONCILE can be built without guessing.
 Requirements C5, C6, C7, S1, S3 are those of `docs/proposals/real-use.md`; rows and decisions
 are those of `docs/proposals/phase-1.md`.
