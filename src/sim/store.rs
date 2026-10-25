@@ -2,11 +2,16 @@
 //! yet made durable. Only `apply` makes it durable, and a crash loses every staged write. A commit
 //! that fails without a crash is never staged, so the durable store stays as it was.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::host::BatchId;
 use crate::protocol::Event;
 use crate::shell::{EVENT_PREFIX, STATE_KEY};
+
+/// The durable events, and the keys that did not parse.
+type ParsedEvents = (Rc<Vec<Event>>, Rc<Vec<String>>);
 
 #[derive(Debug, Default, Clone)]
 pub struct Store {
@@ -16,6 +21,9 @@ pub struct Store {
     unflushed: Vec<(String, String)>,
     /// The core state as it was before the last write that changed it.
     previous_state: Option<String>,
+    /// The events as last parsed, dropped when anything durable changes.
+    parsed: RefCell<Option<ParsedEvents>>,
+    values: RefCell<Option<Rc<BTreeMap<u64, serde_json::Value>>>>,
 }
 
 impl Store {
@@ -60,6 +68,8 @@ impl Store {
     }
 
     fn write(&mut self, entries: Vec<(String, String)>) {
+        *self.parsed.borrow_mut() = None;
+        *self.values.borrow_mut() = None;
         for (key, json) in entries {
             if key == STATE_KEY {
                 self.previous_state = self.durable.get(STATE_KEY).cloned();
@@ -82,8 +92,28 @@ impl Store {
         self.previous_state.as_deref().or_else(|| self.state())
     }
 
-    /// Every durable event, in `seq` order, with the keys that did not parse.
-    pub fn events(&self) -> (Vec<Event>, Vec<String>) {
+    /// The durable events as JSON, by `seq`, for comparing with what clients received.
+    pub fn event_values(&self) -> Rc<BTreeMap<u64, serde_json::Value>> {
+        if let Some(cached) = self.values.borrow().as_ref() {
+            return cached.clone();
+        }
+        let values: BTreeMap<u64, serde_json::Value> = self
+            .events()
+            .0
+            .iter()
+            .filter_map(|event| Some((event.seq, serde_json::to_value(event).ok()?)))
+            .collect();
+        let values = Rc::new(values);
+        *self.values.borrow_mut() = Some(values.clone());
+        values
+    }
+
+    /// Every durable event, in `seq` order, with the keys that did not parse. Parsed once per
+    /// change to the store, then shared.
+    pub fn events(&self) -> ParsedEvents {
+        if let Some(cached) = self.parsed.borrow().as_ref() {
+            return cached.clone();
+        }
         let mut events = Vec::new();
         let mut unparsed = Vec::new();
         for (key, json) in &self.durable {
@@ -96,7 +126,9 @@ impl Store {
             }
         }
         events.sort_by_key(|event| event.seq);
-        (events, unparsed)
+        let parsed = (Rc::new(events), Rc::new(unparsed));
+        *self.parsed.borrow_mut() = Some(parsed.clone());
+        parsed
     }
 }
 

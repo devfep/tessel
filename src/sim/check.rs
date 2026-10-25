@@ -2,27 +2,36 @@
 //! simulator checks that prove them") from what clients received and what the simulated store
 //! holds, never from what the host meant to send. They run after every step of a seed.
 //!
-//! Implemented here: I1 (a grant or event a client holds is in the store), I5 (the stored state
-//! round-trips through the codec and through every older shape) and I9 (no fence, claim id or seq
-//! is seen twice; a retired fence is refused). The invariants of the second half (I2, I4, I8,
-//! I10) join `Checker` and `run` with their traffic.
+//! I1: a grant or event a client holds is in the store. I2: a watcher's events are the log from
+//! its offset, in order, with no gap and no duplicate. I4: when the core has work due, a wake is
+//! pending, later than now. I5: the stored state round-trips through the codec. I8: no two
+//! granted claims conflict. I9: no fence, claim id or seq is seen twice, and a retired fence is
+//! refused. I10: nothing is dispatched for a submission held for review, nothing uncovered is
+//! merged, and no lease is extended without a heartbeat.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
 use crate::coordinator::Coordinator;
+use crate::host::call::Request;
 use crate::host::SocketId;
-use crate::protocol::{ClaimId, ErrorCode, Event, EventKind, Fence, ServerMsg};
-use crate::sim::driver::{Delivery, RequestKind, Sent, Sim};
+use crate::protocol::{
+    uncovered, ClaimId, ErrorCode, Event, EventKind, RaceId, ScopeClaim, ServerMsg,
+};
+use crate::sim::driver::{Delivery, Dispatch, RequestKind, Sent, Sim, Watch};
 use crate::sim::store::Store;
 
 /// Which invariant a violation breaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Checker {
     I1,
+    I2,
+    I4,
     I5,
+    I8,
     I9,
+    I10,
     /// The harness itself: the host kept asking the adapter past any bound, or the driver
     /// made a mistake.
     Harness,
@@ -30,7 +39,16 @@ pub enum Checker {
 
 impl Checker {
     /// The checkers a run enables by default. `Harness` reports the driver's own mistakes.
-    pub const ALL: [Checker; 4] = [Checker::I1, Checker::I5, Checker::I9, Checker::Harness];
+    pub const ALL: [Checker; 8] = [
+        Checker::I1,
+        Checker::I2,
+        Checker::I4,
+        Checker::I5,
+        Checker::I8,
+        Checker::I9,
+        Checker::I10,
+        Checker::Harness,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,10 +60,25 @@ pub struct Violation {
 /// Run every enabled checker on `sim` as it stands.
 pub fn run(sim: &Sim, enabled: &[Checker]) -> Vec<Violation> {
     let mut found = Vec::new();
+    let (events, _) = sim.store().events();
     for checker in enabled {
         let details = match checker {
             Checker::I1 => i1(sim.transcript(), sim.store()),
+            Checker::I2 => i2(
+                sim.transcript(),
+                sim.watches(),
+                &sim.store().event_values(),
+                &|s| sim.is_open(s),
+            ),
+            Checker::I4 => i4(sim.store(), sim.wake(), sim.now_ms()),
             Checker::I5 => i5(sim.store()),
+            Checker::I8 => i8(&events),
+            Checker::I10 => i10(
+                &events,
+                stored_state(sim.store()).ok().flatten().as_ref(),
+                sim.dispatches(),
+                sim.heartbeats(),
+            ),
             Checker::I9 => i9(sim.transcript(), sim.sent(), &|sock| sim.is_open(sock)),
             Checker::Harness => sim.faults().to_vec(),
         };
@@ -83,7 +116,11 @@ pub fn i1(transcript: &[Delivery], store: &Store) -> Vec<String> {
         .iter()
         .map(|key| format!("stored event {key} does not parse"))
         .collect();
-    let by_seq: BTreeMap<u64, &Event> = events.iter().map(|event| (event.seq, event)).collect();
+    let values = store.event_values();
+    let granted: BTreeSet<(u64, u64)> = events
+        .iter()
+        .filter_map(|event| logged_grant(&event.kind))
+        .collect();
     if let Some(state) = &state {
         for (index, event) in events.iter().enumerate() {
             if event.seq != index as u64 {
@@ -100,7 +137,7 @@ pub fn i1(transcript: &[Delivery], store: &Store) -> Vec<String> {
         }
     }
     for delivery in transcript {
-        found.extend(i1_message(&delivery.msg, state.as_ref(), &events, &by_seq));
+        found.extend(i1_message(&delivery.msg, state.as_ref(), &granted, &values));
     }
     found
 }
@@ -108,8 +145,8 @@ pub fn i1(transcript: &[Delivery], store: &Store) -> Vec<String> {
 fn i1_message(
     msg: &ServerMsg,
     state: Option<&Value>,
-    events: &[Event],
-    by_seq: &BTreeMap<u64, &Event>,
+    granted: &BTreeSet<(u64, u64)>,
+    values: &BTreeMap<u64, Value>,
 ) -> Vec<String> {
     let mut found = Vec::new();
     if let ServerMsg::Granted { claim, fence, .. } = msg {
@@ -122,10 +159,7 @@ fn i1_message(
                 claim.0, fence.0
             ));
         }
-        if !events
-            .iter()
-            .any(|event| logs_grant(&event.kind, *claim, *fence))
-        {
+        if !granted.contains(&(claim.0, fence.0)) {
             found.push(format!(
                 "grant of claim {} fence {} is not in the stored log",
                 claim.0, fence.0
@@ -146,34 +180,22 @@ fn i1_message(
         }
     }
     if let ServerMsg::Event { event } = msg {
-        let stored = by_seq
-            .get(&event.seq)
-            .and_then(|e| serde_json::to_value(e).ok());
-        if stored != serde_json::to_value(event).ok() {
+        if values.get(&event.seq) != serde_json::to_value(event).ok().as_ref() {
             found.push(format!("event {} differs from the stored one", event.seq));
         }
     }
     found
 }
 
-fn logs_grant(kind: &EventKind, claim: ClaimId, fence: Fence) -> bool {
-    if let EventKind::ClaimGranted {
-        claim: logged_claim,
-        fence: logged_fence,
-        ..
-    } = kind
-    {
-        return *logged_claim == claim && *logged_fence == fence;
+/// The claim and fence a grant or an amend logged.
+fn logged_grant(kind: &EventKind) -> Option<(u64, u64)> {
+    if let EventKind::ClaimGranted { claim, fence, .. } = kind {
+        return Some((claim.0, fence.0));
     }
-    if let EventKind::ClaimAmended {
-        claim: logged_claim,
-        fence: logged_fence,
-        ..
-    } = kind
-    {
-        return *logged_claim == claim && *logged_fence == fence;
+    if let EventKind::ClaimAmended { claim, fence, .. } = kind {
+        return Some((claim.0, fence.0));
     }
-    false
+    None
 }
 
 /// The places in the state where a field can sit: the top level, `config`, and a claim.
@@ -387,4 +409,323 @@ fn unrefused_probes(
         }
     }
     found
+}
+
+// ---- I2 ----
+
+/// I2: each watcher's events against the stored log from its offset. What it received is always a
+/// run of the log in order from the offset, with no gap and no duplicate; unless its socket ended
+/// or its sends were failed, it received the whole log from there.
+pub fn i2(
+    transcript: &[Delivery],
+    watches: &[Watch],
+    values: &BTreeMap<u64, Value>,
+    is_open: &dyn Fn(SocketId) -> bool,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    for watch in watches {
+        let received: Vec<&Event> = transcript
+            .iter()
+            .filter(|delivery| delivery.sock == watch.sock)
+            .filter_map(|delivery| {
+                if let ServerMsg::Event { event } = &delivery.msg {
+                    return Some(event);
+                }
+                None
+            })
+            .collect();
+        for (index, event) in received.iter().enumerate() {
+            let expected = watch.from_seq + index as u64;
+            if event.seq != expected {
+                found.push(format!(
+                    "watcher on socket {} from {} saw seq {} where {} was next",
+                    watch.sock.0, watch.from_seq, event.seq, expected
+                ));
+                break;
+            }
+            if values.get(&event.seq) != serde_json::to_value(event).ok().as_ref() {
+                found.push(format!(
+                    "watcher on socket {} saw seq {} differently from the stored event",
+                    watch.sock.0, event.seq
+                ));
+                break;
+            }
+        }
+        let owed = values.range(watch.from_seq..).count();
+        if is_open(watch.sock) && !watch.dropped && received.len() < owed {
+            found.push(format!(
+                "watcher on socket {} from {} received {} of {} events",
+                watch.sock.0,
+                watch.from_seq,
+                received.len(),
+                owed
+            ));
+        }
+    }
+    found
+}
+
+// ---- I4 ----
+
+/// I4: if the core has work due, a wake is pending and it is later than now. (A failed wake
+/// retries after a delay, so a wake later than the work is allowed.)
+pub fn i4(store: &Store, wake: Option<u64>, now_ms: u64) -> Vec<String> {
+    let state = match stored_state(store) {
+        Ok(Some(state)) => state,
+        Ok(None) => return Vec::new(),
+        Err(e) => return vec![e],
+    };
+    let core = match serde_json::from_value::<Coordinator>(state) {
+        Ok(core) => core,
+        Err(e) => return vec![format!("the stored state does not decode: {e}")],
+    };
+    let Some(due) = core.next_wake_ms(false, false, now_ms) else {
+        return Vec::new();
+    };
+    match wake {
+        None => vec![format!("work is due at {due} and no wake is pending")],
+        Some(at) if at <= now_ms => {
+            vec![format!(
+                "the pending wake {at} is not later than now ({now_ms})"
+            )]
+        }
+        Some(_) => Vec::new(),
+    }
+}
+
+// ---- I8 ----
+
+/// A granted claim, as the log shows it.
+struct Live {
+    agent: String,
+    scopes: Vec<ScopeClaim>,
+    race: Option<RaceId>,
+}
+
+/// The claims the log shows granted and not ended, by id.
+fn live_claims(events: &[Event]) -> BTreeMap<u64, Live> {
+    let mut live: BTreeMap<u64, Live> = BTreeMap::new();
+    for event in events {
+        if let EventKind::ClaimGranted {
+            agent,
+            claim,
+            scopes,
+            race,
+            ..
+        } = &event.kind
+        {
+            let held = Live {
+                agent: agent.0.clone(),
+                scopes: scopes.clone(),
+                race: *race,
+            };
+            live.insert(claim.0, held);
+        }
+        if let EventKind::ClaimAmended { claim, added, .. } = &event.kind {
+            if let Some(held) = live.get_mut(&claim.0) {
+                held.scopes.extend(added.iter().cloned());
+            }
+        }
+        if let EventKind::ClaimReleased { claim, .. } | EventKind::Merged { claim, .. } =
+            &event.kind
+        {
+            live.remove(&claim.0);
+        }
+        if let EventKind::RaceDecided {
+            winner: Some(winner),
+            ..
+        } = &event.kind
+        {
+            if let Some(held) = live.get_mut(&winner.0) {
+                held.race = None;
+            }
+        }
+    }
+    live
+}
+
+/// Whether two claims hold locks that conflict (`Lock::conflicts_with`).
+fn locks_conflict(a: &[ScopeClaim], b: &[ScopeClaim]) -> bool {
+    for left in a.iter().flat_map(ScopeClaim::locks) {
+        for right in b.iter().flat_map(ScopeClaim::locks) {
+            if left.0 == right.0 && left.1.conflicts_with(right.1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// I8: no two granted claims conflict. Entrants of one race share its scopes, and an agent's own
+/// claims never block each other.
+pub fn i8(events: &[Event]) -> Vec<String> {
+    let live = live_claims(events);
+    let mut found = Vec::new();
+    for (a, left) in &live {
+        for (b, right) in live.range(a + 1..) {
+            let same_race = left.race.is_some() && left.race == right.race;
+            let own = left.agent == right.agent && left.race.is_none() && right.race.is_none();
+            if same_race || own {
+                continue;
+            }
+            if locks_conflict(&left.scopes, &right.scopes) {
+                found.push(format!(
+                    "claims {a} ({}) and {b} ({}) are both granted and conflict",
+                    left.agent, right.agent
+                ));
+            }
+        }
+    }
+    found
+}
+
+// ---- I10 ----
+
+/// I10: no dispatch for a submission held for review, no merge of an uncovered submission, no
+/// lease extended without a heartbeat.
+pub fn i10(
+    events: &[Event],
+    state: Option<&Value>,
+    dispatches: &[Dispatch],
+    heartbeats: &[(String, u64)],
+) -> Vec<String> {
+    let mut found = held_dispatches(events, dispatches);
+    found.extend(merged_uncovered(events));
+    if let Some(state) = state {
+        found.extend(extended_leases(events, state, heartbeats));
+    }
+    found
+}
+
+/// Whether the log up to `events` holds `claim` for review: asked for and not approved.
+fn held_for_review(events: &[Event], claim: ClaimId) -> bool {
+    let mut held = false;
+    for event in events {
+        if let EventKind::ReviewRequested { claim: c, .. } = &event.kind {
+            held |= *c == claim;
+        }
+        if let EventKind::ReviewDecided { claim: c, .. }
+        | EventKind::Submitted { claim: c, .. }
+        | EventKind::SubmitRejected { claim: c, .. } = &event.kind
+        {
+            if *c == claim {
+                held = false;
+            }
+        }
+    }
+    held
+}
+
+fn held_dispatches(events: &[Event], dispatches: &[Dispatch]) -> Vec<String> {
+    let mut found = Vec::new();
+    for dispatch in dispatches {
+        if let Request::Prepare { claim, .. } = &dispatch.request {
+            let upto = dispatch.events_len.min(events.len());
+            if held_for_review(&events[..upto], *claim) {
+                found.push(format!(
+                    "claim {} was dispatched while it was held for review",
+                    claim.0
+                ));
+            }
+        }
+    }
+    found
+}
+
+/// A `Merged` event for a claim whose latest submission, by the scopes the claim held then, left
+/// something uncovered.
+fn merged_uncovered(events: &[Event]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut claimed: BTreeMap<u64, Vec<ScopeClaim>> = BTreeMap::new();
+    let mut uncovered_now: BTreeSet<u64> = BTreeSet::new();
+    for event in events {
+        if let EventKind::ClaimGranted { claim, scopes, .. } = &event.kind {
+            claimed.insert(claim.0, scopes.clone());
+        }
+        if let EventKind::ClaimAmended { claim, added, .. } = &event.kind {
+            claimed
+                .entry(claim.0)
+                .or_default()
+                .extend(added.iter().cloned());
+        }
+        if let EventKind::Submitted { claim, touched, .. } = &event.kind {
+            let held = claimed.get(&claim.0).map_or(&[][..], Vec::as_slice);
+            if uncovered(held, touched).is_empty() {
+                uncovered_now.remove(&claim.0);
+            } else {
+                uncovered_now.insert(claim.0);
+            }
+        }
+        if let EventKind::Merged { claim, .. } = &event.kind {
+            if uncovered_now.contains(&claim.0) {
+                found.push(format!("claim {} merged with its work uncovered", claim.0));
+            }
+        }
+    }
+    found
+}
+
+/// A claim's lease may run `lease_ms` past the latest of its grant, its reopening after a
+/// rejected submission, and a heartbeat from its agent.
+fn extended_leases(events: &[Event], state: &Value, heartbeats: &[(String, u64)]) -> Vec<String> {
+    let lease_ms = state
+        .pointer("/config/lease_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let Some(claims) = state.get("claims").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (id, claim) in claims {
+        if !claim.get("submitted").is_some_and(Value::is_null) {
+            continue;
+        }
+        let (Some(agent), Some(expires)) = (
+            claim.get("agent").and_then(Value::as_str),
+            claim.get("expires_at_ms").and_then(Value::as_u64),
+        ) else {
+            continue;
+        };
+        let renewed = events
+            .iter()
+            .filter(|event| renews(&event.kind, id))
+            .map(|event| event.at_ms)
+            .chain(
+                heartbeats
+                    .iter()
+                    .filter(|(who, _)| who == agent)
+                    .map(|(_, at)| *at),
+            )
+            .max()
+            .unwrap_or(0);
+        if expires > renewed + lease_ms {
+            found.push(format!(
+                "claim {id} expires at {expires}, more than a lease after its last renewal at {renewed}"
+            ));
+        }
+    }
+    found
+}
+
+/// Whether `kind` gives claim `id` a fresh lease: its grant, or its reopening after a rejection.
+fn renews(kind: &EventKind, id: &str) -> bool {
+    if let EventKind::ClaimGranted { claim, .. } | EventKind::SubmitRejected { claim, .. } = kind {
+        return claim.0.to_string() == id;
+    }
+    if let EventKind::RaceDecided {
+        winner: Some(claim),
+        ..
+    } = kind
+    {
+        return claim.0.to_string() == id;
+    }
+    false
+}
+
+/// The events as JSON by `seq`, as `Store::event_values` has them.
+pub fn event_values(events: &[Event]) -> BTreeMap<u64, Value> {
+    events
+        .iter()
+        .filter_map(|event| Some((event.seq, serde_json::to_value(event).ok()?)))
+        .collect()
 }

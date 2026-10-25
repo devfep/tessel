@@ -3,13 +3,15 @@
 //! branches are pinned by cases built by hand from a scripted run.
 
 use serde_json::Value;
+use tessel_coordinator::host::call::Request;
 use tessel_coordinator::host::{HostConfig, SocketId};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, ErrorCode, Event, EventKind, Fence, Intent, Mode, OnConflict,
-    RequestId, RunId, Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind, Fence,
+    Intent, Mode, OnConflict, RaceId, ReleaseReason, RequestId, RunId, Scope, ScopeClaim,
+    ServerMsg,
 };
 use tessel_coordinator::sim::check::{self, Checker};
-use tessel_coordinator::sim::driver::{Delivery, RequestKind, Sent, Sim};
+use tessel_coordinator::sim::driver::{Delivery, Dispatch, RequestKind, Sent, Sim, Watch};
 use tessel_coordinator::sim::store::Store;
 use tessel_coordinator::sim::{self, Run, Variant};
 
@@ -65,6 +67,26 @@ fn i9_alone_sees_a_fence_issued_twice_after_a_stale_reload() {
 #[test]
 fn i5_alone_sees_state_the_codec_does_not_round_trip() {
     assert!(first_caught(Variant::DriftingCodec, Checker::I5).is_some());
+}
+
+#[test]
+fn i2_alone_sees_a_watcher_miss_an_event() {
+    assert!(first_caught(Variant::SkipsReplayEvent, Checker::I2).is_some());
+}
+
+#[test]
+fn i4_alone_sees_work_due_with_no_wake_pending() {
+    assert!(first_caught(Variant::LostWake, Checker::I4).is_some());
+}
+
+#[test]
+fn i8_alone_sees_two_granted_claims_that_conflict() {
+    assert!(first_caught(Variant::LosesScopesOnLoad, Checker::I8).is_some());
+}
+
+#[test]
+fn i10_alone_sees_a_lease_extended_without_a_heartbeat() {
+    assert!(first_caught(Variant::PhantomHeartbeat, Checker::I10).is_some());
 }
 
 // ---- A scripted run to build cases from ----
@@ -521,4 +543,544 @@ fn a_frame_on_a_socket_a_crash_closed_is_dropped() {
     let before = sim.log().len();
     sim.send(a, &ClientMsg::Heartbeat, RequestKind::Other, None);
     assert_eq!(sim.log().len(), before, "nothing reaches a dead socket");
+}
+
+// ---- Events built by hand ----
+
+fn at(seq: u64, at_ms: u64, kind: EventKind) -> Event {
+    Event {
+        seq,
+        at_ms,
+        run: RunId("sim".to_string()),
+        kind,
+    }
+}
+
+fn intent() -> Intent {
+    Intent {
+        summary: "work".to_string(),
+        task_ref: None,
+        assumptions: Vec::new(),
+    }
+}
+
+fn granted_event(
+    seq: u64,
+    agent: &str,
+    claim: u64,
+    scopes: Vec<ScopeClaim>,
+    race: Option<u64>,
+) -> Event {
+    let kind = EventKind::ClaimGranted {
+        agent: AgentId(agent.to_string()),
+        claim: ClaimId(claim),
+        fence: Fence(claim),
+        scopes,
+        intent: intent(),
+        race: race.map(RaceId),
+        at_risk: Vec::new(),
+    };
+    at(seq, 100, kind)
+}
+
+fn released(seq: u64, claim: u64) -> Event {
+    let kind = EventKind::ClaimReleased {
+        claim: ClaimId(claim),
+        reason: ReleaseReason::Agent,
+    };
+    at(seq, 200, kind)
+}
+
+fn connected(seq: u64, agent: &str) -> Event {
+    let kind = EventKind::AgentConnected {
+        agent: AgentId(agent.to_string()),
+    };
+    at(seq, 0, kind)
+}
+
+// ---- I2 ----
+
+fn sees(sock: u64, events: &[Event]) -> Vec<Delivery> {
+    events
+        .iter()
+        .map(|event| Delivery {
+            sock: SocketId(sock),
+            agent: AgentId("w".to_string()),
+            msg: ServerMsg::Event {
+                event: event.clone(),
+            },
+        })
+        .collect()
+}
+
+fn watch(sock: u64, from_seq: u64, dropped: bool) -> Watch {
+    Watch {
+        sock: SocketId(sock),
+        from_seq,
+        dropped,
+    }
+}
+
+#[test]
+fn i2_is_silent_for_the_log_from_the_offset_and_for_a_watcher_past_its_end() {
+    let log: Vec<Event> = (0..4).map(|seq| connected(seq, "a")).collect();
+    assert!(check::i2(
+        &sees(0, &log),
+        &[watch(0, 0, false)],
+        &check::event_values(&log),
+        &open
+    )
+    .is_empty());
+    assert!(check::i2(
+        &sees(0, &log[2..]),
+        &[watch(0, 2, false)],
+        &check::event_values(&log),
+        &open
+    )
+    .is_empty());
+    assert!(check::i2(
+        &[],
+        &[watch(0, 9, false)],
+        &check::event_values(&log),
+        &open
+    )
+    .is_empty());
+}
+
+#[test]
+fn i2_flags_a_gap_a_duplicate_and_a_wrong_start() {
+    let log: Vec<Event> = (0..4).map(|seq| connected(seq, "a")).collect();
+    let gap = [log[0].clone(), log[2].clone(), log[3].clone()];
+    let found = check::i2(
+        &sees(0, &gap),
+        &[watch(0, 0, true)],
+        &check::event_values(&log),
+        &open,
+    );
+    assert_eq!(
+        found,
+        ["watcher on socket 0 from 0 saw seq 2 where 1 was next"]
+    );
+    let twice = [log[0].clone(), log[0].clone()];
+    let found = check::i2(
+        &sees(0, &twice),
+        &[watch(0, 0, true)],
+        &check::event_values(&log),
+        &open,
+    );
+    assert_eq!(
+        found,
+        ["watcher on socket 0 from 0 saw seq 0 where 1 was next"]
+    );
+    let found = check::i2(
+        &sees(0, &log[1..]),
+        &[watch(0, 0, true)],
+        &check::event_values(&log),
+        &open,
+    );
+    assert_eq!(
+        found,
+        ["watcher on socket 0 from 0 saw seq 1 where 0 was next"]
+    );
+}
+
+#[test]
+fn i2_flags_an_event_that_differs_from_the_stored_one() {
+    let log: Vec<Event> = (0..2).map(|seq| connected(seq, "a")).collect();
+    let altered = [log[0].clone(), connected(1, "b")];
+    let found = check::i2(
+        &sees(0, &altered),
+        &[watch(0, 0, false)],
+        &check::event_values(&log),
+        &open,
+    );
+    assert_eq!(
+        found,
+        ["watcher on socket 0 saw seq 1 differently from the stored event"]
+    );
+}
+
+#[test]
+fn i2_flags_a_missing_tail_unless_the_socket_ended_or_was_dropped() {
+    let log: Vec<Event> = (0..4).map(|seq| connected(seq, "a")).collect();
+    let short = sees(0, &log[..2]);
+    let found = check::i2(
+        &short,
+        &[watch(0, 0, false)],
+        &check::event_values(&log),
+        &open,
+    );
+    assert_eq!(found, ["watcher on socket 0 from 0 received 2 of 4 events"]);
+    assert!(check::i2(
+        &short,
+        &[watch(0, 0, false)],
+        &check::event_values(&log),
+        &closed
+    )
+    .is_empty());
+    assert!(check::i2(
+        &short,
+        &[watch(0, 0, true)],
+        &check::event_values(&log),
+        &open
+    )
+    .is_empty());
+}
+
+// ---- I4 ----
+
+#[test]
+fn i4_wants_a_wake_later_than_now_while_work_is_due() {
+    let sim = script();
+    let now = sim.now_ms();
+    assert!(sim.wake().is_some_and(|at| at > now), "the host set a wake");
+    assert!(check::i4(sim.store(), sim.wake(), now).is_empty());
+    let found = check::i4(sim.store(), None, now);
+    assert!(found[0].ends_with("and no wake is pending"), "{found:?}");
+    let found = check::i4(sim.store(), Some(now), now);
+    assert_eq!(
+        found,
+        [format!(
+            "the pending wake {now} is not later than now ({now})"
+        )]
+    );
+}
+
+#[test]
+fn i4_asks_nothing_when_no_work_is_due() {
+    assert!(check::i4(&Store::default(), None, 5).is_empty());
+}
+
+// ---- I8 ----
+
+fn claim_on(path: &str, mode: Mode) -> Vec<ScopeClaim> {
+    vec![file(path, mode)]
+}
+
+#[test]
+fn i8_flags_two_granted_claims_of_two_agents_that_conflict() {
+    let log = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        granted_event(1, "b", 2, claim_on("src/a.rs", Mode::EditBody), None),
+    ];
+    assert_eq!(
+        check::i8(&log),
+        ["claims 1 (a) and 2 (b) are both granted and conflict"]
+    );
+    let dir = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        granted_event(
+            1,
+            "b",
+            2,
+            vec![ScopeClaim {
+                scope: Scope::Dir { path: "src".into() },
+                mode: Mode::EditSignature,
+            }],
+            None,
+        ),
+    ];
+    assert_eq!(
+        check::i8(&dir).len(),
+        1,
+        "an ancestor's intention lock conflicts"
+    );
+}
+
+#[test]
+fn i8_allows_what_does_not_conflict() {
+    let depend = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::Depend), None),
+        granted_event(1, "b", 2, claim_on("src/a.rs", Mode::EditBody), None),
+    ];
+    assert!(check::i8(&depend).is_empty(), "Depend and EditBody coexist");
+    let own = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        granted_event(1, "a", 2, claim_on("src/a.rs", Mode::EditBody), None),
+    ];
+    assert!(
+        check::i8(&own).is_empty(),
+        "an agent's own claims do not block each other"
+    );
+    let apart = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        granted_event(1, "b", 2, claim_on("src/b.rs", Mode::EditBody), None),
+    ];
+    assert!(check::i8(&apart).is_empty());
+    let entrants = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), Some(1)),
+        granted_event(1, "b", 2, claim_on("src/a.rs", Mode::EditBody), Some(1)),
+    ];
+    assert!(
+        check::i8(&entrants).is_empty(),
+        "entrants of one race share its scopes"
+    );
+}
+
+#[test]
+fn i8_forgets_a_claim_once_it_ended_and_sees_a_conflict_an_amend_makes() {
+    let ended = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        released(1, 1),
+        granted_event(2, "b", 2, claim_on("src/a.rs", Mode::EditBody), None),
+    ];
+    assert!(check::i8(&ended).is_empty());
+    let merged = at(
+        1,
+        200,
+        EventKind::Merged {
+            claim: ClaimId(1),
+            head: CommitId("h".into()),
+            base: None,
+            unverified: Vec::new(),
+            untried_shadows: Vec::new(),
+        },
+    );
+    let after_merge = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        merged,
+        granted_event(2, "b", 2, claim_on("src/a.rs", Mode::EditBody), None),
+    ];
+    assert!(check::i8(&after_merge).is_empty());
+    let amended = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        granted_event(1, "b", 2, claim_on("src/b.rs", Mode::EditBody), None),
+        at(
+            2,
+            200,
+            EventKind::ClaimAmended {
+                claim: ClaimId(2),
+                fence: Fence(3),
+                added: claim_on("src/a.rs", Mode::Create),
+            },
+        ),
+    ];
+    assert_eq!(check::i8(&amended).len(), 1);
+}
+
+#[test]
+fn i8_treats_a_race_winner_as_an_ordinary_claim() {
+    let decided = at(
+        2,
+        200,
+        EventKind::RaceDecided {
+            race: RaceId(1),
+            winner: Some(ClaimId(1)),
+            ranking: vec![ClaimId(1)],
+        },
+    );
+    let log = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), Some(1)),
+        granted_event(1, "a", 2, claim_on("src/a.rs", Mode::EditBody), None),
+        decided,
+    ];
+    assert!(
+        check::i8(&log[..2]).len() == 1,
+        "an entrant's race lock blocks even its agent"
+    );
+    assert!(check::i8(&log).is_empty(), "the winner's own claims do not");
+}
+
+// ---- I10 ----
+
+fn prepare(claim: u64, events_len: usize) -> Dispatch {
+    Dispatch {
+        request: Request::Prepare {
+            claim: ClaimId(claim),
+            agent: AgentId("a".into()),
+            fork_commit: CommitId("f".into()),
+            scopes: Vec::new(),
+        },
+        events_len,
+    }
+}
+
+fn review_requested(seq: u64, claim: u64) -> Event {
+    let kind = EventKind::ReviewRequested {
+        claim: ClaimId(claim),
+        reasons: Vec::new(),
+    };
+    at(seq, 150, kind)
+}
+
+fn review_decided(seq: u64, claim: u64, approve: bool) -> Event {
+    let kind = EventKind::ReviewDecided {
+        claim: ClaimId(claim),
+        approve,
+        note: None,
+        reviewer: None,
+    };
+    at(seq, 160, kind)
+}
+
+fn submitted(seq: u64, claim: u64, touched: Vec<ScopeClaim>) -> Event {
+    let kind = EventKind::Submitted {
+        claim: ClaimId(claim),
+        fork_commit: CommitId("f".into()),
+        touched,
+        decisions: DecisionRecord::default(),
+    };
+    at(seq, 140, kind)
+}
+
+fn merged(seq: u64, claim: u64) -> Event {
+    let kind = EventKind::Merged {
+        claim: ClaimId(claim),
+        head: CommitId("h".into()),
+        base: None,
+        unverified: Vec::new(),
+        untried_shadows: Vec::new(),
+    };
+    at(seq, 300, kind)
+}
+
+#[test]
+fn i10_flags_a_dispatch_for_a_submission_held_for_review() {
+    let log = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        submitted(1, 1, claim_on("src/a.rs", Mode::EditBody)),
+        review_requested(2, 1),
+        review_decided(3, 1, true),
+    ];
+    let hold = |events_len: usize| check::i10(&log, None, &[prepare(1, events_len)], &[]);
+    assert_eq!(
+        hold(3),
+        ["claim 1 was dispatched while it was held for review"]
+    );
+    assert!(hold(2).is_empty(), "not yet asked for review");
+    assert!(hold(4).is_empty(), "approved");
+    let other = check::i10(&log, None, &[prepare(2, 3)], &[]);
+    assert!(other.is_empty(), "another claim is not held");
+}
+
+#[test]
+fn i10_flags_a_merge_of_work_the_claim_did_not_cover() {
+    let uncovered = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        submitted(1, 1, claim_on("src/b.rs", Mode::EditBody)),
+        merged(2, 1),
+    ];
+    assert_eq!(
+        check::i10(&uncovered, None, &[], &[]),
+        ["claim 1 merged with its work uncovered"]
+    );
+    let covered = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        submitted(1, 1, claim_on("src/a.rs", Mode::EditBody)),
+        merged(2, 1),
+    ];
+    assert!(check::i10(&covered, None, &[], &[]).is_empty());
+    let resubmitted = [
+        granted_event(0, "a", 1, claim_on("src/a.rs", Mode::EditBody), None),
+        submitted(1, 1, claim_on("src/b.rs", Mode::EditBody)),
+        submitted(2, 1, claim_on("src/a.rs", Mode::EditBody)),
+        merged(3, 1),
+    ];
+    assert!(
+        check::i10(&resubmitted, None, &[], &[]).is_empty(),
+        "the latest submission counts"
+    );
+}
+
+#[test]
+fn i10_flags_a_lease_longer_than_a_lease_past_its_last_renewal() {
+    let sim = script();
+    let (events, _) = sim.store().events();
+    let state = state_of(&sim);
+    assert!(check::i10(&events, Some(&state), &[], &[]).is_empty());
+    let mut longer = state.clone();
+    let expires = longer["claims"]["1"]["expires_at_ms"]
+        .as_u64()
+        .expect("a lease");
+    longer["claims"]["1"]["expires_at_ms"] = Value::from(expires + 1);
+    let found = check::i10(&events, Some(&longer), &[], &[]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].starts_with("claim 1 expires at"), "{found:?}");
+    let beat = [("agent-a".to_string(), sim.now_ms() + 1)];
+    assert!(
+        check::i10(&events, Some(&longer), &[], &beat).is_empty(),
+        "a heartbeat renews"
+    );
+    let other = [("agent-b".to_string(), sim.now_ms() + 1)];
+    assert_eq!(
+        check::i10(&events, Some(&longer), &[], &other).len(),
+        1,
+        "another agent's does not"
+    );
+}
+
+// ---- The driver and the traffic ----
+
+fn seqs_received(sim: &Sim, sock: SocketId) -> Vec<u64> {
+    let mut seqs = Vec::new();
+    for delivery in sim.transcript().iter().filter(|d| d.sock == sock) {
+        if let ServerMsg::Event { event } = &delivery.msg {
+            seqs.push(event.seq);
+        }
+    }
+    seqs
+}
+
+#[test]
+fn a_watcher_gets_the_log_from_its_offset_and_what_follows_it() {
+    let mut sim = script();
+    let stored = sim.stored_events() as u64;
+    let sock = sim.watch("watcher-a", 2, true);
+    assert!(sim.quiet());
+    let seqs = seqs_received(&sim, sock);
+    assert_eq!(seqs.first(), Some(&2));
+    assert!(seqs.windows(2).all(|pair| pair[1] == pair[0] + 1));
+    assert!(
+        seqs.last().is_some_and(|last| *last >= stored),
+        "its own hello is in the log too"
+    );
+    let found = check::i2(
+        sim.transcript(),
+        sim.watches(),
+        &sim.store().event_values(),
+        &|s| sim.is_open(s),
+    );
+    assert_eq!(found, Vec::<String>::new());
+}
+
+#[test]
+fn a_socket_whose_sends_fail_receives_nothing_and_owes_nothing() {
+    let mut sim = script();
+    let sock = sim.watch("watcher-b", 0, false);
+    sim.drop_sends(sock);
+    assert!(sim.quiet());
+    assert!(seqs_received(&sim, sock).is_empty());
+    assert!(sim.watches().iter().any(|w| w.sock == sock && w.dropped));
+}
+
+#[test]
+fn the_traffic_reaches_what_the_checkers_need() {
+    let wanted = [
+        "Merged {",
+        "ReviewRequired",
+        "Uncovered",
+        "RaceResult",
+        "SubmitRejected",
+        "Accepted",
+        "Prepare {",
+        "SendFailed",
+        "crash",
+        "type\\\":\\\"watch",
+        "type\\\":\\\"review",
+        "type\\\":\\\"join_race",
+        "type\\\":\\\"open_race",
+        "type\\\":\\\"heartbeat",
+        "type\\\":\\\"submit",
+    ];
+    let mut seen = vec![0_u32; wanted.len()];
+    for seed in 0..12 {
+        for line in &sim::run_seed(seed, Variant::Correct, &[]).transcript {
+            for (index, needle) in wanted.iter().enumerate() {
+                seen[index] += u32::from(line.contains(needle));
+            }
+        }
+    }
+    for (needle, count) in wanted.iter().zip(&seen) {
+        assert!(*count > 0, "twelve seeds never produced {needle}");
+    }
 }

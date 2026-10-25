@@ -4,8 +4,9 @@
 //! it), so a seed reproduces on any machine, and every seed runs twice with the transcripts
 //! compared.
 //!
-//! This half builds the driver, the store, the clock and checkers I1, I5 and I9. The second half
-//! adds traffic for races, reviews and watchers, and checkers I2, I4, I8 and I10.
+//! Checkers I1, I2, I4, I5, I8, I9 and I10 prove the invariants of `docs/proposals/phase-1.md` that
+//! the call path and the wake carry; the merge path's (I3, I6, I7, I11, I12) come with its
+//! simulation.
 
 pub mod check;
 pub mod clock;
@@ -97,6 +98,8 @@ fn host_config() -> HostConfig {
     HostConfig {
         repo: "sim".to_string(),
         run: Some("sim".to_string()),
+        reviewers: Some(traffic::REVIEWER.to_string()),
+        sensitive: Some("lib/".to_string()),
         ..HostConfig::default()
     }
 }
