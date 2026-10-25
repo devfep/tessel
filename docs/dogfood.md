@@ -416,9 +416,10 @@ next migration. The accounts and files stay; they do nothing while the daemon is
 
 ## A landing
 
-An approval, or a submission the coordinator does not hold for review, starts a landing: rebase,
-claim coverage, the runner's tests, a compare-and-swap push of `main`, a read-back, then `merged`
-in the lane's inbox. [What holds a submission](configuration.md#what-holds-a-submission-for-review)
+An approval, or a submission the coordinator does not hold for review, starts a landing in three
+calls: `Prepare` (rebase, claim coverage, the head pushed to a candidate ref), `Test` (the runner's
+tests on a tree made from that ref) and `Land` (a compare-and-swap push of `main`, a read-back by
+ancestry, the ref deleted), then `merged` in the lane's inbox. [What holds a submission](configuration.md#what-holds-a-submission-for-review)
 and the outcomes are in [Landing](configuration.md#landing).
 
 ## D3, the load on the Mac

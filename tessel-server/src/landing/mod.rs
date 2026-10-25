@@ -1,12 +1,12 @@
 //! The local lander: answers the host's calls with the real lander and the real runner, in
 //! process, against a git remote reached by path.
 //!
-//! Until the core stages a landing (P1-CORE-STAGED-LANDING), the host's one `Prepare` call stands
-//! for the whole merge. Here it runs the lander's `run_merge`: clone main, fetch the agent's fork,
-//! rebase, check coverage and the gate, run the trunk's test command on a clone of the rebased
-//! head, push main with a compare-and-swap, and read main back. `Prepared` is the answer only when
-//! that read found the head on main. The lander runs git and never repo code; the runner runs repo
-//! code and never git (rule 4).
+//! A merge is three calls (`docs/proposals/candidate-ref.md`). `Prepare` clones main, fetches the
+//! agent's fork, rebases, checks coverage and the gate, and pushes the head to its candidate ref
+//! on the repository it lands on; main does not move, and `Prepared` says the head is there. `Test`
+//! runs the trunk's test command on a repository made from that ref. `Land` pushes main with a
+//! compare-and-swap, reads it back by ancestry and deletes the ref. The lander runs git and never
+//! repo code; the runner runs repo code and never git (rule 4).
 //!
 //! Each call is bounded by its own `deadline_ms`. A call still running at its deadline is
 //! answered `Unknown`, its clones are removed, and the work it left behind is stopped from
@@ -30,8 +30,11 @@ use std::sync::Arc;
 use tessel_coordinator::host::call::{Call, CallAnswer, Refusal, Request};
 use tessel_coordinator::merge::RuleKind;
 use tessel_coordinator::protocol::{AgentId, CommitId, ScopeClaim};
+use tessel_lander::candidate::{push_candidate, sweep_candidates};
 use tessel_lander::git::{CommandError, Git, MergeSources, MAIN_BRANCH};
-use tessel_lander::merge::{run_merge, MergeContext, MergePolicy, MergeRequest};
+use tessel_lander::merge::{
+    prepare as merge_prepare, MergeContext, MergePolicy, MergeRequest, Prepared,
+};
 use tessel_lander::run::SystemRunner;
 use tessel_lander::types::Sha;
 
@@ -42,11 +45,11 @@ use crate::identity::is_server_agent_name;
 use crate::paths::{absolute, absolute_location, ResolveError};
 use crate::repo::{BoxFuture, CallPort};
 
-use answer::merge_answer;
+use answer::{commit_id, prepare_answer};
 use deadline::Stop;
 use git_read::read_branch;
-use names::{quote, MAX_LOGGED_CHARS};
 use ports::Ports;
+use staged::unfinished;
 use workdir::CallDir;
 
 pub use ports::{LocalRunner, TestRunner};
@@ -394,7 +397,7 @@ impl Inner {
             main_remote: self.remote.clone(),
             fork_remote,
         };
-        let (clone_dir, test_dir) = (work.dir.child("main"), work.tree_dir("test"));
+        let (clone_dir, test_dir) = (work.dir.child("main"), work.tree_dir("unused"));
         let ctx = MergeContext {
             git: &self.git,
             runner: &SystemRunner,
@@ -409,29 +412,26 @@ impl Inner {
             scopes,
             policy: MergePolicy::Submission,
         };
-        match run_merge(&ctx, &ports, &request) {
-            Ok(outcome) => merge_answer(&repo, outcome, ports.take_first_failure().as_deref()),
-            Err(error) => {
-                if let Some(message) = ports.take_gate_refusal() {
-                    tracing::info!(
-                        repo,
-                        "the trunk's gate cannot be used; the landing is refused"
-                    );
-                    return CallAnswer::Refused {
-                        refusal: Refusal::Rule {
-                            rule: RuleKind::GateInvalid,
-                            message,
-                        },
-                    };
-                }
-                let note = quote(&error.to_string(), MAX_LOGGED_CHARS);
-                tracing::warn!(
-                    repo,
-                    error = %note,
-                    "the merge did not finish; the core retries"
-                );
-                CallAnswer::Unknown
-            }
+        let ready = match merge_prepare(&ctx, &ports, &request) {
+            Ok(Prepared::Ready(ready)) => ready,
+            Ok(Prepared::Done(outcome)) => return prepare_answer(&repo, outcome),
+            Err(error) => return unfinished(&repo, "prepare", &error),
+        };
+        let remote = &self.remote;
+        let (git, runner) = (&self.git, &SystemRunner);
+        let pushed = push_candidate(git, runner, &ports, &ready.workspace, remote, &ready.head);
+        if let Err(error) = pushed {
+            return unfinished(&repo, "push the candidate", &error);
+        }
+        // Best effort: a ref that stays is swept by the next `Prepare`, and is no answer.
+        match sweep_candidates(git, runner, &ports, &ready.workspace, remote, &ready.head) {
+            Ok(removed) => tracing::info!(repo, removed, "swept the stale candidate refs"),
+            Err(error) => tracing::warn!(repo, error = %error, "the candidate sweep did not run"),
+        }
+        tracing::info!(repo, base = %ready.base, head = %ready.head, "the candidate is pushed");
+        CallAnswer::Prepared {
+            base: commit_id(&ready.base),
+            head: commit_id(&ready.head),
         }
     }
 }

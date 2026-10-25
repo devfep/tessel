@@ -1,9 +1,10 @@
 //! The calls the wake issues, and what their answers mean to the core (R21 to R23, R26, R38).
 //!
-//! Until the core stages its landing (P1-CORE-STAGED-LANDING), a merge is one call: `Prepare`,
-//! which stands for the whole merge the lander runs. It is answered `Prepared { base, head }`
-//! once main is at `head`, or `Refused`. The staged `Test` and `Land` calls are not issued yet,
-//! though an answer to either counts as a merge answer. `Call` carries no evidence record, so no
+//! A merge is three calls, each with the dispatch id of the core's stage (`MergeStage`): `Prepare`
+//! (answered `Prepared { base, head }` once the head is on the candidate ref, main unmoved),
+//! `Test` (`Tested`) and `Land` (`Landed { head }` once main holds the head). What an answer
+//! means depends on the call it answers: `merge_outcome_of` reads it with its request, so a
+//! `Landed` is a landing only as the answer to a `Land`. `Call` carries no evidence record, so no
 //! `MergeRecord` reaches the lander.
 //!
 //! An answer that is not of the kind the call asks for, `Unknown` included, is the service being
@@ -20,15 +21,16 @@
 //! retried and not left waiting for an answer nobody will send. What stays uncovered is an
 //! adapter that neither answers, panics nor dies: a bug in the adapter, not a state of the call.
 
-use crate::coordinator::{MergeDispatch, VerifyDispatch};
+use crate::coordinator::{MergeDispatch, MergeStage, VerifyDispatch};
 use crate::host::call::{
     Call, CallAnswer, CallId, DispatchId, Refusal, Request, TestFailure, TrialResult,
 };
 use crate::host::wake::WakeStep;
 use crate::host::{Host, Job, Output};
 use crate::merge::{
-    MergeOutcome, StepExit, TrialOutcome, TrialReport, REASON_OUTPUT_MAX_CHARS,
-    STEWARD_CALL_TIMEOUT_MS,
+    MergeOutcome, StepExit, TrialOutcome, TrialReport, LAND_CALL_TIMEOUT_MS,
+    PREPARE_CALL_TIMEOUT_MS, REASON_OUTPUT_MAX_CHARS, STEWARD_CALL_TIMEOUT_MS,
+    TEST_CALL_TIMEOUT_MS,
 };
 use crate::protocol::CommitId;
 use crate::shell::Work;
@@ -36,18 +38,38 @@ use crate::shell::Work;
 /// How long a head read waits: one ref, not a test run (R38).
 pub const HEAD_CALL_TIMEOUT_MS: u64 = 30_000;
 
-/// A merge, as the `Prepare` call that stands for it.
+/// The call of one stage of a merge, with that stage's share of the time budget.
 pub fn merge_call(id: CallId, dispatch: &MergeDispatch, now_ms: u64) -> Call {
+    let (request, timeout_ms) = match &dispatch.stage {
+        MergeStage::Prepare => (
+            Request::Prepare {
+                claim: dispatch.claim,
+                agent: dispatch.agent.clone(),
+                fork_commit: dispatch.fork_commit.clone(),
+                scopes: dispatch.scopes.clone(),
+            },
+            PREPARE_CALL_TIMEOUT_MS,
+        ),
+        MergeStage::Test { base, head } => (
+            Request::Test {
+                base: base.clone(),
+                head: head.clone(),
+            },
+            TEST_CALL_TIMEOUT_MS,
+        ),
+        MergeStage::Land { base, head } => (
+            Request::Land {
+                base: base.clone(),
+                head: head.clone(),
+            },
+            LAND_CALL_TIMEOUT_MS,
+        ),
+    };
     Call {
         id,
         dispatch_id: DispatchId(dispatch.id),
-        request: Request::Prepare {
-            claim: dispatch.claim,
-            agent: dispatch.agent.clone(),
-            fork_commit: dispatch.fork_commit.clone(),
-            scopes: dispatch.scopes.clone(),
-        },
-        deadline_ms: now_ms.saturating_add(STEWARD_CALL_TIMEOUT_MS),
+        request,
+        deadline_ms: now_ms.saturating_add(timeout_ms),
     }
 }
 
@@ -77,9 +99,13 @@ pub fn head_call(id: CallId, now_ms: u64) -> Call {
     }
 }
 
-/// The wake step that follows the step that issued `request`.
-pub fn resume_after(request: &Request) -> WakeStep {
+/// The wake step that follows the step that issued `request`. A `Prepare` or a `Test` that the
+/// core answered by moving the merge to its next stage (`merge_continues`) goes straight back to
+/// the merge step, which issues that stage's call: the marker with the journaled head was stored
+/// with the answer. Every other merge answer goes on to the verification.
+pub fn resume_after(request: &Request, merge_continues: bool) -> WakeStep {
     match request {
+        Request::Prepare { .. } | Request::Test { .. } if merge_continues => WakeStep::Merge,
         Request::Prepare { .. } | Request::Test { .. } | Request::Land { .. } => {
             WakeStep::Verification
         }
@@ -88,27 +114,33 @@ pub fn resume_after(request: &Request) -> WakeStep {
     }
 }
 
-/// What the answer to a merge call means to the core.
-pub fn merge_outcome_of(answer: &CallAnswer) -> MergeOutcome {
-    match answer {
-        // A head that is the base is a landing that added nothing to main: main already holds the
+/// What the answer to the merge call `request` means to the core. An answer that is not of the
+/// kind that call asks for is the service being unavailable.
+pub fn merge_outcome_of(request: &Request, answer: &CallAnswer) -> MergeOutcome {
+    if let CallAnswer::Refused { refusal } = answer {
+        return refusal_outcome(refusal);
+    }
+    match (request, answer) {
+        // A head that is the base is a rebase that left nothing to add: main already holds the
         // work, as after a lost answer. The core lands that outcome at main, with the main the
-        // attempt was dispatched from as its `before` (`unanswered_from`), which `Merged` drops.
-        CallAnswer::Prepared { base, head } if base == head => {
+        // attempt was dispatched from as its `before` (`unanswered_from`).
+        (Request::Prepare { .. }, CallAnswer::Prepared { base, head }) if base == head => {
             MergeOutcome::AlreadyMerged { base: base.clone() }
         }
-        CallAnswer::Prepared { base, head } => MergeOutcome::Merged {
+        (Request::Prepare { .. }, CallAnswer::Prepared { base, head }) => MergeOutcome::Prepared {
             base: base.clone(),
             head: head.clone(),
         },
-        CallAnswer::Refused { refusal } => refusal_outcome(refusal),
-        CallAnswer::Tested
-        | CallAnswer::Landed { .. }
-        | CallAnswer::Trialled { .. }
-        | CallAnswer::Head { .. }
-        | CallAnswer::Reconciled { .. }
-        | CallAnswer::CandidateMissing
-        | CallAnswer::Unknown => MergeOutcome::ServiceUnavailable,
+        (Request::Test { .. }, CallAnswer::Tested) => MergeOutcome::Tested {},
+        // The base of the landing is the one the call was made with.
+        (Request::Land { base, .. }, CallAnswer::Landed { head }) => MergeOutcome::Merged {
+            base: base.clone(),
+            head: head.clone(),
+        },
+        (Request::Test { .. } | Request::Land { .. }, CallAnswer::CandidateMissing) => {
+            MergeOutcome::CandidateMissing {}
+        }
+        _ => MergeOutcome::ServiceUnavailable,
     }
 }
 
@@ -225,10 +257,10 @@ impl Host {
         let now_ms = self.now_ms;
         let waits = self.waits();
         let dispatch = call.dispatch_id.0;
-        let resume = resume_after(&call.request);
-        let (operation, prepared) = match call.request {
+        let mut resume = resume_after(&call.request, false);
+        let (operation, prepared) = match &call.request {
             Request::Prepare { .. } | Request::Test { .. } | Request::Land { .. } => {
-                let outcome = merge_outcome_of(&answer);
+                let outcome = merge_outcome_of(&call.request, &answer);
                 out.extend(rule_refusal_log(&self.config.repo, &answer));
                 if outcome == MergeOutcome::ServiceUnavailable {
                     out.push(self.failure("lander merge call", "no usable answer"));
@@ -236,6 +268,8 @@ impl Host {
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.merge_outcome(dispatch, &outcome, now_ms)
                 });
+                let next_stage = self.slot.has_merge_in_flight() && !self.waits().merging;
+                resume = resume_after(&call.request, next_stage);
                 ("apply merge outcome", prepared)
             }
             Request::Trial { .. } => {
@@ -290,8 +324,9 @@ mod tests {
         CommitId(text.to_string())
     }
 
-    fn merge_dispatch() -> MergeDispatch {
+    fn merge_dispatch(stage: MergeStage) -> MergeDispatch {
         MergeDispatch {
+            stage,
             id: 7,
             claim: ClaimId(3),
             agent: AgentId("a1".to_string()),
@@ -316,12 +351,31 @@ mod tests {
         }
     }
 
+    fn prepare_request() -> Request {
+        let dispatch = merge_dispatch(MergeStage::Prepare);
+        merge_call(CallId(1), &dispatch, 0).request
+    }
+
+    fn test_request() -> Request {
+        Request::Test {
+            base: commit("b"),
+            head: commit("h"),
+        }
+    }
+
+    fn land_request() -> Request {
+        Request::Land {
+            base: commit("b"),
+            head: commit("h"),
+        }
+    }
+
     #[test]
-    fn a_merge_is_a_prepare_call_with_the_dispatch_of_the_core() {
-        let call = merge_call(CallId(4), &merge_dispatch(), 1_000);
+    fn a_prepare_stage_is_a_prepare_call_with_the_dispatch_of_the_core() {
+        let call = merge_call(CallId(4), &merge_dispatch(MergeStage::Prepare), 1_000);
         assert_eq!(call.id, CallId(4));
         assert_eq!(call.dispatch_id, DispatchId(7));
-        assert_eq!(call.deadline_ms, 1_000 + 780_000);
+        assert_eq!(call.deadline_ms, 1_000 + PREPARE_CALL_TIMEOUT_MS);
         let Request::Prepare {
             claim,
             agent,
@@ -329,12 +383,36 @@ mod tests {
             scopes,
         } = call.request
         else {
-            panic!("a merge is a Prepare");
+            panic!("the first stage is a Prepare");
         };
         assert_eq!(claim, ClaimId(3));
         assert_eq!(agent, AgentId("a1".to_string()));
         assert_eq!(fork_commit, commit("fork"));
-        assert_eq!(scopes, merge_dispatch().scopes);
+        assert_eq!(scopes, merge_dispatch(MergeStage::Prepare).scopes);
+    }
+
+    #[test]
+    fn the_test_and_land_stages_are_calls_of_the_journaled_base_and_head_with_their_own_budgets() {
+        let pair = (commit("b"), commit("h"));
+        let stage = |land: bool| {
+            let (base, head) = pair.clone();
+            if land {
+                MergeStage::Land { base, head }
+            } else {
+                MergeStage::Test { base, head }
+            }
+        };
+        let test = merge_call(CallId(5), &merge_dispatch(stage(false)), 2_000);
+        assert_eq!(test.dispatch_id, DispatchId(7));
+        assert_eq!(test.deadline_ms, 2_000 + TEST_CALL_TIMEOUT_MS);
+        assert_eq!(test.request, test_request());
+        let land = merge_call(CallId(6), &merge_dispatch(stage(true)), 3_000);
+        assert_eq!(land.deadline_ms, 3_000 + LAND_CALL_TIMEOUT_MS);
+        assert_eq!(land.request, land_request());
+        const {
+            assert!(TEST_CALL_TIMEOUT_MS > PREPARE_CALL_TIMEOUT_MS);
+            assert!(TEST_CALL_TIMEOUT_MS > LAND_CALL_TIMEOUT_MS);
+        }
     }
 
     #[test]
@@ -406,12 +484,24 @@ mod tests {
             submitted: Vec::new(),
         };
         let reconcile = Request::Reconcile { head: commit("h") };
-        assert_eq!(resume_after(&prepare), WakeStep::Verification);
-        assert_eq!(resume_after(&test), WakeStep::Verification);
-        assert_eq!(resume_after(&land), WakeStep::Verification);
-        assert_eq!(resume_after(&trial), WakeStep::HeadRead);
-        assert_eq!(resume_after(&read), WakeStep::Finish);
-        assert_eq!(resume_after(&reconcile), WakeStep::Finish);
+        for continues in [false, true] {
+            assert_eq!(resume_after(&trial, continues), WakeStep::HeadRead);
+            assert_eq!(resume_after(&read, continues), WakeStep::Finish);
+            assert_eq!(resume_after(&reconcile, continues), WakeStep::Finish);
+            assert_eq!(
+                resume_after(&land, continues),
+                WakeStep::Verification,
+                "a landing is the last stage"
+            );
+        }
+        for request in [&prepare, &test] {
+            assert_eq!(resume_after(request, false), WakeStep::Verification);
+            assert_eq!(
+                resume_after(request, true),
+                WakeStep::Merge,
+                "a stage that moved the merge on goes straight to the next call"
+            );
+        }
     }
 
     fn refused(refusal: Refusal) -> CallAnswer {
@@ -425,8 +515,8 @@ mod tests {
             head: commit("h"),
         };
         assert_eq!(
-            merge_outcome_of(&prepared),
-            MergeOutcome::Merged {
+            merge_outcome_of(&prepare_request(), &prepared),
+            MergeOutcome::Prepared {
                 base: commit("b"),
                 head: commit("h")
             }
@@ -436,22 +526,25 @@ mod tests {
             total: Some(70),
         });
         assert_eq!(
-            merge_outcome_of(&conflict),
+            merge_outcome_of(&prepare_request(), &conflict),
             MergeOutcome::Conflict {
                 files: vec!["x.rs".to_string()],
                 total: Some(70)
             }
         );
         assert_eq!(
-            merge_outcome_of(&refused(Refusal::Uncovered { total: 4 })),
+            merge_outcome_of(
+                &prepare_request(),
+                &refused(Refusal::Uncovered { total: 4 })
+            ),
             MergeOutcome::Uncovered { total: 4 }
         );
         assert_eq!(
-            merge_outcome_of(&refused(Refusal::GateChanged)),
+            merge_outcome_of(&prepare_request(), &refused(Refusal::GateChanged)),
             MergeOutcome::GateChanged {}
         );
         assert_eq!(
-            merge_outcome_of(&refused(Refusal::CommitNotInFork)),
+            merge_outcome_of(&prepare_request(), &refused(Refusal::CommitNotInFork)),
             MergeOutcome::CommitNotInFork {}
         );
         for kind in [
@@ -466,7 +559,7 @@ mod tests {
                 message: "protected".to_string(),
             });
             assert_eq!(
-                merge_outcome_of(&rule),
+                merge_outcome_of(&prepare_request(), &rule),
                 MergeOutcome::Refused { kind },
                 "{kind:?}"
             );
@@ -479,7 +572,7 @@ mod tests {
             },
         });
         assert_eq!(
-            merge_outcome_of(&failed),
+            merge_outcome_of(&test_request(), &failed),
             MergeOutcome::TestsFailed {
                 result: StepExit {
                     exit_code: 2,
@@ -491,11 +584,51 @@ mod tests {
     }
 
     #[test]
+    fn a_stage_is_answered_by_its_own_kind_of_answer_only() {
+        let landed = CallAnswer::Landed { head: commit("h") };
+        let prepared = CallAnswer::Prepared {
+            base: commit("b"),
+            head: commit("h"),
+        };
+        assert_eq!(
+            merge_outcome_of(&test_request(), &CallAnswer::Tested),
+            MergeOutcome::Tested {}
+        );
+        assert_eq!(
+            merge_outcome_of(&land_request(), &landed),
+            MergeOutcome::Merged {
+                base: commit("b"),
+                head: commit("h")
+            },
+            "the base of a landing is the one the call was made with"
+        );
+        for request in [test_request(), land_request()] {
+            assert_eq!(
+                merge_outcome_of(&request, &CallAnswer::CandidateMissing),
+                MergeOutcome::CandidateMissing {}
+            );
+        }
+        let unusable = [
+            (prepare_request(), CallAnswer::Tested),
+            (prepare_request(), CallAnswer::CandidateMissing),
+            (prepare_request(), landed.clone()),
+            (test_request(), prepared.clone()),
+            (test_request(), landed.clone()),
+            (land_request(), prepared.clone()),
+            (land_request(), CallAnswer::Tested),
+        ];
+        for (request, answer) in unusable {
+            assert_eq!(
+                merge_outcome_of(&request, &answer),
+                MergeOutcome::ServiceUnavailable,
+                "{request:?} answered {answer:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_merge_answer_that_is_not_a_merge_answer_is_the_service_unavailable() {
         let unusable = [
-            CallAnswer::Tested,
-            CallAnswer::CandidateMissing,
-            CallAnswer::Landed { head: commit("h") },
             CallAnswer::Trialled {
                 before: None,
                 after: None,
@@ -510,12 +643,14 @@ mod tests {
             },
             CallAnswer::Unknown,
         ];
-        for answer in unusable {
-            assert_eq!(
-                merge_outcome_of(&answer),
-                MergeOutcome::ServiceUnavailable,
-                "{answer:?}"
-            );
+        for request in [prepare_request(), test_request(), land_request()] {
+            for answer in &unusable {
+                assert_eq!(
+                    merge_outcome_of(&request, answer),
+                    MergeOutcome::ServiceUnavailable,
+                    "{request:?} answered {answer:?}"
+                );
+            }
         }
     }
 
@@ -641,8 +776,13 @@ mod tests {
             head: commit("m"),
         };
         assert_eq!(
-            merge_outcome_of(&at_main),
+            merge_outcome_of(&prepare_request(), &at_main),
             MergeOutcome::AlreadyMerged { base: commit("m") }
+        );
+        assert_eq!(
+            merge_outcome_of(&test_request(), &at_main),
+            MergeOutcome::ServiceUnavailable,
+            "only a Prepare is answered Prepared"
         );
     }
 

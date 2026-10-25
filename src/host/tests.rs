@@ -12,7 +12,10 @@ use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
-use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
+use crate::merge::{
+    MergeOutcome, INFRA_BACKOFF_BASE_MS, LAND_CALL_TIMEOUT_MS, MERGE_WATCHDOG_MS,
+    PREPARE_CALL_TIMEOUT_MS, TEST_CALL_TIMEOUT_MS,
+};
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
     Fence, Intent, Mode, OnConflict, ProtocolRange, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
@@ -103,11 +106,38 @@ fn granted(kit: &Testkit, sock: SocketId) -> (ClaimId, Fence) {
 }
 
 /// The answer of a merge that landed `new` on top of `old`.
+/// The answer to a `Land`: main holds `new`.
 fn landed() -> CallAnswer {
+    CallAnswer::Landed {
+        head: CommitId("new".into()),
+    }
+}
+
+/// The answer to a `Prepare`: `new` is on the candidate ref, on top of `old`.
+fn prepared() -> CallAnswer {
     CallAnswer::Prepared {
         base: CommitId("old".into()),
         head: CommitId("new".into()),
     }
+}
+
+/// Answers the `Prepare` that is out and the `Test` after it, so the merge is at its `Land`, and
+/// returns that call. What the core does with each answer is in `host_a_merge_is_three_calls...`.
+fn reach_the_land_call(kit: &mut Testkit) -> CallId {
+    let prepare = kit.calls().last().expect("a merge call is out").clone();
+    assert!(
+        matches!(prepare.request, Request::Prepare { .. }),
+        "{prepare:?}"
+    );
+    kit.reply(prepare.id, prepared());
+    kit.settle();
+    let test = kit.calls().last().expect("the Test follows").clone();
+    assert!(matches!(test.request, Request::Test { .. }), "{test:?}");
+    kit.reply(test.id, CallAnswer::Tested);
+    kit.settle();
+    let land = kit.calls().last().expect("the Land follows").clone();
+    assert!(matches!(land.request, Request::Land { .. }), "{land:?}");
+    land.id
 }
 
 fn state(kit: &Testkit) -> Value {
@@ -268,7 +298,8 @@ fn host_the_wake_is_computed_after_each_step_with_this_instances_waits() {
         "a merge waiting here leaves only the watchdog"
     );
 
-    kit.reply(CallId(1), landed());
+    let land = reach_the_land_call(&mut kit);
+    kit.reply(land, landed());
     kit.settle();
     assert_ne!(
         kit.wake(),
@@ -765,7 +796,7 @@ fn host_a_failed_commit_of_a_batch_holding_a_call_hands_out_nothing() {
         !state(&kit)["merge_in_flight"].is_object(),
         "no marker is stored"
     );
-    kit.reply(CallId(1), landed());
+    kit.reply(CallId(1), prepared());
     assert!(kit.logs().last().unwrap().contains("no such call"));
 }
 
@@ -846,7 +877,7 @@ fn core_json_with_a_queued_verification() -> String {
         base: CommitId("old".into()),
         head: CommitId("new".into()),
     };
-    core.merge_outcome(core.merge_flight_id(challenger.0), &landed, NOW_MS);
+    core.settle_merge(core.merge_flight_id(challenger.0), &landed, NOW_MS);
     serde_json::to_string(&core).unwrap()
 }
 
@@ -1537,12 +1568,17 @@ fn host_a_wake_that_dispatched_a_merge_runs_its_verification_step_only_after_rep
     );
     assert_eq!(kit.calls().len(), 1, "one call: the merge");
     assert!(matches!(kit.calls()[0].request, Request::Prepare { .. }));
+    let land = reach_the_land_call(&mut kit);
     let mark = kit.history().len();
-    kit.reply(CallId(1), landed());
+    kit.reply(land, landed());
     kit.settle();
-    assert_eq!(kit.calls().len(), 2, "the landing queued a verification");
+    assert_eq!(
+        kit.calls().len(),
+        4,
+        "Prepare, Test and Land, then the verification the landing queued"
+    );
     assert!(
-        matches!(kit.calls()[1].request, Request::Trial { .. }),
+        matches!(kit.calls()[3].request, Request::Trial { .. }),
         "the same wake dispatches it once the merge is answered: {:?}",
         kit.calls()
     );
@@ -1577,7 +1613,8 @@ fn host_a_merge_marker_is_stored_before_its_call_and_its_outcome_before_anyone_i
     );
 
     let told = kit.received(sock).len();
-    kit.reply(CallId(1), landed());
+    let land = reach_the_land_call(&mut kit);
+    kit.reply(land, landed());
     assert!(!merge_marker_stored(&kit), "the outcome is stored");
     assert_eq!(kit.received(sock).len(), told, "and nobody is told yet");
     kit.settle();
@@ -1587,6 +1624,69 @@ fn host_a_merge_marker_is_stored_before_its_call_and_its_outcome_before_anyone_i
         kit.received(sock)
     );
     assert!(kit.logs().is_empty(), "{:?}", kit.logs());
+}
+
+#[test]
+fn host_the_head_is_stored_before_the_test_goes_out_and_the_passed_test_before_the_land() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    for (answer, next, stage) in [
+        (prepared(), "test", "test"),
+        (CallAnswer::Tested, "land", "land"),
+    ] {
+        let out = kit.calls().len();
+        let call = kit.calls().last().unwrap().id;
+        kit.reply(call, answer);
+        let mut stored_first = false;
+        while kit.calls().len() == out {
+            let marker = &state(&kit)["merge_in_flight"]["stage"];
+            stored_first |= marker["stage"] == json!(stage) && marker["head"] == json!("new");
+            assert!(kit.deliver_next(), "the host asks for the {next} call");
+        }
+        assert!(
+            stored_first,
+            "the marker with the head and the {stage} stage is stored before the {next} call"
+        );
+        let issued = kit.calls().last().unwrap();
+        let kind = match issued.request {
+            Request::Test { .. } => "test",
+            Request::Land { .. } => "land",
+            Request::Prepare { .. }
+            | Request::Trial { .. }
+            | Request::ReadHead { .. }
+            | Request::Reconcile { .. } => "other",
+        };
+        assert_eq!(kind, next);
+    }
+    assert_eq!(
+        kit.calls()
+            .iter()
+            .map(|call| call.dispatch_id.0)
+            .collect::<Vec<_>>(),
+        [1, 2, 3],
+        "each stage is its own dispatch"
+    );
+}
+
+#[test]
+fn host_a_stage_answered_for_another_kind_of_call_lands_nothing() {
+    let mut kit = kit();
+    let (sock, _, _) = submitted(&mut kit);
+    wake(&mut kit);
+    let told = kit.received(sock).len();
+    kit.reply(CallId(1), landed());
+    kit.settle();
+    assert_eq!(kit.received(sock).len(), told, "nobody is told merged");
+    assert_eq!(
+        infra_failures(&kit, "1"),
+        1,
+        "a landing answer to a Prepare is no answer"
+    );
+    assert!(kit
+        .logs()
+        .iter()
+        .any(|line| line.contains("no usable answer")));
 }
 
 #[test]
@@ -2043,12 +2143,21 @@ fn host_a_refusal_is_a_fact_about_the_work_not_the_service() {
 }
 
 #[test]
-fn host_a_head_call_waits_30_seconds_and_a_lander_call_13_minutes() {
+fn host_a_head_call_waits_30_seconds_and_a_lander_call_its_stages_budget() {
     let mut kit = kit();
     submitted(&mut kit);
     wake(&mut kit);
     let merge = kit.calls().last().unwrap().clone();
-    assert_eq!(merge.deadline_ms, kit.now_ms() + 780_000);
+    assert_eq!(merge.deadline_ms, kit.now_ms() + PREPARE_CALL_TIMEOUT_MS);
+    let land = reach_the_land_call(&mut kit);
+    let land = kit.calls().iter().find(|call| call.id == land).unwrap();
+    assert_eq!(land.deadline_ms, kit.now_ms() + LAND_CALL_TIMEOUT_MS);
+    let test = kit
+        .calls()
+        .iter()
+        .find(|call| matches!(call.request, Request::Test { .. }))
+        .unwrap();
+    assert_eq!(test.deadline_ms, kit.now_ms() + TEST_CALL_TIMEOUT_MS);
 
     let (kit, _, trial) = trial_outstanding();
     assert_eq!(trial.deadline_ms, kit.now_ms() + 780_000);
@@ -2066,15 +2175,16 @@ fn host_calls_are_numbered_in_the_order_they_are_issued() {
     kit.seed("core", serde_json::to_string(&core).unwrap());
     welcomed(&mut kit, "a3");
     wake(&mut kit);
-    kit.reply(CallId(1), landed());
+    let land = reach_the_land_call(&mut kit);
+    kit.reply(land, landed());
     kit.settle();
     let ids: Vec<CallId> = kit.calls().iter().map(|call| call.id).collect();
-    assert_eq!(ids, [CallId(1), CallId(2)]);
+    assert_eq!(ids, [CallId(1), CallId(2), CallId(3), CallId(4)]);
     let dispatches: Vec<DispatchId> = kit.calls().iter().map(|call| call.dispatch_id).collect();
     assert_eq!(
         dispatches,
-        [DispatchId(1), DispatchId(2)],
-        "the core's dispatch ids"
+        [DispatchId(1), DispatchId(2), DispatchId(3), DispatchId(4)],
+        "the core's dispatch ids, one for each stage"
     );
 }
 
@@ -2126,7 +2236,7 @@ fn host_a_failed_step_leaves_one_future_wake() {
     submitted(&mut kit);
     wake(&mut kit);
     kit.fail_next_commit();
-    kit.reply(CallId(1), landed());
+    kit.reply(CallId(1), prepared());
     let mark = kit.history().len();
     kit.settle();
     let retry = kit.now_ms() + wake::RETRY_MS;
@@ -2150,7 +2260,7 @@ fn host_a_restarted_host_starts_with_nothing_awaited_and_reloads_on_first_use() 
 
     kit.restart();
     let mark = kit.history().len();
-    kit.reply(CallId(1), landed());
+    kit.reply(CallId(1), prepared());
     assert_eq!(
         labels_since(&kit, mark),
         ["Log"],
@@ -2187,7 +2297,7 @@ fn host_an_answer_for_another_dispatch_changes_nothing() {
     moved["merge_in_flight"]["dispatch"] = json!(99);
     kit.seed("core", moved.to_string());
     let told = kit.received(sock).len();
-    kit.reply(CallId(1), landed());
+    kit.reply(CallId(1), prepared());
     kit.settle();
     let after = state(&kit);
     assert_eq!(

@@ -225,27 +225,38 @@ the command line, and a reviewer decides with `tessel review`.
 
 ### Landing
 
-A merge is one `Prepare` call until the staged landing (HOST-MERGE-STANDIN), and for a repository
-with a `remote` the server answers it in process with the lander and the runner. In order:
+A merge is three calls, each with a dispatch id of its own
+(`docs/proposals/candidate-ref.md`), and for a repository with a `remote` the server answers them in
+process with the lander and the runner. `Prepare`, in order:
 
 1. Read main's head from the remote and pin it.
 2. Clone main, fetch every branch of the agent's fork and check that some branch contains the
    commit.
 3. Rebase the commit onto main with a fixed committer, so a retry gives the same commit.
 4. Check the claim covers every changed file and that `tessel.toml` is untouched.
-5. Clone the rebased head into a test tree and run the trunk's `[[test]]` commands there with the
-   runner. The install step is not run: the machine's own toolchain and dependencies are used, and
-   `[install]` in `tessel.toml` is ignored. A trunk with no valid `tessel.toml` cannot be tested, so
-   nothing lands; the server logs why.
-6. Push main with a compare-and-swap on the head read in step 1, then read main back. Only a head
-   found on main is answered as merged. With `token_file` set, every git command of the landing
-   (the clone, the fork fetch, the push and the read-back) gets the token from the file through
-   git's askpass hook, `tessel-server` itself run by git; nothing is minted and nothing is
-   revoked.
+5. Push the rebased head to `refs/tessel/candidate/<head>` on the remote, then delete the other
+   candidate refs there (at most 50 a time). Main does not move, and the answer is `Prepared`
+   with the base and the head. The core stores the head before it makes the next call.
+
+`Test` makes a repository of its own from that ref, with no clone that was ever pushed from, and
+runs the trunk's `[[test]]` commands there with the runner. The install step is not run: the machine's
+own toolchain and dependencies are used, and `[install]` in `tessel.toml` is ignored. A trunk with
+no valid `tessel.toml` cannot be tested, so nothing lands; the server logs why.
+
+`Land` reads the ref first, then clones main, fetches the ref, checks that its tip is the head and
+that the base is in the head's history, pushes main with a compare-and-swap on the base, reads main
+back by ancestry and deletes the ref. Only a head found on main is answered as landed, and a head
+that is already on main is answered so without a push. With `token_file` set, every git command of
+the landing (the clones, the fork fetch, the candidate and main pushes and the read-back) gets the
+token from the file through git's askpass hook, `tessel-server` itself run by git; nothing is
+minted and nothing is revoked.
 
 | Outcome | The host is told | The agent sees |
 |---|---|---|
-| Main read back at the head | `Prepared`, so the claim merges | `merged` with the head |
+| The head is on the candidate ref | `Prepared`, so the core tests it next | nothing yet |
+| The tests passed on the candidate | `Tested`, so the core lands it next | nothing yet |
+| Main holds the head after the push | `Landed`, so the claim merges | `merged` with the head |
+| The candidate ref is gone, or is not the head, and main does not hold the head; or the head is not built on its base | `CandidateMissing`, so the core prepares again, counted as an infrastructure failure | nothing; after three retries, `submit_rejected` as infrastructure |
 | The commit conflicts with main | refused | `submit_rejected`, the number of files that conflicted |
 | The change is not covered by the claim, or touches `tessel.toml` | refused | `submit_rejected` with the fixed reason |
 | The tests failed | refused | `submit_rejected` with the exit code and no test output |
@@ -258,12 +269,14 @@ The first failing test, the conflicting file names (with their total) and every 
 error go to the server log, cut to a length and quoted, and never to an agent. A submission whose
 main already holds the same change is answered as merged at main's head.
 
-Each call is bounded by its own deadline, 13 minutes from when the host issued it. The tests get
-what is left less 5 seconds, and never more than `timeout_secs` of the runner's configuration. A
-call still running at its deadline is answered `Unknown`, its clones are removed, and what it left
-running cannot push main. A server killed mid-merge is woken for each repository with stored state
-when it restarts, finds the merge in flight and retries it after the first backoff, 10 seconds.
-`Test` and `Land` are refused: the host does not issue them while `Prepare` is the whole merge.
+Each call is bounded by its own deadline from when the host issued it: 5 minutes for `Prepare` and
+for `Land`, 13 for `Test`. The tests get what is left of theirs less 5 seconds, and never more than
+`timeout_secs` of the runner's configuration. A call still running at its deadline is answered
+`Unknown`, its clones are removed, and what it left running cannot write to the remote. A server
+killed mid-merge is woken for each repository with stored state when it restarts, finds the merge in
+flight and counts it as one infrastructure failure: a `Prepare` or a `Test` is made again after the
+first backoff, 10 seconds, and a `Land` leaves the claim in doubt, so the new `Prepare` reads main
+first (the reconcile of that case is P1-CORE-RECONCILE).
 
 When the server starts, a repository with a `remote` and no head reads main's head once, so the
 head is main's before the first agent says hello. If main cannot be read then, or a hello arrives

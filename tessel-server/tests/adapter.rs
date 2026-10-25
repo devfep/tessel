@@ -738,14 +738,13 @@ impl CallPort for Landing {
                     base: CommitId("bb".repeat(20)),
                     head,
                 },
+                Request::Test { .. } => CallAnswer::Tested,
+                Request::Land { head, .. } => CallAnswer::Landed { head },
                 Request::ReadHead { .. } => CallAnswer::Head {
                     main: Some(head),
                     landed: Vec::new(),
                 },
-                Request::Test { .. }
-                | Request::Land { .. }
-                | Request::Trial { .. }
-                | Request::Reconcile { .. } => CallAnswer::Unknown,
+                Request::Trial { .. } | Request::Reconcile { .. } => CallAnswer::Unknown,
             }
         })
     }
@@ -990,6 +989,14 @@ impl CallPort for Recording {
                         }
                     }
                 }
+                Request::Test { .. } => {
+                    seen.push("test");
+                    CallAnswer::Tested
+                }
+                Request::Land { head, .. } => {
+                    seen.push("land");
+                    CallAnswer::Landed { head }
+                }
                 Request::ReadHead { .. } => {
                     seen.push("read_head");
                     CallAnswer::Head {
@@ -997,10 +1004,7 @@ impl CallPort for Recording {
                         landed: Vec::new(),
                     }
                 }
-                Request::Test { .. }
-                | Request::Land { .. }
-                | Request::Trial { .. }
-                | Request::Reconcile { .. } => CallAnswer::Unknown,
+                Request::Trial { .. } | Request::Reconcile { .. } => CallAnswer::Unknown,
             }
         })
     }
@@ -1044,8 +1048,8 @@ async fn after_a_landing_the_host_reads_main_again_and_after_a_refusal_it_does_n
     let landed = tempfile::tempdir()?;
     assert_eq!(
         submit_and_record(landed.path(), true).await?,
-        ["prepare", "read_head"],
-        "the landing moved main, so the host reads the head"
+        ["prepare", "test", "land", "read_head"],
+        "the landing, and only the landing, moved main, so the host reads the head after it"
     );
     let refused = tempfile::tempdir()?;
     assert_eq!(

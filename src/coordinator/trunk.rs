@@ -614,7 +614,7 @@ mod tests {
             base: sha(OLD),
             head: sha(NEWER),
         };
-        c.merge_outcome(dispatch, &merged, NOW + 2);
+        c.settle_merge(dispatch, &merged, NOW + 2);
         assert_eq!(head_of(&c), Some(sha(NEWER)));
         assert!(c.trunk_read(&read, Some(sha(TRUNK)), NOW + 3).is_empty());
         assert_eq!(
@@ -812,7 +812,7 @@ mod tests {
             base: sha(OLD),
             head: sha(NEWER),
         };
-        c.merge_outcome(dispatch, &merged, NOW + 1);
+        c.settle_merge(dispatch, &merged, NOW + 1);
         assert_eq!(head_of(&c), Some(sha(NEWER)));
         assert_eq!(reloaded(&c).begin_head_read(), None);
     }

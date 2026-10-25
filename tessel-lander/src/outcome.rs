@@ -190,6 +190,13 @@ pub enum MergeOutcome {
     /// A `Land` found no candidate ref for its head (or one with another tip), and main does not
     /// hold the head: nothing landed, and the head must be made again.
     CandidateMissing,
+    /// The candidate's head does not have its base in its history, so pushing it with a lease on
+    /// that base would rewind main or replace it. The pair is wrong, not the work: nothing was
+    /// pushed, and the head must be made again on the current main.
+    HeadNotOnBase {
+        base: Sha,
+        head: Sha,
+    },
 }
 
 /// The result of one trial, ported from the steward's `TrialOutcome`: `commit` replayed onto main

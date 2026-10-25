@@ -688,11 +688,13 @@ impl RepoTask {
     }
 }
 
-/// Whether the call that got this answer moved main, so the host should read the head again.
+/// Whether the call that got this answer moved main, so the host should read the head again. A
+/// `Prepared` has only put the head on the candidate ref; main moves with the `Landed`.
 fn moves_main(answer: &CallAnswer) -> bool {
     match answer {
-        CallAnswer::Prepared { .. } | CallAnswer::Landed { .. } => true,
-        CallAnswer::Tested
+        CallAnswer::Landed { .. } => true,
+        CallAnswer::Prepared { .. }
+        | CallAnswer::Tested
         | CallAnswer::Trialled { .. }
         | CallAnswer::Head { .. }
         | CallAnswer::Reconciled { .. }

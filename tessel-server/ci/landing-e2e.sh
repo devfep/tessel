@@ -2,9 +2,10 @@
 # Lands one commit through a real `tessel-server` and two real `tessel` agents, and checks main.
 #
 # A bare git repository is main. Agent a1 claims a file, changes it, pushes the commit to its fork
-# and submits it. The server rebases it onto main, the runner runs the trunk's test command on the
-# rebased head, and only then does the server push main with a compare-and-swap. Agent a2 is
-# refused the file while a1 holds it and gets it once a1's work has landed.
+# and submits it. The server rebases it onto main and keeps the head on a candidate ref of main's
+# repository, the runner runs the trunk's test command on a tree made from that ref, and only then
+# does the server push main with a compare-and-swap and delete the ref. Agent a2 is refused the
+# file while a1 holds it and gets it once a1's work has landed.
 #
 # Needs target/debug/{tessel-server,tessel} (cargo build -p tessel-server -p tessel-cli), git and
 # cargo on PATH. With TESSEL_E2E_DIR set it works in that empty directory and leaves everything
@@ -171,16 +172,20 @@ git --git-dir="$main" show main:src/lib.rs | grep -q 'hello from a1' || fail "ma
 [ "$(cat "$work/tmp/tessel-ran")" = "hello from a1" ] ||
   fail "the runner's command ran on something other than the landed change"
 
-# The server logs the read-back line after it pushed main and read it back, so main moves first.
+# The server logs the landing after it pushed main and read it back by ancestry, so main moves first.
 readback=""
 for _ in $(seq 1 60); do
-  readback=$(grep "landed: main was read back at the head" "$work/server.log" || true)
+  readback=$(grep "landed: main holds the head" "$work/server.log" || true)
   [ -n "$readback" ] && break
   kill -0 "$server_pid" 2>/dev/null || fail "the server exited before it logged the landing"
   sleep 0.5
 done
 [ -n "$readback" ] || fail "the server did not log a read-back landing"
 grep -q "$landed" <<<"$readback" || fail "the server log does not name the head it landed"
+
+# The landing deleted the candidate ref the head was tested from.
+[ -z "$(git --git-dir="$main" for-each-ref refs/tessel/candidate)" ] ||
+  fail "a candidate ref is left on main's repository: $(git --git-dir="$main" for-each-ref refs/tessel/candidate)"
 
 # a1's claim is released by the landing, so a2 can have the file.
 granted=""

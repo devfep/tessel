@@ -76,12 +76,18 @@ impl Inner {
                 }
             }
             Err(error) => match ports.take_gate_refusal() {
-                Some(message) => CallAnswer::Refused {
-                    refusal: Refusal::Rule {
-                        rule: RuleKind::GateInvalid,
-                        message,
-                    },
-                },
+                Some(message) => {
+                    tracing::info!(
+                        repo,
+                        "the trunk's gate cannot be used; the landing is refused"
+                    );
+                    CallAnswer::Refused {
+                        refusal: Refusal::Rule {
+                            rule: RuleKind::GateInvalid,
+                            message,
+                        },
+                    }
+                }
                 None => unfinished(&repo, "run the tests", &error),
             },
         }
@@ -124,7 +130,7 @@ fn missing(repo: &str, head: &Sha) -> CallAnswer {
     CallAnswer::CandidateMissing
 }
 
-fn unfinished(repo: &str, what: &str, error: &dyn std::fmt::Display) -> CallAnswer {
+pub(super) fn unfinished(repo: &str, what: &str, error: &dyn std::fmt::Display) -> CallAnswer {
     let note = quote(&error.to_string(), MAX_LOGGED_CHARS);
     tracing::warn!(repo, what, error = %note, "the call did not finish; the core retries");
     CallAnswer::Unknown

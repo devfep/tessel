@@ -355,17 +355,19 @@ async fn a_server_killed_mid_merge_and_restarted_lands_the_claim_once() -> TestR
     Ok(())
 }
 
-/// A `post-receive` hook on the trunk that records each push and holds the first one open until
-/// the test releases it. `git push` returns only when the hook exits, so the lander is inside its
-/// push call, after the trunk moved and before it reads the trunk back or the server answers.
+/// A `post-receive` hook on the trunk that records each push of `main` and holds the first one
+/// open until the test releases it. A push of a candidate ref passes. `git push` returns only when
+/// the hook exits, so the lander is inside the push of its `Land`, after the trunk moved and
+/// before it reads the trunk back or the server answers.
 /// The wait also ends when the marks directory is gone, so a failed test leaves no hook looping;
 /// while the test runs the directory exists, so the passing path is unchanged.
 fn hold_pushes_open(deployment: &Deployment) -> TestResult {
     let marks = deployment.marks.display();
     let hook = format!(
-        "#!/bin/sh\necho push >> {marks}/pushes\n: > {marks}/hook-started\nwhile [ ! -e \
+        "#!/bin/sh\nwhile read old new ref; do\n[ \"$ref\" = refs/heads/main ] || continue\n\
+         echo push >> {marks}/pushes\n: > {marks}/hook-started\nwhile [ ! -e \
          {marks}/hook-release ] && [ -d {marks} ]; do /bin/sleep 0.1; done\n\
-         : > {marks}/hook-done\nexit 0\n"
+         : > {marks}/hook-done\ndone\nexit 0\n"
     );
     let path = deployment.repos.main.join("hooks/post-receive");
     std::fs::create_dir_all(path.parent().ok_or("no hooks dir")?)?;

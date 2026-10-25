@@ -27,7 +27,7 @@ mod racing;
 mod trunk;
 mod verifying;
 
-pub use merging::MergeDispatch;
+pub use merging::{MergeDispatch, MergeStage};
 pub use trunk::{head_request_body, parse_head_response, HeadRead};
 pub use verifying::VerifyDispatch;
 
@@ -247,6 +247,9 @@ struct InFlight {
     /// the submission may have landed on top of it (`Submission::unanswered_from`).
     #[serde(default)]
     main: Option<CommitId>,
+    /// Which call of the staged landing is out. A stored marker without one is a `Prepare`.
+    #[serde(default)]
+    stage: MergeStage,
 }
 
 /// A `Submit` message minus the sender.
@@ -3301,7 +3304,7 @@ mod tests {
             base: CommitId("abc".into()),
             head: CommitId(MERGED_HEAD.into()),
         };
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, NOW + 1);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &outcome, NOW + 1);
         (c, effects)
     }
 

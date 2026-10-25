@@ -6,9 +6,9 @@
 //! retries with backoff. Only `Merged` is `Prepared`, and the lander returns `Merged` only after
 //! it read main back and found the head on it.
 
-use tessel_coordinator::host::call::{CallAnswer, Refusal, TestFailure, TrialResult};
+use tessel_coordinator::host::call::{CallAnswer, Refusal, TrialResult};
 use tessel_coordinator::protocol::CommitId;
-use tessel_lander::outcome::{MergeOutcome, StepOutcome, TrialOutcome, TrialReport};
+use tessel_lander::outcome::{MergeOutcome, TrialOutcome, TrialReport};
 use tessel_lander::run::GitOutput;
 use tessel_lander::types::Sha;
 
@@ -30,24 +30,11 @@ fn git_note(output: &GitOutput) -> String {
     )
 }
 
-fn step_note(step: &StepOutcome) -> String {
-    format!(
-        "{:?} exit {}, timed out {}",
-        step.step, step.exit_code, step.timed_out
-    )
-}
-
-/// The answer to `Prepare`, which stands for the whole merge. `first_failure` is the runner's
-/// first failing test, already bounded and quoted; it is logged and never sent to an agent.
-pub fn merge_answer(repo: &str, outcome: MergeOutcome, first_failure: Option<&str>) -> CallAnswer {
+/// The answer to `Prepare`, which rebases the commit and checks it without running repo code.
+/// `Prepared` with a head different from its base means the head is on the candidate ref; the
+/// caller makes that answer after the push, so no outcome of the lander is it.
+pub fn prepare_answer(repo: &str, outcome: MergeOutcome) -> CallAnswer {
     match outcome {
-        MergeOutcome::Merged { base, head, .. } => {
-            tracing::info!(repo, %base, %head, "landed: main was read back at the head");
-            CallAnswer::Prepared {
-                base: commit_id(&base),
-                head: commit_id(&head),
-            }
-        }
         // The rebase left nothing to add: main already holds the work, as after a landing whose
         // answer was lost. A head equal to the base is how the host reads this as `AlreadyMerged`,
         // so the core lands the claim at main with the main it dispatched from as its `before`.
@@ -89,21 +76,6 @@ pub fn merge_answer(repo: &str, outcome: MergeOutcome, first_failure: Option<&st
             refused(Refusal::GateChanged)
         }
         MergeOutcome::CommitNotInFork => refused(Refusal::CommitNotInFork),
-        MergeOutcome::TestsFailed { result, .. } => {
-            tracing::info!(
-                repo,
-                exit_code = result.exit_code,
-                first_failure = %first_failure.unwrap_or("none"),
-                "the tests failed"
-            );
-            refused(Refusal::TestsFailed {
-                failure: TestFailure {
-                    exit_code: i64::from(result.exit_code),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                },
-            })
-        }
         MergeOutcome::MainMoved { expected, actual } => {
             tracing::info!(
                 repo,
@@ -115,15 +87,16 @@ pub fn merge_answer(repo: &str, outcome: MergeOutcome, first_failure: Option<&st
         }
         MergeOutcome::Clone { result } => infrastructure(repo, "clone", &git_note(&result)),
         MergeOutcome::GitFailed { result } => infrastructure(repo, "git", &git_note(&result)),
-        MergeOutcome::Install { result, .. } => {
-            infrastructure(repo, "install", &step_note(&result))
-        }
-        MergeOutcome::Timeout { result, .. } => {
-            infrastructure(repo, "timeout", &step_note(&result))
-        }
         MergeOutcome::PushFailed { result, .. } => infrastructure(repo, "push", &git_note(&result)),
-        // Only the staged landing finds a candidate ref missing, and `Prepare` is not that.
-        MergeOutcome::CandidateMissing => infrastructure(repo, "candidate", "no candidate ref"),
+        // The tests, the landing and the candidate ref belong to `Test` and `Land`.
+        MergeOutcome::Merged { .. }
+        | MergeOutcome::TestsFailed { .. }
+        | MergeOutcome::Install { .. }
+        | MergeOutcome::Timeout { .. }
+        | MergeOutcome::CandidateMissing
+        | MergeOutcome::HeadNotOnBase { .. } => {
+            infrastructure(repo, "prepare", "an outcome of another call")
+        }
     }
 }
 
@@ -140,6 +113,12 @@ pub fn land_answer(repo: &str, outcome: MergeOutcome) -> CallAnswer {
             }
         }
         MergeOutcome::CandidateMissing => CallAnswer::CandidateMissing,
+        // The candidate cannot be landed from this base: as good as missing. The core goes back
+        // to `Prepare`, which makes the head again on the current main, and counts it.
+        MergeOutcome::HeadNotOnBase { base, head } => {
+            tracing::warn!(repo, %base, %head, "the candidate does not descend from its base");
+            CallAnswer::CandidateMissing
+        }
         MergeOutcome::MainMoved { expected, actual } => {
             tracing::info!(repo, %expected, %actual, "main moved under the push; core reconciles");
             CallAnswer::Unknown
@@ -197,6 +176,8 @@ pub fn trial_answer(report: &TrialReport) -> CallAnswer {
 
 #[cfg(test)]
 mod tests {
+    use tessel_lander::outcome::StepOutcome;
+
     use super::*;
 
     fn sha(digit: char) -> Sha {
@@ -224,20 +205,14 @@ mod tests {
     }
 
     #[test]
-    fn only_a_merged_outcome_is_prepared() {
+    fn nothing_the_lander_decides_in_prepare_is_a_landing() {
         let merged = MergeOutcome::Merged {
             base: sha('a'),
             head: sha('b'),
             evidence: None,
         };
-        assert_eq!(
-            merge_answer("r", merged, None),
-            CallAnswer::Prepared {
-                base: commit_id(&sha('a')),
-                head: commit_id(&sha('b'))
-            }
-        );
         let outcomes = [
+            merged,
             MergeOutcome::MainMoved {
                 expected: sha('a'),
                 actual: sha('c'),
@@ -263,28 +238,74 @@ mod tests {
                 head: sha('b'),
                 result: git_output(),
             },
+            MergeOutcome::CandidateMissing,
         ];
         for outcome in outcomes {
             let shown = format!("{outcome:?}");
-            assert_eq!(
-                merge_answer("r", outcome, None),
-                CallAnswer::Unknown,
-                "{shown}"
-            );
+            assert_eq!(prepare_answer("r", outcome), CallAnswer::Unknown, "{shown}");
+        }
+    }
+
+    #[test]
+    fn only_a_merged_outcome_is_landed_and_a_head_off_its_base_is_a_missing_candidate() {
+        let merged = MergeOutcome::Merged {
+            base: sha('a'),
+            head: sha('b'),
+            evidence: None,
+        };
+        assert_eq!(
+            land_answer("r", merged),
+            CallAnswer::Landed {
+                head: commit_id(&sha('b'))
+            }
+        );
+        assert_eq!(
+            land_answer("r", MergeOutcome::CandidateMissing),
+            CallAnswer::CandidateMissing
+        );
+        let off_base = MergeOutcome::HeadNotOnBase {
+            base: sha('a'),
+            head: sha('b'),
+        };
+        assert_eq!(
+            land_answer("r", off_base),
+            CallAnswer::CandidateMissing,
+            "a pair that cannot land goes back to Prepare, counted, and does not loop"
+        );
+        let doubt = [
+            MergeOutcome::MainMoved {
+                expected: sha('a'),
+                actual: sha('c'),
+            },
+            MergeOutcome::Clone {
+                result: git_output(),
+            },
+            MergeOutcome::GitFailed {
+                result: git_output(),
+            },
+            MergeOutcome::PushFailed {
+                base: sha('a'),
+                head: sha('b'),
+                result: git_output(),
+            },
+        ];
+        for outcome in doubt {
+            let shown = format!("{outcome:?}");
+            assert_eq!(land_answer("r", outcome), CallAnswer::Unknown, "{shown}");
         }
     }
 
     #[test]
     fn facts_about_the_work_are_refusals() {
         assert_eq!(
-            merge_answer("r", MergeOutcome::CommitNotInFork, None),
+            prepare_answer("r", MergeOutcome::CommitNotInFork),
             refused(Refusal::CommitNotInFork)
         );
         let gate = MergeOutcome::GateChanged {
             base: sha('a'),
             head: sha('b'),
         };
-        assert_eq!(merge_answer("r", gate, None), refused(Refusal::GateChanged));
+        assert_eq!(prepare_answer("r", gate), refused(Refusal::GateChanged));
         let uncovered = MergeOutcome::Uncovered {
             base: sha('a'),
             head: sha('b'),
@@ -292,33 +313,14 @@ mod tests {
             total: 7,
         };
         assert_eq!(
-            merge_answer("r", uncovered, None),
+            prepare_answer("r", uncovered),
             refused(Refusal::Uncovered { total: 7 })
         );
     }
 
     #[test]
-    fn a_failed_test_run_gives_the_agent_the_exit_code_and_no_output() {
-        let failed = MergeOutcome::TestsFailed {
-            base: sha('a'),
-            head: sha('b'),
-            result: step(101, false),
-        };
-        assert_eq!(
-            merge_answer("r", failed, Some("\"FAILED\"")),
-            refused(Refusal::TestsFailed {
-                failure: TestFailure {
-                    exit_code: 101,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                }
-            })
-        );
-    }
-
-    #[test]
     fn work_main_already_holds_is_prepared_at_main() {
-        let answer = merge_answer("r", MergeOutcome::AlreadyMerged { base: sha('d') }, None);
+        let answer = prepare_answer("r", MergeOutcome::AlreadyMerged { base: sha('d') });
         assert_eq!(
             answer,
             CallAnswer::Prepared {
@@ -331,13 +333,12 @@ mod tests {
     #[test]
     fn a_conflict_carries_at_most_fifty_quoted_names() {
         let files: Vec<String> = (0..51).map(|n| format!("f\u{1b}{n}")).collect();
-        let answer = merge_answer(
+        let answer = prepare_answer(
             "r",
             MergeOutcome::Conflict {
                 base: sha('a'),
                 files,
             },
-            None,
         );
         let CallAnswer::Refused {
             refusal: Refusal::Conflict { files, total },

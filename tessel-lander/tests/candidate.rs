@@ -366,7 +366,7 @@ fn land_never_pushes_a_head_that_is_not_built_on_the_base() {
     let ports = LocalPorts::new(&repos);
     let outcome = repos.land_candidate(&ports, &head).expect("land");
     assert!(
-        matches!(outcome, MergeOutcome::GitFailed { .. }),
+        matches!(outcome, MergeOutcome::HeadNotOnBase { .. }),
         "{outcome:?}"
     );
     assert_eq!(repos.main_head(), moved, "main is not rewritten");

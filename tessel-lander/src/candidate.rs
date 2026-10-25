@@ -291,7 +291,8 @@ pub fn land_candidate(
 
 /// `None` when the head has the base in its history. The push of main is a lease, which rewinds
 /// or replaces main when the lease holds, so a head that is not built on the base it leases must
-/// never be pushed; the answer is then the git result that said so.
+/// never be pushed; the answer is then [`MergeOutcome::HeadNotOnBase`]. A failure of the question
+/// itself (an exit other than 0 or 1) is a git failure.
 fn descends_from_base(
     ctx: &MergeContext<'_>,
     workspace: &Workspace,
@@ -301,10 +302,13 @@ fn descends_from_base(
         &ctx.git
             .ancestor_command(workspace, &update.base, &update.head),
     )?;
-    Ok(if asked.success() {
-        None
-    } else {
-        Some(MergeOutcome::GitFailed { result: asked })
+    Ok(match asked.exit_code {
+        Some(0) => None,
+        Some(1) => Some(MergeOutcome::HeadNotOnBase {
+            base: update.base.clone(),
+            head: update.head.clone(),
+        }),
+        Some(_) | None => Some(MergeOutcome::GitFailed { result: asked }),
     })
 }
 

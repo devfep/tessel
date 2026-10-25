@@ -648,8 +648,8 @@ impl Sim {
         self.wake = at_ms;
     }
 
-    /// The lander's answer: every call succeeds. Main moves when a head is prepared, as the core
-    /// treats that answer as the landing today.
+    /// The lander's answer: every call succeeds. A `Prepare` makes a head on top of main and moves
+    /// nothing; main moves when that head is landed.
     fn answer_call(&mut self, call: &Call) {
         let now_ms = self.now_ms();
         let events_len = self.stored_events();
@@ -669,10 +669,8 @@ impl Sim {
             Request::Prepare { fork_commit, .. } => {
                 let head = format!("{:040x}", (1_u64 << 40) + call.id.0);
                 self.prepared.insert(head.clone(), fork_commit.0.clone());
-                let base = CommitId(std::mem::replace(&mut self.main, head.clone()));
-                self.landed_forks.insert(fork_commit.0.clone());
                 CallAnswer::Prepared {
-                    base,
+                    base: CommitId(self.main.clone()),
                     head: CommitId(head),
                 }
             }

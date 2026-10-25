@@ -224,11 +224,16 @@ hooks, filters and a malicious `.git/config` in the fetched history (S3); a `Lan
 the wrong tip answers `CandidateMissing` and pushes nothing; an abandoned call performs no
 remote write.
 
-As built (P1-SERVER-STAGED): `land` is still `pub`, because `tessel-swarm` and the lander's
-integration tests call it; it becomes `pub(crate)`, with the compile-fail doctest, in
-P1-CORE-STAGED-LANDING, which removes those callers. Until then `land_candidate` is the only
-caller that takes a head from the candidate ref, and it requires the base to be an ancestor of the
-head before it pushes, because the lease push rewinds or replaces main when the pair is wrong. The
+As built (P1-SERVER-STAGED, P1-CORE-STAGED-LANDING): `land_candidate` is the only caller that takes
+a head from the candidate ref, and it requires the base to be an ancestor of the head before it
+pushes, because the lease push rewinds or replaces main when the pair is wrong. A pair that fails
+the check is `MergeOutcome::HeadNotOnBase`, which the server answers `CandidateMissing`: the core
+goes back to `Prepare` under a new dispatch id and counts an infrastructure failure, so a wrong
+pair ends in a rejection after `MAX_INFRA_RETRIES` and does not loop through reconcile. The server's
+`Prepare` is `prepare` plus `push_candidate` and `sweep_candidates`; its `Test` and `Land` are
+`fetch_candidate_tree` and `land_candidate`. `run_merge` and `land` are no longer called by the
+server but stay `pub`: the tests ported from the steward's `runMerge` call them (`merge_steps`,
+`test_tree`, the `Repos` support), and rewriting them to the staged calls is its own task. The
 isolation tests are `tessel-lander/tests/isolation_candidate.rs`.
 
 ## 6. Alternatives considered

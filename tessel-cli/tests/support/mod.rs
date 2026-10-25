@@ -556,13 +556,11 @@ fn set_session(st: &mut State, sock: SocketId, session: Session) {
     entry.session = session;
 }
 
-/// Whether `request` is the merge preparation that `merge_next` answers.
+/// Whether `request` is a call of a merge, which `merge_next` answers stage by stage.
 fn is_merge_call(request: &CallRequest) -> bool {
     match request {
-        CallRequest::Prepare { .. } => true,
-        CallRequest::Test { .. }
-        | CallRequest::Land { .. }
-        | CallRequest::Trial { .. }
+        CallRequest::Prepare { .. } | CallRequest::Test { .. } | CallRequest::Land { .. } => true,
+        CallRequest::Trial { .. }
         | CallRequest::ReadHead { .. }
         | CallRequest::Reconcile { .. } => false,
     }
@@ -590,7 +588,10 @@ fn is_trial_call(request: &CallRequest) -> bool {
 /// can see a trunk that moved by any means other than a landing the fake made.
 fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Input>) {
     match &call.request {
-        CallRequest::Prepare { .. } | CallRequest::Trial { .. } => st.calls.push(call),
+        CallRequest::Prepare { .. }
+        | CallRequest::Test { .. }
+        | CallRequest::Land { .. }
+        | CallRequest::Trial { .. } => st.calls.push(call),
         CallRequest::ReadHead { .. } => {
             let answer = CallAnswer::Head {
                 main: st.landed.clone(),
@@ -603,7 +604,7 @@ fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Inp
                 answer,
             });
         }
-        CallRequest::Test { .. } | CallRequest::Land { .. } | CallRequest::Reconcile { .. } => {
+        CallRequest::Reconcile { .. } => {
             unreachable!("the host issued a call the fake does not answer: {call:?}");
         }
     }
@@ -726,7 +727,8 @@ impl Fake {
     }
 
     /// Answers the merge the host has asked the lander for with a landing on main, as the
-    /// lander would, and so sends `Merged` to the submitter if it has a socket open. If no merge
+    /// lander would: `Prepare`, `Test` and `Land` in turn, each as the next call the host makes.
+    /// The submitter hears `Merged` if it has a socket open. If no merge
     /// is out, a wake runs first; if none is queued, nothing happens.
     pub fn merge_next(&self) {
         self.merge_next_at(&"b".repeat(40), &"c".repeat(40));
@@ -747,9 +749,25 @@ impl Fake {
             return;
         };
         let (base, head) = (CommitId(base.to_string()), CommitId(head.to_string()));
-        st.landed = Some(head.clone());
-        self.inner
-            .answer(st, &call, CallAnswer::Prepared { base, head });
+        let mut call = Some(call);
+        while let Some(out) = call {
+            let answer = match out.request {
+                CallRequest::Prepare { .. } => CallAnswer::Prepared {
+                    base: base.clone(),
+                    head: head.clone(),
+                },
+                CallRequest::Test { .. } => CallAnswer::Tested,
+                CallRequest::Land { .. } => {
+                    st.landed = Some(head.clone());
+                    CallAnswer::Landed { head: head.clone() }
+                }
+                CallRequest::Trial { .. }
+                | CallRequest::ReadHead { .. }
+                | CallRequest::Reconcile { .. } => unreachable!("not a merge call: {out:?}"),
+            };
+            self.inner.answer(st, &out, answer);
+            call = self.inner.call_of(st, is_merge_call);
+        }
     }
 
     /// Answers the next verification (a race entry's trial) the host has asked the lander for,

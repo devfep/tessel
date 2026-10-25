@@ -819,7 +819,7 @@ mod tests {
         submit(c, who, claim, path);
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, claim.0);
-        c.merge_outcome(c.merge_flight_id(claim.0), &landed(head), NOW)
+        c.settle_merge(c.merge_flight_id(claim.0), &landed(head), NOW)
     }
 
     /// `a1` holds a claim on `src/b.rs` that assumes `src/a.rs`, and `a2` edits `src/a.rs`.
@@ -839,7 +839,7 @@ mod tests {
     fn merge_challenger(c: &mut Coordinator, challenger: ClaimId, head: &str) -> Vec<Effect> {
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger);
-        c.merge_outcome(c.merge_flight_id(challenger), &landed(head), NOW)
+        c.settle_merge(c.merge_flight_id(challenger), &landed(head), NOW)
     }
 
     fn already_merged(base: &str) -> MergeOutcome {
@@ -855,6 +855,7 @@ mod tests {
         let (_, challenger) = challenged(c);
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger);
+        c.reach_land(NOW);
         c.recover_merge(NOW);
         let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
         (challenger, work.retry_at_ms.expect("a retry is scheduled"))
@@ -865,7 +866,7 @@ mod tests {
         let mut c = core();
         let (challenger, due) = challenger_with_lost_answer(&mut c);
         c.begin_merge(due).expect("the retry is dispatched");
-        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+        c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
 
         assert_eq!(pending(&c), 1);
         let queued = &c.state.verifications[0];
@@ -878,7 +879,7 @@ mod tests {
         let mut c = core();
         let (challenger, due) = challenger_with_lost_answer(&mut c);
         c.begin_merge(due).expect("the retry is dispatched");
-        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+        let effects = c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
 
         let told = effects.iter().any(|effect| {
             matches!(
@@ -902,8 +903,14 @@ mod tests {
             base: CommitId(MAIN2.into()),
             head: CommitId(MAIN2.into()),
         };
-        let outcome = crate::host::merge_outcome_of(&at_main);
-        c.merge_outcome(c.merge_flight_id(challenger), &outcome, due);
+        let prepare = crate::host::call::Request::Prepare {
+            claim: challenger,
+            agent: agent("a2"),
+            fork_commit: CommitId(fork_sha("a2")),
+            scopes: Vec::new(),
+        };
+        let outcome = crate::host::merge_outcome_of(&prepare, &at_main);
+        c.settle_merge(c.merge_flight_id(challenger), &outcome, due);
 
         assert_eq!(pending(&c), 1, "the assumption is verified");
         let queued = &c.state.verifications[0];
@@ -928,7 +935,7 @@ mod tests {
         let (challenger, due) = challenger_with_lost_answer(&mut c);
         trunk_moves_to(&mut c, MAIN2, NOW + 1);
         c.begin_merge(due).expect("the retry is dispatched");
-        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+        c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
 
         assert_eq!(pending(&c), 1);
         assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
@@ -940,7 +947,7 @@ mod tests {
         let (challenger, due) = challenger_with_lost_answer(&mut c);
         // The cut-off attempt kept running at the lander and pushed; the retry finds main moved.
         c.begin_merge(due).expect("the retry is dispatched");
-        c.merge_outcome(
+        c.settle_merge(
             c.merge_flight_id(challenger),
             &MergeOutcome::MainMoved {},
             due,
@@ -948,7 +955,7 @@ mod tests {
         trunk_moves_to(&mut c, MAIN2, due + 1);
         c.begin_merge(due + 1)
             .expect("main moved: dispatched at once");
-        c.merge_outcome(
+        c.settle_merge(
             c.merge_flight_id(challenger),
             &already_merged(OTHER),
             due + 1,
@@ -970,7 +977,7 @@ mod tests {
         let again = work.retry_at_ms.expect("a second retry is scheduled");
         c.begin_merge(again)
             .expect("the second retry is dispatched");
-        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(OTHER), again);
+        c.settle_merge(c.merge_flight_id(challenger), &already_merged(OTHER), again);
 
         assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
     }
@@ -982,7 +989,7 @@ mod tests {
         let stored = serde_json::to_string(&c).unwrap();
         let mut c: Coordinator = serde_json::from_str(&stored).unwrap();
         c.begin_merge(due).expect("the retry is dispatched");
-        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+        c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
 
         assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
     }
@@ -1006,6 +1013,7 @@ mod tests {
         let (_, challenger) = challenged(&mut c);
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger, "the held submission is skipped");
+        c.reach_land(NOW);
         c.recover_merge(NOW);
         let review = ClientMsg::Review {
             req: RequestId(7),
@@ -1031,7 +1039,8 @@ mod tests {
         merge_edit(&mut c, "a0", "src/z.rs", MAIN);
         let (_, challenger) = challenged(&mut c);
         c.begin_merge(NOW).expect("a merge is due");
-        c.merge_outcome(
+        c.reach_land(NOW);
+        c.settle_merge(
             c.merge_flight_id(challenger),
             &MergeOutcome::ServiceUnavailable,
             NOW,
@@ -1039,7 +1048,7 @@ mod tests {
         let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
         let due = work.retry_at_ms.expect("a retry is scheduled");
         c.begin_merge(due).expect("the retry is dispatched");
-        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+        c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
 
         assert_eq!(c.state.verifications[0].before, CommitId(MAIN.into()));
     }
@@ -1050,7 +1059,7 @@ mod tests {
         merge_edit(&mut c, "a0", "src/z.rs", MAIN);
         let (_, challenger) = challenged(&mut c);
         c.begin_merge(NOW).expect("a merge is due");
-        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
+        c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
 
         assert_eq!(
             pending(&c),
@@ -1064,7 +1073,7 @@ mod tests {
         let mut c = core();
         let (challenger, due) = challenger_with_lost_answer(&mut c);
         c.begin_merge(due).expect("the retry is dispatched");
-        c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN), due);
+        c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN), due);
 
         assert_eq!(
             pending(&c),
@@ -1217,7 +1226,7 @@ mod tests {
         submit(&mut c, "a1", (assuming, a1), "src/b.rs");
         // a1's own merge is now due, and has priority; put it in backoff to let the trial run.
         c.begin_merge(NOW).unwrap();
-        c.merge_outcome(
+        c.settle_merge(
             c.merge_flight_id(assuming),
             &MergeOutcome::ServiceUnavailable,
             NOW,
@@ -1243,7 +1252,7 @@ mod tests {
         submit(&mut c, "a1", (assuming, a1), "src/b.rs");
         merge_challenger(&mut c, challenger, MAIN);
         let dispatch = c.begin_merge(NOW).unwrap();
-        c.merge_outcome(dispatch.id, &MergeOutcome::ServiceUnavailable, NOW);
+        c.settle_merge(dispatch.id, &MergeOutcome::ServiceUnavailable, NOW);
         let dispatch = c.begin_verification(NOW).unwrap();
         assert_eq!(dispatch.commit, Some(CommitId(fork_sha("a1"))));
     }
@@ -1313,7 +1322,7 @@ mod tests {
         assert_eq!(dispatch.claim, next.0);
         assert_eq!(c.begin_verification(NOW), None, "a merge is in flight");
 
-        c.merge_outcome(c.merge_flight_id(next.0), &landed(MAIN2), NOW);
+        c.settle_merge(c.merge_flight_id(next.0), &landed(MAIN2), NOW);
         assert!(c.begin_verification(NOW).is_some(), "the queue is empty");
     }
 
@@ -1325,7 +1334,7 @@ mod tests {
         let next = grant(&mut c, "a3", vec![edit("src/c.rs")], Vec::new());
         submit(&mut c, "a3", next, "src/c.rs");
         c.begin_merge(NOW).expect("the merge runs");
-        c.merge_outcome(
+        c.settle_merge(
             c.merge_flight_id(next.0),
             &MergeOutcome::ServiceUnavailable,
             NOW,
@@ -1573,7 +1582,7 @@ mod tests {
 
         let dispatch = c.begin_merge(NOW).expect("a1's own merge");
         assert_eq!(dispatch.claim, assuming);
-        let effects = c.merge_outcome(c.merge_flight_id(assuming), &landed(MAIN2), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(assuming), &landed(MAIN2), NOW);
 
         assert_eq!(pending(&c), 0);
         assert!(verified_events(&effects).is_empty());
@@ -1628,7 +1637,7 @@ mod tests {
                 break;
             }
             c.begin_merge(NOW).expect("a merge is due");
-            c.merge_outcome(c.merge_flight_id(claim.0), &landed(MAIN), NOW);
+            c.settle_merge(c.merge_flight_id(claim.0), &landed(MAIN), NOW);
             merges += 1;
         }
         assert!(
@@ -1645,7 +1654,7 @@ mod tests {
         let claim = grant(c, &who, vec![edit(&path)], Vec::new());
         submit(c, &who, claim, &path);
         let dispatch = c.begin_merge(NOW)?;
-        c.merge_outcome(dispatch.id, &landed(MAIN), NOW);
+        c.settle_merge(dispatch.id, &landed(MAIN), NOW);
         Some(dispatch)
     }
 
@@ -1666,7 +1675,7 @@ mod tests {
                     "merge {round} has priority"
                 );
                 let dispatch = c.begin_merge(NOW).expect("the merge is dispatched");
-                c.merge_outcome(dispatch.id, &landed(MAIN), NOW);
+                c.settle_merge(dispatch.id, &landed(MAIN), NOW);
             }
             let claim = grant(&mut c, "late", vec![edit("src/late.rs")], Vec::new());
             submit(&mut c, "late", claim, "src/late.rs");
@@ -1715,7 +1724,7 @@ mod tests {
         let dispatch = c.begin_verification(NOW);
         assert_eq!(dispatch, None, "the merge is due and goes first");
         let first = c.begin_merge(NOW).expect("the merge is dispatched");
-        c.merge_outcome(first.id, &landed(MAIN), NOW);
+        c.settle_merge(first.id, &landed(MAIN), NOW);
 
         let trial = c.begin_verification(NOW).expect("nothing else is due");
         let claim = grant(&mut c, "m1", vec![edit("src/m1.rs")], Vec::new());
@@ -2048,7 +2057,7 @@ mod tests {
             base: CommitId(MAIN.into()),
             head: CommitId(MAIN2.into()),
         };
-        c.merge_outcome(c.merge_flight_id(second.0), &after_first, NOW);
+        c.settle_merge(c.merge_flight_id(second.0), &after_first, NOW);
 
         assert_eq!(pending(&c), 1, "deduplicated");
         let queued = &c.state.verifications[0];
@@ -2080,7 +2089,7 @@ mod tests {
             base: CommitId(MAIN.into()),
             head: CommitId(OTHER.into()),
         };
-        c.merge_outcome(c.merge_flight_id(unrelated.0), &moved, NOW);
+        c.settle_merge(c.merge_flight_id(unrelated.0), &moved, NOW);
         // The second challenging merge starts from OTHER, not from the queued verification's main.
         let second = grant(&mut c, "a3", vec![edit("src/a.rs")], Vec::new());
         submit(&mut c, "a3", second, "src/a.rs");
@@ -2089,7 +2098,7 @@ mod tests {
             base: CommitId(OTHER.into()),
             head: CommitId(MAIN2.into()),
         };
-        c.merge_outcome(c.merge_flight_id(second.0), &after, NOW);
+        c.settle_merge(c.merge_flight_id(second.0), &after, NOW);
 
         assert_eq!(pending(&c), 2, "not deduplicated across an unrelated merge");
         let spans: Vec<_> = c
@@ -2941,7 +2950,7 @@ mod tests {
             total: None,
         };
 
-        let effects = c.merge_outcome(c.merge_flight_id(blocker), &conflict, NOW);
+        let effects = c.settle_merge(c.merge_flight_id(blocker), &conflict, NOW);
 
         assert!(settled(&effects).is_empty());
         assert!(is_live(&c, blocker), "a rejected claim returns to active");
@@ -3057,7 +3066,7 @@ mod tests {
         merge_edit(&mut c, "a0", "src/z.rs", MAIN);
         let (assuming, challenger) = challenged(&mut c);
         c.begin_merge(NOW).expect("a merge is due");
-        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
 
         assert_unverifiable(&c, &effects, assuming);
     }
@@ -3079,7 +3088,7 @@ mod tests {
         let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
         let due = work.retry_at_ms.expect("a retry is scheduled");
         c.begin_merge(due).expect("the retry is dispatched");
-        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
+        let effects = c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), due);
 
         assert_unverifiable(&c, &effects, assuming);
     }
@@ -3090,7 +3099,7 @@ mod tests {
         let (challenger, due) = challenger_with_lost_answer(&mut c);
         let assuming = ClaimId(challenger.0 - 1);
         c.begin_merge(due).expect("the retry is dispatched");
-        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN), due);
+        let effects = c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN), due);
 
         assert_unverifiable(&c, &effects, assuming);
     }
@@ -3118,7 +3127,7 @@ mod tests {
         };
         c.handle(&agent("a1"), release, NOW);
         c.begin_merge(NOW).expect("a merge is due");
-        let effects = c.merge_outcome(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(challenger), &already_merged(MAIN2), NOW);
 
         let (unverified, _) = landing_of(&effects);
         assert!(
@@ -3134,7 +3143,7 @@ mod tests {
         merge_edit(&mut c, "a0", "src/z.rs", MAIN);
         let (shadowed, blocker) = shadowed_and_submitted(&mut c);
         c.begin_merge(NOW).expect("a merge is due");
-        let effects = c.merge_outcome(c.merge_flight_id(blocker), &already_merged(MAIN2), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(blocker), &already_merged(MAIN2), NOW);
 
         let (unverified, untried) = landing_of(&effects);
         assert!(unverified.is_empty());
@@ -3155,7 +3164,7 @@ mod tests {
         shadow(&mut c, "a1", "src/a.rs");
         submit(&mut c, "a2", blocker, "src/a.rs");
         c.begin_merge(NOW).expect("a merge is due");
-        let effects = c.merge_outcome(c.merge_flight_id(blocker.0), &already_merged(MAIN2), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(blocker.0), &already_merged(MAIN2), NOW);
 
         let (_, untried) = landing_of(&effects);
         assert!(untried.is_empty(), "nothing to try: {untried:?}");

@@ -1,9 +1,17 @@
 //! The merge queue: which submitted claim the lander merges next, and what each answer does.
 //!
-//! One merge is in flight per repo, taken in submission order. The shell persists the in-flight
-//! marker (`begin_merge`) before it calls the lander, and applies the answer with
-//! `merge_outcome`. A restart that finds a marker dispatches the same claim again, which is safe:
-//! the lander answers `already_merged` for a commit it already landed. That answer names main as
+//! One merge is in flight per repo, taken in submission order, and it lands in three calls, each
+//! with its own dispatch id (`MergeStage`): `Prepare` rebases the claim's commit and keeps the
+//! result, the head, on the candidate ref; `Test` runs the tests on that head; `Land` moves main
+//! to it. The head is written into the in-flight marker by the answer to `Prepare`, and that
+//! marker is persisted before the `Test` call goes out, so no `Test` or `Land` names a head the
+//! core does not hold (rule 5). A `Land` is dispatched only from the marker of a passed `Test`.
+//!
+//! The shell persists the in-flight marker (`begin_merge`) before it calls the lander, and applies
+//! the answer with `merge_outcome`. A restart that finds a marker counts the dispatch as an
+//! infrastructure failure and, for a claim not in doubt, dispatches a fresh `Prepare`, which is
+//! safe: C7 makes it the same head, and the lander answers `already_merged` for a commit it
+//! already landed. That answer names main as
 //! it is now, not the commit that landed or what main was before, so the baseline of what it
 //! queues for verification is main as recorded at the first dispatch whose answer was lost
 //! (`Submission::unanswered_from`). Without one, nothing is queued, and the `Merged` event lists
@@ -40,6 +48,8 @@ use super::{
     error, unknown_claim, ActiveClaim, Coordinator, Effect, InFlight, ReviewRequest, Submission,
     MAX_REVIEW_NOTE_BYTES,
 };
+use serde::{Deserialize, Serialize};
+
 use crate::merge::{
     infra_backoff_ms, MergeOutcome, MergeRecord, ReviewDecision, ReviewRecord, Verdict,
     MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
@@ -71,7 +81,31 @@ impl Rejection {
     }
 }
 
-/// One merge for the shell to ask the lander for.
+/// Which call of the staged landing a dispatch is. `Test` and `Land` carry the pair the lander is
+/// asked about: `head` is the commit `Prepare` made on top of `base`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum MergeStage {
+    /// Rebase the commit and keep the result on the candidate ref. Nothing lands.
+    #[default]
+    Prepare,
+    /// Run the tests on the candidate `head`.
+    Test { base: CommitId, head: CommitId },
+    /// Move main from `base` to `head`.
+    Land { base: CommitId, head: CommitId },
+}
+
+impl MergeStage {
+    /// Whether an attempt at this stage may already have changed main.
+    fn may_have_landed(&self) -> bool {
+        match self {
+            MergeStage::Prepare | MergeStage::Test { .. } => false,
+            MergeStage::Land { .. } => true,
+        }
+    }
+}
+
+/// One call of a merge for the shell to ask the lander for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeDispatch {
     /// Unique to this dispatch, never reused. The answer carries it to `merge_outcome`.
@@ -83,6 +117,9 @@ pub struct MergeDispatch {
     pub scopes: Vec<ScopeClaim>,
     /// 1 for the first dispatch of this submission, counting every retry.
     pub attempt: u32,
+    /// Which call this is. The stage of a dispatch never changes: the next stage is a new
+    /// dispatch with a new id.
+    pub stage: MergeStage,
     /// What the steward writes into the merge's evidence record, taken from the held claim. Boxed:
     /// it holds the claim's free text, and a dispatch travels inside small enums.
     pub record: Box<MergeRecord>,
@@ -144,6 +181,7 @@ impl Coordinator {
             attempt,
             dispatch: self.state.last_dispatch + 1,
             main: self.state.head.clone(),
+            stage: MergeStage::Prepare,
         };
         let dispatch = self.dispatch_of(&flight)?;
         self.state.last_dispatch = flight.dispatch;
@@ -181,7 +219,8 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        self.retry_after_infrastructure(flight.claim, held, flight.main, now_ms)
+        let may_have_landed = flight.stage.may_have_landed();
+        self.retry_after_infrastructure(flight.claim, held, (flight.main, may_have_landed), now_ms)
     }
 
     /// When the shell should next run `begin_merge`, as an absolute time in milliseconds since the
@@ -242,23 +281,65 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        match outcome.verdict() {
-            Verdict::Landed { base, head } => self.land(claim, &held, Some(base), head, now_ms),
-            Verdict::AlreadyLanded { main } => {
+        let doubt = (flight.main.clone(), flight.stage.may_have_landed());
+        match (&flight.stage, outcome.verdict()) {
+            (MergeStage::Prepare, Verdict::Prepared { base, head }) => {
+                let next = MergeStage::Test { base, head };
+                self.advance(flight, next);
+                Vec::new()
+            }
+            (MergeStage::Test { base, head }, Verdict::Tested) => {
+                let next = MergeStage::Land {
+                    base: base.clone(),
+                    head: head.clone(),
+                };
+                self.advance(flight, next);
+                Vec::new()
+            }
+            (
+                MergeStage::Land {
+                    head: journaled, ..
+                },
+                Verdict::Landed { base, head },
+            ) if *journaled == head => self.land(claim, &held, Some(base), head, now_ms),
+            (MergeStage::Prepare, Verdict::AlreadyLanded { main }) => {
                 let before = held
                     .work
                     .as_ref()
                     .and_then(|work| work.unanswered_from.clone());
                 self.land(claim, &held, before, main, now_ms)
             }
-            Verdict::Rejected { reason } => {
+            (_, Verdict::Rejected { reason }) => {
                 self.reject_work(claim, held, Rejection::plain(reason), now_ms)
             }
-            Verdict::MainMoved => self.retry_after_move(claim, held, now_ms),
-            Verdict::Infrastructure => {
-                self.retry_after_infrastructure(claim, held, flight.main, now_ms)
+            (_, Verdict::MainMoved) => self.retry_after_move(claim, held, now_ms),
+            (MergeStage::Test { .. } | MergeStage::Land { .. }, Verdict::CandidateMissing) => {
+                self.retry_after_missing_candidate(claim, held, now_ms)
             }
+            // An answer the stage did not ask for (a `Landed` for another head, a `Tested` to a
+            // `Prepare`) says nothing: it counts as the attempt not finishing.
+            (
+                _,
+                Verdict::Prepared { .. }
+                | Verdict::Tested
+                | Verdict::CandidateMissing
+                | Verdict::Landed { .. }
+                | Verdict::AlreadyLanded { .. }
+                | Verdict::Infrastructure,
+            ) => self.retry_after_infrastructure(claim, held, doubt, now_ms),
         }
+    }
+
+    /// The answer to the call in flight moved the merge to its next stage: a new dispatch id, the
+    /// same marker. The caller stores the marker before the next call goes out.
+    fn advance(&mut self, flight: InFlight, stage: MergeStage) {
+        let dispatch = self.state.last_dispatch + 1;
+        self.state.last_dispatch = dispatch;
+        self.state.merge_in_flight = Some(InFlight {
+            dispatch,
+            stage,
+            ..flight
+        });
     }
 
     /// Decide a submission held for review (invariant 12). Only a configured reviewer may, never
@@ -353,6 +434,7 @@ impl Coordinator {
             claim,
             attempt,
             dispatch,
+            ref stage,
             main: _,
         } = *flight;
         let held = self.state.claims.get(&claim.0)?;
@@ -365,6 +447,7 @@ impl Coordinator {
             fork_commit: work.fork_commit.clone(),
             scopes: held.scopes.clone(),
             attempt,
+            stage: stage.clone(),
             // `review` is known only with `decisions`: a submission stored before both existed,
             // or a race entry, sends neither, and the steward records them as not supplied.
             record: Box::new(MergeRecord {
@@ -603,19 +686,33 @@ impl Coordinator {
         Vec::new()
     }
 
+    /// The candidate the stage was to work on is gone. Nothing landed: the lander read that main
+    /// does not hold the head, and C7 makes a re-`Prepare` of a head that did land `AlreadyMerged`.
+    /// So the claim goes back to `Prepare` under a new dispatch id as an infrastructure failure
+    /// that cannot be in doubt: counted, with the backoff, and rejected after `MAX_INFRA_RETRIES`.
+    fn retry_after_missing_candidate(
+        &mut self,
+        claim: ClaimId,
+        held: ActiveClaim,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        self.retry_after_infrastructure(claim, held, (None, false), now_ms)
+    }
+
     /// The attempt did not finish. Retry after a backoff, up to `MAX_INFRA_RETRIES` times.
-    /// `dispatched_from` is main as the attempt began; the attempt may have landed on it.
+    /// `dispatched_from` is main as the attempt began; a `Land` that did not finish may have landed
+    /// on it, and the claim is then in doubt. A `Prepare` or a `Test` cannot have changed main.
     fn retry_after_infrastructure(
         &mut self,
         claim: ClaimId,
         held: ActiveClaim,
-        dispatched_from: Option<CommitId>,
+        (dispatched_from, may_have_landed): (Option<CommitId>, bool),
         now_ms: u64,
     ) -> Vec<Effect> {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
         };
-        if !work.in_doubt {
+        if may_have_landed && !work.in_doubt {
             work.in_doubt = true;
             work.unanswered_from = dispatched_from;
         }
@@ -644,7 +741,78 @@ impl Coordinator {
 }
 
 #[cfg(test)]
+impl Coordinator {
+    /// Answers the merge dispatch `dispatch` as a lander would answer a merge that runs all its
+    /// calls: a `Merged` or a `TestsFailed` given to a `Prepare` is preceded by the `Prepared` and
+    /// `Tested` answers that lead to it, each to the dispatch the core issued for its stage. Every
+    /// other outcome, and any answer to a dispatch past its first stage, goes to `merge_outcome`
+    /// as it is. For the tests of what a landing, a rejection or a retry does to the rest of the
+    /// core, which do not care how the stages got there; the stages have tests of their own.
+    pub(crate) fn settle_merge(
+        &mut self,
+        dispatch: u64,
+        outcome: &MergeOutcome,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let at_prepare = self.state.merge_in_flight.as_ref().is_some_and(|flight| {
+            flight.dispatch == dispatch && flight.stage == MergeStage::Prepare
+        });
+        let lands = matches!(outcome, MergeOutcome::Merged { .. });
+        let fails = matches!(outcome, MergeOutcome::TestsFailed { .. });
+        if !(at_prepare && (lands || fails)) {
+            return self.merge_outcome(dispatch, outcome, now_ms);
+        }
+        let (base, head) = if let MergeOutcome::Merged { base, head } = outcome {
+            (base.clone(), head.clone())
+        } else {
+            let base = self.state.head.clone();
+            let base = base.unwrap_or_else(|| CommitId("0".repeat(40)));
+            (base, CommitId("e".repeat(40)))
+        };
+        self.merge_outcome(dispatch, &MergeOutcome::Prepared { base, head }, now_ms);
+        if fails {
+            let test = self.state.last_dispatch;
+            return self.merge_outcome(test, outcome, now_ms);
+        }
+        let test = self.state.last_dispatch;
+        self.merge_outcome(test, &MergeOutcome::Tested {}, now_ms);
+        let land = self.state.last_dispatch;
+        self.merge_outcome(land, outcome, now_ms)
+    }
+}
+
+#[cfg(test)]
+impl Coordinator {
+    /// Takes the merge in flight, which must be at `Prepare`, through `Prepared` and `Tested`
+    /// and returns the `Land` dispatch now in flight: the one whose lost answer leaves a claim in
+    /// doubt.
+    pub(crate) fn reach_land(&mut self, now_ms: u64) -> MergeDispatch {
+        let flight = self
+            .state
+            .merge_in_flight
+            .clone()
+            .expect("a merge is in flight");
+        assert_eq!(flight.stage, MergeStage::Prepare, "the merge is at Prepare");
+        let base = flight
+            .main
+            .clone()
+            .unwrap_or_else(|| CommitId("0".repeat(40)));
+        let prepared = MergeOutcome::Prepared {
+            base,
+            head: CommitId("e".repeat(40)),
+        };
+        self.merge_outcome(flight.dispatch, &prepared, now_ms);
+        let test = self.state.last_dispatch;
+        self.merge_outcome(test, &MergeOutcome::Tested {}, now_ms);
+        self.begin_merge(now_ms).expect("the Land is in flight")
+    }
+}
+
+#[cfg(test)]
 mod queue_props;
+
+#[cfg(test)]
+mod stages;
 
 #[cfg(test)]
 mod tests {
@@ -837,7 +1005,7 @@ mod tests {
     fn a_merge_releases_the_claim_and_tells_the_submitter() {
         let mut c = core();
         let (claim, fence) = dispatched(&mut c, "a", "src/a.rs");
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW + 5);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW + 5);
 
         let to_a = notices(&effects, "a");
         assert!(
@@ -885,7 +1053,7 @@ mod tests {
         };
         c.handle(&agent("a"), hello("a"), NOW);
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
-        c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW);
+        c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW);
         let effects = c.handle(&agent("b"), hello("b"), NOW);
         assert!(
             matches!(replies(&effects)[..], [ServerMsg::Welcome { head, .. }] if head.0 == MAIN),
@@ -897,7 +1065,7 @@ mod tests {
     fn a_landing_names_main_before_it_on_the_message_and_the_event() {
         let mut c = core();
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW + 5);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW + 5);
         assert!(
             matches!(
                 &notices(&effects, "a")[..],
@@ -918,7 +1086,7 @@ mod tests {
         let outcome = MergeOutcome::AlreadyMerged {
             base: CommitId(MAIN.into()),
         };
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, NOW);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &outcome, NOW);
         assert!(matches!(
             &notices(&effects, "a")[..],
             [ServerMsg::Merged { base: None, .. }]
@@ -936,7 +1104,7 @@ mod tests {
         let outcome = MergeOutcome::AlreadyMerged {
             base: CommitId(MAIN.into()),
         };
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, NOW);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &outcome, NOW);
         assert!(matches!(
             notices(&effects, "a")[..],
             [ServerMsg::Merged { head, .. }] if head.0 == MAIN
@@ -957,7 +1125,7 @@ mod tests {
         let queued = c.handle(&agent("b"), wait, NOW);
         assert!(matches!(replies(&queued)[..], [ServerMsg::Queued { .. }]));
 
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW + 1);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW + 1);
         assert!(matches!(
             notices(&effects, "b")[..],
             [
@@ -981,7 +1149,7 @@ mod tests {
             on_conflict: OnConflict::Wait,
         };
         c.handle(&agent("b"), wait, NOW);
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &conflict(), NOW + 1);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &conflict(), NOW + 1);
         assert!(notices(&effects, "b").is_empty(), "{effects:?}");
         assert!(c.has_queued_request(&agent("b")));
     }
@@ -1006,7 +1174,7 @@ mod tests {
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         wait_for(&mut c, "b", "src/a.rs", 4);
 
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW + 1);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW + 1);
 
         match notices(&effects, "b")[..] {
             [ServerMsg::Granted {
@@ -1051,7 +1219,7 @@ mod tests {
         assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(wide.0));
         wait_for(&mut c, "b", "src/b.rs", 4);
 
-        let effects = c.merge_outcome(c.merge_flight_id(wide.0), &merged_outcome(), NOW + 1);
+        let effects = c.settle_merge(c.merge_flight_id(wide.0), &merged_outcome(), NOW + 1);
 
         assert!(
             matches!(
@@ -1085,7 +1253,7 @@ mod tests {
         );
         let (claim, _) = dispatched(&mut c, "author", "src/a.rs");
 
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW);
 
         let moved = |who: &str| -> Vec<Scope> {
             let to = notices(&effects, who);
@@ -1128,7 +1296,7 @@ mod tests {
             vec![sc(file("docs/x.md"), Mode::Depend)],
         );
         let (claim, _) = dispatched(&mut c, "author", "src/a.rs");
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW);
         assert!(logged(&effects)
             .iter()
             .all(|k| !matches!(k, EventKind::BaseMoved { .. })));
@@ -1181,7 +1349,7 @@ mod tests {
             "a submitted claim does not expire"
         );
 
-        let effects = c.merge_outcome(c.merge_flight_id(claim.0), &conflict(), NOW + 500);
+        let effects = c.settle_merge(c.merge_flight_id(claim.0), &conflict(), NOW + 500);
 
         let to_a = notices(&effects, "a");
         let [ServerMsg::SubmitRejected {
@@ -1301,7 +1469,7 @@ mod tests {
         submit(&mut c, "a", claim, "src/a.rs");
         assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(claim.0));
 
-        let effects = c.merge_outcome(
+        let effects = c.settle_merge(
             c.merge_flight_id(claim.0),
             &MergeOutcome::Uncovered { total: 2 },
             NOW + 500,
@@ -1346,7 +1514,7 @@ mod tests {
         ] {
             let mut c = core();
             let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
-            let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, NOW);
+            let effects = c.settle_merge(c.merge_flight_id(claim), &outcome, NOW);
             let [ServerMsg::SubmitRejected { reason, .. }] = &notices(&effects, "a")[..] else {
                 panic!("expected SubmitRejected, got {effects:?}");
             };
@@ -1360,12 +1528,12 @@ mod tests {
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         let moved = MergeOutcome::MainMoved {};
         for attempt in 2..=crate::merge::MAX_MAIN_MOVED {
-            let effects = c.merge_outcome(c.merge_flight_id(claim), &moved, NOW);
+            let effects = c.settle_merge(c.merge_flight_id(claim), &moved, NOW);
             assert!(effects.is_empty(), "{effects:?}");
             let again = c.begin_merge(NOW).expect("redispatched at once");
             assert_eq!((again.claim, again.attempt), (claim, attempt));
         }
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &moved, NOW);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &moved, NOW);
         let [ServerMsg::SubmitRejected { reason, .. }] = &notices(&effects, "a")[..] else {
             panic!("expected SubmitRejected after the bound, got {effects:?}");
         };
@@ -1389,7 +1557,7 @@ mod tests {
             let mut now = NOW;
             for retry in 1..=crate::merge::MAX_INFRA_RETRIES {
                 assert!(
-                    c.merge_outcome(c.merge_flight_id(claim), &outcome, now)
+                    c.settle_merge(c.merge_flight_id(claim), &outcome, now)
                         .is_empty(),
                     "{outcome:?}"
                 );
@@ -1400,7 +1568,7 @@ mod tests {
                 let again = c.begin_merge(now).expect("due after the backoff");
                 assert_eq!((again.claim, again.attempt), (claim, retry + 1));
             }
-            let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, now);
+            let effects = c.settle_merge(c.merge_flight_id(claim), &outcome, now);
             let [ServerMsg::SubmitRejected { reason, .. }] = &notices(&effects, "a")[..] else {
                 panic!("expected SubmitRejected, got {effects:?}");
             };
@@ -1435,9 +1603,9 @@ mod tests {
         );
         assert_eq!(c.begin_merge(NOW + 9_999), Some(one));
 
-        c.merge_outcome(c.merge_flight_id(third.0), &merged_outcome(), NOW);
+        c.settle_merge(c.merge_flight_id(third.0), &merged_outcome(), NOW);
         assert_eq!(c.begin_merge(NOW).unwrap().claim, first.0);
-        c.merge_outcome(c.merge_flight_id(first.0), &merged_outcome(), NOW);
+        c.settle_merge(c.merge_flight_id(first.0), &merged_outcome(), NOW);
         assert_eq!(c.begin_merge(NOW).unwrap().claim, second.0);
     }
 
@@ -1507,7 +1675,7 @@ mod tests {
         let later = grant(&mut c, "later", vec![edit("src/2.rs")]);
         submit(&mut c, "later", later, "src/2.rs");
         assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(later.0));
-        c.merge_outcome(c.merge_flight_id(later.0), &merged_outcome(), NOW);
+        c.settle_merge(c.merge_flight_id(later.0), &merged_outcome(), NOW);
         let last = grant(&mut c, "last", vec![edit("src/3.rs")]);
         submit(&mut c, "last", last, "src/3.rs");
 
@@ -1533,7 +1701,7 @@ mod tests {
         );
         assert!(replies(&effects).is_empty(), "the reviewer gets no reply");
         assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(held.0));
-        c.merge_outcome(c.merge_flight_id(held.0), &merged_outcome(), NOW);
+        c.settle_merge(c.merge_flight_id(held.0), &merged_outcome(), NOW);
         assert_eq!(c.begin_merge(NOW).map(|d| d.claim), Some(last.0));
     }
 
@@ -1841,7 +2009,7 @@ mod tests {
         let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
 
         assert_eq!(restarted.begin_merge(NOW).map(|d| d.claim), Some(decided.0));
-        restarted.merge_outcome(restarted.merge_flight_id(decided.0), &merged_outcome(), NOW);
+        restarted.settle_merge(restarted.merge_flight_id(decided.0), &merged_outcome(), NOW);
         assert_eq!(
             restarted.begin_merge(NOW),
             None,
@@ -1877,7 +2045,7 @@ mod tests {
             Some(sent),
             "the marker survives a restart"
         );
-        restarted.merge_outcome(restarted.merge_flight_id(running.0), &merged_outcome(), NOW);
+        restarted.settle_merge(restarted.merge_flight_id(running.0), &merged_outcome(), NOW);
         assert_eq!(restarted.begin_merge(NOW).unwrap().claim, held.0);
     }
 
@@ -1888,12 +2056,12 @@ mod tests {
         let sent = c.merge_flight_id(claim);
         let before = serde_json::to_string(&c).unwrap();
         for unissued in [0, sent + 1, sent + 1000] {
-            assert!(c.merge_outcome(unissued, &merged_outcome(), NOW).is_empty());
+            assert!(c.settle_merge(unissued, &merged_outcome(), NOW).is_empty());
             assert_eq!(serde_json::to_string(&c).unwrap(), before);
         }
-        c.merge_outcome(sent, &merged_outcome(), NOW);
+        c.settle_merge(sent, &merged_outcome(), NOW);
         assert!(
-            c.merge_outcome(sent, &merged_outcome(), NOW).is_empty(),
+            c.settle_merge(sent, &merged_outcome(), NOW).is_empty(),
             "answered twice"
         );
     }
@@ -1979,7 +2147,7 @@ mod tests {
             "a merge in flight is due now"
         );
 
-        c.merge_outcome(c.merge_flight_id(claim), &MergeOutcome::Clone {}, NOW);
+        c.settle_merge(c.merge_flight_id(claim), &MergeOutcome::Clone {}, NOW);
         let retry = NOW + INFRA_BACKOFF_BASE_MS;
         assert_eq!(
             c.next_alarm_ms(false, NOW),
@@ -1987,9 +2155,9 @@ mod tests {
             "the backoff is earlier than the lease"
         );
         c.begin_merge(retry);
-        c.merge_outcome(c.merge_flight_id(claim), &MergeOutcome::Clone {}, retry);
+        c.settle_merge(c.merge_flight_id(claim), &MergeOutcome::Clone {}, retry);
         c.begin_merge(retry + crate::merge::infra_backoff_ms(2));
-        c.merge_outcome(
+        c.settle_merge(
             c.merge_flight_id(claim),
             &MergeOutcome::Clone {},
             retry + 1_000_000,
@@ -2008,7 +2176,7 @@ mod tests {
         let (claim, _) = dispatched(&mut c, "author", "src/a.rs");
         grant(&mut c, "reader", vec![sc(file("src/a.rs"), Mode::Depend)]);
 
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &merged_outcome(), NOW);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW);
 
         assert!(!notices(&effects, "author")
             .iter()
@@ -2057,7 +2225,7 @@ mod tests {
         let mut c = core();
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         let outcome = MergeOutcome::from_response(400, "{}");
-        let effects = c.merge_outcome(c.merge_flight_id(claim), &outcome, NOW);
+        let effects = c.settle_merge(c.merge_flight_id(claim), &outcome, NOW);
         let [ServerMsg::SubmitRejected { reason, .. }] = &notices(&effects, "a")[..] else {
             panic!("expected SubmitRejected, got {effects:?}");
         };
@@ -2140,12 +2308,12 @@ mod tests {
         assert!(second.id > first.id, "ids only grow");
         let before = serde_json::to_string(&c).unwrap();
 
-        let late = c.merge_outcome(first.id, &merged_outcome(), retry);
+        let late = c.settle_merge(first.id, &merged_outcome(), retry);
 
         assert!(late.is_empty(), "the first dispatch's answer was applied");
         assert_eq!(serde_json::to_string(&c).unwrap(), before);
         assert!(c.has_merge_in_flight());
-        let landed = c.merge_outcome(second.id, &merged_outcome(), retry);
+        let landed = c.settle_merge(second.id, &merged_outcome(), retry);
         assert!(
             !landed.is_empty(),
             "the second dispatch's answer is applied"
@@ -2165,7 +2333,7 @@ mod tests {
 
         assert_ne!(first, 0, "0 is what a state stored without ids carries");
         assert!(second.id > first, "{} is not past {first}", second.id);
-        let late = restarted.merge_outcome(first, &merged_outcome(), retry);
+        let late = restarted.settle_merge(first, &merged_outcome(), retry);
         assert!(late.is_empty() && restarted.has_merge_in_flight());
     }
 
@@ -2187,10 +2355,10 @@ mod tests {
         assert_eq!(again.claim, claim);
         assert!(again.id >= 1, "issued ids start at 1");
         let before = serde_json::to_string(&old).unwrap();
-        assert!(old.merge_outcome(0, &merged_outcome(), retry).is_empty());
+        assert!(old.settle_merge(0, &merged_outcome(), retry).is_empty());
         assert_eq!(serde_json::to_string(&old).unwrap(), before);
         assert!(!old
-            .merge_outcome(again.id, &merged_outcome(), retry)
+            .settle_merge(again.id, &merged_outcome(), retry)
             .is_empty());
     }
 
@@ -2225,7 +2393,7 @@ mod tests {
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         check(&c, "a merge in flight", now);
         check(&c, "a merge in flight, much later", NOW + 1_000_000_000);
-        c.merge_outcome(c.merge_flight_id(claim), &MergeOutcome::Clone {}, now);
+        c.settle_merge(c.merge_flight_id(claim), &MergeOutcome::Clone {}, now);
         check(&c, "backoff", now);
         now += 3_600_000;
         check(&c, "backoff long past", now);

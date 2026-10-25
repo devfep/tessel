@@ -36,6 +36,17 @@ pub const INFRA_BACKOFF_BASE_MS: u64 = 10_000;
 /// once, so it needs the time of one side.
 pub const STEWARD_CALL_TIMEOUT_MS: u64 = 13 * 60 * 1000;
 
+/// How long the coordinator waits for a `Prepare`: clone, fetch the fork, rebase, check, push
+/// the candidate. No test runs in it.
+pub const PREPARE_CALL_TIMEOUT_MS: u64 = 5 * 60 * 1000;
+
+/// How long the coordinator waits for a `Test`: the repo's tests are in it, so it has the budget
+/// the whole merge had (`STEWARD_CALL_TIMEOUT_MS`).
+pub const TEST_CALL_TIMEOUT_MS: u64 = STEWARD_CALL_TIMEOUT_MS;
+
+/// How long the coordinator waits for a `Land`: clone main, fetch the candidate, push, read back.
+pub const LAND_CALL_TIMEOUT_MS: u64 = 5 * 60 * 1000;
+
 /// While a merge runs, a watchdog alarm is kept this long after the call starts: past the
 /// timeout, so it fires only if the instance died without scheduling the next alarm.
 pub const MERGE_WATCHDOG_MS: u64 = STEWARD_CALL_TIMEOUT_MS + 60_000;
@@ -191,7 +202,18 @@ fn refused_reason(kind: RuleKind) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum MergeOutcome {
-    /// Main was updated to `head`, read back by the lander after the push.
+    /// The answer to `Prepare`: the rebased `head` is on the candidate ref, on top of `base`. Main
+    /// has not moved. Nothing has landed.
+    Prepared {
+        base: CommitId,
+        head: CommitId,
+    },
+    /// The answer to `Test`: the tests passed on the candidate.
+    Tested {},
+    /// The answer to `Test` or `Land`: the head is not on its candidate ref and, for a `Land`, not
+    /// on main either. Nothing landed; the work goes back to `Prepare`.
+    CandidateMissing {},
+    /// The answer to `Land`: main was updated to `head`, read back by the lander after the push.
     Merged {
         base: CommitId,
         head: CommitId,
@@ -271,6 +293,13 @@ impl MergeOutcome {
 /// decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
+    /// `Prepare` made the candidate `head` on top of `base`. Nothing has landed.
+    Prepared { base: CommitId, head: CommitId },
+    /// `Test` passed on the candidate.
+    Tested,
+    /// The candidate is gone: the work goes back to `Prepare`, counted as an infrastructure
+    /// failure that cannot have landed.
+    CandidateMissing,
     /// Main now holds the work, at `head`.
     Landed { base: CommitId, head: CommitId },
     /// Main already holds the work, at `main`, but this answer does not say which commit landed
@@ -289,6 +318,12 @@ pub enum Verdict {
 impl MergeOutcome {
     pub fn verdict(&self) -> Verdict {
         match self {
+            MergeOutcome::Prepared { base, head } => Verdict::Prepared {
+                base: base.clone(),
+                head: head.clone(),
+            },
+            MergeOutcome::Tested {} => Verdict::Tested,
+            MergeOutcome::CandidateMissing {} => Verdict::CandidateMissing,
             MergeOutcome::Merged { base, head } => Verdict::Landed {
                 base: base.clone(),
                 head: head.clone(),

@@ -3,6 +3,11 @@
 //! checked after every step. The model below is deliberately independent of `Submission`: it counts
 //! answers itself and only reads the core's state to find out which claims are live.
 //!
+//! A merge is three calls (`Prepare`, `Test`, `Land`), each with its own dispatch id. An `Answer`
+//! is how an attempt ends, and `Answer::stage` is the earliest call it can come from: the model
+//! answers the calls before it (`advance_to`) with `Prepared` and `Tested`, checking that each
+//! moves the merge on under a new dispatch id with the head journaled, and then gives the answer.
+//!
 //! The case count is proptest's default (256), so `PROPTEST_CASES=10000` raises it.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -13,7 +18,7 @@ use proptest::prelude::*;
 use proptest::test_runner::TestRunner;
 
 use crate::coordinator::verifying::{Subject, Verification};
-use crate::coordinator::{Config, Coordinator, Effect};
+use crate::coordinator::{Config, Coordinator, Effect, MergeStage};
 use crate::merge::{
     infra_backoff_ms, MergeOutcome, RuleKind, StepExit, TrialOutcome, TrialReport,
     MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
@@ -60,6 +65,24 @@ fn fork_sha(agent: &AgentId) -> String {
     format!("{seed:02x}").repeat(20)
 }
 
+/// The call of a merge an answer comes from, in the order the core makes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    Prepare,
+    Test,
+    Land,
+}
+
+impl Stage {
+    fn of(stage: &MergeStage) -> Stage {
+        match stage {
+            MergeStage::Prepare => Stage::Prepare,
+            MergeStage::Test { .. } => Stage::Test,
+            MergeStage::Land { .. } => Stage::Land,
+        }
+    }
+}
+
 /// What the lander can answer, as the test generates it.
 #[derive(Debug, Clone, Copy)]
 enum Answer {
@@ -79,6 +102,12 @@ enum Answer {
     Timeout,
     PushFailed,
     ServiceUnavailable,
+    /// The `Prepare` did not finish.
+    UnavailableAtPrepare,
+    /// The candidate was gone when the tests were to run.
+    CandidateMissingAtTest,
+    /// The candidate was gone, and not on main, when the landing was to run.
+    CandidateMissingAtLand,
 }
 
 /// What an answer means for the claim, written from the documented rules: `merged` lands it,
@@ -93,6 +122,42 @@ enum Class {
 }
 
 impl Answer {
+    /// The earliest call of a merge this answer comes from. The tests (`TestsFailed`, `Install`,
+    /// `Timeout`) are run by `Test`; only a `Land` can leave main changed, so only an attempt that
+    /// ends there can be in doubt.
+    fn stage(self) -> Stage {
+        match self {
+            Answer::AlreadyMerged
+            | Answer::Conflict
+            | Answer::Uncovered
+            | Answer::GateChanged
+            | Answer::GateInvalid
+            | Answer::CommitNotInFork
+            | Answer::Refused
+            | Answer::Clone
+            | Answer::GitFailed
+            | Answer::UnavailableAtPrepare => Stage::Prepare,
+            Answer::TestsFailed
+            | Answer::Install
+            | Answer::Timeout
+            | Answer::CandidateMissingAtTest => Stage::Test,
+            Answer::Merged
+            | Answer::MainMoved
+            | Answer::PushFailed
+            | Answer::ServiceUnavailable
+            | Answer::CandidateMissingAtLand => Stage::Land,
+        }
+    }
+
+    /// Whether the answer says the candidate is gone: an infrastructure failure that cannot have
+    /// landed.
+    fn candidate_missing(self) -> bool {
+        matches!(
+            self,
+            Answer::CandidateMissingAtTest | Answer::CandidateMissingAtLand
+        )
+    }
+
     fn class(self) -> Class {
         match self {
             Answer::Merged | Answer::AlreadyMerged => Class::Landed,
@@ -109,7 +174,10 @@ impl Answer {
             | Answer::Install
             | Answer::Timeout
             | Answer::PushFailed
-            | Answer::ServiceUnavailable => Class::Infra,
+            | Answer::ServiceUnavailable
+            | Answer::UnavailableAtPrepare
+            | Answer::CandidateMissingAtTest
+            | Answer::CandidateMissingAtLand => Class::Infra,
         }
     }
 
@@ -146,7 +214,12 @@ impl Answer {
             Answer::Install => MergeOutcome::Install {},
             Answer::Timeout => MergeOutcome::Timeout {},
             Answer::PushFailed => MergeOutcome::PushFailed {},
-            Answer::ServiceUnavailable => MergeOutcome::ServiceUnavailable,
+            Answer::ServiceUnavailable | Answer::UnavailableAtPrepare => {
+                MergeOutcome::ServiceUnavailable
+            }
+            Answer::CandidateMissingAtTest | Answer::CandidateMissingAtLand => {
+                MergeOutcome::CandidateMissing {}
+            }
         }
     }
 }
@@ -169,12 +242,15 @@ fn answers() -> impl Strategy<Value = Answer> {
         2 => Just(Answer::Timeout),
         2 => Just(Answer::PushFailed),
         3 => Just(Answer::ServiceUnavailable),
+        2 => Just(Answer::UnavailableAtPrepare),
+        2 => Just(Answer::CandidateMissingAtTest),
+        2 => Just(Answer::CandidateMissingAtLand),
     ]
 }
 
-/// An answer that leaves the attempt in doubt: it may have landed.
+/// An answer that leaves the attempt in doubt: a `Land` that did not finish may have landed.
 fn lost_answer() -> impl Strategy<Value = Answer> {
-    prop_oneof![Just(Answer::ServiceUnavailable), Just(Answer::Timeout)]
+    prop_oneof![Just(Answer::ServiceUnavailable), Just(Answer::PushFailed)]
 }
 
 fn retryable() -> impl Strategy<Value = Answer> {
@@ -341,7 +417,9 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
 /// The merge the model believes is in flight.
 #[derive(Debug, Clone, Copy)]
 struct Flight {
+    /// The dispatch of the call that is out: it changes with each stage.
     id: u64,
+    stage: Stage,
     claim: u64,
     attempt: u32,
     dispatched_ms: u64,
@@ -1038,6 +1116,8 @@ fn run_recovered_landing(
     let Some(flight) = world.model.inflight else {
         return;
     };
+    // Only a `Land` that is cut off or lost leaves the claim in doubt.
+    advance_to(world, Stage::Land);
     if restart {
         let recovered = recover_checked(world);
         emit(world, recovered);
@@ -1118,6 +1198,9 @@ fn begin_checked(world: &mut World) {
             "I12: a merge went ahead of a verification after {SLOT_AFTER} merges"
         );
     }
+    if let Some(dispatch) = &dispatch {
+        check_stage_dispatch(world, dispatch);
+    }
     let Some(dispatch) = dispatch else {
         // Documented: `None` when nothing is ready. An in-flight merge is always returned.
         assert!(
@@ -1151,8 +1234,18 @@ fn begin_checked(world: &mut World) {
             dispatch.id, flight.id,
             "the dispatch in flight keeps its id when it is returned again"
         );
+        assert_eq!(
+            Stage::of(&dispatch.stage),
+            flight.stage,
+            "the dispatch in flight keeps its stage when it is returned again"
+        );
         return;
     }
+    assert_eq!(
+        dispatch.stage,
+        MergeStage::Prepare,
+        "a new merge starts at Prepare"
+    );
     let work = world.core.state.claims[&id].work.as_ref().unwrap();
     assert!(
         !world.model.held.contains(&id) && !work.awaiting_review,
@@ -1184,16 +1277,97 @@ fn begin_checked(world: &mut World) {
     world.model.issue(Some(id), dispatch.id);
     world.model.inflight = Some(Flight {
         id: dispatch.id,
+        stage: Stage::Prepare,
         claim: id,
         attempt: dispatch.attempt,
         dispatched_ms: world.now,
     });
 }
 
-/// Apply the lander's answer for `claim` through `merge_outcome` and check what it did.
+/// A `Test` or a `Land` names the pair the core journaled, and the stored marker holds it: no
+/// call carries a head the core does not hold (rule 5).
+fn check_stage_dispatch(world: &World, dispatch: &crate::coordinator::MergeDispatch) {
+    let (MergeStage::Test { base, head } | MergeStage::Land { base, head }) = &dispatch.stage
+    else {
+        return;
+    };
+    let stored = serde_json::to_value(&world.core).unwrap();
+    let stage = &stored["merge_in_flight"]["stage"];
+    assert_eq!(
+        (stage["base"].as_str(), stage["head"].as_str()),
+        (Some(base.0.as_str()), Some(head.0.as_str())),
+        "I3: a {:?} names a head the stored marker does not hold",
+        dispatch.stage
+    );
+    assert_eq!(
+        dispatch.id,
+        world.core.state.merge_in_flight.as_ref().unwrap().dispatch
+    );
+}
+
+/// Answer the calls of the merge in flight before `target` with `Prepared` and `Tested`: each
+/// moves the merge to the next call under a new, larger dispatch id, with no effect for anyone,
+/// the head journaled, and a repeat of the answer is stale.
+fn advance_to(world: &mut World, target: Stage) {
+    while let Some(flight) = world.model.inflight.filter(|flight| flight.stage < target) {
+        let (outcome, next) = match flight.stage {
+            Stage::Prepare => (
+                MergeOutcome::Prepared {
+                    base: CommitId("old".into()),
+                    head: CommitId(MAIN.into()),
+                },
+                Stage::Test,
+            ),
+            Stage::Test | Stage::Land => (MergeOutcome::Tested {}, Stage::Land),
+        };
+        let effects = world.core.merge_outcome(flight.id, &outcome, world.now);
+        assert!(
+            effects.is_empty(),
+            "a stage answer had effects: {effects:?}"
+        );
+        let stored = world
+            .core
+            .state
+            .merge_in_flight
+            .clone()
+            .expect("the merge goes on to its next call");
+        assert!(
+            stored.dispatch > flight.id,
+            "each call has a new dispatch id"
+        );
+        assert_eq!(stored.claim.0, flight.claim);
+        assert_eq!(Stage::of(&stored.stage), next);
+        let (MergeStage::Test { base, head } | MergeStage::Land { base, head }) = &stored.stage
+        else {
+            unreachable!("the merge moved past Prepare");
+        };
+        assert_eq!((base.0.as_str(), head.0.as_str()), ("old", MAIN));
+        let before = save(&world.core);
+        let again = world.core.merge_outcome(flight.id, &outcome, world.now);
+        assert!(
+            again.is_empty() && before == save(&world.core),
+            "a repeat of a stage's answer changed the state"
+        );
+        world.model.issue(Some(flight.claim), stored.dispatch);
+        world.model.inflight = Some(Flight {
+            id: stored.dispatch,
+            stage: next,
+            ..flight
+        });
+        let dispatch = world
+            .core
+            .begin_merge(world.now)
+            .expect("the next call is due");
+        assert_eq!(dispatch.id, stored.dispatch);
+        check_stage_dispatch(world, &dispatch);
+    }
+}
+
+/// Apply the lander's answer for `claim` through `merge_outcome` and check what it did. The calls
+/// before the one the answer comes from are answered first.
 fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> {
     let current = world.model.inflight.filter(|flight| flight.claim == claim);
-    let Some(flight) = current else {
+    if current.is_none() {
         // Documented: an answer for any other claim is stale and changes nothing. It carries the
         // latest dispatch id issued for that claim, or an id never issued.
         let id = world
@@ -1204,8 +1378,10 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
             .find(|(of, _)| *of == Some(claim))
             .map_or(UNISSUED_DISPATCH, |(_, id)| *id);
         return stale_answer(world, id, answer);
-    };
+    }
     assert!(world.live(claim), "the claim in flight is still queued");
+    advance_to(world, answer.stage());
+    let flight = world.model.inflight.expect("the merge is still in flight");
     let retry_before = world
         .core
         .state
@@ -1223,7 +1399,14 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
         !world.core.has_merge_in_flight(),
         "the answer left a marker behind"
     );
-    expect_class(world, claim, answer.class(), &effects, retry_before);
+    let doubt = flight.stage == Stage::Land && !answer.candidate_missing();
+    expect_class(
+        world,
+        claim,
+        (answer.class(), doubt),
+        &effects,
+        retry_before,
+    );
     effects
 }
 
@@ -1385,7 +1568,7 @@ fn late_answer(world: &mut World, pick: usize, answer: Answer) -> Vec<Effect> {
 fn expect_class(
     world: &mut World,
     claim: u64,
-    class: Class,
+    (class, doubt): (Class, bool),
     effects: &[Effect],
     retry_before: Option<u64>,
 ) {
@@ -1433,7 +1616,7 @@ fn expect_class(
                 assert_redispatched_at_once(world, claim, retry_before);
             }
         }
-        Class::Infra => expect_infra(world, claim, merged_events, rejected_events),
+        Class::Infra => expect_infra(world, claim, (merged_events, rejected_events), doubt),
     }
 }
 
@@ -1461,8 +1644,17 @@ fn assert_redispatched_at_once(world: &World, claim: u64, retry_before: Option<u
     );
 }
 
-fn expect_infra(world: &mut World, claim: u64, merged_events: usize, rejected_events: usize) {
-    world.model.doubt.insert(claim);
+/// An infrastructure failure of a call that can have changed main (`doubt`: a `Land`) leaves the
+/// claim in doubt; one of a `Prepare` or a `Test`, or a missing candidate, does not.
+fn expect_infra(
+    world: &mut World,
+    claim: u64,
+    (merged_events, rejected_events): (usize, usize),
+    doubt: bool,
+) {
+    if doubt {
+        world.model.doubt.insert(claim);
+    }
     let failures = world.model.infra.entry(claim).or_insert(0);
     *failures += 1;
     let failures = *failures;
@@ -1522,7 +1714,12 @@ fn recover_checked(world: &mut World) -> Vec<Effect> {
         .into_iter()
         .filter(|kind| matches!(kind, EventKind::SubmitRejected { claim: c, .. } if c.0 == flight.claim))
         .count();
-    expect_infra(world, flight.claim, 0, rejected);
+    expect_infra(
+        world,
+        flight.claim,
+        (0, rejected),
+        flight.stage == Stage::Land,
+    );
     effects
 }
 

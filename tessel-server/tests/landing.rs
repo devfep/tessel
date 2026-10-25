@@ -93,8 +93,30 @@ fn prepare_request(commit: &str, scopes: Vec<ScopeClaim>) -> Request {
     }
 }
 
-async fn prepare(landing: &Landing, commit: &str, scopes: Vec<ScopeClaim>) -> CallAnswer {
-    ask(landing, prepare_request(commit, scopes), 120_000).await
+/// The calls of one merge, as the core makes them: `Prepare`, then `Test` on its head, then `Land`.
+/// A merge that ends before landing answers with its last call's answer. One that lands answers
+/// `Prepared { base, head }` with the base it was prepared on, so a test can read the head and the
+/// base of the landing; main has moved to the head by then.
+async fn merge(landing: &Landing, commit: &str, scopes: Vec<ScopeClaim>) -> CallAnswer {
+    let answer = ask(landing, prepare_request(commit, scopes), 120_000).await;
+    let CallAnswer::Prepared { base, head } = &answer else {
+        return answer;
+    };
+    if base == head {
+        return answer;
+    }
+    let tested = ask(landing, test_request(&head.0), 120_000).await;
+    if tested != CallAnswer::Tested {
+        return tested;
+    }
+    let landed = ask(landing, land_request(&base.0, &head.0), 120_000).await;
+    if let CallAnswer::Landed { head } = landed {
+        return CallAnswer::Prepared {
+            base: base.clone(),
+            head,
+        };
+    }
+    landed
 }
 
 fn prepared(answer: &CallAnswer) -> Result<(String, String), String> {
@@ -149,7 +171,7 @@ async fn a_submitted_commit_lands_on_main_after_the_runner_ran_on_it() -> TestRe
     };
     let landing = landing(&repos, "landing-ok", runner.clone());
 
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
 
     let (base, head) = prepared(&answer)?;
     assert_eq!(base, moved, "based on main as it was when the merge began");
@@ -191,7 +213,7 @@ async fn failing_tests_are_refused_with_the_exit_code_and_the_first_failure_only
     let runner = Scripted::new(move |_| Ok(result(101, Some(noisy))));
     let landing = landing(&repos, "landing-failed", runner);
 
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
 
     assert_eq!(
         answer,
@@ -235,7 +257,7 @@ async fn a_conflict_is_refused_with_at_most_fifty_quoted_names() -> TestResult {
     let runner = passing();
     let landing = landing(&repos, "landing-conflict", runner.clone());
 
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
 
     let CallAnswer::Refused {
         refusal: Refusal::Conflict { files, total },
@@ -275,7 +297,7 @@ async fn a_change_the_claim_does_not_cover_is_refused_before_any_test_runs() -> 
     let runner = passing();
     let landing = landing(&repos, "landing-uncovered", runner.clone());
 
-    let answer = prepare(&landing, &commit, vec![file_scope("src/a.rs")]).await;
+    let answer = merge(&landing, &commit, vec![file_scope("src/a.rs")]).await;
 
     assert_eq!(answer, refused(Refusal::Uncovered { total: 1 }));
     assert_eq!((runner.runs(), repos.main_head()), (0, before));
@@ -291,7 +313,7 @@ async fn a_change_to_the_gate_is_refused_before_any_test_runs() -> TestResult {
     let runner = passing();
     let landing = landing(&repos, "landing-gate", runner.clone());
 
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
 
     assert_eq!(answer, refused(Refusal::GateChanged));
     assert_eq!((runner.runs(), repos.main_head()), (0, before));
@@ -326,7 +348,7 @@ async fn a_trunk_whose_gate_is_invalid_is_refused_once_and_not_retried() -> Test
     let runner = passing();
     let landing = landing(&repos, "landing-gate-invalid", runner.clone());
 
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
 
     let message = gate_message(&answer)?;
     assert!(
@@ -354,7 +376,7 @@ async fn a_trunk_with_no_gate_is_refused_once_and_not_retried() -> TestResult {
     let runner = passing();
     let landing = landing(&repos, "landing-gate-missing", runner.clone());
 
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
 
     let message = gate_message(&answer)?;
     assert!(
@@ -374,10 +396,10 @@ async fn a_commit_that_is_not_in_the_fork_is_refused() -> TestResult {
     let runner = passing();
     let landing = landing(&repos, "landing-missing", runner.clone());
 
-    let answer = prepare(&landing, &unpushed, whole_repo()).await;
+    let answer = merge(&landing, &unpushed, whole_repo()).await;
     assert_eq!(answer, refused(Refusal::CommitNotInFork));
 
-    let not_a_commit = prepare(&landing, "abc", whole_repo()).await;
+    let not_a_commit = merge(&landing, "abc", whole_repo()).await;
     assert_eq!(not_a_commit, refused(Refusal::CommitNotInFork));
     assert_eq!((runner.runs(), repos.main_head()), (0, before));
     Ok(())
@@ -447,7 +469,7 @@ async fn an_agent_name_that_is_not_a_fork_name_is_refused_and_makes_no_path() ->
             "{name:?} is a valid name with no fork"
         );
     }
-    let landed = prepare(&landing, &commit, whole_repo()).await;
+    let landed = merge(&landing, &commit, whole_repo()).await;
     assert!(prepared(&landed).is_ok(), "a1 has a fork: {landed:?}");
     Ok(())
 }
@@ -552,7 +574,17 @@ async fn two_names_that_differ_only_by_case_cannot_both_land_through_one_fork() 
             scopes: whole_repo(),
         };
         let answer = ask(&landing, request, 120_000).await;
-        assert!(prepared(&answer).is_ok(), "{answer:?}");
+        let (base, head) = prepared(&answer)?;
+        assert_eq!(runner.runs(), 0, "a Prepare runs no tests");
+        let tested = ask(&landing, test_request(&head), 120_000).await;
+        assert_eq!(tested, CallAnswer::Tested);
+        let landed = ask(&landing, land_request(&base, &head), 120_000).await;
+        assert_eq!(
+            landed,
+            CallAnswer::Landed {
+                head: CommitId(head)
+            }
+        );
     }
     assert_eq!(runner.runs(), 1);
     Ok(())
@@ -577,7 +609,7 @@ async fn main_moving_between_the_tests_and_the_push_is_unknown_and_the_retry_lan
     };
     let landing = landing(&repos, "landing-moved", runner.clone());
 
-    let first = prepare(&landing, &commit, whole_repo()).await;
+    let first = merge(&landing, &commit, whole_repo()).await;
     assert_eq!(
         first,
         CallAnswer::Unknown,
@@ -585,7 +617,7 @@ async fn main_moving_between_the_tests_and_the_push_is_unknown_and_the_retry_lan
     );
     let rival = repos.main_head();
 
-    let retry = prepare(&landing, &commit, whole_repo()).await;
+    let retry = merge(&landing, &commit, whole_repo()).await;
     let (base, head) = prepared(&retry)?;
     assert_eq!(base, rival, "the retry is based on the main that won");
     assert_eq!(repos.main_head(), head);
@@ -595,8 +627,8 @@ async fn main_moving_between_the_tests_and_the_push_is_unknown_and_the_retry_lan
 }
 
 #[tokio::test]
-async fn a_call_past_its_deadline_is_given_up_its_clones_removed_and_it_never_pushes_late(
-) -> TestResult {
+async fn a_test_past_its_deadline_is_given_up_its_tree_removed_and_nothing_lands_late() -> TestResult
+{
     let repos = Repos::new();
     let before = repos.main_head();
     let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
@@ -623,8 +655,10 @@ async fn a_call_past_its_deadline_is_given_up_its_clones_removed_and_it_never_pu
     });
     let landing = landing(&repos, "landing-late", runner);
 
+    let prepared = ask(&landing, prepare_request(&commit, whole_repo()), 120_000).await;
+    let (_, head) = self::prepared(&prepared)?;
     let began = Instant::now();
-    let answer = ask(&landing, prepare_request(&commit, whole_repo()), 2_500).await;
+    let answer = ask(&landing, test_request(&head), 2_500).await;
 
     assert_eq!(answer, CallAnswer::Unknown);
     assert!(
@@ -645,18 +679,17 @@ async fn a_call_past_its_deadline_is_given_up_its_clones_removed_and_it_never_pu
 
     release.send(())?;
     finished.recv_timeout(Duration::from_secs(20))?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !log_lines_with("landing-late")
-        .iter()
-        .any(|l| l.contains("so main was not pushed"))
-    {
-        assert!(
-            Instant::now() < deadline,
-            "the late work ended without pushing"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(repos.main_head(), before, "the abandoned work did not push");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        repos.main_head(),
+        before,
+        "the abandoned test moved nothing"
+    );
+    assert_eq!(
+        candidate_tip(&repos, &head),
+        Some(head),
+        "and left the candidate for the next call"
+    );
     Ok(())
 }
 
@@ -679,7 +712,7 @@ async fn a_runner_that_refuses_to_start_is_infrastructure_and_is_logged() -> Tes
     )?;
     let landing = landing(&repos, "landing-refused", runner);
 
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
 
     assert_eq!(
         answer,
@@ -710,9 +743,9 @@ async fn work_that_main_already_holds_is_prepared_at_main_without_a_second_test_
     let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
     let runner = passing();
     let landing = landing(&repos, "landing-twice", runner.clone());
-    let (_, head) = prepared(&prepare(&landing, &commit, whole_repo()).await)?;
+    let (_, head) = prepared(&merge(&landing, &commit, whole_repo()).await)?;
 
-    let again = prepare(&landing, &commit, whole_repo()).await;
+    let again = merge(&landing, &commit, whole_repo()).await;
 
     assert_eq!(prepared(&again)?, (head.clone(), head.clone()));
     assert_eq!(repos.main_head(), head);
@@ -730,7 +763,7 @@ async fn the_head_and_the_landed_commits_are_read_from_the_remote() -> TestResul
     let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
     let base = repos.main_commit(&[("README", "r2\n")]);
     let landing = landing(&repos, "landing-head", passing());
-    let (_, head) = prepared(&prepare(&landing, &commit, whole_repo()).await)?;
+    let (_, head) = prepared(&merge(&landing, &commit, whole_repo()).await)?;
     let id = |sha: &str| CommitId(sha.to_string());
 
     let submitted = vec![
@@ -813,6 +846,21 @@ fn set_candidate(repos: &Repos, commit: &str, tip: &str) {
     git(&repos.work, &["push", "--quiet", "--force", &main, &target]);
 }
 
+/// The names of main's candidate refs.
+fn candidate_names(repos: &Repos) -> Vec<String> {
+    git(
+        &repos.main,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/tessel/candidate/",
+        ],
+    )
+    .lines()
+    .map(str::to_owned)
+    .collect()
+}
+
 /// Where main's candidate ref of `commit` points, or `None` when there is none.
 fn candidate_tip(repos: &Repos, commit: &str) -> Option<String> {
     let reference = format!("refs/tessel/candidate/{commit}");
@@ -835,6 +883,102 @@ fn land_request(base: &str, head: &str) -> Request {
         base: CommitId(base.to_string()),
         head: CommitId(head.to_string()),
     }
+}
+
+#[tokio::test]
+async fn prepare_puts_the_head_on_its_candidate_ref_and_moves_nothing() -> TestResult {
+    let repos = Repos::new();
+    let before = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "one\ntwo\n")]);
+    let runner = passing();
+    let landing = landing(&repos, "landing-prepare-ref", runner.clone());
+
+    let answer = ask(&landing, prepare_request(&commit, whole_repo()), 120_000).await;
+
+    let (base, head) = prepared(&answer)?;
+    assert_eq!(base, before, "on top of main as it was");
+    assert_ne!(head, base);
+    assert_eq!(repos.main_head(), before, "a Prepare does not move main");
+    assert_eq!(
+        candidate_tip(&repos, &head),
+        Some(head.clone()),
+        "the head is on its candidate ref"
+    );
+    assert_eq!(runner.runs(), 0, "and nothing was tested");
+    assert_no_call_dirs(&repos, "landing-prepare-ref");
+
+    let again = ask(&landing, prepare_request(&commit, whole_repo()), 120_000).await;
+    assert_eq!(prepared(&again)?, (base, head.clone()), "C7: the same head");
+    assert_eq!(candidate_tip(&repos, &head), Some(head), "and the same ref");
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepare_sweeps_the_candidates_of_other_heads_and_leaves_names_that_are_not_heads(
+) -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "one\ntwo\n")]);
+    let stale = "1".repeat(40);
+    set_candidate(&repos, &stale, &repos.main_head());
+    set_candidate(&repos, "not-a-head", &repos.main_head());
+    let landing = landing(&repos, "landing-prepare-sweep", passing());
+
+    let answer = ask(&landing, prepare_request(&commit, whole_repo()), 120_000).await;
+
+    let (_, head) = prepared(&answer)?;
+    assert_eq!(
+        candidate_tip(&repos, &stale),
+        None,
+        "the stale ref is swept"
+    );
+    assert!(
+        candidate_tip(&repos, "not-a-head").is_some(),
+        "a foreign name stays"
+    );
+    assert_eq!(candidate_tip(&repos, &head), Some(head));
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepare_of_work_main_already_holds_pushes_no_candidate() -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "one\ntwo\n")]);
+    let landing = landing(&repos, "landing-prepare-held", passing());
+    let first = merge(&landing, &commit, whole_repo()).await;
+    prepared(&first)?;
+    let main = repos.main_head();
+
+    let again = ask(&landing, prepare_request(&commit, whole_repo()), 120_000).await;
+
+    assert_eq!(
+        prepared(&again)?,
+        (main.clone(), main),
+        "head is base: already merged"
+    );
+    assert_eq!(
+        candidate_names(&repos),
+        Vec::<String>::new(),
+        "no ref is left or made"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepare_is_unknown_and_moves_nothing_when_the_candidate_cannot_be_pushed() -> TestResult {
+    let repos = Repos::new();
+    let before = repos.main_head();
+    let commit = repos.fork_commit(&[("src/a.rs", "one\ntwo\n")]);
+    let hook = repos.main.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\nwhile read old new ref; do\n  case \"$ref\" in refs/tessel/*) exit 1;; esac\ndone\n")?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    let landing = landing(&repos, "landing-prepare-refused", passing());
+
+    let answer = ask(&landing, prepare_request(&commit, whole_repo()), 120_000).await;
+
+    assert_eq!(answer, CallAnswer::Unknown);
+    assert_eq!(repos.main_head(), before);
+    assert_no_call_dirs(&repos, "landing-prepare-refused");
+    Ok(())
 }
 
 #[tokio::test]
@@ -1027,6 +1171,27 @@ async fn land_with_the_ref_on_another_commit_is_candidate_missing_and_pushes_not
 
     assert_eq!(answer, CallAnswer::CandidateMissing);
     assert_eq!(repos.main_head(), base);
+    Ok(())
+}
+
+#[tokio::test]
+async fn land_of_a_head_not_built_on_its_base_is_a_missing_candidate_and_pushes_nothing(
+) -> TestResult {
+    let repos = Repos::new();
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    set_candidate(&repos, &commit, &commit);
+    // Main moves on from where the head was made: the head is a sibling of main.
+    let moved = repos.main_commit(&[("README", "moved\n")]);
+    let landing = landing(&repos, "landing-land-sibling", passing());
+
+    let answer = ask(&landing, land_request(&moved, &commit), 120_000).await;
+
+    assert_eq!(
+        answer,
+        CallAnswer::CandidateMissing,
+        "the core goes back to Prepare, counted, instead of reconciling for ever"
+    );
+    assert_eq!(repos.main_head(), moved, "main is not rewritten");
     Ok(())
 }
 
@@ -1401,7 +1566,7 @@ async fn a_token_file_that_goes_bad_after_start_ends_the_call_unknown_and_pushes
     let before = repos.main_head();
 
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
-    let answer = prepare(&landing, &commit, vec![file_scope("src/a.rs")]).await;
+    let answer = merge(&landing, &commit, vec![file_scope("src/a.rs")]).await;
     assert_eq!(answer, CallAnswer::Unknown);
     assert_eq!(repos.main_head(), before, "nothing was pushed");
     let logged = log_lines_with("cannot use the git token");
@@ -1415,7 +1580,7 @@ async fn a_token_file_that_goes_bad_after_start_ends_the_call_unknown_and_pushes
     );
 
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    let landed = prepare(&landing, &commit, vec![file_scope("src/a.rs")]).await;
+    let landed = merge(&landing, &commit, vec![file_scope("src/a.rs")]).await;
     prepared(&landed)?;
     Ok(())
 }
@@ -1426,7 +1591,7 @@ async fn a_lander_with_a_token_file_lands_on_a_path_remote_as_before() -> TestRe
     let path = token_file(&repos, 0o600, SECRET);
     let landing = build(&repos, "landing-token-path", &path)?;
     let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
-    let answer = prepare(&landing, &commit, vec![file_scope("src/a.rs")]).await;
+    let answer = merge(&landing, &commit, vec![file_scope("src/a.rs")]).await;
     let (_base, head) = prepared(&answer)?;
     assert_eq!(repos.main_head(), head);
     Ok(())
@@ -1503,7 +1668,7 @@ async fn a_rebase_over_another_landing_keeps_what_a_note_follows_a_commit_by() -
     let moved = repos.main_commit(&[("src/ctx.rs", &twenty_lines(&[(4, "elsewhere")]))]);
     let landing = landing(&repos, "landing-notes", passing());
 
-    let answer = prepare(&landing, &two, whole_repo()).await;
+    let answer = merge(&landing, &two, whole_repo()).await;
 
     let (base, head) = prepared(&answer)?;
     assert_eq!(base, moved, "base is main as it was before the landing");
@@ -1594,7 +1759,7 @@ async fn with_a_sudo_runner_the_tree_to_test_is_in_the_handoff_directory_and_goe
         &lander,
         runner.clone(),
     )?;
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
     assert!(prepared(&answer).is_ok(), "{answer:?}");
 
     let seen = seen_during_the_run
@@ -1685,7 +1850,7 @@ async fn a_call_directory_in_the_handoff_directory_is_private_until_a_run_opens_
     capture_logs();
     let id = RepoId::new("acme", "private-case")?;
     let landing = Landing::new(id, &repos.repository("private-case"), &lander, runner)?;
-    let answer = prepare(&landing, &commit, whole_repo()).await;
+    let answer = merge(&landing, &commit, whole_repo()).await;
     assert!(prepared(&answer).is_ok(), "{answer:?}");
     let modes = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
     assert_eq!(
