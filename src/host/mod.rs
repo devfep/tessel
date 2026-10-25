@@ -163,7 +163,7 @@ pub enum Output {
 
 /// The repo the host serves and the deployment settings it reads when it builds the core (the
 /// server's `[[repository]]` entry). `run` and `shadow_enabled` matter only for a repo with nothing
-/// stored; `reviewers`, `sensitive` and `protocol_range` are applied on every load.
+/// stored; `reviewers`, `sensitive`, `protocol_range` and `lease_ms` are applied on every load.
 #[derive(Debug, Clone, Default)]
 pub struct HostConfig {
     /// Named in log lines.

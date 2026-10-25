@@ -172,7 +172,8 @@ impl CoreSlot {
 
 /// Build the core from what `Output::Load` read (R14). Fails loudly on corrupt state or a bad
 /// config and never starts empty over stored data. `run` and `shadow_enabled` matter only when
-/// nothing is stored yet; the reviewers and the sensitive paths are applied on every load. A bad
+/// nothing is stored yet; the reviewers, the sensitive paths, the protocol range and the lease are
+/// applied on every load. A bad
 /// reviewers list leaves nobody able to review and a bad sensitive list holds every submission:
 /// each is reported in `reports`.
 pub fn build_core(
@@ -196,6 +197,10 @@ pub fn build_core(
     )?;
     if let Some(range) = config.protocol_range {
         core.set_protocol_range(range);
+    }
+    if let Some(lease_ms) = config.lease_ms {
+        core.set_lease_ms(lease_ms)
+            .map_err(LoadError::InvalidConfig)?;
     }
     Ok(core)
 }

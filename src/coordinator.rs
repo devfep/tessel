@@ -51,6 +51,12 @@ pub struct Config {
     pub shadow_enabled: bool,
 }
 
+/// The shortest lease a host may set: below it a slow heartbeat loses the claim.
+pub const MIN_LEASE_MS: u64 = 1_000;
+
+/// The longest lease a host may set: above it a dead agent holds its scopes for too long.
+pub const MAX_LEASE_MS: u64 = 600_000;
+
 /// `Config` the coordinator cannot run with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidConfig {
@@ -481,6 +487,20 @@ impl Coordinator {
     /// `/`, so `src/auth/` does not also match `src/authz.rs`.
     pub fn set_sensitive(&mut self, sensitive: Vec<String>) {
         self.state.sensitive = sensitive;
+    }
+
+    /// Replace how long a claim lives without a heartbeat. It comes from the host's `lease_ms`
+    /// setting (`HostConfig`) and is applied on every load, so a stored state follows the
+    /// deployment; claims already granted keep the expiry they were given. Fails outside
+    /// `MIN_LEASE_MS..=MAX_LEASE_MS`.
+    pub fn set_lease_ms(&mut self, lease_ms: u64) -> Result<(), InvalidConfig> {
+        if !(MIN_LEASE_MS..=MAX_LEASE_MS).contains(&lease_ms) {
+            return Err(InvalidConfig {
+                reason: "lease_ms must be between 1 second and 10 minutes",
+            });
+        }
+        self.state.config.lease_ms = lease_ms;
+        Ok(())
     }
 
     /// Fails if `config.lease_ms` is zero: every grant would already be due, so the shell's
