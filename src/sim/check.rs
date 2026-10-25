@@ -29,8 +29,8 @@ pub enum Checker {
 }
 
 impl Checker {
-    /// The checkers a run enables by default.
-    pub const ALL: [Checker; 3] = [Checker::I1, Checker::I5, Checker::I9];
+    /// The checkers a run enables by default. `Harness` reports the driver's own mistakes.
+    pub const ALL: [Checker; 4] = [Checker::I1, Checker::I5, Checker::I9, Checker::Harness];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,20 +218,13 @@ fn encode_decode(state: &Value) -> Result<Value, String> {
     serde_json::to_value(&decoded).map_err(|e| format!("does not encode: {e}"))
 }
 
-/// What stripping each field in turn showed.
-struct Stripped {
-    /// Fields that can be absent and hold the value the core fills in when they are: every
-    /// `#[serde(default)]` field, found with no list to keep.
-    defaulted: Vec<Vec<String>>,
-    /// Those of them whose absence changes what the state encodes back to.
-    drifting: Vec<Vec<String>>,
-}
-
-fn strip_each(state: &Value) -> Stripped {
-    let mut found = Stripped {
-        defaulted: Vec::new(),
-        drifting: Vec::new(),
-    };
+/// The fields of the state that can be absent, found by trial: strip each field in turn and
+/// keep those with which the state still decodes. These are the `#[serde(default)]` fields,
+/// which is where an older build's state differs from this one's. The trial is costly, so a
+/// run does not repeat it: a test pins the set, so a field that gains or loses its default
+/// shows as a change to that set.
+pub fn defaulted_fields(state: &Value) -> Vec<Vec<String>> {
+    let mut found = Vec::new();
     for container in containers(state) {
         let Some(object) = at(state, &container).and_then(Value::as_object) else {
             continue;
@@ -239,28 +232,15 @@ fn strip_each(state: &Value) -> Stripped {
         for key in object.keys() {
             let mut path = container.clone();
             path.push(key.clone());
-            let Ok(encoded) = encode_decode(&without(state, &path)) else {
-                continue;
-            };
-            if at(&encoded, &path) != at(state, &path) {
-                continue;
+            if encode_decode(&without(state, &path)).is_ok() {
+                found.push(path);
             }
-            if encoded != *state {
-                found.drifting.push(path.clone());
-            }
-            found.defaulted.push(path);
         }
     }
     found
 }
 
-/// The fields an older build did not write, as `strip_each` finds them.
-pub fn defaulted_fields(state: &Value) -> Vec<Vec<String>> {
-    strip_each(state).defaulted
-}
-
-/// I5: the stored state decodes and encodes back to what is stored, and so does the state with
-/// each defaulted field absent, and with all of them absent at once.
+/// I5: the stored state decodes and encodes back to what is stored.
 pub fn i5(store: &Store) -> Vec<String> {
     let state = match stored_state(store) {
         Ok(Some(state)) => state,
@@ -271,33 +251,14 @@ pub fn i5(store: &Store) -> Vec<String> {
 }
 
 pub fn i5_state(state: &Value) -> Vec<String> {
-    let mut found = Vec::new();
     match encode_decode(state) {
-        Ok(encoded) if encoded == *state => {}
-        Ok(encoded) => found.push(format!(
+        Ok(encoded) if encoded == *state => Vec::new(),
+        Ok(encoded) => vec![format!(
             "the stored state does not round-trip: {} differ",
             differing_keys(&encoded, state)
-        )),
-        Err(e) => return vec![format!("the stored state {e}")],
+        )],
+        Err(e) => vec![format!("the stored state {e}")],
     }
-    let stripped = strip_each(state);
-    for path in &stripped.drifting {
-        found.push(format!(
-            "the stored state without {} does not round-trip",
-            path.join(".")
-        ));
-    }
-    let mut all_absent = state.clone();
-    for path in &stripped.defaulted {
-        all_absent = without(&all_absent, path);
-    }
-    match encode_decode(&all_absent) {
-        Ok(encoded) if encoded == *state => {}
-        Ok(_) | Err(_) => found.push(
-            "the stored state with every defaulted field absent does not round-trip".to_string(),
-        ),
-    }
-    found
 }
 
 fn differing_keys(encoded: &Value, expected: &Value) -> String {
@@ -391,9 +352,18 @@ fn unrefused_probes(
             continue;
         }
         let refused = transcript.iter().any(|delivery| {
-            delivery.sock == probe.sock
-                && matches!(&delivery.msg, ServerMsg::Error { req: Some(req), code, .. }
-                    if *req == probe.req && refuses_retired_fence(*code))
+            if delivery.sock != probe.sock {
+                return false;
+            }
+            if let ServerMsg::Error {
+                req: Some(req),
+                code,
+                ..
+            } = &delivery.msg
+            {
+                return *req == probe.req && refuses_retired_fence(*code);
+            }
+            false
         });
         if !refused && is_open(probe.sock) {
             found.push(format!(

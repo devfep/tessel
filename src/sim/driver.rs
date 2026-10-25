@@ -281,7 +281,14 @@ impl Sim {
                 self.unsettled.push(self.sent.len() - 1);
             }
         }
-        let text = serde_json::to_string(msg).expect("a client message serializes");
+        let text = match serde_json::to_string(msg) {
+            Ok(text) => text,
+            Err(e) => {
+                self.faults
+                    .push(format!("a client message did not serialize: {e}"));
+                return;
+            }
+        };
         let now_ms = self.now_ms();
         self.input(Input::Frame { now_ms, sock, text });
     }

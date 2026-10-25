@@ -117,10 +117,6 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
             });
         }
         violations.extend(check::run(&sim, enabled));
-        violations.extend(sim.faults().iter().map(|fault| Violation {
-            checker: Checker::Harness,
-            detail: fault.clone(),
-        }));
         if !violations.is_empty() {
             break;
         }

@@ -296,31 +296,44 @@ fn i5_flags_state_that_does_not_decode() {
     assert!(found[0].contains("does not decode"), "{found:?}");
 }
 
+/// Every field the state can lack, as the trial finds them: the top level, `config`, and the
+/// fields of a claim. A field that gains or loses `#[serde(default)]` changes this set, and the
+/// change to this list is where that gets decided.
+const DEFAULTED_FIELDS: &[&str] = &[
+    "claims.1.denial",
+    "claims.1.kind",
+    "claims.1.submitted",
+    "claims.1.work",
+    "config.shadow_enabled",
+    "head",
+    "head_from_hello",
+    "head_pokes",
+    "head_start_failures",
+    "head_start_retry_ms",
+    "head_synced",
+    "head_tried",
+    "last_dispatch",
+    "merge_in_flight",
+    "merges_past_verification",
+    "next_race",
+    "next_submission",
+    "next_verification",
+    "races",
+    "reviewers",
+    "sensitive",
+    "verification_in_flight",
+    "verifications",
+];
+
 #[test]
-fn i5_tries_every_defaulted_field_without_a_list() {
+fn i5_pins_the_fields_the_state_can_lack() {
     let sim = script();
-    let fields: Vec<String> = check::defaulted_fields(&state_of(&sim))
+    let mut fields: Vec<String> = check::defaulted_fields(&state_of(&sim))
         .iter()
         .map(|path| path.join("."))
         .collect();
-    for wanted in [
-        "next_race",
-        "merge_in_flight",
-        "verifications",
-        "races",
-        "reviewers",
-        "sensitive",
-        "next_submission",
-        "config.shadow_enabled",
-        "claims.1.kind",
-        "claims.1.denial",
-    ] {
-        assert!(fields.iter().any(|f| f == wanted), "{wanted} in {fields:?}");
-    }
-    assert!(
-        !fields.iter().any(|f| f == "claims.1.intent"),
-        "a required field is not defaulted"
-    );
+    fields.sort();
+    assert_eq!(fields, DEFAULTED_FIELDS);
 }
 
 // ---- I9 ----
