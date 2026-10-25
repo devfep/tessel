@@ -203,8 +203,7 @@ fn rejects_a_shell_and_any_program_outside_the_allowlist() {
 }
 
 #[test]
-fn rejects_every_argv_shape_that_is_not_pnpm_test_npm_test_cargo_fmt_all_check_or_cargo_test_with_listed_flags(
-) {
+fn rejects_every_argv_outside_the_allowlist() {
     let refused: [&[&str]; 22] = [
         &["cargo", "test", "--config=build.rustc-wrapper=evil"],
         &["cargo", "test", "--config", "x"],

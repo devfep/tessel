@@ -161,7 +161,7 @@ describe("parseGateConfig", () => {
     }
   });
 
-  it("accepts cargo test with each listed flag, pnpm test, npm test and cargo fmt --all --check", () => {
+  it("accepts the listed cargo test flags, pnpm test, npm test and cargo fmt", () => {
     for (const argv of [
       ["cargo", "test"],
       ["cargo", "test", "--workspace", "--locked", "--offline", "--no-fail-fast"],

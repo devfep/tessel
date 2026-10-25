@@ -20,9 +20,10 @@ export const GATE_INSTANCE_MEMORY_BYTES: Record<GateInstance, number> = {
 
 /**
  * The only gate commands: `pnpm test`, `npm test` and `cargo fmt --all --check` exactly, and
- * `cargo test` followed by flags from this list. Nothing that can change which toolchain, config or compiler runs is on it: no
- * `+toolchain`, `--config`, `-Z`, `--manifest-path`, `--target`, no `--` passthrough, and no
- * environment (an argument such as `RUSTC_WRAPPER=x` is not a program). A shell is never allowed.
+ * `cargo test` followed by flags from this list. Nothing that can change which toolchain, config
+ * or compiler runs is on it: no `+toolchain`, `--config`, `-Z`, `--manifest-path`, `--target`,
+ * no `--` passthrough, and no environment (an argument such as `RUSTC_WRAPPER=x` is not a
+ * program). A shell is never allowed.
  */
 export const CARGO_TEST_FLAGS: readonly string[] = [
   "--workspace",

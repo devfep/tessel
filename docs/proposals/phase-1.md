@@ -320,10 +320,11 @@ Lane B:
   `#[serde(default)]` (rule 1), and `tessel-server admin resolve`, run offline (stop, resolve,
   start), is the operator's way out (decision M5-3).
 - GATE-PARITY-FMT (S, after P1-CORE-RECONCILE): the gate's strict command check
-  (`tessel-lander/src/gate.rs`) accepts `cargo fmt --all --check`, which asks rustfmt to check and not write (a repo's
-  cargo config can still alias `fmt` to run repo code, as `cargo test` does, so the check holds
-  for cooperating agents), and Felix's pull request adds it to `tessel.toml`. Clippy stays on CI: it would add a second full
-  compile per landing on a Mac already at load 55-75.
+  (`tessel-lander/src/gate.rs`) accepts `cargo fmt --all --check`, which asks rustfmt to check
+  and not write (a repo's cargo config can still alias `fmt` to run repo code, as `cargo test`
+  does, so the check holds for cooperating agents), and Felix's pull request adds it to
+  `tessel.toml`. Clippy stays on CI: it would add a second full compile per landing on a Mac
+  already at load 55-75.
 - OWN-USERS-DESIGN (S, an adversarial security review, then Felix; while P1-SWARM-ON-SERVER
   runs): a design note whose scope is keeping the lander's token and workspace away from repo
   code under test; keeping main safe from the lanes, which still run as Felix, is not in scope.
