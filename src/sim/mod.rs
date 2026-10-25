@@ -152,7 +152,12 @@ fn cut_off_replays(sim: &Sim) -> usize {
         sim.transcript()
             .iter()
             .filter(|delivery| delivery.sock == sock)
-            .any(|delivery| matches!(delivery.msg, crate::protocol::ServerMsg::Event { .. }))
+            .any(|delivery| {
+                if let crate::protocol::ServerMsg::Event { .. } = delivery.msg {
+                    return true;
+                }
+                false
+            })
     };
     sim.watches()
         .iter()

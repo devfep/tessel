@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::coordinator::Coordinator;
 use crate::host::call::Request;
+use crate::host::wake::RETRY_MS;
 use crate::host::SocketId;
 use crate::protocol::{
     ClaimId, ErrorCode, Event, EventKind, Mode, RaceId, Scope, ScopeClaim, ServerMsg,
@@ -467,12 +468,7 @@ pub fn i2(
 
 // ---- I4 ----
 
-/// How long after the work a failed wake may put the next one: the host's `wake::RETRY_MS`,
-/// which that private module does not export. A host that retries later would show as a
-/// violation at its first failed wake.
-const WAKE_RETRY_MS: u64 = 2_000;
-
-/// I4: if the core has work due, a wake is pending, later than now and at most `WAKE_RETRY_MS`
+/// I4: if the core has work due, a wake is pending, later than now and at most `RETRY_MS`
 /// after the work (a failed wake retries after that delay; a later wake leaves the work waiting).
 ///
 /// "Exactly one wake" holds by construction: the platform keeps the wake in a single slot that
@@ -499,9 +495,9 @@ pub fn i4(store: &Store, wake: Option<u64>, now_ms: u64) -> Vec<String> {
                 "the pending wake {at} is not later than now ({now_ms})"
             )]
         }
-        Some(at) if at > due + WAKE_RETRY_MS => {
+        Some(at) if at > due + RETRY_MS => {
             vec![format!(
-                "the pending wake {at} is more than {WAKE_RETRY_MS} ms after the work due at {due}"
+                "the pending wake {at} is more than {RETRY_MS} ms after the work due at {due}"
             )]
         }
         Some(_) => Vec::new(),
@@ -791,7 +787,10 @@ fn scope_covers(held: &Scope, work: &Scope) -> bool {
         Scope::Dir { .. } => {
             held_path.is_empty() || work_path.starts_with(&format!("{held_path}/"))
         }
-        Scope::File { .. } => matches!(work, Scope::Symbol(_)) && work_path == held_path,
+        Scope::File { .. } => match work {
+            Scope::Symbol(_) => work_path == held_path,
+            Scope::Dir { .. } | Scope::File { .. } => false,
+        },
         Scope::Symbol(_) => false,
     }
 }
