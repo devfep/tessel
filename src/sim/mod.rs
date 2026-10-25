@@ -135,6 +135,60 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
     }
 }
 
+/// Run `seed` against the real host with every checker, then again with none, and compare the two
+/// transcripts. The error names what failed and how to rerun the seed alone and keep it.
+pub fn check_seed(seed: u64) -> Result<Run, String> {
+    let first = run_seed(seed, Variant::Correct, &Checker::ALL);
+    let second = run_seed(seed, Variant::Correct, &[]);
+    let hint = format!("{}\n  {}", rerun_hint(seed), keep_hint(seed));
+    if !first.violations.is_empty() {
+        let found: Vec<String> = first
+            .violations
+            .iter()
+            .map(|v| format!("{:?}: {}", v.checker, v.detail))
+            .collect();
+        return Err(format!("seed {seed} broke {}\n  {hint}", found.join("; ")));
+    }
+    if let Some(difference) = first_difference(&first.transcript, &second.transcript) {
+        return Err(format!(
+            "seed {seed} is not deterministic: {difference}\n  {hint}"
+        ));
+    }
+    if first.steps != STEPS {
+        return Err(format!(
+            "seed {seed} stopped after {} steps\n  {hint}",
+            first.steps
+        ));
+    }
+    Ok(first)
+}
+
+/// How to keep `seed` as a regression case.
+pub fn keep_hint(seed: u64) -> String {
+    format!("keep it: add the line `{seed}  # what it found` to tests/simulator-regressions.txt")
+}
+
+/// The seeds of a regression list: one per line, `seed  # note`, blank lines and `#` comments
+/// allowed. Each run replays them before the seeds of the sweep.
+pub fn parse_regressions(text: &str) -> Result<Vec<u64>, String> {
+    let mut seeds: Vec<u64> = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let body = line.split('#').next().unwrap_or("").trim();
+        if body.is_empty() {
+            continue;
+        }
+        let number = index + 1;
+        let seed: u64 = body
+            .parse()
+            .map_err(|_| format!("line {number}: {body:?} is not a seed (a whole number)"))?;
+        if seeds.contains(&seed) {
+            return Err(format!("line {number}: seed {seed} is listed twice"));
+        }
+        seeds.push(seed);
+    }
+    Ok(seeds)
+}
+
 /// The first line where two transcripts differ, if they do.
 pub fn first_difference(a: &[String], b: &[String]) -> Option<String> {
     for (index, (left, right)) in a.iter().zip(b).enumerate() {
@@ -208,6 +262,31 @@ mod tests {
             seeds_from(set("1"), set(&(u64::MAX - 1).to_string())),
             Ok(u64::MAX - 1..u64::MAX)
         );
+    }
+
+    #[test]
+    fn a_regression_list_has_seeds_comments_and_blank_lines() {
+        let text = "# header\n\n17  # found by I9\n  42\n# end\n";
+        assert_eq!(parse_regressions(text), Ok(vec![17, 42]));
+        assert_eq!(parse_regressions(""), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_bad_or_repeated_regression_line_is_refused_with_its_line_number() {
+        let Err(bad) = parse_regressions("1\nseven\n") else {
+            panic!("a bad line was accepted");
+        };
+        assert!(bad.starts_with("line 2:"), "{bad}");
+        let Err(twice) = parse_regressions("5\n\n5  # again\n") else {
+            panic!("a repeated seed was accepted");
+        };
+        assert!(twice.starts_with("line 3:"), "{twice}");
+    }
+
+    #[test]
+    fn a_failing_seed_says_how_to_rerun_and_keep_it() {
+        let keep = keep_hint(9);
+        assert!(keep.contains("9  # what it found") && keep.contains("simulator-regressions.txt"));
     }
 
     #[test]

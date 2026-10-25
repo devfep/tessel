@@ -26,28 +26,32 @@ fn first_caught(variant: Variant, checker: Checker) -> Option<(u64, Run)> {
         .find(|(_, run)| run.violations.iter().any(|v| v.checker == checker))
 }
 
+/// Seeds that once failed, replayed before every sweep.
+const REGRESSIONS: &str = include_str!("simulator-regressions.txt");
+
+#[test]
+fn the_regression_list_parses() {
+    sim::parse_regressions(REGRESSIONS).unwrap_or_else(|e| panic!("simulator-regressions.txt {e}"));
+}
+
 #[test]
 fn the_real_host_keeps_every_invariant_on_every_seed_and_each_seed_reproduces() {
+    let regressions = sim::parse_regressions(REGRESSIONS)
+        .unwrap_or_else(|e| panic!("simulator-regressions.txt {e}"));
     let seeds = sim::seeds().unwrap_or_else(|e| panic!("{e}"));
-    let mut crashes = 0;
-    for seed in seeds {
-        let first = sim::run_seed(seed, Variant::Correct, &Checker::ALL);
-        let second = sim::run_seed(seed, Variant::Correct, &[]);
-        assert!(
-            first.violations.is_empty(),
-            "seed {seed} broke {:?}\n{}",
-            first.violations,
-            sim::rerun_hint(seed)
-        );
-        if let Some(difference) = sim::first_difference(&first.transcript, &second.transcript) {
-            panic!(
-                "seed {seed} is not deterministic: {difference}\n{}",
-                sim::rerun_hint(seed)
-            );
+    let (mut failures, mut crashes) = (Vec::new(), 0);
+    for seed in regressions.into_iter().chain(seeds) {
+        match sim::check_seed(seed) {
+            Ok(run) => crashes += run.crashes,
+            Err(failure) => failures.push(failure),
         }
-        assert_eq!(first.steps, sim::STEPS, "seed {seed} stopped early");
-        crashes += first.crashes;
     }
+    assert!(
+        failures.is_empty(),
+        "{} seeds failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
     assert!(
         crashes > 0,
         "no seed crashed the host: the faults are not firing"
