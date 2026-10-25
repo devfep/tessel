@@ -7,10 +7,10 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-25 20:20 UTC. Main at `12d77b9`, CI green (it was red from `20cd5fd` until
-`bf07498`, see RUNNER-OWN-UID); the dogfood server runs `455c889` since 13:54 UTC (redeployed for
-GATE-PARITY-FMT; the old binaries are in `~/tessel-dogfood/bin.prev`). M4 is done
-(M4-FIRST-LANDINGS, M4-RESTART-HELD).
+**As of:** 2026-10-25 23:30 UTC. Main at `785bbee` (#120 merged), CI green (it was red from
+`20cd5fd` until `bf07498`, see RUNNER-OWN-UID); the dogfood server runs `455c889`, restarted
+23:13 UTC with the merge path held (redeployed for GATE-PARITY-FMT at 13:54; the old binaries are
+in `~/tessel-dogfood/bin.prev`). M4 is done (M4-FIRST-LANDINGS, M4-RESTART-HELD).
 Eighteen server landings on 24 October, each read by an Opus reviewer on the commit from the
 fork first; main's CI is green on every one but
 `d43aeeb` (fixed by `1c9497f`). The four rebased landings since LANDER-REBASE-DROPS-NOTES kept their
@@ -24,9 +24,9 @@ of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` 
 worktree and decides holds as `orchestrator`. Two lanes ran at once four times; the coordinator
 denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
-claimed the file after the holder landed or left it to a follow-up. Lane A is on
-P1-ADAPTER-SUITE's first part (`.claude/worktrees/adapter-suite`), lane B on P1-SERVER-STAGED
-(`.claude/worktrees/server-staged`).
+claimed the file after the holder landed or left it to a follow-up. Both lanes are stopped
+for the day; lane A waits for P1-CORE-STAGED-LANDING, whose commit `aa484ea` is in
+`.claude/worktrees/core-staged`.
 `.claude/worktrees/orchestrator` holds this commit, `gate-main` (at `455c889`) is the gate
 worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
@@ -61,11 +61,11 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** Felix merges #119 (the runner accounts job), #120 (the simulator on CI), then ruleset
-step 3, and #121 (`src/sim/` in `CLAUDE.md`). Lane A runs P1-ADAPTER-SUITE's first part, lane B
-P1-SERVER-STAGED, which lands only after Felix's written yes. SIM-MUTANTS is with a third lane; the
-nightly on main fails on the simulator's mutants until it lands. LANDER-ADMIN-POLICY-DEAD waits
-for M6.
+**Next:** push `aa484ea` (P1-CORE-STAGED-LANDING) to lane B's fork for an Opus merge-path review,
+then Felix's written yes on its sha, then P1-CORE-RECONCILE. Felix makes ruleset step 3 ("Fast
+lane, simulator" required). Check the 26 October nightly passes with SIM-MUTANTS. Felix's Homebrew
+postgres trusts local connections on a world-writable socket; he closes it before the accounts
+move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -928,25 +928,27 @@ Lane A:
   alone and pinned by hand-built cases; each seed run twice with transcripts compared; clock calls
   banned in `src/host` and `src/sim`. 20 seeds by default (about 10 s in `cargo test`),
   `TESSEL_SIM_SEEDS` 2 in the mutants jobs (#115). Opus "Yes" after three fix passes per half.
-- [ ] **P1-CI-SIM** — lane A. Code landed with the stack (`cc59a08`): seeds from
+- [x] **P1-CI-SIM** (#120, merged) — lane A. Code landed with the stack (`cc59a08`): seeds from
   `TESSEL_SIM_FIRST_SEED`, every failing seed printed with its rerun line (at most 20), kept seeds
-  in `tests/simulator-regressions.txt` replayed first. The workflow is #120 (1,000 seeds per pull
-  request and push, 2 min 4 s on a GitHub runner; 20,000 nightly), for Felix; then ruleset step 3.
-  Its nightly full mutants found 61 missed mutants beyond the baseline, all in `src/sim/`; the
-  scheduled nightly on main fails on them until SIM-MUTANTS lands.
-- [ ] **SIM-MUTANTS** — from #120's nightly. The simulator's harness (traffic, driver, plumbing)
-  kept out of cargo-mutants in `.cargo/mutants.toml`, with the reason; the checkers in
-  `src/sim/check.rs` stay under mutation and their misses are killed by tests. The baseline
-  does not grow.
+  in `tests/simulator-regressions.txt` replayed first. The workflow, #120: 1,000 seeds per pull
+  request and push (2 min 4 s on a GitHub runner), 20,000 nightly. Ruleset step 3 is Felix's next.
+  Its first nightly full mutants found 61 missed mutants beyond the baseline, all in `src/sim/`
+  (SIM-MUTANTS).
+- [x] **SIM-MUTANTS** (`dfceb8a`, landed by the server) — from #120's nightly. `.cargo/mutants.toml`
+  leaves out 24 named simulator mutants, all missed on CI at two seeds and none killed today; new
+  tests (driver wiring, a golden RNG sequence, traffic and crash-kind coverage) kill the rest. The
+  baseline did not grow. The 26 October nightly on main is the first full check.
 - [x] **P1-SWARM-ON-SERVER** (`12d77b9`, landed by the server) — lane A. The swarm's local
   target drives a real `tessel-server`; no swarm code calls the core's merge functions. Additive
   `lease_ms` (1 s to 10 min) and `shadow_enabled`, applied on every load; a test clock only in the
   server's test support. The workspace test takes about 305 s on this Mac against the runner's
   720 s. Its first landing failed in the runner (a keep-alive test lapsed under load); the
   keep-alive tests are now driven by the clock. Opus "Yes" after two fix passes.
-- [ ] **P1-ADAPTER-SUITE** — M. First part after P1-SWARM-ON-SERVER: the CI-only kill -9 loop
-  checked against I1, and the CLI release before the protocol range field against the new server.
-  The rest after P1-HOST-HARDENING: a slow watcher, a panicking repo task, injected store errors.
+- [ ] **P1-ADAPTER-SUITE** — M. First part done (`9a2a044`, landed by the server; workflow #122,
+  merged): an `#[ignore]` kill -9 loop run by the "Adapter suite" job, checking every client
+  transcript against I1 and I9 after each reload (1 min 11 s on its first GitHub run), and the CLI
+  of `e9df98c` landing through the current server. The rest after P1-HOST-HARDENING: a slow watcher,
+  a panicking repo task, injected store errors.
 - [ ] **P1-HOST-HARDENING** — M, after P1-CORE-RECONCILE. P1-PERSIST-RETRY (C8, flips R30),
   exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
 - [ ] **P1-SIM-MERGE** — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING. The asynchronous merge
@@ -965,10 +967,12 @@ Lane B:
   ref answers the new `CandidateMissing` (a `Call` change), which sends the submission back to
   `Prepare`. No new repository or token step. Opus "Yes" after two fix passes; Felix approved the
   shape (M5-7) on 25 October.
-- [ ] **P1-SERVER-STAGED** — M, Felix reviews, after CANDIDATE-REF and MERGE-PATH-REVIEW. The
-  server answers `Test` and `Land`, with the ancestry read-back (P1-LANDER-ANCESTRY folded in)
-  and `CandidateMissing`. First step: a probe on `tessel-sandbox` that GitHub accepts the
-  candidate ref push with the lander's token.
+- [x] **P1-SERVER-STAGED** (`cfb468b`, landed by the server; Felix's written yes for `4ea4014`) —
+  lane B. The server answers `Test` and `Land` from `refs/tessel/candidate/<head>` (the probe passed
+  on `tessel-sandbox/m4-trunk`), refuses to push a head not built on its base, reads back by
+  ancestry (P1-LANDER-ANCESTRY folded in), and answers `CandidateMissing`. `Prepare` still stands
+  for the whole merge, but a lost lease whose head is already on main now answers `Prepared`. Opus
+  "Yes" after one fix pass.
 - [x] **OWN-USERS-DESIGN** (`b067c58`, landed by the server) — lane B.
   `docs/proposals/own-users.md`: hidden accounts `_tessel` (server and lander; alone reads the
   token, key and store) and `_tessel-runner` (repo code), UIDs 481 and 482; `/opt/tessel`
@@ -981,7 +985,10 @@ Lane B:
   October.
 - [ ] **P1-CORE-STAGED-LANDING** — L, Felix reviews, after P1-SERVER-STAGED, P1-SWARM-ON-SERVER and
   SENSITIVE-MERGE-PATH. `Prepare` → head journaled → `Test` → `Land` in the core, with the host
-  and the CLI's fake in the same commit. Closes HOST-MERGE-STANDIN's stand-in half.
+  and the CLI's fake in the same commit. Closes HOST-MERGE-STANDIN's stand-in half. Committed by
+  lane B as `aa484ea` (`.claude/worktrees/core-staged`, gate green, not yet pushed or reviewed):
+  a `Land` off its base goes back to `Prepare`, counted; `run_merge` and `land` stay public for the
+  ported lander tests.
 - [ ] **P1-CORE-RECONCILE** — M, Felix reviews, after P1-CORE-STAGED-LANDING. `Unknown` and
   `Reconcile` (flips R24), a `Land` in doubt shown with its age, offline `tessel-server admin
   resolve` (M5-3), and DOGFOOD-UPGRADE's fixture test.
@@ -1004,9 +1011,9 @@ Orchestrator:
 - [x] **MERGE-PATH-REVIEW** (#116, merged) — `docs/BUILD-PROTOCOL.md` section 6: a "Felix
   reviews" submission is approved only after his own written yes naming the fork commit's sha; any
   new sha needs a new yes; an unheld submission of such a task is made only after that yes.
-- [ ] **SENSITIVE-MERGE-PATH** — before P1-CORE-STAGED-LANDING; a pull request to
-  `scripts/dogfood/setup.sh` Felix merges, then a restart with nothing in flight. `src/merge.rs`,
-  `src/coordinator.rs` and `src/coordinator/` join `sensitive`.
+- [x] **SENSITIVE-MERGE-PATH** (#123, merged) — `src/merge.rs`, `src/coordinator.rs` and
+  `src/coordinator/` joined `sensitive` in `setup.sh` and `install.sh`; the live server config was
+  edited by hand and the server restarted at 23:13 UTC with nothing in flight.
 - [ ] **DOGFOOD-UPGRADE** — a section of `docs/dogfood.md` (a pull request) before the first
   upgrade: rules (a) to (f) of the plan.
 - [ ] **M5-DOGFOOD-STAGED** — after the upgrade, three landings through the staged path, with
