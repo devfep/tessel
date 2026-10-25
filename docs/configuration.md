@@ -25,7 +25,7 @@ agent's fork can neither supply nor change it (`tessel-server/src/landing/ports.
 `tessel-lander/src/merge.rs:337-375`).
 
 The file is strict. An unknown key, a file over 4096 bytes, invalid TOML, or a command outside the
-allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:227-264`).
+allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:232-269`).
 
 ### Keys
 
@@ -39,33 +39,35 @@ allowed list makes the whole file invalid (`tessel-lander/src/gate.rs:227-264`).
 | `test.argv` | array of 1 to 24 strings, required | none | The command, run without a shell. |
 | `test.dir` | directory | `"."` | Working directory, relative to the repo root. |
 
-Code: keys and limits `tessel-lander/src/gate.rs:13-35`, install parsing `:161-190`, test
-parsing `:192-213`. The install step passes without running anything
+Code: keys and limits `tessel-lander/src/gate.rs:13-35`, install parsing `:166-195`, test
+parsing `:197-218`. The install step passes without running anything
 (`tessel-server/src/landing/ports.rs:126-139`), so the keys under `[install]` have no effect.
 
 ### Instances
 
 `instance` may be left out. When it is given it must be one of `standard-1` to `standard-4`, and
 `lite` is not accepted
-(`tessel-lander/src/gate.rs:37-53,239-255`). The Rust server has no container sizes. It checks the
+(`tessel-lander/src/gate.rs:37-53,244-260`). The Rust server has no container sizes. It checks the
 name and reads it nowhere else, so the tests get the resources of the machine the server runs on.
 
 ### Allowed commands
 
-A `test.argv` must be one of (`tessel-lander/src/gate.rs:91-100`):
+A `test.argv` must be one of (`tessel-lander/src/gate.rs:91-101`):
 
 - `["pnpm", "test"]` exactly;
 - `["npm", "test"]` exactly;
-- `["cargo", "fmt", "--all", "--check"]` exactly (it checks formatting and writes nothing);
+- `["cargo", "fmt", "--all", "--check"]` exactly. It asks rustfmt to check and not write. A
+  repo's `.cargo/config.toml` can alias `fmt` to a command that runs repo code, as `cargo test`
+  runs repo code, so the check holds for cooperating agents;
 - `["cargo", "test", ...flags]` where every flag is in this list (`:19-30`): `--workspace`,
   `--locked`, `--offline`, `--no-fail-fast`, `--all-targets`, `--all-features`, `--release`,
   `--lib`, `--bins`, `--tests`.
 
 Not allowed: a `+toolchain` argument, `--config`, `-Z`, `--manifest-path`, `--target`, a `--`
 passthrough, environment assignments, and a shell. Each argument must match
-`^[A-Za-z0-9._/=:@+,%-]+$` and be at most 200 characters (`:35,112-120`). A directory must be `.` or
+`^[A-Za-z0-9._/=:@+,%-]+$` and be at most 200 characters (`:35,116-124`). A directory must be `.` or
 `/`-separated segments that start with a letter, digit or `_` and continue with `A-Z a-z 0-9 . _ -`,
-so `..` is refused (`:99-110`).
+so `..` is refused (`:103-114`).
 
 ### Without the file
 
@@ -77,7 +79,7 @@ way, with the parser's reason, quoted and cut, in the log. Neither is retried: t
 operator must fix it on main ([Landing](#landing)). A file that exists but cannot be read is still
 an infrastructure failure that the core retries. Nothing lands and nothing falls back to another
 gate.
-`GatePlan` and `read_gate_plan` (`tessel-lander/src/gate.rs:266-304`) model the missing-file case,
+`GatePlan` and `read_gate_plan` (`tessel-lander/src/gate.rs:271-309`) model the missing-file case,
 and the server does not call them.
 
 ### Toolchain and dependencies

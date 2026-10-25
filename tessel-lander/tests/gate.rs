@@ -203,7 +203,8 @@ fn rejects_a_shell_and_any_program_outside_the_allowlist() {
 }
 
 #[test]
-fn rejects_every_argv_shape_that_is_not_pnpm_test_npm_test_or_cargo_test_with_listed_flags() {
+fn rejects_every_argv_shape_that_is_not_pnpm_test_npm_test_cargo_fmt_all_check_or_cargo_test_with_listed_flags(
+) {
     let refused: [&[&str]; 22] = [
         &["cargo", "test", "--config=build.rustc-wrapper=evil"],
         &["cargo", "test", "--config", "x"],
@@ -258,10 +259,13 @@ fn accepts_cargo_test_with_each_listed_flag_and_pnpm_test_and_npm_test() {
 fn accepts_cargo_fmt_all_check_and_only_that_argv_of_cargo_fmt() {
     assert!(
         parse_gate_config(&gate_with_argv(&["cargo", "fmt", "--all", "--check"])).is_ok(),
-        "cargo fmt --all --check checks formatting and writes nothing"
+        "cargo fmt --all --check is the one cargo fmt argv"
     );
-    let refused: [&[&str]; 9] = [
+    let refused: [&[&str]; 12] = [
         &["cargo", "fmt"],
+        &["cargo", "fmt", "--all", "--check", "--manifest-path=x"],
+        &["cargo", "fmt", "-p", "x", "--all", "--check"],
+        &["cargo", "fmt", "--all", "--check", "--", "--emit", "files"],
         &["cargo", "fmt", "--all"],
         &["cargo", "fmt", "--check"],
         &["cargo", "fmt", "--check", "--all"],

@@ -90,8 +90,10 @@ fn has_unknown_key(table: &Table, allowed: &[&str]) -> bool {
 
 fn is_allowed_command(argv: &[&str]) -> bool {
     match argv {
-        // `cargo fmt --all --check` checks formatting and writes nothing. Any other flag could
-        // write files (`cargo fmt`, `--all` alone) or change which config rustfmt reads.
+        // `cargo fmt --all --check` asks rustfmt to check and not to write. A repo's
+        // `.cargo/config.toml` can alias `fmt` to a command that runs repo code, as `cargo test`
+        // runs repo code, so this holds for cooperating agents. Every other fmt argv is refused:
+        // a bare `cargo fmt` or `--all` alone rewrites files.
         ["pnpm" | "npm", "test"] | ["cargo", "fmt", "--all", "--check"] => true,
         ["cargo", "test", flags @ ..] => flags.iter().all(|flag| CARGO_TEST_FLAGS.contains(flag)),
         _ => false,
@@ -153,7 +155,8 @@ fn parse_argv(value: Option<&Value>, place: &str) -> Result<Vec<String>, Invalid
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
     if !is_allowed_command(&words) {
         return invalid(format!(
-            "{place} must be pnpm test, npm test, cargo fmt --all --check, or cargo test with only {}",
+            "{place} must be pnpm test, npm test, cargo fmt --all --check, \
+             or cargo test with only {}",
             CARGO_TEST_FLAGS.join(" ")
         ));
     }
