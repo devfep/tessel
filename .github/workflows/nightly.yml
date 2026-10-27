@@ -84,10 +84,12 @@ jobs:
   mutants:
     name: Nightly, full mutants shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # 1,885 mutants at the 26 October run, 12.7 s each on the slowest finished shard (shard 2 did
-    # not finish in 120 minutes, so it ran at 15 s or more) and about 3 minutes of build each. Eight
-    # shards of about 236 mutants take 50 to 75 minutes, inside the limit with room for a
-    # slower runner or a few timeouts. Add shards when the count grows past 2,400.
+    # 1,885 mutants. cargo-mutants splits them into contiguous slices by default, so shard 2 of 4
+    # held the slow simulator checker files: 425 mutants in 119 minutes, 16.8 s of wall time each.
+    # Round-robin sharding deals the mutants out in turn, so every shard gets the same mix. Eight
+    # shards of about 236 mutants at the slow 16.8 s, plus about 3 minutes of build, take about
+    # 69 minutes, inside the 120 minute limit with room for a slower runner or a few timeouts.
+    # Add shards when the count grows past about 3,000.
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -134,7 +136,8 @@ jobs:
           trap 'kill "$monitor"' EXIT
           code=0
           cargo mutants --package tessel-coordinator --package tessel-lander \
-            --test-tool nextest --jobs 2 --shard "$SHARD" "${filter_args[@]}" || code=$?
+            --test-tool nextest --jobs 2 --sharding round-robin --shard "$SHARD" \
+            "${filter_args[@]}" || code=$?
           case "$code" in
             0 | 2 | 3) ;;
             *) echo "::error::cargo mutants exited $code (1 usage error, 4 baseline failed)."
