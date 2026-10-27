@@ -23,7 +23,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::host::{BatchId, SocketId};
@@ -53,6 +53,11 @@ const AGENTS: [&str; 3] = ["a1", "a2", "a3"];
 const WATCHER: &str = "w1";
 const PATHS: [&str; 5] = ["src/a.rs", "src/b.rs", "src/c.rs", "lib/d.rs", "lib/e.rs"];
 const DEFAULT_ITERATIONS: u64 = 25;
+/// How long the server may take to print that it listens, to die after SIGKILL, and how long the
+/// checks of one round may take. A wait that passes its bound fails the test and names the round.
+const START_BOUND: Duration = Duration::from_secs(30);
+const KILL_BOUND: Duration = Duration::from_secs(10);
+const CHECK_BOUND: Duration = Duration::from_secs(120);
 
 /// What the clients saw, shared by every client task across every restart.
 #[derive(Default)]
@@ -144,7 +149,12 @@ impl Traffic {
 struct Server(Child);
 
 impl Server {
-    fn start(config: &Path, port: u16, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    fn start(
+        config: &Path,
+        port: u16,
+        home: &Path,
+        round: u64,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut child = Command::new(BINARY)
             .args(["serve", "--config"])
             .arg(config)
@@ -165,10 +175,15 @@ impl Server {
             }
         });
         let mut seen = Vec::new();
+        let deadline = Instant::now() + START_BOUND;
         loop {
-            let line = heard
-                .recv_timeout(Duration::from_secs(30))
-                .map_err(|_| format!("the server never listened on {port}; it said {seen:?}"))?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            let line = heard.recv_timeout(left).map_err(|why| {
+                format!(
+                    "round {round}: waited {START_BOUND:?} for the server to print \"listening\" \
+                     on {port} ({why}); it said {seen:?}"
+                )
+            })?;
             if line.contains("listening addr=") {
                 break;
             }
@@ -180,9 +195,19 @@ impl Server {
     }
 
     /// SIGKILL: the process gets no chance to clean up.
-    fn kill9(mut self) -> TestResult {
+    fn kill9(mut self, round: u64) -> TestResult {
         self.0.kill()?;
-        self.0.wait()?;
+        let deadline = Instant::now() + KILL_BOUND;
+        while self.0.try_wait()?.is_none() {
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "round {round}: waited {KILL_BOUND:?} for the killed server (pid {}) to exit",
+                    self.0.id()
+                )
+                .into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         Ok(())
     }
 }
@@ -612,34 +637,43 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
     )));
     let mut rng = Rng::new(7);
     let rounds = iterations();
+    let test_began = Instant::now();
     let (mut mid_request, mut last_grants, mut last_events) = (0_u64, 0_usize, 0_usize);
     for round in 0..rounds {
-        let server = Server::start(&config, port, &home)?;
+        let round_began = Instant::now();
+        let server = Server::start(&config, port, &home, round)?;
+        let started_in = round_began.elapsed();
         tokio::time::sleep(Duration::from_millis(400 + rng.below(900) as u64)).await;
         mid_request += u64::from(traffic.in_flight() > 0);
-        server.kill9()?;
+        server.kill9(round)?;
         tokio::time::sleep(Duration::from_millis(30)).await;
-        let (store, events) = stored(&file)?;
-        let found = violations(&traffic, &store, &events);
+        let check_began = Instant::now();
+        let (found, now_events) = checked_in_time(&file, &traffic, round).await?;
+        let check_took = check_began.elapsed();
         assert!(found.is_empty(), "after kill {round}: {found:#?}");
         // A request sent to the server that was just killed will never be answered: it must not
         // count as in flight at the next kill.
         traffic.clear_in_flight();
-        let (now_grants, now_events) = (grants(&traffic), events.len());
+        let now_grants = grants(&traffic);
         assert!(
             now_grants > last_grants && now_events > last_events,
             "kill {round}: no new grant ({last_grants} to {now_grants}) or the log did not grow \
              ({last_events} to {now_events}), so this round checked nothing new"
         );
         (last_grants, last_events) = (now_grants, now_events);
+        progress(&format!(
+            "round {round}/{rounds}: elapsed {:?}, round {:?} (server up in {started_in:?}, \
+             checks {check_took:?}), {now_grants} grants, {now_events} events",
+            test_began.elapsed(),
+            round_began.elapsed()
+        ));
     }
     traffic.stopped.store(true, Ordering::SeqCst);
     for task in tasks {
         task.abort();
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let (store, events) = stored(&file)?;
-    let found = violations(&traffic, &store, &events);
+    let (found, _) = checked_in_time(&file, &traffic, rounds).await?;
     assert!(found.is_empty(), "after the last round: {found:#?}");
     report(
         rounds,
@@ -649,6 +683,43 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
         last_events,
     );
     Ok(())
+}
+
+/// Reads the store and checks the transcript against it on a blocking thread, and gives up after
+/// `CHECK_BOUND`, so a check that never returns fails the test with the round it hung in. Gives
+/// the violations and the number of events stored.
+async fn checked_in_time(
+    file: &Path,
+    traffic: &Arc<Traffic>,
+    round: u64,
+) -> Result<(Vec<String>, usize), Box<dyn std::error::Error>> {
+    let (file, shared) = (file.to_path_buf(), Arc::clone(traffic));
+    let check = tokio::task::spawn_blocking(move || {
+        let (store, events) = stored(&file).map_err(|e| e.to_string())?;
+        Ok::<_, String>((violations(&shared, &store, &events), events.len()))
+    });
+    let waited = tokio::time::timeout(CHECK_BOUND, check)
+        .await
+        .map_err(|_| {
+            format!(
+            "round {round}: waited {CHECK_BOUND:?} for the stored state and log to be read and \
+             checked ({} transcript entries so far)",
+            traffic
+                .transcript
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+        )
+        })?;
+    Ok(waited?.map_err(|e| format!("round {round}: reading the store failed: {e}"))?)
+}
+
+#[expect(
+    clippy::print_stdout,
+    reason = "the CI log shows each round, so a hung run says where it stopped"
+)]
+fn progress(line: &str) {
+    println!("{line}");
 }
 
 #[expect(
