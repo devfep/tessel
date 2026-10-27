@@ -276,12 +276,17 @@ fn scope(rng: &mut Rng) -> ScopeClaim {
 }
 
 /// What an agent knows, kept across its reconnects: the claims it holds with the fence it was last
-/// granted, the fences an amend retired, and the claims it has probed with a retired fence.
+/// granted, the fences an amend retired, and the claims it has probed with a retired fence. A
+/// probed claim is released once its probe was refused, so it stops counting toward the cap.
 #[derive(Default)]
 struct Held {
     fences: BTreeMap<u64, Fence>,
     retired: Vec<(ClaimId, Fence)>,
     probed: BTreeSet<u64>,
+    /// The claim each stale release was sent for, by request.
+    probe_reqs: BTreeMap<u64, u64>,
+    /// The probed claims whose stale release the server refused.
+    refused: BTreeSet<u64>,
     /// How many amends each claim has been sent, to stop at `MAX_AMENDS_PER_CLAIM`.
     amends: BTreeMap<u64, usize>,
 }
@@ -296,21 +301,32 @@ impl Held {
         if let ServerMsg::LeaseExpired { claim, .. } = msg {
             self.fences.remove(&claim.0);
         }
+        if let ServerMsg::Error {
+            req: Some(req),
+            code,
+            ..
+        } = msg
+        {
+            let refused = *code == ErrorCode::StaleFence || *code == ErrorCode::UnknownClaim;
+            if let Some(claim) = self.probe_reqs.get(&req.0).filter(|_| refused) {
+                self.refused.insert(*claim);
+            }
+        }
     }
 
-    /// A claim to amend or release: never one already probed, whose release would then be
-    /// ambiguous.
+    /// A claim to release: never one probed whose refusal has not arrived, whose release would
+    /// then be ambiguous.
     fn pick(&self, rng: &mut Rng) -> Option<(ClaimId, Fence)> {
         let open: Vec<_> = self
             .fences
             .iter()
-            .filter(|(claim, _)| !self.probed.contains(claim))
+            .filter(|(claim, _)| !self.probed.contains(claim) || self.refused.contains(claim))
             .collect();
         let (claim, fence) = open.get(rng.below(open.len()))?;
         Some((ClaimId(**claim), **fence))
     }
 
-    /// A claim to amend: one `pick` could return that has not used up its amends.
+    /// A claim to amend: one never probed that has not used up its amends.
     fn pick_amendable(&mut self, rng: &mut Rng) -> Option<(ClaimId, Fence)> {
         let open: Vec<_> = self
             .fences
@@ -401,6 +417,7 @@ async fn agent(port: u16, name: &'static str, token: String, traffic: Arc<Traffi
 fn stale_release(held: &mut Held, traffic: &Traffic, sock: u64) -> Option<ClientMsg> {
     let (claim, fence) = held.probe()?;
     let req = traffic.req();
+    held.probe_reqs.insert(req.0, claim.0);
     traffic.sent(sock, req, RequestKind::StaleRelease, Some(claim));
     Some(ClientMsg::Release {
         claim,
@@ -533,8 +550,9 @@ fn stored(file: &Path) -> Result<(SimStore, Vec<Event>), Box<dyn std::error::Err
 }
 
 /// Every violation of I1, I5 and I9 the transcript has against the store, and the watcher's own
-/// faults. A stale release counts as accepted when the log holds an agent's release of its claim:
-/// the agent never releases a probed claim itself.
+/// faults. A stale release counts as accepted when the log holds an agent's release of its claim
+/// and the server sent no refusal for the probe: the agent releases a probed claim only after that
+/// refusal arrived.
 fn violations(traffic: &Traffic, store: &SimStore, events: &[Event]) -> Vec<String> {
     let transcript = traffic
         .transcript
@@ -545,22 +563,36 @@ fn violations(traffic: &Traffic, store: &SimStore, events: &[Event]) -> Vec<Stri
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
+    let mut refused = BTreeSet::new();
+    for delivery in transcript.iter() {
+        if let ServerMsg::Error {
+            req: Some(req),
+            code,
+            ..
+        } = &delivery.msg
+        {
+            if *code == ErrorCode::StaleFence || *code == ErrorCode::UnknownClaim {
+                refused.insert(req.0);
+            }
+        }
+    }
     for probe in sent
         .iter_mut()
         .filter(|s| s.kind == RequestKind::StaleRelease)
     {
-        probe.accepted = probe.claim.is_some_and(|claim| {
-            events.iter().any(|event| {
-                if let EventKind::ClaimReleased {
-                    claim: released,
-                    reason,
-                } = &event.kind
-                {
-                    return *released == claim && *reason == ReleaseReason::Agent;
-                }
-                false
-            })
-        });
+        probe.accepted = !refused.contains(&probe.req.0)
+            && probe.claim.is_some_and(|claim| {
+                events.iter().any(|event| {
+                    if let EventKind::ClaimReleased {
+                        claim: released,
+                        reason,
+                    } = &event.kind
+                    {
+                        return *released == claim && *reason == ReleaseReason::Agent;
+                    }
+                    false
+                })
+            });
     }
     let mut found = check::i1(&transcript, store);
     found.extend(check::i5(store));
@@ -999,4 +1031,37 @@ fn a_claim_is_amended_at_most_a_fixed_number_of_times() {
         sent += usize::from(held.pick_amendable(&mut rng).is_some());
     }
     assert_eq!(sent, MAX_AMENDS_PER_CLAIM);
+}
+
+#[test]
+fn an_agent_whose_claims_are_all_probed_and_refused_still_claims_or_releases() {
+    let (mut rng, traffic) = (Rng::new(7), Traffic::default());
+    let mut held = Held::default();
+    for claim in 0..MAX_HELD_PER_AGENT as u64 {
+        held.fences.insert(claim, Fence(claim + 100));
+        held.retired.push((ClaimId(claim), Fence(claim)));
+    }
+    while let Some(ClientMsg::Release { req: Some(req), .. }) =
+        stale_release(&mut held, &traffic, 1)
+    {
+        held.learn(&ServerMsg::Error {
+            req: Some(req),
+            code: ErrorCode::StaleFence,
+            message: String::new(),
+        });
+    }
+    assert_eq!(
+        held.probed.len(),
+        MAX_HELD_PER_AGENT,
+        "every claim is probed"
+    );
+    let mut acted = 0;
+    for _ in 0..1_000 {
+        let msg = act(&mut rng, &mut held, &traffic, 1);
+        acted += usize::from(matches!(
+            msg,
+            Some(ClientMsg::Claim { .. } | ClientMsg::Release { .. })
+        ));
+    }
+    assert!(acted > 0, "an agent holding only refused probes stalled");
 }
