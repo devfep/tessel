@@ -53,6 +53,15 @@ const AGENTS: [&str; 3] = ["a1", "a2", "a3"];
 const WATCHER: &str = "w1";
 const PATHS: [&str; 5] = ["src/a.rs", "src/b.rs", "src/c.rs", "lib/d.rs", "lib/e.rs"];
 const DEFAULT_ITERATIONS: u64 = 25;
+/// How many claims one agent holds at most; at the limit a claim becomes a release. Every denial
+/// logs all the claims it conflicts with, so claims piling up on five files made the average
+/// event grow from 0.5 KB to 5 KB in 25 rounds (denials reached 8 KB) and each round's check cost
+/// more than the last, which made the whole run quadratic.
+const MAX_HELD_PER_AGENT: usize = 6;
+/// How often one claim is amended. Every amend adds a scope that the claim, its events and the
+/// stored state then carry for good, so an amend without a limit makes each event cost more than
+/// the last and the whole run quadratic: the average event grew from 0.5 KB to 5 KB in 25 rounds.
+const MAX_AMENDS_PER_CLAIM: usize = 4;
 /// How long the server may take to print that it listens, to die after SIGKILL, and how long the
 /// checks of one round may take. A wait that passes its bound fails the test and names the round;
 /// the check runs on a thread the test does not join, so a stuck check cannot stop the test from
@@ -273,6 +282,8 @@ struct Held {
     fences: BTreeMap<u64, Fence>,
     retired: Vec<(ClaimId, Fence)>,
     probed: BTreeSet<u64>,
+    /// How many amends each claim has been sent, to stop at `MAX_AMENDS_PER_CLAIM`.
+    amends: BTreeMap<u64, usize>,
 }
 
 impl Held {
@@ -296,6 +307,21 @@ impl Held {
             .filter(|(claim, _)| !self.probed.contains(claim))
             .collect();
         let (claim, fence) = open.get(rng.below(open.len()))?;
+        Some((ClaimId(**claim), **fence))
+    }
+
+    /// A claim to amend: one `pick` could return that has not used up its amends.
+    fn pick_amendable(&mut self, rng: &mut Rng) -> Option<(ClaimId, Fence)> {
+        let open: Vec<_> = self
+            .fences
+            .iter()
+            .filter(|(claim, _)| !self.probed.contains(claim))
+            .filter(|(claim, _)| {
+                self.amends.get(claim).copied().unwrap_or(0) < MAX_AMENDS_PER_CLAIM
+            })
+            .collect();
+        let (claim, fence) = open.get(rng.below(open.len()))?;
+        *self.amends.entry(**claim).or_default() += 1;
         Some((ClaimId(**claim), **fence))
     }
 
@@ -385,7 +411,11 @@ fn stale_release(held: &mut Held, traffic: &Traffic, sock: u64) -> Option<Client
 
 /// One random request: a claim, an amend, a release or a heartbeat.
 fn act(rng: &mut Rng, held: &mut Held, traffic: &Traffic, sock: u64) -> Option<ClientMsg> {
-    match rng.below(10) {
+    let mut roll = rng.below(10);
+    if roll < 4 && held.fences.len() >= MAX_HELD_PER_AGENT {
+        roll = 6;
+    }
+    match roll {
         0..=3 => {
             let req = traffic.send_tracked(sock, RequestKind::Claim, None);
             Some(ClientMsg::Claim {
@@ -400,7 +430,7 @@ fn act(rng: &mut Rng, held: &mut Held, traffic: &Traffic, sock: u64) -> Option<C
             })
         }
         4..=5 => {
-            let (claim, fence) = held.pick(rng)?;
+            let (claim, fence) = held.pick_amendable(rng)?;
             let req = traffic.send_tracked(sock, RequestKind::Amend, Some(claim));
             Some(ClientMsg::Amend {
                 req,
@@ -941,4 +971,32 @@ fn report(rounds: u64, mid_request: u64, refused: usize, grants: usize, events: 
         "{rounds} kills, {mid_request} of them with a claim or amend that had no answer yet; \
          {grants} grants received, {events} events stored, {refused} stale releases refused"
     );
+}
+
+#[test]
+fn an_agent_at_its_limit_releases_instead_of_claiming() {
+    let (mut rng, traffic) = (Rng::new(5), Traffic::default());
+    for _ in 0..200 {
+        let mut held = Held::default();
+        for claim in 0..MAX_HELD_PER_AGENT as u64 {
+            held.fences.insert(claim, Fence(claim));
+        }
+        let msg = act(&mut rng, &mut held, &traffic, 1);
+        assert!(
+            !matches!(msg, Some(ClientMsg::Claim { .. })),
+            "claimed at the limit of {MAX_HELD_PER_AGENT}"
+        );
+    }
+}
+
+#[test]
+fn a_claim_is_amended_at_most_a_fixed_number_of_times() {
+    let mut held = Held::default();
+    held.fences.insert(1, Fence(1));
+    let mut rng = Rng::new(3);
+    let mut sent = 0;
+    for _ in 0..1_000 {
+        sent += usize::from(held.pick_amendable(&mut rng).is_some());
+    }
+    assert_eq!(sent, MAX_AMENDS_PER_CLAIM);
 }
