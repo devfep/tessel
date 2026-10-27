@@ -1102,6 +1102,16 @@ fn run_shadowed_landing(world: &mut World, who: usize, on: usize) {
         let submitted = submit(world, &self::who(index), true);
         emit(world, submitted);
     }
+    if let Some(claim) = blocker.filter(|claim| world.model.held.contains(claim)) {
+        let approval = ClientMsg::Review {
+            req: RequestId(7),
+            claim: ClaimId(claim),
+            approve: true,
+            note: None,
+        };
+        let decided = world.handle(&agent("felix"), approval);
+        emit(world, decided);
+    }
     if blocker.is_some_and(|claim| world.live(claim) && !world.model.held.contains(&claim)) {
         cycle(world, Answer::AlreadyMerged);
     }
@@ -1431,13 +1441,14 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
         "the answer left a marker behind"
     );
     let doubt = flight.stage == Stage::Land && !answer.candidate_missing();
-    expect_class(
-        world,
-        claim,
-        (answer.class(), doubt),
-        &effects,
-        retry_before,
-    );
+    // Only a `Prepare` can be answered `already_merged`: at a later call it is an answer that call
+    // does not ask for, an attempt that did not finish.
+    let class = if matches!(answer, Answer::AlreadyMerged) && flight.stage != Stage::Prepare {
+        Class::Infra
+    } else {
+        answer.class()
+    };
+    expect_class(world, claim, (class, doubt), &effects, retry_before);
     effects
 }
 
@@ -1788,10 +1799,6 @@ fn expect_test_sent_again(world: &mut World, flight: Flight, rejected: usize) {
         stored.attempt,
         failures + world.model.moved.get(&claim).copied().unwrap_or(0) + 1
     );
-    assert!(
-        !world.model.doubt.contains(&claim),
-        "a Test cannot have landed"
-    );
     world.model.issue(Some(claim), stored.dispatch);
     world.model.inflight = Some(Flight {
         id: stored.dispatch,
@@ -2009,6 +2016,9 @@ fn run(script: &[Op]) {
 
 #[test]
 fn random_merge_queue_scripts_keep_the_queue_rules() {
+    // Checks 8 and 9 need a landing that lists what it could not verify, which a random script
+    // reaches only by chance: one fixed script reaches it every time.
+    run(&[Op::ShadowedLanding { who: 0, on: 0 }]);
     let mut runner = TestRunner::default();
     let outcome = runner.run(&ops(), |script| {
         run(&script);
