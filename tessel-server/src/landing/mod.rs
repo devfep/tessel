@@ -397,7 +397,9 @@ impl Inner {
             main_remote: self.remote.clone(),
             fork_remote,
         };
-        let (clone_dir, test_dir) = (work.dir.child("main"), work.tree_dir("unused"));
+        let clone_dir = work.dir.child("main");
+        // `merge_prepare` runs no tests; this path is never created.
+        let test_dir = work.dir.child("prepare-runs-no-tests");
         let ctx = MergeContext {
             git: &self.git,
             runner: &SystemRunner,
