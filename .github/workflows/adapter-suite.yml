@@ -26,6 +26,13 @@ on:
     branches: [main]
   schedule:
     - cron: "43 4 * * *"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: How many times the kill loop kills and restarts the server (a positive integer).
+        required: false
+        default: "200"
+        type: string
 
 permissions:
   contents: read
@@ -55,9 +62,18 @@ jobs:
       # The real server binary is killed with SIGKILL and started again on its store that many
       # times, under client traffic; after each kill every client transcript is checked against
       # the stored state and log (I1, I5 and I9 of the simulator's checkers).
-      - name: Kill loop
+      - name: Kill loop iterations
         env:
-          TESSEL_KILL_LOOP_ITERATIONS: ${{ github.event_name == 'schedule' && '200' || '25' }}
+          ITERATIONS: >-
+            ${{ github.event_name == 'schedule' && '200' ||
+            github.event_name == 'workflow_dispatch' && inputs.iterations || '25' }}
+        run: |
+          if ! [[ "$ITERATIONS" =~ ^[1-9][0-9]{0,5}$ ]]; then
+            echo "::error::iterations must be a positive integer of at most six digits, got '$ITERATIONS'."
+            exit 1
+          fi
+          echo "TESSEL_KILL_LOOP_ITERATIONS=$ITERATIONS" >> "$GITHUB_ENV"
+      - name: Kill loop
         run: cargo test -p tessel-server --test kill_loop -- --ignored --nocapture
 
   old-cli:

@@ -84,11 +84,15 @@ jobs:
   mutants:
     name: Nightly, full mutants shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    # 1,885 mutants at the 26 October run, 12.7 s each on the slowest finished shard (shard 2 did
+    # not finish in 120 minutes, so it ran at 15 s or more) and about 3 minutes of build each. Eight
+    # shards of about 236 mutants take 50 to 75 minutes, inside the limit with room for a
+    # slower runner or a few timeouts. Add shards when the count grows past 2,400.
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        shard: ["0/4", "1/4", "2/4", "3/4"]
+        shard: ["0/8", "1/8", "2/8", "3/8", "4/8", "5/8", "6/8", "7/8"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
