@@ -2802,6 +2802,28 @@ async fn a_merge_that_lands_while_the_socket_is_down_still_moves_the_base() -> R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_merge_next_lands_exactly_one_of_two_queued_submissions() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start_settled("first").await?;
+    a2.start_settled("second").await?;
+    let edits = [
+        (&a1, "src/a.rs", "pub fn a() { 1; }\n"),
+        (&a2, "src/b.rs", "pub fn b() { 1; }\n"),
+    ];
+    for (agent, path, text) in edits {
+        assert_eq!(agent.tessel(&["claim", path])?.code, 0);
+        commit_in(agent, path, text)?;
+        let submitted = agent.tessel(&["submit", "--evidence", "ok"])?;
+        assert_eq!(submitted.code, 0, "{}", submitted.all());
+    }
+    fake.merge_next();
+    assert_eq!(fake.landings(), 1, "one merge_next answers one merge");
+    fake.merge_next();
+    assert_eq!(fake.landings(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_damaged_state_file_refuses_to_start_and_a_missing_one_does_not() -> Result<()> {
     let (_fake, a1, _a2) = world(30_000).await?;
     a1.start("first")?;

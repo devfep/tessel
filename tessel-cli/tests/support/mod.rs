@@ -103,6 +103,8 @@ struct State {
     calls: Vec<Call>,
     /// The head of the last merge `merge_next` landed, which is what a head read answers.
     landed: Option<CommitId>,
+    /// How many landings `merge_next` has answered.
+    landings: u32,
     /// The wake the host last asked for, on the fake's clock.
     wake_at: Option<u64>,
     logs: Vec<String>,
@@ -650,6 +652,7 @@ impl Fake {
                 next_socket: 0,
                 calls: Vec::new(),
                 landed: None,
+                landings: 0,
                 wake_at: None,
                 logs: Vec::new(),
                 received: Vec::new(),
@@ -759,15 +762,25 @@ impl Fake {
                 CallRequest::Test { .. } => CallAnswer::Tested,
                 CallRequest::Land { .. } => {
                     st.landed = Some(head.clone());
+                    st.landings += 1;
                     CallAnswer::Landed { head: head.clone() }
                 }
                 CallRequest::Trial { .. }
                 | CallRequest::ReadHead { .. }
                 | CallRequest::Reconcile { .. } => unreachable!("not a merge call: {out:?}"),
             };
+            let landed = matches!(answer, CallAnswer::Landed { .. });
             self.inner.answer(st, &out, answer);
+            if landed {
+                break;
+            }
             call = self.inner.call_of(st, is_merge_call);
         }
+    }
+
+    /// How many landings `merge_next` and `merge_next_at` have answered.
+    pub fn landings(&self) -> u32 {
+        lock(&self.inner.state).landings
     }
 
     /// Answers the next verification (a race entry's trial) the host has asked the lander for,
