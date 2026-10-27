@@ -9,9 +9,11 @@
 //!
 //! The shell persists the in-flight marker (`begin_merge`) before it calls the lander, and applies
 //! the answer with `merge_outcome`. A restart that finds a marker counts the dispatch as an
-//! infrastructure failure and, for a claim not in doubt, dispatches a fresh `Prepare`, which is
-//! safe: C7 makes it the same head, and the lander answers `already_merged` for a commit it
-//! already landed. That answer names main as
+//! infrastructure failure. A `Test` is sent again with the journaled head, under a new dispatch id
+//! (the candidate ref survives the restart, and a lost ref answers `CandidateMissing`). A
+//! `Prepare` or a `Land` is followed by a fresh `Prepare`, which is safe: C7 makes it the same
+//! head, and the lander answers `already_merged` for a commit it already landed; after a `Land`
+//! the claim is in doubt, and that `Prepare` goes first. That answer names main as
 //! it is now, not the commit that landed or what main was before, so the baseline of what it
 //! queues for verification is main as recorded at the first dispatch whose answer was lost
 //! (`Submission::unanswered_from`). Without one, nothing is queued, and the `Merged` event lists
@@ -81,6 +83,14 @@ impl Rejection {
     }
 }
 
+/// Why a claim whose merge never finished is sent back after `tries` attempts.
+fn infra_rejection(tries: u32) -> String {
+    format!(
+        "the merge could not be completed after {tries} tries: infrastructure, not a code \
+         failure; submit again"
+    )
+}
+
 /// Which call of the staged landing a dispatch is. `Test` and `Land` carry the pair the lander is
 /// asked about: `head` is the commit `Prepare` made on top of `base`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +111,16 @@ impl MergeStage {
         match self {
             MergeStage::Prepare | MergeStage::Test { .. } => false,
             MergeStage::Land { .. } => true,
+        }
+    }
+
+    /// Main as an attempt at this stage began, which is the baseline of a landing that may have
+    /// happened unseen. A `Land` leased main at its `base`, the one the lander read, which is not
+    /// `main` (the core's own head at `Prepare`) when main moved outside the core in between.
+    fn dispatched_from(&self, main: Option<&CommitId>) -> Option<CommitId> {
+        match self {
+            MergeStage::Prepare | MergeStage::Test { .. } => main.cloned(),
+            MergeStage::Land { base, .. } => Some(base.clone()),
         }
     }
 }
@@ -219,8 +239,36 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        let may_have_landed = flight.stage.may_have_landed();
-        self.retry_after_infrastructure(flight.claim, held, (flight.main, may_have_landed), now_ms)
+        if let MergeStage::Test { .. } = flight.stage {
+            return self.resend_test(flight, held, now_ms);
+        }
+        let doubt = (
+            flight.stage.dispatched_from(flight.main.as_ref()),
+            flight.stage.may_have_landed(),
+        );
+        self.retry_after_infrastructure(flight.claim, held, doubt, now_ms)
+    }
+
+    /// A restart cut off a `Test`: the head is journaled and its candidate ref survives
+    /// (candidate-ref §1), so the same `Test` goes out again under a new dispatch id instead of a
+    /// `Prepare` and a push. It counts as an infrastructure failure and cannot be in doubt. It
+    /// goes out at once, with no backoff: the restart was this process's, not a lander that
+    /// failed, and `MAX_INFRA_RETRIES` bounds it. If the ref is gone the lander answers
+    /// `CandidateMissing` and the claim goes back to `Prepare`.
+    fn resend_test(&mut self, flight: InFlight, held: ActiveClaim, now_ms: u64) -> Vec<Effect> {
+        let Some(mut work) = held.work.clone() else {
+            return Vec::new();
+        };
+        work.infra_failures += 1;
+        if work.infra_failures > MAX_INFRA_RETRIES {
+            let reason = infra_rejection(work.infra_failures);
+            return self.reject_work(flight.claim, held, Rejection::plain(reason), now_ms);
+        }
+        let attempt = work.moved + work.infra_failures + 1;
+        self.keep_work(flight.claim, held, work);
+        let stage = flight.stage.clone();
+        self.advance(InFlight { attempt, ..flight }, stage);
+        Vec::new()
     }
 
     /// When the shell should next run `begin_merge`, as an absolute time in milliseconds since the
@@ -281,7 +329,10 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        let doubt = (flight.main.clone(), flight.stage.may_have_landed());
+        let doubt = (
+            flight.stage.dispatched_from(flight.main.as_ref()),
+            flight.stage.may_have_landed(),
+        );
         match (&flight.stage, outcome.verdict()) {
             (MergeStage::Prepare, Verdict::Prepared { base, head }) => {
                 let next = MergeStage::Test { base, head };
@@ -718,11 +769,7 @@ impl Coordinator {
         }
         work.infra_failures += 1;
         if work.infra_failures > MAX_INFRA_RETRIES {
-            let reason = format!(
-                "the merge could not be completed after {} tries: infrastructure, not a code \
-                 failure; submit again",
-                work.infra_failures
-            );
+            let reason = infra_rejection(work.infra_failures);
             return self.reject_work(claim, held, Rejection::plain(reason), now_ms);
         }
         let wait = infra_backoff_ms(work.infra_failures);

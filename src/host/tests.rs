@@ -1670,6 +1670,32 @@ fn host_the_head_is_stored_before_the_test_goes_out_and_the_passed_test_before_t
 }
 
 #[test]
+fn host_a_restart_at_test_sends_the_journaled_head_to_test_again() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let prepare = kit.calls().last().unwrap().id;
+    kit.reply(prepare, prepared());
+    while kit.calls().len() == 1 {
+        assert!(kit.deliver_next(), "the host asks for the test call");
+    }
+    let Request::Test { base, head } = kit.calls().last().unwrap().request.clone() else {
+        panic!("the second call is a Test");
+    };
+
+    kit.restart();
+    wake(&mut kit);
+    assert_eq!(infra_failures(&kit, "1"), 1, "the cut-off is counted");
+    let again = kit
+        .calls()
+        .iter()
+        .rfind(|call| !matches!(call.request, Request::ReadHead { .. }))
+        .expect("a call was made");
+    assert_eq!(again.request, Request::Test { base, head });
+    assert_eq!(again.dispatch_id.0, 3, "a new dispatch id, past the Test's");
+}
+
+#[test]
 fn host_a_stage_answered_for_another_kind_of_call_lands_nothing() {
     let mut kit = kit();
     let (sock, _, _) = submitted(&mut kit);

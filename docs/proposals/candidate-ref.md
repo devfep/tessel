@@ -93,8 +93,9 @@ What survives a kill, by window (each becomes a P1-FAILPOINTS window, section 7)
 |---|---|---|
 | in `Prepare`, before the push | nothing | the core re-dispatches `Prepare`; same head by C7 |
 | after the push, before the answer is persisted | the ref; core has no head | re-`Prepare` pushes the same name; stale refs swept |
-| after the head is journaled, before `Test` answers | the ref, the head | recovery re-sends `Test` (before `Land`: an infra attempt) |
+| after the head is journaled, before `Test` answers | the ref, the head | recovery re-sends `Test` with the journaled head under a new dispatch id, at once; it counts as an infra attempt, not in doubt |
 | in `Test` | a repository in `call-N` (removed at start) | same |
+| in `Land`, no answer | the ref, maybe main at the head | the claim is in doubt: a fresh `Prepare` goes first, and answers `AlreadyMerged` if it landed |
 | after `Land` pushed main, before the read-back | main at the head, the ref | `Unknown`; `Reconcile` says landed; the sweep removes the ref |
 | after the read-back, before the delete | main at the head, the ref | the answer is lost: the same |
 | after the delete, before the answer persists | main at the head, no ref | `Reconcile` says landed |

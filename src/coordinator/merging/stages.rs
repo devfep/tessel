@@ -382,17 +382,61 @@ fn a_candidate_missing_answer_to_a_prepare_is_not_an_answer_it_can_get() {
 
 // ---- Land ----
 
+const MOVED: &str = "1111111111111111111111111111111111111111";
+
+/// A core whose `Land` is in flight for a `Prepare` that ran when the core thought main was at
+/// `MOVED`, while the lander leased main at `OLD` (main moved outside tessel in between).
+fn at_land_after_main_moved() -> (Coordinator, ClaimId, MergeDispatch) {
+    let (mut c, claim, prepare) = submitted();
+    c.state
+        .merge_in_flight
+        .as_mut()
+        .expect("a Prepare is out")
+        .main = Some(commit(MOVED));
+    let test = next_after(&mut c, &prepare, &prepared());
+    let land = next_after(&mut c, &test, &MergeOutcome::Tested {});
+    (c, claim, land)
+}
+
 #[test]
-fn a_land_that_did_not_finish_leaves_the_claim_in_doubt_from_main_as_dispatched() {
-    let (mut c, claim, land) = at_land();
+fn a_land_that_did_not_finish_leaves_the_claim_in_doubt_from_the_base_it_leased() {
+    let (mut c, claim, land) = at_land_after_main_moved();
     c.merge_outcome(land.id, &MergeOutcome::ServiceUnavailable, NOW + 4);
     let work = work(&c, claim);
     assert!(work.in_doubt);
     assert_eq!(work.infra_failures, 1);
     assert_eq!(
-        work.unanswered_from, c.state.head,
-        "main as the Land was dispatched from"
+        work.unanswered_from,
+        Some(commit(OLD)),
+        "the base the Land leased, not the main the core read at Prepare"
     );
+}
+
+#[test]
+fn a_cut_off_land_is_in_doubt_from_the_base_it_leased() {
+    let (mut c, claim, _land) = at_land_after_main_moved();
+    c.recover_merge(NOW + 4);
+    let work = work(&c, claim);
+    assert!(work.in_doubt);
+    assert_eq!(work.unanswered_from, Some(commit(OLD)));
+}
+
+#[test]
+fn a_landing_found_after_a_lost_land_answer_spans_from_the_leased_base() {
+    let (mut c, claim, land) = at_land_after_main_moved();
+    c.merge_outcome(land.id, &MergeOutcome::ServiceUnavailable, NOW + 4);
+    let due = work(&c, claim).retry_at_ms.unwrap();
+    let prepare = c.begin_merge(due).expect("the claim in doubt goes first");
+    assert_eq!(prepare.stage, MergeStage::Prepare);
+    let already = MergeOutcome::AlreadyMerged { base: commit(HEAD) };
+    let effects = c.merge_outcome(prepare.id, &already, due + 1);
+    let base = events(&effects).into_iter().find_map(|kind| {
+        let EventKind::Merged { base, .. } = kind else {
+            return None;
+        };
+        Some(base.clone())
+    });
+    assert_eq!(base, Some(Some(commit(OLD))), "not the outside commits");
 }
 
 #[test]
@@ -446,4 +490,116 @@ fn a_land_refused_by_a_rule_rejects_the_work() {
     let effects = c.merge_outcome(land.id, &refused, NOW + 4);
     assert!(rejected(&effects));
     assert!(c.state.claims[&claim.0].work.is_none());
+}
+
+// ---- a restart after the head is journaled ----
+
+#[test]
+fn a_restart_at_test_sends_the_journaled_head_to_test_again_under_a_new_dispatch_id() {
+    let (mut c, claim, test) = at_test();
+    c.recover_merge(NOW + 4);
+    let work = work(&c, claim);
+    assert_eq!((work.infra_failures, work.in_doubt), (1, false));
+    assert_eq!(work.unanswered_from, None);
+    let again = c.begin_merge(NOW + 4).expect("the Test goes out again");
+    assert_eq!(again.stage, test.stage, "the same head, not a new Prepare");
+    assert!(again.id > test.id, "a new dispatch id");
+    assert_eq!(again.attempt, 2);
+    let stale = c.merge_outcome(test.id, &failed_tests(), NOW + 5);
+    assert!(
+        stale.is_empty(),
+        "the cut-off dispatch can no longer be answered"
+    );
+    assert!(c.has_merge_in_flight());
+}
+
+#[test]
+fn a_test_sent_again_after_a_restart_goes_on_to_land_and_lands() {
+    let (mut c, claim, _) = at_test();
+    c.recover_merge(NOW + 4);
+    let again = c.begin_merge(NOW + 4).expect("the Test goes out again");
+    let land = next_after(&mut c, &again, &MergeOutcome::Tested {});
+    assert!(matches!(land.stage, MergeStage::Land { .. }));
+    let effects = c.merge_outcome(land.id, &merged(), NOW + 6);
+    assert!(landed(&effects));
+    assert!(!c.state.claims.contains_key(&claim.0));
+}
+
+#[test]
+fn a_test_sent_again_whose_candidate_is_gone_goes_back_to_prepare() {
+    let (mut c, claim, _) = at_test();
+    c.recover_merge(NOW + 4);
+    let again = c.begin_merge(NOW + 4).expect("the Test goes out again");
+    c.merge_outcome(again.id, &MergeOutcome::CandidateMissing {}, NOW + 5);
+    let work = work(&c, claim);
+    assert_eq!((work.infra_failures, work.in_doubt), (2, false));
+    let due = work.retry_at_ms.expect("a backoff");
+    let prepare = c.begin_merge(due).expect("prepared again");
+    assert_eq!(prepare.stage, MergeStage::Prepare);
+}
+
+#[test]
+fn restarts_at_test_are_bounded_like_any_infrastructure_failure() {
+    let (mut c, claim, _) = at_test();
+    for restart in 1..=MAX_INFRA_RETRIES {
+        c.recover_merge(NOW + 4);
+        assert_eq!(work(&c, claim).infra_failures, restart);
+        c.begin_merge(NOW + 4).expect("the Test goes out again");
+    }
+    let effects = c.recover_merge(NOW + 5);
+    assert!(rejected(&effects), "the fourth in a row rejects");
+    assert!(!c.has_merge_in_flight());
+    assert!(c.state.claims[&claim.0].work.is_none());
+}
+
+#[test]
+fn a_restart_at_prepare_or_land_dispatches_a_fresh_prepare() {
+    for (mut c, claim, dispatch) in [submitted(), at_land()] {
+        c.recover_merge(NOW + 4);
+        assert!(!c.has_merge_in_flight(), "{:?}", dispatch.stage);
+        let due = work(&c, claim).retry_at_ms.expect("a backoff");
+        let again = c.begin_merge(due).expect("dispatched after the backoff");
+        assert_eq!(again.stage, MergeStage::Prepare, "{:?}", dispatch.stage);
+    }
+}
+
+// ---- answers a stage does not ask for ----
+
+#[test]
+fn already_merged_answered_to_a_test_lands_nothing_and_is_not_in_doubt() {
+    let (mut c, claim, test) = at_test();
+    let already = MergeOutcome::AlreadyMerged { base: commit(HEAD) };
+    let effects = c.merge_outcome(test.id, &already, NOW + 4);
+    assert!(!landed(&effects));
+    assert_eq!(c.state.head, None);
+    let work = work(&c, claim);
+    assert_eq!((work.infra_failures, work.in_doubt), (1, false));
+}
+
+#[test]
+fn already_merged_answered_to_a_land_lands_nothing_and_leaves_the_claim_in_doubt() {
+    let (mut c, claim, land) = at_land();
+    let already = MergeOutcome::AlreadyMerged { base: commit(HEAD) };
+    let effects = c.merge_outcome(land.id, &already, NOW + 4);
+    assert!(!landed(&effects));
+    assert_eq!(c.state.head, None);
+    let work = work(&c, claim);
+    assert_eq!((work.infra_failures, work.in_doubt), (1, true));
+}
+
+#[test]
+fn main_moved_answered_to_a_test_or_a_land_dispatches_a_fresh_prepare_without_a_failure() {
+    for (mut c, claim, dispatch) in [at_test(), at_land()] {
+        let effects = c.merge_outcome(dispatch.id, &MergeOutcome::MainMoved {}, NOW + 4);
+        assert!(effects.is_empty(), "{:?}", dispatch.stage);
+        let work = work(&c, claim);
+        assert_eq!(
+            (work.moved, work.infra_failures, work.in_doubt),
+            (1, 0, false),
+            "{:?}",
+            dispatch.stage
+        );
+        let again = c.begin_merge(NOW + 5).expect("dispatched again");
+        assert_eq!(again.stage, MergeStage::Prepare);
+    }
 }

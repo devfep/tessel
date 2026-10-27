@@ -31,6 +31,8 @@ use crate::protocol::{
 const START: u64 = 1_000;
 const LEASE: u64 = 30_000;
 const MAIN: &str = "dddddddddddddddddddddddddddddddddddddddd";
+/// The base every model `Prepare` reports, which the `Land` that follows leases.
+const LEASED: &str = "old";
 /// Main as an `already_merged` answer reports it: never equal to `MAIN`, which a merge lands at.
 const LANDED: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const AGENTS: usize = 4;
@@ -184,7 +186,7 @@ impl Answer {
     fn outcome(self) -> MergeOutcome {
         match self {
             Answer::Merged => MergeOutcome::Merged {
-                base: CommitId("old".into()),
+                base: CommitId(LEASED.into()),
                 head: CommitId(MAIN.into()),
             },
             Answer::AlreadyMerged => MergeOutcome::AlreadyMerged {
@@ -361,6 +363,15 @@ enum Op {
     },
     /// The process died with a merge in flight and came back.
     Restart,
+    /// The merge in flight is answered up to its next call, and the script goes on with that
+    /// `Test` or `Land` out: claims, submissions, reviews, ticks, late answers and trials then
+    /// happen while it is.
+    Advance,
+    /// The merge in flight is answered up to its `Test` (or its `Land`), and the process dies
+    /// there and comes back.
+    RestartAt {
+        land: bool,
+    },
     /// The instance hung: the watchdog fires `MERGE_WATCHDOG_MS` after the dispatch.
     Watchdog,
     /// An answer carrying a dispatch id issued earlier (a call that outlived its dispatch). It is
@@ -408,6 +419,8 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
         3 => (SLOT_AFTER as usize..3 * SLOT_AFTER as usize)
             .prop_map(|rounds| Op::Storm { rounds }),
         1 => Just(Op::Restart),
+        5 => Just(Op::Advance),
+        3 => any::<bool>().prop_map(|land| Op::RestartAt { land }),
         1 => Just(Op::Watchdog),
         6 => (answers(), 0..16usize).prop_map(|(answer, pick)| Op::LateAnswer { answer, pick }),
     ];
@@ -663,6 +676,23 @@ fn apply(world: &mut World, op: &Op) {
             Vec::new()
         }
         Op::Restart => recover_checked(world),
+        Op::Advance => {
+            let next = match world.model.inflight.map(|flight| flight.stage) {
+                None | Some(Stage::Land) => None,
+                Some(Stage::Prepare) => Some(Stage::Test),
+                Some(Stage::Test) => Some(Stage::Land),
+            };
+            if let Some(next) = next {
+                advance_to(world, next);
+            }
+            Vec::new()
+        }
+        Op::RestartAt { land } => {
+            if world.model.inflight.is_some() {
+                advance_to(world, if *land { Stage::Land } else { Stage::Test });
+            }
+            recover_checked(world)
+        }
         Op::LateAnswer { answer, pick } => late_answer(world, *pick, *answer),
         Op::Watchdog => {
             if let Some(flight) = world.model.inflight {
@@ -1052,7 +1082,8 @@ fn granted(effects: &[Effect]) -> Option<u64> {
 }
 
 /// A landing answered `already_merged` at its first dispatch, with a submitted shadow claim
-/// behind it: check 9 requires the shadow claim to be listed untried.
+/// behind it and a claim that assumed what it touched: check 9 requires the shadow claim to be
+/// listed untried and the assumption listed unverified, as the landing's span is unknown.
 fn run_shadowed_landing(world: &mut World, who: usize, on: usize) {
     for _ in 0..AGENTS * 2 {
         if world.head_of_queue().is_none() {
@@ -1060,6 +1091,8 @@ fn run_shadowed_landing(world: &mut World, who: usize, on: usize) {
         }
         cycle(world, Answer::Merged);
     }
+    let assuming = assume(world, who + 2, (on + 1) % (TARGETS - 1), on);
+    emit(world, assuming);
     let claimed = claim(world, who, on, false, false);
     let blocker = granted(&claimed);
     emit(world, claimed);
@@ -1111,7 +1144,6 @@ fn run_recovered_landing(
         let decided = world.handle(&agent("felix"), approval);
         emit(world, decided);
     }
-    let first_main = world.core.state.head.clone();
     begin_checked(world);
     let Some(flight) = world.model.inflight else {
         return;
@@ -1131,10 +1163,9 @@ fn run_recovered_landing(
     }
     cycle(world, Answer::AlreadyMerged);
     let landed = challenger.is_some_and(|claim| world.model.merged.contains(&claim));
-    // A baseline equal to the landing's main has no span: nothing is queued (check 7).
-    let spans = first_main.as_ref().is_some_and(|main| main.0 != LANDED);
+    // The `Land` the model dispatches leases main at `LEASED`, which is not the landing's main.
     let assuming_live = assuming_claim.is_some_and(|id| world.core.state.claims.contains_key(&id));
-    if !(landed && challenges && spans && assuming_live && Some(flight.claim) == challenger) {
+    if !(landed && challenges && assuming_live && Some(flight.claim) == challenger) {
         return;
     }
     let queued = world.core.state.verifications.iter().find(|queued| {
@@ -1143,9 +1174,9 @@ fn run_recovered_landing(
     });
     let queued = queued.expect("a landing with a baseline and a challenge queues its verification");
     assert_eq!(
-        Some(&queued.before),
-        first_main.as_ref(),
-        "check 8: baseline is the first lost main"
+        queued.before,
+        CommitId(LEASED.into()),
+        "check 8: baseline is the base the lost Land leased"
     );
     assert_eq!(
         queued.main,
@@ -1313,7 +1344,7 @@ fn advance_to(world: &mut World, target: Stage) {
         let (outcome, next) = match flight.stage {
             Stage::Prepare => (
                 MergeOutcome::Prepared {
-                    base: CommitId("old".into()),
+                    base: CommitId(LEASED.into()),
                     head: CommitId(MAIN.into()),
                 },
                 Stage::Test,
@@ -1341,7 +1372,7 @@ fn advance_to(world: &mut World, target: Stage) {
         else {
             unreachable!("the merge moved past Prepare");
         };
-        assert_eq!((base.0.as_str(), head.0.as_str()), ("old", MAIN));
+        assert_eq!((base.0.as_str(), head.0.as_str()), (LEASED, MAIN));
         let before = save(&world.core);
         let again = world.core.merge_outcome(flight.id, &outcome, world.now);
         assert!(
@@ -1709,11 +1740,15 @@ fn recover_checked(world: &mut World) -> Vec<Effect> {
     );
     let effects = world.core.recover_merge(world.now);
     world.model.inflight = None;
-    assert!(!world.core.has_merge_in_flight());
     let rejected = kinds(&effects)
         .into_iter()
         .filter(|kind| matches!(kind, EventKind::SubmitRejected { claim: c, .. } if c.0 == flight.claim))
         .count();
+    if flight.stage == Stage::Test {
+        expect_test_sent_again(world, flight, rejected);
+        return effects;
+    }
+    assert!(!world.core.has_merge_in_flight());
     expect_infra(
         world,
         flight.claim,
@@ -1721,6 +1756,59 @@ fn recover_checked(world: &mut World) -> Vec<Effect> {
         flight.stage == Stage::Land,
     );
     effects
+}
+
+/// A restart that cut off a `Test` counts as an infrastructure failure that is not in doubt, and
+/// sends the `Test` again with the same head under a new dispatch id (candidate-ref §1), at once
+/// and with no backoff. The failure after `MAX_INFRA_RETRIES` rejects the claim instead.
+fn expect_test_sent_again(world: &mut World, flight: Flight, rejected: usize) {
+    let claim = flight.claim;
+    let failures = world.model.infra.entry(claim).or_insert(0);
+    *failures += 1;
+    let failures = *failures;
+    if failures > MAX_INFRA_RETRIES {
+        assert_eq!(rejected, 1, "check 4: rejected at failure {failures}");
+        assert_reopened(world, claim);
+        assert!(!world.core.has_merge_in_flight());
+        world.model.doubt.remove(&claim);
+        return;
+    }
+    assert_eq!(rejected, 0, "check 4: rejected at failure {failures}");
+    let before = flight;
+    let stored = world
+        .core
+        .state
+        .merge_in_flight
+        .clone()
+        .expect("a Test cut off by a restart is sent again");
+    assert_eq!(stored.claim.0, claim);
+    assert!(stored.dispatch > before.id, "the second Test has a new id");
+    assert_eq!(Stage::of(&stored.stage), Stage::Test);
+    assert_eq!(
+        stored.attempt,
+        failures + world.model.moved.get(&claim).copied().unwrap_or(0) + 1
+    );
+    assert!(
+        !world.model.doubt.contains(&claim),
+        "a Test cannot have landed"
+    );
+    world.model.issue(Some(claim), stored.dispatch);
+    world.model.inflight = Some(Flight {
+        id: stored.dispatch,
+        attempt: stored.attempt,
+        dispatched_ms: world.now,
+        ..before
+    });
+    let MergeStage::Test { base, head } = &stored.stage else {
+        unreachable!("checked above");
+    };
+    assert_eq!((base.0.as_str(), head.0.as_str()), (LEASED, MAIN));
+    let dispatch = world
+        .core
+        .begin_merge(world.now)
+        .expect("the Test goes out again");
+    assert_eq!(dispatch.id, stored.dispatch);
+    check_stage_dispatch(world, &dispatch);
 }
 
 /// Wait out the head's backoff, dispatch, answer.
