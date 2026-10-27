@@ -502,26 +502,23 @@ fn violations(traffic: &Traffic, store: &SimStore, events: &[Event]) -> Vec<Stri
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
-    let mut released_by_agent = BTreeSet::new();
-    for event in events {
-        if let EventKind::ClaimReleased { claim, reason } = &event.kind {
-            if *reason == ReleaseReason::Agent {
-                released_by_agent.insert(claim.0);
-            }
-        }
-    }
     for probe in sent
         .iter_mut()
         .filter(|s| s.kind == RequestKind::StaleRelease)
     {
-        probe.accepted = probe
-            .claim
-            .is_some_and(|claim| released_by_agent.contains(&claim.0));
+        probe.accepted = probe.claim.is_some_and(|claim| {
+            events.iter().any(|event| {
+                if let EventKind::ClaimReleased {
+                    claim: released,
+                    reason,
+                } = &event.kind
+                {
+                    return *released == claim && *reason == ReleaseReason::Agent;
+                }
+                false
+            })
+        });
     }
-    // With no socket counted open, `check::i9` reports a stale release only when it was accepted,
-    // and it looks for a refusal of every other one through the whole transcript. That search
-    // can report nothing here, so only the accepted probes are passed.
-    sent.retain(|s| s.kind != RequestKind::StaleRelease || s.accepted);
     let mut found = check::i1(&transcript, store);
     found.extend(check::i5(store));
     found.extend(check::i9(&transcript, &sent, &|_| false));
