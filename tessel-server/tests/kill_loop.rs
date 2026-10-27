@@ -663,11 +663,11 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
     let test_began = Instant::now();
     let (mut mid_request, mut last_grants, mut last_events) = (0_u64, 0_usize, 0_usize);
     for round in 0..rounds {
-        let round_began = Instant::now();
+        let (round_began, before) = (Instant::now(), Counts::of(&traffic));
         let server = Server::start(&config, port, &home, round)?;
         let started_in = round_began.elapsed();
         tokio::time::sleep(Duration::from_millis(400 + rng.below(900) as u64)).await;
-        wait_for_progress(&traffic, last_grants, round).await?;
+        let first_grant = wait_for_progress(&traffic, (last_grants, &before), round).await?;
         mid_request += u64::from(traffic.in_flight() > 0);
         server.kill9(round)?;
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -684,14 +684,16 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
             "kill {round}: no new grant ({last_grants} to {now_grants}) or the log did not grow \
              ({last_events} to {now_events}), so this round checked nothing new"
         );
-        (last_grants, last_events) = (now_grants, now_events);
         let times = RoundTimes {
             test: test_began.elapsed(),
             round: round_began.elapsed(),
             started: started_in,
             check: check_took,
+            first_grant,
+            new_events: now_events - last_events,
         };
         progress_line(round, rounds, &times, (now_grants, now_events));
+        (last_grants, last_events) = (now_grants, now_events);
     }
     traffic.stopped.store(true, Ordering::SeqCst);
     for task in tasks {
@@ -808,7 +810,8 @@ impl Counts {
     fn since(&self, traffic: &Traffic) -> String {
         let now = Self::of(traffic);
         format!(
-            "{} sockets opened, {} requests sent, {} unanswered, {} grants in all",
+            "{} sockets opened since the server began to start (0: the clients never reconnected), \
+             {} requests sent, {} unanswered (many: the server is not answering), {} grants in all",
             now.sockets - self.sockets,
             now.requests - self.requests,
             traffic.in_flight(),
@@ -817,22 +820,18 @@ impl Counts {
     }
 }
 
-/// Waits for the round's first new grant, and says what the clients did meanwhile if there is none.
+/// Waits for the round's first new grant and gives the time it took since the round began. With
+/// no grant it says what the clients did since `since`, a snapshot from before the server started.
 async fn wait_for_progress(
     traffic: &Traffic,
-    last_grants: usize,
+    (last_grants, since): (usize, &Counts),
     round: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let before = Counts::of(traffic);
+) -> Result<Duration, Box<dyn std::error::Error>> {
+    let began = Instant::now();
     progress_within(traffic, last_grants, PROGRESS_BOUND)
         .await
-        .map_err(|why| {
-            format!(
-                "round {round}: {why}; since the minimum run: {}",
-                before.since(traffic)
-            )
-        })?;
-    Ok(())
+        .map_err(|why| format!("round {round}: {why}; {}", since.since(traffic)))?;
+    Ok(began.elapsed())
 }
 
 /// Waits until the clients have been granted something new since `last_grants`, or fails after
@@ -872,19 +871,56 @@ async fn a_round_in_which_the_clients_get_nothing_fails_within_its_bound() {
     );
 }
 
+#[tokio::test]
+async fn a_grant_that_has_arrived_ends_the_wait_at_once() {
+    let traffic = Traffic::default();
+    let granted = ServerMsg::Granted {
+        req: RequestId(1),
+        claim: ClaimId(1),
+        fence: Fence(1),
+        expires_at_ms: 0,
+        race: None,
+        at_risk: Vec::new(),
+        head: None,
+    };
+    traffic.record(1, "a1", granted);
+    let began = Instant::now();
+    progress_within(&traffic, 0, Duration::from_secs(30))
+        .await
+        .expect("a grant beyond the 0 already received");
+    assert!(
+        began.elapsed() < Duration::from_secs(1),
+        "the wait did not end at once"
+    );
+    progress_within(&traffic, 1, Duration::from_millis(100))
+        .await
+        .expect_err("that grant was already counted");
+}
+
 /// How long each part of a round took.
 struct RoundTimes {
     test: Duration,
     round: Duration,
     started: Duration,
     check: Duration,
+    /// How long after the minimum run the first new grant came.
+    first_grant: Duration,
+    /// Events the round stored: with the round time, the server's rate.
+    new_events: usize,
 }
 
 fn progress_line(round: u64, rounds: u64, times: &RoundTimes, totals: (usize, usize)) {
     progress(&format!(
-        "round {round}/{rounds}: elapsed {:?}, round {:?} (server up in {:?}, checks {:?}), \
-         {} grants, {} events",
-        times.test, times.round, times.started, times.check, totals.0, totals.1
+        "round {round}/{rounds}: elapsed {:?}, round {:?} (server up in {:?}, first grant {:?} \
+         after the minimum run, {} events stored this round, checks {:?}), {} grants, {} events",
+        times.test,
+        times.round,
+        times.started,
+        times.first_grant,
+        times.new_events,
+        times.check,
+        totals.0,
+        totals.1
     ));
 }
 
