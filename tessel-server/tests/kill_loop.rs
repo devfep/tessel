@@ -54,7 +54,9 @@ const WATCHER: &str = "w1";
 const PATHS: [&str; 5] = ["src/a.rs", "src/b.rs", "src/c.rs", "lib/d.rs", "lib/e.rs"];
 const DEFAULT_ITERATIONS: u64 = 25;
 /// How long the server may take to print that it listens, to die after SIGKILL, and how long the
-/// checks of one round may take. A wait that passes its bound fails the test and names the round.
+/// checks of one round may take. A wait that passes its bound fails the test and names the round;
+/// the check runs on a thread the test does not join, so a stuck check cannot stop the test from
+/// ending.
 const START_BOUND: Duration = Duration::from_secs(30);
 const KILL_BOUND: Duration = Duration::from_secs(10);
 const CHECK_BOUND: Duration = Duration::from_secs(120);
@@ -155,7 +157,7 @@ impl Server {
         home: &Path,
         round: u64,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut child = Command::new(BINARY)
+        let child = Command::new(BINARY)
             .args(["serve", "--config"])
             .arg(config)
             .env_clear()
@@ -165,7 +167,9 @@ impl Server {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()?;
-        let stderr = child.stderr.take().ok_or("no stderr")?;
+        // Owned by a `Server` from here on, so every error path below kills and reaps it.
+        let mut server = Self(child);
+        let stderr = server.0.stderr.take().ok_or("no stderr")?;
         let (lines, heard) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -191,31 +195,37 @@ impl Server {
         }
         // Keeps reading so the server never blocks on a full pipe.
         std::thread::spawn(move || for _ in heard {});
-        Ok(Self(child))
+        Ok(server)
     }
 
     /// SIGKILL: the process gets no chance to clean up.
     fn kill9(mut self, round: u64) -> TestResult {
         self.0.kill()?;
-        let deadline = Instant::now() + KILL_BOUND;
-        while self.0.try_wait()?.is_none() {
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "round {round}: waited {KILL_BOUND:?} for the killed server (pid {}) to exit",
-                    self.0.id()
-                )
-                .into());
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Ok(())
+        reaped_within(&mut self.0, KILL_BOUND)
+            .map_err(|why| format!("round {round}: killed server: {why}").into())
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = reaped_within(&mut self.0, KILL_BOUND);
+    }
+}
+
+/// Waits for `child` to exit, polling, and fails with the process id after `bound`.
+fn reaped_within(child: &mut Child, bound: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + bound;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(error) => return Err(format!("could not wait for pid {}: {error}", child.id())),
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("waited {bound:?} for pid {} to exit", child.id()));
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -582,6 +592,25 @@ fn refusals(traffic: &Traffic) -> usize {
     count
 }
 
+fn write_config(
+    config: &Path,
+    port: u16,
+    stores: &Path,
+    keys: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::write(
+        config,
+        format!(
+            "listen = \"127.0.0.1:{port}\"\nstore_dir = {stores:?}\n\n[[repository]]\n\
+             tenant = \"acme\"\nname = {REPO:?}\nrun = \"killloop\"\n\n\
+             [identity]\nkeys = {keys:?}\naudience = \"kill-loop\"\n",
+            stores = stores.display().to_string(),
+            keys = keys.display().to_string(),
+        ),
+    )?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "kills a server many times: runs in the CI job that names it"]
 async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> TestResult {
@@ -607,16 +636,7 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
     let port = free_port()?;
     let config = root.path().join("tessel-server.toml");
     let stores = root.path().join("stores");
-    std::fs::write(
-        &config,
-        format!(
-            "listen = \"127.0.0.1:{port}\"\nstore_dir = {stores:?}\n\n[[repository]]\n\
-             tenant = \"acme\"\nname = {REPO:?}\nrun = \"killloop\"\n\n\
-             [identity]\nkeys = {keys:?}\naudience = \"kill-loop\"\n",
-            stores = stores.display().to_string(),
-            keys = identity.keys.display().to_string(),
-        ),
-    )?;
+    write_config(&config, port, &stores, &identity.keys)?;
     let file = RepoId::new("acme", REPO)?.store_file(&stores);
     let traffic = Arc::new(Traffic::default());
     let mut tasks = Vec::new();
@@ -648,7 +668,7 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
         server.kill9(round)?;
         tokio::time::sleep(Duration::from_millis(30)).await;
         let check_began = Instant::now();
-        let (found, now_events) = checked_in_time(&file, &traffic, round).await?;
+        let (found, now_events) = checked_in_time(&file, &traffic, &format!("round {round}"))?;
         let check_took = check_began.elapsed();
         assert!(found.is_empty(), "after kill {round}: {found:#?}");
         // A request sent to the server that was just killed will never be answered: it must not
@@ -661,19 +681,20 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
              ({last_events} to {now_events}), so this round checked nothing new"
         );
         (last_grants, last_events) = (now_grants, now_events);
-        progress(&format!(
-            "round {round}/{rounds}: elapsed {:?}, round {:?} (server up in {started_in:?}, \
-             checks {check_took:?}), {now_grants} grants, {now_events} events",
-            test_began.elapsed(),
-            round_began.elapsed()
-        ));
+        let times = RoundTimes {
+            test: test_began.elapsed(),
+            round: round_began.elapsed(),
+            started: started_in,
+            check: check_took,
+        };
+        progress_line(round, rounds, &times, (now_grants, now_events));
     }
     traffic.stopped.store(true, Ordering::SeqCst);
     for task in tasks {
         task.abort();
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let (found, _) = checked_in_time(&file, &traffic, rounds).await?;
+    let (found, _) = checked_in_time(&file, &traffic, "the final check")?;
     assert!(found.is_empty(), "after the last round: {found:#?}");
     report(
         rounds,
@@ -685,33 +706,96 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
     Ok(())
 }
 
-/// Reads the store and checks the transcript against it on a blocking thread, and gives up after
-/// `CHECK_BOUND`, so a check that never returns fails the test with the round it hung in. Gives
-/// the violations and the number of events stored.
-async fn checked_in_time(
+/// Reads the store and checks the transcript against it on a thread, and gives up after
+/// `CHECK_BOUND`, so a check that never returns fails the test and names `what`. A thread that
+/// overran is left running: joining it would hang the test the way the check did. Gives the
+/// violations and the number of events stored.
+fn checked_in_time(
     file: &Path,
     traffic: &Arc<Traffic>,
-    round: u64,
+    what: &str,
 ) -> Result<(Vec<String>, usize), Box<dyn std::error::Error>> {
+    let entries = traffic
+        .transcript
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .len();
     let (file, shared) = (file.to_path_buf(), Arc::clone(traffic));
-    let check = tokio::task::spawn_blocking(move || {
+    let found = run_within(CHECK_BOUND, move || {
         let (store, events) = stored(&file).map_err(|e| e.to_string())?;
         Ok::<_, String>((violations(&shared, &store, &events), events.len()))
-    });
-    let waited = tokio::time::timeout(CHECK_BOUND, check)
-        .await
-        .map_err(|_| {
-            format!(
-            "round {round}: waited {CHECK_BOUND:?} for the stored state and log to be read and \
-             checked ({} transcript entries so far)",
-            traffic
-                .transcript
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .len()
+    })
+    .map_err(|why| {
+        format!(
+            "{what}: the stored state and log were not read and checked: {why} \
+             ({entries} transcript entries when it began)"
         )
-        })?;
-    Ok(waited?.map_err(|e| format!("round {round}: reading the store failed: {e}"))?)
+    })?;
+    Ok(found.map_err(|e| format!("{what}: reading the store failed: {e}"))?)
+}
+
+/// Runs `work` on its own thread and waits `bound` for its result.
+fn run_within<T: Send + 'static>(
+    bound: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let (done, result) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(work());
+    });
+    result
+        .recv_timeout(bound)
+        .map_err(|why| format!("waited {bound:?} ({why})"))
+}
+
+#[test]
+fn a_check_that_never_returns_fails_within_its_bound() {
+    let began = Instant::now();
+    let outcome = run_within(Duration::from_millis(200), || {
+        std::thread::sleep(Duration::from_secs(30));
+    });
+    let message = outcome.expect_err("the check overran its bound");
+    assert!(message.contains("waited 200ms"), "{message}");
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "the bound did not fire in time"
+    );
+}
+
+#[test]
+fn a_process_that_will_not_exit_fails_within_its_bound() -> TestResult {
+    let mut child = Command::new("sleep").arg("30").spawn()?;
+    let began = Instant::now();
+    let outcome = reaped_within(&mut child, Duration::from_millis(200));
+    let pid = child.id();
+    child.kill()?;
+    child.wait()?;
+    let message = outcome.expect_err("the process was still running");
+    assert!(
+        message.contains(&format!("waited 200ms for pid {pid}")),
+        "{message}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "the bound did not fire in time"
+    );
+    Ok(())
+}
+
+/// How long each part of a round took.
+struct RoundTimes {
+    test: Duration,
+    round: Duration,
+    started: Duration,
+    check: Duration,
+}
+
+fn progress_line(round: u64, rounds: u64, times: &RoundTimes, totals: (usize, usize)) {
+    progress(&format!(
+        "round {round}/{rounds}: elapsed {:?}, round {:?} (server up in {:?}, checks {:?}), \
+         {} grants, {} events",
+        times.test, times.round, times.started, times.check, totals.0, totals.1
+    ));
 }
 
 #[expect(
