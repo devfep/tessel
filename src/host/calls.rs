@@ -140,7 +140,49 @@ pub fn merge_outcome_of(request: &Request, answer: &CallAnswer) -> MergeOutcome 
         (Request::Test { .. } | Request::Land { .. }, CallAnswer::CandidateMissing) => {
             MergeOutcome::CandidateMissing {}
         }
-        _ => MergeOutcome::ServiceUnavailable,
+        (
+            Request::Prepare { .. },
+            CallAnswer::Tested
+            | CallAnswer::Landed { .. }
+            | CallAnswer::Trialled { .. }
+            | CallAnswer::Head { .. }
+            | CallAnswer::Reconciled { .. }
+            | CallAnswer::CandidateMissing
+            | CallAnswer::Refused { .. }
+            | CallAnswer::Unknown,
+        )
+        | (
+            Request::Test { .. },
+            CallAnswer::Prepared { .. }
+            | CallAnswer::Landed { .. }
+            | CallAnswer::Trialled { .. }
+            | CallAnswer::Head { .. }
+            | CallAnswer::Reconciled { .. }
+            | CallAnswer::Refused { .. }
+            | CallAnswer::Unknown,
+        )
+        | (
+            Request::Land { .. },
+            CallAnswer::Prepared { .. }
+            | CallAnswer::Tested
+            | CallAnswer::Trialled { .. }
+            | CallAnswer::Head { .. }
+            | CallAnswer::Reconciled { .. }
+            | CallAnswer::Refused { .. }
+            | CallAnswer::Unknown,
+        )
+        | (
+            Request::Trial { .. } | Request::ReadHead { .. } | Request::Reconcile { .. },
+            CallAnswer::Prepared { .. }
+            | CallAnswer::Tested
+            | CallAnswer::Landed { .. }
+            | CallAnswer::Trialled { .. }
+            | CallAnswer::Head { .. }
+            | CallAnswer::Reconciled { .. }
+            | CallAnswer::CandidateMissing
+            | CallAnswer::Refused { .. }
+            | CallAnswer::Unknown,
+        ) => MergeOutcome::ServiceUnavailable,
     }
 }
 
