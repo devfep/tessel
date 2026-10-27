@@ -60,6 +60,9 @@ const DEFAULT_ITERATIONS: u64 = 25;
 const START_BOUND: Duration = Duration::from_secs(30);
 const KILL_BOUND: Duration = Duration::from_secs(10);
 const CHECK_BOUND: Duration = Duration::from_secs(120);
+/// How long after its minimum run time a round may wait for the clients' first new grant. Clients
+/// that reconnect slowly on a loaded runner would otherwise make the round check nothing.
+const PROGRESS_BOUND: Duration = Duration::from_secs(20);
 
 /// What the clients saw, shared by every client task across every restart.
 #[derive(Default)]
@@ -664,6 +667,7 @@ async fn a_server_killed_again_and_again_keeps_every_grant_event_and_fence() -> 
         let server = Server::start(&config, port, &home, round)?;
         let started_in = round_began.elapsed();
         tokio::time::sleep(Duration::from_millis(400 + rng.below(900) as u64)).await;
+        wait_for_progress(&traffic, last_grants, round).await?;
         mid_request += u64::from(traffic.in_flight() > 0);
         server.kill9(round)?;
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -780,6 +784,92 @@ fn a_process_that_will_not_exit_fails_within_its_bound() -> TestResult {
         "the bound did not fire in time"
     );
     Ok(())
+}
+
+/// What the clients had done at a moment: the sockets they opened and the requests they sent.
+struct Counts {
+    sockets: u64,
+    requests: usize,
+}
+
+impl Counts {
+    fn of(traffic: &Traffic) -> Self {
+        Self {
+            sockets: traffic.next_sock.load(Ordering::SeqCst),
+            requests: traffic
+                .sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+        }
+    }
+
+    /// What the clients did since `self`, for a failure message.
+    fn since(&self, traffic: &Traffic) -> String {
+        let now = Self::of(traffic);
+        format!(
+            "{} sockets opened, {} requests sent, {} unanswered, {} grants in all",
+            now.sockets - self.sockets,
+            now.requests - self.requests,
+            traffic.in_flight(),
+            grants(traffic)
+        )
+    }
+}
+
+/// Waits for the round's first new grant, and says what the clients did meanwhile if there is none.
+async fn wait_for_progress(
+    traffic: &Traffic,
+    last_grants: usize,
+    round: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let before = Counts::of(traffic);
+    progress_within(traffic, last_grants, PROGRESS_BOUND)
+        .await
+        .map_err(|why| {
+            format!(
+                "round {round}: {why}; since the minimum run: {}",
+                before.since(traffic)
+            )
+        })?;
+    Ok(())
+}
+
+/// Waits until the clients have been granted something new since `last_grants`, or fails after
+/// `bound` with what it waited for. A round the clients spent reconnecting checks nothing, so the
+/// round waits for them instead of assuming they were quick.
+async fn progress_within(
+    traffic: &Traffic,
+    last_grants: usize,
+    bound: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + bound;
+    while grants(traffic) <= last_grants {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "waited {bound:?} for a grant beyond the {last_grants} already received"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_round_in_which_the_clients_get_nothing_fails_within_its_bound() {
+    let traffic = Traffic::default();
+    let began = Instant::now();
+    let message = progress_within(&traffic, 0, Duration::from_millis(200))
+        .await
+        .expect_err("no client was granted anything");
+    assert!(
+        message.contains("waited 200ms for a grant beyond the 0"),
+        "{message}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "the bound did not fire in time"
+    );
 }
 
 /// How long each part of a round took.
