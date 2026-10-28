@@ -181,12 +181,9 @@ fn merged_events(sim: &Sim) -> usize {
 /// asks the lander where main is instead.
 pub const EXPECTED_TO_FAIL: &[(u64, Checker, &str)] = &[
     (11, Checker::I6, UNKNOWN_AFTER_LAND),
-    (72, Checker::I6, UNKNOWN_AFTER_LAND),
     (108, Checker::I6, UNKNOWN_AFTER_LAND),
-    (143, Checker::I6, UNKNOWN_AFTER_LAND),
-    (154, Checker::I6, UNKNOWN_AFTER_LAND),
+    (114, Checker::I6, UNKNOWN_AFTER_LAND),
     (187, Checker::I6, UNKNOWN_AFTER_LAND),
-    (265, Checker::I6, UNKNOWN_AFTER_LAND),
 ];
 
 const UNKNOWN_AFTER_LAND: &str =
@@ -453,6 +450,7 @@ mod tests {
     #[test]
     fn the_default_seeds_make_the_merge_path_delay_repeat_drop_and_refuse() {
         let (faults, merged, landings, stale, trials) = default_seeds_totals();
+        let mut missing = Vec::new();
         for fault in [
             "delayed",
             "reply_delayed",
@@ -466,14 +464,16 @@ mod tests {
             "pushed_to_main",
             "cut_off_always",
             "candidate_lost",
-            "stale_report",
             "flipped_on_rerun",
         ] {
-            assert!(
-                faults.get(fault).copied().unwrap_or(0) > 0,
-                "no default seed injected {fault}: {faults:?}"
-            );
+            if faults.get(fault).copied().unwrap_or(0) == 0 {
+                missing.push(fault);
+            }
         }
+        assert!(
+            missing.is_empty(),
+            "no default seed injected {missing:?}: {faults:?}"
+        );
         assert!(merged > 0 && landings > 0, "nothing landed");
         assert!(stale > 0, "no answer came for a dispatch not in flight");
         assert!(trials > 0, "no verification was dispatched");

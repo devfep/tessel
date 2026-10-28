@@ -7,6 +7,8 @@
 //! An answer sent before a restart is never received: the lander does not outlive the call's
 //! connection to the host, though what the lander did, such as a push, stays done.
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 use crate::host::call::{Call, CallAnswer, CallId, Request};
@@ -286,6 +288,10 @@ impl Sim {
     /// The host receives an answer, or the news that the call was lost. If its dispatch is not the
     /// one in flight, the host must change nothing (invariant I7): what it staged is compared.
     pub(super) fn reply_to_host(&mut self, call: CallId, input: Input) {
+        if self.store.staged().is_some() {
+            let fault = format!("call {} was answered with a write outstanding", call.0);
+            self.faults.push(fault);
+        }
         let open = self.open_calls.remove(&call.0);
         if let Some(open) = &open {
             if is_failure(&input) {
@@ -305,11 +311,12 @@ impl Sim {
     fn probe_for(&self, call: &Call) -> Option<Probe> {
         let state = self.stored_state_value()?;
         let pointer = match call.request {
-            Request::Prepare { .. } | Request::Test { .. } | Request::Land { .. } => {
-                "/merge_in_flight/dispatch"
-            }
+            Request::Prepare { .. }
+            | Request::Test { .. }
+            | Request::Land { .. }
+            | Request::Reconcile { .. } => "/merge_in_flight/dispatch",
             Request::Trial { .. } => "/verification_in_flight/dispatch",
-            Request::ReadHead { .. } | Request::Reconcile { .. } => return None,
+            Request::ReadHead { .. } => return None,
         };
         let in_flight = state.pointer(pointer).and_then(Value::as_u64);
         if in_flight == Some(call.dispatch_id.0) {
@@ -333,6 +340,29 @@ impl Sim {
             dispatch: probe.dispatch,
             changed,
         });
+    }
+
+    /// A restart or a failed commit struck: the core may count it against the merge in flight, so
+    /// it is charged to that merge's fork commit.
+    pub(super) fn strike_merge_in_flight(&mut self) {
+        let Some(state) = self.stored_state_value() else {
+            return;
+        };
+        let Some(claim) = state
+            .pointer("/merge_in_flight/claim")
+            .and_then(Value::as_u64)
+        else {
+            return;
+        };
+        let pointer = format!("/claims/{claim}/work/fork_commit");
+        if let Some(fork) = state.pointer(&pointer).and_then(Value::as_str) {
+            *self.fork_strikes.entry(fork.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    /// Restarts and failed commits that struck during a merge of each fork commit.
+    pub fn fork_strikes(&self) -> &BTreeMap<String, u64> {
+        &self.fork_strikes
     }
 
     /// Feed the stored log to the counters the host keeps, from where they left off.
@@ -364,9 +394,16 @@ fn stored_difference(key: &str, json: &str, before: &Value) -> Option<String> {
 /// candidate that is gone, or a call lost. The core counts each against the submission.
 fn is_failure(input: &Input) -> bool {
     match input {
-        Input::Replied { answer, .. } => {
-            matches!(answer, CallAnswer::Unknown | CallAnswer::CandidateMissing)
-        }
+        Input::Replied { answer, .. } => match answer {
+            CallAnswer::Unknown | CallAnswer::CandidateMissing => true,
+            CallAnswer::Prepared { .. }
+            | CallAnswer::Tested
+            | CallAnswer::Landed { .. }
+            | CallAnswer::Trialled { .. }
+            | CallAnswer::Head { .. }
+            | CallAnswer::Reconciled { .. }
+            | CallAnswer::Refused { .. } => false,
+        },
         Input::CallLost { .. } => true,
         Input::Opened { .. }
         | Input::Frame { .. }
@@ -466,6 +503,62 @@ mod tests {
             assert!(sim.quiet());
         }
         sim
+    }
+
+    /// One agent submits a commit that the merge path cuts off every time, at its `Prepare` or its
+    /// `Test`, and the clock runs past every backoff.
+    fn poisoned_commit_run(at_test: bool) -> Sim {
+        let config = HostConfig {
+            repo: "sim".to_string(),
+            run: Some("sim".to_string()),
+            ..HostConfig::default()
+        };
+        let mut sim = Sim::new(config, Variant::Correct);
+        let agent = sim.connect("a");
+        assert!(sim.quiet());
+        sim.send(agent, &claim(1, "src/a.rs"), RequestKind::Claim, None);
+        assert!(sim.quiet());
+        let (claim, fence) = {
+            let view = sim.view("a").expect("the agent connected");
+            let (claim, fence) = view.held.iter().next().expect("the agent holds a claim");
+            (ClaimId(*claim), *fence)
+        };
+        sim.poison_fork(&format!("{:040x}", 2), at_test);
+        let work = submit(2, claim, fence, "src/a.rs");
+        sim.send(agent, &work, RequestKind::Submit, Some(claim));
+        for _ in 0..12 {
+            sim.advance(100_000);
+            assert!(sim.quiet());
+        }
+        sim
+    }
+
+    #[test]
+    fn a_poisoned_commit_uses_up_its_tries_and_is_rejected_with_the_cores_reason() {
+        for at_test in [false, true] {
+            let sim = poisoned_commit_run(at_test);
+            let fork = format!("{:040x}", 2);
+            assert_eq!(
+                sim.lander().cutoffs().get(&fork),
+                Some(&4),
+                "at test: {at_test}"
+            );
+            let events = sim.store().events().0.clone();
+            let reasons: Vec<&String> = events
+                .iter()
+                .filter_map(|event| {
+                    if let EventKind::SubmitRejected { reason, .. } = &event.kind {
+                        return Some(reason);
+                    }
+                    None
+                })
+                .collect();
+            assert_eq!(reasons.len(), 1, "{reasons:?}");
+            assert!(crate::sim::merge_check::is_infra_rejection(reasons[0]));
+            assert!(!merged(&sim));
+            let found = check::run(&sim, &Checker::ALL);
+            assert!(found.is_empty(), "{found:?}");
+        }
     }
 
     #[test]

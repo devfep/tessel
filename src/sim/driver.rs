@@ -159,6 +159,8 @@ pub struct Sim {
     open_calls: BTreeMap<u64, Call>,
     /// Calls whose answer the host has had, kept to recognise a later answer to the same call.
     answered_calls: BTreeMap<u64, Call>,
+    /// Restarts and failed commits that struck while a merge of the fork commit was in flight.
+    fork_strikes: BTreeMap<String, u64>,
     stale_answers: Vec<StaleAnswer>,
     slot_notes: Vec<SlotNote>,
     /// The host's counters as the summary route keeps them: fed the log a page at a time.
@@ -204,6 +206,7 @@ impl Sim {
             timeline_seq: 0,
             open_calls: BTreeMap::new(),
             answered_calls: BTreeMap::new(),
+            fork_strikes: BTreeMap::new(),
             stale_answers: Vec::new(),
             slot_notes: Vec::new(),
             tally: SummaryTally::default(),
@@ -218,6 +221,11 @@ impl Sim {
 
     pub fn lander(&self) -> &Lander {
         &self.lander
+    }
+
+    /// Cut off every call for the fork commit `fork` at its `Prepare`, or at its `Test`.
+    pub fn poison_fork(&mut self, fork: &str, at_test: bool) {
+        self.lander.poison(fork, at_test);
     }
 
     /// Send every reply of the merge path `ms` after its call runs.
@@ -610,6 +618,7 @@ impl Sim {
     /// reads main's head, which the simulated lander port does).
     fn crash_now(&mut self) {
         self.log.push("crash".to_string());
+        self.strike_merge_in_flight();
         self.crashes += 1;
         self.crash = None;
         self.host = Host::new(self.config.clone());
@@ -700,6 +709,7 @@ impl Sim {
         if self.fail_next_commit {
             self.fail_next_commit = false;
             self.failed_commits += 1;
+            self.strike_merge_in_flight();
             let failed = Input::CommitFailed { now_ms, batch };
             self.answers.push_back(Answer::Input(failed));
             return;

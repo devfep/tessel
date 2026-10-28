@@ -16,8 +16,8 @@ use crate::sim::driver::{Delivery, Dispatch, SlotCall, SlotNote, StaleAnswer};
 use crate::sim::lander::{Landing, MAIN0};
 
 /// How many merges may be dispatched in a row past a ready verification
-/// (`coordinator::verifying::VERIFY_SLOT_AFTER`; not exported, so repeated here and pinned by a
-/// test against the core's behaviour).
+/// (`coordinator::verifying::VERIFY_SLOT_AFTER`, private there, so repeated here; no test pins the
+/// two together).
 pub const VERIFY_SLOT_AFTER: usize = 4;
 
 /// I3: at most one `Merged` per claim, in the log and among the messages clients received; each
@@ -25,11 +25,12 @@ pub const VERIFY_SLOT_AFTER: usize = 4;
 /// that history.
 pub fn i3(events: &[Event], transcript: &[Delivery], history: &[Landing]) -> Vec<String> {
     let mut found = Vec::new();
+    let forks = forks_by_claim(events);
     let mut merged: BTreeMap<u64, usize> = BTreeMap::new();
     for event in events {
         if let EventKind::Merged { claim, head, .. } = &event.kind {
             *merged.entry(claim.0).or_insert(0) += 1;
-            if head.0 != MAIN0 && !history.iter().any(|landing| landing.head == head.0) {
+            if !merged_on_main(&forks, claim.0, &head.0, history) {
                 found.push(format!(
                     "claim {} merged at {}, which is not on main",
                     claim.0, head.0
@@ -52,6 +53,48 @@ pub fn i3(events: &[Event], transcript: &[Delivery], history: &[Landing]) -> Vec
         ));
     }
     found.extend(repeated_on_main(history));
+    found.extend(broken_chain(history));
+    found
+}
+
+/// Whether a claim's `Merged` at `head` is main: either the landing of one of the claim's own
+/// submissions, or, when one of them landed earlier (a retry answered `already merged`), a head on
+/// main.
+fn merged_on_main(
+    forks: &BTreeMap<u64, Vec<String>>,
+    claim: u64,
+    head: &str,
+    history: &[Landing],
+) -> bool {
+    let own = |landing: &Landing| {
+        landing
+            .fork
+            .as_ref()
+            .is_some_and(|fork| forks.get(&claim).is_some_and(|mine| mine.contains(fork)))
+    };
+    if history
+        .iter()
+        .any(|landing| landing.head == head && own(landing))
+    {
+        return true;
+    }
+    history.iter().any(own) && (head == MAIN0 || history.iter().any(|l| l.head == head))
+}
+
+/// A landing whose parent is not the main before it: a head put on main that was not made on it,
+/// which drops what landed in between.
+fn broken_chain(history: &[Landing]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut main = MAIN0;
+    for landing in history {
+        if landing.parent != main {
+            found.push(format!(
+                "{} landed on {main} but was made on {}",
+                landing.head, landing.parent
+            ));
+        }
+        main = landing.head.as_str();
+    }
     found
 }
 
@@ -77,7 +120,7 @@ fn repeated_on_main(history: &[Landing]) -> Vec<String> {
 
 /// Whether `reason` is the one the core gives a submission it could not merge for infrastructure
 /// reasons (`merging::infra_rejection`).
-fn is_infra_rejection(reason: &str) -> bool {
+pub fn is_infra_rejection(reason: &str) -> bool {
     reason.contains("infrastructure, not a code failure")
 }
 
@@ -104,23 +147,25 @@ pub struct MergePath<'a> {
     pub cutoffs: &'a BTreeMap<String, u32>,
     /// The fork commits the lander cuts off at one stage, every time.
     pub poisoned: &'a [String],
-    /// Failures the lander did not cause: restarts and failed commits, each of which the core can
-    /// count against a merge in flight, or lose a count of.
-    pub other_failures: u64,
+    /// Restarts and failed commits that struck while a merge of the fork commit was in flight,
+    /// each of which the core can count against it, or lose a count of.
+    pub strikes: &'a BTreeMap<String, u64>,
     /// Main's first-parent history.
     pub history: &'a [Landing],
 }
 
 /// I6: a commit that cuts the merge path off every time is dispatched at most
-/// `MAX_INFRA_RETRIES + 1` times (and once more for each failure that can lose a count), then its
-/// claim is rejected and never merged. A claim is rejected as an infrastructure failure only after
-/// that many of its calls were cut off or other failures struck, so no claim is rejected because
-/// of another's commit, and work that is on main is never rejected.
+/// `MAX_INFRA_RETRIES + 1` times (and once more for each restart or failed commit that struck
+/// during one of its merges, which can lose a count), then its claim is rejected and never merged.
+/// A claim is rejected as an infrastructure failure only after that many of its own calls were cut
+/// off or such failures struck, so no claim is rejected because of another's commit, and work that
+/// is on main is never rejected.
 pub fn i6(events: &[Event], path: &MergePath<'_>) -> Vec<String> {
     let mut found = Vec::new();
-    let allowed = u64::from(MAX_INFRA_RETRIES) + 1 + path.other_failures;
     let by_claim = forks_by_claim(events);
     for fork in path.poisoned {
+        let allowed =
+            u64::from(MAX_INFRA_RETRIES) + 1 + path.strikes.get(fork).copied().unwrap_or(0);
         let seen = u64::from(path.cutoffs.get(fork).copied().unwrap_or(0));
         if seen > allowed {
             found.push(format!(
@@ -158,12 +203,15 @@ fn infra_rejections(
             .get(&claim.0)
             .into_iter()
             .flatten()
-            .map(|fork| u64::from(path.cutoffs.get(fork).copied().unwrap_or(0)))
+            .map(|fork| {
+                u64::from(path.cutoffs.get(fork).copied().unwrap_or(0))
+                    + path.strikes.get(fork).copied().unwrap_or(0)
+            })
             .sum();
-        if charged + path.other_failures <= u64::from(MAX_INFRA_RETRIES) {
+        if charged <= u64::from(MAX_INFRA_RETRIES) {
             found.push(format!(
-                "claim {} was rejected as an infrastructure failure after only {charged} cut-off calls and {} other failures",
-                claim.0, path.other_failures
+                "claim {} was rejected as an infrastructure failure after only {charged} failures",
+                claim.0
             ));
         }
         let landed = latest.get(&claim.0).is_some_and(|fork| {
@@ -252,6 +300,9 @@ pub fn i11(events: &[Event], counters: &Summary) -> Vec<String> {
 /// interrupted and a `Land` in doubt holds the verification back; the bound is one more than the
 /// core's `VERIFY_SLOT_AFTER` for the merge that was already out when the verification became
 /// ready.
+///
+/// Unproven at the default seeds: a seed lands 0 to 2 merges, so the bound is never reached there.
+/// Only the hand-built notes in this file exercise it; a continuous-load run is not built.
 pub fn i12(notes: &[SlotNote], events: &[Event]) -> Vec<String> {
     let mut found = Vec::new();
     let mut ready_since: Option<usize> = None;
@@ -387,11 +438,18 @@ mod tests {
         }
     }
 
-    const INFRA: &str = "the merge could not be completed after 4 tries: infrastructure, not a code failure; submit again";
+    const INFRA: &str =
+        "the merge could not be completed after 4 tries: infrastructure, not a code \
+                         failure; submit again";
 
     fn landing(head: &str, fork: &str) -> Landing {
+        landing_on(MAIN0, head, fork)
+    }
+
+    fn landing_on(parent: &str, head: &str, fork: &str) -> Landing {
         Landing {
             head: head.to_string(),
+            parent: parent.to_string(),
             fork: Some(fork.to_string()),
         }
     }
@@ -412,14 +470,19 @@ mod tests {
 
     #[test]
     fn i3_is_silent_for_one_merge_per_claim_on_a_history_with_each_submission_once() {
-        let events = log(vec![merged(1, "h1"), merged(2, "h2")]);
-        let history = [landing("h1", "f1"), landing("h2", "f2")];
+        let events = log(vec![
+            submitted(1, "f1"),
+            submitted(2, "f2"),
+            merged(1, "h1"),
+            merged(2, "h2"),
+        ]);
+        let history = [landing("h1", "f1"), landing_on("h1", "h2", "f2")];
         assert!(i3(&events, &[told_merged(0, 1)], &history).is_empty());
     }
 
     #[test]
     fn i3_flags_a_claim_merged_twice_in_the_log() {
-        let events = log(vec![merged(1, "h1"), merged(1, "h1")]);
+        let events = log(vec![submitted(1, "f1"), merged(1, "h1"), merged(1, "h1")]);
         let found = i3(&events, &[], &[landing("h1", "f1")]);
         assert_eq!(found, ["claim 1 was merged 2 times"]);
     }
@@ -432,18 +495,46 @@ mod tests {
     }
 
     #[test]
-    fn i3_flags_a_submission_on_main_twice_and_a_merge_that_is_not_on_main() {
-        let history = [landing("h1", "f1"), landing("h2", "f1")];
+    fn i3_flags_a_submission_on_main_twice() {
+        let history = [landing("h1", "f1"), landing_on("h1", "h2", "f1")];
         let found = i3(&[], &[], &history);
         assert_eq!(found, ["the submission f1 landed on main twice"]);
-        let found = i3(&[], &[], &[landing("h1", "f1"), landing("h1", "f2")]);
+        let found = i3(
+            &[],
+            &[],
+            &[landing("h1", "f1"), landing_on("h1", "h1", "f2")],
+        );
         assert_eq!(found, ["h1 is on main twice"]);
-        let events = log(vec![merged(1, "elsewhere")]);
-        let found = i3(&events, &[], &[landing("h1", "f1")]);
+    }
+
+    #[test]
+    fn i3_flags_a_merge_that_is_not_the_claims_own_landing() {
+        let history = [landing("h1", "f1"), landing_on("h1", "h2", "f2")];
+        let elsewhere = log(vec![submitted(1, "f1"), merged(1, "elsewhere")]);
+        let found = i3(&elsewhere, &[], &history);
         assert_eq!(found, ["claim 1 merged at elsewhere, which is not on main"]);
+        let others = log(vec![submitted(1, "f9"), merged(1, "h1")]);
+        let found = i3(&others, &[], &history);
+        assert_eq!(found, ["claim 1 merged at h1, which is not on main"]);
+        let retry = log(vec![submitted(1, "f1"), merged(1, "h2")]);
+        assert!(
+            i3(&retry, &[], &history).is_empty(),
+            "an already-merged retry"
+        );
+    }
+
+    #[test]
+    fn i3_flags_a_landing_that_was_not_made_on_the_main_before_it() {
+        let history = [landing("h1", "f1"), landing_on(MAIN0, "h2", "f2")];
+        let found = i3(&[], &[], &history);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("but was made on"), "{found:?}");
+        assert!(i3(&[], &[], &[landing_on("zzz", "h1", "f1")]).len() == 1);
     }
 
     // ---- I6 ----
+
+    static NO_STRIKES: BTreeMap<String, u64> = BTreeMap::new();
 
     fn path<'a>(
         cutoffs: &'a BTreeMap<String, u32>,
@@ -453,7 +544,7 @@ mod tests {
         MergePath {
             cutoffs,
             poisoned,
-            other_failures: 0,
+            strikes: &NO_STRIKES,
             history,
         }
     }
@@ -516,15 +607,49 @@ mod tests {
         let cutoffs = BTreeMap::from([("f2".to_string(), 3)]);
         let found = i6(&events, &path(&cutoffs, &[], &[]));
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("after only 3 cut-off calls"), "{found:?}");
+        assert!(found[0].contains("after only 3 failures"), "{found:?}");
         let cutoffs = BTreeMap::from([("f2".to_string(), 4)]);
         assert!(i6(&events, &path(&cutoffs, &[], &[])).is_empty());
         let three = BTreeMap::from([("f2".to_string(), 3)]);
+        let struck = BTreeMap::from([("f2".to_string(), 1)]);
         let restarts = MergePath {
-            other_failures: 1,
+            strikes: &struck,
             ..path(&three, &[], &[])
         };
         assert!(i6(&events, &restarts).is_empty(), "a restart is a failure");
+        let elsewhere = BTreeMap::from([("f9".to_string(), 7)]);
+        let other = MergePath {
+            strikes: &elsewhere,
+            ..path(&three, &[], &[])
+        };
+        assert_eq!(
+            i6(&events, &other).len(),
+            1,
+            "another commit's restarts do not count"
+        );
+    }
+
+    #[test]
+    fn i6_allows_a_poisoned_commit_one_more_try_for_each_restart_that_struck_it() {
+        let poisoned = ["f1".to_string()];
+        let cutoffs = BTreeMap::from([("f1".to_string(), 5)]);
+        let events = log(vec![submitted(1, "f1"), rejected(1, INFRA)]);
+        let struck = BTreeMap::from([("f1".to_string(), 1)]);
+        let path = MergePath {
+            strikes: &struck,
+            ..path(&cutoffs, &poisoned, &[])
+        };
+        assert!(i6(&events, &path).is_empty());
+        let elsewhere = BTreeMap::from([("f2".to_string(), 9)]);
+        let other = MergePath {
+            strikes: &elsewhere,
+            ..path
+        };
+        assert_eq!(
+            i6(&events, &other).len(),
+            1,
+            "other commits' restarts excuse nothing"
+        );
     }
 
     #[test]

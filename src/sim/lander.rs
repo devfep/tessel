@@ -33,6 +33,8 @@ enum Poison {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landing {
     pub head: String,
+    /// Main before the head: its first parent.
+    pub parent: String,
     /// The fork commit the head was made from. `None` for a commit someone else pushed to main.
     pub fork: Option<String>,
 }
@@ -40,6 +42,8 @@ pub struct Landing {
 #[derive(Debug, Clone)]
 struct Candidate {
     fork: String,
+    /// The main the head was prepared on.
+    base: String,
 }
 
 /// What the lander does with one call.
@@ -88,8 +92,6 @@ pub type FaultCounts = BTreeMap<&'static str, u64>;
 #[derive(Debug)]
 struct Chaos {
     rng: Rng,
-    /// Commits whose calls are cut off, and at which stage.
-    poisoned: BTreeMap<String, Poison>,
     seen_forks: BTreeSet<String>,
     limited_until_ms: u64,
     /// Reconcile answers still owed as `Unknown`.
@@ -120,6 +122,8 @@ pub struct Lander {
     chaos: Option<Chaos>,
     /// How long main's history was when each call was issued, by call and dispatch.
     issued_at: BTreeMap<(u64, u64), usize>,
+    /// Commits whose calls are cut off, and at which stage.
+    poisoned: BTreeMap<String, Poison>,
     /// Every reply is sent this long after the call runs, with or without faults.
     slow_replies_ms: u64,
     /// Every reply is sent a second time this long after the first, with or without faults.
@@ -167,6 +171,7 @@ impl Lander {
             cutoffs: BTreeMap::new(),
             chaos: None,
             issued_at: BTreeMap::new(),
+            poisoned: BTreeMap::new(),
             slow_replies_ms: 0,
             repeat_replies_ms: None,
         }
@@ -176,7 +181,6 @@ impl Lander {
     pub fn with_faults(mut self, seed: u64) -> Self {
         self.chaos = Some(Chaos {
             rng: Rng::new(seed ^ 0x6c61_6e64_6572),
-            poisoned: BTreeMap::new(),
             seen_forks: BTreeSet::new(),
             limited_until_ms: 0,
             reconcile_unknowns: 0,
@@ -218,10 +222,17 @@ impl Lander {
 
     /// The fork commits every call for which is cut off at one stage.
     pub fn poisoned(&self) -> Vec<String> {
-        self.chaos
-            .as_ref()
-            .map(|chaos| chaos.poisoned.keys().cloned().collect())
-            .unwrap_or_default()
+        self.poisoned.keys().cloned().collect()
+    }
+
+    /// Cut off every call for `fork` at its `Prepare`, or at its `Test` when `at_test`.
+    pub fn poison(&mut self, fork: &str, at_test: bool) {
+        let stage = if at_test {
+            Poison::AtTest
+        } else {
+            Poison::AtPrepare
+        };
+        self.poisoned.insert(fork.to_string(), stage);
     }
 
     /// The faults injected so far, by name.
@@ -245,6 +256,18 @@ impl Lander {
 
     /// Decide what happens to `call`, which the host issued at `now_ms`.
     pub fn plan(&mut self, call: &Call, now_ms: u64) -> Plan {
+        self.maybe_poison(&call.request);
+        if let Some(fork) = self.fork_of(&call.request) {
+            if self.is_poisoned_at(&fork, &call.request) {
+                if let Some(chaos) = self.chaos.as_mut() {
+                    chaos.bump("cut_off_always");
+                }
+                return Plan {
+                    fate: Fate::CutOff,
+                    ..Plan::PROMPT
+                };
+            }
+        }
         if self.chaos.is_none() {
             return Plan {
                 reply_after_ms: self.slow_replies_ms,
@@ -256,8 +279,7 @@ impl Lander {
             .insert((call.id.0, call.dispatch_id.0), self.history.len());
         self.maybe_push_to_main();
         self.maybe_lose_candidate(&call.request);
-        let fork = self.fork_of(&call.request);
-        let fate = self.fate_of(&call.request, fork.as_deref(), now_ms);
+        let fate = self.fate_of(&call.request, now_ms);
         let Some(chaos) = self.chaos.as_mut() else {
             return Plan::PROMPT;
         };
@@ -281,18 +303,33 @@ impl Lander {
         }
     }
 
+    /// The first time a fork commit is prepared, it may be one that cuts the path off every time.
+    fn maybe_poison(&mut self, request: &Request) {
+        let (Request::Prepare { fork_commit, .. }, Some(chaos)) = (request, self.chaos.as_mut())
+        else {
+            return;
+        };
+        if let Some(stage) = chaos.roll_poison(&fork_commit.0) {
+            self.poisoned.insert(fork_commit.0.clone(), stage);
+        }
+    }
+
     /// Someone else pushes to main.
     fn maybe_push_to_main(&mut self) {
         let Some(chaos) = self.chaos.as_mut() else {
             return;
         };
-        if !chaos.rng.chance(0.06) {
+        if !chaos.rng.chance(0.1) {
             return;
         }
         chaos.bump("pushed_to_main");
         let head = candidate_head("someone else", &self.main);
-        self.main = head.clone();
-        self.history.push(Landing { head, fork: None });
+        let parent = std::mem::replace(&mut self.main, head.clone());
+        self.history.push(Landing {
+            head,
+            parent,
+            fork: None,
+        });
     }
 
     /// The candidate ref a head is kept on goes missing.
@@ -303,30 +340,21 @@ impl Lander {
         let Some(chaos) = self.chaos.as_mut() else {
             return;
         };
-        if chaos.rng.chance(0.02) && self.candidates.remove(&head.0).is_some() {
+        if chaos.rng.chance(0.08) && self.candidates.remove(&head.0).is_some() {
             chaos.bump("candidate_lost");
         }
     }
 
-    fn fate_of(&mut self, request: &Request, fork: Option<&str>, now_ms: u64) -> Fate {
+    fn fate_of(&mut self, request: &Request, now_ms: u64) -> Fate {
         let Some(chaos) = self.chaos.as_mut() else {
             return Fate::Reply;
         };
-        if let (Some(fork), Request::Prepare { .. }) = (fork, request) {
-            chaos.maybe_poison(fork);
-        }
-        if let Some(fork) = fork {
-            if chaos.is_poisoned_at(fork, request) {
-                chaos.bump("cut_off_always");
-                return Fate::CutOff;
-            }
-        }
         if now_ms < chaos.limited_until_ms {
             chaos.bump("rate_limited");
             return Fate::RateLimited;
         }
         let roll = chaos.rng.below(100);
-        let land = matches!(request, Request::Land { .. });
+        let land = is_land(request);
         match roll {
             0..=5 => chaos.counted("unknown", Fate::Unknown),
             6..=9 => chaos.counted("never_runs", Fate::NeverRuns),
@@ -389,6 +417,7 @@ impl Lander {
             head.clone(),
             Candidate {
                 fork: fork.to_string(),
+                base: self.main.clone(),
             },
         );
         CallAnswer::Prepared {
@@ -407,7 +436,7 @@ impl Lander {
             };
         };
         if !known {
-            if chaos.rng.chance(0.5) {
+            if chaos.rng.chance(0.8) {
                 chaos.bump("stale_report");
                 return CallAnswer::Tested;
             }
@@ -449,17 +478,18 @@ impl Lander {
         let Some(candidate) = self.candidates.get(head) else {
             return CallAnswer::CandidateMissing;
         };
-        if base != self.main {
+        if base != self.main || candidate.base != base {
             if let Some(chaos) = self.chaos.as_mut() {
                 chaos.bump("compare_and_swap_refused");
             }
             return CallAnswer::Unknown;
         }
         let fork = candidate.fork.clone();
-        self.main = head.to_string();
+        let parent = std::mem::replace(&mut self.main, head.to_string());
         self.landed_forks.insert(fork.clone());
         self.history.push(Landing {
             head: head.to_string(),
+            parent,
             fork: Some(fork),
         });
         CallAnswer::Landed {
@@ -500,6 +530,18 @@ impl Lander {
     }
 }
 
+/// Whether `request` is a `Land`.
+fn is_land(request: &Request) -> bool {
+    match request {
+        Request::Land { .. } => true,
+        Request::Prepare { .. }
+        | Request::Test { .. }
+        | Request::Trial { .. }
+        | Request::ReadHead { .. }
+        | Request::Reconcile { .. } => false,
+    }
+}
+
 fn clean_trial() -> CallAnswer {
     CallAnswer::Trialled {
         before: Some(TrialResult::Clean),
@@ -509,23 +551,25 @@ fn clean_trial() -> CallAnswer {
 
 impl Chaos {
     /// The first time a fork commit is seen, it may be one that cuts the path off every time.
-    fn maybe_poison(&mut self, fork: &str) {
-        if self.seen_forks.insert(fork.to_string()) && self.rng.chance(0.06) {
-            let stage = if self.rng.chance(0.5) {
-                Poison::AtPrepare
-            } else {
-                Poison::AtTest
-            };
-            self.poisoned.insert(fork.to_string(), stage);
-            self.bump("poisoned_commit");
+    fn roll_poison(&mut self, fork: &str) -> Option<Poison> {
+        if !self.seen_forks.insert(fork.to_string()) || !self.rng.chance(0.06) {
+            return None;
         }
+        self.bump("poisoned_commit");
+        Some(if self.rng.chance(0.5) {
+            Poison::AtPrepare
+        } else {
+            Poison::AtTest
+        })
     }
 
     fn counted(&mut self, fault: &'static str, fate: Fate) -> Fate {
         self.bump(fault);
         fate
     }
+}
 
+impl Lander {
     /// Whether `request` is the stage at which `fork` is cut off.
     fn is_poisoned_at(&self, fork: &str, request: &Request) -> bool {
         match (self.poisoned.get(fork), request) {
@@ -737,6 +781,27 @@ mod tests {
             }
         }
         assert!(longest >= 2, "the longest run of Unknown was {longest}");
+    }
+
+    #[test]
+    fn a_test_of_a_head_whose_candidate_is_gone_may_be_reported_as_passing() {
+        let mut stale = false;
+        for seed in 0..50 {
+            let mut lander = Lander::new().with_faults(seed);
+            let (_, head) = prepared_head(&mut lander, "f1");
+            lander.candidates.remove(&head);
+            let test = Request::Test {
+                base: CommitId(MAIN0.to_string()),
+                head: CommitId(head),
+            };
+            let answer = lander.execute(&call(2, test));
+            assert!(
+                answer == CallAnswer::Tested || answer == CallAnswer::CandidateMissing,
+                "a gone candidate answered {answer:?}"
+            );
+            stale |= answer == CallAnswer::Tested;
+        }
+        assert!(stale, "no seed reported a stale commit as tested");
     }
 
     #[test]

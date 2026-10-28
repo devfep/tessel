@@ -104,7 +104,7 @@ pub fn run(sim: &Sim, enabled: &[Checker]) -> Vec<Violation> {
                 &merge_check::MergePath {
                     cutoffs: sim.lander().cutoffs(),
                     poisoned: &sim.lander().poisoned(),
-                    other_failures: sim.crashes() + sim.failed_commits(),
+                    strikes: sim.fork_strikes(),
                     history: sim.lander().history(),
                 },
             ),
@@ -566,7 +566,8 @@ fn i4_suspended(wake: Option<u64>, now_ms: u64, due: u64) -> Vec<String> {
             "the pending wake {at} is not later than now ({now_ms})"
         )],
         Some(at) if at > now_ms + MERGE_WATCHDOG_MS => vec![format!(
-            "the pending wake {at} is more than the watchdog ({MERGE_WATCHDOG_MS} ms) after now ({now_ms})"
+            "the pending wake {at} is more than the watchdog ({MERGE_WATCHDOG_MS} ms) after now \
+             ({now_ms})"
         )],
         Some(_) => Vec::new(),
     }
