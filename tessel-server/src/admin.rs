@@ -357,7 +357,7 @@ mod resolve_tests {
         let work = &core["claims"][claim.to_string()]["work"];
         assert_eq!(work["in_doubt"], false);
         assert_eq!(work["infra_failures"], 0);
-        assert_eq!(work["moved"], 1, "contention, not an attempt");
+        assert_eq!(work["moved"], 0, "nobody said main moved, and no attempt");
     }
 
     #[test]
