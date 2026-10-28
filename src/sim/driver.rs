@@ -856,3 +856,84 @@ fn without_scopes(json: &str) -> String {
     }
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::call::DispatchId;
+    use crate::protocol::{AgentId, ClaimId};
+
+    fn sim() -> Sim {
+        Sim::new(HostConfig::default(), Variant::Correct)
+    }
+
+    /// Hand `request` to the lander and return what it answered.
+    fn ask(sim: &mut Sim, id: u64, request: Request) -> CallAnswer {
+        let call = Call {
+            id: crate::host::call::CallId(id),
+            dispatch_id: DispatchId(id),
+            request,
+            deadline_ms: u64::MAX,
+        };
+        sim.answer_call(&call);
+        let Some(Answer::Input(Input::Replied { answer, .. })) = sim.answers.pop_back() else {
+            panic!("the lander did not answer call {id} at once");
+        };
+        answer
+    }
+
+    fn prepare(sim: &mut Sim, id: u64, fork: &str) -> (CommitId, CommitId) {
+        let request = Request::Prepare {
+            claim: ClaimId(1),
+            agent: AgentId("a".to_string()),
+            fork_commit: CommitId(fork.to_string()),
+            scopes: Vec::new(),
+        };
+        let CallAnswer::Prepared { base, head } = ask(sim, id, request) else {
+            panic!("a prepare was not prepared");
+        };
+        (base, head)
+    }
+
+    #[test]
+    fn reconcile_says_landed_only_for_a_head_that_is_on_main() {
+        let mut sim = sim();
+        let (base, head) = prepare(&mut sim, 1, "f1");
+        let reconcile = Request::Reconcile { head: head.clone() };
+        let CallAnswer::Reconciled { landed, .. } = ask(&mut sim, 2, reconcile.clone()) else {
+            panic!("a reconcile was not reconciled");
+        };
+        assert!(!landed, "a prepared head is not a landed one");
+        ask(&mut sim, 3, Request::Land { base, head });
+        let CallAnswer::Reconciled { landed, .. } = ask(&mut sim, 4, reconcile) else {
+            panic!("a reconcile was not reconciled");
+        };
+        assert!(landed);
+    }
+
+    #[test]
+    fn a_land_whose_base_is_not_main_is_refused_and_main_stays() {
+        let mut sim = sim();
+        let (base, first) = prepare(&mut sim, 1, "f1");
+        let (_, second) = prepare(&mut sim, 2, "f2");
+        ask(
+            &mut sim,
+            3,
+            Request::Land {
+                base: base.clone(),
+                head: first.clone(),
+            },
+        );
+        let answer = ask(&mut sim, 4, Request::Land { base, head: second });
+        assert_eq!(answer, CallAnswer::Unknown);
+        assert_eq!(sim.main, first.0, "a stale base moved main");
+    }
+
+    #[test]
+    fn a_fork_commit_prepares_to_the_same_head_every_time() {
+        let mut sim = sim();
+        let first = prepare(&mut sim, 1, "f1");
+        let again = prepare(&mut sim, 2, "f1");
+        assert_eq!(first, again);
+    }
+}
