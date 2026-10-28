@@ -1060,7 +1060,8 @@ Lane B:
   `InFlight.main` feeds only a discarded `dispatched_from`; nothing pins that `moves_main`
   (`tessel-server/src/repo.rs:693`) leaves `Prepared` out. The fake's fix and the `moves_main`
   test edit lane A's `tessel-cli/tests/support/mod.rs` and `tessel-server/src/repo.rs`, which the
-  plan's cross-edit list for this task does not name; lane A (on `src/sim/**`) stays out of them while this runs.
+  plan's cross-edit list for this task does not name; lane A (on `src/sim/**`) stays out of them
+  while this runs.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
