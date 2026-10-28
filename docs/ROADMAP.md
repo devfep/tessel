@@ -7,21 +7,23 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-28 11:00 UTC. Main at `fe5a898`, Felix's merge of #124 (02:29 UTC), CI and the
-adapter suite green on it. NIGHTLY-TIME is done: the first scheduled runs on the fixed workflows
-passed on `fe5a898`. The nightly (run 40665367478) took 56.5 min, each job inside its 120 min limit:
-the eight mutants shards 42-56 min each, the simulator sweep 28 min, proptest 2 min. The adapter
-suite (run 40675285287) passed in 8 min: 200 kill rounds in 457 s, 12,556 events, 3,822 grants, 216
-stale releases refused. Before #124, the 26 and 27 October scheduled runs were cancelled at their
-limits. The previous STATE (`26b39fb`) landed through the server after two Opus reads; its note was
-copied. The orchestrator checked `dab6a22` where the lane had not: `tessel-server/ci/landing-e2e.sh`
-against its own build passes, with the candidate ref pushed, "the tests passed on the candidate",
-the ref deleted and main read back; and `tessel-server/tests/restart.rs` passes on it (2 tests),
-where `a_server_killed_mid_merge_and_restarted_lands_the_claim_once` kills the server while the
-runner's command runs, the `Test` stage, and the restart lands the claim once. Not checked: that the
-candidate ref is gone after that restart. DOGFOOD-UPGRADE is #125 (open, all 14 checks pass): Opus
-"With changes" on `1a515ff`, "Yes" on `8837e30`; its head `5b22bba` applies that review's
-should-fixes and was read in this STATE's review.
+**As of:** 2026-10-28 11:20 UTC. Main at `6703ee7`, Felix's merge of #125 (DOGFOOD-UPGRADE, 11:14
+UTC), after this STATE's first part landed through the server as `c2ef54e` (CI and the adapter suite
+green on it; notes copied). #124 merged at 02:29 UTC as `fe5a898`. NIGHTLY-TIME is done: the first
+scheduled runs on the fixed workflows passed on `fe5a898`. The nightly (run 40665367478) took 56.5
+min, each job inside its 120 min limit: the eight mutants shards 42-56 min each, the simulator sweep
+28 min, proptest 2 min. The adapter suite (run 40675285287) passed in 8 min: 200 kill rounds in 457
+s, 12,556 events, 3,822 grants, 216 stale releases refused. Before #124, the 26 and 27 October
+scheduled runs were cancelled at their limits. The previous STATE (`26b39fb`) landed through the
+server after two Opus reads; its note was copied. The orchestrator checked `dab6a22` where the lane
+had not: `tessel-server/ci/landing-e2e.sh` against its own build passes, with the candidate ref
+pushed, "the tests passed on the candidate", the ref deleted and main read back; and
+`tessel-server/tests/restart.rs` passes on it (2 tests), where
+`a_server_killed_mid_merge_and_restarted_lands_the_claim_once` kills the server while the runner's
+command runs, the `Test` stage, and the restart lands the claim once. Not checked: that the
+candidate ref is gone after that restart. DOGFOOD-UPGRADE is done as #125 (all 14 checks passed):
+Opus "With changes" on `1a515ff`, "Yes" on `8837e30`; its head `5b22bba` applies that review's
+should-fixes and was read in STATE's review.
 The dogfood server runs `455c889` from `~/tessel-dogfood/bin`, restarted 27 October 22:25 UTC after
 the Mac was shut down. Main has moved on since that build, `src/` and `tessel-server/src/` included;
 only tests, docs and workflows changed since that build's last STATE, so no redeploy for them.
@@ -62,16 +64,16 @@ required checks, the repository admin role as bypass; always). Proven first on
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
 **Waiting on Felix:** his written yes naming `dab6a22` (P1-CORE-STAGED-LANDING, Opus "Yes" on
-REVIEW-2; the end-to-end landing and a restart at `Test` checked by the orchestrator, above);
-merging #125 (DOGFOOD-UPGRADE); the plan's rule (d) (`docs/proposals/phase-1.md`), which says a
-build bumps `state_version` "only if the old binary can still read the new state", a case the
-store's `refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
-`tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
-P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
-lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
-itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
-`tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged
-pull requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word).
+REVIEW-2; the end-to-end landing and a restart at `Test` checked by the orchestrator, above); the
+plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps `state_version` "only if the
+old binary can still read the new state", a case the store's `refuse_unknown` rules out (#125
+follows the code); a GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial
+landing, which the dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing
+`PUSH_ALLOW_REMOTES` to the sandbox trunk now that lanes push branches; the suggested patch to his
+push hook that exempts only a URL git resolves to itself
+(`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
+`tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged pull
+requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word).
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the
 sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
@@ -1069,12 +1071,11 @@ Orchestrator:
 - [x] **SENSITIVE-MERGE-PATH** (#123, merged) — `src/merge.rs`, `src/coordinator.rs` and
   `src/coordinator/` joined `sensitive` in `setup.sh` and `install.sh`; the live server config was
   edited by hand and the server restarted at 23:13 UTC with nothing in flight.
-- [ ] **DOGFOOD-UPGRADE** (#125, open) — a section of `docs/dogfood.md` (a pull request) before
+- [x] **DOGFOOD-UPGRADE** (#125, merged) — a section of `docs/dogfood.md` (a pull request) before
   the first upgrade: rules (a) to (f) of the plan. As written: "nothing in flight" is checked by
   outcomes, since a staged merge or a timeout's backoff can be in flight with no clone on disk;
   the build goes to `bin.next` and a trial lands on `tessel-sandbox/m4-trunk` before the swap;
   rollback to `bin.prev` only when the store's `state_version` is one the old build knows.
-  Waits for Felix's merge.
 - [ ] **M5-DOGFOOD-STAGED** — after the upgrade, three landings through the staged path, with
   notes and claims released by `Merged`.
 
