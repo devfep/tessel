@@ -630,6 +630,18 @@ mod tests {
     }
 
     #[test]
+    fn a_head_prepared_on_an_older_main_is_refused_on_a_fresh_base() {
+        let mut lander = Lander::new();
+        let (base, stale) = prepared_head(&mut lander, "f1");
+        let (_, newer) = prepared_head(&mut lander, "f2");
+        lander.execute(&call(2, land(&base, &newer)));
+        let answer = lander.execute(&call(3, land(&newer, &stale)));
+        assert_eq!(answer, CallAnswer::Unknown);
+        assert_eq!(lander.main(), newer, "a non-fast-forward moved main");
+        assert!(!lander.on_main(&stale));
+    }
+
+    #[test]
     fn a_land_whose_base_is_not_main_is_refused_and_moves_nothing() {
         let mut lander = Lander::new();
         let (base, first) = prepared_head(&mut lander, "f1");
