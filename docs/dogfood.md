@@ -444,10 +444,16 @@ If the lander cannot say whether a `Land` moved main (a lost reply, a timeout, o
 stopped during the push), the core does not reject the work and does not count an attempt. It asks
 the lander whether the head is on main (`Reconcile`) and goes on from the answer, as
 [Landing](configuration.md#landing) describes; each failed ask waits 10, 30, then 90 seconds.
-`tessel status` in the submitter's worktree shows `[landing in doubt for 3m 20s: ...]`, counted
-from when that daemon was told. A lander that never answers holds the queue behind it. To settle
-it by hand, read main yourself (is the claim's commit on `main`?), stop the server, wait for its
-pid to exit, and run, with the claim number `tessel status` shows:
+`tessel status` in the submitter's worktree shows `[landing in doubt for 3m 20s: ...]`. The
+server tells the daemon when the doubt begins and ends, and lists the agent's claims in doubt in
+every `Welcome`, so a daemon that was offline, or a server that was stopped and restarted (as
+`admin resolve` needs), is right at its next connection: the doubt is shown if it stands and gone
+if it ended. The age counts from when that daemon first learned of the doubt, on its own clock.
+A lander that never answers holds the queue behind it. To find the claim without the submitter,
+read `server.log`: each `Land` or `Reconcile` that leaves a doubt logs `the landing of claim N is
+in doubt since <ms>` and names the command. To settle it by hand, read main yourself (is the
+claim's commit on `main`?), stop the server, wait for its pid to exit, and run, with that claim
+number:
 
 ```
 <server dir>/bin/tessel-server admin resolve <claim> --landed --config <server dir>/tessel-server.toml

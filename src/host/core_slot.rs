@@ -6,7 +6,7 @@
 
 use crate::coordinator::{Coordinator as Core, Effect, HeadRead};
 use crate::host::HostConfig;
-use crate::protocol::{AgentId, Event};
+use crate::protocol::{AgentId, ClaimInDoubt, Event};
 use crate::shell::{self, LoadError, Outbound, StoreDecision, StoredSize, Work};
 
 /// What this instance is waiting on, for the wake the core computes (R16).
@@ -70,6 +70,10 @@ impl CoreSlot {
         self.core
             .as_ref()
             .is_some_and(|core| core.has_due_expiry(now_ms))
+    }
+
+    pub fn merge_in_doubt(&self) -> Option<ClaimInDoubt> {
+        self.core.as_ref().and_then(|core| core.merge_in_doubt())
     }
 
     pub fn has_merge_in_flight(&self) -> bool {

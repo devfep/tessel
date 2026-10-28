@@ -12,10 +12,7 @@ use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
-use crate::merge::{
-    MergeOutcome, INFRA_BACKOFF_BASE_MS, LAND_CALL_TIMEOUT_MS, MERGE_WATCHDOG_MS,
-    PREPARE_CALL_TIMEOUT_MS, TEST_CALL_TIMEOUT_MS,
-};
+use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
     Fence, Intent, Mode, OnConflict, ProtocolRange, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
@@ -937,8 +934,13 @@ fn a_frame_on_a_socket_the_host_does_not_know_is_logged() {
 
 /// A claim of a1 on x.rs, submitted and waiting to merge.
 fn submitted(kit: &mut Testkit) -> (SocketId, ClaimId, CommitId) {
-    let sock = welcomed(kit, "a1");
-    kit.send(sock, &claim(1, "x.rs", "s"));
+    submitted_by(kit, "a1", "x.rs")
+}
+
+/// A claim of `name` on `path`, submitted and waiting to merge.
+fn submitted_by(kit: &mut Testkit, name: &str, path: &str) -> (SocketId, ClaimId, CommitId) {
+    let sock = welcomed(kit, name);
+    kit.send(sock, &claim(1, path, "s"));
     kit.settle();
     let (claim_id, fence) = granted(kit, sock);
     let fork_commit = CommitId("ab".repeat(20));
@@ -947,7 +949,7 @@ fn submitted(kit: &mut Testkit) -> (SocketId, ClaimId, CommitId) {
         claim: claim_id,
         fence,
         fork_commit: fork_commit.clone(),
-        touched: vec![edit_file("x.rs")],
+        touched: vec![edit_file(path)],
         decisions: DecisionRecord {
             evidence: vec!["tests passed".into()],
             ..DecisionRecord::default()
@@ -2082,6 +2084,52 @@ fn reconciled(main: &str, landed: bool) -> CallAnswer {
 /// R24 from M5: a marker found on `Loaded` that a `Land` may have left on main is reconciled, not
 /// counted as a cut-off. A `Prepare` or a `Test` marker still is (the test above).
 #[test]
+fn host_a_merge_answer_that_ends_the_merge_goes_on_to_the_verification_not_to_the_next_merge() {
+    // `next_stage` needs both a merge still in flight and no merge call out: a refusal clears
+    // the flight, so the wake does not dispatch the second claim until its next turn.
+    let mut kit = kit();
+    submitted(&mut kit);
+    submitted_by(&mut kit, "a2", "y.rs");
+    wake(&mut kit);
+    let prepare = merge_call_out(&kit);
+    kit.reply(
+        prepare.id,
+        CallAnswer::Refused {
+            refusal: Refusal::GateChanged,
+        },
+    );
+    kit.settle();
+    assert!(!merge_marker_stored(&kit), "the first claim was rejected");
+    assert_eq!(
+        kit.calls().len(),
+        1,
+        "no second Prepare in the same wake: {:?}",
+        kit.calls()
+    );
+    wake(&mut kit);
+    assert_eq!(kit.calls().len(), 2, "the next wake dispatches it");
+}
+
+#[test]
+fn host_a_land_in_doubt_logs_the_claim_for_the_operator() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let land = merge_call_out_after(&mut kit);
+    kit.reply(land.id, CallAnswer::Unknown);
+    kit.settle();
+    let line = kit
+        .logs()
+        .iter()
+        .find(|line| line.contains("is in doubt"))
+        .unwrap_or_else(|| panic!("no doubt line in {:?}", kit.logs()));
+    assert!(
+        line.contains("claim 1 ") && line.contains("admin resolve 1"),
+        "{line}"
+    );
+}
+
+#[test]
 fn host_a_land_marker_found_on_load_is_reconciled_and_not_counted_as_a_cut_off() {
     let mut kit = kit();
     submitted(&mut kit);
@@ -2329,16 +2377,28 @@ fn host_a_head_call_waits_30_seconds_and_a_lander_call_its_stages_budget() {
     submitted(&mut kit);
     wake(&mut kit);
     let merge = kit.calls().last().unwrap().clone();
-    assert_eq!(merge.deadline_ms, kit.now_ms() + PREPARE_CALL_TIMEOUT_MS);
+    assert_eq!(
+        merge.deadline_ms,
+        kit.now_ms() + 300_000,
+        "a Prepare with no answer times out at five minutes, not before or after"
+    );
     let land = reach_the_land_call(&mut kit);
     let land = kit.calls().iter().find(|call| call.id == land).unwrap();
-    assert_eq!(land.deadline_ms, kit.now_ms() + LAND_CALL_TIMEOUT_MS);
+    assert_eq!(
+        land.deadline_ms,
+        kit.now_ms() + 300_000,
+        "and so does a Land"
+    );
     let test = kit
         .calls()
         .iter()
         .find(|call| matches!(call.request, Request::Test { .. }))
         .unwrap();
-    assert_eq!(test.deadline_ms, kit.now_ms() + TEST_CALL_TIMEOUT_MS);
+    assert_eq!(
+        test.deadline_ms,
+        kit.now_ms() + 780_000,
+        "a Test gets 13 minutes"
+    );
 
     let (kit, _, trial) = trial_outstanding();
     assert_eq!(trial.deadline_ms, kit.now_ms() + 780_000);

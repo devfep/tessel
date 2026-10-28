@@ -1046,7 +1046,15 @@ impl Daemon {
     }
 
     /// Sets or clears each claim's merge doubt from what `Welcome` lists, on every connection.
-    fn apply_welcome_doubts(&mut self, _doubts: &[ClaimInDoubt]) {}
+    /// A claim listed keeps the local time it already has, or gets now; one not listed loses it.
+    fn apply_welcome_doubts(&mut self, doubts: &[ClaimInDoubt]) {
+        for held in &mut self.state.claims {
+            let listed = doubts.iter().any(|doubt| doubt.claim == held.claim);
+            held.merge_doubt_since_ms =
+                listed.then(|| held.merge_doubt_since_ms.unwrap_or_else(now_ms));
+        }
+        self.persist();
+    }
 
     /// Warns, once for as long as the same range is announced, when the coordinator's range does
     /// not include this daemon's version. The daemon connects anyway. A coordinator that announces
@@ -2956,6 +2964,44 @@ mod tests {
         let mut known: Vec<String> = KNOWN_EVENT_KINDS.iter().map(|t| (*t).into()).collect();
         known.sort();
         assert_eq!(kinds, known);
+    }
+
+    #[test]
+    fn a_merge_doubt_frame_reaching_a_daemon_without_the_name_is_skipped_and_counted() {
+        // A daemon built before `merge_doubt` has no name for it: with its known list as it was,
+        // the frame is an unknown envelope, which the daemon skips and counts, not an error.
+        let frame = r#"{"type":"merge_doubt","claim":7,"since_ms":5}"#;
+        let known_then: Vec<&str> = KNOWN_MESSAGE_TYPES
+            .iter()
+            .copied()
+            .filter(|name| *name != "merge_doubt")
+            .collect();
+        let frame_value: serde_json::Value = serde_json::from_str(frame).unwrap();
+        let kind = frame_value["type"].as_str().unwrap();
+        assert!(
+            !known_then.contains(&kind),
+            "the old daemon has no name for it"
+        );
+        assert!(
+            serde_json::from_str::<ServerMsg>(frame.replace("merge_doubt", "zzz").as_str())
+                .is_err(),
+            "and cannot decode it"
+        );
+        let skipped =
+            unknown_envelope(&frame.replace("merge_doubt", "merge_doubt_from_the_future"));
+        assert_eq!(
+            skipped,
+            Some(UnknownEnvelope {
+                seq: None,
+                kind: Some("merge_doubt_from_the_future".to_string())
+            }),
+            "a type with no name is skipped and named for the count"
+        );
+        assert!(ServerMsg::MergeDoubt {
+            claim: ClaimId(7),
+            since_ms: Some(5)
+        }
+        .skippable());
     }
 
     #[test]

@@ -315,10 +315,15 @@ Lane B:
   core's `in_doubt` and `unanswered_from`. Done: core tests that a retried `Land` reuses its
   dispatch id, base, head and candidate ref; that `Unknown` after `Land` never counts toward
   `MAX_INFRA_RETRIES`; that a marker found on `Loaded` is reconciled, not counted as a cut-off
-  (R24's test flipped in this commit); DOGFOOD-UPGRADE's fixture test (c). A `Land` in doubt is
-  shown in status with how long it has been in doubt, as an optional wire field with
-  `#[serde(default)]` (rule 1), and `tessel-server admin resolve`, run offline (stop, resolve,
-  start), is the operator's way out (decision M5-3).
+  (R24's test flipped in this commit); DOGFOOD-UPGRADE's fixture test (c). As built: a `Land` in
+  doubt stays in flight as a `Reconcile` under its dispatch id and counts nothing; a restart
+  reconciles a `Land` marker at once; a marker from before the staged landing is `Unstaged` and in
+  doubt. A `Land` in doubt is shown in status with how long it has been in doubt: a live
+  `MergeDoubt` notice (never logged, skippable by an older daemon, so the version stays,
+  invariant 13) plus an optional `Welcome::merge_doubts` (`#[serde(default)]`, rule 1) that
+  rebuilds the doubt at every connection. `tessel-server admin resolve`, run offline (stop,
+  resolve, start), is the operator's way out (decision M5-3), and the server log names the claim
+  in doubt.
 - GATE-PARITY-FMT (S, after P1-CORE-RECONCILE): the gate's strict command check
   (`tessel-lander/src/gate.rs`) accepts `cargo fmt --all --check`, which asks rustfmt to check
   and not write (a repo's cargo config can still alias `fmt` to run repo code, as `cargo test`

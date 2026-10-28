@@ -645,10 +645,14 @@ pub enum ServerMsg {
     },
     /// The landing of a submitted claim is in doubt: the lander was asked to move main and cannot
     /// say whether it did. The core asks again (`Reconcile`) and never rejects the work for it.
-    /// `since_ms` is the server's clock when the doubt began; the CLI uses only whether it is set,
-    /// and counts the age on its own clock. `None` says it is over (the work
-    /// is back in the queue, or it landed or was rejected, which `Merged` and `SubmitRejected`
-    /// report). Old coordinators never send it, so a CLI shows no doubt for them.
+    ///
+    /// A live notice, never logged, and skippable: a daemon with no name for it skips and counts
+    /// the frame and only shows less (`ServerMsg::skippable`, invariant 13). `since_ms` is
+    /// informational, the server's clock when the doubt began; a daemon counts the age on its own
+    /// clock from when it learns of the doubt. `None` says the doubt is over (the work is back in
+    /// the queue, or it landed or was rejected, which `Merged` and `SubmitRejected` report). A
+    /// daemon that was offline when a doubt began or ended learns the truth at its next
+    /// connection, from `Welcome::merge_doubts`. Old coordinators never send either.
     MergeDoubt {
         claim: ClaimId,
         #[serde(default)]
@@ -720,6 +724,36 @@ pub enum ServerMsg {
         code: ErrorCode,
         message: String,
     },
+}
+
+impl ServerMsg {
+    /// Whether a reader that has no name for this message type may skip it and stay correct
+    /// (invariant 13). True only for a type that is never logged, is sent only as a live notice,
+    /// and whose absence only makes a reader show less. No wildcard: a new type must be decided
+    /// here, and `server_message_types_of_version_1_are_pinned` fails until the version moves
+    /// for one that is not skippable.
+    pub fn skippable(&self) -> bool {
+        match self {
+            ServerMsg::MergeDoubt { .. } => true,
+            ServerMsg::Welcome { .. }
+            | ServerMsg::Granted { .. }
+            | ServerMsg::Denied { .. }
+            | ServerMsg::Shadowed { .. }
+            | ServerMsg::Queued { .. }
+            | ServerMsg::Accepted { .. }
+            | ServerMsg::Merged { .. }
+            | ServerMsg::SubmitRejected { .. }
+            | ServerMsg::Uncovered { .. }
+            | ServerMsg::ReviewRequired { .. }
+            | ServerMsg::BaseMoved { .. }
+            | ServerMsg::AssumptionChallenged { .. }
+            | ServerMsg::LeaseExpired { .. }
+            | ServerMsg::RaceOpened { .. }
+            | ServerMsg::RaceResult { .. }
+            | ServerMsg::Event { .. }
+            | ServerMsg::Error { .. } => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1767,6 +1801,79 @@ mod tests {
 #[cfg(test)]
 mod merge_doubt_tests {
     use super::*;
+
+    /// The `type` of every `ServerMsg` variant, as serde lists them in its error for an unknown
+    /// tag.
+    fn server_message_types() -> Vec<String> {
+        let error = serde_json::from_str::<ServerMsg>(r#"{"type":"zzz"}"#).err();
+        let message = error.expect("an unknown tag decoded").to_string();
+        let (_, listed) = message.split_once("expected one of ").expect(&message);
+        let listed = listed.split(" at line").next().unwrap_or(listed);
+        listed
+            .split(", ")
+            .map(|name| name.trim_matches('`').to_string())
+            .collect()
+    }
+
+    #[test]
+    fn server_message_types_of_version_1_are_pinned() {
+        // The types every v1 daemon decodes, none skippable. A new type is added to
+        // `SKIPPABLE_SINCE_V1` only if `ServerMsg::skippable` says true; otherwise the version
+        // moves (invariant 13) and this list with it.
+        const V1: [&str; 17] = [
+            "welcome",
+            "granted",
+            "denied",
+            "shadowed",
+            "queued",
+            "accepted",
+            "merged",
+            "submit_rejected",
+            "uncovered",
+            "review_required",
+            "base_moved",
+            "assumption_challenged",
+            "lease_expired",
+            "race_opened",
+            "race_result",
+            "event",
+            "error",
+        ];
+        const SKIPPABLE_SINCE_V1: [&str; 1] = ["merge_doubt"];
+        assert_eq!(PROTOCOL_VERSION, 1, "the version moved: re-pin this test");
+        let mut expected: Vec<String> = V1
+            .iter()
+            .chain(&SKIPPABLE_SINCE_V1)
+            .map(|t| (*t).into())
+            .collect();
+        expected.sort();
+        let mut found = server_message_types();
+        found.sort();
+        assert_eq!(
+            found, expected,
+            "a new ServerMsg type: decide `skippable`, or bump the version"
+        );
+    }
+
+    #[test]
+    fn only_a_live_doubt_notice_is_skippable() {
+        let doubt = ServerMsg::MergeDoubt {
+            claim: ClaimId(1),
+            since_ms: None,
+        };
+        assert!(doubt.skippable());
+        let error = ServerMsg::Error {
+            req: None,
+            code: ErrorCode::Malformed,
+            message: String::new(),
+        };
+        let merged = ServerMsg::Merged {
+            claim: ClaimId(1),
+            head: CommitId("h".into()),
+            base: None,
+        };
+        assert!(!error.skippable() && !merged.skippable());
+    }
 
     #[test]
     fn a_merge_doubt_message_without_a_time_says_the_doubt_is_over() {

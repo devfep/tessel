@@ -392,6 +392,12 @@ impl Host {
                 ("apply reconcile outcome", prepared)
             }
         };
+        if matches!(
+            call.request,
+            Request::Land { .. } | Request::Reconcile { .. }
+        ) {
+            out.extend(self.doubt_log());
+        }
         self.commit_unsent(
             operation,
             prepared,
@@ -399,6 +405,19 @@ impl Host {
             Some(Job::Wake(resume)),
             out,
         );
+    }
+
+    /// The log line that names the claim whose landing is in doubt, for the operator who looks
+    /// for it without the submitter: `admin resolve` needs the claim number.
+    fn doubt_log(&self) -> Option<Output> {
+        let doubt = self.slot.merge_in_doubt()?;
+        Some(Output::Log {
+            line: format!(
+                "coordinator {}: the landing of claim {} is in doubt since {} ms; the lander \
+                 cannot say whether main moved (tessel-server admin resolve {} settles it)",
+                self.config.repo, doubt.claim.0, doubt.since_ms, doubt.claim.0
+            ),
+        })
     }
 }
 

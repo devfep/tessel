@@ -181,8 +181,29 @@ impl Coordinator {
     }
 
     /// The claims of `agent` whose landing is in doubt now, for the `Welcome` it gets.
-    pub(in crate::coordinator) fn merge_doubts_of(&self, _agent: &AgentId) -> Vec<ClaimInDoubt> {
-        Vec::new()
+    pub(in crate::coordinator) fn merge_doubts_of(&self, agent: &AgentId) -> Vec<ClaimInDoubt> {
+        let Some(doubt) = self.merge_in_doubt() else {
+            return Vec::new();
+        };
+        let owner = self
+            .state
+            .claims
+            .get(&doubt.claim.0)
+            .map(|held| &held.agent);
+        if owner == Some(agent) {
+            vec![doubt]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The claim whose landing is in doubt now, if one is, and when the doubt began.
+    pub fn merge_in_doubt(&self) -> Option<ClaimInDoubt> {
+        let flight = self.state.merge_in_flight.as_ref()?;
+        Some(ClaimInDoubt {
+            claim: flight.claim,
+            since_ms: flight.doubt_since_ms?,
+        })
     }
 
     /// What the lander's answer means to a merge at its `Land` (or at the `Reconcile` that follows
