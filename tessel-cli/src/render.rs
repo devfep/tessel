@@ -169,15 +169,6 @@ fn age_text(ms: u64) -> String {
     }
 }
 
-fn merge_doubt_line(claim: u64, in_doubt: bool) -> String {
-    let what = if in_doubt {
-        "the landing is in doubt: the lander cannot say whether main moved"
-    } else {
-        "the landing is no longer in doubt"
-    };
-    format!("  claim {claim}: {what}\n")
-}
-
 /// What `status` adds to a submitted claim whose landing is in doubt.
 fn doubt_text(held: &HeldClaim, now_ms: u64) -> String {
     held.merge_doubt_since_ms.map_or_else(String::new, |since| {
@@ -596,9 +587,8 @@ pub fn notice_text(notice: &Notice) -> String {
             let _ = writeln!(out, "  code {code:?}");
             out.push_str(&quote_untrusted("the coordinator", message));
         }
-        ServerMsg::MergeDoubt { claim, since_ms } => {
-            out.push_str(&merge_doubt_line(claim.0, since_ms.is_some()));
-        }
+        // Shown by `status` from the claim, not as a notice: the daemon files none.
+        ServerMsg::MergeDoubt { .. } => {}
         ServerMsg::Merged { claim, head, .. } => {
             let head = escape(&head.0);
             let _ = writeln!(out, "  claim {} is merged; main is now at {head}", claim.0);

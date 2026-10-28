@@ -581,8 +581,8 @@ fn is_trial_call(request: &CallRequest) -> bool {
 }
 
 /// A call the host handed out. A head read is answered at once, with the head of the last merge
-/// the fake landed; a merge or a trial waits for `merge_next` or `verify_next`. The host does not
-/// issue any other call yet, so one that arrives fails the test instead of waiting unanswered.
+/// the fake landed; a reconcile is answered at once from the same record (landed if the head is
+/// the last one landed); a merge or a trial waits for `merge_next` or `verify_next`.
 ///
 /// The head-read answer is fake-only. A real lander reads a trunk that anything can move; the
 /// fake has no trunk and never pokes one, so the head it reports is the one `merge_next` last
@@ -606,8 +606,18 @@ fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Inp
                 answer,
             });
         }
-        CallRequest::Reconcile { .. } => {
-            unreachable!("the host issued a call the fake does not answer: {call:?}");
+        CallRequest::Reconcile { head } => {
+            let landed = st.landed.as_ref() == Some(head);
+            let answer = CallAnswer::Reconciled {
+                main: st.landed.clone().unwrap_or_else(|| head.clone()),
+                landed,
+            };
+            let call = call.id;
+            pending.push_back(Input::Replied {
+                now_ms,
+                call,
+                answer,
+            });
         }
     }
 }

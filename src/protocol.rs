@@ -618,7 +618,8 @@ pub enum ServerMsg {
     },
     /// The landing of a submitted claim is in doubt: the lander was asked to move main and cannot
     /// say whether it did. The core asks again (`Reconcile`) and never rejects the work for it.
-    /// `since_ms` is the server's clock when the doubt began; `None` says it is over (the work
+    /// `since_ms` is the server's clock when the doubt began; the CLI uses only whether it is set,
+    /// and counts the age on its own clock. `None` says it is over (the work
     /// is back in the queue, or it landed or was rejected, which `Merged` and `SubmitRejected`
     /// report). Old coordinators never send it, so a CLI shows no doubt for them.
     MergeDoubt {

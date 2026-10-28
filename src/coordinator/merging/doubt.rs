@@ -17,9 +17,9 @@
 //! The operator's way out is `Coordinator::resolve_doubt`, which feeds the core the answer a
 //! `Reconcile` would have given.
 
-use super::MergeStage;
+use super::{MergeStage, Rejection};
 use crate::coordinator::{ActiveClaim, Coordinator, Effect, InFlight, Submission};
-use crate::merge::{infra_backoff_ms, MAX_INFRA_RETRIES};
+use crate::merge::{infra_backoff_ms, Verdict, MAX_INFRA_RETRIES};
 use crate::protocol::{ClaimId, CommitId, ServerMsg};
 
 /// What the lander's `Reconcile` found out about the `Land` in doubt.
@@ -114,6 +114,9 @@ impl Coordinator {
         held: ActiveClaim,
         told: bool,
     ) -> (ActiveClaim, Vec<Effect>) {
+        if !told {
+            return (held, Vec::new());
+        }
         let agent = held.agent.clone();
         let work = held.work.clone().map(|work| Submission {
             in_doubt: false,
@@ -122,9 +125,6 @@ impl Coordinator {
             ..work
         });
         let held = ActiveClaim { work, ..held };
-        if !told {
-            return (held, Vec::new());
-        }
         let msg = ServerMsg::MergeDoubt {
             claim,
             since_ms: None,
@@ -141,12 +141,14 @@ impl Coordinator {
         now_ms: u64,
     ) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
-        let Some(flight) = self.state.merge_in_flight.take_if(|flight| {
-            flight.dispatch == dispatch && matches!(flight.stage, MergeStage::Reconcile { .. })
-        }) else {
+        let at_reconcile = self.state.merge_in_flight.as_ref();
+        let Some(MergeStage::Reconcile { base, head }) = at_reconcile
+            .filter(|flight| flight.dispatch == dispatch)
+            .map(|flight| flight.stage.clone())
+        else {
             return Vec::new();
         };
-        let MergeStage::Reconcile { base, head } = flight.stage.clone() else {
+        let Some(flight) = self.state.merge_in_flight.take() else {
             return Vec::new();
         };
         let claim = flight.claim;
@@ -160,14 +162,76 @@ impl Coordinator {
             Reconciliation::NotLanded { main: Some(main) } if *main == base => {
                 self.resend_land(flight, held, (base, head))
             }
-            Reconciliation::NotLanded {
-                main: Some(_) | None,
-            } => {
+            Reconciliation::NotLanded { main: Some(_) } => {
                 let (held, mut effects) = self.end_doubt(claim, held, told);
                 effects.extend(self.retry_after_move(claim, held, now_ms));
                 effects
             }
+            // Only the operator leaves main unsaid. Nobody said main moved, so this is no
+            // contention: the claim goes back to `Prepare` and nothing is counted.
+            Reconciliation::NotLanded { main: None } => {
+                let (held, effects) = self.end_doubt(claim, held, told);
+                self.state.claims.insert(claim.0, held);
+                effects
+            }
             Reconciliation::Unknown => {
+                self.enter_doubt(flight, held, (base, head), (Pace::Backoff, now_ms))
+            }
+        }
+    }
+
+    /// What the lander's answer means to a merge at its `Land` (or at the `Reconcile` that follows
+    /// one). Only a landing of the journaled head acts at a `Reconcile`; a late answer to the
+    /// `Land` otherwise says nothing the `Reconcile` will not. At a `Land`, a refusal, a move of
+    /// main or a missing candidate ends a doubt a resent `Land` was in, and says so; an answer
+    /// the `Land` did not ask for leaves it in doubt, reconciled and not counted.
+    pub(super) fn land_stage_outcome(
+        &mut self,
+        flight: InFlight,
+        held: ActiveClaim,
+        verdict: Verdict,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let claim = flight.claim;
+        let (reconciling, base, head) = match flight.stage.clone() {
+            MergeStage::Land { base, head } => (false, base, head),
+            MergeStage::Reconcile { base, head } => (true, base, head),
+            MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged => {
+                self.state.merge_in_flight = Some(flight);
+                return Vec::new();
+            }
+        };
+        if let Verdict::Landed { base, head: landed } = &verdict {
+            if *landed == head {
+                return self.land(claim, &held, Some(base.clone()), landed.clone(), now_ms);
+            }
+        }
+        if reconciling {
+            self.state.merge_in_flight = Some(flight);
+            return Vec::new();
+        }
+        let told = flight.doubt_since_ms.is_some();
+        match verdict {
+            Verdict::Rejected { reason } => {
+                let (held, mut effects) = self.end_doubt(claim, held, told);
+                effects.extend(self.reject_work(claim, held, Rejection::plain(reason), now_ms));
+                effects
+            }
+            Verdict::MainMoved => {
+                let (held, mut effects) = self.end_doubt(claim, held, told);
+                effects.extend(self.retry_after_move(claim, held, now_ms));
+                effects
+            }
+            Verdict::CandidateMissing => {
+                let (held, mut effects) = self.end_doubt(claim, held, told);
+                effects.extend(self.retry_after_missing_candidate(claim, held, now_ms));
+                effects
+            }
+            Verdict::Prepared { .. }
+            | Verdict::Tested
+            | Verdict::Landed { .. }
+            | Verdict::AlreadyLanded { .. }
+            | Verdict::Infrastructure => {
                 self.enter_doubt(flight, held, (base, head), (Pace::Backoff, now_ms))
             }
         }

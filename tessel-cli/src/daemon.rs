@@ -1361,6 +1361,9 @@ impl Daemon {
     fn apply_submitted(&mut self, set_submitted: Vec<(ClaimId, bool, Option<String>)>) {
         for (claim, submitted, commit) in set_submitted {
             if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
+                if held.submitted != submitted {
+                    held.merge_doubt_since_ms = None;
+                }
                 held.submitted = submitted;
                 held.submitted_commit = commit;
                 if !submitted {
@@ -1527,6 +1530,7 @@ impl Daemon {
         let renewed = now_ms().saturating_add(self.state.lease_ms.unwrap_or(0));
         if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
             held.submitted = submitted;
+            held.merge_doubt_since_ms = None;
             held.awaiting_review = false;
             held.submitted_commit = if submitted {
                 commit.or_else(|| held.submitted_commit.take())

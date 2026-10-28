@@ -101,8 +101,8 @@ fn infra_rejection(tries: u32) -> String {
     )
 }
 
-/// Which call of the staged landing a dispatch is. `Test`, `Land` and `Reconcile` carry the pair the
-/// lander is asked about: `head` is the commit `Prepare` made on top of `base`.
+/// Which call of the staged landing a dispatch is. `Test`, `Land` and `Reconcile` carry the pair
+/// the lander is asked about: `head` is the commit `Prepare` made on top of `base`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
 pub enum MergeStage {
@@ -405,15 +405,6 @@ impl Coordinator {
                 self.advance(flight, next);
                 Vec::new()
             }
-            (
-                MergeStage::Land {
-                    head: journaled, ..
-                }
-                | MergeStage::Reconcile {
-                    head: journaled, ..
-                },
-                Verdict::Landed { base, head },
-            ) if *journaled == head => self.land(claim, &held, Some(base), head, now_ms),
             (MergeStage::Prepare, Verdict::AlreadyLanded { main }) => {
                 let before = held
                     .work
@@ -421,62 +412,19 @@ impl Coordinator {
                     .and_then(|work| work.unanswered_from.clone());
                 self.land(claim, &held, before, main, now_ms)
             }
-            // A late answer to the `Land` of a merge that is being reconciled says nothing the
-            // `Reconcile` will not: only a landing of the journaled head (above) acts.
-            (
-                MergeStage::Reconcile { .. },
-                Verdict::Prepared { .. }
-                | Verdict::Tested
-                | Verdict::CandidateMissing
-                | Verdict::Landed { .. }
-                | Verdict::AlreadyLanded { .. }
-                | Verdict::Rejected { .. }
-                | Verdict::MainMoved
-                | Verdict::Infrastructure,
-            ) => {
-                self.state.merge_in_flight = Some(flight);
-                Vec::new()
+            (MergeStage::Land { .. } | MergeStage::Reconcile { .. }, verdict) => {
+                self.land_stage_outcome(flight, held, verdict, now_ms)
             }
             (
-                MergeStage::Prepare
-                | MergeStage::Test { .. }
-                | MergeStage::Land { .. }
-                | MergeStage::Unstaged,
+                MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged,
                 Verdict::Rejected { reason },
             ) => self.reject_work(claim, held, Rejection::plain(reason), now_ms),
-            (MergeStage::Land { .. }, Verdict::MainMoved) => {
-                // A `Land` sent again after a reconcile found main at its base is refused: the
-                // doubt is over. One that was never in doubt changes nothing else.
-                let mut effects = Vec::new();
-                let held = if flight.doubt_since_ms.is_some() {
-                    let (held, told) = self.end_doubt(claim, held, true);
-                    effects = told;
-                    held
-                } else {
-                    held
-                };
-                effects.extend(self.retry_after_move(claim, held, now_ms));
-                effects
-            }
             (
                 MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged,
                 Verdict::MainMoved,
             ) => self.retry_after_move(claim, held, now_ms),
-            (MergeStage::Test { .. } | MergeStage::Land { .. }, Verdict::CandidateMissing) => {
+            (MergeStage::Test { .. }, Verdict::CandidateMissing) => {
                 self.retry_after_missing_candidate(claim, held, now_ms)
-            }
-            // An answer the `Land` did not ask for (a `Landed` for another head, a `Tested`) says
-            // nothing about main: the `Land` is in doubt, reconciled and not counted.
-            (
-                MergeStage::Land { base, head },
-                Verdict::Prepared { .. }
-                | Verdict::Tested
-                | Verdict::Landed { .. }
-                | Verdict::AlreadyLanded { .. }
-                | Verdict::Infrastructure,
-            ) => {
-                let pair = (base.clone(), head.clone());
-                self.enter_doubt(flight, held, pair, (Pace::Backoff, now_ms))
             }
             // An answer the stage did not ask for (a `Tested` to a `Prepare`) says nothing: it
             // counts as the attempt not finishing.

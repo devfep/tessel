@@ -846,16 +846,11 @@ fn only_the_dispatch_in_doubt_can_be_reconciled() {
 
 /// A core as the build before the staged landing stored it: a merge in flight whose marker has
 /// no `stage`, no `doubts` and no `doubt_since_ms`, and whose one call may have pushed.
+/// `fixtures/pre_staged_core.json` is a core as 455c889 stored it: the current serializer's output
+/// for one submitted claim with a merge in flight, less the three marker fields the staged landing
+/// added (`stage`, `doubts`, `doubt_since_ms`), checked in so it cannot drift with the serializer.
 fn store_written_before_the_staged_landing() -> String {
-    let (mut c, _, _) = submitted();
-    c.state.head = Some(commit(OLD));
-    c.state.merge_in_flight.as_mut().unwrap().main = Some(commit(OLD));
-    let mut stored = serde_json::to_value(&c).unwrap();
-    let marker = stored["merge_in_flight"].as_object_mut().unwrap();
-    for key in ["stage", "doubts", "doubt_since_ms"] {
-        marker.remove(key).expect("the current build writes it");
-    }
-    serde_json::to_string(&stored).unwrap()
+    include_str!("fixtures/pre_staged_core.json").to_string()
 }
 
 #[test]
