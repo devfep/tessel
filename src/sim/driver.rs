@@ -6,21 +6,28 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::host::call::{Call, CallAnswer, Request, TrialResult};
+use crate::host::call::{Call, CallId, Request};
 use crate::host::{BatchId, Host, HostConfig, Input, Output, SocketId};
 use crate::protocol::{
     AgentId, ClaimId, ClientMsg, CommitId, ErrorCode, EventKind, Fence, ReleaseReason, RequestId,
     ScopeClaim, ServerMsg,
 };
-use crate::shell::STATE_KEY;
+use crate::shell::{SummaryTally, STATE_KEY};
 use crate::sim::clock::Clock;
+use crate::sim::lander::Lander;
 use crate::sim::store::Store;
 use crate::sim::variant::Variant;
+
+mod merge_path;
+
+use merge_path::Due;
+pub use merge_path::{SlotCall, SlotNote, StaleAnswer};
 
 /// The most answers and wakes one `quiet` delivers: far more than any workload needs.
 const QUIET_LIMIT: usize = 10_000;
 
-/// The head every `Hello` names and every `ReadHead` reads back.
+/// The head every `Hello` names. It is not main: the lander starts main elsewhere
+/// (`lander::MAIN0`), so a dispatch that names this head took it from an agent.
 pub const BASE: &str = "abc";
 
 /// What the adapter owes the host.
@@ -28,6 +35,11 @@ pub const BASE: &str = "abc";
 enum Answer {
     Input(Input),
     Commit(BatchId),
+    /// The answer to a call, or the news that it was lost.
+    Reply {
+        call: CallId,
+        input: Input,
+    },
 }
 
 /// A fault armed for the next outputs or answers.
@@ -121,6 +133,7 @@ pub struct Sim {
     log: Vec<String>,
     crash: Option<Crash>,
     fail_next_commit: bool,
+    failed_commits: u64,
     executed: u64,
     crashes: u64,
     crashes_after_apply: u64,
@@ -136,14 +149,20 @@ pub struct Sim {
     awaiting_review: BTreeSet<u64>,
     open_races: BTreeSet<u64>,
     race_entrants: BTreeMap<u64, Vec<u64>>,
-    /// Main as the simulated git host has it.
-    main: String,
-    /// Rebased heads the lander made, by the fork commit each came from.
-    prepared: BTreeMap<String, String>,
-    landed_forks: BTreeSet<String>,
     wakes_set: u64,
     /// The scopes each claim or amend request asked for, by request id; `true` for an amend.
     requested: BTreeMap<u64, (bool, Vec<ScopeClaim>)>,
+    lander: Lander,
+    timeline: BTreeMap<(u64, u64), Due>,
+    timeline_seq: u64,
+    /// Calls the host waits on, by id, as of the last restart.
+    open_calls: BTreeMap<u64, Call>,
+    /// Calls whose answer the host has had, kept to recognise a later answer to the same call.
+    answered_calls: BTreeMap<u64, Call>,
+    stale_answers: Vec<StaleAnswer>,
+    slot_notes: Vec<SlotNote>,
+    /// The host's counters as the summary route keeps them: fed the log a page at a time.
+    tally: SummaryTally,
 }
 
 impl Sim {
@@ -165,6 +184,7 @@ impl Sim {
             log: Vec::new(),
             crash: None,
             fail_next_commit: false,
+            failed_commits: 0,
             executed: 0,
             crashes: 0,
             crashes_after_apply: 0,
@@ -177,12 +197,57 @@ impl Sim {
             awaiting_review: BTreeSet::new(),
             open_races: BTreeSet::new(),
             race_entrants: BTreeMap::new(),
-            main: BASE.to_string(),
-            prepared: BTreeMap::new(),
-            landed_forks: BTreeSet::new(),
             wakes_set: 0,
             requested: BTreeMap::new(),
+            lander: Lander::new(),
+            timeline: BTreeMap::new(),
+            timeline_seq: 0,
+            open_calls: BTreeMap::new(),
+            answered_calls: BTreeMap::new(),
+            stale_answers: Vec::new(),
+            slot_notes: Vec::new(),
+            tally: SummaryTally::default(),
         }
+    }
+
+    /// Make the merge path asynchronous and faulty, as `seed` fixes it. Without this every call
+    /// is answered at once and in order.
+    pub fn inject_merge_faults(&mut self, seed: u64) {
+        self.lander = Lander::new().with_faults(seed);
+    }
+
+    pub fn lander(&self) -> &Lander {
+        &self.lander
+    }
+
+    /// Send every reply of the merge path `ms` after its call runs.
+    pub fn slow_replies(&mut self, ms: u64) {
+        self.lander.slow_replies(ms);
+    }
+
+    /// Send every reply of the merge path a second time `ms` after the first.
+    pub fn repeat_replies(&mut self, ms: u64) {
+        self.lander.repeat_replies(ms);
+    }
+
+    /// Answers the host was given for a dispatch that was not in flight.
+    pub fn stale_answers(&self) -> &[StaleAnswer] {
+        &self.stale_answers
+    }
+
+    /// The state of the verification queue at each dispatch, in order.
+    pub fn slot_notes(&self) -> &[SlotNote] {
+        &self.slot_notes
+    }
+
+    /// The counters of `Summary::from_events` as the host keeps them, over the stored log.
+    pub fn counters(&self) -> crate::protocol::Summary {
+        self.tally.summary()
+    }
+
+    /// How many times the host restarted: an answer sent before a restart is never received.
+    pub fn epoch(&self) -> u64 {
+        self.crashes
     }
 
     pub fn now_ms(&self) -> u64 {
@@ -249,6 +314,11 @@ impl Sim {
         self.crashes
     }
 
+    /// How many commits failed without a crash.
+    pub fn failed_commits(&self) -> u64 {
+        self.failed_commits
+    }
+
     /// How many of the crashes struck right after a commit was made durable.
     pub fn crashes_after_apply(&self) -> u64 {
         self.crashes_after_apply
@@ -272,9 +342,10 @@ impl Sim {
         self.clock.advance(ms);
     }
 
-    /// Jump to the held wake, if any.
+    /// Jump to the held wake or the next thing the merge path has to do, whichever is first.
     pub fn jump_to_wake(&mut self) {
-        if let Some(at_ms) = self.wake {
+        let next = [self.wake, self.next_due_ms()].into_iter().flatten().min();
+        if let Some(at_ms) = next {
             self.clock.jump_to(at_ms);
         }
     }
@@ -473,6 +544,7 @@ impl Sim {
     /// when the host kept asking past `QUIET_LIMIT` rounds.
     pub fn quiet(&mut self) -> bool {
         let finished = self.drain();
+        self.count_events();
         for index in std::mem::take(&mut self.unsettled) {
             let probe = self.sent[index];
             let releases = probe.claim.map_or(0, |claim| self.agent_releases(claim));
@@ -483,7 +555,7 @@ impl Sim {
 
     fn drain(&mut self) -> bool {
         for _ in 0..QUIET_LIMIT {
-            if self.deliver_next() {
+            if self.deliver_next() || self.deliver_due() {
                 continue;
             }
             let now_ms = self.now_ms();
@@ -504,6 +576,7 @@ impl Sim {
         let now_ms = self.now_ms();
         match answer {
             Answer::Input(input) => self.input(input),
+            Answer::Reply { call, input } => self.reply_to_host(call, input),
             Answer::Commit(batch) => {
                 let stored = match self.variant {
                     Variant::WriteBehind => self.store.defer(batch),
@@ -541,6 +614,8 @@ impl Sim {
         self.crash = None;
         self.host = Host::new(self.config.clone());
         self.answers.clear();
+        self.open_calls.clear();
+        self.answered_calls.clear();
         self.store.crash();
         self.wake = Some(self.clock.now_ms());
         for sock in self.sock_agent.keys() {
@@ -624,6 +699,7 @@ impl Sim {
         let now_ms = self.now_ms();
         if self.fail_next_commit {
             self.fail_next_commit = false;
+            self.failed_commits += 1;
             let failed = Input::CommitFailed { now_ms, batch };
             self.answers.push_back(Answer::Input(failed));
             return;
@@ -646,57 +722,6 @@ impl Sim {
             return;
         }
         self.wake = at_ms;
-    }
-
-    /// The lander's answer: every call succeeds. A `Prepare` makes a head on top of main and moves
-    /// nothing; main moves when that head is landed.
-    fn answer_call(&mut self, call: &Call) {
-        let now_ms = self.now_ms();
-        let events_len = self.stored_events();
-        self.dispatches.push(Dispatch {
-            request: call.request.clone(),
-            events_len,
-        });
-        let answer = match &call.request {
-            Request::ReadHead { submitted } => CallAnswer::Head {
-                main: Some(CommitId(self.main.clone())),
-                landed: submitted
-                    .iter()
-                    .filter(|commit| self.landed_forks.contains(&commit.0))
-                    .cloned()
-                    .collect(),
-            },
-            Request::Prepare { fork_commit, .. } => {
-                let head = format!("{:040x}", (1_u64 << 40) + call.id.0);
-                self.prepared.insert(head.clone(), fork_commit.0.clone());
-                CallAnswer::Prepared {
-                    base: CommitId(self.main.clone()),
-                    head: CommitId(head),
-                }
-            }
-            Request::Test { .. } => CallAnswer::Tested,
-            Request::Land { head, .. } => {
-                self.main = head.0.clone();
-                if let Some(fork) = self.prepared.get(&head.0) {
-                    self.landed_forks.insert(fork.clone());
-                }
-                CallAnswer::Landed { head: head.clone() }
-            }
-            Request::Trial { .. } => CallAnswer::Trialled {
-                before: Some(TrialResult::Clean),
-                after: Some(TrialResult::Clean),
-            },
-            Request::Reconcile { head } => CallAnswer::Reconciled {
-                main: CommitId(self.main.clone()),
-                landed: head.0 == self.main || self.prepared.contains_key(&head.0),
-            },
-        };
-        let replied = Input::Replied {
-            now_ms,
-            call: call.id,
-            answer,
-        };
-        self.answers.push_back(Answer::Input(replied));
     }
 
     fn deliver_to_client(&mut self, sock: SocketId, msg: ServerMsg) {
@@ -860,7 +885,7 @@ fn without_scopes(json: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::call::DispatchId;
+    use crate::host::call::{CallAnswer, DispatchId};
     use crate::protocol::{AgentId, ClaimId};
 
     fn sim() -> Sim {
@@ -876,7 +901,11 @@ mod tests {
             deadline_ms: u64::MAX,
         };
         sim.answer_call(&call);
-        let Some(Answer::Input(Input::Replied { answer, .. })) = sim.answers.pop_back() else {
+        let Some(Answer::Reply {
+            input: Input::Replied { answer, .. },
+            ..
+        }) = sim.answers.pop_back()
+        else {
             panic!("the lander did not answer call {id} at once");
         };
         answer
@@ -926,7 +955,7 @@ mod tests {
         );
         let answer = ask(&mut sim, 4, Request::Land { base, head: second });
         assert_eq!(answer, CallAnswer::Unknown);
-        assert_eq!(sim.main, first.0, "a stale base moved main");
+        assert_eq!(sim.lander.main(), first.0, "a stale base moved main");
     }
 
     #[test]

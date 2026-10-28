@@ -18,6 +18,7 @@ use crate::coordinator::Coordinator;
 use crate::host::call::Request;
 use crate::host::wake::RETRY_MS;
 use crate::host::SocketId;
+use crate::merge::MERGE_WATCHDOG_MS;
 use crate::protocol::{
     ClaimId, ErrorCode, Event, EventKind, Mode, RaceId, Scope, ScopeClaim, ServerMsg,
 };
@@ -72,7 +73,7 @@ pub fn run(sim: &Sim, enabled: &[Checker]) -> Vec<Violation> {
                 &sim.store().event_values(),
                 &|s| sim.is_open(s),
             ),
-            Checker::I4 => i4(sim.store(), sim.wake(), sim.now_ms()),
+            Checker::I4 => i4_waiting(sim.store(), sim.wake(), sim.now_ms(), sim.waits()),
             Checker::I5 => i5(sim.store()),
             Checker::I8 => i8(&events),
             Checker::I10 => i10(
@@ -477,6 +478,21 @@ pub fn i2(
 /// `Sim::quiet` fires every wake at or before now before the checkers look (a host that sets
 /// such wakes shows as a stuck harness); only its unit case pins it.
 pub fn i4(store: &Store, wake: Option<u64>, now_ms: u64) -> Vec<String> {
+    i4_waiting(store, wake, now_ms, Waits::default())
+}
+
+/// What the host waits on: a merge call out, a trial out. The core has no work due for what it
+/// waits on; the answer resumes it (the wake is suspended meanwhile).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Waits {
+    pub merging: bool,
+    pub verifying: bool,
+    /// A head read or a reconcile is out.
+    pub reading: bool,
+}
+
+/// I4 for a host that waits on `waits`.
+pub fn i4_waiting(store: &Store, wake: Option<u64>, now_ms: u64, waits: Waits) -> Vec<String> {
     let state = match stored_state(store) {
         Ok(Some(state)) => state,
         Ok(None) => return Vec::new(),
@@ -486,9 +502,12 @@ pub fn i4(store: &Store, wake: Option<u64>, now_ms: u64) -> Vec<String> {
         Ok(core) => core,
         Err(e) => return vec![format!("the stored state does not decode: {e}")],
     };
-    let Some(due) = core.next_wake_ms(false, false, now_ms) else {
+    let Some(due) = core.next_wake_ms(waits.merging, waits.verifying, now_ms) else {
         return Vec::new();
     };
+    if waits.merging || waits.verifying || waits.reading {
+        return i4_suspended(wake, now_ms, due);
+    }
     match wake {
         None => vec![format!("work is due at {due} and no wake is pending")],
         Some(at) if at <= now_ms => {
@@ -501,6 +520,25 @@ pub fn i4(store: &Store, wake: Option<u64>, now_ms: u64) -> Vec<String> {
                 "the pending wake {at} is more than {RETRY_MS} ms after the work due at {due}"
             )]
         }
+        Some(_) => Vec::new(),
+    }
+}
+
+/// I4 while a call is out. The wake is suspended at the call: a lease that runs out meanwhile is
+/// expired on the next client message or when the answer resumes the wake (R28), not at its time.
+/// What the host owes is the watchdog: a wake pending, later than now, at most `MERGE_WATCHDOG_MS`
+/// ahead. `P1-ONE-BATCH` changes the suspended wake, and this check with it.
+fn i4_suspended(wake: Option<u64>, now_ms: u64, due: u64) -> Vec<String> {
+    match wake {
+        None => vec![format!(
+            "work is due at {due}, a call is out and no wake is pending"
+        )],
+        Some(at) if at <= now_ms => vec![format!(
+            "the pending wake {at} is not later than now ({now_ms})"
+        )],
+        Some(at) if at > now_ms + MERGE_WATCHDOG_MS => vec![format!(
+            "the pending wake {at} is more than the watchdog ({MERGE_WATCHDOG_MS} ms) after now ({now_ms})"
+        )],
         Some(_) => Vec::new(),
     }
 }

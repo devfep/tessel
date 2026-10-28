@@ -32,6 +32,11 @@ impl Store {
         self.staged = Some((batch, entries));
     }
 
+    /// The write the adapter has accepted and not yet made durable.
+    pub fn staged(&self) -> Option<&[(String, String)]> {
+        self.staged.as_ref().map(|(_, entries)| entries.as_slice())
+    }
+
     /// Make the staged write of `batch` durable. False when `batch` has nothing staged.
     pub fn apply(&mut self, batch: BatchId) -> bool {
         let Some((staged, entries)) = self.staged.take() else {

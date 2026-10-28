@@ -5,12 +5,14 @@
 //! compared.
 //!
 //! Checkers I1, I2, I4, I5, I8, I9 and I10 prove the invariants of `docs/proposals/phase-1.md` that
-//! the call path and the wake carry; the merge path's (I3, I6, I7, I11, I12) come with its
-//! simulation.
+//! the call path and the wake carry. The merge path is asynchronous and faulty (`lander`, and
+//! `driver::merge_path` for how its answers come back); the checkers that read what it does (I3,
+//! I6, I7, I11, I12 and COORD-HEAD-FROM-AGENT's) follow.
 
 pub mod check;
 pub mod clock;
 pub mod driver;
+pub mod lander;
 pub mod rng;
 pub mod store;
 pub mod traffic;
@@ -98,6 +100,16 @@ pub struct Run {
     pub cut_off_replays: usize,
     /// Every input and output, in order.
     pub transcript: Vec<String>,
+    /// The faults the merge path injected, by name.
+    pub faults: lander::FaultCounts,
+    /// `Merged` events in the log.
+    pub merged: usize,
+    /// Landings on main, the lander's own and others'.
+    pub landings: usize,
+    /// Answers the host had for a dispatch not in flight.
+    pub stale_answers: usize,
+    /// Trials the host dispatched.
+    pub trials: usize,
 }
 
 fn host_config() -> HostConfig {
@@ -114,6 +126,7 @@ fn host_config() -> HostConfig {
 /// step that violates anything.
 pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
     let mut sim = Sim::new(host_config(), variant);
+    sim.inject_merge_faults(seed);
     let mut traffic = traffic::Traffic::new(seed);
     let mut violations = Vec::new();
     let mut steps = 0;
@@ -136,7 +149,24 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
         crashes: sim.crashes(),
         cut_off_replays: cut_off_replays(&sim),
         transcript: sim.log().to_vec(),
+        faults: sim.lander().faults(),
+        merged: merged_events(&sim),
+        landings: sim.lander().history().len(),
+        stale_answers: sim.stale_answers().len(),
+        trials: sim
+            .dispatches()
+            .iter()
+            .filter(|dispatch| matches!(dispatch.request, crate::host::call::Request::Trial { .. }))
+            .count(),
     }
+}
+
+fn merged_events(sim: &Sim) -> usize {
+    let (events, _) = sim.store().events();
+    events
+        .iter()
+        .filter(|event| matches!(event.kind, crate::protocol::EventKind::Merged { .. }))
+        .count()
 }
 
 /// Run `seed` against the real host with every checker, then again with none, and compare the two
@@ -351,6 +381,61 @@ mod tests {
         let hint = rerun_hint(41);
         assert!(hint.contains("TESSEL_SIM_FIRST_SEED=41"), "{hint}");
         assert!(hint.contains("TESSEL_SIM_SEEDS=1"), "{hint}");
+    }
+
+    /// What the default seeds did to the merge path, summed.
+    fn default_seeds_totals() -> (lander::FaultCounts, usize, usize, usize, usize) {
+        let mut faults = lander::FaultCounts::new();
+        let (mut merged, mut landings, mut stale, mut trials) = (0, 0, 0, 0);
+        for seed in 0..DEFAULT_SEEDS {
+            let run = run_seed(seed, Variant::Correct, &[]);
+            for (fault, count) in run.faults {
+                *faults.entry(fault).or_insert(0) += count;
+            }
+            merged += run.merged;
+            landings += run.landings;
+            stale += run.stale_answers;
+            trials += run.trials;
+        }
+        (faults, merged, landings, stale, trials)
+    }
+
+    #[test]
+    fn the_default_seeds_make_the_merge_path_delay_repeat_drop_and_refuse() {
+        let (faults, merged, landings, stale, trials) = default_seeds_totals();
+        for fault in [
+            "delayed",
+            "reply_delayed",
+            "duplicated",
+            "never_runs",
+            "lost_reply",
+            "pushed_then_lost_reply",
+            "unknown",
+            "rate_limited",
+            "compare_and_swap_refused",
+            "pushed_to_main",
+            "cut_off_always",
+            "candidate_lost",
+            "stale_report",
+            "flipped_on_rerun",
+        ] {
+            assert!(
+                faults.get(fault).copied().unwrap_or(0) > 0,
+                "no default seed injected {fault}: {faults:?}"
+            );
+        }
+        assert!(merged > 0 && landings > 0, "nothing landed");
+        assert!(stale > 0, "no answer came for a dispatch not in flight");
+        assert!(trials > 0, "no verification was dispatched");
+    }
+
+    #[test]
+    fn a_seed_with_merge_faults_reproduces_and_a_different_seed_does_not() {
+        let a = run_seed(3, Variant::Correct, &[]);
+        let again = run_seed(3, Variant::Correct, &[]);
+        let other = run_seed(4, Variant::Correct, &[]);
+        assert_eq!(first_difference(&a.transcript, &again.transcript), None);
+        assert!(first_difference(&a.transcript, &other.transcript).is_some());
     }
 
     #[test]

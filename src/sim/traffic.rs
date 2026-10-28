@@ -7,8 +7,8 @@
 
 use crate::host::SocketId;
 use crate::protocol::{
-    ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, Fence, Intent, Mode, OnConflict,
-    RaceId, RequestId, Scope, ScopeClaim,
+    Assumption, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, Fence, Intent, Mode,
+    OnConflict, RaceId, RequestId, Scope, ScopeClaim,
 };
 use crate::shell::LEASE_MS;
 use crate::sim::driver::{RequestKind, Sim};
@@ -75,15 +75,15 @@ impl Traffic {
         let roll = self.rng.below(100);
         match roll {
             0..=19 => self.claim(sim, agent),
-            20..=27 => self.amend(sim, agent),
-            28..=35 => self.release(sim, agent),
-            36..=43 => self.heartbeat(sim, agent),
-            44..=51 => self.stale_release(sim, agent),
-            52..=65 => self.submit(sim, agent),
-            66..=72 => self.review(sim),
-            73..=81 => self.race(sim, agent),
-            82..=86 => self.watch(sim),
-            87..=91 => sim.advance(self.rng.below(5_000) as u64 + 1),
+            20..=26 => self.amend(sim, agent),
+            27..=31 => self.release(sim, agent),
+            32..=37 => self.heartbeat(sim, agent),
+            38..=43 => self.stale_release(sim, agent),
+            44..=66 => self.submit(sim, agent),
+            67..=72 => self.review(sim),
+            73..=80 => self.race(sim, agent),
+            81..=85 => self.watch(sim),
+            86..=91 => sim.advance(self.rng.below(5_000) as u64 + 1),
             92..=96 => self.jump(sim),
             _ => self.disconnect(sim, agent),
         }
@@ -114,17 +114,31 @@ impl Traffic {
             OnConflict::Fail
         };
         let scopes = (0..=self.rng.below(2)).map(|_| self.scope()).collect();
+        let assumptions = self.assumptions();
         let msg = ClientMsg::Claim {
             req: self.req(),
             intent: Intent {
                 summary: format!("work {}", self.next_req),
                 task_ref: None,
-                assumptions: Vec::new(),
+                assumptions,
             },
             scopes,
             on_conflict,
         };
         sim.send(sock, &msg, RequestKind::Claim, None);
+    }
+
+    /// What a claim relies on without owning, now and then: a file another claim may edit, which
+    /// queues a verification when that edit lands.
+    fn assumptions(&mut self) -> Vec<Assumption> {
+        if !self.rng.chance(0.6) {
+            return Vec::new();
+        }
+        let path = PATHS[self.rng.below(PATHS.len())].to_string();
+        vec![Assumption {
+            scope: Scope::File { path },
+            statement: "keeps its behaviour".to_string(),
+        }]
     }
 
     /// A claim the agent holds, with its fence.
@@ -242,7 +256,7 @@ impl Traffic {
             .and_then(|view| view.scopes.get(&claim.0))
             .cloned()
             .unwrap_or_default();
-        let touched = if claimed.is_empty() || self.rng.chance(0.2) {
+        let touched = if claimed.is_empty() || self.rng.chance(0.1) {
             vec![self.scope()]
         } else {
             vec![claimed[self.rng.below(claimed.len())].clone()]
