@@ -2163,6 +2163,27 @@ fn host_a_land_marker_found_on_load_is_reconciled_and_not_counted_as_a_cut_off()
 }
 
 #[test]
+fn host_a_reconcile_after_a_restart_that_gets_no_answer_logs_the_claim_for_the_operator() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    reach_the_land_call(&mut kit);
+    kit.restart();
+    wake(&mut kit);
+    let reconcile = merge_call_out(&kit);
+    assert!(matches!(reconcile.request, Request::Reconcile { .. }));
+    kit.reply(reconcile.id, CallAnswer::Unknown);
+    kit.settle();
+    let line = kit
+        .logs()
+        .iter()
+        .find(|line| line.contains("is in doubt"))
+        .unwrap_or_else(|| panic!("no doubt line in {:?}", kit.logs()));
+    assert!(line.contains("claim 1 "), "{line}");
+    assert!(line.contains("admin resolve 1 --landed"), "{line}");
+}
+
+#[test]
 fn host_unknown_from_a_land_is_reconciled_after_a_backoff_and_a_land_sent_again_keeps_its_dispatch()
 {
     let mut kit = kit();

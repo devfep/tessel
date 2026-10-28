@@ -3255,23 +3255,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_claim_whose_submission_changes_forgets_its_merge_doubt() {
+    async fn a_claim_that_stops_being_submitted_forgets_its_merge_doubt_one_that_becomes_submitted_keeps_it(
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let mut daemon = daemon_in(dir.path());
         go_online(&mut daemon);
         daemon.state.claims = vec![held(7)];
-        for submitted in [false, true] {
-            daemon.on_server_msg(ServerMsg::MergeDoubt {
-                claim: ClaimId(7),
-                since_ms: Some(5),
-            });
-            assert!(daemon.state.claims[0].merge_doubt_since_ms.is_some());
-            daemon.set_submitted(ClaimId(7), submitted, None);
-            assert_eq!(
-                daemon.state.claims[0].merge_doubt_since_ms, None,
-                "set_submitted({submitted})"
-            );
-        }
+        let doubt = ServerMsg::MergeDoubt {
+            claim: ClaimId(7),
+            since_ms: Some(5),
+        };
+        daemon.on_server_msg(doubt.clone());
+        daemon.set_submitted(ClaimId(7), true, None);
+        assert!(daemon.state.claims[0].merge_doubt_since_ms.is_some());
+        daemon.set_submitted(ClaimId(7), false, None);
+        assert_eq!(daemon.state.claims[0].merge_doubt_since_ms, None);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_repair_that_marks_a_claim_submitted_keeps_the_doubt_welcome_just_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        daemon.state.claims = vec![held(7)];
+        daemon.on_server_msg(welcome_listing(vec![ClaimInDoubt {
+            claim: ClaimId(7),
+            since_ms: 1,
+        }]));
+        daemon.apply_submitted(vec![(ClaimId(7), true, None)]);
+        assert!(daemon.state.claims[0].merge_doubt_since_ms.is_some());
+        daemon.apply_submitted(vec![(ClaimId(7), false, None)]);
+        assert_eq!(daemon.state.claims[0].merge_doubt_since_ms, None);
     }
 
     #[test]
