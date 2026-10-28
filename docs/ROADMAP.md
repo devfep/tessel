@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-28 20:41 UTC. Main at `55528c9`: P1-CORE-STAGED-LANDING landed through the server
+**As of:** 2026-10-28 22:10 UTC. Main at `55528c9`: P1-CORE-STAGED-LANDING landed through the server
 at 18:23 UTC as `05b6ec1`..`55528c9` (six commits, base `c4dfb11`; claim 117, held as merge-path and
 approved by the orchestrator). Felix delegated the merge-path yes to a vote: three Opus voters
 (honesty and safety, test strength, operational risk) each read `dab6a22` before the earlier reviews
@@ -30,10 +30,29 @@ coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and
 claimed the file after the holder landed or left it to a follow-up.
 In flight (dispatched 20:32 UTC from `55528c9`, both sonnet): P1-CORE-RECONCILE (lane B,
 `.claude/worktrees/core-reconcile`) and P1-SIM-MERGE (lane A, `.claude/worktrees/sim-merge`), side
-by side; briefs in `~/tessel-orch-notes/2026-10-28/`. A Nightly run dispatched on `55528c9`
-(40764265692) is the simulator sweep on main. P1-HOST-HARDENING and P1-ONE-BATCH follow
-P1-CORE-RECONCILE, P1-ADAPTER-SUITE's rest follows P1-HOST-HARDENING, and P1-FAILPOINTS follows
-P1-SIM-MERGE and P1-CORE-RECONCILE. The dogfood server runs `455c889` from `~/tessel-dogfood/bin`
+by side; briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28/`.
+- P1-CORE-RECONCILE: `9a4d5e9` (red) and `3199e84`, gate green (claim 122; fork branch
+  `core-reconcile-1`). Opus REVIEW-1 "With changes": its must-fix was a new top-level
+  `ServerMsg::MergeDoubt` with no version bump, against invariant 13 and the plan's "optional
+  field". Felix put that to a vote: three Opus voters went 3-0 for keeping it with changes
+  (`vote-invariant-13/DECISION.md`): invariant 13 rewritten on whether an older daemon can decode
+  and safely skip a frame (its stated reason has been false since `9f6110b`), checked by an
+  exhaustive `skippable()`, and the doubt rebuilt from an optional `Welcome` field on every
+  connection, since a daemon offline when a doubt ends kept showing it. Fix pass 1 (`35fb57a`, the
+  addendum) is done; passes 2 (REVIEW-1's should-fixes), 3 (the vote) and 4 (the Nightly's
+  missed mutants, below) are running. Felix delegated his merge-path yes to a vote of three Opus
+  voters, on the final commit.
+- P1-SIM-MERGE: `8e40e8f`..`57ed69e`, gate green (claim 119; fork branch `sim-merge-1`), in Opus
+  review. Its new check found the core sending a `Trial` with the `Hello`-declared head before the
+  head read (seeds 64, 196, 229, outside the default set); seven I6 seeds are marked expected to
+  fail until P1-CORE-RECONCILE lands, so P1-CORE-RECONCILE lands first.
+The Nightly dispatched on `55528c9` (run 40764265692): the simulator sweep, the 10,000-case
+proptests and all eight mutant shards passed; the baseline check failed on nine new missed
+mutants in P1-CORE-STAGED-LANDING's code (`src/merge.rs`: the `Prepare` and `Land` timeouts'
+`5 * 60 * 1000`, eight; `src/host/calls.rs`: `&&` in `Host::run_answer`, one). Lane B adds the
+tests as part of P1-CORE-RECONCILE; until it lands, the scheduled Nightly fails the same way.
+P1-HOST-HARDENING and P1-ONE-BATCH follow P1-CORE-RECONCILE, P1-ADAPTER-SUITE's rest follows
+P1-HOST-HARDENING, and P1-FAILPOINTS follows P1-SIM-MERGE and P1-CORE-RECONCILE. The dogfood server runs `455c889` from `~/tessel-dogfood/bin`
 (restarted 27 October 22:25 UTC); main has moved on since that build, `src/` and
 `tessel-server/src/` included. It is not upgraded until P1-CORE-RECONCILE lands and the upgrade's
 trial landing passes (DOGFOOD-UPGRADE's "When"; the trial waits on Felix's token, below).
