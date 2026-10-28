@@ -769,9 +769,21 @@ impl Fake {
                 | CallRequest::ReadHead { .. }
                 | CallRequest::Reconcile { .. } => unreachable!("not a merge call: {out:?}"),
             };
-            let landed = matches!(answer, CallAnswer::Landed { .. });
+            // A `Landed`, or a `Prepared` whose head is its base (the core reads that as main
+            // already holding the work), ends the merge: one call answers at most one merge.
+            let ends_the_merge = match &answer {
+                CallAnswer::Landed { .. } => true,
+                CallAnswer::Prepared { base, head } => base == head,
+                CallAnswer::Tested
+                | CallAnswer::Trialled { .. }
+                | CallAnswer::Head { .. }
+                | CallAnswer::Reconciled { .. }
+                | CallAnswer::CandidateMissing
+                | CallAnswer::Refused { .. }
+                | CallAnswer::Unknown => false,
+            };
             self.inner.answer(st, &out, answer);
-            if landed {
+            if ends_the_merge {
                 break;
             }
             call = self.inner.call_of(st, is_merge_call);

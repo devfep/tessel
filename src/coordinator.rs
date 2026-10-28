@@ -243,8 +243,10 @@ struct InFlight {
     /// stored before dispatch ids existed, which no issued id equals.
     #[serde(default)]
     dispatch: u64,
-    /// Main's head as the coordinator knew it when this dispatch was made. If the answer is lost,
-    /// the submission may have landed on top of it (`Submission::unanswered_from`).
+    /// Main's head as the coordinator knew it when this dispatch was made. Kept for one reader: a
+    /// marker stored before the staged landing (`MergeStage::Unstaged`), whose lost whole-merge
+    /// call may have pushed on top of it, takes it as `Submission::unanswered_from`. For every
+    /// staged marker the baseline is the `Land`'s own `base` and this is not read.
     #[serde(default)]
     main: Option<CommitId>,
     /// Which call of the staged landing is out. A stored marker without one was written before

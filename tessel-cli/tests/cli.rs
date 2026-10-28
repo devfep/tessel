@@ -2824,6 +2824,31 @@ async fn one_merge_next_lands_exactly_one_of_two_queued_submissions() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_merge_next_at_main_answered_already_merged_ends_one_merge_not_two() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start_settled("first").await?;
+    a2.start_settled("second").await?;
+    let edits = [
+        (&a1, "src/a.rs", "pub fn a() { 1; }\n"),
+        (&a2, "src/b.rs", "pub fn b() { 1; }\n"),
+    ];
+    for (agent, path, text) in edits {
+        assert_eq!(agent.tessel(&["claim", path])?.code, 0);
+        commit_in(agent, path, text)?;
+        assert_eq!(agent.tessel(&["submit", "--evidence", "ok"])?.code, 0);
+    }
+    let main = head_of(&a1)?;
+    fake.merge_next_at(&main, &main);
+    eventually(SHORT, || Ok((a1.held_claims()? == 0).then_some(()))).await?;
+    assert_eq!(
+        a2.held_claims()?,
+        1,
+        "the second submission was not merged by the same call"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_damaged_state_file_refuses_to_start_and_a_missing_one_does_not() -> Result<()> {
     let (_fake, a1, _a2) = world(30_000).await?;
     a1.start("first")?;
