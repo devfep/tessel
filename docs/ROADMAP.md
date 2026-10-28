@@ -52,12 +52,12 @@ mutants in P1-CORE-STAGED-LANDING's code (`src/merge.rs`: the `Prepare` and `Lan
 `5 * 60 * 1000`, eight; `src/host/calls.rs`: `&&` in `Host::run_answer`, one). Lane B adds the
 tests as part of P1-CORE-RECONCILE; until it lands, the scheduled Nightly fails the same way.
 P1-HOST-HARDENING and P1-ONE-BATCH follow P1-CORE-RECONCILE, P1-ADAPTER-SUITE's rest follows
-P1-HOST-HARDENING, and P1-FAILPOINTS follows P1-SIM-MERGE and P1-CORE-RECONCILE. The dogfood server runs `455c889` from `~/tessel-dogfood/bin`
-(restarted 27 October 22:25 UTC); main has moved on since that build, `src/` and
-`tessel-server/src/` included. It is not upgraded until P1-CORE-RECONCILE lands and the upgrade's
-trial landing passes (DOGFOOD-UPGRADE's "When"; the trial waits on Felix's token, below).
-`.claude/worktrees/orchestrator` holds this commit, `gate-main` (at `455c889`) is the gate
-worktree.
+P1-HOST-HARDENING, and P1-FAILPOINTS follows P1-SIM-MERGE and P1-CORE-RECONCILE. The dogfood
+server runs `455c889` from `~/tessel-dogfood/bin` (restarted 27 October 22:25 UTC); main has
+moved on since that build, `src/` and `tessel-server/src/` included. It is not upgraded until
+P1-CORE-RECONCILE lands and the upgrade's trial landing passes (DOGFOOD-UPGRADE's "When"; the
+trial waits on Felix's token, below). `.claude/worktrees/orchestrator` holds this commit,
+`gate-main` (at `455c889`) is the gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
 classifier still refuses the orchestrator's own pull request merges ("Merge Without Review"), so
