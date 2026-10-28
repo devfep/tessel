@@ -160,33 +160,38 @@ binaries, upgrade as below first.
   flight with no clone on disk (between the calls of a staged merge, or in the backoff after a
   timeout, while an abandoned push may still be running), so check the outcomes: every
   submission that is not held has `merged`, `submit_rejected` or `uncovered` in its lane's inbox,
-  the lanes are idle, `server.log` has no timeout or push warning after the last `landed:` line,
-  and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
+  the lanes are idle, `server.log` has no timeout or push warning after the latest of those
+  outcomes, and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
 - **The build.** Build only from a landed `main` whose CI is green, in a checkout of that commit,
-  and copy `tessel-server` and `tessel` into `<server dir>/bin.next`. Leave `<server dir>/bin`
-  alone until the swap: git's askpass hook is the running server's own executable.
+  and copy `tessel-server` and `tessel` with `install -m 755` into `<server dir>/bin.next`. Leave
+  `<server dir>/bin` alone until the swap: git's askpass hook is the running server's own
+  executable.
 - **A trial first.** Before the swap, the binaries in `bin.next` land one commit on
   `tessel-sandbox/m4-trunk` over HTTPS through the askpass hook. The trial server needs a
   directory, a configuration and a port of its own, not `setup.sh`'s, which writes this page's
   remote and port, and a GitHub token that can push `tessel-sandbox/m4-trunk`, which the dogfood
-  token cannot. If the trial fails, stop here; the running server is untouched.
+  token cannot. If the trial fails, stop here; the running server is untouched. Stop the trial
+  server before the swap: its askpass hook is `bin.next/tessel-server`, which the swap renames.
 - **The swap.** From inside `<server dir>`: stop the server (the commands are in [The
   server](#the-server)) and wait until its pid has exited, because the store lock refuses a second
-  server; then `trash bin.prev`, `mv bin bin.prev`, `mv bin.next bin`, start it, and wait for a
-  new `listening` line in `server.log`. A fix that cannot land through the server goes through a
-  pull request you merge.
+  server; then `trash bin.prev` if it exists, `mv bin bin.prev`, `mv bin.next bin`, start it, and
+  wait for a new `listening` line in `server.log`. A fix that cannot land through the server goes
+  through a pull request you merge.
 - **Rollback.** Only with an idle queue: nothing queued, in flight or held. A build refuses a
-  store whose `state_version` is newer than it knows (`tessel-server/src/store.rs`). If the
-  new build kept the version the old one knows, rollback is the swap the other way, with
-  `bin.prev`. If it raised it, the old build cannot open the store, and rollback means a fresh
-  store and new claims. Never put a copy of an older store back: a restored store can reissue
-  fences.
+  store whose `state_version` is newer than it knows (`tessel-server/src/store.rs`). If the new
+  build kept the version the old one knows, rollback is the swap the other way: stop, wait for the
+  pid, `mv bin bin.bad`, `mv bin.prev bin`, start. It worked when the new `listening` line has no
+  store or coordinator error after it: `state_version` covers only the store's shape, and a record
+  the new build wrote can still fail to decode in the old one. If the new build raised the
+  version, the old build cannot open the store, and rollback means a fresh store and new claims.
+  Never put a copy of an older store back: a restored store can reissue fences.
 
 After the [move to the service accounts](#moving-to-the-service-accounts), every rule above stands;
 only the swap changes. `/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries <dir>` does it in
-place of the commands above, with the built binaries in `<dir>` instead of `bin.next`, and the
-rollback is `/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries /opt/tessel/bin.prev`, which
-works because the script copies the binaries out before it moves `/opt/tessel/bin`.
+place of the commands above, with the built binaries (`tessel-runner` too) in `<dir>` instead of
+`bin.next`. The rollback is
+`/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries /opt/tessel/bin.prev`, which works because
+the script copies the binaries out before it moves `/opt/tessel/bin`.
 
 ## A lane
 
