@@ -623,9 +623,9 @@ met (M6, decision 6). The Cloudflare Rust glue goes earlier, at the start of M3 
    request number is Phase 3.
 4. **Advisory releases are `Merged` with a new optional `advisory` field**, counted in
    `advisory_releases` and never in `merges`. A new event kind would bump `PROTOCOL_VERSION`
-   (invariant 13), and older daemons, which skip unknown kinds, would treat their log reads as
-   incomplete and lose their reconnect repairs; with a field, they read the event as a release,
-   which it is.
+   (invariant 13: a new logged event is not something an older reader can skip and stay
+   correct, since the log is what its reconnect repairs read); with a field, older daemons read
+   the event as a release, which it is.
 5. **Required checks**: the six ruleset steps above, each Felix's edit.
 6. **The dogfood gate before the deletion: five merged pull requests and one redeploy** while a
    submitted claim is held, that claim released by head sync afterwards, none released by hand.

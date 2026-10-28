@@ -62,14 +62,28 @@
 //!     human must approve it first. The rule is deliberately simple and
 //!     explainable: every flagged change says why it was flagged.
 //! 13. Versioning. `Hello` carries the client's protocol version; the
-//!     coordinator refuses versions it does not speak. A new optional field
-//!     (`#[serde(default)]`) is additive and keeps the version. A new `EventKind`
-//!     variant, a new value of an enum inside a logged event, or a new top-level
-//!     message type bumps it: an older daemon skips an unknown logged event but
-//!     then treats every log read as incomplete and loses its reconnect repairs.
+//!     coordinator refuses versions it does not speak. The axis is whether an
+//!     older reader decodes what it is sent, or can safely skip it. A new optional
+//!     field (`#[serde(default)]`) is additive and keeps the version. These bump
+//!     it: a new value of an enum, or a new required field, in any message or
+//!     event; a new `ClientMsg` type; a new `EventKind`. A new `ServerMsg` type
+//!     keeps it only if it is never logged, is sent only as a live notice, and an
+//!     older daemon that skips it stays correct (it only shows less):
+//!     `ServerMsg::skippable` says which types those are, and a test pins the
+//!     type names of version 1 so a new type that is not skippable fails until
+//!     the version moves.
+//!
+//!     Readers of `ServerMsg` MUST skip, and count, a frame whose `type` they
+//!     have no name for, and MUST NOT skip a frame whose `type` they know but
+//!     whose payload they cannot decode (it may be a grant, a release or a lease
+//!     end they act on). A daemon skips an unknown logged event too, keeping the
+//!     `seq` it carries so the log shows no gap. Daemons built before 9f6110b (17
+//!     October) do not skip: they drop the connection once per unknown frame.
 
-/// Bump for a new `EventKind` variant, a new value of an enum inside a logged event, or a new
-/// top-level message type (invariant 13). A new optional field (`#[serde(default)]`) keeps it.
+/// Bump for a new value of an enum or a new required field in any message or event, a new
+/// `ClientMsg` type, a new `EventKind`, or a new `ServerMsg` type that is logged or that an older
+/// daemon cannot safely skip (invariant 13). A new optional field (`#[serde(default)]`) keeps it,
+/// and so does a `ServerMsg` type that is only a live notice (`ServerMsg::skippable`).
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// The lowest and the highest `PROTOCOL_VERSION` a server speaks, both included. A server
