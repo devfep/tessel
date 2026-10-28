@@ -7,27 +7,26 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-28 11:00 UTC. Main at `fe5a898`, Felix's merge of #124 (02:29 UTC), CI
-and the adapter suite green on it. NIGHTLY-TIME is done: the first scheduled runs on the fixed
-workflows passed on `fe5a898`. The nightly (run 40665367478) took 56.5 min, each job inside its
-120 min limit: the eight mutants shards 42-56 min each, the simulator sweep 28 min, proptest 2 min. The
-adapter suite (run 40675285287) passed in 8 min: 200 kill rounds in 457 s, 12,556 events, 3,822
-grants, 216 stale releases refused. Before #124, the 26 and 27 October scheduled
-runs were cancelled at their limits. The previous STATE (`26b39fb`) landed through the server
-after two Opus reads; its note was copied. The orchestrator checked `dab6a22` where the lane had
-not: `tessel-server/ci/landing-e2e.sh` against its own build passes, with the candidate ref
-pushed, "the tests passed on the candidate", the ref deleted and main read back; and
-`tessel-server/tests/restart.rs` passes on it (2 tests), where
-`a_server_killed_mid_merge_and_restarted_lands_the_claim_once` kills the server while the
-runner's command runs, the `Test` stage, and the restart lands the claim once. Not checked: that
-the candidate ref is gone after that restart. DOGFOOD-UPGRADE is #125 (open, all 14 checks pass):
-Opus "With changes" on `1a515ff`, "Yes" on `8837e30`; its head `5b22bba` applies that review's
+**As of:** 2026-10-28 11:00 UTC. Main at `fe5a898`, Felix's merge of #124 (02:29 UTC), CI and the
+adapter suite green on it. NIGHTLY-TIME is done: the first scheduled runs on the fixed workflows
+passed on `fe5a898`. The nightly (run 40665367478) took 56.5 min, each job inside its 120 min limit:
+the eight mutants shards 42-56 min each, the simulator sweep 28 min, proptest 2 min. The adapter
+suite (run 40675285287) passed in 8 min: 200 kill rounds in 457 s, 12,556 events, 3,822 grants, 216
+stale releases refused. Before #124, the 26 and 27 October scheduled runs were cancelled at their
+limits. The previous STATE (`26b39fb`) landed through the server after two Opus reads; its note was
+copied. The orchestrator checked `dab6a22` where the lane had not: `tessel-server/ci/landing-e2e.sh`
+against its own build passes, with the candidate ref pushed, "the tests passed on the candidate",
+the ref deleted and main read back; and `tessel-server/tests/restart.rs` passes on it (2 tests),
+where `a_server_killed_mid_merge_and_restarted_lands_the_claim_once` kills the server while the
+runner's command runs, the `Test` stage, and the restart lands the claim once. Not checked: that the
+candidate ref is gone after that restart. DOGFOOD-UPGRADE is #125 (open, all 14 checks pass): Opus
+"With changes" on `1a515ff`, "Yes" on `8837e30`; its head `5b22bba` applies that review's
 should-fixes and was read in this STATE's review.
 The dogfood server runs `455c889` from `~/tessel-dogfood/bin`, restarted 27 October 22:25 UTC after
 the Mac was shut down. Main has moved on since that build, `src/` and `tessel-server/src/` included;
-only tests, docs and workflows changed since that build's last STATE, so no redeploy for them. Claims 107, 108 and 109
-lapsed across the shutdown (`lease_expired` in the lanes' inboxes); lanes re-claim before
-submitting. Agent tokens are valid to 31 October. Lanes cannot push (Felix's
+only tests, docs and workflows changed since that build's last STATE, so no redeploy for them.
+Claims 107, 108 and 109 lapsed across the shutdown (`lease_expired` in the lanes' inboxes); lanes
+re-claim before submitting. Agent tokens are valid to 31 October. Lanes cannot push (Felix's
 `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
 of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the lane's
 worktree and decides holds as `orchestrator`. Two lanes ran at once four times by 25 October; the
