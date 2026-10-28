@@ -551,6 +551,11 @@ fn a_frame_on_a_socket_a_crash_closed_is_dropped() {
     sim.send(a, &ClientMsg::Heartbeat, RequestKind::Other, None);
     assert!(sim.quiet());
     assert!(!sim.is_open(a));
+    assert_eq!(
+        sim.crashes_after_apply(),
+        0,
+        "an output crash is not an apply crash"
+    );
     let before = sim.log().len();
     sim.send(a, &ClientMsg::Heartbeat, RequestKind::Other, None);
     assert_eq!(sim.log().len(), before, "nothing reaches a dead socket");
@@ -1402,11 +1407,13 @@ fn a_crash_after_apply_kills_the_process_once_and_a_disarmed_one_never_strikes()
     sim.send(a, &claim_msg(20, "src/d.rs"), RequestKind::Claim, None);
     assert!(sim.quiet());
     assert_eq!(sim.crashes(), 0, "a disarmed fault does not strike");
+    assert_eq!(sim.crashes_after_apply(), 0);
 
     sim.crash_after_apply();
     sim.send(a, &claim_msg(21, "src/e.rs"), RequestKind::Claim, None);
     assert!(sim.quiet());
     assert_eq!(sim.crashes(), 1);
+    assert_eq!(sim.crashes_after_apply(), 1);
     assert!(!sim.is_open(a), "a crash closes every socket");
     assert!(sim.view("agent-a").expect("agent").sock.is_none());
 }
@@ -1633,6 +1640,10 @@ fn eight_fixed_seeds_send_every_kind_of_request_and_cause_every_kind_of_fault() 
             .count();
         crashes += sim.crashes();
         apply_crashes += sim.crashes_after_apply();
+        assert!(
+            sim.crashes_after_apply() <= sim.crashes(),
+            "seed {seed}: more crashes after a commit than crashes"
+        );
     }
     for kind in [
         RequestKind::Other,
