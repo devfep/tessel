@@ -13,6 +13,7 @@ pub mod check;
 pub mod clock;
 pub mod driver;
 pub mod lander;
+pub mod merge_check;
 pub mod rng;
 pub mod store;
 pub mod traffic;
