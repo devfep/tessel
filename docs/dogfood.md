@@ -146,35 +146,47 @@ again, because `init` keeps the token already in the file.
 
 An upgrade replaces the binaries in `<server dir>/bin` and keeps the store. Every upgrade follows
 these rules; the staged landing (M5) is the first that needs them. Running `setup.sh` again for new
-tokens is an upgrade too, because it copies the `tessel-server` and `tessel` on your `PATH` into
-`<server dir>/bin`: run it with the binaries of the commit the server already runs on `PATH`, or
-follow these rules.
+tokens copies the `tessel-server` and `tessel` on your `PATH` into `<server dir>/bin`, so run it
+only with binaries built from a checkout of the commit the server already runs; to change the
+binaries, upgrade as below first.
 
 - **When.** No upgrade to the staged landing until P1-SERVER-STAGED, P1-CORE-STAGED-LANDING and
-  P1-CORE-RECONCILE have all landed. P1-CORE-RECONCILE carries a fixture test: a store written
+  P1-CORE-RECONCILE have all landed. P1-CORE-RECONCILE is to carry a fixture test: a store written
   before the staged landing with a merge in flight is decoded by the new core and treated as in
   doubt.
 - **Nothing in flight.** Upgrade only with no dispatch in flight; held submissions are fine. A
-  dispatch is in flight while `<server dir>/lander/devfep/tessel` holds a `call-*` directory.
-  A stop mid-test orphans the cargo process group, and an old whole-merge call may already have
-  pushed, which the new core would read as a merge cut off before `Land`.
+  stop mid-test orphans the cargo process group, and an old whole-merge call may already have
+  pushed, which the new core would read as a merge cut off before `Land`. A merge can be in
+  flight with no clone on disk (between the calls of a staged merge, or in the backoff after a
+  timeout, while an abandoned push may still be running), so check the outcomes: every
+  submission that is not held has `merged`, `submit_rejected` or `uncovered` in its lane's inbox,
+  the lanes are idle, `server.log` has no timeout or push warning after the last `landed:` line,
+  and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
 - **The build.** Build only from a landed `main` whose CI is green, in a checkout of that commit,
   and copy `tessel-server` and `tessel` into `<server dir>/bin.next`. Leave `<server dir>/bin`
   alone until the swap: git's askpass hook is the running server's own executable.
 - **A trial first.** Before the swap, the binaries in `bin.next` land one commit on
-  `tessel-sandbox/m4-trunk` over HTTPS through the askpass hook, from a server directory of their
-  own. If that fails, stop here; the running server is untouched.
+  `tessel-sandbox/m4-trunk` over HTTPS through the askpass hook. The trial server needs a
+  directory, a configuration and a port of its own, not `setup.sh`'s, which writes this page's
+  remote and port, and a GitHub token that can push `tessel-sandbox/m4-trunk`, which the dogfood
+  token cannot. If the trial fails, stop here; the running server is untouched.
 - **The swap.** From inside `<server dir>`: stop the server (the commands are in [The
-  server](#the-server)), `trash bin.prev`, `mv bin bin.prev`, `mv bin.next bin`, start it, and
-  tail `server.log` until it logs `serving`. A fix that cannot land through the server goes
-  through a pull request you merge.
-- **Rollback.** Only with an idle queue: nothing queued and nothing in flight. A build bumps
-  `state_version` only if the old binary can still read the new state; then rollback is the swap
-  the other way, with `bin.prev`. Otherwise rollback means a fresh store and new claims. Never put
-  a copy of an older store back: a restored store can reissue fences.
+  server](#the-server)) and wait until its pid has exited, because the store lock refuses a second
+  server; then `trash bin.prev`, `mv bin bin.prev`, `mv bin.next bin`, start it, and wait for a
+  new `listening` line in `server.log`. A fix that cannot land through the server goes through a
+  pull request you merge.
+- **Rollback.** Only with an idle queue: nothing queued, in flight or held. A build refuses a
+  store whose `state_version` is newer than it knows (`tessel-server/src/store.rs`). If the
+  new build kept the version the old one knows, rollback is the swap the other way, with
+  `bin.prev`. If it raised it, the old build cannot open the store, and rollback means a fresh
+  store and new claims. Never put a copy of an older store back: a restored store can reissue
+  fences.
 
-After the [move to the service accounts](#moving-to-the-service-accounts), the build, nothing in
-flight and rollback rules stand, and `upgrade.sh` does the swap in place of the commands above.
+After the [move to the service accounts](#moving-to-the-service-accounts), every rule above stands;
+only the swap changes. `/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries <dir>` does it in
+place of the commands above, with the built binaries in `<dir>` instead of `bin.next`, and the
+rollback is `/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries /opt/tessel/bin.prev`, which
+works because the script copies the binaries out before it moves `/opt/tessel/bin`.
 
 ## A lane
 
