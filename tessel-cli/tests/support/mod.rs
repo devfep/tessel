@@ -609,7 +609,10 @@ fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Inp
         CallRequest::Reconcile { head } => {
             let landed = st.landed.as_ref() == Some(head);
             let answer = CallAnswer::Reconciled {
-                main: st.landed.clone().unwrap_or_else(|| head.clone()),
+                main: st
+                    .landed
+                    .clone()
+                    .unwrap_or_else(|| CommitId("0".repeat(40))),
                 landed,
             };
             let call = call.id;

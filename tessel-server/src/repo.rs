@@ -835,8 +835,6 @@ mod tests {
         running.stop().await;
     }
 
-    /// `stop` with a storage thread stuck sending its answer into an inbox nobody reads. The
-    /// runtime is shut down by timeout, so a hang ends the test instead of the process.
     #[test]
     fn only_a_landed_answer_moves_main_and_a_prepared_one_does_not() {
         let prepared = CallAnswer::Prepared {
@@ -847,6 +845,8 @@ mod tests {
         assert!(moves_main(&CallAnswer::Landed { head: commit("h") }));
     }
 
+    /// `stop` with a storage thread stuck sending its answer into an inbox nobody reads. The
+    /// runtime is shut down by timeout, so a hang ends the test instead of the process.
     #[test]
     fn stop_returns_with_a_full_inbox() {
         let runtime = tokio::runtime::Builder::new_multi_thread()

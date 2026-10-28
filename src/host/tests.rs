@@ -2081,11 +2081,9 @@ fn reconciled(main: &str, landed: bool) -> CallAnswer {
     }
 }
 
-/// R24 from M5: a marker found on `Loaded` that a `Land` may have left on main is reconciled, not
-/// counted as a cut-off. A `Prepare` or a `Test` marker still is (the test above).
 #[test]
-fn host_a_merge_answer_that_ends_the_merge_goes_on_to_the_verification_not_to_the_next_merge() {
-    // `next_stage` needs both a merge still in flight and no merge call out: a refusal clears
+fn host_a_refused_prepare_does_not_dispatch_the_next_merge_in_the_same_wake() {
+    // `merge_continues` needs a merge still in flight and no merge call out: a refusal clears
     // the flight, so the wake does not dispatch the second claim until its next turn.
     let mut kit = kit();
     submitted(&mut kit);
@@ -2129,6 +2127,8 @@ fn host_a_land_in_doubt_logs_the_claim_for_the_operator() {
     );
 }
 
+/// R24 from M5: a marker found on `Loaded` that a `Land` may have left on main is reconciled, not
+/// counted as a cut-off. A `Prepare` or a `Test` marker still is (the test above).
 #[test]
 fn host_a_land_marker_found_on_load_is_reconciled_and_not_counted_as_a_cut_off() {
     let mut kit = kit();

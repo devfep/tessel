@@ -349,8 +349,8 @@ impl Host {
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.merge_outcome(dispatch, &outcome, now_ms)
                 });
-                let next_stage = self.slot.has_merge_in_flight() && !self.waits().merging;
-                resume = resume_after(&call.request, next_stage);
+                resume = resume_after(&call.request, self.merge_continues());
+                out.extend(self.doubt_log());
                 ("apply merge outcome", prepared)
             }
             Request::Trial { .. } => {
@@ -387,17 +387,11 @@ impl Host {
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.reconcile_outcome(dispatch, &found, now_ms)
                 });
-                let next_stage = self.slot.has_merge_in_flight() && !self.waits().merging;
-                resume = resume_after(&call.request, next_stage);
+                resume = resume_after(&call.request, self.merge_continues());
+                out.extend(self.doubt_log());
                 ("apply reconcile outcome", prepared)
             }
         };
-        if matches!(
-            call.request,
-            Request::Land { .. } | Request::Reconcile { .. }
-        ) {
-            out.extend(self.doubt_log());
-        }
         self.commit_unsent(
             operation,
             prepared,
@@ -407,15 +401,23 @@ impl Host {
         );
     }
 
+    /// Whether the merge goes on after this answer: one is still in flight and no merge call of
+    /// this instance is out.
+    fn merge_continues(&self) -> bool {
+        self.slot.has_merge_in_flight() && !self.waits().merging
+    }
+
     /// The log line that names the claim whose landing is in doubt, for the operator who looks
-    /// for it without the submitter: `admin resolve` needs the claim number.
+    /// for it without the submitter: `admin resolve` needs the claim number. The time is the
+    /// server's clock, milliseconds since the epoch, not a duration.
     fn doubt_log(&self) -> Option<Output> {
         let doubt = self.slot.merge_in_doubt()?;
+        let claim = doubt.claim.0;
         Some(Output::Log {
             line: format!(
-                "coordinator {}: the landing of claim {} is in doubt since {} ms; the lander \
-                 cannot say whether main moved (tessel-server admin resolve {} settles it)",
-                self.config.repo, doubt.claim.0, doubt.since_ms, doubt.claim.0
+                "coordinator {}: the landing of claim {claim} is in doubt since {} (epoch ms); \
+                 settle it by hand with: tessel-server admin resolve {claim} --landed|--not-landed",
+                self.config.repo, doubt.since_ms
             ),
         })
     }

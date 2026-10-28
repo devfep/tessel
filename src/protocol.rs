@@ -1839,11 +1839,20 @@ mod merge_doubt_tests {
             "event",
             "error",
         ];
-        const SKIPPABLE_SINCE_V1: [&str; 1] = ["merge_doubt"];
+        // Each skippable type is a sample frame: it must decode, say `skippable()` and carry the
+        // tag it is listed under, so a type cannot be listed without being skippable.
+        const SKIPPABLE_SINCE_V1: [(&str, &str); 1] =
+            [("merge_doubt", r#"{"type":"merge_doubt","claim":1}"#)];
+        for (tag, frame) in SKIPPABLE_SINCE_V1 {
+            let msg: ServerMsg = serde_json::from_str(frame).unwrap();
+            assert!(msg.skippable(), "{tag}");
+            let value = serde_json::to_value(&msg).unwrap();
+            assert_eq!(value["type"], tag);
+        }
         assert_eq!(PROTOCOL_VERSION, 1, "the version moved: re-pin this test");
         let mut expected: Vec<String> = V1
             .iter()
-            .chain(&SKIPPABLE_SINCE_V1)
+            .chain(SKIPPABLE_SINCE_V1.iter().map(|(tag, _)| tag))
             .map(|t| (*t).into())
             .collect();
         expected.sort();

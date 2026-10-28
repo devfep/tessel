@@ -451,7 +451,7 @@ every `Welcome`, so a daemon that was offline, or a server that was stopped and 
 if it ended. The age counts from when that daemon first learned of the doubt, on its own clock.
 A lander that never answers holds the queue behind it. To find the claim without the submitter,
 read `server.log`: each `Land` or `Reconcile` that leaves a doubt logs `the landing of claim N is
-in doubt since <ms>` and names the command. To settle it by hand, read main yourself (is the
+in doubt since <epoch ms>` and gives the command. To settle it by hand, read main yourself (is the
 claim's commit on `main`?), stop the server, wait for its pid to exit, and run, with that claim
 number:
 

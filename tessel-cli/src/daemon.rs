@@ -1376,12 +1376,10 @@ impl Daemon {
     fn apply_submitted(&mut self, set_submitted: Vec<(ClaimId, bool, Option<String>)>) {
         for (claim, submitted, commit) in set_submitted {
             if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
-                if held.submitted != submitted {
-                    held.merge_doubt_since_ms = None;
-                }
                 held.submitted = submitted;
                 held.submitted_commit = commit;
                 if !submitted {
+                    held.merge_doubt_since_ms = None;
                     held.awaiting_review = false;
                 }
             }
@@ -1545,7 +1543,9 @@ impl Daemon {
         let renewed = now_ms().saturating_add(self.state.lease_ms.unwrap_or(0));
         if let Some(held) = self.state.claims.iter_mut().find(|h| h.claim == claim) {
             held.submitted = submitted;
-            held.merge_doubt_since_ms = None;
+            if !submitted {
+                held.merge_doubt_since_ms = None;
+            }
             held.awaiting_review = false;
             held.submitted_commit = if submitted {
                 commit.or_else(|| held.submitted_commit.take())
@@ -1723,7 +1723,8 @@ impl Daemon {
 
     /// The coordinator cannot say whether the landing of `claim` took effect (`since_ms` set), or
     /// says it is over. The age shown in status counts from when this daemon was told, on its own
-    /// clock; a daemon that was offline then is not told later.
+    /// clock; a daemon that was offline then learns the truth from `Welcome::merge_doubts` at its
+    /// next connection.
     fn on_merge_doubt(&mut self, claim: ClaimId, since_ms: Option<u64>) {
         let Some(held) = self
             .state
@@ -2971,22 +2972,6 @@ mod tests {
         // A daemon built before `merge_doubt` has no name for it: with its known list as it was,
         // the frame is an unknown envelope, which the daemon skips and counts, not an error.
         let frame = r#"{"type":"merge_doubt","claim":7,"since_ms":5}"#;
-        let known_then: Vec<&str> = KNOWN_MESSAGE_TYPES
-            .iter()
-            .copied()
-            .filter(|name| *name != "merge_doubt")
-            .collect();
-        let frame_value: serde_json::Value = serde_json::from_str(frame).unwrap();
-        let kind = frame_value["type"].as_str().unwrap();
-        assert!(
-            !known_then.contains(&kind),
-            "the old daemon has no name for it"
-        );
-        assert!(
-            serde_json::from_str::<ServerMsg>(frame.replace("merge_doubt", "zzz").as_str())
-                .is_err(),
-            "and cannot decode it"
-        );
         let skipped =
             unknown_envelope(&frame.replace("merge_doubt", "merge_doubt_from_the_future"));
         assert_eq!(

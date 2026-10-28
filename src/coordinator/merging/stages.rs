@@ -1056,7 +1056,7 @@ fn a_land_that_was_never_in_doubt_answered_main_moved_keeps_what_it_had() {
     assert_eq!(work(&c, claim).moved, 1);
 }
 
-// ---- fix pass 2 ----
+// ---- the end of a doubt ----
 
 #[test]
 fn the_operators_not_landed_answer_does_not_count_main_moved_and_cannot_reject() {
