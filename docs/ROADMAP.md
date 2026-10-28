@@ -7,26 +7,21 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-28 11:20 UTC. Main at `6703ee7`, Felix's merge of #125 (DOGFOOD-UPGRADE, 11:14
-UTC), after this STATE's first part landed through the server as `c2ef54e` (CI and the adapter suite
-green on it; notes copied). #124 merged at 02:29 UTC as `fe5a898`. NIGHTLY-TIME is done: the first
-scheduled runs on the fixed workflows passed on `fe5a898`. The nightly (run 40665367478) took 56.5
-min, each job inside its 120 min limit: the eight mutants shards 42-56 min each, the simulator sweep
-28 min, proptest 2 min. The adapter suite (run 40675285287) passed in 8 min: 200 kill rounds in 457
-s, 12,556 events, 3,822 grants, 216 stale releases refused. Before #124, the 26 and 27 October
-scheduled runs were cancelled at their limits. The previous STATE (`26b39fb`) landed through the
-server after two Opus reads; its note was copied. The orchestrator checked `dab6a22` where the lane
-had not: `tessel-server/ci/landing-e2e.sh` against its own build passes, with the candidate ref
-pushed, "the tests passed on the candidate", the ref deleted and main read back; and
-`tessel-server/tests/restart.rs` passes on it (2 tests), where
-`a_server_killed_mid_merge_and_restarted_lands_the_claim_once` kills the server while the runner's
-command runs, the `Test` stage, and the restart lands the claim once. Not checked: that the
-candidate ref is gone after that restart. DOGFOOD-UPGRADE is done as #125 (all 14 checks passed):
-Opus "With changes" on `1a515ff`, "Yes" on `8837e30`; its head `5b22bba` applies that review's
-should-fixes and was read in STATE's review.
+**As of:** 2026-10-28 18:45 UTC. Main at `55528c9`: P1-CORE-STAGED-LANDING landed through the server
+at 18:23 UTC as `05b6ec1`..`55528c9` (six commits, base `c4dfb11`; claim 117, held as merge-path and
+approved by the orchestrator). Felix delegated the merge-path yes to a vote: three Opus voters
+(honesty and safety, test strength, operational risk) each read `dab6a22` before the earlier reviews
+and voted Yes, with no must-fix. The submitted commit is `0411f43` (fork branch `core-staged-3`), a
+clean merge of `c4dfb11` into `dab6a22` whose tree `98a29cc` is the merge-tree the third voter
+checked; the submit refused `dab6a22` alone because it was based on `933d47f`. The daemon copies no
+notes for a submission with a merge commit, so the orchestrator copied the six notes by subject. CI
+(run 40744638381), the Adapter suite and Own users passed on `55528c9`. Before this, main was
+`c4dfb11` (STATE for #125), with NIGHTLY-TIME and DOGFOOD-UPGRADE (#125) done and the first
+scheduled nightly and adapter-suite runs passing on `fe5a898`. The voters' should-fixes are in Next;
+the votes are in `~/tessel-orch-notes/2026-10-28/vote-dab6a22/`.
 The dogfood server runs `455c889` from `~/tessel-dogfood/bin`, restarted 27 October 22:25 UTC after
 the Mac was shut down. Main has moved on since that build, `src/` and `tessel-server/src/` included;
-only tests, docs and workflows changed since that build's last STATE, so no redeploy for them.
+it is not redeployed until P1-CORE-RECONCILE lands.
 Claims 107, 108 and 109 lapsed across the shutdown (`lease_expired` in the lanes' inboxes); lanes
 re-claim before submitting. Agent tokens are valid to 31 October. Lanes cannot push (Felix's
 `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to a new branch
@@ -35,10 +30,11 @@ worktree and decides holds as `orchestrator`. Two lanes ran at once four times b
 coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up.
-In flight: nothing. Lane A has no unblocked task (P1-HOST-HARDENING and P1-ONE-BATCH follow
-P1-CORE-RECONCILE, P1-SIM-MERGE follows P1-CORE-STAGED-LANDING, P1-ADAPTER-SUITE's rest follows
-P1-HOST-HARDENING, and P1-FAILPOINTS follows P1-SIM-MERGE and P1-CORE-RECONCILE). Lane B waits
-for Felix's yes on P1-CORE-STAGED-LANDING's `dab6a22` (`.claude/worktrees/core-staged`).
+In flight: nothing. P1-CORE-RECONCILE (lane B) and P1-SIM-MERGE (lane A) are unblocked and not
+yet dispatched; P1-HOST-HARDENING and P1-ONE-BATCH follow P1-CORE-RECONCILE, P1-ADAPTER-SUITE's rest
+follows P1-HOST-HARDENING, and P1-FAILPOINTS follows P1-SIM-MERGE and P1-CORE-RECONCILE. The dogfood
+server still runs `455c889`; it must not run the staged core until P1-CORE-RECONCILE lands
+(DOGFOOD-UPGRADE's "When"). `.claude/worktrees/core-staged` is done and can be removed.
 `.claude/worktrees/orchestrator` holds this commit, `gate-main` (at `455c889`) is the gate
 worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
@@ -63,15 +59,13 @@ required checks, the repository admin role as bypass; always). Proven first on
 `tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
-**Waiting on Felix:** his written yes naming `dab6a22` (P1-CORE-STAGED-LANDING, Opus "Yes" on
-REVIEW-2; the end-to-end landing and a restart at `Test` checked by the orchestrator, above); the
-plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps `state_version` "only if the
-old binary can still read the new state", a case the store's `refuse_unknown` rules out (#125
-follows the code); a GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial
-landing, which the dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing
-`PUSH_ALLOW_REMOTES` to the sandbox trunk now that lanes push branches; the suggested patch to his
-push hook that exempts only a URL git resolves to itself
-(`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
+**Waiting on Felix:** the plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps
+`state_version` "only if the old binary can still read the new state", a case the store's
+`refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
+`tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
+P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
+lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
+itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
 `tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged pull
 requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word).
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the
@@ -79,17 +73,22 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** on Felix's yes, submit `dab6a22` (claim it again first) and approve its hold, then
-P1-CORE-RECONCILE (lane B), which must cover what the `dab6a22` reviews found: a store written
-before the staged landing with a marker in flight decodes as `Prepare`, not in doubt; a `Land` that
-loses its lease answers `Unknown` (`tessel-server/src/landing/answer.rs:122` on `dab6a22`), so
+**Next:** P1-CORE-RECONCILE (lane B), which must cover what the `dab6a22` reviews and votes found: a
+store written before the staged landing with a marker in flight decodes as `Prepare`, not in doubt
+(make the old marker distinguishable and treat it as in doubt, or refuse to start with it); a `Land`
+that loses its lease answers `Unknown` (`tessel-server/src/landing/answer.rs:122` on `dab6a22`), so
 `Reconcile` must go back to `Prepare` when main is not the base or it loops; the simulator's
-`Reconcile` reports any prepared head as landed (`src/sim/driver.rs:691` on `dab6a22`); `Unknown` at
-`Land` is still counted. The orchestrator adds REVIEW-2's nit to it: dropping the `!work.in_doubt`
-first-baseline guard survives the coordinator's library tests, so a stages test needs two lost
-`Land`s on different bases. Felix makes ruleset step 3 ("Fast
-lane, simulator" required). Felix's Homebrew postgres trusts local connections on a world-writable
-socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+`Reconcile` reports any prepared head as landed (`src/sim/driver.rs:691` on `dab6a22`) and its
+lander does not model C7; `Unknown` at `Land` is still counted; dropping the `!work.in_doubt`
+first-baseline guard survives every test, so a stages test needs two lost `Land`s on different
+bases; the three `_` arms on `MergeStage` in `merge_outcome` (merging.rs:363, 366, 373) are spelled
+out. Smaller, from the votes: `docs/configuration.md:277` says a cut-off `Test` waits 10 s, but
+`resend_test` sends it at once; `docs/dogfood.md` and `docs/configuration.md` describe the staged
+landing the live `455c889` does not run yet; the upgrade's in-flight check should read the stored
+`merge_in_flight`; `restart.rs` should assert the candidate ref is gone after a restart. Then
+P1-SIM-MERGE (lane A), and one dispatched nightly simulator sweep on main. Felix makes ruleset step
+3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts local connections on a
+world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -1038,14 +1037,13 @@ Lane B:
   a lane can still reach `_tessel` at the next upgrade until binaries are built on CI (M6), and
   egress is not limited. Opus security review "Yes" after three fix passes; Felix approved it on 25
   October.
-- [ ] **P1-CORE-STAGED-LANDING** — L, Felix reviews, after P1-SERVER-STAGED, P1-SWARM-ON-SERVER and
-  SENSITIVE-MERGE-PATH. `Prepare` → head journaled → `Test` → `Land` in the core, with the host
-  and the CLI's fake in the same commit. Closes HOST-MERGE-STANDIN's stand-in half. Lane B's
-  `dab6a22` (fork `devfep/tessel-lane-b`, branch `core-staged-2`; `.claude/worktrees/core-staged`):
-  a `Land` off its base goes back to `Prepare`, counted; `run_merge` and `land` stay public for the
-  ported lander tests. Opus merge-path review "Yes" after one fix pass; waits for Felix's written
-  yes naming `dab6a22`. The orchestrator ran `landing-e2e.sh` and `tests/restart.rs` on it (both
-  pass, STATE). What the reviews left for P1-CORE-RECONCILE is in STATE's Next line.
+- [x] **P1-CORE-STAGED-LANDING** (`55528c9`, landed by the server) — L, lane B, after
+  P1-SERVER-STAGED, P1-SWARM-ON-SERVER and SENSITIVE-MERGE-PATH. `Prepare` → head journaled →
+  `Test` → `Land` in the core, with the host and the CLI's fake in the same commit. Closes
+  HOST-MERGE-STANDIN's stand-in half. A `Land` off its base goes back to `Prepare`, counted;
+  `run_merge` and `land` stay public for the ported lander tests. Opus merge-path review "Yes" after
+  one fix pass (`dab6a22`); Felix delegated his yes to a vote of three Opus reviewers, 3-0 Yes. What
+  the reviews left for P1-CORE-RECONCILE is in STATE's Next line.
 - [ ] **P1-CORE-RECONCILE** — M, Felix reviews, after P1-CORE-STAGED-LANDING. `Unknown` and
   `Reconcile` (flips R24), a `Land` in doubt shown with its age, offline `tessel-server admin
   resolve` (M5-3), and DOGFOOD-UPGRADE's fixture test.
