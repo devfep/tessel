@@ -3154,6 +3154,26 @@ mod tests {
             .all(|h| h.merge_doubt_since_ms.is_none()));
     }
 
+    #[tokio::test]
+    async fn a_claim_whose_submission_changes_forgets_its_merge_doubt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        go_online(&mut daemon);
+        daemon.state.claims = vec![held(7)];
+        for submitted in [false, true] {
+            daemon.on_server_msg(ServerMsg::MergeDoubt {
+                claim: ClaimId(7),
+                since_ms: Some(5),
+            });
+            assert!(daemon.state.claims[0].merge_doubt_since_ms.is_some());
+            daemon.set_submitted(ClaimId(7), submitted, None);
+            assert_eq!(
+                daemon.state.claims[0].merge_doubt_since_ms, None,
+                "set_submitted({submitted})"
+            );
+        }
+    }
+
     #[test]
     fn an_offline_daemon_lapses_a_claim_past_its_local_expiry() {
         let dir = tempfile::tempdir().unwrap();

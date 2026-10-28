@@ -1060,3 +1060,56 @@ fn a_land_that_was_never_in_doubt_answered_main_moved_keeps_what_it_had() {
         .is_empty());
     assert_eq!(work(&c, claim).moved, 1);
 }
+
+// ---- fix pass 2 ----
+
+#[test]
+fn the_operators_not_landed_answer_does_not_count_main_moved_and_cannot_reject() {
+    let (mut c, claim, _) = in_doubt_after_unknown();
+    c.state
+        .claims
+        .get_mut(&claim.0)
+        .and_then(|held| held.work.as_mut())
+        .expect("submitted")
+        .moved = crate::merge::MAX_MAIN_MOVED - 1;
+    let effects = c.resolve_doubt(claim, false, NOW + 50).expect("in doubt");
+    assert!(!rejected(&effects), "nobody said main moved");
+    assert_eq!(work(&c, claim).moved, crate::merge::MAX_MAIN_MOVED - 1);
+    let prepare = c.begin_merge(NOW + 50).expect("dispatched at once");
+    assert_eq!(prepare.stage, MergeStage::Prepare);
+}
+
+/// The `Land` sent again after a reconcile found main at its base, in flight.
+fn resent_land() -> (Coordinator, ClaimId, MergeDispatch) {
+    let (mut c, claim, _) = in_doubt_after_unknown();
+    let reconcile = due_reconcile(&mut c, claim);
+    let at_base = Reconciliation::NotLanded {
+        main: Some(commit(OLD)),
+    };
+    c.reconcile_outcome(reconcile.id, &at_base, NOW + 10_000);
+    let again = c
+        .begin_merge(NOW + 10_000)
+        .expect("the Land goes out again");
+    (c, claim, again)
+}
+
+#[test]
+fn a_resent_land_refused_ends_the_doubt_and_says_so() {
+    let (mut c, claim, again) = resent_land();
+    let refused = MergeOutcome::Refused {
+        kind: RuleKind::ProtectedRef,
+    };
+    let effects = c.merge_outcome(again.id, &refused, NOW + 10_001);
+    assert!(rejected(&effects));
+    assert_eq!(doubt_notices(&effects), vec![(claim, None)]);
+}
+
+#[test]
+fn a_resent_land_whose_candidate_is_gone_ends_the_doubt_and_says_so() {
+    let (mut c, claim, again) = resent_land();
+    let effects = c.merge_outcome(again.id, &MergeOutcome::CandidateMissing {}, NOW + 10_001);
+    assert_eq!(doubt_notices(&effects), vec![(claim, None)]);
+    let work = work(&c, claim);
+    assert_eq!((work.in_doubt, work.unanswered_from.clone()), (false, None));
+    assert_eq!(work.infra_failures, 1, "counted, as a missing candidate is");
+}
