@@ -197,6 +197,33 @@ impl Deployment {
         Ok(events.into_iter().map(|event| event.kind).collect())
     }
 
+    /// The candidate refs on the trunk: the heads `Prepare` pushed and no `Land` has deleted.
+    fn candidate_refs(&self) -> String {
+        git(
+            &self.repos.main,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/tessel/candidate",
+            ],
+        )
+    }
+
+    /// What `docs/dogfood.md` tells the operator to run before an upgrade, as `rusqlite` runs it:
+    /// the JSON type of the stored `merge_in_flight`, `null` with no merge in flight.
+    fn merge_in_flight(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let file = RepoId::new("acme", REPO)?.store_file(&self.repos.root.path().join("stores"));
+        let conn = rusqlite::Connection::open_with_flags(
+            file,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        Ok(conn.query_row(
+            "select json_type(json, '$.merge_in_flight') from kv where key = 'core'",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     fn calls_left(&self) -> Vec<String> {
         let dir = self.repos.clones(REPO);
         let entries = std::fs::read_dir(dir).into_iter().flatten().flatten();
@@ -299,6 +326,16 @@ async fn a_server_killed_mid_merge_and_restarted_lands_the_claim_once() -> TestR
         1,
         "the merge's clones are on disk"
     );
+    assert_eq!(
+        deployment.candidate_refs().lines().count(),
+        1,
+        "the head is on the candidate ref while its tests run"
+    );
+    assert_eq!(
+        deployment.merge_in_flight()?,
+        "object",
+        "the stored state says a merge is in flight"
+    );
 
     first.kill9()?;
     std::fs::write(deployment.marks.join("release"), "go")?;
@@ -351,6 +388,16 @@ async fn a_server_killed_mid_merge_and_restarted_lands_the_claim_once() -> TestR
         deployment.calls_left().is_empty()
     })
     .await?;
+    assert_eq!(
+        deployment.candidate_refs(),
+        "",
+        "the landing after the restart deleted the candidate ref"
+    );
+    assert_eq!(
+        deployment.merge_in_flight()?,
+        "null",
+        "and the stored state says nothing is in flight"
+    );
     second.kill9()?;
     Ok(())
 }
@@ -382,12 +429,11 @@ fn pushes_seen(deployment: &Deployment) -> usize {
 }
 
 /// A server killed with `SIGKILL` after the lander's push reached the trunk and before the server
-/// answered the submission. The restart dispatches the same submission again. Its rebase finds
-/// the work already on the trunk, so the lander answers `AlreadyMerged` (`head == base` in
-/// `tessel-lander/src/merge.rs`), the host reads that as `Prepared` at the trunk, and the core
-/// lands the claim with the trunk as it was at the first dispatch as `before`
-/// (`Submission::unanswered_from`). The claim ends landed exactly once: one new commit on the
-/// trunk, one `Merged` event naming it, one release, and no second push.
+/// answered the `Land`. The restart finds the `Land` marker and reconciles it, counting nothing:
+/// the lander finds the journaled head on the trunk by ancestry, and the core lands the claim from
+/// the base the `Land` leased. The claim ends landed exactly once: one new commit on the trunk,
+/// one `Merged` event naming it, one release, and no second push. The candidate ref the killed
+/// `Land` did not get to delete stays until a later `Prepare` sweeps it.
 #[tokio::test]
 async fn a_server_killed_after_the_push_and_restarted_counts_the_landing_once() -> TestResult {
     let deployment = Deployment::new()?;

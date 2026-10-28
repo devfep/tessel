@@ -262,8 +262,9 @@ minted and nothing is revoked.
 | The tests failed | refused | `submit_rejected` with the exit code and no test output |
 | The trunk's `tessel.toml` is missing or not a valid gate | refused, the parser's error to the log | `submit_rejected` with the fixed reason, not retried |
 | The commit is not on the agent's fork | refused | `submit_rejected` with the fixed reason |
-| Main moved before the push | `Unknown`, which the core retries | nothing yet |
-| Anything that did not finish: a clone, a push, a runner that refuses to start, a timeout | `Unknown`, which the core retries | nothing; after three retries, `submit_rejected` as infrastructure |
+| Main moved before the push | `Unknown`, so the core reconciles | nothing yet |
+| A `Prepare` or a `Test` that did not finish: a clone, a push, a runner that refuses to start, a timeout | `Unknown`, which the core counts and retries | nothing; after three retries, `submit_rejected` as infrastructure |
+| A `Land` that did not finish: a clone, a push, a lost reply, a timeout | `Unknown`, so the core reconciles | nothing, and `tessel status` shows the landing in doubt and for how long; never `submit_rejected` for it |
 
 The first failing test, the conflicting file names (with their total) and every infrastructure
 error go to the server log, cut to a length and quoted, and never to an agent. A submission whose
@@ -272,11 +273,35 @@ main already holds the same change is answered as merged at main's head.
 Each call is bounded by its own deadline from when the host issued it: 5 minutes for `Prepare` and
 for `Land`, 13 for `Test`. The tests get what is left of theirs less 5 seconds, and never more than
 `timeout_secs` of the runner's configuration. A call still running at its deadline is answered
-`Unknown`, its clones are removed, and what it left running cannot write to the remote. A server
-killed mid-merge is woken for each repository with stored state when it restarts, finds the merge in
-flight and counts it as one infrastructure failure: a `Prepare` or a `Test` is made again after the
-first backoff, 10 seconds, and a `Land` leaves the claim in doubt, so the new `Prepare` reads main
-first (the reconcile of that case is P1-CORE-RECONCILE).
+`Unknown`, its clones are removed, and what it left running cannot write to the remote.
+
+A `Land` answered `Unknown` may have moved main, so it is not an attempt and never rejects the
+work. The core keeps the merge in flight under the `Land`'s dispatch id and asks `Reconcile`: is
+the journaled head an ancestor of main, and where is main. If it is, the work landed, from the
+base the `Land` leased. If it is not and main is still at that base, the same `Land` goes out
+again, with the same base and head, so it pushes the candidate ref already journaled. If main is
+elsewhere the head cannot land any more, and the claim goes back to `Prepare` as contention (it
+counts toward the limit on `main_moved`, not the infrastructure limit). An `Unknown` from the
+`Land` or from the `Reconcile` waits the infrastructure backoff (10, 30, then 90 seconds) before
+the next `Reconcile`, so the doubt is paced, not bounded. When the lander cannot answer, the
+operator stops the server, reads main, and runs
+`tessel-server admin resolve <claim> --landed` or `--not-landed` against the stopped server
+(the store is locked while it runs), then starts it; the core applies the answer as it would a
+`Reconcile`'s.
+
+A server killed mid-merge is woken for each repository with stored state when it restarts and
+finds the merge in flight. A `Prepare` is counted as one infrastructure failure and made again
+after the first backoff, 10 seconds. A `Test` is counted and sent again at once, with the same
+head, because the candidate ref survives the restart; if the ref is gone the answer is
+`CandidateMissing` and the claim goes back to `Prepare`. A `Land` is reconciled at once and not
+counted. A marker written before the staged landing carries no stage, so its one whole-merge call
+may already have pushed: it is counted once and the claim is in doubt, so the new `Prepare`
+reads main first and a work main already holds is landed from the main recorded at that dispatch.
+
+Which build does this: main from `05b6ec1` (the staged landing) and, with P1-CORE-RECONCILE, the
+reconcile above. The dogfood server runs `455c889`, which predates both, until it is upgraded by
+the rules in [Upgrading the server](dogfood.md#upgrading-the-server); its core makes the whole
+merge in one `Prepare` and has no `Land` to reconcile.
 
 When the server starts, a repository with a `remote` and no head reads main's head once, so the
 head is main's before the first agent says hello. If main cannot be read then, or a hello arrives

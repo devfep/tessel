@@ -855,7 +855,7 @@ mod tests {
         let (_, challenger) = challenged(c);
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger);
-        c.reach_land(NOW);
+        c.make_unstaged();
         c.recover_merge(NOW);
         let work = c.state.claims[&challenger.0].work.as_ref().unwrap();
         (challenger, work.retry_at_ms.expect("a retry is scheduled"))
@@ -1013,7 +1013,7 @@ mod tests {
         let (_, challenger) = challenged(&mut c);
         let dispatch = c.begin_merge(NOW).expect("a merge is due");
         assert_eq!(dispatch.claim, challenger, "the held submission is skipped");
-        c.reach_land(NOW);
+        c.make_unstaged();
         c.recover_merge(NOW);
         let review = ClientMsg::Review {
             req: RequestId(7),
@@ -1039,7 +1039,7 @@ mod tests {
         merge_edit(&mut c, "a0", "src/z.rs", MAIN);
         let (_, challenger) = challenged(&mut c);
         c.begin_merge(NOW).expect("a merge is due");
-        c.reach_land(NOW);
+        c.make_unstaged();
         c.settle_merge(
             c.merge_flight_id(challenger),
             &MergeOutcome::ServiceUnavailable,

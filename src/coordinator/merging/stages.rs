@@ -414,7 +414,7 @@ fn a_land_that_did_not_finish_leaves_the_claim_in_doubt_from_the_base_it_leased(
     c.merge_outcome(land.id, &MergeOutcome::ServiceUnavailable, NOW + 4);
     let work = work(&c, claim);
     assert!(work.in_doubt);
-    assert_eq!(work.infra_failures, 1);
+    assert_eq!(work.infra_failures, 0, "a Land in doubt is not an attempt");
     assert_eq!(
         work.unanswered_from,
         Some(commit(OLD)),
@@ -436,17 +436,14 @@ fn a_landing_found_after_a_lost_land_answer_spans_from_the_leased_base() {
     let (mut c, claim, land) = at_land_after_main_moved();
     c.merge_outcome(land.id, &MergeOutcome::ServiceUnavailable, NOW + 4);
     let due = work(&c, claim).retry_at_ms.unwrap();
-    let prepare = c.begin_merge(due).expect("the claim in doubt goes first");
-    assert_eq!(prepare.stage, MergeStage::Prepare);
-    let already = MergeOutcome::AlreadyMerged { base: commit(HEAD) };
-    let effects = c.merge_outcome(prepare.id, &already, due + 1);
-    let base = events(&effects).into_iter().find_map(|kind| {
-        let EventKind::Merged { base, .. } = kind else {
-            return None;
-        };
-        Some(base.clone())
-    });
-    assert_eq!(base, Some(Some(commit(OLD))), "not the outside commits");
+    let reconcile = c.begin_merge(due).expect("the claim in doubt goes first");
+    let effects = c.reconcile_outcome(reconcile.id, &Reconciliation::Landed, due + 1);
+    let span = merged_span(&effects);
+    assert_eq!(
+        span.map(|(base, _)| base),
+        Some(Some(commit(OLD))),
+        "not the outside commits"
+    );
 }
 
 #[test]
@@ -563,14 +560,13 @@ fn restarts_at_test_are_bounded_like_any_infrastructure_failure() {
 }
 
 #[test]
-fn a_restart_at_prepare_or_land_dispatches_a_fresh_prepare() {
-    for (mut c, claim, dispatch) in [submitted(), at_land()] {
-        c.recover_merge(NOW + 4);
-        assert!(!c.has_merge_in_flight(), "{:?}", dispatch.stage);
-        let due = work(&c, claim).retry_at_ms.expect("a backoff");
-        let again = c.begin_merge(due).expect("dispatched after the backoff");
-        assert_eq!(again.stage, MergeStage::Prepare, "{:?}", dispatch.stage);
-    }
+fn a_restart_at_prepare_dispatches_a_fresh_prepare_after_a_backoff() {
+    let (mut c, claim, _) = submitted();
+    c.recover_merge(NOW + 4);
+    assert!(!c.has_merge_in_flight());
+    let due = work(&c, claim).retry_at_ms.expect("a backoff");
+    let again = c.begin_merge(due).expect("dispatched after the backoff");
+    assert_eq!(again.stage, MergeStage::Prepare);
 }
 
 // ---- answers a stage does not ask for ----
@@ -594,7 +590,7 @@ fn already_merged_answered_to_a_land_lands_nothing_and_leaves_the_claim_in_doubt
     assert!(!landed(&effects));
     assert_eq!(c.state.head, None);
     let work = work(&c, claim);
-    assert_eq!((work.infra_failures, work.in_doubt), (1, true));
+    assert_eq!((work.infra_failures, work.in_doubt), (0, true));
 }
 
 #[test]
@@ -832,12 +828,12 @@ fn a_restart_during_a_reconcile_reconciles_again_without_counting() {
 fn only_the_dispatch_in_doubt_can_be_reconciled() {
     let (mut c, claim, land) = in_doubt_after_unknown();
     let before = serde_json::to_string(&c).unwrap();
-    let effects = c.reconcile_outcome(land.id + 100, &Reconciliation::Landed, NOW + 9);
+    let effects = c.reconcile_outcome(land.id + 100, &Reconciliation::Landed, NOW + 4);
     assert!(effects.is_empty());
     assert_eq!(before, serde_json::to_string(&c).unwrap());
     let (mut other, _, test) = at_test();
     let before = serde_json::to_string(&other).unwrap();
-    other.reconcile_outcome(test.id, &Reconciliation::Landed, NOW + 9);
+    other.reconcile_outcome(test.id, &Reconciliation::Landed, NOW + 1);
     assert_eq!(
         before,
         serde_json::to_string(&other).unwrap(),
@@ -963,7 +959,7 @@ fn the_operator_can_resolve_a_land_the_stopped_server_never_recovered() {
 fn the_operator_cannot_resolve_a_claim_with_no_land_in_doubt() {
     let (mut c, claim, _) = at_test();
     let before = serde_json::to_string(&c).unwrap();
-    let refusal = c.resolve_doubt(claim, true, NOW + 50).unwrap_err();
+    let refusal = c.resolve_doubt(claim, true, NOW + 2).unwrap_err();
     assert_eq!(
         refusal.to_string(),
         format!("claim {} has no Land in doubt", claim.0)
@@ -973,7 +969,7 @@ fn the_operator_cannot_resolve_a_claim_with_no_land_in_doubt() {
         serde_json::to_string(&c).unwrap(),
         "nothing changed"
     );
-    assert!(c.resolve_doubt(ClaimId(999), false, NOW + 50).is_err());
+    assert!(c.resolve_doubt(ClaimId(999), false, NOW + 2).is_err());
     let (mut idle, claim, _) = submitted();
     idle.merge_outcome(
         idle.state.merge_in_flight.as_ref().unwrap().dispatch,
@@ -984,4 +980,83 @@ fn the_operator_cannot_resolve_a_claim_with_no_land_in_doubt() {
         idle.resolve_doubt(claim, true, NOW + 50).is_err(),
         "nothing in flight"
     );
+}
+
+// ---- the submitter is told how long the landing has been in doubt ----
+
+fn doubt_notices(effects: &[Effect]) -> Vec<(ClaimId, Option<u64>)> {
+    effects
+        .iter()
+        .filter_map(|effect| {
+            let Effect::Notify {
+                msg: ServerMsg::MergeDoubt { claim, since_ms },
+                ..
+            } = effect
+            else {
+                return None;
+            };
+            Some((*claim, *since_ms))
+        })
+        .collect()
+}
+
+#[test]
+fn the_submitter_is_told_once_when_the_landing_falls_in_doubt_with_the_time_it_began() {
+    let (mut c, claim, land) = at_land();
+    let effects = c.merge_outcome(land.id, &MergeOutcome::ServiceUnavailable, NOW + 4);
+    assert_eq!(doubt_notices(&effects), vec![(claim, Some(NOW + 4))]);
+    let reconcile = due_reconcile(&mut c, claim);
+    let again = c.reconcile_outcome(reconcile.id, &Reconciliation::Unknown, NOW + 20_000);
+    assert!(
+        doubt_notices(&again).is_empty(),
+        "a longer doubt is not a new one: the age counts from the first"
+    );
+}
+
+#[test]
+fn a_restart_that_finds_a_land_tells_the_submitter_too() {
+    let (mut c, claim, _) = at_land();
+    let effects = c.recover_merge(NOW + 4);
+    assert_eq!(doubt_notices(&effects), vec![(claim, Some(NOW + 4))]);
+}
+
+#[test]
+fn the_submitter_is_told_when_the_doubt_is_over_and_the_work_goes_back_to_prepare() {
+    let (mut c, claim, _) = in_doubt_after_unknown();
+    let reconcile = due_reconcile(&mut c, claim);
+    let elsewhere = Reconciliation::NotLanded {
+        main: Some(commit(MOVED)),
+    };
+    let effects = c.reconcile_outcome(reconcile.id, &elsewhere, NOW + 10_000);
+    assert_eq!(doubt_notices(&effects), vec![(claim, None)]);
+}
+
+#[test]
+fn a_land_sent_again_that_main_refuses_ends_the_doubt_and_says_so() {
+    let (mut c, claim, land) = in_doubt_after_unknown();
+    let reconcile = due_reconcile(&mut c, claim);
+    let at_base = Reconciliation::NotLanded {
+        main: Some(commit(OLD)),
+    };
+    c.reconcile_outcome(reconcile.id, &at_base, NOW + 10_000);
+    let again = c
+        .begin_merge(NOW + 10_000)
+        .expect("the Land goes out again");
+    assert_eq!(again.id, land.id);
+    let effects = c.merge_outcome(again.id, &MergeOutcome::MainMoved {}, NOW + 10_001);
+    assert_eq!(doubt_notices(&effects), vec![(claim, None)]);
+    let work = work(&c, claim);
+    assert_eq!(
+        (work.in_doubt, work.moved, work.infra_failures),
+        (false, 1, 0)
+    );
+}
+
+#[test]
+fn a_land_that_was_never_in_doubt_answered_main_moved_keeps_what_it_had() {
+    let (mut c, claim, land) = at_land();
+    assert!(c
+        .merge_outcome(land.id, &MergeOutcome::MainMoved {}, NOW + 4)
+        .is_empty());
+    assert_eq!(work(&c, claim).moved, 1);
 }

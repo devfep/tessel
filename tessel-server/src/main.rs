@@ -1,4 +1,5 @@
-//! `tessel-server serve --config <file>`, and `admin keygen` and `admin token` for the keys.
+//! `tessel-server serve --config <file>`, `admin keygen` and `admin token` for the keys, and
+//! `admin resolve` for a `Land` in doubt.
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use tessel_server::admin::{self, TokenArgs};
 use tessel_server::config::{Config, IdentityConfig};
 use tessel_server::credential::{
@@ -69,6 +70,29 @@ enum AdminCommand {
         /// Mint a token for a reserved service (lander, runner or server), not an agent.
         #[arg(long)]
         service: bool,
+    },
+    /// Settle a `Land` the lander could not answer, after reading main. Run it with the server
+    /// stopped: the store is locked while the server runs, and this refuses then.
+    #[command(group(ArgGroup::new("answer").required(true).args(["landed", "not_landed"])))]
+    Resolve {
+        /// The configuration file.
+        #[arg(long)]
+        config: PathBuf,
+        /// The claim whose `Land` is in doubt, as `tessel status` shows it.
+        claim: u64,
+        /// The tenant; with `--repo`, needed only when the configuration lists several.
+        #[arg(long, requires = "repo")]
+        tenant: Option<String>,
+        /// The repository.
+        #[arg(long, requires = "tenant")]
+        repo: Option<String>,
+        /// The claim's head is on main: it merges, from the base its `Land` leased.
+        #[arg(long)]
+        landed: bool,
+        /// The head is not on main: the claim goes back to `Prepare`, which is safe whatever main
+        /// is, since a work main already holds is answered as merged.
+        #[arg(long)]
+        not_landed: bool,
     },
 }
 
@@ -150,6 +174,27 @@ fn run_admin(command: AdminCommand) -> Result<(), String> {
             let minted = admin::token(&identity, &args, identity::now_ms())
                 .map_err(|error| error.to_string())?;
             print_token(&minted);
+            Ok(())
+        }
+        AdminCommand::Resolve {
+            config,
+            claim,
+            tenant,
+            repo,
+            landed,
+            not_landed: _,
+        } => {
+            let loaded = Config::load(&config).map_err(|error| error.to_string())?;
+            let named = (tenant.as_deref(), repo.as_deref());
+            let done = admin::resolve(&loaded, named, (claim, landed), identity::now_ms())
+                .map_err(|error| error.to_string())?;
+            tracing::info!(
+                repo = %done.repository,
+                claim = done.claim,
+                landed = done.landed,
+                events = done.events,
+                "resolved the Land in doubt; start the server to go on"
+            );
             Ok(())
         }
     }

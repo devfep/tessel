@@ -9,7 +9,9 @@
 //!
 //! An answer that is not of the kind the call asks for, `Unknown` included, is the service being
 //! unavailable: infrastructure, retried with backoff (R26). A head answer that is not a head is
-//! `None` (R23).
+//! `None` (R23). After a `Land` the same answer is not a failure but a doubt: the core asks
+//! `Reconcile` (answered `Reconciled { main, landed }`) with the `Land`'s dispatch id, and an
+//! answer to a `Reconcile` that is not a `Reconciled` is `Unknown` again, never an outcome.
 //!
 //! The host does not time out a call itself (HOST-CALL-DEADLINE-BACKSTOP). The adapter's deadline
 //! is enough, for two reasons. The adapter owns the call's lifetime: it holds the call's
@@ -17,11 +19,12 @@
 //! a panic in the answer reaches the host as `CallLost`. And the one failure a deadline cannot
 //! cover, the adapter process dying mid-call, takes the host with it. Calls are held in memory
 //! only; what is stored is the merge marker. A restarted host finds a merge in flight that no
-//! call waits for and recovers it on the first wake (R24, `recover_merge_step`), so the claim is
-//! retried and not left waiting for an answer nobody will send. What stays uncovered is an
+//! call waits for and recovers it on the first wake (R24, `recover_merge_step`): a `Prepare`
+//! marker is retried as an attempt, a `Test` is sent again, and a `Land` is reconciled, so the
+//! claim is not left waiting for an answer nobody will send. What stays uncovered is an
 //! adapter that neither answers, panics nor dies: a bug in the adapter, not a state of the call.
 
-use crate::coordinator::{MergeDispatch, MergeStage, VerifyDispatch};
+use crate::coordinator::{MergeDispatch, MergeStage, Reconciliation, VerifyDispatch};
 use crate::host::call::{
     Call, CallAnswer, CallId, DispatchId, Refusal, Request, TestFailure, TrialResult,
 };
@@ -119,11 +122,12 @@ pub fn head_call(id: CallId, now_ms: u64) -> Call {
 pub fn resume_after(request: &Request, merge_continues: bool) -> WakeStep {
     match request {
         Request::Prepare { .. } | Request::Test { .. } if merge_continues => WakeStep::Merge,
+        Request::Reconcile { .. } => WakeStep::Merge,
         Request::Prepare { .. } | Request::Test { .. } | Request::Land { .. } => {
             WakeStep::Verification
         }
         Request::Trial { .. } => WakeStep::HeadRead,
-        Request::ReadHead { .. } | Request::Reconcile { .. } => WakeStep::Finish,
+        Request::ReadHead { .. } => WakeStep::Finish,
     }
 }
 
@@ -253,6 +257,28 @@ fn trial_outcome(result: TrialResult) -> TrialOutcome {
     }
 }
 
+/// What the answer to a `Reconcile` means to the core. Anything but a `Reconciled` is `Unknown`:
+/// the reconcile is asked again after its backoff and decides nothing.
+pub fn reconciliation_of(answer: &CallAnswer) -> Reconciliation {
+    match answer {
+        CallAnswer::Reconciled { landed: true, .. } => Reconciliation::Landed,
+        CallAnswer::Reconciled {
+            main,
+            landed: false,
+        } => Reconciliation::NotLanded {
+            main: Some(main.clone()),
+        },
+        CallAnswer::Prepared { .. }
+        | CallAnswer::Tested
+        | CallAnswer::Landed { .. }
+        | CallAnswer::Trialled { .. }
+        | CallAnswer::Head { .. }
+        | CallAnswer::CandidateMissing
+        | CallAnswer::Refused { .. }
+        | CallAnswer::Unknown => Reconciliation::Unknown,
+    }
+}
+
 /// The head a head answer carries, if it carries one.
 pub fn head_of(answer: &CallAnswer) -> Option<CommitId> {
     match answer {
@@ -354,9 +380,16 @@ impl Host {
                 ("apply trunk head", prepared)
             }
             Request::Reconcile { .. } => {
-                out.push(self.failure("apply call answer", "reconcile is not issued yet"));
-                self.wake_failed(out);
-                return;
+                let found = reconciliation_of(&answer);
+                if found == Reconciliation::Unknown {
+                    out.push(self.failure("lander reconcile call", "no usable answer"));
+                }
+                let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
+                    core.reconcile_outcome(dispatch, &found, now_ms)
+                });
+                let next_stage = self.slot.has_merge_in_flight() && !self.waits().merging;
+                resume = resume_after(&call.request, next_stage);
+                ("apply reconcile outcome", prepared)
             }
         };
         self.commit_unsent(
@@ -542,7 +575,11 @@ mod tests {
         for continues in [false, true] {
             assert_eq!(resume_after(&trial, continues), WakeStep::HeadRead);
             assert_eq!(resume_after(&read, continues), WakeStep::Finish);
-            assert_eq!(resume_after(&reconcile, continues), WakeStep::Finish);
+            assert_eq!(
+                resume_after(&reconcile, continues),
+                WakeStep::Merge,
+                "a reconcile that sends the Land again or the claim back to Prepare goes on to it"
+            );
             assert_eq!(
                 resume_after(&land, continues),
                 WakeStep::Verification,
@@ -707,6 +744,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_reconcile_answer_means_landed_not_landed_with_main_or_unknown() {
+        assert_eq!(
+            reconciliation_of(&CallAnswer::Reconciled {
+                main: commit("m"),
+                landed: true
+            }),
+            Reconciliation::Landed
+        );
+        assert_eq!(
+            reconciliation_of(&CallAnswer::Reconciled {
+                main: commit("m"),
+                landed: false
+            }),
+            Reconciliation::NotLanded {
+                main: Some(commit("m"))
+            }
+        );
+        for answer in [
+            CallAnswer::Unknown,
+            CallAnswer::Tested,
+            CallAnswer::Landed { head: commit("h") },
+            CallAnswer::CandidateMissing,
+            refused(Refusal::GateChanged),
+        ] {
+            assert_eq!(
+                reconciliation_of(&answer),
+                Reconciliation::Unknown,
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reconcile_stage_is_a_reconcile_call_of_the_journaled_head_under_the_dispatch_of_the_land()
+    {
+        let stage = MergeStage::Reconcile {
+            base: commit("b"),
+            head: commit("h"),
+        };
+        let call = merge_call(CallId(8), &merge_dispatch(stage), 4_000);
+        assert_eq!(call.dispatch_id, DispatchId(7));
+        assert_eq!(call.request, Request::Reconcile { head: commit("h") });
+        assert_eq!(call.deadline_ms, 4_000 + RECONCILE_CALL_TIMEOUT_MS);
     }
 
     #[test]

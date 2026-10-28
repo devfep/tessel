@@ -8,6 +8,12 @@
 //! answers the calls before it (`advance_to`) with `Prepared` and `Tested`, checking that each
 //! moves the merge on under a new dispatch id with the head journaled, and then gives the answer.
 //!
+//! A `Land` that does not finish (or is found by a restart) leaves the merge in flight as a
+//! `Reconcile` that counts nothing. The model checks that, then plays the host's part and answers
+//! the reconcile: main moved elsewhere (the claim goes back to `Prepare` as contention), or, in
+//! `run_recovered_landing`, the head is on main. The rest of the doubt machine, `Unknown`
+//! rounds, a `Land` sent again and the operator's answer, is read in `stages`.
+//!
 //! The case count is proptest's default (256), so `PROPTEST_CASES=10000` raises it.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -18,7 +24,7 @@ use proptest::prelude::*;
 use proptest::test_runner::TestRunner;
 
 use crate::coordinator::verifying::{Subject, Verification};
-use crate::coordinator::{Config, Coordinator, Effect, MergeStage};
+use crate::coordinator::{Config, Coordinator, Effect, MergeStage, Reconciliation};
 use crate::merge::{
     infra_backoff_ms, MergeOutcome, RuleKind, StepExit, TrialOutcome, TrialReport,
     MAX_INFRA_RETRIES, MAX_MAIN_MOVED, MERGE_WATCHDOG_MS,
@@ -67,12 +73,14 @@ fn fork_sha(agent: &AgentId) -> String {
     format!("{seed:02x}").repeat(20)
 }
 
-/// The call of a merge an answer comes from, in the order the core makes them.
+/// The call of a merge an answer comes from, in the order the core makes them. `Reconcile` is the
+/// `Land` in doubt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Stage {
     Prepare,
     Test,
     Land,
+    Reconcile,
 }
 
 impl Stage {
@@ -80,7 +88,8 @@ impl Stage {
         match stage {
             MergeStage::Prepare => Stage::Prepare,
             MergeStage::Test { .. } => Stage::Test,
-            MergeStage::Land { .. } | MergeStage::Reconcile { .. } => Stage::Land,
+            MergeStage::Land { .. } => Stage::Land,
+            MergeStage::Reconcile { .. } => Stage::Reconcile,
             MergeStage::Unstaged => Stage::Prepare,
         }
     }
@@ -679,7 +688,7 @@ fn apply(world: &mut World, op: &Op) {
         Op::Restart => recover_checked(world),
         Op::Advance => {
             let next = match world.model.inflight.map(|flight| flight.stage) {
-                None | Some(Stage::Land) => None,
+                None | Some(Stage::Land | Stage::Reconcile) => None,
                 Some(Stage::Prepare) => Some(Stage::Test),
                 Some(Stage::Test) => Some(Stage::Land),
             };
@@ -1162,17 +1171,18 @@ fn run_recovered_landing(
     // Only a `Land` that is cut off or lost leaves the claim in doubt.
     advance_to(world, Stage::Land);
     if restart {
-        let recovered = recover_checked(world);
+        let recovered = recover_unsettled(world);
         emit(world, recovered);
     } else {
-        let answered = answer_checked(world, flight.claim, lost);
+        let answered = answer_unsettled(world, flight.claim, lost);
         emit(world, answered);
     }
     if moved_between {
-        // The cut-off attempt went on to push: the retry finds main moved, and the baseline stays.
-        cycle(world, Answer::MainMoved);
+        // The first reconcile gets no answer: still in doubt, nothing counted.
+        reconcile_unknown(world);
     }
-    cycle(world, Answer::AlreadyMerged);
+    let found = reconcile_landed(world);
+    emit(world, found);
     let landed = challenger.is_some_and(|claim| world.model.merged.contains(&claim));
     // The `Land` the model dispatches leases main at `LEASED`, which is not the landing's main.
     let assuming_live = assuming_claim.is_some_and(|id| world.core.state.claims.contains_key(&id));
@@ -1191,8 +1201,8 @@ fn run_recovered_landing(
     );
     assert_eq!(
         queued.main,
-        CommitId(LANDED.into()),
-        "check 8: ends at the lander's main"
+        CommitId(MAIN.into()),
+        "check 8: ends at the head the reconcile found on main"
     );
     CHECK_8_RUNS.fetch_add(1, Ordering::Relaxed);
 }
@@ -1360,7 +1370,7 @@ fn advance_to(world: &mut World, target: Stage) {
                 },
                 Stage::Test,
             ),
-            Stage::Test | Stage::Land => (MergeOutcome::Tested {}, Stage::Land),
+            Stage::Test | Stage::Land | Stage::Reconcile => (MergeOutcome::Tested {}, Stage::Land),
         };
         let effects = world.core.merge_outcome(flight.id, &outcome, world.now);
         assert!(
@@ -1405,9 +1415,24 @@ fn advance_to(world: &mut World, target: Stage) {
     }
 }
 
-/// Apply the lander's answer for `claim` through `merge_outcome` and check what it did. The calls
-/// before the one the answer comes from are answered first.
+/// `answer_unsettled`, then the host's part if the answer left a `Land` in doubt: the reconcile
+/// finds main elsewhere, so the claim goes back to `Prepare` as contention.
 fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> {
+    let mut effects = answer_unsettled(world, claim, answer);
+    if world
+        .model
+        .inflight
+        .is_some_and(|f| f.stage == Stage::Reconcile)
+    {
+        effects.extend(reconcile_moved(world));
+    }
+    effects
+}
+
+/// Apply the lander's answer for `claim` through `merge_outcome` and check what it did. The calls
+/// before the one the answer comes from are answered first. A `Land` that did not finish stays in
+/// flight as a `Reconcile` under its own dispatch id, with nothing counted.
+fn answer_unsettled(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> {
     let current = world.model.inflight.filter(|flight| flight.claim == claim);
     if current.is_none() {
         // Documented: an answer for any other claim is stale and changes nothing. It carries the
@@ -1436,11 +1461,6 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
         .core
         .merge_outcome(flight.id, &answer.outcome(), world.now);
     check_unverifiable(world, claim, &owed, &effects);
-    world.model.inflight = None;
-    assert!(
-        !world.core.has_merge_in_flight(),
-        "the answer left a marker behind"
-    );
     let doubt = flight.stage == Stage::Land && !answer.candidate_missing();
     // Only a `Prepare` can be answered `already_merged`: at a later call it is an answer that call
     // does not ask for, an attempt that did not finish.
@@ -1449,7 +1469,70 @@ fn answer_checked(world: &mut World, claim: u64, answer: Answer) -> Vec<Effect> 
     } else {
         answer.class()
     };
-    expect_class(world, claim, (class, doubt), &effects, retry_before);
+    if doubt && class == Class::Infra {
+        expect_land_in_doubt(world, flight, &effects);
+        return effects;
+    }
+    world.model.inflight = None;
+    assert!(
+        !world.core.has_merge_in_flight(),
+        "the answer left a marker behind"
+    );
+    expect_class(world, claim, (class, false), &effects, retry_before);
+    effects
+}
+
+/// A `Land` that did not finish, or was found by a restart, is in doubt: the merge stays in flight
+/// as a `Reconcile` under the `Land`'s dispatch id, no failure is counted, and nothing is rejected
+/// or landed.
+fn expect_land_in_doubt(world: &mut World, flight: Flight, effects: &[Effect]) {
+    let claim = flight.claim;
+    assert!(
+        kinds(effects).iter().all(|kind| !matches!(
+            kind,
+            EventKind::Merged { .. } | EventKind::SubmitRejected { .. }
+        )),
+        "a Land in doubt neither lands nor rejects"
+    );
+    let stored = world
+        .core
+        .state
+        .merge_in_flight
+        .clone()
+        .expect("a Land in doubt stays in flight");
+    assert_eq!(
+        stored.dispatch, flight.id,
+        "the Reconcile keeps the Land's id"
+    );
+    assert_eq!(Stage::of(&stored.stage), Stage::Reconcile);
+    let work = world.core.state.claims[&claim].work.as_ref().unwrap();
+    assert_eq!(
+        work.infra_failures,
+        world.model.infra.get(&claim).copied().unwrap_or(0),
+        "check 4: a Land in doubt is not an attempt"
+    );
+    assert!(work.in_doubt, "the Land may have landed");
+    world.model.doubt.insert(claim);
+    world.model.inflight = Some(Flight {
+        stage: Stage::Reconcile,
+        ..flight
+    });
+}
+
+/// The host asks the lander whether the head is on main once the backoff is over, and is told main
+/// is elsewhere: the head cannot land any more, so the claim goes back to `Prepare` as contention.
+fn reconcile_moved(world: &mut World) -> Vec<Effect> {
+    let flight = ask_reconcile(world);
+    let elsewhere = Reconciliation::NotLanded {
+        main: Some(CommitId("elsewhere".into())),
+    };
+    let effects = world
+        .core
+        .reconcile_outcome(flight.id, &elsewhere, world.now);
+    world.model.inflight = None;
+    assert!(!world.core.has_merge_in_flight());
+    world.model.doubt.remove(&flight.claim);
+    expect_class(world, flight.claim, (Class::Moved, false), &effects, None);
     effects
 }
 
@@ -1739,8 +1822,23 @@ fn assert_reopened(world: &World, claim: u64) {
     assert!(held.submitted.is_none() && held.work.is_none());
 }
 
-/// The process died with a merge in flight. `recover_merge` counts it as an infrastructure failure.
+/// `recover_unsettled`, then the host's part if the restart found a `Land`: the reconcile finds
+/// main elsewhere.
 fn recover_checked(world: &mut World) -> Vec<Effect> {
+    let mut effects = recover_unsettled(world);
+    if world
+        .model
+        .inflight
+        .is_some_and(|f| f.stage == Stage::Reconcile)
+    {
+        effects.extend(reconcile_moved(world));
+    }
+    effects
+}
+
+/// The process died with a merge in flight. `recover_merge` counts a `Prepare` as an infrastructure
+/// failure, sends a `Test` again, and reconciles a `Land` without counting it.
+fn recover_unsettled(world: &mut World) -> Vec<Effect> {
     let Some(flight) = world.model.inflight else {
         let effects = world.core.recover_merge(world.now);
         assert!(effects.is_empty() && !world.core.has_merge_in_flight());
@@ -1751,6 +1849,11 @@ fn recover_checked(world: &mut World) -> Vec<Effect> {
         "the claim in flight is still queued"
     );
     let effects = world.core.recover_merge(world.now);
+    if flight.stage == Stage::Reconcile {
+        // A restart during a reconcile asks again: nothing changes.
+        assert!(effects.is_empty() && world.core.has_merge_in_flight());
+        return effects;
+    }
     world.model.inflight = None;
     let rejected = kinds(&effects)
         .into_iter()
@@ -1760,13 +1863,12 @@ fn recover_checked(world: &mut World) -> Vec<Effect> {
         expect_test_sent_again(world, flight, rejected);
         return effects;
     }
+    if flight.stage == Stage::Land {
+        expect_land_in_doubt(world, flight, &effects);
+        return effects;
+    }
     assert!(!world.core.has_merge_in_flight());
-    expect_infra(
-        world,
-        flight.claim,
-        (0, rejected),
-        flight.stage == Stage::Land,
-    );
+    expect_infra(world, flight.claim, (0, rejected), false);
     effects
 }
 
@@ -1817,6 +1919,50 @@ fn expect_test_sent_again(world: &mut World, flight: Flight, rejected: usize) {
         .expect("the Test goes out again");
     assert_eq!(dispatch.id, stored.dispatch);
     check_stage_dispatch(world, &dispatch);
+}
+
+/// The host asks the reconcile once its backoff is over: the dispatch is the `Land`'s.
+fn ask_reconcile(world: &mut World) -> Flight {
+    let flight = world.model.inflight.expect("a Reconcile is out");
+    let due = world.core.next_merge_ms(false, world.now);
+    world.now = world.now.max(due.unwrap_or(world.now));
+    let asked = world
+        .core
+        .begin_merge(world.now)
+        .expect("the Reconcile is due");
+    assert_eq!(asked.id, flight.id);
+    assert!(matches!(asked.stage, MergeStage::Reconcile { .. }));
+    flight
+}
+
+/// The reconcile gets no answer: the claim stays in doubt, nothing is counted, and the next ask
+/// waits out a backoff.
+fn reconcile_unknown(world: &mut World) {
+    let flight = ask_reconcile(world);
+    let effects = world
+        .core
+        .reconcile_outcome(flight.id, &Reconciliation::Unknown, world.now);
+    assert!(effects.is_empty(), "{effects:?}");
+    expect_land_in_doubt(world, flight, &effects);
+    let due = world.core.next_merge_ms(false, world.now);
+    assert!(
+        due.is_some_and(|due| due > world.now),
+        "the next ask is paced"
+    );
+    assert_eq!(world.core.clone().begin_merge(world.now), None);
+}
+
+/// The reconcile finds the head on main: the work landed, from the base the `Land` leased.
+fn reconcile_landed(world: &mut World) -> Vec<Effect> {
+    let flight = ask_reconcile(world);
+    let effects = world
+        .core
+        .reconcile_outcome(flight.id, &Reconciliation::Landed, world.now);
+    world.model.inflight = None;
+    assert!(!world.core.has_merge_in_flight());
+    world.model.doubt.remove(&flight.claim);
+    expect_class(world, flight.claim, (Class::Landed, false), &effects, None);
+    effects
 }
 
 /// Wait out the head's backoff, dispatch, answer.

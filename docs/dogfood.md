@@ -151,14 +151,25 @@ only with binaries built from a checkout of the commit the server already runs; 
 binaries, upgrade as below first.
 
 - **When.** No upgrade to the staged landing until P1-SERVER-STAGED, P1-CORE-STAGED-LANDING and
-  P1-CORE-RECONCILE have all landed. P1-CORE-RECONCILE is to carry a fixture test: a store written
-  before the staged landing with a merge in flight is decoded by the new core and treated as in
-  doubt.
+  P1-CORE-RECONCILE have all landed. P1-CORE-RECONCILE carries a fixture test, `a_marker_stored_
+  before_the_staged_landing_leaves_the_claim_in_doubt_from_its_main`: a store written before the
+  staged landing with a merge in flight is decoded by the new core as a marker with no stage
+  (`unstaged`), not as a `Prepare`, and the claim is in doubt from the main that marker recorded.
 - **Nothing in flight.** Upgrade only with no dispatch in flight; held submissions are fine. A
   stop mid-test orphans the cargo process group, and an old whole-merge call may already have
-  pushed, which the new core would read as a merge cut off before `Land`. A merge can be in
-  flight with no clone on disk (between the calls of a staged merge, or in the backoff after a
-  timeout, while an abandoned push may still be running), so check the outcomes: every
+  pushed, which the new core reads as a merge in doubt, not one cut off before `Land`. First read
+  what the store says, for each repository (it opens read-only, so the server may run):
+
+  ```
+  sqlite3 -readonly "<server dir>/stores/<tenant>/<repo>.sqlite" \
+    "select json_type(json, '\$.merge_in_flight'), json_type(json, '\$.verification_in_flight') \
+     from kv where key = 'core'"
+  ```
+
+  It prints `null|null` when no merge and no verification is in flight; `object` in the first
+  column is a merge, a `Land` in doubt included. A merge can also be in flight with no clone on
+  disk (between the calls of a staged merge, or in the backoff after a timeout, while an
+  abandoned push may still be running), so check the outcomes too: every
   submission that is not held has `merged`, `submit_rejected` or `uncovered` in its lane's inbox,
   the lanes are idle, `server.log` has no timeout or push warning after the latest of those
   outcomes, and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
@@ -421,6 +432,32 @@ calls: `Prepare` (rebase, claim coverage, the head pushed to a candidate ref), `
 tests on a tree made from that ref) and `Land` (a compare-and-swap push of `main`, a read-back by
 ancestry, the ref deleted), then `merged` in the lane's inbox. [What holds a submission](configuration.md#what-holds-a-submission-for-review)
 and the outcomes are in [Landing](configuration.md#landing).
+
+That is main's build. The server on this page runs `455c889`, which predates the staged landing:
+its core makes the whole merge in one `Prepare` and sends no `Test` or `Land`, so it has no `Land`
+to be in doubt. The staged landing, and the reconcile below, run only once the server is upgraded
+by the rules above.
+
+### A `Land` in doubt
+
+If the lander cannot say whether a `Land` moved main (a lost reply, a timeout, or the server
+stopped during the push), the core does not reject the work and does not count an attempt. It asks
+the lander whether the head is on main (`Reconcile`) and goes on from the answer, as
+[Landing](configuration.md#landing) describes; each failed ask waits 10, 30, then 90 seconds.
+`tessel status` in the submitter's worktree shows `[landing in doubt for 3m 20s: ...]`, counted
+from when that daemon was told. A lander that never answers holds the queue behind it. To settle
+it by hand, read main yourself (is the claim's commit on `main`?), stop the server, wait for its
+pid to exit, and run, with the claim number `tessel status` shows:
+
+```
+<server dir>/bin/tessel-server admin resolve <claim> --landed --config <server dir>/tessel-server.toml
+<server dir>/bin/tessel-server admin resolve <claim> --not-landed --config <server dir>/tessel-server.toml
+```
+
+`--landed` merges the claim from the base its `Land` leased. `--not-landed` sends it back to
+`Prepare`, which is safe whatever main is. It refuses while a server holds the store, and when the
+claim has no `Land` in flight. Then start the server. The answer is the one a `Reconcile` would
+have given: the core still applies its own rules.
 
 ## D3, the load on the Mac
 

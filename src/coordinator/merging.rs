@@ -8,14 +8,18 @@
 //! core does not hold (rule 5). A `Land` is dispatched only from the marker of a passed `Test`.
 //!
 //! The shell persists the in-flight marker (`begin_merge`) before it calls the lander, and applies
-//! the answer with `merge_outcome`. A restart that finds a marker counts the dispatch as an
-//! infrastructure failure. A `Test` is sent again with the journaled head, under a new dispatch id
-//! (the candidate ref survives the restart, and a lost ref answers `CandidateMissing`). A
-//! `Prepare` or a `Land` is followed by a fresh `Prepare`, which is safe: C7 makes it the same
-//! head, and the lander answers `already_merged` for a commit it already landed; after a `Land`
-//! the claim is in doubt, and that `Prepare` goes first. That answer names main as
-//! it is now, not the commit that landed or what main was before, so the baseline of what it
-//! queues for verification is main as recorded at the first dispatch whose answer was lost
+//! the answer with `merge_outcome`. A restart that finds a marker (`recover_merge`) reads it by
+//! stage. A `Prepare` counts as an infrastructure failure and is followed by a fresh `Prepare`,
+//! which is safe: C7 makes it the same head, and the lander answers `already_merged` for a commit
+//! it already landed. A `Test` is sent again with the journaled head, under a new dispatch id (the
+//! candidate ref survives the restart, and a lost ref answers `CandidateMissing`). A `Land` may
+//! be on main: it is not an attempt and is never rejected for it. The merge stays in flight as a
+//! `Reconcile` under the `Land`'s dispatch id and the lander is asked whether the journaled head
+//! is on main (see `doubt`). A marker stored before the staged landing has no stage
+//! (`MergeStage::Unstaged`): its one call may have pushed, so it counts once and leaves the claim
+//! in doubt, and the fresh `Prepare` goes first. That answer names main as it is now, not the
+//! commit that landed or what main was before, so the baseline of what it queues for
+//! verification is main as recorded at the first dispatch whose answer was lost
 //! (`Submission::unanswered_from`). Without one, nothing is queued, and the `Merged` event lists
 //! the assumptions and shadow claims that went unverified (see `verifying`).
 //!
@@ -51,6 +55,12 @@ use super::{
     MAX_REVIEW_NOTE_BYTES,
 };
 use serde::{Deserialize, Serialize};
+
+mod doubt;
+
+pub use doubt::{NoLandInDoubt, Reconciliation};
+
+use doubt::{mark_doubt, Pace};
 
 use crate::merge::{
     infra_backoff_ms, MergeOutcome, MergeRecord, ReviewDecision, ReviewRecord, Verdict,
@@ -139,31 +149,6 @@ impl MergeStage {
     }
 }
 
-/// What the lander's `Reconcile` found out about the `Land` in doubt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reconciliation {
-    /// The journaled head is an ancestor of main: the work landed.
-    Landed,
-    /// The head is not on main. `main` is where main is, if the answer said.
-    NotLanded { main: Option<CommitId> },
-    /// The reconcile itself got no answer.
-    Unknown,
-}
-
-/// `Coordinator::resolve_doubt` found nothing to resolve.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoLandInDoubt {
-    pub claim: ClaimId,
-}
-
-impl std::fmt::Display for NoLandInDoubt {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "claim {} has no Land in doubt", self.claim.0)
-    }
-}
-
-impl std::error::Error for NoLandInDoubt {}
-
 /// One call of a merge for the shell to ask the lander for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeDispatch {
@@ -221,6 +206,9 @@ impl Coordinator {
     pub fn begin_merge(&mut self, now_ms: u64) -> Option<MergeDispatch> {
         let now_ms = self.advance_clock(now_ms);
         if let Some(flight) = self.state.merge_in_flight.clone() {
+            if self.reconcile_waits(&flight, now_ms) {
+                return None;
+            }
             if let Some(dispatch) = self.dispatch_of(&flight) {
                 return Some(dispatch);
             }
@@ -251,6 +239,20 @@ impl Coordinator {
         Some(dispatch)
     }
 
+    /// Whether `flight` is a `Reconcile` still waiting out the backoff after an `Unknown`.
+    fn reconcile_waits(&self, flight: &InFlight, now_ms: u64) -> bool {
+        let MergeStage::Reconcile { .. } = flight.stage else {
+            return false;
+        };
+        self.retry_at_ms(flight.claim)
+            .is_some_and(|due| due > now_ms)
+    }
+
+    fn retry_at_ms(&self, claim: ClaimId) -> Option<u64> {
+        let held = self.state.claims.get(&claim.0)?;
+        held.work.as_ref()?.retry_at_ms
+    }
+
     /// The id of the merge dispatch in flight for `claim`, for tests that answer "the current
     /// dispatch". Panics when another claim, or none, is in flight.
     #[cfg(test)]
@@ -266,9 +268,12 @@ impl Coordinator {
         self.state.merge_in_flight.is_some()
     }
 
-    /// Account for a merge that was in flight when the process died: the lander's answer is lost,
-    /// so the dispatch counts as an infrastructure failure. The claim is retried after a backoff
-    /// and rejected at the bound, so a commit that hangs the lander cannot wedge the queue.
+    /// Account for a merge that was in flight when the process died: the lander's answer is lost.
+    /// A `Prepare` or a marker stored before the staged landing counts as an infrastructure
+    /// failure: the claim is retried after a backoff and rejected at the bound, so a commit that
+    /// hangs the lander cannot wedge the queue. A `Test` is sent again. A `Land` may be on main:
+    /// it is reconciled at once (see `doubt`) and counts nothing, and a `Reconcile` is asked
+    /// again.
     pub fn recover_merge(&mut self, now_ms: u64) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
         let Some(flight) = self.state.merge_in_flight.take() else {
@@ -280,8 +285,17 @@ impl Coordinator {
         if held.submitted.is_none() || held.work.is_none() {
             return Vec::new();
         }
-        if let MergeStage::Test { .. } = flight.stage {
-            return self.resend_test(flight, held, now_ms);
+        match flight.stage.clone() {
+            MergeStage::Test { .. } => return self.resend_test(flight, held, now_ms),
+            MergeStage::Land { base, head } => {
+                let pace = (Pace::AtOnce, now_ms);
+                return self.enter_doubt(flight, held, (base, head), pace);
+            }
+            MergeStage::Reconcile { .. } => {
+                self.state.merge_in_flight = Some(flight);
+                return Vec::new();
+            }
+            MergeStage::Prepare | MergeStage::Unstaged => {}
         }
         let doubt = (
             flight.stage.dispatched_from(flight.main.as_ref()),
@@ -320,9 +334,12 @@ impl Coordinator {
     /// and the watchdog fires only if the instance died first. Otherwise a stored marker means the
     /// process restarted, and the alarm must recover it at once.
     pub fn next_merge_ms(&self, merging_here: bool, now_ms: u64) -> Option<u64> {
-        if self.state.merge_in_flight.is_some() {
+        if let Some(flight) = &self.state.merge_in_flight {
             if merging_here {
                 return Some(now_ms.saturating_add(MERGE_WATCHDOG_MS));
+            }
+            if self.reconcile_waits(flight, now_ms) {
+                return self.retry_at_ms(flight.claim);
             }
             return Some(now_ms);
         }
@@ -404,17 +421,67 @@ impl Coordinator {
                     .and_then(|work| work.unanswered_from.clone());
                 self.land(claim, &held, before, main, now_ms)
             }
-            (_, Verdict::Rejected { reason }) => {
-                self.reject_work(claim, held, Rejection::plain(reason), now_ms)
+            // A late answer to the `Land` of a merge that is being reconciled says nothing the
+            // `Reconcile` will not: only a landing of the journaled head (above) acts.
+            (
+                MergeStage::Reconcile { .. },
+                Verdict::Prepared { .. }
+                | Verdict::Tested
+                | Verdict::CandidateMissing
+                | Verdict::Landed { .. }
+                | Verdict::AlreadyLanded { .. }
+                | Verdict::Rejected { .. }
+                | Verdict::MainMoved
+                | Verdict::Infrastructure,
+            ) => {
+                self.state.merge_in_flight = Some(flight);
+                Vec::new()
             }
-            (_, Verdict::MainMoved) => self.retry_after_move(claim, held, now_ms),
+            (
+                MergeStage::Prepare
+                | MergeStage::Test { .. }
+                | MergeStage::Land { .. }
+                | MergeStage::Unstaged,
+                Verdict::Rejected { reason },
+            ) => self.reject_work(claim, held, Rejection::plain(reason), now_ms),
+            (MergeStage::Land { .. }, Verdict::MainMoved) => {
+                // A `Land` sent again after a reconcile found main at its base is refused: the
+                // doubt is over. One that was never in doubt changes nothing else.
+                let mut effects = Vec::new();
+                let held = if flight.doubt_since_ms.is_some() {
+                    let (held, told) = self.end_doubt(claim, held, true);
+                    effects = told;
+                    held
+                } else {
+                    held
+                };
+                effects.extend(self.retry_after_move(claim, held, now_ms));
+                effects
+            }
+            (
+                MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged,
+                Verdict::MainMoved,
+            ) => self.retry_after_move(claim, held, now_ms),
             (MergeStage::Test { .. } | MergeStage::Land { .. }, Verdict::CandidateMissing) => {
                 self.retry_after_missing_candidate(claim, held, now_ms)
             }
-            // An answer the stage did not ask for (a `Landed` for another head, a `Tested` to a
-            // `Prepare`) says nothing: it counts as the attempt not finishing.
+            // An answer the `Land` did not ask for (a `Landed` for another head, a `Tested`) says
+            // nothing about main: the `Land` is in doubt, reconciled and not counted.
             (
-                _,
+                MergeStage::Land { base, head },
+                Verdict::Prepared { .. }
+                | Verdict::Tested
+                | Verdict::Landed { .. }
+                | Verdict::AlreadyLanded { .. }
+                | Verdict::Infrastructure,
+            ) => {
+                let pair = (base.clone(), head.clone());
+                self.enter_doubt(flight, held, pair, (Pace::Backoff, now_ms))
+            }
+            // An answer the stage did not ask for (a `Tested` to a `Prepare`) says nothing: it
+            // counts as the attempt not finishing.
+            (
+                MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged,
                 Verdict::Prepared { .. }
                 | Verdict::Tested
                 | Verdict::CandidateMissing
@@ -423,28 +490,6 @@ impl Coordinator {
                 | Verdict::Infrastructure,
             ) => self.retry_after_infrastructure(claim, held, doubt, now_ms),
         }
-    }
-
-    /// The answer to a `Reconcile` of the merge in flight under `dispatch`.
-    pub fn reconcile_outcome(
-        &mut self,
-        dispatch: u64,
-        found: &Reconciliation,
-        now_ms: u64,
-    ) -> Vec<Effect> {
-        let _ = (dispatch, found, now_ms);
-        Vec::new()
-    }
-
-    /// The operator's answer for the `Land` of `claim` in doubt.
-    pub fn resolve_doubt(
-        &mut self,
-        claim: ClaimId,
-        landed: bool,
-        now_ms: u64,
-    ) -> Result<Vec<Effect>, NoLandInDoubt> {
-        let _ = (landed, now_ms);
-        Err(NoLandInDoubt { claim })
     }
 
     /// The answer to the call in flight moved the merge to its next stage: a new dispatch id, the
@@ -831,9 +876,8 @@ impl Coordinator {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
         };
-        if may_have_landed && !work.in_doubt {
-            work.in_doubt = true;
-            work.unanswered_from = dispatched_from;
+        if may_have_landed {
+            mark_doubt(&mut work, dispatched_from);
         }
         work.infra_failures += 1;
         if work.infra_failures > MAX_INFRA_RETRIES {
@@ -898,28 +942,18 @@ impl Coordinator {
 
 #[cfg(test)]
 impl Coordinator {
-    /// Takes the merge in flight, which must be at `Prepare`, through `Prepared` and `Tested`
-    /// and returns the `Land` dispatch now in flight: the one whose lost answer leaves a claim in
-    /// doubt.
-    pub(crate) fn reach_land(&mut self, now_ms: u64) -> MergeDispatch {
+    /// Turns the merge in flight, which must be at `Prepare`, into a marker as the build before
+    /// the staged landing stored it: a whole-merge call that may already have pushed. What is
+    /// left of "a lost answer is retried from `Prepare`", for the tests of what a landing found
+    /// after one does to the rest of the core.
+    pub(crate) fn make_unstaged(&mut self) {
         let flight = self
             .state
             .merge_in_flight
-            .clone()
+            .as_mut()
             .expect("a merge is in flight");
         assert_eq!(flight.stage, MergeStage::Prepare, "the merge is at Prepare");
-        let base = flight
-            .main
-            .clone()
-            .unwrap_or_else(|| CommitId("0".repeat(40)));
-        let prepared = MergeOutcome::Prepared {
-            base,
-            head: CommitId("e".repeat(40)),
-        };
-        self.merge_outcome(flight.dispatch, &prepared, now_ms);
-        let test = self.state.last_dispatch;
-        self.merge_outcome(test, &MergeOutcome::Tested {}, now_ms);
-        self.begin_merge(now_ms).expect("the Land is in flight")
+        flight.stage = MergeStage::Unstaged;
     }
 }
 

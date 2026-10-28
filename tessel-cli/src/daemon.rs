@@ -160,6 +160,7 @@ const KNOWN_MESSAGE_TYPES: &[&str] = &[
     "queued",
     "accepted",
     "merged",
+    "merge_doubt",
     "submit_rejected",
     "uncovered",
     "review_required",
@@ -3116,6 +3117,41 @@ mod tests {
         let kept: Vec<u64> = daemon.state.claims.iter().map(|h| h.claim.0).collect();
         assert_eq!(kept, vec![8]);
         assert!(inbox(&daemon).contains("lease_expired"));
+    }
+
+    #[tokio::test]
+    async fn a_merge_doubt_is_kept_on_the_claim_from_when_it_was_told_and_cleared_when_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        go_online(&mut daemon);
+        daemon.state.claims = vec![held(7), held(8)];
+        let doubt = |since_ms| ServerMsg::MergeDoubt {
+            claim: ClaimId(7),
+            since_ms,
+        };
+        daemon.on_server_msg(doubt(Some(5)));
+        let since = daemon.state.claims[0].merge_doubt_since_ms;
+        assert!(
+            since.is_some_and(|at| at > 5),
+            "counted on this clock, not the server's"
+        );
+        assert_eq!(daemon.state.claims[1].merge_doubt_since_ms, None);
+        daemon.on_server_msg(doubt(Some(9)));
+        assert_eq!(
+            daemon.state.claims[0].merge_doubt_since_ms, since,
+            "a repeat does not restart the age"
+        );
+        daemon.on_server_msg(doubt(None));
+        assert_eq!(daemon.state.claims[0].merge_doubt_since_ms, None);
+        daemon.on_server_msg(ServerMsg::MergeDoubt {
+            claim: ClaimId(99),
+            since_ms: Some(1),
+        });
+        assert!(daemon
+            .state
+            .claims
+            .iter()
+            .all(|h| h.merge_doubt_since_ms.is_none()));
     }
 
     #[test]

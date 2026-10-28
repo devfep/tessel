@@ -1734,3 +1734,27 @@ mod tests {
         assert!(!ProtocolRange::current().contains(PROTOCOL_VERSION + 1));
     }
 }
+
+#[cfg(test)]
+mod merge_doubt_tests {
+    use super::*;
+
+    #[test]
+    fn a_merge_doubt_message_without_a_time_says_the_doubt_is_over() {
+        let text = r#"{"type":"merge_doubt","claim":7}"#;
+        let msg: ServerMsg = serde_json::from_str(text).unwrap();
+        assert!(matches!(
+            msg,
+            ServerMsg::MergeDoubt {
+                claim: ClaimId(7),
+                since_ms: None
+            }
+        ));
+        let begun = ServerMsg::MergeDoubt {
+            claim: ClaimId(7),
+            since_ms: Some(42),
+        };
+        let json = serde_json::to_string(&begun).unwrap();
+        assert_eq!(json, r#"{"type":"merge_doubt","claim":7,"since_ms":42}"#);
+    }
+}

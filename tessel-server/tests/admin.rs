@@ -314,3 +314,53 @@ fn admin_a_server_started_with_identity_admits_a_minted_token_and_logs_neither_i
     );
     Ok(())
 }
+
+fn resolve(config: &Path, args: &[&str]) -> Result<Output, std::io::Error> {
+    Command::new(BINARY)
+        .args(["admin", "resolve"])
+        .args(args)
+        .arg("--config")
+        .arg(config)
+        .stdin(Stdio::null())
+        .output()
+}
+
+#[test]
+fn admin_resolve_needs_exactly_one_answer() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let config = write_config(dir.path(), false)?;
+    for args in [vec!["1"], vec!["1", "--landed", "--not-landed"]] {
+        let refused = resolve(&config, &args)?;
+        assert!(!refused.status.success(), "{args:?}");
+        assert!(
+            text(&refused.stderr).contains("--landed"),
+            "{args:?}: {}",
+            text(&refused.stderr)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn admin_resolve_refuses_while_the_server_holds_the_store_and_says_how_to_go_on() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let config = write_config(dir.path(), false)?;
+    let (server, log) = spawn_serve(&config)?;
+    until(&log, "listening")?;
+    let refused = resolve(&config, &["1", "--landed"])?;
+    assert!(!refused.status.success());
+    let message = text(&refused.stderr);
+    assert!(
+        message.contains("is in use by tessel-server pid") && message.contains("stop that server"),
+        "{message}"
+    );
+    drop(server);
+    let stopped = resolve(&config, &["1", "--landed"])?;
+    assert!(!stopped.status.success());
+    let message = text(&stopped.stderr);
+    assert!(
+        message.contains("no stored state") && !message.contains("in use"),
+        "with the server stopped the lock is free and the repository has nothing stored: {message}"
+    );
+    Ok(())
+}

@@ -2983,7 +2983,7 @@ fn the_call_and_commit_error_paths() -> Vec<Scenario> {
             kit.reply(CallId(42), CallAnswer::Unknown);
             kit
         }),
-        ("apply call answer", || {
+        ("lander reconcile call", || {
             let head = CommitId("a".into());
             answered_without_state(Request::Reconcile { head })
         }),

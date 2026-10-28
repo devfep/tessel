@@ -837,6 +837,63 @@ pub fn status_text(state: &State, running: bool, unread: usize, now_ms: u64) -> 
 mod tests {
     use super::*;
 
+    fn status_with_claim(since: Option<u64>) -> State {
+        State {
+            pid: 1,
+            agent: "a1".to_string(),
+            repo: "r".to_string(),
+            summary: "s".to_string(),
+            task_ref: None,
+            start_base: String::new(),
+            coordinator_head: None,
+            base: "b".to_string(),
+            socket: String::new(),
+            connection: Connection::Online,
+            lease_ms: None,
+            last_error: None,
+            skipped_frames: 0,
+            protocol_warning: None,
+            pending_notes: Vec::new(),
+            claims: vec![HeldClaim {
+                claim: ClaimId(3),
+                fence: tessel_coordinator::protocol::Fence(1),
+                expires_at_ms: 9,
+                race: None,
+                scopes: Vec::new(),
+                submitted: true,
+                submitted_commit: None,
+                awaiting_review: false,
+                merge_doubt_since_ms: since,
+                assumptions: Vec::new(),
+            }],
+            queued: None,
+            updated_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn status_shows_how_long_a_landing_has_been_in_doubt() {
+        let text = status_text(&status_with_claim(Some(1_000)), true, 0, 201_000);
+        assert!(
+            text.contains(
+                "[landing in doubt for 3m 20s: the lander cannot say whether main moved]"
+            ),
+            "{text}"
+        );
+        let calm = status_text(&status_with_claim(None), true, 0, 201_000);
+        assert!(!calm.contains("doubt"), "{calm}");
+    }
+
+    #[test]
+    fn an_age_is_seconds_then_minutes_then_hours() {
+        assert_eq!(age_text(0), "0s");
+        assert_eq!(age_text(59_999), "59s");
+        assert_eq!(age_text(60_000), "1m 0s");
+        assert_eq!(age_text(3_599_000), "59m 59s");
+        assert_eq!(age_text(3_600_000 + 5 * 60_000 + 59_000), "1h 5m");
+        assert_eq!(age_text(u64::MAX), "5124095576030h 25m");
+    }
+
     #[test]
     fn quoting_labels_the_author_prefixes_lines_and_escapes_control_characters() {
         let text = quote_untrusted(
