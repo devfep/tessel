@@ -7,19 +7,22 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-28 00:10 UTC. Main at `0e63247`, CI and the adapter suite green on it. Three
-server landings since the last STATE, each read by an Opus reviewer on the fork commit first:
-`1dd12a9` (NIGHTLY-TIME's kill-loop half, 27 October), `e2e473d` (SIM-APPLY-CRASH-MUTANT) and
-`0e63247` (KILL-LOOP-PROGRESS, held for two test-type signatures and approved by the orchestrator).
-Every landed commit has its note; lane A's daemon copied the notes of the four rebased ones 17 s
-after the landing. The 25 October STATE landings (`64e3a3f`, `933d47f`, rebased) had no notes on
-main until the orchestrator's daemon next started, 28 October 00:13 UTC, about 48 h later: the
-daemon copies a note when the server reports the landing, and the orchestrator's daemon was not
-running then (LANDER-REBASE-DROPS-NOTES evidence). The adapter suite's kill loop failed once on
-`e2e473d` ("kill 16: no new grant", the flake KILL-LOOP-PROGRESS's bounded first-grant wait is meant
-to absorb) and passed on rerun. The 26 and 27 October scheduled nightly and adapter runs were
-cancelled at their 120 and 30 min limits; #124 and KILL-LOOP-PROGRESS are the intended fixes,
-unproven until a scheduled run passes.
+**As of:** 2026-10-28 01:15 UTC. Main at `f217e0c`, CI and the adapter suite green on it. On 28
+October `1738513` (the previous STATE) and `f217e0c` (KILL-LOOP-I9-ACCEPT-TEST) landed. Three server
+landings before them and since the 25 October STATE, each read by an Opus reviewer on the fork
+commit first: `1dd12a9` (NIGHTLY-TIME's kill-loop half, 27 October), `e2e473d`
+(SIM-APPLY-CRASH-MUTANT) and `0e63247` (KILL-LOOP-PROGRESS, held for two test-type signatures and
+approved by the orchestrator). Every landed commit has its note; lane A's daemon copied the notes of
+the four rebased ones 17 s after the landing. The 25 October STATE landings (`64e3a3f`, `933d47f`,
+rebased) had no notes on main until the orchestrator's daemon next started, 28 October 00:13 UTC,
+about 48 h later: the daemon copies a note when the server reports the landing, and the
+orchestrator's daemon was not running then (LANDER-REBASE-DROPS-NOTES evidence). The adapter suite's
+kill loop failed once on `e2e473d` ("kill 16: no new grant", the flake KILL-LOOP-PROGRESS's bounded
+first-grant wait is meant to absorb) and passed on rerun. The 26 and 27 October scheduled nightly
+and adapter runs were cancelled at their 120 and 30 min limits; #124 and KILL-LOOP-PROGRESS are the
+intended fixes, unproven until a scheduled run passes. On #124's branch at `c6157f6` all 28 checks
+pass, and a dispatched 200-round kill loop (run 40612885606) passed in 470 s: 13,095 events, the
+last round's check 3.26 s (27.4 s at 7,331 events before KILL-LOOP-PROGRESS).
 The dogfood server runs `455c889` from `~/tessel-dogfood/bin`, restarted 27 October 22:25 UTC after
 the Mac was shut down. Main has moved on since that build, `src/` and `tessel-server/src/` included;
 only tests and docs changed since the last STATE, so no redeploy for them. Claims 107, 108 and 109
@@ -31,10 +34,12 @@ worktree and decides holds as `orchestrator`. Two lanes ran at once four times b
 coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up.
-In flight: lane A on KILL-LOOP-I9-ACCEPT-TEST (`.claude/worktrees/kill-loop-i9-test`). Lane B waits
-for Felix's yes on P1-CORE-STAGED-LANDING's `dab6a22` (`.claude/worktrees/core-staged`).
-`.claude/worktrees/orchestrator` holds this commit, `gate-main` (at `455c889`) is the gate
-worktree.
+In flight: nothing. Lane A has no unblocked task (P1-HOST-HARDENING and P1-ONE-BATCH follow
+P1-CORE-RECONCILE, P1-SIM-MERGE follows P1-CORE-STAGED-LANDING, P1-ADAPTER-SUITE's rest follows
+P1-HOST-HARDENING, P1-FAILPOINTS follows P1-SIM-MERGE and P1-CORE-RECONCILE, and NIGHTLY-TIME waits
+on Felix's merge of #124). Lane B waits for Felix's yes on P1-CORE-STAGED-LANDING's `dab6a22`
+(`.claude/worktrees/core-staged`). `.claude/worktrees/orchestrator` holds this commit, `gate-main`
+(at `455c889`) is the gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
 classifier still refuses the orchestrator's own pull request merges ("Merge Without Review"), so
@@ -60,8 +65,8 @@ Felix's own force-push was refused. A `pre-push` hook in the checkout's shared h
 **Waiting on Felix:** his written yes naming `dab6a22` (P1-CORE-STAGED-LANDING, Opus "Yes" on
 REVIEW-2; not verified by the lane: the staged server end to end, a restart at `Test` against a
 real lander and candidate ref); merging #124 (the nightly's full mutants in 8 round-robin
-shards, each 34-55 min; the kill-loop job 60 min for 200 rounds; main merged in at `c6157f6` so
-its kill-loop and aggregate-mutants checks rerun on the fixes); where P1-DENIAL-BOUND goes in the
+shards, each 32-55 min; the kill-loop job 60 min for 200 rounds; main merged in at `c6157f6`, and
+all 28 checks pass there); where P1-DENIAL-BOUND goes in the
 order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that lanes push branches; the
 suggested patch to his push hook that exempts only a URL git resolves to itself
 (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
@@ -74,18 +79,16 @@ SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-L
 cannot see the flake (see its entry).
 **Next:** on Felix's yes, submit `dab6a22` (claim it again first) and approve its hold, then
 P1-CORE-RECONCILE (lane B), which must cover what the `dab6a22` reviews found: a store written
-before the staged landing with a marker in flight decodes as `Prepare`, not in doubt; a `Land`
-that loses its lease answers `Unknown` (`tessel-server/src/landing/answer.rs:122` on `dab6a22`),
-so `Reconcile` must go back to `Prepare` when main is not the base or it loops; the simulator's
-`Reconcile` reports any prepared head as landed (`src/sim/driver.rs:691` on `dab6a22`); `Unknown`
-at `Land` is still counted. The orchestrator adds REVIEW-2's nit to it: dropping the
-`!work.in_doubt` first-baseline guard survives the coordinator's library tests, so a stages test
-needs two lost `Land`s on different bases. After #124 merges, the first 200-round scheduled kill
-loop on the fixed loop is its CI proof (REVIEW-5 estimated 13-26 min, on `77c73a6`, before the
-last fix). Felix makes
-ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts local
-connections on a world-writable socket; he closes it before the accounts move.
-LANDER-ADMIN-POLICY-DEAD waits for M6.
+before the staged landing with a marker in flight decodes as `Prepare`, not in doubt; a `Land` that
+loses its lease answers `Unknown` (`tessel-server/src/landing/answer.rs:122` on `dab6a22`), so
+`Reconcile` must go back to `Prepare` when main is not the base or it loops; the simulator's
+`Reconcile` reports any prepared head as landed (`src/sim/driver.rs:691` on `dab6a22`); `Unknown` at
+`Land` is still counted. The orchestrator adds REVIEW-2's nit to it: dropping the `!work.in_doubt`
+first-baseline guard survives the coordinator's library tests, so a stages test needs two lost
+`Land`s on different bases. After #124 merges, the first 200-round scheduled kill loop on the fixed
+loop is its CI proof (a dispatched 200-round run took 470 s). Felix makes ruleset step 3 ("Fast
+lane, simulator" required). Felix's Homebrew postgres trusts local connections on a world-writable
+socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -984,28 +987,31 @@ Lane A:
   stored 4 and 7 (about 90 ms each for the 7); other CI rounds ran at about 13-20 ms, as on this
   Mac. Inference, not proof.
 - [ ] **NIGHTLY-TIME** (kill-loop half landed as `1dd12a9`; workflows in #124, open) — lane A, from
-  the 26 October scheduled runs cancelled at their limits. Every kill-loop wait is bounded and
-  names its round, the check runs on a thread, the child is reaped with a bound. #124: the
-  nightly's full mutants in 8 round-robin shards (34-55 min each), the kill-loop job 60 min for
-  200 rounds, iterations capped at 1-300. Its first full run found one new missed mutant beyond
+  the 26 October scheduled runs cancelled at their limits. Every kill-loop wait is bounded and names
+  its round, the check runs on a thread, the child is reaped with a bound. #124: the nightly's full
+  mutants in 8 round-robin shards (32-55 min each over its two full runs), the kill-loop job 60 min
+  for 200 rounds, iterations capped at 1-300. Its first full run found one new missed mutant beyond
   the baseline (SIM-APPLY-CRASH-MUTANT). Done when #124 merges and a scheduled nightly and adapter
   run pass.
 - [x] **SIM-APPLY-CRASH-MUTANT** (`e2e473d`, landed by the server) — lane B. The scripted crash
   test pins `crashes_after_apply` at 0 disarmed and 1 armed, so a constant, skipped or doubled
   count fails. Opus "Yes" after one fix pass.
 - [x] **KILL-LOOP-PROGRESS** (`0e63247`, landed by the server) — lane A, from the 27 October
-  200-round run: no hang (it reached round 156 at the 30-minute limit), but the per-round check
-  grew quadratically (1.08 s at 1,486 events, 27.4 s at 7,331). The checkers are linear; events
-  grew because each denial lists every conflicting claim, and the test's agents released too few
-  while heartbeats renewed their leases. Each agent now holds at most 6 claims and amends a claim
-  at most 4 times, and releases a probed claim once its stale-release probe is refused; the I9
-  check counts a stale release as accepted (a violation) only when no refusal came for that probe
-  and the agent released the claim.
-  Each round waits, bounded, for its first grant. 25 rounds: check 162 ms at 1,836 events; 200
-  rounds not yet run on the fixed loop. Opus "Yes" after two fix passes.
-- [ ] **KILL-LOOP-I9-ACCEPT-TEST** — lane A, S, from KILL-LOOP-PROGRESS's review: no unit test
-  pins the kill loop's "retired fence accepted" verdict, so a mutant that never counts a stale
-  release as accepted survives every test, the CI kill loop included. Dispatched 28 October.
+  200-round run: no hang (it reached round 156 at the 30-minute limit), but the per-round check grew
+  quadratically (1.08 s at 1,486 events, 27.4 s at 7,331). The checkers are linear; events grew
+  because each denial lists every conflicting claim, and the test's agents released too few while
+  heartbeats renewed their leases. Each agent now holds at most 6 claims and amends a claim at most
+  4 times, and releases a probed claim once its stale-release probe is refused; the I9 check counts
+  a stale release as accepted (a violation) only when no refusal came for that probe and the agent
+  released the claim. Each round waits, bounded, for its first grant. 25 rounds: check 162 ms at
+  1,836 events; 200 rounds on #124's branch (dispatched run 40612885606): passed in 470 s, 13,095
+  events, last check 3.26 s. Opus "Yes" after two fix passes.
+- [x] **KILL-LOOP-I9-ACCEPT-TEST** (`f217e0c`, landed by the server) — lane A, S, from
+  KILL-LOOP-PROGRESS's review: no unit test pinned the kill loop's "retired fence accepted" verdict,
+  so a mutant that never counts a stale release as accepted survived every test, the CI kill loop
+  included. Three `violations()` tests now cover a stale release with no refusal and an agent
+  release (flagged), a refused one, and no refusal without an agent release of that claim (not
+  flagged); five mutants of the rule each fail at least one. Opus "Yes" after one fix pass.
 
 Lane B:
 - [x] **CANDIDATE-REF** (`a451766`, landed by the server) — lane B.
