@@ -6,8 +6,9 @@
 //!
 //! Checkers I1, I2, I4, I5, I8, I9 and I10 prove the invariants of `docs/proposals/phase-1.md` that
 //! the call path and the wake carry. The merge path is asynchronous and faulty (`lander`, and
-//! `driver::merge_path` for how its answers come back); the checkers that read what it does (I3,
-//! I6, I7, I11, I12 and COORD-HEAD-FROM-AGENT's) follow.
+//! `driver::merge_path` for how its answers come back), and I3, I6, I7, I11 and I12 and
+//! COORD-HEAD-FROM-AGENT's check (`merge_check`) read what it does. Their evidence and advisory
+//! clauses come with the rows that add evidence records and advisory mode (M6).
 
 pub mod check;
 pub mod clock;
@@ -170,26 +171,74 @@ fn merged_events(sim: &Sim) -> usize {
         .count()
 }
 
+/// Violations a seed is known to produce, with what must change before it stops: the seed, the
+/// checker, and why. `check_seed` accepts these and no others, and refuses a seed that no longer
+/// produces one, so a fix shows as a line to delete. The seeds are found by sweeping and move
+/// with the traffic and the lander (see `traffic`).
+///
+/// Every entry is the core counting `Unknown` after `Land`, or recovering a `Land` marker with no
+/// call waiting, as a failed attempt, and rejecting work the lander landed (I6). P1-CORE-RECONCILE
+/// asks the lander where main is instead.
+pub const EXPECTED_TO_FAIL: &[(u64, Checker, &str)] = &[
+    (11, Checker::I6, UNKNOWN_AFTER_LAND),
+    (72, Checker::I6, UNKNOWN_AFTER_LAND),
+    (108, Checker::I6, UNKNOWN_AFTER_LAND),
+    (143, Checker::I6, UNKNOWN_AFTER_LAND),
+    (154, Checker::I6, UNKNOWN_AFTER_LAND),
+    (187, Checker::I6, UNKNOWN_AFTER_LAND),
+    (265, Checker::I6, UNKNOWN_AFTER_LAND),
+];
+
+const UNKNOWN_AFTER_LAND: &str =
+    "P1-CORE-RECONCILE: the core counts Unknown after Land as a failed attempt";
+
+/// Whether `seed` is known to break `checker`.
+fn expected(seed: u64, checker: Checker) -> bool {
+    EXPECTED_TO_FAIL
+        .iter()
+        .any(|(s, c, _)| *s == seed && *c == checker)
+}
+
 /// Run `seed` against the real host with every checker, then again with none, and compare the two
-/// transcripts. The error names what failed and how to rerun the seed alone and keep it.
+/// transcripts. The error names what failed and how to rerun the seed alone and keep it. A
+/// violation the seed is expected to produce (`EXPECTED_TO_FAIL`) is not a failure, and a seed that
+/// no longer produces one is.
 pub fn check_seed(seed: u64) -> Result<Run, String> {
     let first = run_seed(seed, Variant::Correct, &Checker::ALL);
     let second = run_seed(seed, Variant::Correct, &[]);
     let hint = rerun_hint(seed);
-    if !first.violations.is_empty() {
-        let found: Vec<String> = first
-            .violations
-            .iter()
-            .map(|v| format!("{:?}: {}", v.checker, v.detail))
-            .collect();
-        return Err(format!("seed {seed} broke {}\n  {hint}", found.join("; ")));
+    let unexpected: Vec<String> = first
+        .violations
+        .iter()
+        .filter(|v| !expected(seed, v.checker))
+        .map(|v| format!("{:?}: {}", v.checker, v.detail))
+        .collect();
+    if !unexpected.is_empty() {
+        return Err(format!(
+            "seed {seed} broke {}\n  {hint}",
+            unexpected.join("; ")
+        ));
     }
-    if let Some(difference) = first_difference(&first.transcript, &second.transcript) {
+    let stopped = !first.violations.is_empty();
+    let upto = if stopped {
+        first.transcript.len().min(second.transcript.len())
+    } else {
+        second.transcript.len()
+    };
+    if let Some(difference) = first_difference(&first.transcript, &second.transcript[..upto]) {
         return Err(format!(
             "seed {seed} is not deterministic: {difference}\n  {hint}"
         ));
     }
-    if first.steps != STEPS {
+    if let Some((_, checker, why)) = EXPECTED_TO_FAIL
+        .iter()
+        .find(|(s, c, _)| *s == seed && !first.violations.iter().any(|v| v.checker == *c))
+    {
+        return Err(format!(
+            "seed {seed} no longer breaks {checker:?} ({why}): remove it from EXPECTED_TO_FAIL"
+        ));
+    }
+    if !stopped && first.steps != STEPS {
         return Err(format!(
             "seed {seed} stopped after {} steps\n  {hint}",
             first.steps
@@ -437,6 +486,18 @@ mod tests {
         let other = run_seed(4, Variant::Correct, &[]);
         assert_eq!(first_difference(&a.transcript, &again.transcript), None);
         assert!(first_difference(&a.transcript, &other.transcript).is_some());
+    }
+
+    #[test]
+    fn every_seed_that_is_expected_to_fail_still_fails_its_checker_and_no_other() {
+        for (seed, checker, why) in EXPECTED_TO_FAIL {
+            let run = run_seed(*seed, Variant::Correct, &Checker::ALL);
+            assert!(
+                !run.violations.is_empty() && run.violations.iter().all(|v| v.checker == *checker),
+                "seed {seed} ({why}): {:?}",
+                run.violations
+            );
+        }
     }
 
     #[test]

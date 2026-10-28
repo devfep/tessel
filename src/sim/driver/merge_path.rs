@@ -480,6 +480,51 @@ mod tests {
         );
     }
 
+    fn only(sim: &Sim, checker: Checker) -> Vec<String> {
+        check::run(sim, &[checker])
+            .into_iter()
+            .map(|violation| violation.detail)
+            .collect()
+    }
+
+    #[test]
+    fn the_stale_answer_agent_base_and_counter_checkers_read_what_the_driver_records() {
+        use crate::host::call::Request;
+        use crate::protocol::Event;
+        use crate::sim::driver::{Dispatch, StaleAnswer, BASE};
+
+        let mut sim = merged_with_repeated_replies();
+        sim.stale_answers.push(StaleAnswer {
+            call: 1,
+            dispatch: 1,
+            changed: Some("changed the stored state".to_string()),
+        });
+        assert_eq!(only(&sim, Checker::I7).len(), 1);
+        sim.dispatches.push(Dispatch {
+            request: Request::Land {
+                base: CommitId(BASE.to_string()),
+                head: CommitId("h".to_string()),
+            },
+            events_len: 0,
+        });
+        assert_eq!(only(&sim, Checker::AgentBase).len(), 1);
+        assert!(only(&sim, Checker::I11).is_empty());
+        let merged = Event {
+            seq: 1_000,
+            at_ms: 0,
+            run: crate::protocol::RunId("r".to_string()),
+            kind: EventKind::Merged {
+                claim: ClaimId(99),
+                head: CommitId("h".to_string()),
+                base: None,
+                unverified: Vec::new(),
+                untried_shadows: Vec::new(),
+            },
+        };
+        sim.tally.add_page(&[merged]);
+        assert_eq!(only(&sim, Checker::I11).len(), 1);
+    }
+
     #[test]
     fn a_merge_with_late_and_repeated_replies_keeps_every_checker_silent() {
         let sim = merged_with_repeated_replies();

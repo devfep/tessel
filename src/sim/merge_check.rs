@@ -7,18 +7,95 @@
 //! landing's evidence head with the head the lander tested, and none of the five reads advisory
 //! releases.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::protocol::{Event, Summary};
-use crate::sim::driver::{Delivery, Dispatch, SlotNote, StaleAnswer};
-use crate::sim::lander::Landing;
+use crate::host::call::Request;
+use crate::merge::MAX_INFRA_RETRIES;
+use crate::protocol::{ClaimId, Event, EventKind, ServerMsg, Summary};
+use crate::sim::driver::{Delivery, Dispatch, SlotCall, SlotNote, StaleAnswer};
+use crate::sim::lander::{Landing, MAIN0};
 
 /// How many merges may be dispatched in a row past a ready verification
-/// (`coordinator::verifying::VERIFY_SLOT_AFTER`, private there).
+/// (`coordinator::verifying::VERIFY_SLOT_AFTER`; not exported, so repeated here and pinned by a
+/// test against the core's behaviour).
 pub const VERIFY_SLOT_AFTER: usize = 4;
 
-pub fn i3(_events: &[Event], _transcript: &[Delivery], _history: &[Landing]) -> Vec<String> {
-    Vec::new()
+/// I3: at most one `Merged` per claim, in the log and among the messages clients received; each
+/// submission at most once on main's first-parent history; every landing the log reports is on
+/// that history.
+pub fn i3(events: &[Event], transcript: &[Delivery], history: &[Landing]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut merged: BTreeMap<u64, usize> = BTreeMap::new();
+    for event in events {
+        if let EventKind::Merged { claim, head, .. } = &event.kind {
+            *merged.entry(claim.0).or_insert(0) += 1;
+            if head.0 != MAIN0 && !history.iter().any(|landing| landing.head == head.0) {
+                found.push(format!(
+                    "claim {} merged at {}, which is not on main",
+                    claim.0, head.0
+                ));
+            }
+        }
+    }
+    for (claim, count) in merged.iter().filter(|(_, count)| **count > 1) {
+        found.push(format!("claim {claim} was merged {count} times"));
+    }
+    let mut told: BTreeMap<(u64, u64), usize> = BTreeMap::new();
+    for delivery in transcript {
+        if let ServerMsg::Merged { claim, .. } = &delivery.msg {
+            *told.entry((delivery.sock.0, claim.0)).or_insert(0) += 1;
+        }
+    }
+    for ((sock, claim), count) in told.iter().filter(|(_, count)| **count > 1) {
+        found.push(format!(
+            "socket {sock} was told claim {claim} merged {count} times"
+        ));
+    }
+    found.extend(repeated_on_main(history));
+    found
+}
+
+/// A fork commit or a head that appears more than once on main's first-parent history.
+fn repeated_on_main(history: &[Landing]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut heads = BTreeSet::new();
+    let mut forks = BTreeSet::new();
+    for landing in history {
+        if !heads.insert(landing.head.as_str()) {
+            found.push(format!("{} is on main twice", landing.head));
+        }
+        let fork = landing.fork.as_deref();
+        if fork.is_some_and(|fork| !forks.insert(fork)) {
+            found.push(format!(
+                "the submission {} landed on main twice",
+                fork.unwrap_or_default()
+            ));
+        }
+    }
+    found
+}
+
+/// Whether `reason` is the one the core gives a submission it could not merge for infrastructure
+/// reasons (`merging::infra_rejection`).
+fn is_infra_rejection(reason: &str) -> bool {
+    reason.contains("infrastructure, not a code failure")
+}
+
+/// The fork commits each claim submitted, by claim.
+fn forks_by_claim(events: &[Event]) -> BTreeMap<u64, Vec<String>> {
+    let mut forks: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for event in events {
+        if let EventKind::Submitted {
+            claim, fork_commit, ..
+        } = &event.kind
+        {
+            forks
+                .entry(claim.0)
+                .or_default()
+                .push(fork_commit.0.clone());
+        }
+    }
+    forks
 }
 
 /// What I6 compares the log with.
@@ -27,30 +104,227 @@ pub struct MergePath<'a> {
     pub cutoffs: &'a BTreeMap<String, u32>,
     /// The fork commits the lander cuts off at one stage, every time.
     pub poisoned: &'a [String],
-    /// Failures the lander did not cause: restarts and failed commits.
+    /// Failures the lander did not cause: restarts and failed commits, each of which the core can
+    /// count against a merge in flight, or lose a count of.
     pub other_failures: u64,
     /// Main's first-parent history.
     pub history: &'a [Landing],
 }
 
-pub fn i6(_events: &[Event], _path: &MergePath<'_>) -> Vec<String> {
-    Vec::new()
+/// I6: a commit that cuts the merge path off every time is dispatched at most
+/// `MAX_INFRA_RETRIES + 1` times (and once more for each failure that can lose a count), then its
+/// claim is rejected and never merged. A claim is rejected as an infrastructure failure only after
+/// that many of its calls were cut off or other failures struck, so no claim is rejected because
+/// of another's commit, and work that is on main is never rejected.
+pub fn i6(events: &[Event], path: &MergePath<'_>) -> Vec<String> {
+    let mut found = Vec::new();
+    let allowed = u64::from(MAX_INFRA_RETRIES) + 1 + path.other_failures;
+    let by_claim = forks_by_claim(events);
+    for fork in path.poisoned {
+        let seen = u64::from(path.cutoffs.get(fork).copied().unwrap_or(0));
+        if seen > allowed {
+            found.push(format!(
+                "{fork} was dispatched {seen} times past its {allowed} tries"
+            ));
+        }
+        found.extend(poisoned_outcome(events, &by_claim, fork, seen >= allowed));
+    }
+    found.extend(infra_rejections(events, &by_claim, path));
+    found
 }
 
-pub fn i7(_stale: &[StaleAnswer]) -> Vec<String> {
-    Vec::new()
+/// Each rejection as an infrastructure failure: charged enough, and not for landed work.
+fn infra_rejections(
+    events: &[Event],
+    by_claim: &BTreeMap<u64, Vec<String>>,
+    path: &MergePath<'_>,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut latest: BTreeMap<u64, &str> = BTreeMap::new();
+    for event in events {
+        if let EventKind::Submitted {
+            claim, fork_commit, ..
+        } = &event.kind
+        {
+            latest.insert(claim.0, fork_commit.0.as_str());
+        }
+        let EventKind::SubmitRejected { claim, reason } = &event.kind else {
+            continue;
+        };
+        if !is_infra_rejection(reason) {
+            continue;
+        }
+        let charged: u64 = by_claim
+            .get(&claim.0)
+            .into_iter()
+            .flatten()
+            .map(|fork| u64::from(path.cutoffs.get(fork).copied().unwrap_or(0)))
+            .sum();
+        if charged + path.other_failures <= u64::from(MAX_INFRA_RETRIES) {
+            found.push(format!(
+                "claim {} was rejected as an infrastructure failure after only {charged} cut-off calls and {} other failures",
+                claim.0, path.other_failures
+            ));
+        }
+        let landed = latest.get(&claim.0).is_some_and(|fork| {
+            path.history
+                .iter()
+                .any(|landing| landing.fork.as_deref() == Some(*fork))
+        });
+        if landed {
+            found.push(format!(
+                "claim {} was rejected as an infrastructure failure though its work is on main",
+                claim.0
+            ));
+        }
+    }
+    found
 }
 
-pub fn i11(_events: &[Event], _counters: &Summary) -> Vec<String> {
-    Vec::new()
+/// What became of the claim that submitted a poisoned commit: it must not merge, and once every
+/// try is spent it must have been rejected (or have ended some other way).
+fn poisoned_outcome(
+    events: &[Event],
+    by_claim: &BTreeMap<u64, Vec<String>>,
+    fork: &str,
+    spent: bool,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    let Some((claim, _)) = by_claim
+        .iter()
+        .find(|(_, forks)| forks.iter().any(|f| f == fork))
+    else {
+        return found;
+    };
+    let ended_by = |wanted: fn(&EventKind, ClaimId) -> bool| {
+        events
+            .iter()
+            .any(|event| wanted(&event.kind, ClaimId(*claim)))
+    };
+    if ended_by(|kind, claim| matches!(kind, EventKind::Merged { claim: c, .. } if *c == claim)) {
+        found.push(format!(
+            "claim {claim} merged though its commit {fork} cuts the merge path off every time"
+        ));
+    }
+    let gone = ended_by(|kind, claim| {
+        matches!(
+            kind,
+            EventKind::SubmitRejected { claim: c, .. }
+                | EventKind::ClaimReleased { claim: c, .. } if *c == claim
+        )
+    });
+    if spent && !gone {
+        found.push(format!(
+            "claim {claim}: every try of {fork} is spent and it was not rejected"
+        ));
+    }
+    found
 }
 
-pub fn i12(_notes: &[SlotNote], _events: &[Event]) -> Vec<String> {
-    Vec::new()
+/// I7: an answer for a dispatch that was not in flight changes nothing the host stores.
+pub fn i7(stale: &[StaleAnswer]) -> Vec<String> {
+    stale
+        .iter()
+        .filter_map(|answer| {
+            let changed = answer.changed.as_ref()?;
+            Some(format!(
+                "the answer to call {} for dispatch {}, not in flight, {changed}",
+                answer.call, answer.dispatch
+            ))
+        })
+        .collect()
 }
 
-pub fn agent_base(_dispatches: &[Dispatch], _declared: &str) -> Vec<String> {
-    Vec::new()
+/// I11 (without its evidence clause): the counters the host keeps as it goes equal
+/// `Summary::from_events` over the log.
+pub fn i11(events: &[Event], counters: &Summary) -> Vec<String> {
+    let expected = Summary::from_events(events);
+    if expected == *counters {
+        return Vec::new();
+    }
+    vec![format!(
+        "the counters {counters:?} differ from the log's {expected:?}"
+    )]
+}
+
+/// I12 (without advisory mode): a verification that is ready is dispatched within a bounded number
+/// of landings. Counted in landings, not dispatches, because a merge in flight is never
+/// interrupted and a `Land` in doubt holds the verification back; the bound is one more than the
+/// core's `VERIFY_SLOT_AFTER` for the merge that was already out when the verification became
+/// ready.
+pub fn i12(notes: &[SlotNote], events: &[Event]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut ready_since: Option<usize> = None;
+    for note in notes {
+        match (note.call, note.verification_ready) {
+            (SlotCall::Trial, _) | (SlotCall::MergeStart, false) => ready_since = None,
+            (SlotCall::MergeStart, true) => {
+                let since = *ready_since.get_or_insert(note.events_len);
+                let landed = landings(events, since, note.events_len);
+                if landed > VERIFY_SLOT_AFTER {
+                    found.push(format!(
+                        "a merge was dispatched after {landed} landings with a verification ready"
+                    ));
+                }
+            }
+            (SlotCall::Other, _) => {}
+        }
+    }
+    found
+}
+
+/// How many `Merged` events the log holds with `from <= seq < to`, as positions in the log.
+fn landings(events: &[Event], from: usize, to: usize) -> usize {
+    events
+        .iter()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .filter(|event| matches!(event.kind, EventKind::Merged { .. }))
+        .count()
+}
+
+/// COORD-HEAD-FROM-AGENT: no dispatch names `declared`, the head agents say they are on. The core
+/// reads main's head from the lander; a call built on an agent's word is built on a commit main
+/// may never have held.
+pub fn agent_base(dispatches: &[Dispatch], declared: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for (index, dispatch) in dispatches.iter().enumerate() {
+        let names = match &dispatch.request {
+            Request::Test { base, head } | Request::Land { base, head } => {
+                vec![base.0.as_str(), head.0.as_str()]
+            }
+            Request::Trial {
+                commit,
+                before,
+                main,
+                ..
+            } => {
+                let mut names = vec![before.0.as_str(), main.0.as_str()];
+                names.extend(commit.iter().map(|c| c.0.as_str()));
+                names
+            }
+            Request::Reconcile { head } => vec![head.0.as_str()],
+            Request::Prepare { .. } | Request::ReadHead { .. } => Vec::new(),
+        };
+        if names.contains(&declared) {
+            found.push(format!(
+                "dispatch {index} ({}) names the head an agent declared",
+                request_name(&dispatch.request)
+            ));
+        }
+    }
+    found
+}
+
+fn request_name(request: &Request) -> &'static str {
+    match request {
+        Request::Prepare { .. } => "prepare",
+        Request::Test { .. } => "test",
+        Request::Land { .. } => "land",
+        Request::Trial { .. } => "trial",
+        Request::ReadHead { .. } => "read head",
+        Request::Reconcile { .. } => "reconcile",
+    }
 }
 
 #[cfg(test)]

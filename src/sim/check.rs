@@ -7,7 +7,8 @@
 //! pending, later than now. I5: the stored state round-trips through the codec. I8: no two
 //! granted claims conflict. I9: no fence, claim id or seq is seen twice, and a retired fence is
 //! refused. I10: nothing is dispatched for a submission held for review, nothing uncovered is
-//! merged, and no lease is extended without a heartbeat.
+//! merged, and no lease is extended without a heartbeat. The checkers that read the merge path
+//! (I3, I6, I7, I11, I12 and COORD-HEAD-FROM-AGENT's) are in `merge_check`; `run` calls them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
@@ -22,7 +23,8 @@ use crate::merge::MERGE_WATCHDOG_MS;
 use crate::protocol::{
     ClaimId, ErrorCode, Event, EventKind, Mode, RaceId, Scope, ScopeClaim, ServerMsg,
 };
-use crate::sim::driver::{Delivery, Dispatch, RequestKind, Sent, Sim, Watch};
+use crate::sim::driver::{Delivery, Dispatch, RequestKind, Sent, Sim, Watch, BASE};
+use crate::sim::merge_check;
 use crate::sim::store::Store;
 
 /// Which invariant a violation breaks.
@@ -30,11 +32,18 @@ use crate::sim::store::Store;
 pub enum Checker {
     I1,
     I2,
+    I3,
     I4,
     I5,
+    I6,
+    I7,
     I8,
     I9,
     I10,
+    I11,
+    I12,
+    /// COORD-HEAD-FROM-AGENT: no dispatch names a head an agent declared.
+    AgentBase,
     /// The harness itself: the host kept asking the adapter past any bound, or the driver
     /// made a mistake.
     Harness,
@@ -42,14 +51,20 @@ pub enum Checker {
 
 impl Checker {
     /// The checkers a run enables by default. `Harness` reports the driver's own mistakes.
-    pub const ALL: [Checker; 8] = [
+    pub const ALL: [Checker; 14] = [
         Checker::I1,
         Checker::I2,
+        Checker::I3,
         Checker::I4,
         Checker::I5,
+        Checker::I6,
+        Checker::I7,
         Checker::I8,
         Checker::I9,
         Checker::I10,
+        Checker::I11,
+        Checker::I12,
+        Checker::AgentBase,
         Checker::Harness,
     ];
 }
@@ -83,6 +98,20 @@ pub fn run(sim: &Sim, enabled: &[Checker]) -> Vec<Violation> {
                 sim.heartbeats(),
             ),
             Checker::I9 => i9(sim.transcript(), sim.sent(), &|sock| sim.is_open(sock)),
+            Checker::I3 => merge_check::i3(&events, sim.transcript(), sim.lander().history()),
+            Checker::I6 => merge_check::i6(
+                &events,
+                &merge_check::MergePath {
+                    cutoffs: sim.lander().cutoffs(),
+                    poisoned: &sim.lander().poisoned(),
+                    other_failures: sim.crashes() + sim.failed_commits(),
+                    history: sim.lander().history(),
+                },
+            ),
+            Checker::I7 => merge_check::i7(sim.stale_answers()),
+            Checker::I11 => merge_check::i11(&events, &sim.counters()),
+            Checker::I12 => merge_check::i12(sim.slot_notes(), &events),
+            Checker::AgentBase => merge_check::agent_base(sim.dispatches(), BASE),
             Checker::Harness => sim.faults().to_vec(),
         };
         for detail in details {
@@ -845,5 +874,24 @@ fn mode_permits(held: Mode, work: Mode) -> bool {
         Mode::Depend => true,
         Mode::EditBody => held == Mode::EditSignature,
         Mode::EditSignature | Mode::Create => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn i4_while_a_call_is_out_wants_only_the_watchdog() {
+        let now = 1_000;
+        let due = 1_500;
+        assert!(i4_suspended(Some(now + 1), now, due).is_empty());
+        assert!(i4_suspended(Some(now + MERGE_WATCHDOG_MS), now, due).is_empty());
+        assert_eq!(i4_suspended(None, now, due).len(), 1);
+        assert_eq!(i4_suspended(Some(now), now, due).len(), 1);
+        assert_eq!(
+            i4_suspended(Some(now + MERGE_WATCHDOG_MS + 1), now, due).len(),
+            1
+        );
     }
 }
