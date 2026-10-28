@@ -235,6 +235,7 @@ fn answer_in(msg: ServerMsg) -> Option<Answer> {
         | ServerMsg::Uncovered { .. }
         | ServerMsg::ReviewRequired { .. }
         | ServerMsg::BaseMoved { .. }
+        | ServerMsg::MergeDoubt { .. }
         | ServerMsg::AssumptionChallenged { .. }
         | ServerMsg::LeaseExpired { .. }
         | ServerMsg::Event { .. } => None,

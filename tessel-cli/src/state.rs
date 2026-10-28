@@ -30,6 +30,11 @@ pub struct HeldClaim {
     /// in the merge queue (`Accepted` after approval).
     #[serde(default)]
     pub awaiting_review: bool,
+    /// This machine's clock when the coordinator said the landing of the submission is in doubt
+    /// (`MergeDoubt`): it may or may not have moved main, and the coordinator is finding out.
+    /// `None` when it is not, and cleared when the coordinator says the doubt is over.
+    #[serde(default)]
+    pub merge_doubt_since_ms: Option<u64>,
     /// What the agent said it relies on but does not own when it made this claim, from `--assume`.
     /// `tessel submit` writes them into the commit's git note.
     #[serde(default)]

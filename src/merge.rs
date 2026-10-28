@@ -47,6 +47,9 @@ pub const TEST_CALL_TIMEOUT_MS: u64 = STEWARD_CALL_TIMEOUT_MS;
 /// How long the coordinator waits for a `Land`: clone main, fetch the candidate, push, read back.
 pub const LAND_CALL_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 
+/// How long the coordinator waits for a `Reconcile`: one read of main and an ancestry check.
+pub const RECONCILE_CALL_TIMEOUT_MS: u64 = 60 * 1000;
+
 /// While a merge runs, a watchdog alarm is kept this long after the call starts: past the
 /// timeout, so it fires only if the instance died without scheduling the next alarm.
 pub const MERGE_WATCHDOG_MS: u64 = STEWARD_CALL_TIMEOUT_MS + 60_000;

@@ -159,6 +159,35 @@ fn scopes_text(scopes: &[ScopeClaim]) -> String {
     scopes.iter().map(claim_text).collect::<Vec<_>>().join(", ")
 }
 
+/// "3m 20s": the two largest units of `ms`, or seconds below a minute.
+fn age_text(ms: u64) -> String {
+    let seconds = ms / 1_000;
+    match (seconds / 3_600, seconds / 60 % 60, seconds % 60) {
+        (0, 0, seconds) => format!("{seconds}s"),
+        (0, minutes, seconds) => format!("{minutes}m {seconds}s"),
+        (hours, minutes, _) => format!("{hours}h {minutes}m"),
+    }
+}
+
+fn merge_doubt_line(claim: u64, in_doubt: bool) -> String {
+    let what = if in_doubt {
+        "the landing is in doubt: the lander cannot say whether main moved"
+    } else {
+        "the landing is no longer in doubt"
+    };
+    format!("  claim {claim}: {what}\n")
+}
+
+/// What `status` adds to a submitted claim whose landing is in doubt.
+fn doubt_text(held: &HeldClaim, now_ms: u64) -> String {
+    held.merge_doubt_since_ms.map_or_else(String::new, |since| {
+        format!(
+            " [landing in doubt for {}: the lander cannot say whether main moved]",
+            age_text(now_ms.saturating_sub(since))
+        )
+    })
+}
+
 fn held_line(held: &HeldClaim) -> String {
     let submitted = if held.submitted { " [submitted]" } else { "" };
     let race = held
@@ -567,6 +596,9 @@ pub fn notice_text(notice: &Notice) -> String {
             let _ = writeln!(out, "  code {code:?}");
             out.push_str(&quote_untrusted("the coordinator", message));
         }
+        ServerMsg::MergeDoubt { claim, since_ms } => {
+            out.push_str(&merge_doubt_line(claim.0, since_ms.is_some()));
+        }
         ServerMsg::Merged { claim, head, .. } => {
             let head = escape(&head.0);
             let _ = writeln!(out, "  claim {} is merged; main is now at {head}", claim.0);
@@ -739,7 +771,7 @@ pub fn race_result_text(
     out
 }
 
-pub fn status_text(state: &State, running: bool, unread: usize) -> String {
+pub fn status_text(state: &State, running: bool, unread: usize, now_ms: u64) -> String {
     let mut out = String::new();
     let daemon = if running {
         "running"
@@ -782,7 +814,12 @@ pub fn status_text(state: &State, running: bool, unread: usize) -> String {
         let _ = writeln!(out, "claims: none");
     }
     for held in &state.claims {
-        let _ = writeln!(out, "claim: {}", held_line(held));
+        let _ = writeln!(
+            out,
+            "claim: {}{}",
+            held_line(held),
+            doubt_text(held, now_ms)
+        );
     }
     if let Some(queued) = &state.queued {
         let _ = writeln!(

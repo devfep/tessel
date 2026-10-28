@@ -704,7 +704,7 @@ pub async fn status(cwd: &Path, json: bool) -> anyhow::Result<Report> {
         )));
     }
     Ok(Report::ok(match state {
-        Some(state) => status_text(&state, running, unread),
+        Some(state) => status_text(&state, running, unread, crate::daemon::now_ms()),
         None => "daemon: not running; run `tessel start \"<intent>\"`\n".to_string(),
     }))
 }

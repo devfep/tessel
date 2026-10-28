@@ -616,6 +616,16 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base: Option<CommitId>,
     },
+    /// The landing of a submitted claim is in doubt: the lander was asked to move main and cannot
+    /// say whether it did. The core asks again (`Reconcile`) and never rejects the work for it.
+    /// `since_ms` is the server's clock when the doubt began; `None` says it is over (the work
+    /// is back in the queue, or it landed or was rejected, which `Merged` and `SubmitRejected`
+    /// report). Old coordinators never send it, so a CLI shows no doubt for them.
+    MergeDoubt {
+        claim: ClaimId,
+        #[serde(default)]
+        since_ms: Option<u64>,
+    },
     SubmitRejected {
         claim: ClaimId,
         reason: String,

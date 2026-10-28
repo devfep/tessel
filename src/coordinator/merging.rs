@@ -91,26 +91,38 @@ fn infra_rejection(tries: u32) -> String {
     )
 }
 
-/// Which call of the staged landing a dispatch is. `Test` and `Land` carry the pair the lander is
-/// asked about: `head` is the commit `Prepare` made on top of `base`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Which call of the staged landing a dispatch is. `Test`, `Land` and `Reconcile` carry the pair the
+/// lander is asked about: `head` is the commit `Prepare` made on top of `base`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
 pub enum MergeStage {
     /// Rebase the commit and keep the result on the candidate ref. Nothing lands.
-    #[default]
     Prepare,
     /// Run the tests on the candidate `head`.
     Test { base: CommitId, head: CommitId },
     /// Move main from `base` to `head`.
     Land { base: CommitId, head: CommitId },
+    /// A `Land` left main in an unknown state: ask whether `head` is an ancestor of main and
+    /// where main is. It keeps the dispatch id of the `Land` it follows, and a `Land` sent again
+    /// after it names the same `base` and `head`.
+    Reconcile { base: CommitId, head: CommitId },
+    /// A marker stored before the staged landing: its one whole-merge call may already have pushed
+    /// to main, and no head was journaled to ask about. Only a restart finds it (`recover_merge`),
+    /// and it is treated as a `Land` that did not finish.
+    Unstaged,
 }
 
 impl MergeStage {
+    /// What a stored marker without a stage is.
+    pub(super) fn unstaged() -> Self {
+        MergeStage::Unstaged
+    }
+
     /// Whether an attempt at this stage may already have changed main.
     fn may_have_landed(&self) -> bool {
         match self {
             MergeStage::Prepare | MergeStage::Test { .. } => false,
-            MergeStage::Land { .. } => true,
+            MergeStage::Land { .. } | MergeStage::Reconcile { .. } | MergeStage::Unstaged => true,
         }
     }
 
@@ -119,11 +131,38 @@ impl MergeStage {
     /// `main` (the core's own head at `Prepare`) when main moved outside the core in between.
     fn dispatched_from(&self, main: Option<&CommitId>) -> Option<CommitId> {
         match self {
-            MergeStage::Prepare | MergeStage::Test { .. } => main.cloned(),
-            MergeStage::Land { base, .. } => Some(base.clone()),
+            MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged => main.cloned(),
+            MergeStage::Land { base, .. } | MergeStage::Reconcile { base, .. } => {
+                Some(base.clone())
+            }
         }
     }
 }
+
+/// What the lander's `Reconcile` found out about the `Land` in doubt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reconciliation {
+    /// The journaled head is an ancestor of main: the work landed.
+    Landed,
+    /// The head is not on main. `main` is where main is, if the answer said.
+    NotLanded { main: Option<CommitId> },
+    /// The reconcile itself got no answer.
+    Unknown,
+}
+
+/// `Coordinator::resolve_doubt` found nothing to resolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoLandInDoubt {
+    pub claim: ClaimId,
+}
+
+impl std::fmt::Display for NoLandInDoubt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "claim {} has no Land in doubt", self.claim.0)
+    }
+}
+
+impl std::error::Error for NoLandInDoubt {}
 
 /// One call of a merge for the shell to ask the lander for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +241,8 @@ impl Coordinator {
             dispatch: self.state.last_dispatch + 1,
             main: self.state.head.clone(),
             stage: MergeStage::Prepare,
+            doubts: 0,
+            doubt_since_ms: None,
         };
         let dispatch = self.dispatch_of(&flight)?;
         self.state.last_dispatch = flight.dispatch;
@@ -350,6 +391,9 @@ impl Coordinator {
             (
                 MergeStage::Land {
                     head: journaled, ..
+                }
+                | MergeStage::Reconcile {
+                    head: journaled, ..
                 },
                 Verdict::Landed { base, head },
             ) if *journaled == head => self.land(claim, &held, Some(base), head, now_ms),
@@ -379,6 +423,28 @@ impl Coordinator {
                 | Verdict::Infrastructure,
             ) => self.retry_after_infrastructure(claim, held, doubt, now_ms),
         }
+    }
+
+    /// The answer to a `Reconcile` of the merge in flight under `dispatch`.
+    pub fn reconcile_outcome(
+        &mut self,
+        dispatch: u64,
+        found: &Reconciliation,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let _ = (dispatch, found, now_ms);
+        Vec::new()
+    }
+
+    /// The operator's answer for the `Land` of `claim` in doubt.
+    pub fn resolve_doubt(
+        &mut self,
+        claim: ClaimId,
+        landed: bool,
+        now_ms: u64,
+    ) -> Result<Vec<Effect>, NoLandInDoubt> {
+        let _ = (landed, now_ms);
+        Err(NoLandInDoubt { claim })
     }
 
     /// The answer to the call in flight moved the merge to its next stage: a new dispatch id, the
@@ -487,6 +553,8 @@ impl Coordinator {
             dispatch,
             ref stage,
             main: _,
+            doubts: _,
+            doubt_since_ms: _,
         } = *flight;
         let held = self.state.claims.get(&claim.0)?;
         let work = held.work.as_ref()?;

@@ -971,6 +971,7 @@ impl Daemon {
                 self.queue_notes_of_submission(claim, base, head);
                 self.on_merged(claim, msg);
             }
+            ServerMsg::MergeDoubt { claim, since_ms } => self.on_merge_doubt(claim, since_ms),
             ServerMsg::SubmitRejected { claim, .. } => self.on_submit_rejected(claim, msg),
             ServerMsg::Uncovered {
                 req,
@@ -1160,6 +1161,7 @@ impl Daemon {
                 submitted: false,
                 submitted_commit: None,
                 awaiting_review: false,
+                merge_doubt_since_ms: None,
                 assumptions: pending.assumptions,
             };
             self.replace_or_push(held.clone());
@@ -1469,6 +1471,7 @@ impl Daemon {
             submitted: server.submitted,
             submitted_commit: server.submitted_commit,
             awaiting_review: server.awaiting_review,
+            merge_doubt_since_ms: None,
             assumptions: server.assumptions,
         };
         self.state.claims.push(held.clone());
@@ -1696,6 +1699,23 @@ impl Daemon {
             ),
             Some(msg),
         );
+    }
+
+    /// The coordinator cannot say whether the landing of `claim` took effect (`since_ms` set), or
+    /// says it is over. The age shown in status counts from when this daemon was told, on its own
+    /// clock; a daemon that was offline then is not told later.
+    fn on_merge_doubt(&mut self, claim: ClaimId, since_ms: Option<u64>) {
+        let Some(held) = self
+            .state
+            .claims
+            .iter_mut()
+            .find(|held| held.claim == claim)
+        else {
+            return;
+        };
+        let begun = since_ms.map(|_| held.merge_doubt_since_ms.unwrap_or_else(now_ms));
+        held.merge_doubt_since_ms = begun;
+        self.persist();
     }
 
     /// The first of `Accepted` and `ReviewRequired` for a claim decides the submit reply; the
@@ -2290,6 +2310,7 @@ impl Daemon {
             submitted: false,
             submitted_commit: None,
             awaiting_review: false,
+            merge_doubt_since_ms: None,
             assumptions: Vec::new(),
         };
         self.send_release(&held);
@@ -2963,6 +2984,7 @@ mod tests {
             submitted: false,
             submitted_commit: None,
             awaiting_review: false,
+            merge_doubt_since_ms: None,
             assumptions: Vec::new(),
         }
     }

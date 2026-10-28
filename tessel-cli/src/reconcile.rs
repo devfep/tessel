@@ -409,6 +409,7 @@ mod tests {
             submitted: false,
             submitted_commit: None,
             awaiting_review: false,
+            merge_doubt_since_ms: None,
             assumptions: Vec::new(),
         }
     }

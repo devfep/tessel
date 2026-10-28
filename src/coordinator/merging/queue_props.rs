@@ -80,7 +80,8 @@ impl Stage {
         match stage {
             MergeStage::Prepare => Stage::Prepare,
             MergeStage::Test { .. } => Stage::Test,
-            MergeStage::Land { .. } => Stage::Land,
+            MergeStage::Land { .. } | MergeStage::Reconcile { .. } => Stage::Land,
+            MergeStage::Unstaged => Stage::Prepare,
         }
     }
 }

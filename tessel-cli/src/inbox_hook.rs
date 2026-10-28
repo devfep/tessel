@@ -165,6 +165,7 @@ fn settles(msg: &ServerMsg) -> Option<(ClaimId, Settled)> {
         | ServerMsg::Queued { .. }
         | ServerMsg::Accepted { .. }
         | ServerMsg::BaseMoved { .. }
+        | ServerMsg::MergeDoubt { .. }
         | ServerMsg::AssumptionChallenged { .. }
         | ServerMsg::LeaseExpired { .. }
         | ServerMsg::RaceOpened { .. }

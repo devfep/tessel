@@ -2061,6 +2061,160 @@ fn host_a_marker_with_no_call_waiting_is_a_cut_off() {
     );
 }
 
+/// The last merge call that is out, if it is not a head read.
+fn merge_call_out(kit: &Testkit) -> Call {
+    kit.calls()
+        .iter()
+        .rev()
+        .find(|call| !matches!(call.request, Request::ReadHead { .. }))
+        .expect("a merge call was made")
+        .clone()
+}
+
+fn reconciled(main: &str, landed: bool) -> CallAnswer {
+    CallAnswer::Reconciled {
+        main: CommitId(main.into()),
+        landed,
+    }
+}
+
+/// R24 from M5: a marker found on `Loaded` that a `Land` may have left on main is reconciled, not
+/// counted as a cut-off. A `Prepare` or a `Test` marker still is (the test above).
+#[test]
+fn host_a_land_marker_found_on_load_is_reconciled_and_not_counted_as_a_cut_off() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let land = merge_call_out_after(&mut kit);
+
+    kit.restart();
+    wake(&mut kit);
+    assert!(merge_marker_stored(&kit), "the Land is not given up on");
+    assert_eq!(infra_failures(&kit, "1"), 0, "and not counted");
+    let reconcile = merge_call_out(&kit);
+    assert_eq!(
+        reconcile.request,
+        Request::Reconcile {
+            head: CommitId("new".into())
+        }
+    );
+    assert_eq!(
+        reconcile.dispatch_id, land.dispatch_id,
+        "the Land's dispatch"
+    );
+
+    kit.reply(reconcile.id, reconciled("new", true));
+    kit.settle();
+    assert!(!merge_marker_stored(&kit), "the work landed");
+    assert_eq!(state(&kit)["head"], json!("new"));
+    assert!(
+        state(&kit)["claims"]["1"].is_null(),
+        "and the claim is released"
+    );
+}
+
+#[test]
+fn host_unknown_from_a_land_is_reconciled_after_a_backoff_and_a_land_sent_again_keeps_its_dispatch()
+{
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let land = merge_call_out_after(&mut kit);
+    kit.reply(land.id, CallAnswer::Unknown);
+    kit.settle();
+    assert_eq!(
+        infra_failures(&kit, "1"),
+        0,
+        "Unknown after Land is not an attempt"
+    );
+    assert!(merge_marker_stored(&kit));
+    assert_eq!(
+        kit.wake(),
+        Some(kit.now_ms() + INFRA_BACKOFF_BASE_MS),
+        "the reconcile waits out the backoff"
+    );
+
+    kit.advance(INFRA_BACKOFF_BASE_MS);
+    wake(&mut kit);
+    let reconcile = merge_call_out(&kit);
+    assert!(
+        matches!(reconcile.request, Request::Reconcile { .. }),
+        "{reconcile:?}"
+    );
+    assert_eq!(reconcile.dispatch_id, land.dispatch_id);
+
+    kit.reply(reconcile.id, reconciled("old", false));
+    kit.settle();
+    let again = merge_call_out(&kit);
+    assert_eq!(again.request, land.request, "the same base and head");
+    assert_eq!(again.dispatch_id, land.dispatch_id, "the same dispatch id");
+    assert_ne!(again.id, land.id, "a new call");
+
+    kit.reply(again.id, landed());
+    kit.settle();
+    assert!(!merge_marker_stored(&kit));
+    assert_eq!(state(&kit)["head"], json!("new"));
+}
+
+#[test]
+fn host_a_reconcile_that_finds_main_elsewhere_sends_the_claim_back_to_prepare() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let land = merge_call_out_after(&mut kit);
+    kit.lose(land.id);
+    kit.settle();
+    kit.advance(INFRA_BACKOFF_BASE_MS);
+    wake(&mut kit);
+    let reconcile = merge_call_out(&kit);
+    kit.reply(reconcile.id, reconciled("elsewhere", false));
+    kit.settle();
+    let next = merge_call_out(&kit);
+    assert!(matches!(next.request, Request::Prepare { .. }), "{next:?}");
+    assert!(next.dispatch_id.0 > land.dispatch_id.0);
+    assert_eq!(infra_failures(&kit, "1"), 0);
+}
+
+#[test]
+fn host_a_reconcile_that_gets_no_answer_is_asked_again_and_never_rejects() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let land = merge_call_out_after(&mut kit);
+    kit.reply(land.id, CallAnswer::Unknown);
+    kit.settle();
+    for round in 0..6 {
+        kit.advance(90_000);
+        wake(&mut kit);
+        let reconcile = merge_call_out(&kit);
+        assert!(
+            matches!(reconcile.request, Request::Reconcile { .. }),
+            "round {round}"
+        );
+        if round % 2 == 0 {
+            kit.reply(reconcile.id, CallAnswer::Unknown);
+        } else {
+            kit.lose(reconcile.id);
+        }
+        kit.settle();
+        assert_eq!(infra_failures(&kit, "1"), 0, "round {round}");
+        assert!(
+            state(&kit)["claims"]["1"]["work"].is_object(),
+            "round {round}"
+        );
+    }
+}
+
+/// The `Land` call of a submission whose `Prepare` is out.
+fn merge_call_out_after(kit: &mut Testkit) -> Call {
+    let id = reach_the_land_call(kit);
+    kit.calls()
+        .iter()
+        .find(|call| call.id == id)
+        .unwrap()
+        .clone()
+}
+
 #[test]
 fn host_a_verification_marker_with_no_call_waiting_is_a_cut_off() {
     let (mut kit, _, _) = trial_outstanding();

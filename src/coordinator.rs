@@ -27,7 +27,7 @@ mod racing;
 mod trunk;
 mod verifying;
 
-pub use merging::{MergeDispatch, MergeStage};
+pub use merging::{MergeDispatch, MergeStage, NoLandInDoubt, Reconciliation};
 pub use trunk::{head_request_body, parse_head_response, HeadRead};
 pub use verifying::VerifyDispatch;
 
@@ -247,9 +247,18 @@ struct InFlight {
     /// the submission may have landed on top of it (`Submission::unanswered_from`).
     #[serde(default)]
     main: Option<CommitId>,
-    /// Which call of the staged landing is out. A stored marker without one is a `Prepare`.
-    #[serde(default)]
+    /// Which call of the staged landing is out. A stored marker without one was written before
+    /// the staged landing: its one whole-merge call may already have pushed
+    /// (`MergeStage::Unstaged`).
+    #[serde(default = "MergeStage::unstaged")]
     stage: MergeStage,
+    /// How many times a `Land` of this merge was left in doubt, by `Unknown` from the `Land` or
+    /// from its `Reconcile`. It paces the reconciles and is never an attempt.
+    #[serde(default)]
+    doubts: u32,
+    /// The server's clock when this merge's `Land` was first left in doubt.
+    #[serde(default)]
+    doubt_since_ms: Option<u64>,
 }
 
 /// A `Submit` message minus the sender.

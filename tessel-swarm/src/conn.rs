@@ -431,6 +431,7 @@ impl Conn {
                 | ServerMsg::Queued { .. }
                 | ServerMsg::Accepted { .. }
                 | ServerMsg::Merged { .. }
+                | ServerMsg::MergeDoubt { .. }
                 | ServerMsg::SubmitRejected { .. }
                 | ServerMsg::Uncovered { .. }
                 | ServerMsg::ReviewRequired { .. }
@@ -491,6 +492,7 @@ pub async fn read_log(
             | ServerMsg::Queued { .. }
             | ServerMsg::Accepted { .. }
             | ServerMsg::Merged { .. }
+            | ServerMsg::MergeDoubt { .. }
             | ServerMsg::SubmitRejected { .. }
             | ServerMsg::Uncovered { .. }
             | ServerMsg::ReviewRequired { .. }

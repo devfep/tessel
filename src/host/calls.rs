@@ -29,8 +29,8 @@ use crate::host::wake::WakeStep;
 use crate::host::{Host, Job, Output};
 use crate::merge::{
     MergeOutcome, StepExit, TrialOutcome, TrialReport, LAND_CALL_TIMEOUT_MS,
-    PREPARE_CALL_TIMEOUT_MS, REASON_OUTPUT_MAX_CHARS, STEWARD_CALL_TIMEOUT_MS,
-    TEST_CALL_TIMEOUT_MS,
+    PREPARE_CALL_TIMEOUT_MS, REASON_OUTPUT_MAX_CHARS, RECONCILE_CALL_TIMEOUT_MS,
+    STEWARD_CALL_TIMEOUT_MS, TEST_CALL_TIMEOUT_MS,
 };
 use crate::protocol::CommitId;
 use crate::shell::Work;
@@ -63,6 +63,19 @@ pub fn merge_call(id: CallId, dispatch: &MergeDispatch, now_ms: u64) -> Call {
                 head: head.clone(),
             },
             LAND_CALL_TIMEOUT_MS,
+        ),
+        MergeStage::Reconcile { head, .. } => (
+            Request::Reconcile { head: head.clone() },
+            RECONCILE_CALL_TIMEOUT_MS,
+        ),
+        MergeStage::Unstaged => (
+            Request::Prepare {
+                claim: dispatch.claim,
+                agent: dispatch.agent.clone(),
+                fork_commit: dispatch.fork_commit.clone(),
+                scopes: dispatch.scopes.clone(),
+            },
+            PREPARE_CALL_TIMEOUT_MS,
         ),
     };
     Call {

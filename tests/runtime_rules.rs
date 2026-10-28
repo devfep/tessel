@@ -403,6 +403,53 @@ fn r24_a_stored_merge_marker_with_no_call_waiting_here_is_a_cut_off_that_is_reco
     );
 }
 
+/// From M5 a marker that a `Land` may have left on main is reconciled, not counted as a cut-off
+/// (the part of R24 that the staged landing changed).
+#[test]
+fn r24_a_stored_land_marker_is_reconciled_not_counted_and_not_given_up() {
+    let mut core = new_core();
+    let (claim, fence) = grant(&mut core, "a", "x.rs");
+    let submit = ClientMsg::Submit {
+        req: RequestId(9),
+        claim,
+        fence,
+        fork_commit: CommitId("ab".repeat(20)),
+        touched: vec![edit_file("x.rs")],
+        decisions: DecisionRecord {
+            evidence: vec!["tests passed".into()],
+            ..DecisionRecord::default()
+        },
+    };
+    core.handle(&agent("a"), submit, NOW);
+    let prepare = core.begin_merge(NOW).expect("the submission is dispatched");
+    let prepared = MergeOutcome::Prepared {
+        base: CommitId("old".into()),
+        head: CommitId("new".into()),
+    };
+    core.merge_outcome(prepare.id, &prepared, NOW);
+    let test = core.begin_merge(NOW).expect("the Test follows");
+    core.merge_outcome(test.id, &MergeOutcome::Tested {}, NOW);
+    let land = core.begin_merge(NOW).expect("the Land follows");
+
+    assert!(
+        merge_cut_off(false, core.has_merge_in_flight()),
+        "a restart forgot the call"
+    );
+    core.recover_merge(NOW + 1);
+    assert!(
+        core.has_merge_in_flight(),
+        "recovery keeps the marker to reconcile"
+    );
+    let reconcile = core.begin_merge(NOW + 1).expect("the Reconcile is due");
+    assert_eq!(reconcile.id, land.id, "under the Land's dispatch id");
+    let stored = serde_json::to_value(&core).unwrap();
+    assert_eq!(
+        stored["claims"]["1"]["work"]["infra_failures"], 0,
+        "and no attempt is counted"
+    );
+    assert_eq!(stored["claims"]["1"]["work"]["in_doubt"], true);
+}
+
 fn grant(core: &mut Core, who: &str, path: &str) -> (ClaimId, Fence) {
     let effects = core.handle(&agent(who), claim_msg(1, &[path], OnConflict::Fail), NOW);
     for effect in effects {
