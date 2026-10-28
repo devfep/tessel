@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-28 20:55 UTC. Main at `55528c9`: P1-CORE-STAGED-LANDING landed through the server
+**As of:** 2026-10-28 20:41 UTC. Main at `55528c9`: P1-CORE-STAGED-LANDING landed through the server
 at 18:23 UTC as `05b6ec1`..`55528c9` (six commits, base `c4dfb11`; claim 117, held as merge-path and
 approved by the orchestrator). Felix delegated the merge-path yes to a vote: three Opus voters
 (honesty and safety, test strength, operational risk) each read `dab6a22` before the earlier reviews
@@ -28,7 +28,7 @@ worktree and decides holds as `orchestrator`. Two lanes ran at once four times b
 coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up.
-In flight (dispatched 20:35 UTC from `55528c9`, both sonnet): P1-CORE-RECONCILE (lane B,
+In flight (dispatched 20:32 UTC from `55528c9`, both sonnet): P1-CORE-RECONCILE (lane B,
 `.claude/worktrees/core-reconcile`) and P1-SIM-MERGE (lane A, `.claude/worktrees/sim-merge`), side
 by side; briefs in `~/tessel-orch-notes/2026-10-28/`. A Nightly run dispatched on `55528c9`
 (40764265692) is the simulator sweep on main. P1-HOST-HARDENING and P1-ONE-BATCH follow
@@ -1058,7 +1058,9 @@ Lane B:
   `restart.rs` should assert the candidate ref is gone after a restart; the CLI fake's `merge_next`
   can land two merges in one call when a base == head `Prepare` reads as `AlreadyMerged`;
   `InFlight.main` feeds only a discarded `dispatched_from`; nothing pins that `moves_main`
-  (`tessel-server/src/repo.rs:693`) leaves `Prepared` out.
+  (`tessel-server/src/repo.rs:693`) leaves `Prepared` out. The fake's fix and the `moves_main`
+  test edit lane A's `tessel-cli/tests/support/mod.rs` and `tessel-server/src/repo.rs`, which the
+  plan's cross-edit list for this task does not name; lane A (on `src/sim/**`) stays out of them while this runs.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
