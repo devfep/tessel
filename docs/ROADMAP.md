@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-28 22:10 UTC. Main at `55528c9`: P1-CORE-STAGED-LANDING landed through the server
+**As of:** 2026-10-28 22:45 UTC. Main at `55528c9`: P1-CORE-STAGED-LANDING landed through the server
 at 18:23 UTC as `05b6ec1`..`55528c9` (six commits, base `c4dfb11`; claim 117, held as merge-path and
 approved by the orchestrator). Felix delegated the merge-path yes to a vote: three Opus voters
 (honesty and safety, test strength, operational risk) each read `dab6a22` before the earlier reviews
@@ -31,26 +31,34 @@ claimed the file after the holder landed or left it to a follow-up.
 In flight (dispatched 20:32 UTC from `55528c9`, both sonnet): P1-CORE-RECONCILE (lane B,
 `.claude/worktrees/core-reconcile`) and P1-SIM-MERGE (lane A, `.claude/worktrees/sim-merge`), side
 by side; briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28/`.
-- P1-CORE-RECONCILE: `9a4d5e9` (red) and `3199e84`, gate green (claim 122; fork branch
-  `core-reconcile-1`). Opus REVIEW-1 "With changes": its must-fix was a new top-level
-  `ServerMsg::MergeDoubt` with no version bump, against invariant 13 and the plan's "optional
-  field". Felix put that to a vote: three Opus voters went 3-0 for keeping it with changes
-  (`vote-invariant-13/DECISION.md`): invariant 13 rewritten on whether an older daemon can decode
-  and safely skip a frame (its stated reason has been false since `9f6110b`), checked by an
-  exhaustive `skippable()`, and the doubt rebuilt from an optional `Welcome` field on every
-  connection, since a daemon offline when a doubt ends kept showing it. Fix pass 1 (`35fb57a`, the
-  addendum) is done; passes 2 (REVIEW-1's should-fixes), 3 (the vote) and 4 (the Nightly's
-  missed mutants, below) are running. Felix delegated his merge-path yes to a vote of three Opus
-  voters, on the final commit.
-- P1-SIM-MERGE: `8e40e8f`..`57ed69e`, gate green (claim 119; fork branch `sim-merge-1`), in Opus
-  review. Its new check found the core sending a `Trial` with the `Hello`-declared head before the
-  head read (seeds 64, 196, 229, outside the default set); seven I6 seeds are marked expected to
-  fail until P1-CORE-RECONCILE lands, so P1-CORE-RECONCILE lands first.
+- P1-CORE-RECONCILE (claim 122): `9a4d5e9` (red), `3199e84` and the merge of main `3620b40`
+  (fork branch `core-reconcile-1`), gate green. Opus REVIEW-1 "With changes": its must-fix was a
+  new top-level `ServerMsg::MergeDoubt` with no version bump, against invariant 13 and the plan's
+  "optional field". Felix put that to a vote; three Opus voters all chose to keep it with changes
+  (`vote-invariant-13/DECISION.md`; Felix can still overrule): rewrite invariant 13 on whether
+  an older daemon can decode and safely skip a frame (its stated reason has been false since
+  `9f6110b`), check it with an exhaustive `skippable()`, and rebuild the doubt from an optional
+  `Welcome` field on every connection, since by the code a daemon offline when a doubt ends would
+  keep showing it. Four fix passes, in order, are done at `7d671d3` (fork branch
+  `core-reconcile-2`; gate green, 2306 tests): 1 the addendum (`35fb57a`), 2 REVIEW-1's
+  should-fixes 2, 3, 4 and 6 (5 is lane A's), 3 the vote's conditions (invariant 13 rewritten in
+  its own commit, `6dd1a41`), 4 the Nightly's missed mutants (below). Opus REVIEW-2 of
+  `3620b40..7d671d3` is running. For this task Felix delegated his written merge-path yes
+  (BUILD-PROTOCOL section 6, MERGE-PATH-REVIEW) to a vote of Opus voters on the final commit, as
+  for `dab6a22`; the orchestrator runs it with three.
+- P1-SIM-MERGE (claim 119): `8e40e8f`..`57ed69e` (fork branch `sim-merge-1`), gate green. Opus
+  REVIEW-1 "No": landing it turns CI red, since CI sweeps 1,000 seeds from the commit's SHA on
+  every push and the Nightly 20,000, and its agent-base check fails about 1% of seeds (64, 196,
+  229 in 0..300) on a core bug (CORE-HEAD-ADOPTED, below), so no list of seed numbers can keep
+  them green; I6's tries clauses never fire; the simulator's lander applies a `Land` whose head
+  was not prepared on main, and I3 does not see it. Fix pass 1 is running. It lands after
+  P1-CORE-RECONCILE and CORE-HEAD-ADOPTED, then drops its expected-to-fail seeds.
 The Nightly dispatched on `55528c9` (run 40764265692): the simulator sweep, the 10,000-case
-proptests and all eight mutant shards passed; the baseline check failed on nine new missed
-mutants in P1-CORE-STAGED-LANDING's code (`src/merge.rs`: the `Prepare` and `Land` timeouts'
-`5 * 60 * 1000`, eight; `src/host/calls.rs`: `&&` in `Host::run_answer`, one). Lane B adds the
-tests as part of P1-CORE-RECONCILE; until it lands, the scheduled Nightly fails the same way.
+proptests and all eight mutant shards finished green; the baseline check failed on nine new
+missed mutants in P1-CORE-STAGED-LANDING's code (`src/merge.rs`: the `Prepare` and `Land`
+timeouts' `5 * 60 * 1000`, eight; `src/host/calls.rs`: `&&` in `Host::run_answer`, one). Lane
+B's pass 4 adds their tests; until P1-CORE-RECONCILE lands, the scheduled Nightly's baseline
+check fails on these nine.
 P1-HOST-HARDENING and P1-ONE-BATCH follow P1-CORE-RECONCILE, P1-ADAPTER-SUITE's rest follows
 P1-HOST-HARDENING, and P1-FAILPOINTS follows P1-SIM-MERGE and P1-CORE-RECONCILE. The dogfood
 server runs `455c889` from `~/tessel-dogfood/bin` (restarted 27 October 22:25 UTC); main has
@@ -94,8 +102,9 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** the lanes' reports, Opus reviews of their commits from the forks, and P1-CORE-RECONCILE's
-held submission, which lands only after Felix's written yes (merge path). Felix makes ruleset step
+**Next:** REVIEW-2 of P1-CORE-RECONCILE, then the merge-path vote on its final commit, then its
+held submission, which lands on the vote's buy-in; then CORE-HEAD-ADOPTED (lane B), then
+P1-SIM-MERGE after its fix pass and a re-review. Felix makes ruleset step
 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts local connections on a
 world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
@@ -983,8 +992,9 @@ Lane A:
   watcher, a panicking repo task, injected store errors.
 - [ ] **P1-HOST-HARDENING** — M, after P1-CORE-RECONCILE. P1-PERSIST-RETRY (C8, flips R30),
   exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
-- [ ] **P1-SIM-MERGE** (dispatched 28 October) — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING.
-  The asynchronous merge path; checkers I3, I6, I7, I11, I12; COORD-HEAD-FROM-AGENT's check that no
+- [ ] **P1-SIM-MERGE** (dispatched 28 October) — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING;
+  lands after P1-CORE-RECONCILE and CORE-HEAD-ADOPTED (its review). The asynchronous merge
+  path; checkers I3, I6, I7, I11, I12; COORD-HEAD-FROM-AGENT's check that no
   dispatch uses an agent-declared base. Also the `dab6a22` reviews' simulator findings, moved here
   from P1-CORE-RECONCILE by the orchestrator because this task replaces that lander and keeps to
   `src/sim/**`: the simulator's `Reconcile` reports any prepared head as landed
@@ -997,7 +1007,9 @@ Lane A:
   each with an fsync (`synchronous=FULL`, `tessel-server/src/store.rs:357`). In PR run
   40428101997, round 0 stored 16 events at about 70 ms each, and the two rounds with no new grant
   stored 4 and 7 (about 90 ms each for the 7); other CI rounds ran at about 13-20 ms, as on this
-  Mac. Inference, not proof.
+  Mac. Inference, not proof. P1-SIM-MERGE weakens the simulator's I4 while a call is out (a
+  suspended wake owes only the watchdog, R20/R28), so with calls out for up to 400 s it misses
+  most lease-expiry bugs; this task restores it.
 - [x] **NIGHTLY-TIME** (kill-loop half landed as `1dd12a9`; workflows #124, merged) — lane A, from
   the 26 October scheduled runs cancelled at their limits. Every kill-loop wait is bounded and names
   its round, the check runs on a thread, the child is reaped with a bound. #124: the nightly's full
@@ -1081,6 +1093,13 @@ Lane B:
   test edit lane A's `tessel-cli/tests/support/mod.rs` and `tessel-server/src/repo.rs`, which the
   plan's cross-edit list for this task does not name; lane A (on `src/sim/**`) stays out of them
   while this runs.
+- [ ] **CORE-HEAD-ADOPTED** — S, lane B, after P1-CORE-RECONCILE; found by P1-SIM-MERGE's
+  agent-base check (seeds 64, 196, 229). After the start read fails `MAX_INFRA_RETRIES` + 1
+  times, `start_retry_owed` (`src/coordinator/trunk.rs:117-122`) stops owing a read, and the head
+  a `Hello` declared reaches dispatches through `state.head` (`merging.rs:230`, a queued
+  verification's `before`/`main`), against COORD-HEAD-FROM-AGENT. Keep owing the read with
+  capped backoff and dispatch nothing that names a head while the head is only adopted. Done: a
+  core test and the simulator's agent-base check green on CI's sweeps.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
