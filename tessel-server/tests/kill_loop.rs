@@ -1065,3 +1065,48 @@ fn an_agent_whose_claims_are_all_probed_and_refused_still_claims_or_releases() {
     }
     assert!(acted > 0, "an agent holding only refused probes stalled");
 }
+
+/// A log holding one agent release of claim 1, and a traffic record with one stale-release probe
+/// of that claim (request 9), for the verdict on whether the server refused the probe.
+fn probed_then_released() -> (Traffic, SimStore, Vec<Event>) {
+    let traffic = Traffic::default();
+    traffic.sent(1, RequestId(9), RequestKind::StaleRelease, Some(ClaimId(1)));
+    let released = Event {
+        seq: 0,
+        at_ms: 0,
+        run: tessel_coordinator::protocol::RunId("run".to_string()),
+        kind: EventKind::ClaimReleased {
+            claim: ClaimId(1),
+            reason: ReleaseReason::Agent,
+        },
+    };
+    (traffic, SimStore::default(), vec![released])
+}
+
+#[test]
+fn a_stale_release_with_no_refusal_and_an_agent_release_is_flagged_as_accepted() {
+    let (traffic, store, events) = probed_then_released();
+    let found = violations(&traffic, &store, &events);
+    assert_eq!(
+        found,
+        vec!["retired fence accepted (request 9)".to_string()]
+    );
+}
+
+#[test]
+fn a_stale_release_the_server_refused_is_not_flagged() {
+    for code in [ErrorCode::StaleFence, ErrorCode::UnknownClaim] {
+        let (traffic, store, events) = probed_then_released();
+        traffic.record(
+            1,
+            "a1",
+            ServerMsg::Error {
+                req: Some(RequestId(9)),
+                code,
+                message: String::new(),
+            },
+        );
+        let found = violations(&traffic, &store, &events);
+        assert!(found.is_empty(), "{code:?}: {found:?}");
+    }
+}
