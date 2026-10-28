@@ -859,6 +859,7 @@ impl Coordinator {
             lease_ms: self.state.config.lease_ms,
             protocol: PROTOCOL_VERSION,
             protocol_range: Some(self.state.protocol_range),
+            merge_doubts: self.merge_doubts_of(agent),
         };
         vec![connected, Effect::Reply(welcome)]
     }
@@ -2121,6 +2122,7 @@ mod tests {
             lease_ms,
             protocol,
             protocol_range,
+            merge_doubts,
         } = only_reply(&effects)
         else {
             panic!("expected Welcome, got {effects:?}");
@@ -2129,6 +2131,7 @@ mod tests {
         assert_eq!(*lease_ms, LEASE);
         assert_eq!(*protocol, PROTOCOL_VERSION);
         assert_eq!(*protocol_range, Some(ProtocolRange::current()));
+        assert!(merge_doubts.is_empty());
         let events = logged(&effects);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].seq, 0);

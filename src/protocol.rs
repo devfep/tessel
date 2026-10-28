@@ -86,6 +86,14 @@
 /// and so does a `ServerMsg` type that is only a live notice (`ServerMsg::skippable`).
 pub const PROTOCOL_VERSION: u16 = 1;
 
+/// A claim whose landing is in doubt, as `Welcome` lists it. `since_ms` is the server's clock
+/// when the doubt began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimInDoubt {
+    pub claim: ClaimId,
+    pub since_ms: u64,
+}
+
 /// The lowest and the highest `PROTOCOL_VERSION` a server speaks, both included. A server
 /// announces it in `Welcome::protocol_range` so a client can warn when its own version is outside
 /// it, before a message it cannot read arrives.
@@ -582,6 +590,11 @@ pub enum ServerMsg {
         /// nothing to compare its own version with.
         #[serde(default)]
         protocol_range: Option<ProtocolRange>,
+        /// The claims of this agent whose landing is in doubt now (`MergeDoubt`), so a daemon
+        /// that was offline when a doubt began or ended has the truth at every connection. An
+        /// older server omits it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        merge_doubts: Vec<ClaimInDoubt>,
     },
     Granted {
         req: RequestId,
@@ -1728,6 +1741,7 @@ mod tests {
             lease_ms: 9,
             protocol: 3,
             protocol_range: Some(ProtocolRange { min: 2, max: 4 }),
+            merge_doubts: Vec::new(),
         };
         let json = serde_json::to_string(&sent).unwrap();
         assert!(

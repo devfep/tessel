@@ -1108,3 +1108,72 @@ fn a_resent_land_whose_candidate_is_gone_ends_the_doubt_and_says_so() {
     assert_eq!((work.in_doubt, work.unanswered_from.clone()), (false, None));
     assert_eq!(work.infra_failures, 1, "counted, as a missing candidate is");
 }
+
+// ---- Welcome lists the claims in doubt ----
+
+fn welcome_doubts(c: &mut Coordinator, who: &str, now: u64) -> Vec<crate::protocol::ClaimInDoubt> {
+    let hello = ClientMsg::Hello {
+        agent: AgentId(who.into()),
+        base: commit(OLD),
+        protocol: crate::protocol::PROTOCOL_VERSION,
+    };
+    let effects = c.handle(&AgentId(who.into()), hello, now);
+    effects
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::Reply(ServerMsg::Welcome { merge_doubts, .. }) => Some(merge_doubts),
+            Effect::Reply(_) | Effect::Notify { .. } | Effect::Log(_) => None,
+        })
+        .expect("a Welcome")
+}
+
+#[test]
+fn a_welcome_lists_the_claims_of_that_agent_whose_landing_is_in_doubt_with_when_it_began() {
+    let (mut c, claim, _) = in_doubt_after_unknown();
+    let listed = welcome_doubts(&mut c, "a", NOW + 100);
+    let expected = crate::protocol::ClaimInDoubt {
+        claim,
+        since_ms: NOW + 4,
+    };
+    assert_eq!(listed, vec![expected]);
+    assert!(welcome_doubts(&mut c, "someone-else", NOW + 101).is_empty());
+}
+
+#[test]
+fn a_restart_that_found_a_land_lists_it_at_the_next_welcome() {
+    let (mut c, claim, _) = at_land();
+    c.recover_merge(NOW + 4);
+    let listed = welcome_doubts(&mut c, "a", NOW + 5);
+    assert_eq!(
+        listed.iter().map(|d| d.claim).collect::<Vec<_>>(),
+        vec![claim]
+    );
+}
+
+#[test]
+fn a_welcome_lists_nothing_once_the_doubt_is_over_however_it_ended() {
+    // The reconcile found main elsewhere.
+    let (mut c, claim, _) = in_doubt_after_unknown();
+    let reconcile = due_reconcile(&mut c, claim);
+    let elsewhere = Reconciliation::NotLanded {
+        main: Some(commit(MOVED)),
+    };
+    c.reconcile_outcome(reconcile.id, &elsewhere, NOW + 10_000);
+    assert!(welcome_doubts(&mut c, "a", NOW + 10_001).is_empty());
+    // The operator answered, each way: what `admin resolve` stores and a restart loads.
+    for landed in [true, false] {
+        let (mut c, claim, _) = in_doubt_after_unknown();
+        c.resolve_doubt(claim, landed, NOW + 50).expect("in doubt");
+        assert!(
+            welcome_doubts(&mut c, "a", NOW + 51).is_empty(),
+            "landed {landed}"
+        );
+    }
+    // A resent Land was refused, so the work went back to its agent.
+    let (mut c, _, again) = resent_land();
+    let refused = MergeOutcome::Refused {
+        kind: RuleKind::ProtectedRef,
+    };
+    c.merge_outcome(again.id, &refused, NOW + 10_001);
+    assert!(welcome_doubts(&mut c, "a", NOW + 10_002).is_empty());
+}

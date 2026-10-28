@@ -20,7 +20,7 @@
 use super::{MergeStage, Rejection};
 use crate::coordinator::{ActiveClaim, Coordinator, Effect, InFlight, Submission};
 use crate::merge::{infra_backoff_ms, Verdict, MAX_INFRA_RETRIES};
-use crate::protocol::{ClaimId, CommitId, ServerMsg};
+use crate::protocol::{AgentId, ClaimId, ClaimInDoubt, CommitId, ServerMsg};
 
 /// What the lander's `Reconcile` found out about the `Land` in doubt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +178,11 @@ impl Coordinator {
                 self.enter_doubt(flight, held, (base, head), (Pace::Backoff, now_ms))
             }
         }
+    }
+
+    /// The claims of `agent` whose landing is in doubt now, for the `Welcome` it gets.
+    pub(in crate::coordinator) fn merge_doubts_of(&self, _agent: &AgentId) -> Vec<ClaimInDoubt> {
+        Vec::new()
     }
 
     /// What the lander's answer means to a merge at its `Land` (or at the `Reconcile` that follows

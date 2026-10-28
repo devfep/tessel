@@ -608,6 +608,7 @@ fn welcome(lease_ms: u64) -> ServerMsg {
         lease_ms,
         protocol: 1,
         protocol_range: None,
+        merge_doubts: Vec::new(),
     }
 }
 

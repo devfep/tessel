@@ -11,9 +11,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context};
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    uncovered, AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event,
-    EventKind, Intent, OnConflict, ProtocolRange, RequestId, ScopeClaim, ServerMsg,
-    PROTOCOL_VERSION,
+    uncovered, AgentId, Assumption, ClaimId, ClaimInDoubt, ClientMsg, CommitId, DecisionRecord,
+    ErrorCode, Event, EventKind, Intent, OnConflict, ProtocolRange, RequestId, ScopeClaim,
+    ServerMsg, PROTOCOL_VERSION,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -902,8 +902,12 @@ impl Daemon {
                 head,
                 lease_ms,
                 protocol_range,
+                merge_doubts,
                 ..
-            } => self.on_welcome(head.0, lease_ms, protocol_range),
+            } => {
+                self.on_welcome(head.0, lease_ms, protocol_range);
+                self.apply_welcome_doubts(&merge_doubts);
+            }
             ServerMsg::Granted {
                 req,
                 claim,
@@ -1040,6 +1044,9 @@ impl Daemon {
         self.log(&format!("welcomed; lease {lease_ms} ms"));
         self.persist();
     }
+
+    /// Sets or clears each claim's merge doubt from what `Welcome` lists, on every connection.
+    fn apply_welcome_doubts(&mut self, _doubts: &[ClaimInDoubt]) {}
 
     /// Warns, once for as long as the same range is announced, when the coordinator's range does
     /// not include this daemon's version. The daemon connects anyway. A coordinator that announces
@@ -3156,6 +3163,49 @@ mod tests {
             .claims
             .iter()
             .all(|h| h.merge_doubt_since_ms.is_none()));
+    }
+
+    fn welcome_listing(doubts: Vec<ClaimInDoubt>) -> ServerMsg {
+        ServerMsg::Welcome {
+            head: CommitId("a".repeat(40)),
+            lease_ms: 30_000,
+            protocol: PROTOCOL_VERSION,
+            protocol_range: None,
+            merge_doubts: doubts,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_daemon_offline_across_the_end_of_a_doubt_shows_none_after_it_reconnects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let mut doubtful = held(7);
+        doubtful.merge_doubt_since_ms = Some(5);
+        daemon.state.claims = vec![doubtful, held(8)];
+        daemon.on_server_msg(welcome_listing(Vec::new()));
+        assert!(daemon
+            .state
+            .claims
+            .iter()
+            .all(|h| h.merge_doubt_since_ms.is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_welcome_that_lists_a_doubt_sets_it_and_keeps_the_first_local_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = daemon_in(dir.path());
+        let mut known = held(8);
+        known.merge_doubt_since_ms = Some(11);
+        daemon.state.claims = vec![held(7), known];
+        let listed = |claim| ClaimInDoubt {
+            claim: ClaimId(claim),
+            since_ms: 1,
+        };
+        daemon.on_server_msg(welcome_listing(vec![listed(7), listed(8), listed(99)]));
+        assert!(daemon.state.claims[0]
+            .merge_doubt_since_ms
+            .is_some_and(|at| at > 11));
+        assert_eq!(daemon.state.claims[1].merge_doubt_since_ms, Some(11));
     }
 
     #[tokio::test]

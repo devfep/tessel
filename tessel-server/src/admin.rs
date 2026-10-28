@@ -360,6 +360,46 @@ mod resolve_tests {
         assert_eq!(work["moved"], 0, "nobody said main moved, and no attempt");
     }
 
+    /// The `Welcome` a core loaded from the store gives agent `a1`: its claims in doubt.
+    fn welcome_doubts(config: &Config, id: &RepoId) -> usize {
+        let dir = StoreDir::open(&config.store_dir).unwrap();
+        let stored = dir.open_repo(id).unwrap().load().unwrap().unwrap();
+        let mut core =
+            shell::load_core(Some(&stored), Some("t"), None, Vec::new(), Vec::new()).unwrap();
+        let who = AgentId("a1".to_string());
+        let hello = ClientMsg::Hello {
+            agent: who.clone(),
+            base: CommitId(OLD.to_string()),
+            protocol: tessel_coordinator::protocol::PROTOCOL_VERSION,
+        };
+        let effects = core.handle(&who, hello, 9_000);
+        effects
+            .into_iter()
+            .find_map(|effect| match effect {
+                Effect::Reply(ServerMsg::Welcome { merge_doubts, .. }) => Some(merge_doubts.len()),
+                Effect::Reply(_) | Effect::Notify { .. } | Effect::Log(_) => None,
+            })
+            .expect("a Welcome")
+    }
+
+    #[test]
+    fn after_a_restart_the_welcome_lists_the_doubt_until_resolve_ends_it() {
+        for landed in [true, false] {
+            let (_dir, config, id, claim) = setup();
+            assert_eq!(
+                welcome_doubts(&config, &id),
+                1,
+                "the restarted server knows"
+            );
+            resolve(&config, (None, None), (claim, landed), 5_000).unwrap();
+            assert_eq!(
+                welcome_doubts(&config, &id),
+                0,
+                "landed {landed}: none after resolve"
+            );
+        }
+    }
+
     #[test]
     fn a_claim_with_no_land_in_doubt_is_refused_and_nothing_is_written() {
         let (_dir, config, id, claim) = setup();
