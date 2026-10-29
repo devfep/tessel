@@ -1369,6 +1369,9 @@ fn a_dispatch_records_the_log_length_the_host_had_when_it_asked() {
         "the script stored {stored_before} events"
     );
     let a = agent_socket(&sim, "agent-a");
+    // A restart right after the submission is stored: the reloaded core owes the head read the
+    // `Hello`-adopted head needs, and a merge is dispatched only after it, at the next wake.
+    sim.crash_after_apply();
     sim.send(
         a,
         &submit_msg(10, 1, 3, "src/a.rs"),
@@ -1376,8 +1379,10 @@ fn a_dispatch_records_the_log_length_the_host_had_when_it_asked() {
         Some(ClaimId(1)),
     );
     assert!(sim.quiet());
-    sim.jump_to_wake();
-    assert!(sim.quiet());
+    for _ in 0..2 {
+        sim.jump_to_wake();
+        assert!(sim.quiet());
+    }
     let prepares: Vec<_> = sim
         .dispatches()
         .iter()
