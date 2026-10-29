@@ -499,6 +499,12 @@ for the pid to exit):
      --config <server dir>/tessel-server.toml
    ```
 
+After the [move to the service accounts](#moving-to-the-service-accounts), stop the server with
+`/usr/bin/sudo /bin/launchctl bootout system/dev.tessel.server` (not the pid kill above),
+use `--config /var/tessel/tessel-server.toml` and the binary `/opt/tessel/bin/tessel-server`, and
+run steps 1 and 3 under `/usr/bin/sudo -u _tessel`. Start it again with `launchctl bootstrap`, as
+above.
+
 `--landed <head>` merges the claim from the base its `Land` leased, and is refused unless `<head>`
 is exactly the head the `Land` journaled; `admin resolve` prints the claim's base and head either
 way. Use it only when step 2 exits 0. `--not-landed` takes no head and is safe whatever main is,
@@ -510,7 +516,9 @@ daemon finds the landing in the repository's event log at its next connection an
 is gone from the coordinator; forgot it`, not a `merged` notice. A lane that was waiting (`--wait`)
 behind the settled claim was told, when the server stopped, that its queued wait was withdrawn;
 `--landed` may have granted that wait, and the daemon then adopts the claim and says so in its
-inbox. Use that claim, or `tessel release` it.
+inbox. Use that claim, or `tessel release` it. A lane whose own claim request was still
+on the way when the connection dropped is answered by that request's reply for the same claim,
+not by an adopted one.
 
 Two doubts that resolving does not fix:
 
