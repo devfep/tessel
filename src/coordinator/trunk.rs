@@ -37,14 +37,15 @@
 //!   sides: its entries stay in `Judging` with `trials_await_head`, and the read queues them on
 //!   the head it read, or on the head a landing sets (`release_races_awaiting_head`). When the
 //!   read has failed more than `MAX_INFRA_RETRIES` times they are judged with no trials, tests
-//!   unknown, and the read stays owed. A race entry hears nothing until the race is decided. Agents already
-//!   welcomed learn nothing new: the next `Welcome` and the next dispatch carry the head.
+//!   unknown, and the read stays owed. A race entry hears nothing until the race is decided.
+//!   Agents already welcomed learn nothing new: the next `Welcome` and the next dispatch carry
+//!   the head.
 //! - A state loaded from storage whose head is still the `Hello`'s owes one read at the first
 //!   wake that runs anyway (the server wakes once at start), because a read that was out when the
 //!   process stopped left no marker. It sets no wake of its own. If that read fails it is retried
-//!   as above, so a state that keeps failing backs off and keeps owing the read. A head a landing or an earlier
-//!   read set owes nothing, and neither does a state that was not loaded: its `Hello` came while
-//!   the start read was out, and the answer or the retries above deal with it.
+//!   as above, so a state that keeps failing backs off and keeps owing the read. A head a landing
+//!   or an earlier read set owes nothing, and neither does a state that was not loaded: its
+//!   `Hello` came while the start read was out, and the answer or the retries above deal with it.
 //! - The move is logged as `BaseMoved { by: "steward", notified: [] }`. Nobody is notified: the
 //!   touched scopes of an admin merge are unknown to the coordinator, and claims are not touched.
 

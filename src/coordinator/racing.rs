@@ -566,7 +566,7 @@ impl Coordinator {
             self.state.claims.remove(&claim.0);
             effects.extend(self.claim_released(claim, ReleaseReason::LostRace, now_ms));
         }
-        if any_submitted && self.head_is_adopted() {
+        if any_submitted && self.trials_wait_for_head() {
             if let Some(race) = self.state.races.get_mut(&race_id.0) {
                 race.trials_await_head = true;
             }
@@ -576,8 +576,15 @@ impl Coordinator {
         effects
     }
 
+    /// Whether a closing race must wait for the head read: the head is only adopted from a
+    /// `Hello` and the start read has not yet failed more than `MAX_INFRA_RETRIES` times.
+    fn trials_wait_for_head(&self) -> bool {
+        self.head_is_adopted() && self.state.head_start_failures <= MAX_INFRA_RETRIES
+    }
+
     /// Queue the tests of each entry that submitted, all on the head as it is now. With nothing
-    /// to try, the race is judged at once.
+    /// to try, the race is judged at once; that includes a head that is still only adopted (the
+    /// retries are spent), whose base no trial may name.
     fn queue_race_trials(&mut self, race_id: RaceId, now_ms: u64) -> Vec<Effect> {
         let Some(race) = self.state.races.get(&race_id.0) else {
             return Vec::new();
@@ -588,7 +595,7 @@ impl Coordinator {
                 submitted.push((entrant.claim, entrant.agent.clone()));
             }
         }
-        if let Some(head) = self.state.head.clone() {
+        if let Some(head) = self.state.head.clone().filter(|_| !self.head_is_adopted()) {
             for (claim, agent) in submitted {
                 self.record_race_trial(race_id, &agent, claim, &head);
             }
@@ -604,8 +611,7 @@ impl Coordinator {
     /// now. Once the start read has failed more than `MAX_INFRA_RETRIES` times they are judged with
     /// no trials instead, tests unknown, as with no head; the read stays owed.
     pub(super) fn release_races_awaiting_head(&mut self, now_ms: u64) -> Vec<Effect> {
-        let adopted = self.head_is_adopted();
-        if adopted && self.state.head_start_failures <= MAX_INFRA_RETRIES {
+        if self.trials_wait_for_head() {
             return Vec::new();
         }
         let mut waiting = Vec::new();
@@ -617,11 +623,7 @@ impl Coordinator {
         }
         let mut effects = Vec::new();
         for race_id in waiting {
-            if adopted {
-                effects.extend(self.finish_judging(race_id, now_ms));
-            } else {
-                effects.extend(self.queue_race_trials(race_id, now_ms));
-            }
+            effects.extend(self.queue_race_trials(race_id, now_ms));
         }
         effects
     }
