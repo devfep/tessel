@@ -46,6 +46,7 @@ use super::{
     without_duplicates, ActiveClaim, ClaimKind, ClaimRequest, Coordinator, Effect, LockOwner,
     LockTable, Submission, SubmitRequest,
 };
+use crate::merge::MAX_INFRA_RETRIES;
 use crate::protocol::{
     rank_entries, review_reasons, AgentId, ClaimId, CommitId, Criterion, DecisionRecord, ErrorCode,
     EventKind, Fence, Intent, RaceEntry, RaceId, ReleaseReason, RequestId, ScopeClaim, ServerMsg,
@@ -598,10 +599,13 @@ impl Coordinator {
         self.finish_judging(race_id, now_ms)
     }
 
-    /// Queue the trials of every race that closed while the head was only adopted, now that a
-    /// head read has replaced it.
-    pub(super) fn queue_trials_awaiting_head(&mut self, now_ms: u64) -> Vec<Effect> {
-        if self.head_is_adopted() {
+    /// Release the races that closed while the head was only adopted. Called wherever the head
+    /// stops being adopted (a head read, a landing): their trials are queued on the head as it is
+    /// now. Once the start read has failed more than `MAX_INFRA_RETRIES` times they are judged with
+    /// no trials instead, tests unknown, as with no head; the read stays owed.
+    pub(super) fn release_races_awaiting_head(&mut self, now_ms: u64) -> Vec<Effect> {
+        let adopted = self.head_is_adopted();
+        if adopted && self.state.head_start_failures <= MAX_INFRA_RETRIES {
             return Vec::new();
         }
         let mut waiting = Vec::new();
@@ -613,7 +617,11 @@ impl Coordinator {
         }
         let mut effects = Vec::new();
         for race_id in waiting {
-            effects.extend(self.queue_race_trials(race_id, now_ms));
+            if adopted {
+                effects.extend(self.finish_judging(race_id, now_ms));
+            } else {
+                effects.extend(self.queue_race_trials(race_id, now_ms));
+            }
         }
         effects
     }
@@ -875,7 +883,7 @@ fn has_evidence(decisions: &DecisionRecord) -> bool {
 mod tests {
     use super::*;
     use crate::coordinator::{Config, HeadRead};
-    use crate::merge::{MergeOutcome, TrialOutcome, TrialReport, MAX_INFRA_RETRIES};
+    use crate::merge::{MergeOutcome, TrialOutcome, TrialReport};
     use crate::protocol::{
         Assumption, ClientMsg, Event, Fence, Mode, OnConflict, RunId, Scope, Summary,
         PROTOCOL_VERSION,

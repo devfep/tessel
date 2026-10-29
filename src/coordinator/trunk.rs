@@ -35,12 +35,14 @@
 //!   lander's `Prepare` answer carries the base, and a lander that refuses or cannot read heads
 //!   still answers the agent. A race that closes queues no trials, which name the head as both
 //!   sides: its entries stay in `Judging` with `trials_await_head`, and the read queues them on
-//!   the head it read. A race entry hears nothing until the race is decided. Agents already
+//!   the head it read, or on the head a landing sets (`release_races_awaiting_head`). When the
+//!   read has failed more than `MAX_INFRA_RETRIES` times they are judged with no trials, tests
+//!   unknown, and the read stays owed. A race entry hears nothing until the race is decided. Agents already
 //!   welcomed learn nothing new: the next `Welcome` and the next dispatch carry the head.
 //! - A state loaded from storage whose head is still the `Hello`'s owes one read at the first
 //!   wake that runs anyway (the server wakes once at start), because a read that was out when the
 //!   process stopped left no marker. It sets no wake of its own. If that read fails it is retried
-//!   as above, so a state that keeps failing backs off and stops. A head a landing or an earlier
+//!   as above, so a state that keeps failing backs off and keeps owing the read. A head a landing or an earlier
 //!   read set owes nothing, and neither does a state that was not loaded: its `Hello` came while
 //!   the start read was out, and the answer or the retries above deal with it.
 //! - The move is logged as `BaseMoved { by: "steward", notified: [] }`. Nobody is notified: the
@@ -179,7 +181,7 @@ impl Coordinator {
             Some(head) if !is_null_head(&head) => head,
             Some(_) | None => {
                 self.note_start_read_failed(now_ms);
-                return Vec::new();
+                return self.release_races_awaiting_head(now_ms);
             }
         };
         self.state.head_synced = self.state.head_synced.max(read.pokes);
@@ -200,7 +202,7 @@ impl Coordinator {
                 ));
             }
         }
-        effects.extend(self.queue_trials_awaiting_head(now_ms));
+        effects.extend(self.release_races_awaiting_head(now_ms));
         effects
     }
 }
@@ -335,7 +337,6 @@ mod tests {
             },
         };
         c.handle(&agent(who), submit, NOW);
-        c.confirm_adopted_head(NOW);
         assert!(c.begin_merge(NOW).is_some());
     }
 

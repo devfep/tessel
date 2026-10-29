@@ -11,7 +11,7 @@ use super::core_slot::{ApplyError, CoreSlot, Prepared, Waits};
 use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
-use crate::coordinator::{Coordinator as Core, Effect, HeadRead};
+use crate::coordinator::{Coordinator as Core, Effect};
 use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
@@ -91,27 +91,6 @@ fn welcomed(kit: &mut Testkit, name: &str) -> SocketId {
     kit.send(sock, &hello(name));
     kit.settle();
     sock
-}
-
-/// The start read of a core with no head: main's head is `abc`, the base of `hello`.
-fn read_main(core: &mut Core) {
-    let read = HeadRead {
-        head_at_start: None,
-        pokes: 0,
-    };
-    core.trunk_read(&read, Some(CommitId("abc".into())), NOW_MS);
-}
-
-/// As `welcomed`, on a repo whose core has read main's head (`abc`, the `Hello`'s base): a merge
-/// is dispatched only once the head is read from main, and the read is not what the test is about.
-fn welcomed_on_a_read_head(kit: &mut Testkit, name: &str) -> SocketId {
-    if kit.stored_state().is_none() {
-        let reviewers = shell::reviewers_or_none(Some("felix"), |_| {});
-        let mut core = shell::load_core(None, Some("test"), None, reviewers, Vec::new()).unwrap();
-        read_main(&mut core);
-        kit.seed("core", serde_json::to_string(&core).unwrap());
-    }
-    welcomed(kit, name)
 }
 
 fn granted(kit: &Testkit, sock: SocketId) -> (ClaimId, Fence) {
@@ -880,7 +859,6 @@ fn core_with_a_challenger_submitted() -> (Core, (ClaimId, Fence)) {
         },
         statement: "f returns Some".to_string(),
     };
-    read_main(&mut core);
     grant_in(&mut core, "a1", "b.rs", vec![assumption]);
     let challenger = grant_in(&mut core, "a2", "a.rs", Vec::new());
     submit_in(&mut core, "a2", challenger, "a.rs");
@@ -961,7 +939,7 @@ fn submitted(kit: &mut Testkit) -> (SocketId, ClaimId, CommitId) {
 
 /// A claim of `name` on `path`, submitted and waiting to merge.
 fn submitted_by(kit: &mut Testkit, name: &str, path: &str) -> (SocketId, ClaimId, CommitId) {
-    let sock = welcomed_on_a_read_head(kit, name);
+    let sock = welcomed(kit, name);
     kit.send(sock, &claim(1, path, "s"));
     kit.settle();
     let (claim_id, fence) = granted(kit, sock);
@@ -2079,10 +2057,10 @@ fn host_a_marker_with_no_call_waiting_is_a_cut_off() {
         1,
         "nothing is dispatched: the claim is in backoff"
     );
-    let last = kit.calls().last().expect("the merge call is the last");
+    let last = kit.calls().last().expect("the restart asked for the head");
     assert!(
-        matches!(last.request, Request::Prepare { .. }),
-        "the head was read from main before the merge, so the restart owes no read: {last:?}"
+        matches!(last.request, Request::ReadHead { .. }),
+        "the restart lost the start read, so the head a hello declared is read: {last:?}"
     );
 }
 

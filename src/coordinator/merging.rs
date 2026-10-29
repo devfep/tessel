@@ -680,6 +680,7 @@ impl Coordinator {
             self.record_verifications(&challenged, &before, &head);
             self.record_shadow_verifications(claim, &before, &head);
         }
+        effects.extend(self.release_races_awaiting_head(now_ms));
         effects
     }
 
@@ -1174,7 +1175,6 @@ mod tests {
             protocol: 1,
         };
         c.handle(&agent("a"), hello("a"), NOW);
-        c.confirm_adopted_head(NOW);
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW);
         let effects = c.handle(&agent("b"), hello("b"), NOW);

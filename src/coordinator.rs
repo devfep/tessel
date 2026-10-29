@@ -3309,7 +3309,6 @@ mod tests {
     ) -> (Coordinator, Vec<Effect>) {
         let mut c = coordinator();
         hello(&mut c, "holder", "abc", PROTOCOL_VERSION);
-        c.confirm_adopted_head(NOW);
         let (claim, fence) = grant(&mut c, "holder", vec![held]);
         let submitted = submit(&mut c, "holder", claim, fence, vec![touched]);
         accepted_position(&submitted, claim);

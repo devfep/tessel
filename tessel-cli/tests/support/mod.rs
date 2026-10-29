@@ -561,7 +561,7 @@ impl Inner {
     }
 
     /// The outstanding call `wanted` picks. A wake is run first if no call is out, since only a
-    /// wake issues one; a second if the first only read the head, which a merge waits for.
+    /// wake issues one.
     fn call_of(&self, st: &mut State, wanted: fn(&CallRequest) -> bool) -> Option<Call> {
         let find = |st: &State| st.calls.iter().find(|call| wanted(&call.request)).cloned();
         if let Some(call) = find(st) {
@@ -570,15 +570,10 @@ impl Inner {
         if !st.calls.is_empty() {
             return None;
         }
-        for _ in 0..2 {
-            st.wake_at = None;
-            let now_ms = self.clock();
-            self.feed(st, Input::Wake { now_ms }, None);
-            if let Some(call) = find(st) {
-                return Some(call);
-            }
-        }
-        None
+        st.wake_at = None;
+        let now_ms = self.clock();
+        self.feed(st, Input::Wake { now_ms }, None);
+        find(st)
     }
 
     fn answer(&self, st: &mut State, call: &Call, answer: CallAnswer) {
