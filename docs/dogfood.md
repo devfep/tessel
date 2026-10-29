@@ -179,8 +179,8 @@ binaries, upgrade as below first.
   (or, for a claim settled with `admin resolve --landed` while the server was stopped, the note
   `claim N is gone from the coordinator; forgot it`, which counts as an outcome: that command
   records the landing in the server's log, and the lane finds out from the log when it
-  reconnects), the lanes are idle, `server.log` has no timeout or push warning after the latest of those
-  outcomes, and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
+  reconnects), the lanes are idle, `server.log` has no timeout or push warning after the latest of
+  those outcomes, and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
 - **The build.** Build only from a landed `main` whose CI is green, in a checkout of that commit,
   and copy `tessel-server` and `tessel` with `install -m 755` into `<server dir>/bin.next`. Leave
   `<server dir>/bin` alone until the swap: git's askpass hook is the running server's own
@@ -483,8 +483,10 @@ for the pid to exit):
    it):
 
    ```
-   <server dir>/bin/tessel-server admin resolve <claim> --landed <head> --config <server dir>/tessel-server.toml
-   <server dir>/bin/tessel-server admin resolve <claim> --not-landed --config <server dir>/tessel-server.toml
+   <server dir>/bin/tessel-server admin resolve <claim> --landed <head> \
+     --config <server dir>/tessel-server.toml
+   <server dir>/bin/tessel-server admin resolve <claim> --not-landed \
+     --config <server dir>/tessel-server.toml
    ```
 
 `--landed <head>` merges the claim from the base its `Land` leased, and is refused unless `<head>`

@@ -515,8 +515,9 @@ fn admin_resolve_landed_leaves_the_waiters_grant_in_the_log_and_in_the_stored_st
         req: Some(RequestId(1)),
     };
     let effects = core.handle(&waiter, release, 9_001);
-    let released = effects.iter().any(|effect| {
-        matches!(effect, Effect::Log(event) if matches!(event.kind, EventKind::ClaimReleased { .. }))
+    let released = effects.iter().any(|effect| match effect {
+        Effect::Log(event) => matches!(event.kind, EventKind::ClaimReleased { .. }),
+        Effect::Reply(_) | Effect::Notify { .. } => false,
     });
     assert!(
         released,

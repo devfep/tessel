@@ -54,8 +54,9 @@ pub enum AdminError {
     #[error("{0}; nothing was changed")]
     NothingInDoubt(#[from] NoLandInDoubt),
     #[error(
-        "--landed names {given}, but the Land of claim {claim} journaled head {head} (base {base}); \
-         give that head once you have checked it is on main, or use --not-landed; nothing was changed"
+        "--landed names {given}, but the Land of claim {claim} journaled head {head} \
+         (base {base}); give that head once you have checked it is on main, or use \
+         --not-landed; nothing was changed"
     )]
     HeadMismatch {
         claim: u64,
