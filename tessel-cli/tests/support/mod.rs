@@ -21,7 +21,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, ensure, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tempfile::TempDir;
-use tessel_coordinator::host::call::{Call, CallAnswer, Request as CallRequest, TrialResult};
+use tessel_coordinator::host::call::{
+    Call, CallAnswer, CallId, Request as CallRequest, TrialResult,
+};
 use tessel_coordinator::host::{Host, HostConfig, Input, Output as HostOutput, SocketId};
 use tessel_coordinator::protocol::{
     AgentId, ClientMsg, CommitId, Event, ProtocolRange, ServerMsg, PROTOCOL_VERSION,
@@ -103,6 +105,11 @@ struct State {
     calls: Vec<Call>,
     /// The head of the last merge `merge_next` landed, which is what a head read answers.
     landed: Option<CommitId>,
+    /// The base the first `Hello` declared: main's head until a merge lands, as the test's repo
+    /// has no remote to read. A head read that comes before it waits in `head_reads`.
+    main_base: Option<CommitId>,
+    /// Head reads the host is waiting on, kept until `main_base` is known.
+    head_reads: Vec<CallId>,
     /// How many landings `merge_next` has answered.
     landings: u32,
     /// The wake the host last asked for, on the fake's clock.
@@ -437,12 +444,45 @@ impl Inner {
             None if self.takes_held_reply(&msg) => Replies::Park,
             None => Replies::Deliver,
         };
+        let hello_base = if let ClientMsg::Hello { base, .. } = &msg {
+            Some(base.clone())
+        } else {
+            None
+        };
         if let Action::Call { agent } = shell::decide(&session, &msg) {
             st.received.push((agent, msg));
         }
         let kept = replies != Replies::Deliver;
         self.feed(st, frame, kept.then_some(Origin { sock, replies }));
+        if let Some(base) = hello_base {
+            self.answer_waiting_head_reads(st, &base);
+        }
         replies == Replies::Lose || st.sockets.get(&sock).is_some_and(|entry| entry.cut)
+    }
+
+    /// The first `Hello`'s base becomes main's head, and the head reads that waited for one are
+    /// answered with it. A reviewer's zeros are no base.
+    fn answer_waiting_head_reads(&self, st: &mut State, base: &CommitId) {
+        if base.0.bytes().all(|byte| byte == b'0') {
+            return;
+        }
+        let main = st.main_base.get_or_insert_with(|| base.clone()).clone();
+        let now_ms = self.clock();
+        for call in std::mem::take(&mut st.head_reads) {
+            let answer = CallAnswer::Head {
+                main: Some(main.clone()),
+                landed: Vec::new(),
+            };
+            self.feed(
+                st,
+                Input::Replied {
+                    now_ms,
+                    call,
+                    answer,
+                },
+                None,
+            );
+        }
     }
 
     /// Whether `msg` is the claim or amend whose reply `hold_next_claim_reply` keeps back.
@@ -521,7 +561,7 @@ impl Inner {
     }
 
     /// The outstanding call `wanted` picks. A wake is run first if no call is out, since only a
-    /// wake issues one.
+    /// wake issues one; a second if the first only read the head, which a merge waits for.
     fn call_of(&self, st: &mut State, wanted: fn(&CallRequest) -> bool) -> Option<Call> {
         let find = |st: &State| st.calls.iter().find(|call| wanted(&call.request)).cloned();
         if let Some(call) = find(st) {
@@ -530,10 +570,15 @@ impl Inner {
         if !st.calls.is_empty() {
             return None;
         }
-        st.wake_at = None;
-        let now_ms = self.clock();
-        self.feed(st, Input::Wake { now_ms }, None);
-        find(st)
+        for _ in 0..2 {
+            st.wake_at = None;
+            let now_ms = self.clock();
+            self.feed(st, Input::Wake { now_ms }, None);
+            if let Some(call) = find(st) {
+                return Some(call);
+            }
+        }
+        None
     }
 
     fn answer(&self, st: &mut State, call: &Call, answer: CallAnswer) {
@@ -595,8 +640,12 @@ fn take_call(st: &mut State, call: Call, now_ms: u64, pending: &mut VecDeque<Inp
         | CallRequest::Land { .. }
         | CallRequest::Trial { .. } => st.calls.push(call),
         CallRequest::ReadHead { .. } => {
+            let Some(main) = st.landed.clone().or_else(|| st.main_base.clone()) else {
+                st.head_reads.push(call.id);
+                return;
+            };
             let answer = CallAnswer::Head {
-                main: st.landed.clone(),
+                main: Some(main),
                 landed: Vec::new(),
             };
             let call = call.id;
@@ -665,6 +714,8 @@ impl Fake {
                 next_socket: 0,
                 calls: Vec::new(),
                 landed: None,
+                main_base: None,
+                head_reads: Vec::new(),
                 landings: 0,
                 wake_at: None,
                 logs: Vec::new(),
