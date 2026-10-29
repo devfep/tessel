@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-29 12:00 UTC. Main at `001606a` (STATE). Before it, at `df4b39a`:
+**As of:** 2026-10-29 12:00 UTC. Main at `001606a`, two STATE commits after `df4b39a`, where
 P1-CORE-RECONCILE landed through the server at
 00:31 UTC as `8f15d61`..`df4b39a` (eleven commits, base `93a2f6a`; claim 122, held as merge-path
 and approved by the orchestrator). Felix delegated the merge-path yes for it to a vote of Opus
@@ -32,16 +32,19 @@ In flight (briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28
 - CORE-HEAD-ADOPTED (lane A, sonnet, dispatched 00:33 UTC from `df4b39a`,
   `.claude/worktrees/core-head-adopted`; claim 125): `8f0816d`..`8b8c07e` (gate green, 2311
   tests), then fix pass 1 `5f671c7` (red) and `4cac8ee` (fork branch `core-head-adopted-2`; gate
-  green, 2314). It keeps owing the head read while the head is only adopted; a race closing on an
-  adopted head waits for the read (judged with tests unknown once the retries are spent); a
-  `Prepare` names no main meanwhile (the lane's departure from the brief, so an agent on a port
-  that cannot read heads still hears the lander is missing); the CLI fake answers the head read.
-  Opus REVIEW-1 "With changes" (a landing that ended the adoption stranded a waiting race in
-  `Judging`; fixed); REVIEW-2 "With changes", no must-fix (a race closing after the retries waits
-  up to 90 s; the retry threshold is not pinned): fix pass 2 running. With P1-SIM-MERGE's
-  `4c99b4e` merged on top (scratch), seeds 64, 196 and 229 pass and 0..300 has no agent-base
-  failure. The reviewers call it merge path (`src/coordinator/` is sensitive): its held
-  submission waits for Felix's yes or a vote he delegates; asked.
+  green, 2314), then fix pass 2 `d2bfda1` (red) and `4fdd79b` (fork branch
+  `core-head-adopted-3`; gate green, 2315). It keeps owing the head read while the head is only
+  adopted; a race closing on an adopted head waits for the read, and is judged at once with tests
+  unknown once the retries are spent; a merge goes to the lander at once rather than waiting (the
+  lane's departure from the brief, so an agent on a port that cannot read heads still hears the
+  lander is missing) and records no main (`InFlight::main` is `None`; a `Prepare` never carries
+  one); the CLI fake answers the head read. Opus REVIEW-1 "With changes" (a landing that ended
+  the adoption stranded a waiting race in `Judging`; fixed); REVIEW-2 "With changes", no
+  must-fix (a race closing after the retries waited up to 90 s; the retry threshold was not
+  pinned; both fixed in pass 2, by the lane's report, not yet re-reviewed). With P1-SIM-MERGE's
+  `4c99b4e` merged on top (scratch), seeds 196 and 229 (which fail without it) and 64 pass, and
+  0..300 has no agent-base failure. REVIEW-1 calls it merge path (`src/coordinator/` is
+  sensitive): its submission will be held for Felix's yes or a vote he delegates; asked.
 - P1-SIM-MERGE (lane A): fix pass 1 at `4c99b4e` (fork branch `sim-merge-2`; gate green, 2291
   tests) answers REVIEW-1's "No" except the agent-base failure, which is CORE-HEAD-ADOPTED's.
   Opus REVIEW-2 "With changes", no must-fix of the lane's: I3's chain clause cannot fire on the
@@ -61,7 +64,8 @@ In flight (briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28
   connection. Five fix passes followed; REVIEW-2 "With changes", no must-fix. Pass 4 added tests
   for the nine missed mutants Nightly 40764265692 found in P1-CORE-STAGED-LANDING's code (killed
   by hand, four of the eight `merge.rs` mutants applied, the rest by argument; cargo-mutants not
-  run). The next scheduled Nightly is the first cargo-mutants check of those tests.
+  run). The scheduled Nightly 40853018831 on `001606a` was the first cargo-mutants check of
+  those tests: none of the nine is missed any more.
 P1-HOST-HARDENING follows P1-CORE-RECONCILE; P1-ONE-BATCH follows CORE-HEAD-ADOPTED;
 P1-ADAPTER-SUITE's rest follows P1-HOST-HARDENING; P1-FAILPOINTS follows P1-SIM-MERGE. The dogfood
 server runs `455c889` from `~/tessel-dogfood/bin` (restarted 27 October 22:25 UTC). Its
@@ -110,8 +114,9 @@ sandbox commits use his GitHub noreply address.
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
 **Next:** CORE-HEAD-ADOPTED (lane A), then P1-SIM-MERGE's fix pass 2, rebase and landing;
-RESOLVE-NAMES-HEAD (lane B) after CORE-HEAD-ADOPTED lands or leaves the core files (its core test
-is a cross edit), held for Felix's merge-path yes; then P1-HOST-HARDENING and P1-ONE-BATCH. Felix
+RESOLVE-NAMES-HEAD (lane B) after CORE-HEAD-ADOPTED lands or leaves the core files (its core tests
+are a cross edit), held for Felix's merge-path yes or a vote he delegates; then P1-HOST-HARDENING
+and P1-ONE-BATCH. Felix
 makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts local
 connections on a world-writable socket; he closes it before the accounts move.
 LANDER-ADMIN-POLICY-DEAD waits for M6.
@@ -1010,18 +1015,18 @@ Lane A:
   the default seeds (at most two merges per seed); its doc says so.
 - [ ] **P1-FAILPOINTS** — M, after P1-SIM-MERGE and P1-CORE-RECONCILE. The crash windows of a
   landing, the candidate ref's included.
-- [ ] **CORE-HEAD-ADOPTED** — S, lane A, after P1-CORE-RECONCILE (when the core is lane A's
-  again) and before P1-ONE-BATCH, which changes the same wake; found by P1-SIM-MERGE's agent-base
-  check (seeds 64, 196, 229). A dispatch names the `Hello`-declared head while it is only
+- [ ] **CORE-HEAD-ADOPTED** — S, lane A, Felix reviews, after P1-CORE-RECONCILE (when the core is
+  lane A's again) and before P1-ONE-BATCH, which changes the same wake; found by P1-SIM-MERGE's
+  agent-base check (seeds 64, 196, 229). A dispatch names the `Hello`-declared head while it is only
   adopted: a race trial records `state.head` as `before`/`main` (`src/coordinator/racing.rs:563`,
   `verifying.rs:336-337` on `7d671d3`), and so does a `Prepare`'s `main` (`merging.rs:230` on
-  `7d671d3`). By P1-SIM-MERGE REVIEW-1's reading, after the start read fails
-  `MAX_INFRA_RETRIES` + 1 times `start_retry_owed` (`trunk.rs:118-123` on `7d671d3`) stops owing
-  a read, so the head can stay adopted; nobody has traced it on those seeds. Keep owing the read
-  with capped backoff and dispatch nothing that names a head while the head is only adopted.
-  Done: a core test and the simulator's agent-base check green on CI's sweeps. The row, its lane
-  and its place before P1-SIM-MERGE's landing (which delays P1-FAILPOINTS) rest on P1-SIM-MERGE
-  REVIEW-1 and the standing order.
+  `7d671d3`). By P1-SIM-MERGE REVIEW-1's reading, after the start read fails `MAX_INFRA_RETRIES` + 1
+  times `start_retry_owed` (`trunk.rs:118-123` on `7d671d3`) stops owing a read, so the head can
+  stay adopted; nobody has traced it on those seeds. Keep owing the read with capped backoff and
+  dispatch nothing that names a head while the head is only adopted. Done: a core test and the
+  simulator's agent-base check green on CI's sweeps. The row, its lane and its place before
+  P1-SIM-MERGE's landing (which delays P1-FAILPOINTS) rest on P1-SIM-MERGE REVIEW-1 and the standing
+  order.
 - [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
   renewal persisted below half the lease (C10). Evidence from the kill loop on CI: the server
   keeps one commit outstanding and commits each step as its own batch (`src/host/batch.rs:1`),
@@ -1145,9 +1150,9 @@ Lane B:
   Nightly 40853018831 found on `001606a` in P1-CORE-RECONCILE's code, which its baseline allows
   none of: `src/coordinator/merging/doubt.rs` (`enter_doubt`: a deleted `doubts` field and
   `+=` to `*=`; `resend_land`: a deleted `retry_at_ms`; `&&` to `||` in `reconcile_outcome` and
-  in `resolve_doubt`, the latter VOTE-2's M2) and `src/merge.rs:51` (`*` to `+` and `/`); until
-  then the Nightly's baseline check fails on them. The core tests are a cross edit into lane A's
-  core, named here.
+  in `resolve_doubt`'s `submitted`/`work` guard, not VOTE-2's M2) and `src/merge.rs:51` (`*` to
+  `+` and `/`); until then the Nightly's baseline check fails on them. The core tests are a
+  cross edit into lane A's core, named here.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
