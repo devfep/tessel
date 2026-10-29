@@ -7,7 +7,8 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-29 00:55 UTC. Main at `df4b39a`: P1-CORE-RECONCILE landed through the server at
+**As of:** 2026-10-29 12:00 UTC. Main at `001606a` (STATE). Before it, at `df4b39a`:
+P1-CORE-RECONCILE landed through the server at
 00:31 UTC as `8f15d61`..`df4b39a` (eleven commits, base `93a2f6a`; claim 122, held as merge-path
 and approved by the orchestrator). Felix delegated the merge-path yes for it to a vote of Opus
 voters on its final commit (as for `dab6a22`); three voters (honesty and safety, test strength,
@@ -29,7 +30,18 @@ coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and
 claimed the file after the holder landed or left it to a follow-up.
 In flight (briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28/`):
 - CORE-HEAD-ADOPTED (lane A, sonnet, dispatched 00:33 UTC from `df4b39a`,
-  `.claude/worktrees/core-head-adopted`).
+  `.claude/worktrees/core-head-adopted`; claim 125): `8f0816d`..`8b8c07e` (gate green, 2311
+  tests), then fix pass 1 `5f671c7` (red) and `4cac8ee` (fork branch `core-head-adopted-2`; gate
+  green, 2314). It keeps owing the head read while the head is only adopted; a race closing on an
+  adopted head waits for the read (judged with tests unknown once the retries are spent); a
+  `Prepare` names no main meanwhile (the lane's departure from the brief, so an agent on a port
+  that cannot read heads still hears the lander is missing); the CLI fake answers the head read.
+  Opus REVIEW-1 "With changes" (a landing that ended the adoption stranded a waiting race in
+  `Judging`; fixed); REVIEW-2 "With changes", no must-fix (a race closing after the retries waits
+  up to 90 s; the retry threshold is not pinned): fix pass 2 running. With P1-SIM-MERGE's
+  `4c99b4e` merged on top (scratch), seeds 64, 196 and 229 pass and 0..300 has no agent-base
+  failure. The reviewers call it merge path (`src/coordinator/` is sensitive): its held
+  submission waits for Felix's yes or a vote he delegates; asked.
 - P1-SIM-MERGE (lane A): fix pass 1 at `4c99b4e` (fork branch `sim-merge-2`; gate green, 2291
   tests) answers REVIEW-1's "No" except the agent-base failure, which is CORE-HEAD-ADOPTED's.
   Opus REVIEW-2 "With changes", no must-fix of the lane's: I3's chain clause cannot fire on the
@@ -80,7 +92,10 @@ required checks, the repository admin role as bypass; always). Proven first on
 `tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
-**Waiting on Felix:** the plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps
+**Waiting on Felix:** his merge-path yes for CORE-HEAD-ADOPTED, or a vote he delegates, and the
+same choice for RESOLVE-NAMES-HEAD; whether CLAUDE.md rule 1 should also name a never-logged live
+notice an older daemon can skip and stay correct as additive (invariant 13 since `f1ea1f6`); the
+plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps
 `state_version` "only if the old binary can still read the new state", a case the store's
 `refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
 `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
@@ -1126,7 +1141,12 @@ Lane B:
   fixes); the log's `--config`; run resolve as the store's owner; `docs/dogfood.md:154-155` splits
   the fixture test's name in a code span; after `--landed` the lane sees "claim N is gone from the
   coordinator", not `merged`, which the upgrade's "nothing in flight" check must accept. VOTE-3's
-  optional `admin resolve --reject` is not taken. The core test is a cross edit into lane A's
+  optional `admin resolve --reject` is not taken. Also the seven missed mutants the scheduled
+  Nightly 40853018831 found on `001606a` in P1-CORE-RECONCILE's code, which its baseline allows
+  none of: `src/coordinator/merging/doubt.rs` (`enter_doubt`: a deleted `doubts` field and
+  `+=` to `*=`; `resend_land`: a deleted `retry_at_ms`; `&&` to `||` in `reconcile_outcome` and
+  in `resolve_doubt`, the latter VOTE-2's M2) and `src/merge.rs:51` (`*` to `+` and `/`); until
+  then the Nightly's baseline check fails on them. The core tests are a cross edit into lane A's
   core, named here.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
