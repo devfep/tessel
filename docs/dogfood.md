@@ -503,8 +503,8 @@ for the pid to exit):
 is exactly the head the `Land` journaled; `admin resolve` prints the claim's base and head either
 way. Use it only when step 2 exits 0. `--not-landed` takes no head and is safe whatever main is,
 so use it when unsure or when step 2 exits 1 or 128: it sends the claim back to `Prepare`, which
-answers `already_merged` if the work is on main after all. Both refuse while a server holds the store, and
-when the claim has no `Land` in flight. Then start the server. The answer is the one a `Reconcile`
+answers `already_merged` if the work is on main after all. Both refuse while a server holds the
+store, and when the claim has no `Land` in flight. Then start the server. The answer is the one a `Reconcile`
 would have given: the core still applies its own rules. After `--landed`, the lane's daemon finds
 the landing in the repository's event log at its next connection and reports `claim N is gone
 from the coordinator; forgot it`, not a `merged` notice. A lane that was waiting (`--wait`) behind
