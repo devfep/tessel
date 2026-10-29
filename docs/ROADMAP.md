@@ -7,14 +7,16 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-29 00:40 UTC. Main at `df4b39a`: P1-CORE-RECONCILE landed through the server at
+**As of:** 2026-10-29 00:55 UTC. Main at `df4b39a`: P1-CORE-RECONCILE landed through the server at
 00:31 UTC as `8f15d61`..`df4b39a` (eleven commits, base `93a2f6a`; claim 122, held as merge-path
 and approved by the orchestrator). Felix delegated the merge-path yes for it to a vote of Opus
 voters on its final commit (as for `dab6a22`); three voters (honesty and safety, test strength,
 operational risk) read `7897dc7` and each voted "Yes with should-fixes", with no must-fix
-(`~/tessel-orch-notes/2026-10-28/vote-core-reconcile/`). Their should-fixes are RESOLVE-NAMES-HEAD
-(below), which lands before DOGFOOD-UPGRADE. The submission held a merge of main, so the daemon
-copied no notes; the orchestrator copied all eleven by subject. Before this, main was `93a2f6a`
+(`~/tessel-orch-notes/2026-10-28/vote-core-reconcile/`). The landed tree is `7897dc7`'s plus
+main's docs-only commits since. CI (40794648923) and the Adapter suite (40794649049) passed on
+`df4b39a`. The votes' should-fixes are RESOLVE-NAMES-HEAD (below), which the orchestrator gates
+the server's upgrade on. The submission held a merge of main, so the daemon copied no notes; the
+orchestrator copied all eleven by subject. Before this, main was `93a2f6a`
 (STATE). P1-CORE-STAGED-LANDING (`05b6ec1`..`55528c9`, 28 October 18:23 UTC) was voted the same
 way (`vote-dab6a22/`). The daemon copying no notes for a submission with a merge commit is a gap
 CLAUDE.md's dogfooding paragraph does not mention.
@@ -29,10 +31,15 @@ In flight (briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28
 - CORE-HEAD-ADOPTED (lane A, sonnet, dispatched 00:33 UTC from `df4b39a`,
   `.claude/worktrees/core-head-adopted`).
 - P1-SIM-MERGE (lane A): fix pass 1 at `4c99b4e` (fork branch `sim-merge-2`; gate green, 2291
-  tests) answers REVIEW-1's "No" except the agent-base failure, which is CORE-HEAD-ADOPTED's;
-  Opus REVIEW-2 is running. Its daemon in `.claude/worktrees/sim-merge` is stopped (claim 119
-  released) while lane A runs CORE-HEAD-ADOPTED; it re-claims, rebases onto that, drops its
-  expected-to-fail seeds and fixes the default-seed `compare_and_swap_refused` test, then lands.
+  tests) answers REVIEW-1's "No" except the agent-base failure, which is CORE-HEAD-ADOPTED's.
+  Opus REVIEW-2 "With changes", no must-fix of the lane's: I3's chain clause cannot fire on the
+  lander's own histories (`parent` should be `candidate.base`), a scripted stale-`Tested` run, a
+  scripted restart during a poisoned `Test`. Its daemon in `.claude/worktrees/sim-merge` is
+  stopped (claim 119 released) while lane A runs CORE-HEAD-ADOPTED. Fix pass 2
+  (`lane-a/sim-merge/FIX-2.md`) comes with the rebase onto CORE-HEAD-ADOPTED: REVIEW-2's
+  should-fixes, its expected-to-fail seeds dropped, the default-seed `compare_and_swap_refused`
+  test re-checked (REVIEW-2 found it passes on the reconciling core); then it lands. REVIEW-2
+  also asks that I12 be recorded as unproven at the default seeds: it is, in its row.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -41,12 +48,15 @@ In flight (briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28
   exhaustive `skippable()`, and the doubt rebuilt from an optional `Welcome` field on every
   connection. Five fix passes followed; REVIEW-2 "With changes", no must-fix. Pass 4 added tests
   for the nine missed mutants Nightly 40764265692 found in P1-CORE-STAGED-LANDING's code (killed
-  by hand, four of the eight `merge.rs` mutants applied, the rest by argument).
+  by hand, four of the eight `merge.rs` mutants applied, the rest by argument; cargo-mutants not
+  run). The next scheduled Nightly is the first cargo-mutants check of those tests.
 P1-HOST-HARDENING follows P1-CORE-RECONCILE; P1-ONE-BATCH follows CORE-HEAD-ADOPTED;
 P1-ADAPTER-SUITE's rest follows P1-HOST-HARDENING; P1-FAILPOINTS follows P1-SIM-MERGE. The dogfood
-server runs `455c889` from `~/tessel-dogfood/bin` (restarted 27 October 22:25 UTC). It is not
-upgraded until RESOLVE-NAMES-HEAD lands and the upgrade's trial landing passes (DOGFOOD-UPGRADE's
-"When"; the trial waits on Felix's token, below). `.claude/worktrees/orchestrator` holds this
+server runs `455c889` from `~/tessel-dogfood/bin` (restarted 27 October 22:25 UTC). Its
+upgrade's "When" (`docs/dogfood.md`) is met: P1-SERVER-STAGED, P1-CORE-STAGED-LANDING and
+P1-CORE-RECONCILE have landed. The orchestrator adds RESOLVE-NAMES-HEAD as a gate, since after the
+upgrade `admin resolve` is live with an unchecked `--landed`; the trial landing waits on Felix's
+token (below). `.claude/worktrees/orchestrator` holds this
 commit, `gate-main` (at `455c889`) is the gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking. The auto-mode
@@ -84,11 +94,12 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** CORE-HEAD-ADOPTED (lane A), then P1-SIM-MERGE's rebase and landing after its re-review;
-RESOLVE-NAMES-HEAD (lane B) once lane A's core work leaves room on this Mac; then
-P1-HOST-HARDENING and P1-ONE-BATCH. Felix makes ruleset step 3 ("Fast lane,
-simulator" required). Felix's Homebrew postgres trusts local connections on a world-writable
-socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** CORE-HEAD-ADOPTED (lane A), then P1-SIM-MERGE's fix pass 2, rebase and landing;
+RESOLVE-NAMES-HEAD (lane B) after CORE-HEAD-ADOPTED lands or leaves the core files (its core test
+is a cross edit), held for Felix's merge-path yes; then P1-HOST-HARDENING and P1-ONE-BATCH. Felix
+makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts local
+connections on a world-writable socket; he closes it before the accounts move.
+LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -980,7 +991,8 @@ Lane A:
   dispatch uses an agent-declared base. Also the `dab6a22` reviews' simulator findings, moved here
   from P1-CORE-RECONCILE by the orchestrator because this task replaces that lander and keeps to
   `src/sim/**`: the simulator's `Reconcile` reports any prepared head as landed
-  (`src/sim/driver.rs:691` on `dab6a22`), and its lander does not model C7.
+  (`src/sim/driver.rs:691` on `dab6a22`), and its lander does not model C7. I12 is unproven at
+  the default seeds (at most two merges per seed); its doc says so.
 - [ ] **P1-FAILPOINTS** — M, after P1-SIM-MERGE and P1-CORE-RECONCILE. The crash windows of a
   landing, the candidate ref's included.
 - [ ] **CORE-HEAD-ADOPTED** — S, lane A, after P1-CORE-RECONCILE (when the core is lane A's
@@ -1089,21 +1101,33 @@ Lane B:
   test edit lane A's `tessel-cli/tests/support/mod.rs` and `tessel-server/src/repo.rs`, which the
   plan's cross-edit list for this task does not name; lane A (on `src/sim/**`) stays out of them
   while this runs.
-- [ ] **RESOLVE-NAMES-HEAD** — S, lane B, before DOGFOOD-UPGRADE (the live `455c889` has no
-  `admin resolve`); the should-fixes of P1-CORE-RECONCILE's merge-path vote
+- [ ] **RESOLVE-NAMES-HEAD** — S, lane B, Felix reviews (it changes how `admin resolve` records
+  `Merged`, the one path to `Merged` outside the lander: merge path, PLAN.md section 10), after
+  CORE-HEAD-ADOPTED lands or leaves the core files; before the dogfood server's upgrade, a gate
+  the orchestrator adds (the live `455c889` has no `admin resolve`), resting on VOTE-1 and VOTE-3
+  should-fix 1, STATE-1029-1's review and the standing order; it adds itself to `docs/dogfood.md`'s
+  "When". The should-fixes of P1-CORE-RECONCILE's merge-path vote
   (`~/tessel-orch-notes/2026-10-28/vote-core-reconcile/VOTE-1..3.md`). `--landed` is the one path
   to `Merged` the lander does not check, and the operator is never shown the head to check (the
-  lander rebases, so the claim's own commit is never on main): log `base` and `head` in the doubt
-  line, print them in `admin resolve`, require `--landed <head>` equal to the journaled head, and
-  give the runbook's read (`merge_in_flight.stage.head`, then `git merge-base --is-ancestor`) and
-  that `--not-landed` is safe when unsure. Tests the votes found missing: the `--landed` /
-  `--not-landed` mapping in `run_admin` (a swap survives; a binary test against a stored `Land` in
-  doubt), `resolve_doubt` refusing another claim (dropping its claim filter survives), `restart.rs`
-  keeping the candidate ref, `!skippable()` for every v1 type. Also: the "core retries" wording
-  after a `Land` that ends `Unknown`; whether an `Unstaged` doubt may still end in an
-  infrastructure rejection (fix or document); a `Land` whose push fails for good resends forever
-  (document what the operator fixes); the log's `--config`; run resolve as the store's owner. The
-  core test is a cross edit into lane A's core, named here.
+  lander rebases, so the claim's own commit is not on main by its sha): log `base` and `head` in
+  the doubt line, print them in `admin resolve`, and give the runbook's read
+  (`merge_in_flight.stage.head`, then `git merge-base --is-ancestor`) and that `--not-landed` is
+  safe when unsure. Requiring `--landed <head>` equal to the journaled head (VOTE-1's "preferably")
+  is the orchestrator's choice, an operator CLI change for Felix's review. Tests the votes found
+  missing (VOTE-2: missing tests, not wrong behaviour): the `--landed` / `--not-landed` mapping in
+  `run_admin` (a swap survives; a binary test against a stored `Land` in doubt), `resolve_doubt`
+  refusing another claim (dropping its claim filter survives), `restart.rs` keeping the candidate
+  ref, `!skippable()` for every v1 type, a waiter granted by an offline `--landed` getting its
+  grant on reconnect (every notice is dropped as unsent), and the vacuous `merge_doubt` skip test
+  dropped or made to check the count. Also: the "core retries" wording after a `Land` that ends
+  `Unknown`; an `Unstaged` doubt does end in an infrastructure rejection at the retry bound
+  (`retry_after_infrastructure`, reachable only by breaking "nothing in flight"): fix or
+  document; a `Land` whose push fails for good resends forever (document what the operator
+  fixes); the log's `--config`; run resolve as the store's owner; `docs/dogfood.md:154-155` splits
+  the fixture test's name in a code span; after `--landed` the lane sees "claim N is gone from the
+  coordinator", not `merged`, which the upgrade's "nothing in flight" check must accept. VOTE-3's
+  optional `admin resolve --reject` is not taken. The core test is a cross edit into lane A's
+  core, named here.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
