@@ -457,7 +457,7 @@ mod tests {
             "leased base base1",
             "journaled head head1",
             "admin resolve 7 --landed head1 --config",
-            "git merge-base --is-ancestor head1 main",
+            "git merge-base --is-ancestor head1 origin/main",
             "--not-landed",
         ] {
             assert!(line.contains(part), "{part:?} missing from {line}");
