@@ -227,7 +227,7 @@ impl Coordinator {
             claim,
             attempt,
             dispatch: self.state.last_dispatch + 1,
-            main: self.state.head.clone(),
+            main: self.state.head.clone().filter(|_| !self.head_is_adopted()),
             stage: MergeStage::Prepare,
             doubts: 0,
             doubt_since_ms: None,
@@ -596,12 +596,8 @@ impl Coordinator {
 
     /// The earliest submission that may be dispatched: submitted and not held for review, except
     /// that one in doubt (`unanswered_from`) comes first. Only real claims have `work`, so shadow
-    /// claims never qualify. Nothing qualifies while the head is only adopted from a `Hello`: a
-    /// merge records the head as the main it was dispatched from, so it waits for the head read.
+    /// claims never qualify.
     fn next_to_merge(&self) -> Option<ClaimId> {
-        if self.head_is_adopted() {
-            return None;
-        }
         let mut next: Option<(bool, u64, ClaimId)> = None;
         for (id, held) in &self.state.claims {
             let (Some(ordinal), Some(work)) = (held.submitted, held.work.as_ref()) else {
@@ -1060,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_waits_for_the_head_read_while_the_head_is_only_adopted() {
+    fn a_merge_names_no_main_while_the_head_is_only_adopted() {
         let read_head = CommitId("c".repeat(40));
         let mut c = core();
         let start = c.begin_head_read().expect("no head: a read is due");
@@ -1072,13 +1068,16 @@ mod tests {
         c.handle(&agent("a1"), hello, NOW);
         let claim = grant(&mut c, "a1", vec![edit("src/a.rs")]);
         submit(&mut c, "a1", claim, "src/a.rs");
-        assert!(c.begin_merge(NOW + 1).is_none(), "a Prepare would name it");
-        assert_eq!(c.next_merge_ms(false, NOW + 1), None);
+        c.begin_merge(NOW + 1).expect("the lander is asked");
+        let flight = c.state.merge_in_flight.as_ref().expect("in flight");
+        assert_eq!(flight.main, None, "the Hello's base is no main");
+        c.recover_merge(NOW + 1);
 
         c.trunk_read(&start, Some(read_head.clone()), NOW + 2);
-        assert!(c.begin_merge(NOW + 3).is_some(), "the read releases it");
+        let due = c.next_merge_ms(false, NOW + 2).expect("a retry is due");
+        c.begin_merge(due).expect("dispatched again");
         let flight = c.state.merge_in_flight.as_ref().expect("in flight");
-        assert_eq!(flight.main, Some(read_head));
+        assert_eq!(flight.main, Some(read_head), "once the head is read");
     }
 
     fn merged_outcome() -> MergeOutcome {

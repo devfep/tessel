@@ -308,8 +308,8 @@ head is main's before the first agent says hello. If main cannot be read then, o
 first, the head is the base that hello declared, as before; a later wake of the repository reads
 again while it has no head. A head that is only the base a hello declared is read again, at 10 s,
 30 s and then every 90 s for as long as the read fails, and while it stands the repository starts
-no merge and queues no trial of a closed race: a submission waits in the queue, and a race stays
-undecided, until the read answers.
+records no main for a merge and queues no trial of a closed race: a race stays undecided until
+the read answers.
 
 The runner has no sandbox until M5. A trunk's test command runs as the runner's user, which is the
 server's user, and can write to a path `remote` and read the `token_file`, which a landing does not

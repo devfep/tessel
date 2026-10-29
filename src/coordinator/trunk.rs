@@ -30,13 +30,13 @@
 //!   that runs anyway still offers it, and a poke starts the count again. While the head is
 //!   adopted from a `Hello` the read is owed for as long as that lasts: it is offered again after
 //!   every failure, the backoff stays at its last step (90 s), and no count ends it.
-//! - Until a read replaces an adopted head, nothing is dispatched that names it. A merge is not
-//!   started (`begin_merge` finds nothing to merge, so a verification may run meanwhile), and a
-//!   race that closes queues no trials: its entries stay in `Judging` with
-//!   `trials_await_head`, and the read queues them on the head it read. An agent sees what a
-//!   queued submission always shows: `Accepted` with its queue position, then nothing until the
-//!   merge runs; a race entry hears nothing until the race is decided. Agents already welcomed
-//!   learn nothing new: the next `Welcome` and the next dispatch carry the head.
+//! - Until a read replaces an adopted head, nothing is dispatched that names it. A merge goes to
+//!   the lander at once but records no main (`InFlight::main` is `None`, as with no head): the
+//!   lander's `Prepare` answer carries the base, and a lander that refuses or cannot read heads
+//!   still answers the agent. A race that closes queues no trials, which name the head as both
+//!   sides: its entries stay in `Judging` with `trials_await_head`, and the read queues them on
+//!   the head it read. A race entry hears nothing until the race is decided. Agents already
+//!   welcomed learn nothing new: the next `Welcome` and the next dispatch carry the head.
 //! - A state loaded from storage whose head is still the `Hello`'s owes one read at the first
 //!   wake that runs anyway (the server wakes once at start), because a read that was out when the
 //!   process stopped left no marker. It sets no wake of its own. If that read fails it is retried
