@@ -596,8 +596,12 @@ impl Coordinator {
 
     /// The earliest submission that may be dispatched: submitted and not held for review, except
     /// that one in doubt (`unanswered_from`) comes first. Only real claims have `work`, so shadow
-    /// claims never qualify.
+    /// claims never qualify. Nothing qualifies while the head is only adopted from a `Hello`: a
+    /// merge records the head as the main it was dispatched from, so it waits for the head read.
     fn next_to_merge(&self) -> Option<ClaimId> {
+        if self.head_is_adopted() {
+            return None;
+        }
         let mut next: Option<(bool, u64, ClaimId)> = None;
         for (id, held) in &self.state.claims {
             let (Some(ordinal), Some(work)) = (held.submitted, held.work.as_ref()) else {
@@ -1171,6 +1175,7 @@ mod tests {
             protocol: 1,
         };
         c.handle(&agent("a"), hello("a"), NOW);
+        c.confirm_adopted_head(NOW);
         let (claim, _) = dispatched(&mut c, "a", "src/a.rs");
         c.settle_merge(c.merge_flight_id(claim), &merged_outcome(), NOW);
         let effects = c.handle(&agent("b"), hello("b"), NOW);

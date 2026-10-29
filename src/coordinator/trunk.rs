@@ -25,11 +25,18 @@
 //!   the poke count: the answer is the truth about main. It is logged as a `BaseMoved`, because
 //!   the agent was welcomed with the old head. A head a landing or an earlier read set is never
 //!   replaced this way, and the compare-and-set still drops a read that began before it.
-//! - A read that fails while the head is missing or adopted from a `Hello` is offered again after
-//!   `infra_backoff_ms` (10 s, 30 s, 90 s), at most `MAX_INFRA_RETRIES` times, then no wake is set
-//!   for it. Any alarm that runs anyway still offers it while the head is missing, and a poke
-//!   starts the count again. Agents already welcomed learn nothing new: the next `Welcome` and
-//!   the next dispatch carry the head.
+//! - A read that fails while the head is missing is offered again after `infra_backoff_ms`
+//!   (10 s, 30 s, 90 s), at most `MAX_INFRA_RETRIES` times, then no wake is set for it. Any alarm
+//!   that runs anyway still offers it, and a poke starts the count again. While the head is
+//!   adopted from a `Hello` the read is owed for as long as that lasts: it is offered again after
+//!   every failure, the backoff stays at its last step (90 s), and no count ends it.
+//! - Until a read replaces an adopted head, nothing is dispatched that names it. A merge is not
+//!   started (`begin_merge` finds nothing to merge, so a verification may run meanwhile), and a
+//!   race that closes queues no trials: its entries stay in `Judging` with
+//!   `trials_await_head`, and the read queues them on the head it read. An agent sees what a
+//!   queued submission always shows: `Accepted` with its queue position, then nothing until the
+//!   merge runs; a race entry hears nothing until the race is decided. Agents already welcomed
+//!   learn nothing new: the next `Welcome` and the next dispatch carry the head.
 //! - A state loaded from storage whose head is still the `Hello`'s owes one read at the first
 //!   wake that runs anyway (the server wakes once at start), because a read that was out when the
 //!   process stopped left no marker. It sets no wake of its own. If that read fails it is retried
@@ -108,7 +115,7 @@ impl Coordinator {
     }
 
     /// `head` is the base a `Hello` declared, not something read from main or landed.
-    fn head_is_adopted(&self) -> bool {
+    pub(super) fn head_is_adopted(&self) -> bool {
         self.state.head.is_some() && self.state.head == self.state.head_from_hello
     }
 
@@ -117,7 +124,7 @@ impl Coordinator {
     /// process stopped is gone.
     fn start_retry_owed(&self) -> bool {
         let failures = self.state.head_start_failures;
-        let retrying = (1..=MAX_INFRA_RETRIES).contains(&failures);
+        let retrying = failures >= 1;
         let lost_with_the_process = failures == 0 && self.state.loaded;
         self.head_is_adopted() && (retrying || lost_with_the_process)
     }
@@ -131,7 +138,8 @@ impl Coordinator {
             return Some(now_ms);
         }
         let failures = self.state.head_start_failures;
-        if (1..=MAX_INFRA_RETRIES).contains(&failures) {
+        let bounded = failures <= MAX_INFRA_RETRIES && self.state.head.is_none();
+        if failures >= 1 && (self.head_is_adopted() || bounded) {
             return Some(self.state.head_start_retry_ms.max(now_ms));
         }
         None
@@ -177,22 +185,39 @@ impl Coordinator {
         self.state.head_synced = self.state.head_synced.max(read.pokes);
         self.state.head_start_failures = 0;
         self.state.head_from_hello = None;
-        if self.state.head.as_ref() == Some(&head) {
-            return Vec::new();
-        }
-        let first = self.state.head.replace(head.clone()).is_none();
-        if first {
+        let mut effects = Vec::new();
+        if self.state.head.as_ref() != Some(&head) {
+            let first = self.state.head.replace(head.clone()).is_none();
             // The first head is no move: nobody had a base to be moved from.
-            return Vec::new();
+            if !first {
+                effects.push(self.event(
+                    now_ms,
+                    EventKind::BaseMoved {
+                        head,
+                        by: AgentId(STEWARD_AGENT.to_string()),
+                        notified: Vec::new(),
+                    },
+                ));
+            }
         }
-        vec![self.event(
-            now_ms,
-            EventKind::BaseMoved {
-                head,
-                by: AgentId(STEWARD_AGENT.to_string()),
-                notified: Vec::new(),
-            },
-        )]
+        effects.extend(self.queue_trials_awaiting_head(now_ms));
+        effects
+    }
+}
+
+#[cfg(test)]
+impl Coordinator {
+    /// A head read that answers the head a `Hello` adopted, for the tests whose subject is not
+    /// the read: dispatches name no head until one has answered.
+    pub(crate) fn confirm_adopted_head(&mut self, now_ms: u64) {
+        let Some(head) = self.state.head.clone().filter(|_| self.head_is_adopted()) else {
+            return;
+        };
+        let read = HeadRead {
+            head_at_start: None,
+            pokes: self.state.head_pokes,
+        };
+        self.trunk_read(&read, Some(head), now_ms);
     }
 }
 
@@ -310,6 +335,7 @@ mod tests {
             },
         };
         c.handle(&agent(who), submit, NOW);
+        c.confirm_adopted_head(NOW);
         assert!(c.begin_merge(NOW).is_some());
     }
 
@@ -848,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_state_whose_reads_keep_failing_backs_off_and_stops() {
+    fn a_restored_state_whose_reads_keep_failing_backs_off_and_keeps_owing_the_read() {
         let mut c = core();
         c.begin_head_read().expect("due");
         hello(&mut c, "a1", OLD);
@@ -870,10 +896,10 @@ mod tests {
             );
             now += wait;
         }
-        let last = c.begin_head_read().expect("the last retry");
-        c.trunk_read(&last, None, now);
-        assert_eq!(c.begin_head_read(), None, "no read is owed after the bound");
-        assert_eq!(c.next_head_read_ms(now), None);
+        let past_the_bound = c.begin_head_read().expect("still owed after the bound");
+        c.trunk_read(&past_the_bound, None, now);
+        let capped = infra_backoff_ms(MAX_INFRA_RETRIES);
+        assert_eq!(c.next_head_read_ms(now), Some(now + capped));
         assert_eq!(head_of(&c), Some(sha(OLD)));
     }
 }

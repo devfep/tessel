@@ -89,6 +89,10 @@ pub(super) struct Race {
     /// In join order.
     entrants: Vec<Entrant>,
     phase: Phase,
+    /// The race closed while the head was only adopted from a `Hello`, so its trials are not
+    /// queued yet: a trial names the head as both sides, and the head read has not confirmed it.
+    #[serde(default)]
+    trials_await_head: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +286,7 @@ impl Coordinator {
             criteria,
             entrants: Vec::new(),
             phase: Phase::Open,
+            trials_await_head: false,
         };
         place_race_locks(&mut self.locks, id, &race);
         let opened = EventKind::RaceOpened {
@@ -540,18 +545,18 @@ impl Coordinator {
     }
 
     /// Close the race to entries: release entrants that never submitted, and queue the tests of
-    /// each entry that did, all on the head as it is now. With nothing to try, the race is judged
-    /// at once.
+    /// each entry that did (`queue_race_trials`), unless the head is only adopted: then they wait
+    /// for the head read (`trials_await_head`).
     fn begin_judging(&mut self, race_id: RaceId, now_ms: u64) -> Vec<Effect> {
         let Some(race) = self.state.races.get_mut(&race_id.0) else {
             return Vec::new();
         };
         race.phase = Phase::Judging;
         let mut cut_off = Vec::new();
-        let mut submitted = Vec::new();
+        let mut any_submitted = false;
         for entrant in &race.entrants {
             match entrant.entered {
-                Some(_) => submitted.push((entrant.claim, entrant.agent.clone())),
+                Some(_) => any_submitted = true,
                 None => cut_off.push(entrant.claim),
             }
         }
@@ -560,13 +565,55 @@ impl Coordinator {
             self.state.claims.remove(&claim.0);
             effects.extend(self.claim_released(claim, ReleaseReason::LostRace, now_ms));
         }
+        if any_submitted && self.head_is_adopted() {
+            if let Some(race) = self.state.races.get_mut(&race_id.0) {
+                race.trials_await_head = true;
+            }
+            return effects;
+        }
+        effects.extend(self.queue_race_trials(race_id, now_ms));
+        effects
+    }
+
+    /// Queue the tests of each entry that submitted, all on the head as it is now. With nothing
+    /// to try, the race is judged at once.
+    fn queue_race_trials(&mut self, race_id: RaceId, now_ms: u64) -> Vec<Effect> {
+        let Some(race) = self.state.races.get(&race_id.0) else {
+            return Vec::new();
+        };
+        let mut submitted = Vec::new();
+        for entrant in &race.entrants {
+            if entrant.entered.is_some() {
+                submitted.push((entrant.claim, entrant.agent.clone()));
+            }
+        }
         if let Some(head) = self.state.head.clone() {
             for (claim, agent) in submitted {
                 self.record_race_trial(race_id, &agent, claim, &head);
             }
         }
-        if !self.race_has_trials(race_id) {
-            effects.extend(self.finish_judging(race_id, now_ms));
+        if self.race_has_trials(race_id) {
+            return Vec::new();
+        }
+        self.finish_judging(race_id, now_ms)
+    }
+
+    /// Queue the trials of every race that closed while the head was only adopted, now that a
+    /// head read has replaced it.
+    pub(super) fn queue_trials_awaiting_head(&mut self, now_ms: u64) -> Vec<Effect> {
+        if self.head_is_adopted() {
+            return Vec::new();
+        }
+        let mut waiting = Vec::new();
+        for (id, race) in &mut self.state.races {
+            if race.trials_await_head {
+                race.trials_await_head = false;
+                waiting.push(RaceId(*id));
+            }
+        }
+        let mut effects = Vec::new();
+        for race_id in waiting {
+            effects.extend(self.queue_race_trials(race_id, now_ms));
         }
         effects
     }
@@ -880,6 +927,7 @@ mod tests {
             protocol: PROTOCOL_VERSION,
         };
         c.handle(&agent("felix"), hello, NOW);
+        c.confirm_adopted_head(NOW);
         c
     }
 

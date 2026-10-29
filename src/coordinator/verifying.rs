@@ -1807,6 +1807,7 @@ mod tests {
             protocol: crate::protocol::PROTOCOL_VERSION,
         };
         c.handle(&agent("felix"), hello, NOW);
+        c.confirm_adopted_head(NOW);
         let open = ClientMsg::OpenRace {
             req: RequestId(5),
             intent: Intent {
