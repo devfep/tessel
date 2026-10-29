@@ -206,6 +206,22 @@ impl Coordinator {
         })
     }
 
+    /// The base and head that the `Land` of `claim` journaled, while that `Land` (or the
+    /// `Reconcile` that follows it) is the merge in flight. The lander rebases, so this head, not
+    /// the submitter's fork commit, is what must be on main for the work to have landed.
+    pub fn journaled_land(&self, claim: ClaimId) -> Option<(CommitId, CommitId)> {
+        let flight = self.state.merge_in_flight.as_ref()?;
+        if flight.claim != claim {
+            return None;
+        }
+        match &flight.stage {
+            MergeStage::Land { base, head } | MergeStage::Reconcile { base, head } => {
+                Some((base.clone(), head.clone()))
+            }
+            MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged => None,
+        }
+    }
+
     /// What the lander's answer means to a merge at its `Land` (or at the `Reconcile` that follows
     /// one). Only a landing of the journaled head acts at a `Reconcile`; a late answer to the
     /// `Land` otherwise says nothing the `Reconcile` will not. At a `Land`, a refusal, a move of

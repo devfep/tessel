@@ -2968,28 +2968,6 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_doubt_frame_reaching_a_daemon_without_the_name_is_skipped_and_counted() {
-        // A daemon built before `merge_doubt` has no name for it: with its known list as it was,
-        // the frame is an unknown envelope, which the daemon skips and counts, not an error.
-        let frame = r#"{"type":"merge_doubt","claim":7,"since_ms":5}"#;
-        let skipped =
-            unknown_envelope(&frame.replace("merge_doubt", "merge_doubt_from_the_future"));
-        assert_eq!(
-            skipped,
-            Some(UnknownEnvelope {
-                seq: None,
-                kind: Some("merge_doubt_from_the_future".to_string())
-            }),
-            "a type with no name is skipped and named for the count"
-        );
-        assert!(ServerMsg::MergeDoubt {
-            claim: ClaimId(7),
-            since_ms: Some(5)
-        }
-        .skippable());
-    }
-
-    #[test]
     fn a_known_name_with_a_payload_that_does_not_parse_is_not_skipped() {
         for text in [
             r#"{"type":"welcome"}"#,

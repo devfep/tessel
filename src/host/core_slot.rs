@@ -6,7 +6,7 @@
 
 use crate::coordinator::{Coordinator as Core, Effect, HeadRead};
 use crate::host::HostConfig;
-use crate::protocol::{AgentId, ClaimInDoubt, Event};
+use crate::protocol::{AgentId, ClaimId, ClaimInDoubt, CommitId, Event};
 use crate::shell::{self, LoadError, Outbound, StoreDecision, StoredSize, Work};
 
 /// What this instance is waiting on, for the wake the core computes (R16).
@@ -74,6 +74,13 @@ impl CoreSlot {
 
     pub fn merge_in_doubt(&self) -> Option<ClaimInDoubt> {
         self.core.as_ref().and_then(|core| core.merge_in_doubt())
+    }
+
+    /// The base and head the `Land` of `claim` journaled, while it is the merge in flight.
+    pub fn journaled_land(&self, claim: ClaimId) -> Option<(CommitId, CommitId)> {
+        self.core
+            .as_ref()
+            .and_then(|core| core.journaled_land(claim))
     }
 
     pub fn has_merge_in_flight(&self) -> bool {

@@ -53,6 +53,16 @@ pub enum AdminError {
     Load(LoadError),
     #[error("{0}; nothing was changed")]
     NothingInDoubt(#[from] NoLandInDoubt),
+    #[error(
+        "--landed names {given}, but the Land of claim {claim} journaled head {head} (base {base}); \
+         give that head once you have checked it is on main, or use --not-landed; nothing was changed"
+    )]
+    HeadMismatch {
+        claim: u64,
+        given: String,
+        base: String,
+        head: String,
+    },
     #[error("cannot write the state the answer produced: {0}")]
     Serialize(#[from] serde_json::Error),
 }
@@ -129,25 +139,40 @@ fn repository_of<'a>(
     }
 }
 
+/// The operator's answer for a `Land` in doubt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    /// The `Land`'s journaled head is on main. The head is the one the operator checked; the
+    /// answer is refused unless it is the journaled one.
+    Landed { head: String },
+    /// The head is not on main, or the operator cannot tell: the claim goes back to `Prepare`.
+    NotLanded,
+}
+
 /// What `resolve` did, for the log line.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub repository: String,
     pub claim: u64,
     pub landed: bool,
+    /// The main the settled `Land` leased.
+    pub base: String,
+    /// The head the settled `Land` journaled.
+    pub head: String,
     /// Events the answer appended to the repository's log.
     pub events: usize,
 }
 
 /// Settle the `Land` of `claim` that is in doubt, offline: take the store directory's lock (so a
 /// running server refuses it), load the stored core, feed it the answer a `Reconcile` would have
-/// given (`landed`: the head is on main; otherwise it is not and the claim goes back to `Prepare`)
-/// and store the result with its events in one transaction. The core's rules still apply: it
-/// refuses a claim with no `Land` in flight, and nothing is written then.
+/// given (`Answer::Landed`: the head is on main, and the head given must be the journaled one;
+/// otherwise it is not and the claim goes back to `Prepare`) and store the result with its events
+/// in one transaction. The core's rules still apply: it refuses a claim with no `Land` in flight,
+/// and nothing is written then.
 pub fn resolve(
     config: &Config,
     (tenant, repo): (Option<&str>, Option<&str>),
-    (claim, landed): (u64, bool),
+    (claim, answer): (u64, &Answer),
     now_ms: u64,
 ) -> Result<Resolved, AdminError> {
     let repository = repository_of(config, (tenant, repo))?;
@@ -173,6 +198,21 @@ pub fn resolve(
         sensitive,
     )
     .map_err(AdminError::Load)?;
+    let (base, head) = core.journaled_land(ClaimId(claim)).ok_or(NoLandInDoubt {
+        claim: ClaimId(claim),
+    })?;
+    let landed = match answer {
+        Answer::Landed { head: given } if *given != head.0 => {
+            return Err(AdminError::HeadMismatch {
+                claim,
+                given: given.clone(),
+                base: base.0,
+                head: head.0,
+            });
+        }
+        Answer::Landed { .. } => true,
+        Answer::NotLanded => false,
+    };
     let effects = core.resolve_doubt(ClaimId(claim), landed, now_ms)?;
     let (events, _unsent) = shell::split_effects(effects);
     let entries = shell::persist_entries(&core, &events)?;
@@ -181,6 +221,8 @@ pub fn resolve(
         repository: id.to_string(),
         claim,
         landed,
+        base: base.0,
+        head: head.0,
         events: events.len(),
     })
 }
@@ -233,6 +275,20 @@ mod resolve_tests {
 
     const OLD: &str = "dddddddddddddddddddddddddddddddddddddddd";
     const HEAD: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    fn landed() -> Answer {
+        Answer::Landed {
+            head: HEAD.to_string(),
+        }
+    }
+
+    fn answer(landed_on_main: bool) -> Answer {
+        if landed_on_main {
+            landed()
+        } else {
+            Answer::NotLanded
+        }
+    }
 
     fn write_config(dir: &Path, repositories: &[(&str, &str)]) -> Config {
         let mut text = format!(
@@ -329,7 +385,7 @@ mod resolve_tests {
     #[test]
     fn landed_merges_the_claim_and_stores_the_event() {
         let (_dir, config, id, claim) = setup();
-        let done = resolve(&config, (None, None), (claim, true), 5_000).unwrap();
+        let done = resolve(&config, (None, None), (claim, &landed()), 5_000).unwrap();
         assert_eq!((done.landed, done.claim), (true, claim));
         assert!(done.events > 0);
         let kinds = kinds_of(&config, &id);
@@ -347,7 +403,7 @@ mod resolve_tests {
     #[test]
     fn not_landed_sends_the_claim_back_to_prepare_and_keeps_it() {
         let (_dir, config, id, claim) = setup();
-        resolve(&config, (None, None), (claim, false), 5_000).unwrap();
+        resolve(&config, (None, None), (claim, &Answer::NotLanded), 5_000).unwrap();
         let kinds = kinds_of(&config, &id);
         assert!(!kinds
             .iter()
@@ -391,7 +447,7 @@ mod resolve_tests {
                 1,
                 "the restarted server knows"
             );
-            resolve(&config, (None, None), (claim, landed), 5_000).unwrap();
+            resolve(&config, (None, None), (claim, &answer(landed)), 5_000).unwrap();
             assert_eq!(
                 welcome_doubts(&config, &id),
                 0,
@@ -405,7 +461,7 @@ mod resolve_tests {
         let (_dir, config, id, claim) = setup();
         let before = core_of(&config, &id);
         let events = kinds_of(&config, &id).len();
-        let wrong = resolve(&config, (None, None), (claim + 1, true), 5_000).unwrap_err();
+        let wrong = resolve(&config, (None, None), (claim + 1, &landed()), 5_000).unwrap_err();
         assert_eq!(
             wrong.to_string(),
             format!(
@@ -415,9 +471,32 @@ mod resolve_tests {
         );
         assert_eq!(core_of(&config, &id), before);
         assert_eq!(kinds_of(&config, &id).len(), events);
-        resolve(&config, (None, None), (claim, true), 5_000).unwrap();
-        let again = resolve(&config, (None, None), (claim, true), 5_001).unwrap_err();
+        resolve(&config, (None, None), (claim, &landed()), 5_000).unwrap();
+        let again = resolve(&config, (None, None), (claim, &landed()), 5_001).unwrap_err();
         assert!(matches!(again, AdminError::NothingInDoubt(_)), "{again}");
+    }
+
+    #[test]
+    fn landed_names_the_journaled_head_or_nothing_is_written() {
+        let (_dir, config, id, claim) = setup();
+        let before = core_of(&config, &id);
+        let events = kinds_of(&config, &id).len();
+        let other = Answer::Landed {
+            head: OLD.to_string(),
+        };
+        let refused = resolve(&config, (None, None), (claim, &other), 5_000).unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                AdminError::HeadMismatch { given, base, head, .. }
+                    if (given.as_str(), base.as_str(), head.as_str()) == (OLD, OLD, HEAD)
+            ),
+            "{refused}"
+        );
+        assert_eq!(core_of(&config, &id), before);
+        assert_eq!(kinds_of(&config, &id).len(), events);
+        let done = resolve(&config, (None, None), (claim, &landed()), 5_000).unwrap();
+        assert_eq!((done.base.as_str(), done.head.as_str()), (OLD, HEAD));
     }
 
     #[test]
@@ -425,7 +504,7 @@ mod resolve_tests {
         let (_dir, config, id, claim) = setup();
         let before = core_of(&config, &id);
         let held = StoreDir::open(&config.store_dir).unwrap();
-        let refused = resolve(&config, (None, None), (claim, true), 5_000).unwrap_err();
+        let refused = resolve(&config, (None, None), (claim, &landed()), 5_000).unwrap_err();
         assert!(
             refused
                 .to_string()
@@ -440,17 +519,18 @@ mod resolve_tests {
     fn a_repository_is_named_when_there_are_several_and_must_exist() {
         let dir = tempfile::tempdir().unwrap();
         let config = write_config(dir.path(), &[("acme", "one"), ("acme", "two")]);
-        let which = resolve(&config, (None, None), (1, true), 1).unwrap_err();
+        let which = resolve(&config, (None, None), (1, &landed()), 1).unwrap_err();
         assert!(
             matches!(which, AdminError::WhichRepository { count: 2, .. }),
             "{which}"
         );
-        let missing = resolve(&config, (Some("acme"), Some("three")), (1, true), 1).unwrap_err();
+        let missing =
+            resolve(&config, (Some("acme"), Some("three")), (1, &landed()), 1).unwrap_err();
         assert!(
             missing.to_string().contains("acme/one, acme/two"),
             "{missing}"
         );
-        let empty = resolve(&config, (Some("acme"), Some("one")), (1, true), 1).unwrap_err();
+        let empty = resolve(&config, (Some("acme"), Some("one")), (1, &landed()), 1).unwrap_err();
         assert!(matches!(empty, AdminError::NoState { .. }), "{empty}");
         assert!(
             !dir.path().join("stores/acme/one.sqlite").exists(),

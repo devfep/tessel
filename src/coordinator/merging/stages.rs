@@ -676,8 +676,17 @@ fn unknown_after_land_never_counts_toward_the_infrastructure_bound() {
         assert_eq!(work.infra_failures, 0, "round {round}");
         assert!(work.in_doubt);
         let waited = work.retry_at_ms.unwrap() - now;
-        let capped = infra_backoff_ms(round.min(MAX_INFRA_RETRIES) + 1);
-        assert!(waited <= capped, "round {round}: the backoff is capped");
+        let doubts = c.state.merge_in_flight.as_ref().map(|flight| flight.doubts);
+        assert_eq!(
+            doubts,
+            Some(round + 1),
+            "round {round}: the Land's doubt and each ask count"
+        );
+        let capped = infra_backoff_ms((round + 1).min(MAX_INFRA_RETRIES));
+        assert_eq!(
+            waited, capped,
+            "round {round}: the backoff grows to its cap"
+        );
     }
 }
 
@@ -690,6 +699,11 @@ fn a_retried_land_reuses_its_dispatch_id_base_head_and_candidate_ref() {
         main: Some(commit(OLD)),
     };
     let effects = c.reconcile_outcome(reconcile.id, &at_base, NOW + 10_000);
+    assert_eq!(
+        work(&c, claim).retry_at_ms,
+        None,
+        "the resent Land does not wait on the Reconcile's backoff"
+    );
     assert!(effects.is_empty(), "{effects:?}");
     let again = c
         .begin_merge(NOW + 10_000)
@@ -1176,4 +1190,108 @@ fn a_welcome_lists_nothing_once_the_doubt_is_over_however_it_ended() {
     };
     c.merge_outcome(again.id, &refused, NOW + 10_001);
     assert!(welcome_doubts(&mut c, "a", NOW + 10_002).is_empty());
+}
+
+// ---- the head the operator checks, and who may be resolved ----
+
+/// A second agent's claim on `src/b.rs`, submitted and queued behind the merge in flight.
+fn submit_another(c: &mut Coordinator) -> ClaimId {
+    let scope = ScopeClaim {
+        scope: Scope::File {
+            path: "src/b.rs".into(),
+        },
+        mode: crate::protocol::Mode::EditBody,
+    };
+    let claim = ClientMsg::Claim {
+        req: RequestId(1),
+        intent: Intent {
+            summary: "other".into(),
+            task_ref: None,
+            assumptions: Vec::new(),
+        },
+        scopes: vec![scope.clone()],
+        on_conflict: OnConflict::Fail,
+    };
+    let who = AgentId("b".into());
+    let effects = c.handle(&who, claim, NOW);
+    let granted = effects.iter().find_map(|effect| match effect {
+        Effect::Reply(ServerMsg::Granted { claim, fence, .. }) => Some((*claim, *fence)),
+        Effect::Reply(_) | Effect::Notify { .. } | Effect::Log(_) => None,
+    });
+    let (claim, fence) = granted.expect("granted");
+    let submit = ClientMsg::Submit {
+        req: RequestId(9),
+        claim,
+        fence,
+        fork_commit: commit(&"cd".repeat(20)),
+        touched: vec![scope],
+        decisions: DecisionRecord {
+            evidence: vec!["tests passed".into()],
+            ..DecisionRecord::default()
+        },
+    };
+    c.handle(&who, submit, NOW);
+    claim
+}
+
+#[test]
+fn the_journaled_land_is_the_base_and_head_of_the_claim_whose_land_is_in_flight() {
+    let (c, claim, _) = at_test();
+    assert_eq!(c.journaled_land(claim), None, "a Test has no Land yet");
+    let (mut c, claim, _) = at_land();
+    let journaled = Some((commit(OLD), commit(HEAD)));
+    assert_eq!(c.journaled_land(claim), journaled);
+    assert_eq!(
+        c.journaled_land(ClaimId(claim.0 + 1)),
+        None,
+        "another claim"
+    );
+    c.merge_outcome(
+        c.merge_flight_id(claim),
+        &MergeOutcome::ServiceUnavailable,
+        NOW + 4,
+    );
+    assert_eq!(c.journaled_land(claim), journaled, "and at its Reconcile");
+    let (idle, claim, _) = submitted();
+    assert_eq!(idle.journaled_land(claim), None, "a Prepare has none");
+}
+
+#[test]
+fn the_operator_cannot_resolve_another_claim_than_the_one_in_doubt() {
+    let (mut c, claim, _) = in_doubt_after_unknown();
+    let other = submit_another(&mut c);
+    assert_ne!(other, claim);
+    let before = serde_json::to_string(&c).unwrap();
+    for landed in [true, false] {
+        let refusal = c.resolve_doubt(other, landed, NOW + 50).unwrap_err();
+        assert_eq!(refusal.claim, other, "landed {landed}");
+    }
+    assert_eq!(
+        before,
+        serde_json::to_string(&c).unwrap(),
+        "nothing changed"
+    );
+    assert!(c.merge_in_doubt().is_some_and(|doubt| doubt.claim == claim));
+}
+
+#[test]
+fn a_claim_without_its_submission_or_its_work_is_not_resolved_or_reconciled() {
+    for submitted_gone in [true, false] {
+        let (mut c, claim, _) = in_doubt_after_unknown();
+        let held = c.state.claims.get_mut(&claim.0).unwrap();
+        if submitted_gone {
+            held.submitted = None;
+        } else {
+            held.work = None;
+        }
+        let before = serde_json::to_string(&c).unwrap();
+        assert!(c.resolve_doubt(claim, true, NOW + 50).is_err());
+        assert_eq!(before, serde_json::to_string(&c).unwrap());
+        let dispatch = c.merge_flight_id(claim);
+        let effects = c.reconcile_outcome(dispatch, &Reconciliation::Landed, NOW + 10_000);
+        assert!(
+            effects.is_empty(),
+            "submitted gone {submitted_gone}: {effects:?}"
+        );
+    }
 }

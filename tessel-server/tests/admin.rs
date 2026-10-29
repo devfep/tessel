@@ -6,11 +6,8 @@
     reason = "assertions are how these tests fail; they return Result so `?` carries setup errors"
 )]
 
-#[expect(
-    dead_code,
-    reason = "each test crate compiles all of support and uses only some of it"
-)]
-mod support;
+#[path = "support/stored_land.rs"]
+mod stored_land;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -21,7 +18,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use data_encoding::BASE64URL_NOPAD;
-use tessel_coordinator::protocol::EventKind;
+use tessel_coordinator::coordinator::Effect;
+use tessel_coordinator::protocol::{
+    AgentId, ClientMsg, CommitId, EventKind, RequestId, PROTOCOL_VERSION,
+};
+use tessel_coordinator::shell;
 use tessel_server::id::RepoId;
 use tessel_server::identity::{self, Ed25519Verifier};
 use tessel_server::store::Store;
@@ -30,6 +31,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_tessel-server");
 const AUD: &str = "tessel-test";
+const HEAD_ARG: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 fn write_config(dir: &Path, identity: bool) -> Result<PathBuf, std::io::Error> {
     let path = dir.join("tessel-server.toml");
@@ -337,7 +339,7 @@ fn resolve(config: &Path, args: &[&str]) -> Result<Output, std::io::Error> {
 fn admin_resolve_needs_exactly_one_answer() -> TestResult {
     let dir = tempfile::tempdir()?;
     let config = write_config(dir.path(), false)?;
-    for args in [vec!["1"], vec!["1", "--landed", "--not-landed"]] {
+    for args in [vec!["1"], vec!["1", "--landed", HEAD_ARG, "--not-landed"]] {
         let refused = resolve(&config, &args)?;
         assert!(!refused.status.success(), "{args:?}");
         assert!(
@@ -355,7 +357,7 @@ fn admin_resolve_refuses_while_the_server_holds_the_store_and_says_how_to_go_on(
     let config = write_config(dir.path(), false)?;
     let (server, log) = spawn_serve(&config)?;
     until(&log, "listening")?;
-    let refused = resolve(&config, &["1", "--landed"])?;
+    let refused = resolve(&config, &["1", "--landed", HEAD_ARG])?;
     assert!(!refused.status.success());
     let message = text(&refused.stderr);
     assert!(
@@ -363,7 +365,7 @@ fn admin_resolve_refuses_while_the_server_holds_the_store_and_says_how_to_go_on(
         "{message}"
     );
     drop(server);
-    let stopped = resolve(&config, &["1", "--landed"])?;
+    let stopped = resolve(&config, &["1", "--landed", HEAD_ARG])?;
     assert!(!stopped.status.success());
     let message = text(&stopped.stderr);
     assert!(
@@ -376,9 +378,9 @@ fn admin_resolve_refuses_while_the_server_holds_the_store_and_says_how_to_go_on(
 /// A store with claim 1's `Land` in doubt for `acme/demo`, and the config that names it.
 fn stopped_server_with_a_land_in_doubt(
     dir: &Path,
-) -> Result<(PathBuf, support::LandInDoubt), Box<dyn std::error::Error>> {
+) -> Result<(PathBuf, stored_land::LandInDoubt), Box<dyn std::error::Error>> {
     let config = write_config(dir, false)?;
-    let land = support::store_a_land_in_doubt(&dir.join("stores"), ("acme", "demo"), false);
+    let land = stored_land::store_a_land_in_doubt(&dir.join("stores"), ("acme", "demo"), false);
     Ok((config, land))
 }
 
@@ -432,7 +434,7 @@ fn admin_resolve_landed_with_another_head_is_refused_and_writes_nothing() -> Tes
     }
     let events = stored_events(dir.path())?;
     assert_eq!(events.len(), before, "no event was written");
-    assert!(merged_heads(&events).is_empty());
+    assert_eq!(merged_heads(&events), Vec::<String>::new());
     Ok(())
 }
 
@@ -455,5 +457,70 @@ fn admin_resolve_not_landed_takes_no_head_and_never_merges() -> TestResult {
     );
     let events = stored_events(dir.path())?;
     assert!(merged_heads(&events).is_empty(), "{events:?}");
+    Ok(())
+}
+
+/// What the daemon of the waiter learns after the offline resolve: the notice that granted it was
+/// dropped as unsent, so the grant must be in the stored log and in the stored state, with the
+/// fence the log names, for the daemon's repair after its next `Welcome` to find and use.
+#[test]
+fn admin_resolve_landed_leaves_the_waiters_grant_in_the_log_and_in_the_stored_state() -> TestResult
+{
+    let dir = tempfile::tempdir()?;
+    let config = write_config(dir.path(), false)?;
+    let land =
+        stored_land::store_a_land_in_doubt(&dir.path().join("stores"), ("acme", "demo"), true);
+    let waiter = AgentId("a2".to_string());
+    let before = stored_events(dir.path())?;
+    assert!(
+        before
+            .iter()
+            .any(|kind| matches!(kind, EventKind::WaitQueued { agent, .. } if *agent == waiter)),
+        "a2 waits behind the claim in doubt: {before:?}"
+    );
+    let claim = land.claim.to_string();
+    let done = resolve(&config, &[&claim, "--landed", &land.head])?;
+    assert!(done.status.success(), "{}", text(&done.stderr));
+
+    let events = stored_events(dir.path())?;
+    let granted = events.iter().find_map(|kind| {
+        let EventKind::ClaimGranted {
+            agent,
+            claim,
+            fence,
+            ..
+        } = kind
+        else {
+            return None;
+        };
+        (*agent == waiter).then_some((*claim, *fence))
+    });
+    let (granted_claim, fence) = granted.ok_or_else(|| format!("no grant in {events:?}"))?;
+
+    let file = RepoId::new("acme", "demo")?.store_file(&dir.path().join("stores"));
+    let stored = Store::open_read_only(&file)?
+        .load()?
+        .ok_or("no stored state")?;
+    let mut core = shell::load_core(Some(&stored), Some("test"), None, Vec::new(), Vec::new())
+        .map_err(|error| format!("{error:?}"))?;
+    let hello = ClientMsg::Hello {
+        agent: waiter.clone(),
+        base: CommitId("0".repeat(40)),
+        protocol: PROTOCOL_VERSION,
+    };
+    core.handle(&waiter, hello, 9_000);
+    let release = ClientMsg::Release {
+        claim: granted_claim,
+        fence,
+        req: Some(RequestId(1)),
+    };
+    let effects = core.handle(&waiter, release, 9_001);
+    let released = effects.iter().any(|effect| {
+        matches!(effect, Effect::Log(event) if matches!(event.kind, EventKind::ClaimReleased { .. }))
+    });
+    assert!(
+        released,
+        "the waiter holds the claim the log names: {effects:?}"
+    );
     Ok(())
 }

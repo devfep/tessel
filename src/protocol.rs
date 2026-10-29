@@ -1864,6 +1864,127 @@ mod merge_doubt_tests {
         );
     }
 
+    /// One sample of every `ServerMsg` type that version 1 shipped before `merge_doubt`.
+    fn v1_samples() -> Vec<ServerMsg> {
+        let (claim, req, fence) = (ClaimId(1), RequestId(1), Fence(1));
+        let scope = Scope::File {
+            path: "src/a.rs".into(),
+        };
+        vec![
+            ServerMsg::Welcome {
+                head: CommitId("h".into()),
+                lease_ms: 1,
+                protocol: 1,
+                protocol_range: None,
+                merge_doubts: Vec::new(),
+            },
+            ServerMsg::Granted {
+                req,
+                claim,
+                fence,
+                expires_at_ms: 1,
+                race: None,
+                at_risk: Vec::new(),
+                head: None,
+            },
+            ServerMsg::Denied {
+                req,
+                conflicts: Vec::new(),
+            },
+            ServerMsg::Shadowed {
+                req,
+                claim,
+                fence,
+                expires_at_ms: 1,
+                conflicts: Vec::new(),
+            },
+            ServerMsg::Queued { req, position: 1 },
+            ServerMsg::Accepted {
+                req,
+                claim,
+                queue_position: 1,
+            },
+            ServerMsg::Merged {
+                claim,
+                head: CommitId("h".into()),
+                base: None,
+            },
+            ServerMsg::SubmitRejected {
+                claim,
+                reason: "r".into(),
+                reviewer: None,
+                note: None,
+            },
+            ServerMsg::Uncovered {
+                req: None,
+                claim,
+                scopes: Vec::new(),
+            },
+            ServerMsg::ReviewRequired {
+                claim,
+                reasons: Vec::new(),
+            },
+            ServerMsg::BaseMoved {
+                head: CommitId("h".into()),
+                by: AgentId("a".into()),
+                affected: Vec::new(),
+            },
+            ServerMsg::AssumptionChallenged {
+                claim,
+                assumption: Assumption {
+                    scope,
+                    statement: "s".into(),
+                },
+                by: AgentId("a".into()),
+                their_commit: CommitId("c".into()),
+            },
+            ServerMsg::LeaseExpired { claim, fence },
+            ServerMsg::RaceOpened {
+                req,
+                race: RaceId(1),
+                deadline_ms: 1,
+            },
+            ServerMsg::RaceResult {
+                race: RaceId(1),
+                winner: None,
+                ranking: Vec::new(),
+                entries: Vec::new(),
+            },
+            ServerMsg::Event {
+                event: Event {
+                    seq: 0,
+                    at_ms: 1,
+                    run: RunId("r".into()),
+                    kind: EventKind::AgentConnected {
+                        agent: AgentId("a".into()),
+                    },
+                },
+            },
+            ServerMsg::Error {
+                req: None,
+                code: ErrorCode::Malformed,
+                message: String::new(),
+            },
+        ]
+    }
+
+    #[test]
+    fn no_server_message_type_of_version_1_is_skippable() {
+        let samples = v1_samples();
+        let mut tags: Vec<String> = Vec::new();
+        for msg in &samples {
+            let value = serde_json::to_value(msg).unwrap();
+            let tag = value["type"].as_str().unwrap().to_string();
+            assert!(!msg.skippable(), "{tag} is skippable");
+            tags.push(tag);
+        }
+        tags.sort();
+        let mut pinned: Vec<String> = server_message_types();
+        pinned.retain(|tag| tag != "merge_doubt");
+        pinned.sort();
+        assert_eq!(tags, pinned, "a sample for every type but merge_doubt");
+    }
+
     #[test]
     fn only_a_live_doubt_notice_is_skippable() {
         let doubt = ServerMsg::MergeDoubt {

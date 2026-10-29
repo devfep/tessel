@@ -146,7 +146,7 @@ fn infrastructure(repo: &str, what: &str, note: &str) -> CallAnswer {
         repo,
         what,
         note = %note,
-        "the merge did not finish; the core retries"
+        "the call did not finish; the core retries a Prepare and reconciles a Land"
     );
     CallAnswer::Unknown
 }

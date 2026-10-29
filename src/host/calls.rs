@@ -35,7 +35,7 @@ use crate::merge::{
     PREPARE_CALL_TIMEOUT_MS, REASON_OUTPUT_MAX_CHARS, RECONCILE_CALL_TIMEOUT_MS,
     STEWARD_CALL_TIMEOUT_MS, TEST_CALL_TIMEOUT_MS,
 };
-use crate::protocol::CommitId;
+use crate::protocol::{ClaimInDoubt, CommitId};
 use crate::shell::Work;
 
 /// How long a head read waits: one ref, not a test run (R38).
@@ -408,19 +408,30 @@ impl Host {
     }
 
     /// The log line that names the claim whose landing is in doubt, for the operator who looks
-    /// for it without the submitter: `admin resolve` needs the claim number. The time is the
-    /// server's clock, milliseconds since the epoch, not a duration.
+    /// for it without the submitter.
     fn doubt_log(&self) -> Option<Output> {
         let doubt = self.slot.merge_in_doubt()?;
-        let claim = doubt.claim.0;
+        let (base, head) = self.slot.journaled_land(doubt.claim)?;
         Some(Output::Log {
-            line: format!(
-                "coordinator {}: the landing of claim {claim} is in doubt since {} (epoch ms); \
-                 settle it by hand with: tessel-server admin resolve {claim} --landed|--not-landed",
-                self.config.repo, doubt.since_ms
-            ),
+            line: doubt_line(&self.config.repo, &doubt, (&base, &head)),
         })
     }
+}
+
+/// The text of the doubt log line: the claim, the main its `Land` leased and the head it
+/// journaled, and the command that settles it. `admin resolve` needs the claim number and, for
+/// `--landed`, the head, which is the rebased commit and not the submitter's fork commit. The time
+/// is the server's clock, milliseconds since the epoch, not a duration.
+fn doubt_line(repo: &str, doubt: &ClaimInDoubt, (base, head): (&CommitId, &CommitId)) -> String {
+    let (claim, since) = (doubt.claim.0, doubt.since_ms);
+    let (base, head) = (&base.0, &head.0);
+    format!(
+        "coordinator {repo}: the landing of claim {claim} is in doubt since {since} (epoch ms); \
+         its Land leased base {base} and journaled head {head}. With the server stopped, settle it \
+         by hand with: tessel-server admin resolve {claim} --landed {head} --config <the server's \
+         configuration file> if `git merge-base --is-ancestor {head} main` succeeds in the \
+         trunk, and with --not-landed (no head) otherwise or when unsure"
+    )
 }
 
 #[cfg(test)]
@@ -431,6 +442,26 @@ mod tests {
 
     fn commit(text: &str) -> CommitId {
         CommitId(text.to_string())
+    }
+
+    #[test]
+    fn the_doubt_line_names_the_claim_base_head_and_the_whole_command() {
+        let doubt = ClaimInDoubt {
+            claim: ClaimId(7),
+            since_ms: 1_234,
+        };
+        let line = doubt_line("acme/demo", &doubt, (&commit("base1"), &commit("head1")));
+        for part in [
+            "acme/demo",
+            "claim 7 is in doubt since 1234 (epoch ms)",
+            "leased base base1",
+            "journaled head head1",
+            "admin resolve 7 --landed head1 --config",
+            "git merge-base --is-ancestor head1 main",
+            "--not-landed",
+        ] {
+            assert!(line.contains(part), "{part:?} missing from {line}");
+        }
     }
 
     fn merge_dispatch(stage: MergeStage) -> MergeDispatch {

@@ -1065,6 +1065,18 @@ mod tests {
     }
 
     #[test]
+    fn a_reconcile_is_given_a_minute_and_is_the_shortest_call() {
+        assert_eq!(RECONCILE_CALL_TIMEOUT_MS, 60_000);
+        for longer in [
+            PREPARE_CALL_TIMEOUT_MS,
+            LAND_CALL_TIMEOUT_MS,
+            TEST_CALL_TIMEOUT_MS,
+        ] {
+            assert!(RECONCILE_CALL_TIMEOUT_MS < longer);
+        }
+    }
+
+    #[test]
     fn the_request_names_the_agents_fork_the_commit_and_the_claims_scopes() {
         let scopes = [
             ScopeClaim {

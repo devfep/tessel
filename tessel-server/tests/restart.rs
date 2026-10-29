@@ -224,6 +224,23 @@ impl Deployment {
         )?)
     }
 
+    /// What `docs/dogfood.md` tells the operator to read for a `Land` in doubt: the head and base
+    /// the `Land` journaled, as `rusqlite` runs the runbook's query.
+    fn journaled_land(&self) -> Result<(String, String), Box<dyn std::error::Error>> {
+        let file = RepoId::new("acme", REPO)?.store_file(&self.repos.root.path().join("stores"));
+        let conn = rusqlite::Connection::open_with_flags(
+            file,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        Ok(conn.query_row(
+            "select json_extract(json, '$.merge_in_flight.stage.head'), \
+                    json_extract(json, '$.merge_in_flight.stage.base') \
+             from kv where key = 'core'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    }
+
     fn calls_left(&self) -> Vec<String> {
         let dir = self.repos.clones(REPO);
         let entries = std::fs::read_dir(dir).into_iter().flatten().flatten();
@@ -448,6 +465,22 @@ async fn a_server_killed_after_the_push_and_restarted_counts_the_landing_once() 
     let landed = deployment.repos.main_head();
     assert_ne!(landed, before, "post-receive runs after the trunk moved");
     assert_eq!(pushes_seen(&deployment), 1);
+    let candidates = deployment.candidate_refs();
+    assert_eq!(
+        candidates.lines().count(),
+        1,
+        "the killed Land left its candidate ref"
+    );
+    let (head, base) = deployment.journaled_land()?;
+    assert_eq!(base, before, "the Land leased the main it found");
+    let on_main = Command::new("git")
+        .current_dir(&deployment.repos.main)
+        .args(["merge-base", "--is-ancestor", &head, "main"])
+        .status()?;
+    assert!(
+        on_main.success(),
+        "the runbook's read finds the journaled head on main"
+    );
 
     first.kill9()?;
     let unanswered = deployment.events()?;
@@ -510,6 +543,11 @@ async fn a_server_killed_after_the_push_and_restarted_counts_the_landing_once() 
         pushes_seen(&deployment),
         1,
         "the restart did not push again"
+    );
+    assert_eq!(
+        deployment.candidate_refs(),
+        candidates,
+        "the reconcile keeps the candidate ref, for a later Prepare to sweep"
     );
     wait_for("the clones to be removed", || {
         deployment.calls_left().is_empty()

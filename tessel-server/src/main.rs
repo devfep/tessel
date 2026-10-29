@@ -86,11 +86,12 @@ enum AdminCommand {
         /// The repository.
         #[arg(long, requires = "tenant")]
         repo: Option<String>,
-        /// The claim's head is on main: it merges, from the base its `Land` leased.
-        #[arg(long)]
-        landed: bool,
-        /// The head is not on main: the claim goes back to `Prepare`, which is safe whatever main
-        /// is, since a work main already holds is answered as merged.
+        /// The head of the claim's `Land`, which you checked is on main: the claim merges, from
+        /// the base its `Land` leased. Refused unless it is the head the `Land` journaled.
+        #[arg(long, value_name = "HEAD")]
+        landed: Option<String>,
+        /// The head is not on main, or you cannot tell: the claim goes back to `Prepare`, which is
+        /// safe whatever main is, since a work main already holds is answered as merged.
         #[arg(long)]
         not_landed: bool,
     },
@@ -182,16 +183,21 @@ fn run_admin(command: AdminCommand) -> Result<(), String> {
             tenant,
             repo,
             landed,
-            not_landed: _,
+            not_landed: _, // clap requires exactly one of the two
         } => {
             let loaded = Config::load(&config).map_err(|error| error.to_string())?;
             let named = (tenant.as_deref(), repo.as_deref());
-            let done = admin::resolve(&loaded, named, (claim, landed), identity::now_ms())
+            let answer = landed.map_or(admin::Answer::NotLanded, |head| admin::Answer::Landed {
+                head,
+            });
+            let done = admin::resolve(&loaded, named, (claim, &answer), identity::now_ms())
                 .map_err(|error| error.to_string())?;
             tracing::info!(
                 repo = %done.repository,
                 claim = done.claim,
                 landed = done.landed,
+                base = %done.base,
+                head = %done.head,
                 events = done.events,
                 "resolved the Land in doubt; start the server to go on"
             );

@@ -150,11 +150,16 @@ tokens copies the `tessel-server` and `tessel` on your `PATH` into `<server dir>
 only with binaries built from a checkout of the commit the server already runs; to change the
 binaries, upgrade as below first.
 
-- **When.** No upgrade to the staged landing until P1-SERVER-STAGED, P1-CORE-STAGED-LANDING and
-  P1-CORE-RECONCILE have all landed. P1-CORE-RECONCILE carries a fixture test, `a_marker_stored_
-  before_the_staged_landing_leaves_the_claim_in_doubt_from_its_main`: a store written before the
-  staged landing with a merge in flight is decoded by the new core as a marker with no stage
-  (`unstaged`), not as a `Prepare`, and the claim is in doubt from the main that marker recorded.
+- **When.** No upgrade to the staged landing until P1-SERVER-STAGED, P1-CORE-STAGED-LANDING,
+  P1-CORE-RECONCILE and RESOLVE-NAMES-HEAD have all landed. P1-CORE-RECONCILE carries a fixture
+  test, named in full on the next line, which checks that a store written before the staged landing
+  with a merge in flight is decoded by the new core as a marker with no stage (`unstaged`), not as
+  a `Prepare`, and that the claim is in doubt from the main that marker recorded:
+
+  ```
+  a_marker_stored_before_the_staged_landing_leaves_the_claim_in_doubt_from_its_main
+  ```
+
 - **Nothing in flight.** Upgrade only with no dispatch in flight; held submissions are fine. A
   stop mid-test orphans the cargo process group, and an old whole-merge call may already have
   pushed, which the new core reads as a merge in doubt, not one cut off before `Land`. First read
@@ -170,8 +175,11 @@ binaries, upgrade as below first.
   column is a merge, a `Land` in doubt included. A merge can also be in flight with no clone on
   disk (between the calls of a staged merge, or in the backoff after a timeout, while an
   abandoned push may still be running), so check the outcomes too: every
-  submission that is not held has `merged`, `submit_rejected` or `uncovered` in its lane's inbox,
-  the lanes are idle, `server.log` has no timeout or push warning after the latest of those
+  submission that is not held has `merged`, `submit_rejected` or `uncovered` in its lane's inbox
+  (or, for a claim settled with `admin resolve --landed` while the server was stopped, the note
+  `claim N is gone from the coordinator; forgot it`, which counts as an outcome: that command
+  records the landing in the server's log, and the lane finds out from the log when it
+  reconnects), the lanes are idle, `server.log` has no timeout or push warning after the latest of those
   outcomes, and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
 - **The build.** Build only from a landed `main` whose CI is green, in a checkout of that commit,
   and copy `tessel-server` and `tessel` with `install -m 755` into `<server dir>/bin.next`. Leave
@@ -449,21 +457,58 @@ server tells the daemon when the doubt begins and ends, and lists the agent's cl
 every `Welcome`, so a daemon that was offline, or a server that was stopped and restarted (as
 `admin resolve` needs), is right at its next connection: the doubt is shown if it stands and gone
 if it ended. The age counts from when that daemon first learned of the doubt, on its own clock.
-A lander that never answers holds the queue behind it. To find the claim without the submitter,
-read `server.log`: each `Land` or `Reconcile` that leaves a doubt logs `the landing of claim N is
-in doubt since <epoch ms>` and gives the command. To settle it by hand, read main yourself (is the
-claim's commit on `main`?), stop the server, wait for its pid to exit, and run, with that claim
-number:
+A lander that never answers holds the queue behind it.
 
-```
-<server dir>/bin/tessel-server admin resolve <claim> --landed --config <server dir>/tessel-server.toml
-<server dir>/bin/tessel-server admin resolve <claim> --not-landed --config <server dir>/tessel-server.toml
-```
+To find the claim without the submitter, read `server.log`: each `Land` or `Reconcile` that leaves
+a doubt logs `the landing of claim N is in doubt since <epoch ms>`, names the `base` the `Land`
+leased and the `head` it journaled, and gives the command. The lander rebases, so the submitter's
+fork commit is never on main by its sha; the commit to look for is that journaled `head`.
 
-`--landed` merges the claim from the base its `Land` leased. `--not-landed` sends it back to
-`Prepare`, which is safe whatever main is. It refuses while a server holds the store, and when the
-claim has no `Land` in flight. Then start the server. The answer is the one a `Reconcile` would
-have given: the core still applies its own rules.
+To settle it by hand, with the server stopped (`kill "$(cat <server dir>/server.pid)"`, then wait
+for the pid to exit):
+
+1. Read the journaled head and base (it opens read-only; use the repository's own path):
+
+   ```
+   sqlite3 -readonly "<server dir>/stores/<tenant>/<repo>.sqlite" \
+     "select json_extract(json, '\$.merge_in_flight.stage.head'), \
+             json_extract(json, '\$.merge_in_flight.stage.base') \
+      from kv where key = 'core'"
+   ```
+
+2. In the trunk, ask whether main holds that head:
+   `git -C <trunk> merge-base --is-ancestor <head> main` (exit 0: yes; 1: no).
+3. Run, with that claim number, as the user that owns the store (`_tessel` after the
+   [move to the service accounts](#moving-to-the-service-accounts); the lock and the write need
+   it):
+
+   ```
+   <server dir>/bin/tessel-server admin resolve <claim> --landed <head> --config <server dir>/tessel-server.toml
+   <server dir>/bin/tessel-server admin resolve <claim> --not-landed --config <server dir>/tessel-server.toml
+   ```
+
+`--landed <head>` merges the claim from the base its `Land` leased, and is refused unless `<head>`
+is exactly the head the `Land` journaled; `admin resolve` prints the claim's base and head either
+way. Use it only when step 2 says yes. `--not-landed` takes no head and is safe whatever main is,
+so use it when unsure or when step 2 says no: it sends the claim back to `Prepare`, which answers
+`already_merged` if the work is on main after all. Both refuse while a server holds the store, and
+when the claim has no `Land` in flight. Then start the server. The answer is the one a `Reconcile`
+would have given: the core still applies its own rules. After `--landed`, the lane's daemon finds
+the landing in the server's log at its next connection and reports `claim N is gone from the
+coordinator; forgot it`, not a `merged` notice.
+
+Two doubts that resolving does not fix:
+
+- A `Land` whose push fails for good (a revoked token, a ruleset that refuses the push to `main`)
+  is asked again every 90 seconds, forever, each time with a fresh clone of main. The `server.log`
+  shows a repeated `push` warning while the claim stays in doubt. Fix the credential or the
+  ruleset; `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`,
+  and `--landed` is for a push that reached main. No command rejects the work.
+- A store written before the staged landing (`unstaged`) that holds a merge in flight starts a
+  fresh `Prepare` that counts as an infrastructure failure. If that `Prepare` and the next ones
+  fail until the bound, the claim is rejected as an infrastructure failure although the old call
+  may have pushed. It is reachable only by upgrading with a merge in flight, which "Nothing in
+  flight" above forbids.
 
 ## D3, the load on the Mac
 
