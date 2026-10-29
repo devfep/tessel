@@ -1055,6 +1055,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_merge_waits_for_the_head_read_while_the_head_is_only_adopted() {
+        let read_head = CommitId("c".repeat(40));
+        let mut c = core();
+        let start = c.begin_head_read().expect("no head: a read is due");
+        let hello = ClientMsg::Hello {
+            agent: agent("a1"),
+            base: CommitId(MAIN.into()),
+            protocol: crate::protocol::PROTOCOL_VERSION,
+        };
+        c.handle(&agent("a1"), hello, NOW);
+        let claim = grant(&mut c, "a1", vec![edit("src/a.rs")]);
+        submit(&mut c, "a1", claim, "src/a.rs");
+        assert!(c.begin_merge(NOW + 1).is_none(), "a Prepare would name it");
+        assert_eq!(c.next_merge_ms(false, NOW + 1), None);
+
+        c.trunk_read(&start, Some(read_head.clone()), NOW + 2);
+        assert!(c.begin_merge(NOW + 3).is_some(), "the read releases it");
+        let flight = c.state.merge_in_flight.as_ref().expect("in flight");
+        assert_eq!(flight.main, Some(read_head));
+    }
+
     fn merged_outcome() -> MergeOutcome {
         MergeOutcome::Merged {
             base: CommitId("old".into()),

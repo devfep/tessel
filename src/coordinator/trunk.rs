@@ -340,6 +340,27 @@ mod tests {
     }
 
     #[test]
+    fn an_adopted_head_keeps_owing_its_read_after_the_retries_run_out() {
+        let mut c = core();
+        let mut read = c.begin_head_read().expect("no head: a read is due");
+        hello(&mut c, "a1", OLD);
+        let mut now = NOW;
+        for failures in 1..=MAX_INFRA_RETRIES + 3 {
+            c.trunk_read(&read, None, now);
+            let due = c
+                .next_head_read_ms(now)
+                .unwrap_or_else(|| panic!("failure {failures}: the read is still owed"));
+            let wait = infra_backoff_ms(failures.min(MAX_INFRA_RETRIES));
+            assert_eq!(due, now + wait, "failure {failures}: backoff is capped");
+            now = due;
+            read = c.begin_head_read().expect("still owed");
+        }
+        c.trunk_read(&read, Some(sha(TRUNK)), now);
+        assert_eq!(head_of(&c), Some(sha(TRUNK)));
+        assert_eq!(c.next_head_read_ms(now), None);
+    }
+
+    #[test]
     fn no_read_is_due_while_a_merge_is_in_flight() {
         let (mut c, _) = poked();
         merge_in_flight(&mut c, "a1");

@@ -2028,6 +2028,33 @@ mod tests {
     // ---- trials ----
 
     #[test]
+    fn a_race_trial_waits_for_the_head_read_while_the_head_is_only_adopted() {
+        let read_head = CommitId("c".repeat(40));
+        let mut c = bare_core();
+        let start = c.begin_head_read().expect("no head: a read is due");
+        let hello = ClientMsg::Hello {
+            agent: agent("felix"),
+            base: CommitId(MAIN.into()),
+            protocol: PROTOCOL_VERSION,
+        };
+        c.handle(&agent("felix"), hello, NOW);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        assert_eq!(
+            c.begin_verification(NOW + 2),
+            None,
+            "the Hello's base was never read from main: no trial names it"
+        );
+
+        c.trunk_read(&start, Some(read_head.clone()), NOW + 3);
+        let trial = c
+            .begin_verification(NOW + 4)
+            .expect("the read releases the trial");
+        assert_eq!((trial.before, trial.main), (read_head.clone(), read_head));
+    }
+
+    #[test]
     fn trials_wait_for_merges() {
         let mut c = core();
         let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
