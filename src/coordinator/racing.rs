@@ -2141,17 +2141,40 @@ mod tests {
         assert_eq!(c.begin_verification(NOW + 2), None);
         let mut read = start;
         let mut now = NOW + 3;
-        let mut decided = false;
-        for _ in 0..=MAX_INFRA_RETRIES {
+        for failure in 1..=MAX_INFRA_RETRIES + 1 {
             let effects = c.trunk_read(&read, None, now);
-            decided |= logged(&effects)
+            let decided = logged(&effects)
                 .iter()
                 .any(|kind| matches!(kind, EventKind::RaceDecided { .. }));
+            assert_eq!(
+                decided,
+                failure == MAX_INFRA_RETRIES + 1,
+                "failure {failure}: judged only once the retries are spent"
+            );
             now += 100_000;
             read = c.begin_head_read().expect("the read stays owed");
         }
-        assert!(decided, "the race is judged once the retries are spent");
-        assert!(c.begin_head_read().is_some(), "and the read stays owed");
+        assert!(c.state.verifications.is_empty(), "no trial names the base");
+    }
+
+    #[test]
+    fn a_race_that_closes_after_the_retries_are_spent_is_judged_at_once() {
+        let (mut c, start) = adopted_core();
+        let mut read = start;
+        for failure in 0..=MAX_INFRA_RETRIES {
+            c.trunk_read(&read, None, NOW + u64::from(failure));
+            read = c.begin_head_read().expect("the read stays owed");
+        }
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        let effects = submit_effects(&mut c, "a1", one, true, NOW + 100);
+        assert!(
+            logged(&effects)
+                .iter()
+                .any(|kind| matches!(kind, EventKind::RaceDecided { .. })),
+            "{effects:?}"
+        );
+        assert!(c.state.verifications.is_empty(), "no trial names the base");
     }
 
     #[test]
