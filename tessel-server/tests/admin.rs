@@ -6,6 +6,12 @@
     reason = "assertions are how these tests fail; they return Result so `?` carries setup errors"
 )]
 
+#[expect(
+    dead_code,
+    reason = "each test crate compiles all of support and uses only some of it"
+)]
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
@@ -15,8 +21,10 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use data_encoding::BASE64URL_NOPAD;
+use tessel_coordinator::protocol::EventKind;
 use tessel_server::id::RepoId;
 use tessel_server::identity::{self, Ed25519Verifier};
+use tessel_server::store::Store;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -362,5 +370,90 @@ fn admin_resolve_refuses_while_the_server_holds_the_store_and_says_how_to_go_on(
         message.contains("no stored state") && !message.contains("in use"),
         "with the server stopped the lock is free and the repository has nothing stored: {message}"
     );
+    Ok(())
+}
+
+/// A store with claim 1's `Land` in doubt for `acme/demo`, and the config that names it.
+fn stopped_server_with_a_land_in_doubt(
+    dir: &Path,
+) -> Result<(PathBuf, support::LandInDoubt), Box<dyn std::error::Error>> {
+    let config = write_config(dir, false)?;
+    let land = support::store_a_land_in_doubt(&dir.join("stores"), ("acme", "demo"), false);
+    Ok((config, land))
+}
+
+fn stored_events(dir: &Path) -> Result<Vec<EventKind>, Box<dyn std::error::Error>> {
+    let file = RepoId::new("acme", "demo")?.store_file(&dir.join("stores"));
+    let events = Store::open_read_only(&file)?.read_events(0, 1_000)?;
+    Ok(events.into_iter().map(|event| event.kind).collect())
+}
+
+fn merged_heads(events: &[EventKind]) -> Vec<String> {
+    let mut heads = Vec::new();
+    for kind in events {
+        if let EventKind::Merged { head, .. } = kind {
+            heads.push(head.0.clone());
+        }
+    }
+    heads
+}
+
+#[test]
+fn admin_resolve_landed_with_the_journaled_head_merges_it_and_prints_base_and_head() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (config, land) = stopped_server_with_a_land_in_doubt(dir.path())?;
+    let claim = land.claim.to_string();
+    let done = resolve(&config, &[&claim, "--landed", &land.head])?;
+    let said = text(&done.stderr);
+    assert!(done.status.success(), "{said}");
+    assert!(
+        said.contains(&land.base) && said.contains(&land.head),
+        "the operator is shown the base and head it settled: {said}"
+    );
+    assert_eq!(merged_heads(&stored_events(dir.path())?), [land.head]);
+    Ok(())
+}
+
+#[test]
+fn admin_resolve_landed_with_another_head_is_refused_and_writes_nothing() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (config, land) = stopped_server_with_a_land_in_doubt(dir.path())?;
+    let claim = land.claim.to_string();
+    let before = stored_events(dir.path())?.len();
+    for wrong in ["f".repeat(40), land.base.clone(), "abc".to_string()] {
+        let refused = resolve(&config, &[&claim, "--landed", &wrong])?;
+        let said = text(&refused.stderr);
+        assert!(!refused.status.success(), "{wrong}: {said}");
+        assert!(
+            said.contains(&land.head) && said.contains(&land.base),
+            "the refusal names the journaled head and base: {said}"
+        );
+        assert!(said.contains("nothing was changed"), "{said}");
+    }
+    let events = stored_events(dir.path())?;
+    assert_eq!(events.len(), before, "no event was written");
+    assert!(merged_heads(&events).is_empty());
+    Ok(())
+}
+
+#[test]
+fn admin_resolve_not_landed_takes_no_head_and_never_merges() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (config, land) = stopped_server_with_a_land_in_doubt(dir.path())?;
+    let claim = land.claim.to_string();
+    let with_head = resolve(&config, &[&claim, "--not-landed", &land.head])?;
+    assert!(!with_head.status.success(), "--not-landed takes no head");
+    assert!(stored_events(dir.path())?
+        .iter()
+        .all(|kind| !matches!(kind, EventKind::Merged { .. })));
+    let done = resolve(&config, &[&claim, "--not-landed"])?;
+    let said = text(&done.stderr);
+    assert!(done.status.success(), "{said}");
+    assert!(
+        said.contains(&land.base) && said.contains(&land.head),
+        "{said}"
+    );
+    let events = stored_events(dir.path())?;
+    assert!(merged_heads(&events).is_empty(), "{events:?}");
     Ok(())
 }
