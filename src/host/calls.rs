@@ -429,8 +429,8 @@ fn doubt_line(repo: &str, doubt: &ClaimInDoubt, (base, head): (&CommitId, &Commi
         "coordinator {repo}: the landing of claim {claim} is in doubt since {since} (epoch ms); \
          its Land leased base {base} and journaled head {head}. With the server stopped, settle it \
          by hand with: tessel-server admin resolve {claim} --landed {head} --config <the server's \
-         configuration file> if `git merge-base --is-ancestor {head} main` succeeds in the \
-         trunk, and with --not-landed (no head) otherwise or when unsure"
+         configuration file> if `git merge-base --is-ancestor {head} origin/main` succeeds in a \
+         fetched checkout of the trunk, and with --not-landed (no head) otherwise or when unsure"
     )
 }
 

@@ -178,7 +178,7 @@ binaries, upgrade as below first.
   submission that is not held has `merged`, `submit_rejected` or `uncovered` in its lane's inbox
   (or, for a claim settled with `admin resolve --landed` while the server was stopped, the note
   `claim N is gone from the coordinator; forgot it`, which counts as an outcome: that command
-  records the landing in the server's log, and the lane finds out from the log when it
+  records the landing in the repository's event log, and the lane finds out from that log when it
   reconnects), the lanes are idle, `server.log` has no timeout or push warning after the latest of
   those outcomes, and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
 - **The build.** Build only from a landed `main` whose CI is green, in a checkout of that commit,
@@ -467,17 +467,27 @@ fork commit is never on main by its sha; the commit to look for is that journale
 To settle it by hand, with the server stopped (`kill "$(cat <server dir>/server.pid)"`, then wait
 for the pid to exit):
 
-1. Read the journaled head and base (it opens read-only; use the repository's own path):
+1. Read the journaled stage, claim, head and base. The store is
+   `<store_dir>/<tenant>/<repo>.sqlite`, where `store_dir` is the one in
+   `<server dir>/tessel-server.toml` (`<server dir>/stores` until the move to the service
+   accounts, `/var/tessel/stores` after). The read opens it read-only, but run it as the user that
+   owns the store (after the move, prefix it with `sudo -u _tessel`):
 
    ```
-   sqlite3 -readonly "<server dir>/stores/<tenant>/<repo>.sqlite" \
-     "select json_extract(json, '\$.merge_in_flight.stage.head'), \
+   sqlite3 -readonly "<store_dir>/<tenant>/<repo>.sqlite" \
+     "select json_extract(json, '\$.merge_in_flight.stage.stage'), \
+             json_extract(json, '\$.merge_in_flight.claim'), \
+             json_extract(json, '\$.merge_in_flight.stage.head'), \
              json_extract(json, '\$.merge_in_flight.stage.base') \
       from kv where key = 'core'"
    ```
 
-2. In the trunk, ask whether main holds that head:
-   `git -C <trunk> merge-base --is-ancestor <head> main` (exit 0: yes; 1: no).
+   The stage must be `land` or `reconcile` and the claim the one you mean; `admin resolve`
+   refuses the others.
+2. In a checkout of the trunk (the lander's own clones are deleted after each call), run
+   `git fetch origin main`, then `git merge-base --is-ancestor <head> origin/main`. Exit 0 means
+   the head is on main. Exit 1 means it is not. Exit 128 means the checkout does not know the
+   commit: fetch again, or answer `--not-landed`.
 3. Run, with that claim number, as the user that owns the store (`_tessel` after the
    [move to the service accounts](#moving-to-the-service-accounts); the lock and the write need
    it):
@@ -491,18 +501,22 @@ for the pid to exit):
 
 `--landed <head>` merges the claim from the base its `Land` leased, and is refused unless `<head>`
 is exactly the head the `Land` journaled; `admin resolve` prints the claim's base and head either
-way. Use it only when step 2 says yes. `--not-landed` takes no head and is safe whatever main is,
-so use it when unsure or when step 2 says no: it sends the claim back to `Prepare`, which answers
-`already_merged` if the work is on main after all. Both refuse while a server holds the store, and
+way. Use it only when step 2 exits 0. `--not-landed` takes no head and is safe whatever main is,
+so use it when unsure or when step 2 exits 1 or 128: it sends the claim back to `Prepare`, which
+answers `already_merged` if the work is on main after all. Both refuse while a server holds the store, and
 when the claim has no `Land` in flight. Then start the server. The answer is the one a `Reconcile`
 would have given: the core still applies its own rules. After `--landed`, the lane's daemon finds
-the landing in the server's log at its next connection and reports `claim N is gone from the
-coordinator; forgot it`, not a `merged` notice.
+the landing in the repository's event log at its next connection and reports `claim N is gone
+from the coordinator; forgot it`, not a `merged` notice. A lane that was waiting (`--wait`) behind
+the settled claim was told, when the server stopped, that its queued wait was withdrawn; `--landed`
+may have granted that wait, and the daemon then adopts the claim and says so in its inbox. Use that
+claim, or `tessel release` it.
 
 Two doubts that resolving does not fix:
 
 - A `Land` whose push fails for good (a revoked token, a ruleset that refuses the push to `main`)
-  is asked again every 90 seconds, forever, each time with a fresh clone of main. The `server.log`
+  is asked again about every 90 seconds once the backoff is capped (10 s, 30 s, then 90 s, plus
+  the clone and push of each try), forever, each time with a fresh clone of main. The `server.log`
   shows a repeated `push` warning while the claim stays in doubt. Fix the credential or the
   ruleset; `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`,
   and `--landed` is for a push that reached main. No command rejects the work.

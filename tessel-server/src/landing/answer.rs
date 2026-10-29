@@ -2,9 +2,9 @@
 //! land), and what the server log keeps of them.
 //!
 //! A merge outcome that is a fact about the work becomes a refusal, which the core never retries.
-//! One that is not (main moved, or any infrastructure failure) becomes `Unknown`, which the core
-//! retries with backoff. Only `Merged` is `Prepared`, and the lander returns `Merged` only after
-//! it read main back and found the head on it.
+//! One that is not (main moved, or any infrastructure failure) becomes `Unknown`: the core retries
+//! a `Prepare` or `Test` with backoff and reconciles a `Land`. Only `Merged` is `Prepared`, and the
+//! lander returns `Merged` only after it read main back and found the head on it.
 
 use tessel_coordinator::host::call::{CallAnswer, Refusal, TrialResult};
 use tessel_coordinator::protocol::CommitId;
