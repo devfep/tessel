@@ -874,8 +874,8 @@ fn has_evidence(decisions: &DecisionRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinator::Config;
-    use crate::merge::{MergeOutcome, TrialOutcome, TrialReport};
+    use crate::coordinator::{Config, HeadRead};
+    use crate::merge::{MergeOutcome, TrialOutcome, TrialReport, MAX_INFRA_RETRIES};
     use crate::protocol::{
         Assumption, ClientMsg, Event, Fence, Mode, OnConflict, RunId, Scope, Summary,
         PROTOCOL_VERSION,
@@ -2074,6 +2074,91 @@ mod tests {
     }
 
     // ---- trials ----
+
+    /// A core whose start read is out when `felix` says hello, so the head is only adopted.
+    fn adopted_core() -> (Coordinator, HeadRead) {
+        let mut c = bare_core();
+        let start = c.begin_head_read().expect("no head: a read is due");
+        let hello = ClientMsg::Hello {
+            agent: agent("felix"),
+            base: CommitId(MAIN.into()),
+            protocol: PROTOCOL_VERSION,
+        };
+        c.handle(&agent("felix"), hello, NOW);
+        (c, start)
+    }
+
+    #[test]
+    fn a_landing_that_ends_the_adoption_releases_the_race_waiting_for_the_head() {
+        let landed_head = CommitId("e".repeat(40));
+        let (mut c, start) = adopted_core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        let other = claim_as(&mut c, "x1", "src/x.rs", OnConflict::Fail);
+        let [ServerMsg::Granted { claim, fence, .. }] = replies(&other)[..] else {
+            panic!("expected Granted");
+        };
+        let msg = ClientMsg::Submit {
+            req: RequestId(9),
+            claim: *claim,
+            fence: *fence,
+            fork_commit: CommitId(fork_sha("x1")),
+            touched: vec![edit("src/x.rs")],
+            decisions: DecisionRecord {
+                evidence: vec!["tests passed".into()],
+                ..DecisionRecord::default()
+            },
+        };
+        c.handle(&agent("x1"), msg, NOW + 1);
+        submit_at(&mut c, "a1", one, NOW + 2);
+        c.begin_merge(NOW + 3).expect("x1's merge");
+        let landed = MergeOutcome::Merged {
+            base: CommitId("b".repeat(40)),
+            head: landed_head.clone(),
+        };
+        c.settle_merge(c.merge_flight_id(*claim), &landed, NOW + 4);
+        c.trunk_read(&start, Some(CommitId(MAIN.into())), NOW + 5);
+        let trial = c
+            .begin_verification(NOW + 6)
+            .expect("the landing ended the adoption: the race is tried on the landed head");
+        assert_eq!(trial.main, landed_head);
+    }
+
+    #[test]
+    fn a_read_that_keeps_failing_judges_the_waiting_race_with_the_tests_unknown() {
+        let (mut c, start) = adopted_core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        assert_eq!(c.begin_verification(NOW + 2), None);
+        let mut read = start;
+        let mut now = NOW + 3;
+        let mut decided = false;
+        for _ in 0..=MAX_INFRA_RETRIES {
+            let effects = c.trunk_read(&read, None, now);
+            decided |= logged(&effects)
+                .iter()
+                .any(|kind| matches!(kind, EventKind::RaceDecided { .. }));
+            now += 100_000;
+            read = c.begin_head_read().expect("the read stays owed");
+        }
+        assert!(decided, "the race is judged once the retries are spent");
+        assert!(c.begin_head_read().is_some(), "and the read stays owed");
+    }
+
+    #[test]
+    fn a_later_read_does_not_queue_the_trials_of_a_race_again() {
+        let (mut c, start) = adopted_core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        c.trunk_read(&start, Some(CommitId(MAIN.into())), NOW + 2);
+        assert_eq!(c.state.verifications.len(), 1);
+        c.trunk_moved(NOW + 3);
+        let read = c.begin_head_read().expect("a poke makes a read due");
+        c.trunk_read(&read, Some(CommitId("c".repeat(40))), NOW + 4);
+        assert_eq!(c.state.verifications.len(), 1, "one trial per entry");
+    }
 
     #[test]
     fn a_race_trial_waits_for_the_head_read_while_the_head_is_only_adopted() {
