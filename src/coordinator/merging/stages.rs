@@ -3,10 +3,13 @@
 //! each stage is read on its own, and the journaled head is read back from the stored state.
 
 use crate::coordinator::{Config, Coordinator, Effect, MergeDispatch, MergeStage};
-use crate::merge::{infra_backoff_ms, MergeOutcome, RuleKind, StepExit, MAX_INFRA_RETRIES};
+use crate::merge::{
+    infra_backoff_ms, MergeOutcome, RuleKind, StepExit, TrialOutcome, TrialReport,
+    MAX_INFRA_RETRIES,
+};
 use crate::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, DecisionRecord, EventKind, Intent, OnConflict,
-    RequestId, RunId, Scope, ScopeClaim, ServerMsg,
+    AgentId, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Intent,
+    OnConflict, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
 };
 
 const NOW: u64 = 1_000;
@@ -702,7 +705,7 @@ fn a_retried_land_reuses_its_dispatch_id_base_head_and_candidate_ref() {
     assert_eq!(
         work(&c, claim).retry_at_ms,
         None,
-        "the resent Land does not wait on the Reconcile's backoff"
+        "the resend clears the stale backoff (the Land stage never reads it, so this pins state)"
     );
     assert!(effects.is_empty(), "{effects:?}");
     let again = c
@@ -988,6 +991,158 @@ fn the_operator_cannot_resolve_a_claim_with_no_land_in_doubt() {
     assert!(
         idle.resolve_doubt(claim, true, NOW + 50).is_err(),
         "nothing in flight"
+    );
+}
+
+/// A core whose head is only adopted from a `Hello`, with claim `a`'s `Land` in doubt and a
+/// one-entrant race on another file that closed meanwhile, so it waits for the head.
+fn in_doubt_with_a_race_waiting_for_the_head() -> (Coordinator, ClaimId, AgentId) {
+    let file = |path: &str| ScopeClaim {
+        scope: Scope::File { path: path.into() },
+        mode: crate::protocol::Mode::EditBody,
+    };
+    let intent = || Intent {
+        summary: "s".into(),
+        task_ref: None,
+        assumptions: Vec::new(),
+    };
+    let decisions = || DecisionRecord {
+        evidence: vec!["tests passed".into()],
+        ..DecisionRecord::default()
+    };
+    let granted = |effects: &[Effect]| {
+        effects.iter().find_map(|effect| match effect {
+            Effect::Reply(ServerMsg::Granted { claim, fence, .. }) => Some((*claim, *fence)),
+            Effect::Reply(_) | Effect::Notify { .. } | Effect::Log(_) => None,
+        })
+    };
+    let mut c = Coordinator::new(Config {
+        run: RunId("stages".into()),
+        lease_ms: 30_000,
+        shadow_enabled: true,
+    })
+    .unwrap();
+    let (felix, a, r1) = (
+        AgentId("felix".into()),
+        AgentId("a".into()),
+        AgentId("r1".into()),
+    );
+    c.set_reviewers(vec![felix.clone()]);
+    c.begin_head_read().expect("no head: a read is due");
+    let hello = ClientMsg::Hello {
+        agent: felix.clone(),
+        base: commit(OLD),
+        protocol: crate::protocol::PROTOCOL_VERSION,
+    };
+    c.handle(&felix, hello, NOW);
+
+    let claim = ClientMsg::Claim {
+        req: RequestId(1),
+        intent: intent(),
+        scopes: vec![file("src/a.rs")],
+        on_conflict: OnConflict::Fail,
+    };
+    let (claim, fence) = granted(&c.handle(&a, claim, NOW)).expect("granted");
+    let submit = ClientMsg::Submit {
+        req: RequestId(2),
+        claim,
+        fence,
+        fork_commit: commit(&"ab".repeat(20)),
+        touched: vec![file("src/a.rs")],
+        decisions: decisions(),
+    };
+    c.handle(&a, submit, NOW);
+
+    let open = ClientMsg::OpenRace {
+        req: RequestId(3),
+        intent: intent(),
+        scopes: vec![file("src/r.rs")],
+        max_entrants: 1,
+        deadline_ms: NOW + 20_000,
+        criteria: vec![Criterion::FirstSubmitted],
+    };
+    let opened = c.handle(&felix, open, NOW);
+    let race = opened.iter().find_map(|effect| match effect {
+        Effect::Reply(ServerMsg::RaceOpened { race, .. }) => Some(*race),
+        Effect::Reply(_) | Effect::Notify { .. } | Effect::Log(_) => None,
+    });
+    let join = ClientMsg::JoinRace {
+        req: RequestId(4),
+        race: race.expect("RaceOpened"),
+    };
+    let (entry, fence) = granted(&c.handle(&r1, join, NOW)).expect("joined");
+    let enter = ClientMsg::Submit {
+        req: RequestId(5),
+        claim: entry,
+        fence,
+        fork_commit: commit(&"cd".repeat(20)),
+        touched: vec![file("src/r.rs")],
+        decisions: decisions(),
+    };
+    c.handle(&r1, enter, NOW + 1);
+    assert!(c.races_await_head(), "the race closed on an adopted head");
+
+    let prepare = c.begin_merge(NOW + 2).expect("a's merge");
+    let test = next_after(&mut c, &prepare, &prepared());
+    let land = next_after(&mut c, &test, &MergeOutcome::Tested {});
+    c.merge_outcome(land.id, &MergeOutcome::ServiceUnavailable, NOW + 4);
+    (c, claim, r1)
+}
+
+#[test]
+fn an_offline_landed_answer_releases_the_races_waiting_on_the_head_and_the_trials_tell_the_entrants(
+) {
+    let (mut c, claim, r1) = in_doubt_with_a_race_waiting_for_the_head();
+    let effects = c.resolve_doubt(claim, true, NOW + 50).expect("in doubt");
+    assert!(landed(&effects));
+    assert!(
+        !c.races_await_head(),
+        "the landing is a head the core has read"
+    );
+    let notified = |effects: &[Effect]| {
+        effects
+            .iter()
+            .filter(|effect| {
+                matches!(
+                    effect,
+                    Effect::Notify {
+                        msg: ServerMsg::RaceResult { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    assert_eq!(
+        notified(&effects),
+        0,
+        "the trial is queued, not judged: nothing for `admin resolve` to drop"
+    );
+
+    let stored = serde_json::to_string(&c).unwrap();
+    let mut restarted: Coordinator = serde_json::from_str(&stored).unwrap();
+    let trial = restarted
+        .begin_verification(NOW + 60)
+        .expect("the queued trial");
+    assert_eq!(
+        (trial.agent.clone(), trial.main.clone()),
+        (r1.clone(), commit(HEAD))
+    );
+    let clean = TrialReport {
+        before: Some(TrialOutcome::Clean {}),
+        after: Some(TrialOutcome::Clean {}),
+    };
+    let decided = restarted.verification_outcome(trial.id, &clean, NOW + 61);
+    assert_eq!(
+        notified(&decided),
+        2,
+        "the opener and the entrant hear the result"
+    );
+    assert!(
+        events(&decided)
+            .iter()
+            .any(|kind| matches!(kind, EventKind::RaceDecided { .. })),
+        "and the log, which a daemon reads on reconnecting, records it"
     );
 }
 

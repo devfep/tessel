@@ -2200,6 +2200,37 @@ fn host_a_land_in_doubt_logs_the_claim_for_the_operator() {
         line.contains("claim 1 ") && line.contains("admin resolve 1"),
         "{line}"
     );
+    for part in [
+        "leased base old ",
+        "journaled head new.",
+        "admin resolve 1 --landed new ",
+        "git merge-base --is-ancestor new origin/main",
+    ] {
+        assert!(line.contains(part), "{part:?} missing from {line}");
+    }
+}
+
+#[test]
+fn host_the_doubt_line_names_the_tenant_and_repo_the_command_needs() {
+    let mut kit = Testkit::new(HostConfig {
+        repo: "acme/demo".to_string(),
+        ..config()
+    });
+    submitted(&mut kit);
+    wake(&mut kit);
+    let land = merge_call_out_after(&mut kit);
+    kit.reply(land.id, CallAnswer::Unknown);
+    kit.settle();
+    let line = kit
+        .logs()
+        .iter()
+        .find(|line| line.contains("is in doubt"))
+        .unwrap_or_else(|| panic!("no doubt line in {:?}", kit.logs()))
+        .clone();
+    assert!(
+        line.contains("admin resolve 1 --landed new --tenant acme --repo demo --config"),
+        "{line}"
+    );
 }
 
 /// R24 from M5: a marker found on `Loaded` that a `Land` may have left on main is reconciled, not

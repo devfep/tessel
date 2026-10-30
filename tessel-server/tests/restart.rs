@@ -224,21 +224,60 @@ impl Deployment {
         )?)
     }
 
-    /// What `docs/dogfood.md` tells the operator to read for a `Land` in doubt: the head and base
-    /// the `Land` journaled, as `rusqlite` runs the runbook's query.
+    /// What `docs/dogfood.md` tells the operator to read for a `Land` in doubt, run with the
+    /// `sqlite3` the runbook names, as the store's owner and without `-readonly`: the stage, the
+    /// claim, and the head and base the `Land` journaled.
     fn journaled_land(&self) -> Result<(String, String), Box<dyn std::error::Error>> {
-        let file = RepoId::new("acme", REPO)?.store_file(&self.repos.root.path().join("stores"));
-        let conn = rusqlite::Connection::open_with_flags(
-            file,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
-        Ok(conn.query_row(
-            "select json_extract(json, '$.merge_in_flight.stage.head'), \
-                    json_extract(json, '$.merge_in_flight.stage.base') \
-             from kv where key = 'core'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?)
+        let query = "select json_extract(json, '$.merge_in_flight.stage.stage'), \
+                            json_extract(json, '$.merge_in_flight.claim'), \
+                            json_extract(json, '$.merge_in_flight.stage.head'), \
+                            json_extract(json, '$.merge_in_flight.stage.base') \
+                     from kv where key = 'core'";
+        let out = Command::new("sqlite3")
+            .arg(self.store_file()?)
+            .arg(query)
+            .output()
+            .map_err(|e| format!("the runbook's read needs the sqlite3 command: {e}"))?;
+        let text = String::from_utf8(out.stdout)?;
+        assert!(out.status.success(), "sqlite3 said {:?}", out.stderr);
+        let columns: Vec<&str> = text.trim_end().split('|').collect();
+        let [stage, _claim, head, base] = columns[..] else {
+            return Err(format!("expected four columns, got {text:?}").into());
+        };
+        assert_eq!(stage, "land", "the runbook's read names the stage");
+        Ok((head.to_string(), base.to_string()))
+    }
+
+    fn store_file(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        Ok(RepoId::new("acme", REPO)?.store_file(&self.repos.root.path().join("stores")))
+    }
+
+    /// The store as a stopped server leaves it after a clean close (the last connection closed, so
+    /// the `-wal` and `-shm` files are gone), read with the runbook's query: it names `head`.
+    fn assert_the_runbook_reads_a_cleanly_closed_store(&self, head: &str) -> TestResult {
+        let file = self.store_file()?;
+        let conn = rusqlite::Connection::open(&file)?;
+        conn.query_row("select count(*) from kv", [], |row| row.get::<_, i64>(0))?;
+        drop(conn);
+        for suffix in ["-wal", "-shm"] {
+            let side = PathBuf::from(format!("{}{suffix}", file.display()));
+            assert!(!side.exists(), "{} outlived the close", side.display());
+        }
+        assert_eq!(self.journaled_land()?.0, head, "the runbook's read works");
+        Ok(())
+    }
+
+    /// The runbook's step 2: `head` is an ancestor of the trunk's main.
+    fn assert_on_main(&self, head: &str) -> TestResult {
+        let on_main = Command::new("git")
+            .current_dir(&self.repos.main)
+            .args(["merge-base", "--is-ancestor", head, "main"])
+            .status()?;
+        assert!(
+            on_main.success(),
+            "the runbook's read finds the head on main"
+        );
+        Ok(())
     }
 
     fn calls_left(&self) -> Vec<String> {
@@ -473,16 +512,10 @@ async fn a_server_killed_after_the_push_and_restarted_counts_the_landing_once() 
     );
     let (head, base) = deployment.journaled_land()?;
     assert_eq!(base, before, "the Land leased the main it found");
-    let on_main = Command::new("git")
-        .current_dir(&deployment.repos.main)
-        .args(["merge-base", "--is-ancestor", &head, "main"])
-        .status()?;
-    assert!(
-        on_main.success(),
-        "the runbook's read finds the journaled head on main"
-    );
+    deployment.assert_on_main(&head)?;
 
     first.kill9()?;
+    deployment.assert_the_runbook_reads_a_cleanly_closed_store(&head)?;
     let unanswered = deployment.events()?;
     assert!(
         !unanswered

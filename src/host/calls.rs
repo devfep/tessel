@@ -469,7 +469,7 @@ mod tests {
             "claim 7 is in doubt since 1234 (epoch ms)",
             "leased base base1",
             "journaled head head1",
-            "admin resolve 7 --landed head1 --config",
+            "admin resolve 7 --landed head1 --tenant acme --repo demo --config",
             "git merge-base --is-ancestor head1 origin/main",
             "--not-landed",
         ] {

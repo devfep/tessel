@@ -26,7 +26,7 @@ use tessel_coordinator::host::call::{
 };
 use tessel_coordinator::host::{Host, HostConfig, Input, Output as HostOutput, SocketId};
 use tessel_coordinator::protocol::{
-    AgentId, ClientMsg, CommitId, Event, ProtocolRange, ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClaimId, ClientMsg, CommitId, Event, ProtocolRange, ServerMsg, PROTOCOL_VERSION,
 };
 use tessel_coordinator::shell::{self, Action, Session, EVENT_PREFIX, STATE_KEY};
 use tokio::net::{TcpListener, TcpStream};
@@ -847,6 +847,76 @@ impl Fake {
             }
             call = self.inner.call_of(st, is_merge_call);
         }
+    }
+
+    /// Answers the merge the host has asked the lander for up to its `Land`, which gets no answer
+    /// (`Unknown`): the lander cannot say whether main moved, so the claim's landing is in doubt.
+    pub fn land_in_doubt(&self) {
+        let mut guard = lock(&self.inner.state);
+        let st = &mut *guard;
+        let mut call = self.inner.call_of(st, is_merge_call);
+        while let Some(out) = call {
+            let answer = match out.request {
+                CallRequest::Prepare { .. } => CallAnswer::Prepared {
+                    base: sha('b'),
+                    head: sha('c'),
+                },
+                CallRequest::Test { .. } => CallAnswer::Tested,
+                CallRequest::Land { .. } => CallAnswer::Unknown,
+                CallRequest::Trial { .. }
+                | CallRequest::ReadHead { .. }
+                | CallRequest::Reconcile { .. } => unreachable!("not a merge call: {out:?}"),
+            };
+            let in_doubt = answer == CallAnswer::Unknown;
+            self.inner.answer(st, &out, answer);
+            if in_doubt {
+                return;
+            }
+            call = self.inner.call_of(st, is_merge_call);
+        }
+    }
+
+    /// The store as it stands now: what a server killed at this moment leaves behind.
+    pub fn stored(&self) -> BTreeMap<String, String> {
+        lock(&self.inner.state).store.clone()
+    }
+
+    /// How many sockets the host serves.
+    pub fn open_sockets(&self) -> usize {
+        lock(&self.inner.state).sockets.len()
+    }
+
+    /// What the operator does after a server was killed with `killed` in its store (`stored`):
+    /// `tessel-server admin resolve` on that state, which writes the log and the stored core as
+    /// the command does and drops its notices, then a server that starts from that store with
+    /// nothing in flight. A killed server never ran the withdrawals its closing sockets would
+    /// have caused, so they are not in `killed`. Stop the open sockets first
+    /// (`set_accepting(false)`, `drop_connections`, and wait for `open_sockets` to reach 0).
+    pub fn resolve_offline(
+        &self,
+        killed: BTreeMap<String, String>,
+        (claim, landed): (u64, bool),
+    ) -> Result<()> {
+        let mut guard = lock(&self.inner.state);
+        let st = &mut *guard;
+        st.store = killed;
+        let stored = st
+            .store
+            .get(STATE_KEY)
+            .context("the store holds no state")?;
+        let reviewers = shell::reviewers_or_none(st.config.reviewers.as_deref(), |_| {});
+        let mut core = shell::load_core(Some(stored), None, None, reviewers, Vec::new())
+            .map_err(|e| anyhow::anyhow!("loading the stored state: {e}"))?;
+        let effects = core
+            .resolve_doubt(ClaimId(claim), landed, self.inner.clock())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let (events, _unsent) = shell::split_effects(effects);
+        st.store.extend(shell::persist_entries(&core, &events)?);
+        st.calls.clear();
+        st.head_reads.clear();
+        st.wake_at = None;
+        st.host = Host::new(st.config.clone());
+        Ok(())
     }
 
     /// How many landings `merge_next` and `merge_next_at` have answered.
