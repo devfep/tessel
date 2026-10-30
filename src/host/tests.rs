@@ -3276,6 +3276,224 @@ fn host_a_replaying_socket_whose_buffer_overflows_is_closed() {
     assert!(replayed_seqs(&kit, watcher).is_empty());
 }
 
+/// A stored batch with `count` live events from `first_seq` and nothing else to send.
+fn held_events(first_seq: u64, count: usize) -> Held {
+    Held {
+        outbound: Vec::new(),
+        events: (first_seq..).take(count).map(old_event).collect(),
+        reply_to: None,
+        bind: None,
+        next_wake_ms: None,
+        calls: Vec::new(),
+    }
+}
+
+fn commits_in(outputs: &[Output]) -> usize {
+    let commits = outputs
+        .iter()
+        .filter(|o| matches!(o, Output::Commit { .. }));
+    commits.count()
+}
+
+fn no_batch_was_lost(kit: &Testkit) {
+    let lost = kit
+        .logs()
+        .iter()
+        .find(|line| line.contains("no outstanding batch"));
+    assert_eq!(lost, None, "a commit answer found its batch gone");
+}
+
+#[test]
+fn host_a_failed_send_to_a_replaying_socket_during_a_commit_withdraws_it_after_the_commit() {
+    let mut kit = kit();
+    let (a1, a2) = a2_waits_behind_a1(&mut kit);
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    let mark = kit.history().len();
+    kit.send(a1, &claim(9, "y.rs", "t"));
+    let now_ms = kit.now_ms();
+    kit.input(Input::SendFailed { now_ms, sock: a2 });
+    assert_eq!(
+        close_of(&kit, a2),
+        Some((1011, "send failed")),
+        "closed at once"
+    );
+    assert_eq!(
+        commits_since(&kit, mark).len(),
+        1,
+        "only a1's commit is out"
+    );
+
+    kit.settle();
+    no_batch_was_lost(&kit);
+    assert!(matches!(
+        kit.received(a1).last(),
+        Some(ServerMsg::Granted { .. })
+    ));
+    assert!(
+        !queued(&kit, "a2"),
+        "the withdrawal ran once the gate opened"
+    );
+}
+
+#[test]
+fn host_a_replay_buffer_that_overflows_in_a_release_withdraws_after_the_batch_and_its_next_job() {
+    let mut kit = kit();
+    let (_a1, a2) = a2_waits_behind_a1(&mut kit);
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    let held = held_events(100, REPLAY_BUFFER_EVENTS + 1);
+    let pending = Pending::new(BatchId(99), Vec::new(), held, Some(super::Job::Poke));
+    kit.host.gate = super::Gate::Committing(Box::new(pending));
+    let mark = kit.history().len();
+    let mut out = Vec::new();
+    kit.host.committed(kit.now_ms(), BatchId(99), &mut out);
+    assert_eq!(
+        commits_in(&out),
+        1,
+        "the withdrawal's commit, and not the poke's"
+    );
+    kit.execute(out);
+    kit.settle();
+
+    no_batch_was_lost(&kit);
+    assert_eq!(close_of(&kit, a2), Some((1013, "replay buffer full")));
+    assert!(!queued(&kit, "a2"), "a2 is withdrawn");
+    assert_eq!(
+        commits_since(&kit, mark).len(),
+        2,
+        "the poke ran after the withdrawal"
+    );
+}
+
+#[test]
+fn host_two_replays_that_overflow_in_one_release_are_both_withdrawn() {
+    let mut kit = kit();
+    let (_a1, a2) = a2_waits_behind_a1(&mut kit);
+    let a3 = welcomed(&mut kit, "a3");
+    kit.send(a3, &waiting_claim(3, &["x.rs"]));
+    kit.settle();
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(a3, &ClientMsg::Watch { from_seq: 0 });
+    let held = held_events(100, REPLAY_BUFFER_EVENTS + 1);
+    let committed = Pending::new(BatchId(99), Vec::new(), held, None).commit();
+    let mut out = Vec::new();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    assert_eq!(commits_in(&out), 1, "one withdrawal at a time");
+    kit.execute(out);
+    kit.settle();
+
+    no_batch_was_lost(&kit);
+    assert!(
+        !queued(&kit, "a2") && !queued(&kit, "a3"),
+        "both are withdrawn"
+    );
+}
+
+#[test]
+fn host_a_replay_buffer_overflow_is_logged_with_the_agent_and_the_bound() {
+    let mut kit = kit();
+    seed_log(&mut kit, 3);
+    let watcher = kit.open("w7");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let committed = Pending::new(
+        BatchId(99),
+        Vec::new(),
+        held_events(3, REPLAY_BUFFER_EVENTS + 1),
+        None,
+    )
+    .commit();
+    let mut out = Vec::new();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.execute(out);
+    let line = kit
+        .logs()
+        .iter()
+        .find(|line| line.contains("replay buffer"));
+    let line = line.expect("the overflow is logged");
+    assert!(line.contains("repo-1"), "{line}");
+    assert!(line.contains("agent=w7"), "{line}");
+    assert!(line.contains(&REPLAY_BUFFER_EVENTS.to_string()), "{line}");
+}
+
+#[test]
+fn host_a_job_run_while_the_gate_is_closed_waits_for_it() {
+    let mut kit = kit();
+    welcomed(&mut kit, "a1");
+    let pending = Pending::new(BatchId(99), Vec::new(), held_events(100, 0), None);
+    kit.host.gate = super::Gate::Committing(Box::new(pending));
+    let mut out = Vec::new();
+    kit.host.run(super::Job::Poke, &mut out);
+    assert_eq!(commits_in(&out), 0, "no second commit while one is out");
+    assert!(matches!(kit.host.gate, super::Gate::Committing(_)));
+
+    kit.host.committed(kit.now_ms(), BatchId(99), &mut out);
+    kit.execute(out);
+    kit.settle();
+    no_batch_was_lost(&kit);
+}
+
+#[test]
+fn host_a_watch_and_hello_queued_behind_a_load_keep_the_hello_after_the_replay() {
+    let mut kit = kit();
+    seed_log(&mut kit, 150);
+    let busy = kit.open("a2");
+    let watcher = kit.open("w");
+    kit.send(busy, &hello("a2"));
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(watcher, &hello("w"));
+    kit.settle();
+
+    let received = kit.received(watcher);
+    let welcome = received.iter().position(is_welcome).expect("a welcome");
+    assert!(welcome >= 150, "the welcome follows every replayed event");
+    let seqs = event_seqs(received);
+    assert_eq!(seqs, (0..=151).collect::<Vec<_>>(), "each event once");
+}
+
+#[test]
+fn host_a_second_watch_queued_behind_a_load_does_not_restart_the_replay() {
+    let mut kit = kit();
+    seed_log(&mut kit, 150);
+    let busy = kit.open("a2");
+    let watcher = kit.open("w");
+    kit.send(busy, &hello("a2"));
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+
+    let seqs = event_seqs(kit.received(watcher));
+    assert_eq!(seqs, (0..=150).collect::<Vec<_>>(), "each event once");
+    let (_, code, message) = error_of(kit.received(watcher).last().unwrap());
+    assert_eq!(code, ErrorCode::Malformed);
+    assert_eq!(message, "this socket is already watching");
+    let failed = kit
+        .logs()
+        .iter()
+        .find(|l| l.contains("replay events failed"));
+    assert_eq!(failed, None);
+}
+
+#[test]
+fn host_the_frames_a_replaying_socket_queued_keep_their_order() {
+    let mut kit = kit();
+    seed_log(&mut kit, 150);
+    let busy = kit.open("a2");
+    let watcher = kit.open("w");
+    kit.send(busy, &hello("a2"));
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(watcher, &hello("w"));
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.settle();
+
+    let received = kit.received(watcher);
+    assert!(received.iter().any(is_welcome));
+    let (_, code, _) = error_of(received.last().unwrap());
+    assert_eq!(
+        code,
+        ErrorCode::Malformed,
+        "the second watch is refused after the welcome"
+    );
+}
+
 #[test]
 fn host_a_grant_that_fails_to_send_keeps_the_claim_until_its_lease_lapses() {
     let mut kit = kit();
