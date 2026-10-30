@@ -692,7 +692,7 @@ mod tests {
         let reasons = rejection_reasons(&sim);
         assert_eq!(
             reasons,
-            ["the tests did not run, so no trial judged the race"]
+            ["the tests gave no result, so no trial judged this entry"]
         );
         let found = check::run(&sim, &Checker::ALL);
         assert!(found.is_empty(), "{found:?}");

@@ -36,8 +36,10 @@
 //!   logged once, when the outcome is known, so `races_decided` counts a race once. A race with
 //!   no eligible entry, including one nobody entered, is decided at once with `winner: None`.
 //! - `RaceResult` goes to every entrant and to the opener, who may not be one but is who decides a
-//!   `HumanPick`. Losers get `SubmitRejected` with a fixed reason and lose their claim; their forks
-//!   are untouched. The winner becomes a real claim holding the race's scopes.
+//!   `HumanPick`. Losers get `SubmitRejected` with a fixed reason (`LOST_RACE`, or
+//!   `TESTS_GAVE_NO_RESULT` for an entry no trial judged in a `TestsPass` race without a winner)
+//!   and lose their claim; their forks are untouched. The winner becomes a real claim holding the
+//!   race's scopes.
 
 use serde::{Deserialize, Serialize};
 
@@ -64,10 +66,11 @@ const MAX_CRITERIA: usize = 5;
 /// What every loser is told. Fixed: nothing about the winning work is quoted.
 const LOST_RACE: &str = "lost the race";
 
-/// What an entrant is told when a `TestsPass` race had no winner and no trial judged its entry
-/// (the head was unknown, or the tests never ran): not that it lost, because nothing beat it.
-/// Fixed, like `LOST_RACE`.
-const TESTS_DID_NOT_RUN: &str = "the tests did not run, so no trial judged the race";
+/// What an entrant is told when a `TestsPass` race had no winner and no trial judged its entry:
+/// its `tests_passed` is `None`, whether the trial hit a conflict, timed out or was refused, or no
+/// head was known. Not that it lost, because nothing beat it. The release is still logged as
+/// `LostRace`. Fixed, like `LOST_RACE`.
+const TESTS_GAVE_NO_RESULT: &str = "the tests gave no result, so no trial judged this entry";
 
 /// What every entry is told when a `HumanPick` race ran out of time. Fixed, like `LOST_RACE`.
 const NOT_PICKED: &str = "the race was not picked in time";
@@ -790,7 +793,7 @@ impl Coordinator {
                     && verdict.rejection == LOST_RACE
                     && entered.tests_passed.is_none();
                 let rejection = if unjudged {
-                    TESTS_DID_NOT_RUN
+                    TESTS_GAVE_NO_RESULT
                 } else {
                     verdict.rejection
                 };
@@ -2139,7 +2142,7 @@ mod tests {
         );
         assert_eq!(
             rejection_of(&effects, "a2", two.0).as_deref(),
-            Some(TESTS_DID_NOT_RUN)
+            Some(TESTS_GAVE_NO_RESULT)
         );
         let mut logged_reasons = Vec::new();
         for kind in logged(&effects) {
@@ -2149,7 +2152,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(logged_reasons, [TESTS_DID_NOT_RUN]);
+        assert_eq!(logged_reasons, [TESTS_GAVE_NO_RESULT]);
     }
 
     #[test]
@@ -2166,7 +2169,7 @@ mod tests {
         let effects = submit_effects(&mut c, "a1", one, true, NOW + 1);
         assert_eq!(
             rejection_of(&effects, "a1", one.0).as_deref(),
-            Some(TESTS_DID_NOT_RUN)
+            Some(TESTS_GAVE_NO_RESULT)
         );
     }
 
