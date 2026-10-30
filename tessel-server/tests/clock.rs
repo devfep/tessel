@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, EventKind, Fence, Intent, Mode, OnConflict,
-    ReleaseReason, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Fence, Intent,
+    Mode, OnConflict, ReleaseReason, RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 use tessel_server::config::{Config, RepositoryConfig};
 use tessel_server::id::RepoId;
@@ -50,6 +50,15 @@ async fn start(
     lease_ms: Option<u64>,
     clock: &TestClock,
 ) -> Result<RunningServer, Box<dyn std::error::Error>> {
+    start_with_reviewers(dir, lease_ms, clock, Vec::new()).await
+}
+
+async fn start_with_reviewers(
+    dir: &std::path::Path,
+    lease_ms: Option<u64>,
+    clock: &TestClock,
+    reviewers: Vec<String>,
+) -> Result<RunningServer, Box<dyn std::error::Error>> {
     let config = Config {
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         store_dir: dir.join("stores"),
@@ -59,7 +68,7 @@ async fn start(
             tenant: "acme".to_string(),
             name: "demo".to_string(),
             run: "test".to_string(),
-            reviewers: Vec::new(),
+            reviewers,
             sensitive: Vec::new(),
             remote: None,
             fork: None,
@@ -233,6 +242,93 @@ async fn a_call_frame_sent_after_the_clock_moved_is_answered_after_the_expiry_it
         expired_before_the_answer,
         "the answer came before the expiry was logged"
     );
+    server.stop().await;
+    Ok(())
+}
+
+fn file_scope() -> ScopeClaim {
+    ScopeClaim {
+        scope: Scope::File {
+            path: "src/a.rs".to_string(),
+        },
+        mode: Mode::EditBody,
+    }
+}
+
+async fn send_msg(socket: &mut Socket, msg: &ClientMsg) -> TestResult {
+    socket
+        .send(Message::text(serde_json::to_string(msg)?))
+        .await?;
+    Ok(())
+}
+
+/// A repository whose port reads no heads, with no stored state, adopts its head from the first
+/// `Hello` and has no start read. A race that closes there is still decided: the head reads the
+/// core owes are refused, and once they have failed the race is judged with the tests unknown.
+#[tokio::test]
+async fn a_race_is_decided_on_a_port_that_reads_no_heads_with_an_empty_store() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let clock = TestClock::new();
+    clock.freeze();
+    let server =
+        start_with_reviewers(dir.path(), Some(600_000), &clock, vec!["a1".to_string()]).await?;
+    let mut socket = welcomed(server.local_addr(), "a1").await?;
+    let intent = Intent {
+        summary: "race".to_string(),
+        task_ref: None,
+        assumptions: Vec::new(),
+    };
+    let open = ClientMsg::OpenRace {
+        req: RequestId(1),
+        intent,
+        scopes: vec![file_scope()],
+        max_entrants: 1,
+        deadline_ms: clock.now_ms() + 5_000_000,
+        criteria: vec![Criterion::FirstSubmitted],
+    };
+    send_msg(&mut socket, &open).await?;
+    let opened = next(&mut socket).await?;
+    let ServerMsg::RaceOpened { race, .. } = opened else {
+        return Err(format!("expected RaceOpened, got {opened:?}").into());
+    };
+    send_msg(
+        &mut socket,
+        &ClientMsg::JoinRace {
+            req: RequestId(2),
+            race,
+        },
+    )
+    .await?;
+    let ServerMsg::Granted { claim, fence, .. } = next(&mut socket).await? else {
+        return Err("expected a grant".into());
+    };
+    let submit = ClientMsg::Submit {
+        req: RequestId(3),
+        claim,
+        fence,
+        fork_commit: CommitId("cd".repeat(20)),
+        touched: vec![file_scope()],
+        decisions: DecisionRecord {
+            evidence: vec!["tests passed".to_string()],
+            ..DecisionRecord::default()
+        },
+    };
+    send_msg(&mut socket, &submit).await?;
+    let mut result = None;
+    for _ in 0..8 {
+        clock.advance(100_000);
+        while let Ok(Ok(message)) =
+            tokio::time::timeout(Duration::from_millis(300), next(&mut socket)).await
+        {
+            if matches!(message, ServerMsg::RaceResult { .. }) {
+                result = Some(message);
+            }
+        }
+        if result.is_some() {
+            break;
+        }
+    }
+    assert!(result.is_some(), "the closed race was never decided");
     server.stop().await;
     Ok(())
 }

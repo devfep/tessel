@@ -2180,6 +2180,34 @@ mod tests {
     }
 
     #[test]
+    fn a_race_on_a_head_adopted_with_no_start_read_is_decided_by_the_reads_it_owes() {
+        let mut c = bare_core();
+        let hello = ClientMsg::Hello {
+            agent: agent("felix"),
+            base: CommitId(MAIN.into()),
+            protocol: PROTOCOL_VERSION,
+        };
+        c.handle(&agent("felix"), hello, NOW);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        let mut now = NOW + 2;
+        let mut decided = false;
+        for _ in 0..=MAX_INFRA_RETRIES + 1 {
+            let Some(read) = c.begin_head_read() else {
+                break;
+            };
+            assert!(c.next_head_read_ms(now).is_some(), "a wake is set for the read");
+            let effects = c.trunk_read(&read, None, now);
+            decided |= logged(&effects)
+                .iter()
+                .any(|kind| matches!(kind, EventKind::RaceDecided { .. }));
+            now += 100_000;
+        }
+        assert!(decided, "the closed race is never decided: no read was owed");
+    }
+
+    #[test]
     fn a_later_read_does_not_queue_the_trials_of_a_race_again() {
         let (mut c, start) = adopted_core();
         let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
