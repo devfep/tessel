@@ -66,7 +66,7 @@ impl Traffic {
             0 | 1 => sim.crash_after_outputs(1 + self.rng.below(8) as u64),
             2 => sim.crash_after_apply(),
             3 | 4 => sim.fail_next_commit(),
-            5..=7 => sim.crash_at_moment(1 + self.moments.below(MOMENTS_AHEAD) as u64),
+            5 | 6 => sim.crash_at_moment(1 + self.moments.below(MOMENTS_AHEAD) as u64),
             _ => {}
         }
     }

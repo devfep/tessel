@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn the_seeds_crash_at_every_moment_of_prepare_test_land_and_reconcile() {
         let mut reached = Vec::new();
-        for seed in 0..120 {
+        for seed in 0..180 {
             let run = sim::run_seed(seed, Variant::Correct, &[]);
             reached.extend(run.failpoints);
         }
