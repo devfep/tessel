@@ -181,10 +181,10 @@ sandbox commits use his GitHub noreply address.
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
 **Next:** P1-FAILPOINTS, its review and landing (lane A); P1-HOST-HARDENING, its vote and landing
-(lane B); then HEAD-ADOPTED-FOLLOWUPS (lane A) and RESOLVE-RUNBOOK-NITS with RACE-LOSER-TEXT (lane
-B); then P1-ONE-BATCH. Felix makes ruleset step 3 ("Fast lane, simulator" required). Felix's
-Homebrew postgres trusts local connections on a world-writable socket; he closes it before the
-accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+(lane B); then HEAD-ADOPTED-FOLLOWUPS (lane A) and RACE-LOSER-TEXT (lane B); then
+RESOLVE-RUNBOOK-NITS (lane B); then P1-ONE-BATCH. Felix makes ruleset step 3 ("Fast lane, simulator"
+required). Felix's Homebrew postgres trusts local connections on a world-writable socket; he closes
+it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -1069,8 +1069,9 @@ Lane A:
   transcript against I1, I5 and I9 after each reload (1 min 11 s on its first GitHub run), and the
   CLI of `e9df98c` landing through the current server. The rest after P1-HOST-HARDENING: a slow
   watcher, a panicking repo task, injected store errors.
-- [ ] **P1-HOST-HARDENING** — M, after P1-CORE-RECONCILE. P1-PERSIST-RETRY (C8, flips R30),
-  exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
+- [ ] **P1-HOST-HARDENING** (dispatched 30 October, run by lane B: see STATE) — M, after
+  P1-CORE-RECONCILE. P1-PERSIST-RETRY (C8, flips R30), exact replay without stalling (C3, flips
+  R36), COORD-UNDELIVERED-GRANT (decision 7).
 - [x] **P1-SIM-MERGE** (`5d68ed7`..`7423616`, landed by the server 30 October; held for a signature
   change, approved on Opus REVIEW-3's "Yes") — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING;
   lands after P1-CORE-RECONCILE and CORE-HEAD-ADOPTED (its review). The asynchronous merge path;
@@ -1132,10 +1133,9 @@ Lane A:
   adopted base; tessel-server's clock test asserts `tests_passed: None` on the `RaceResult`. From
   RACE-UNKNOWN-REASON (its item 2 and its vote's VOTE-3 should-fixes 3-4): an operator log line when
   a race is judged with the tests unknown (the core has no channel for it; it belongs in
-  `src/host/**`), (the opener's `RaceResult` line is RACE-LOSER-TEXT's). From P1-SIM-MERGE's
-  REVIEW-3 nits: the poison in
-  `a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound` is inert (the test passes
-  with `poison_fork` deleted): drop it or rename the test; say in
+  `src/host/**`); the opener's `RaceResult` line is RACE-LOSER-TEXT's. From P1-SIM-MERGE's REVIEW-3
+  nits: the poison in `a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound` is
+  inert (the test passes with `poison_fork` deleted): drop it or rename the test; say in
   `Sim::crash_after_every_test_dispatch`'s doc why it is `pub`, or use it from `tests/simulator.rs`.
   Done: those tests, each failing without its change, and the docs.
 - [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
@@ -1331,11 +1331,11 @@ Lane B:
   `assert_the_runbook_reads_a_cleanly_closed_store` checkpoints the killed WAL with rusqlite before
   the restart (run it on a copy); `Fake::resolve_offline` copies `admin::resolve` and passes no
   sensitive list (call it, or pin it); `offline_resolve.rs` could assert the job's claim, base and
-  head; `restart.rs`'s `_claim` is read but never asserted; `journaled_land` runs a bare `sqlite3`
-  (Homebrew's on the Mac, not the Apple build the runbook names). For later: a read-only `admin`
-  command printing the doubt (first vote's VOTE-3 should-fix 8). Done: the doc edits, and each test
-  change failing without it.
-- [ ] **RACE-LOSER-TEXT** — S, lane B, with RESOLVE-RUNBOOK-NITS; from RACE-UNKNOWN-REASON's vote
+  head; `restart.rs`'s `_claim` is read but never asserted, and its query is a copy of the runbook's
+  with nothing tying the two; `journaled_land` runs a bare `sqlite3` (Homebrew's on the Mac, not the
+  Apple build the runbook names). For later: a read-only `admin` command printing the doubt (first
+  vote's VOTE-3 should-fix 8). Done: the doc edits, and each test change failing without it.
+- [ ] **RACE-LOSER-TEXT** — S, lane B, after P1-HOST-HARDENING; from RACE-UNKNOWN-REASON's vote
   (VOTE-1 should-fix 4, VOTE-3 should-fix 2), resting on it and the standing order. The CLI's
   `rejected_text` (`tessel-cli/src/render.rs` ~509) tells every rejected entrant "claim N is active
   again with the same fence; fix the cause, push, and `tessel submit` again"; for a race entrant
