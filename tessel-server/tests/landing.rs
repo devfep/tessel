@@ -1144,11 +1144,12 @@ async fn land_is_landed_when_main_moved_past_the_head_after_the_ref_was_deleted(
     Ok(())
 }
 
-/// A `Land` killed after its push reached main and before the ref was deleted leaves main at the
-/// head and the ref in place, whether or not the read-back ran (candidate-ref §1). Everything the
-/// core then asks must find the head landed, push nothing and leave no ref.
+/// The state a `Land` killed after its push reached main and before the ref was deleted leaves,
+/// built with `git update-ref` (nothing is killed here): main at the head and the ref in place,
+/// whether or not the read-back ran (candidate-ref §1). Everything the core then asks must find
+/// the head landed, push nothing and leave no ref.
 #[tokio::test]
-async fn a_land_killed_after_the_push_leaves_a_head_every_later_call_finds_landed() -> TestResult {
+async fn a_head_on_main_with_its_ref_left_is_found_landed_by_every_later_call() -> TestResult {
     let repos = Repos::new();
     let base = repos.main_head();
     let landing = landing(&repos, "landing-killed-after-push", passing());

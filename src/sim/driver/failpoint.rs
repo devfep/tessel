@@ -64,7 +64,7 @@ mod tests {
     use crate::host::HostConfig;
     use crate::merge::MAX_INFRA_RETRIES;
     use crate::protocol::EventKind;
-    use crate::protocol::{Assumption, ClaimId, ClientMsg, RequestId, Scope};
+    use crate::protocol::{Assumption, ClaimId, ClientMsg, RequestId, Scope, ServerMsg};
     use crate::sim::check::{self, Checker};
     use crate::sim::driver::merge_path::tests::{
         claim, fork, race_run, rejection_reasons, submit, submitted_commit,
@@ -117,6 +117,8 @@ mod tests {
             .filter(|landing| landing.fork.as_deref() == Some(fork().as_str()))
             .collect();
         assert_eq!(landings.len(), 1, "{point:?}: {landings:?}");
+        // A tripwire on the sim lander, which never drops a candidate and keys it by the
+        // deterministic `candidate_head`: no core change can move this count.
         let kept = sim.lander().candidate_count();
         assert!(
             kept <= 1,
@@ -192,6 +194,11 @@ mod tests {
         assert!(
             sim.lander().runs() > runs,
             "{point:?}: the call never arrived"
+        );
+        assert_eq!(
+            sim.lander().runs(),
+            sim.dispatches().len(),
+            "{point:?}: every call ran"
         );
         sim
     }
@@ -287,7 +294,12 @@ mod tests {
     /// The submission is cut off every time it reaches `point`; it is rejected for infrastructure
     /// once, after exactly the bound, and nothing lands.
     fn cut_off_every_time(point: Failpoint) -> Sim {
-        let mut sim = submitted_commit(|sim| sim.crash_at_every(point));
+        // Late runs: the reconnect's `Hello` frees the `Land`, whose reply must not arrive while
+        // the `Hello`'s own write is still staged.
+        let mut sim = submitted_commit(|sim| {
+            sim.late_runs(5_000);
+            sim.crash_at_every(point);
+        });
         run_to_rest(&mut sim);
         let reasons = rejection_reasons(&sim);
         assert_eq!(reasons.len(), 1, "{point:?}: {reasons:?}");
@@ -314,7 +326,12 @@ mod tests {
     #[test]
     fn i6_a_restart_after_every_recorded_test_is_not_a_cut_off_and_the_claim_lands() {
         let point = at(Step::Test, Moment::Recorded);
-        let mut sim = submitted_commit(|sim| sim.crash_at_every(point));
+        // Late runs: the reconnect's `Hello` frees the `Land`, whose reply must not arrive while
+        // the `Hello`'s own write is still staged.
+        let mut sim = submitted_commit(|sim| {
+            sim.late_runs(5_000);
+            sim.crash_at_every(point);
+        });
         run_to_rest(&mut sim);
         assert_landed_once(&sim, point);
     }
@@ -327,7 +344,12 @@ mod tests {
     fn a_land_marker_cut_off_every_time_is_never_rejected() {
         let point = at(Step::Land, Moment::Persisted);
         let restarts = u64::from(MAX_INFRA_RETRIES) + 3;
-        let mut sim = submitted_commit(|sim| sim.crash_at_every(point));
+        // Late runs: the reconnect's `Hello` frees the `Land`, whose reply must not arrive while
+        // the `Hello`'s own write is still staged.
+        let mut sim = submitted_commit(|sim| {
+            sim.late_runs(5_000);
+            sim.crash_at_every(point);
+        });
         for _ in 0..30 {
             if sim.crashes() >= restarts {
                 break;
@@ -347,8 +369,38 @@ mod tests {
         );
         assert_eq!(calls_sent(&sim)[2], 0, "a Land went out past its marker");
         sim.disarm();
+        assert!(
+            a_reconnect_hears_of_the_doubt(&mut sim),
+            "no Welcome to a reconnect listed the claim in doubt"
+        );
         run_to_rest(&mut sim);
         assert_landed_after_crashes(&sim, point);
+    }
+
+    /// The doubt reaches the submitter in the `Welcome` of a reconnect. The crash loop closes
+    /// some sockets before a `Welcome` is sent, so connect again until one arrives.
+    fn a_reconnect_hears_of_the_doubt(sim: &mut Sim) -> bool {
+        let claim = {
+            let view = sim.view("a").expect("the agent connected");
+            ClaimId(*view.held.iter().next().expect("a holds a claim").0)
+        };
+        for _ in 0..10 {
+            let seen = sim.transcript().len();
+            sim.connect("a");
+            sim.quiet();
+            let welcomed = sim.transcript()[seen..].iter().find_map(|delivery| {
+                let ServerMsg::Welcome { merge_doubts, .. } = &delivery.msg else {
+                    return None;
+                };
+                Some(merge_doubts)
+            });
+            if let Some(doubts) = welcomed {
+                return doubts.iter().any(|doubt| doubt.claim == claim);
+            }
+            sim.advance(100_000);
+            sim.quiet();
+        }
+        false
     }
 
     #[test]
@@ -629,7 +681,11 @@ mod tests {
         for step in [Step::Prepare, Step::Test, Step::Land, Step::Reconcile] {
             for moment in MOMENTS {
                 let point = at(step, moment);
-                assert!(reached.contains(&point), "no seed crashed at {point:?}");
+                assert!(
+                    reached.contains(&point),
+                    "no seed crashed at {point:?}: the seeds do not reach it, or a change in core \
+                     routing moved the moment"
+                );
             }
         }
     }
