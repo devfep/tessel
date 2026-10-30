@@ -7,13 +7,27 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-30 07:10 UTC. Main at `3b708cd`, where RESOLVE-NAMES-HEAD landed through the
-server at 06:50 UTC as `97ca04c`..`3b708cd` (eight commits on `d5bf531`, fast-forward, so every
-commit kept its sha and note; claim 128, held as merge path and approved by the orchestrator on a
-vote). CI (41016436513), the Adapter suite (41016436480) and Own users (41016436479) passed on
-`3b708cd`. Its vote, under Felix's standing order of 30 October (below): three Opus devil's
-advocates (safety of the one path to `Merged` outside the lander; test honesty; operations and the
-runbook) each voted "Yes with should-fixes", with no must-fix
+**As of:** 2026-10-30 11:45 UTC. Main at `9188032`, where CORE-HEAD-ADOPTED landed through the
+server at 11:28 UTC as `b4e1348`..`9188032` (twelve commits on `77d5db5`; claim 125, held as merge
+path and approved by the orchestrator on a re-vote). The lander dropped the submission's merge of
+main, so the daemon copied no notes; the orchestrator copied all twelve by subject and author. CI
+(41048353740) and the Adapter suite (41048353696) passed on `9188032`. Its first vote on `4fdd79b`
+(`~/tessel-orch-notes/2026-10-30/vote-core-head-adopted/`): VOTE-1 "No (must-fix)" (a head adopted
+from a `Hello` with no read owed stranded a closing race in `Judging` for good: a port that never
+reads heads with an empty store, or a `Landing` port whose fresh store's first commit failed; a
+regression from `df4b39a`), VOTE-3 "Yes with should-fixes", VOTE-2 stalled on a background run and
+never voted. The orchestrator rejected the hold; fix pass 3 (`109da3d` merge of main, `7ab34ae` red,
+`389a54d`; gate green, 2330) owes a read whenever a closed race waits on an adopted head, counts a
+refused read as a failure, and judges the race with the tests unknown after four. A re-vote of three
+fresh voters on `389a54d` (`vote-core-head-adopted-2/`) went 3-0 "Yes with should-fixes", no
+must-fix; the should-fixes are HEAD-ADOPTED-FOLLOWUPS (below). At 07:32 UTC the STATE commits
+`663b304`..`77d5db5` landed (claim 129). Before, at 06:50 UTC, RESOLVE-NAMES-HEAD landed through the
+server as `97ca04c`..`3b708cd` (eight commits on `d5bf531`, fast-forward, so every commit kept its
+sha and note; claim 128, held as merge path and approved by the orchestrator on a vote). CI
+(41016436513), the Adapter suite (41016436480) and Own users (41016436479) passed on `3b708cd`. Its
+vote, under Felix's standing order of 30 October (below): three Opus devil's advocates (safety of
+the one path to `Merged` outside the lander; test honesty; operations and the runbook) each voted
+"Yes with should-fixes", with no must-fix
 (`~/tessel-orch-notes/2026-10-30/vote-resolve-names-head/`); their should-fixes are
 RESOLVE-FOLLOWUPS (below). The voters were told it would land after claim 125, rebased; it landed
 first, alone on `d5bf531`, after claim 125's hold was rejected. The vote still covers the landed
@@ -46,41 +60,22 @@ coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and
 claimed the file after the holder landed or left it to a follow-up.
 In flight (briefs, reports and reviews in `~/tessel-orch-notes/2026-10-28/`, the 30 October votes
 in `~/tessel-orch-notes/2026-10-30/`):
-- CORE-HEAD-ADOPTED (lane A, sonnet, dispatched 00:33 UTC from `df4b39a`,
-  `.claude/worktrees/core-head-adopted`; claim 125): `8f0816d`..`8b8c07e` (gate green, 2311 tests),
-  then fix pass 1 `5f671c7` (red) and `4cac8ee` (fork branch `core-head-adopted-2`; gate green,
-  2314), then fix pass 2 `d2bfda1` (red) and `4fdd79b` (fork branch `core-head-adopted-3`; gate
-  green, 2315). It keeps owing the head read while the head is only adopted; a race closing on an
-  adopted head waits for the read, and is judged at once with tests unknown once the retries are
-  spent; a merge goes to the lander at once rather than waiting (the lane's departure from the
-  brief, so an agent on a port that cannot read heads still hears the lander is missing) and records
-  no main (`InFlight::main` is `None`; a `Prepare` never carries one); the CLI fake answers the head
-  read. Opus REVIEW-1 "With changes" (a landing that ended the adoption stranded a waiting race in
-  `Judging`; fixed); REVIEW-2 "With changes", no must-fix (a race closing after the retries waited
-  up to 90 s; the retry threshold was not pinned; both fixed in pass 2, re-reviewed by REVIEW-3).
-  With P1-SIM-MERGE's `4c99b4e` merged on top (scratch), seeds 196 and 229 (which fail without it)
-  and 64 pass, and 0..300 has no agent-base failure. Opus REVIEW-3 "Yes" on `4fdd79b`; submitted and
-  held as merge path (`src/coordinator/` is sensitive). Its vote (30 October,
-  `~/tessel-orch-notes/2026-10-30/vote-core-head-adopted/`): VOTE-1 "No (must-fix)": a head adopted
-  from a `Hello` with no read owed strands a closing race in `Judging` for good, a regression from
-  `df4b39a` (a probe at `4fdd79b`, a control at `df4b39a`). It needs a port that never reads heads
-  (`NoLander`, or any `reads_trunk_head() == false`) with an empty store, or a `Landing` port whose
-  fresh store's first commit failed; an empty store on a `Landing` port gets the start read and is
-  fine. VOTE-3 "Yes with should-fixes"; its should-fix 1 is the same `NoLander` case. VOTE-2 was
-  still running at 07:10 UTC. The orchestrator rejected the hold on VOTE-1's must-fix alone (claim
-  125 active again), and fix pass 3 (`FIX-3.md`) is running: the must-fix with core and `NoLander`
-  server tests, plus the votes' small should-fixes. VOTE-2's findings go to fix pass 3 or the
-  re-vote.
-- P1-SIM-MERGE (lane A): fix pass 1 at `4c99b4e` (fork branch `sim-merge-2`; gate green, 2291
-  tests) answers REVIEW-1's "No" except the agent-base failure, which is CORE-HEAD-ADOPTED's.
-  Opus REVIEW-2 "With changes", no must-fix of the lane's: I3's chain clause cannot fire on the
-  lander's own histories (`parent` should be `candidate.base`), a scripted stale-`Tested` run, a
-  scripted restart during a poisoned `Test`. Its daemon in `.claude/worktrees/sim-merge` is
-  stopped (claim 119 released) while lane A runs CORE-HEAD-ADOPTED. Fix pass 2
-  (`lane-a/sim-merge/FIX-2.md`) comes with the rebase onto CORE-HEAD-ADOPTED: REVIEW-2's
-  should-fixes, its expected-to-fail seeds dropped, the default-seed `compare_and_swap_refused`
-  test re-checked (REVIEW-2 found it passes on the reconciling core); then it lands. REVIEW-2
-  also asks that I12 be recorded as unproven at the default seeds: it is, in its row.
+- RESOLVE-FOLLOWUPS (lane B, sonnet, dispatched 11:40 UTC from `9188032`,
+  `.claude/worktrees/resolve-followups`; brief
+  `~/tessel-orch-notes/2026-10-30/lane-b/resolve-followups/BRIEF.md`): the row's items 1-7, not its
+  "For later" design items. It edits `admin resolve` and its runbook, so it is merge path and goes
+  to a vote.
+- P1-SIM-MERGE (lane A, sonnet; `.claude/worktrees/sim-merge`): fix pass 1 at `4c99b4e` (fork branch
+  `sim-merge-2`; gate green, 2291 tests) answers REVIEW-1's "No" except the agent-base failure,
+  which was CORE-HEAD-ADOPTED's. Opus REVIEW-2 "With changes", no must-fix of the lane's: I3's chain
+  clause cannot fire on the lander's own histories (`parent` should be `candidate.base`), a scripted
+  stale-`Tested` run, a scripted restart during a poisoned `Test`. Fix pass 2
+  (`lane-a/sim-merge/FIX-2.md`) dispatched 11:35 UTC: a merge of main `9188032` (not a rebase: its
+  commits are pushed), REVIEW-2's should-fixes, its expected-to-fail seeds dropped, the default-seed
+  `compare_and_swap_refused` test re-checked, and the agent-base check on seeds 64, 196, 229, a
+  0..300 sweep and, load allowing, a 1,000-seed run on the merged tree (CORE-HEAD-ADOPTED's Done
+  line, per its re-vote's VOTE-3). Then a review and the landing. REVIEW-2 also asks that I12 be
+  recorded as unproven at the default seeds: it is, in its row.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -144,12 +139,11 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** CORE-HEAD-ADOPTED's fix pass 3 (lane A), its re-vote and landing; then P1-SIM-MERGE's
-fix pass 2, rebase and landing (lane A), then RACE-UNKNOWN-REASON (lane A); P1-HOST-HARDENING with
-RESOLVE-FOLLOWUPS (lane B) once claim 125 releases its files; then P1-ONE-BATCH. Felix
-makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts local
-connections on a world-writable socket; he closes it before the accounts move.
-LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** P1-SIM-MERGE's fix pass 2, review and landing (lane A), then HEAD-ADOPTED-FOLLOWUPS and
+RACE-UNKNOWN-REASON (lane A); RESOLVE-FOLLOWUPS, its vote and landing, then P1-HOST-HARDENING (lane
+B); then P1-ONE-BATCH. Felix makes ruleset step 3 ("Fast lane, simulator" required). Felix's
+Homebrew postgres trusts local connections on a world-writable socket; he closes it before the
+accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -1045,18 +1039,39 @@ Lane A:
   the default seeds (at most two merges per seed); its doc says so.
 - [ ] **P1-FAILPOINTS** — M, after P1-SIM-MERGE and P1-CORE-RECONCILE. The crash windows of a
   landing, the candidate ref's included.
-- [ ] **CORE-HEAD-ADOPTED** — S, lane A, Felix reviews, after P1-CORE-RECONCILE (when the core is
-  lane A's again) and before P1-ONE-BATCH, which changes the same wake; found by P1-SIM-MERGE's
-  agent-base check (seeds 64, 196, 229). A dispatch names the `Hello`-declared head while it is only
-  adopted: a race trial records `state.head` as `before`/`main` (`src/coordinator/racing.rs:563`,
-  `verifying.rs:336-337` on `7d671d3`), and so does a `Prepare`'s `main` (`merging.rs:230` on
-  `7d671d3`). By P1-SIM-MERGE REVIEW-1's reading, after the start read fails `MAX_INFRA_RETRIES` + 1
-  times `start_retry_owed` (`trunk.rs:118-123` on `7d671d3`) stops owing a read, so the head can
-  stay adopted; nobody has traced it on those seeds. Keep owing the read with capped backoff and
-  dispatch nothing that names a head while the head is only adopted. Done: a core test and the
-  simulator's agent-base check green on CI's sweeps. The row, its lane and its place before
-  P1-SIM-MERGE's landing (which delays P1-FAILPOINTS) rest on P1-SIM-MERGE REVIEW-1 and the standing
-  order.
+- [x] **CORE-HEAD-ADOPTED** (`b4e1348`..`9188032`, landed by the server 30 October; held as merge
+  path, approved on a 3-0 re-vote after a first vote's must-fix) — S, lane A, Felix reviews, after
+  P1-CORE-RECONCILE (when the core is lane A's again) and before P1-ONE-BATCH, which changes the
+  same wake; found by P1-SIM-MERGE's agent-base check (seeds 64, 196, 229). A dispatch names the
+  `Hello`-declared head while it is only adopted: a race trial records `state.head` as
+  `before`/`main` (`src/coordinator/racing.rs:563`, `verifying.rs:336-337` on `7d671d3`), and so
+  does a `Prepare`'s `main` (`merging.rs:230` on `7d671d3`). By P1-SIM-MERGE REVIEW-1's reading,
+  after the start read fails `MAX_INFRA_RETRIES` + 1 times `start_retry_owed` (`trunk.rs:118-123` on
+  `7d671d3`) stops owing a read, so the head can stay adopted; nobody has traced it on those seeds.
+  Keep owing the read with capped backoff and dispatch nothing that names a head while the head is
+  only adopted. Done: a core test and the simulator's agent-base check green on CI's sweeps. The
+  row, its lane and its place before P1-SIM-MERGE's landing (which delays P1-FAILPOINTS) rest on
+  P1-SIM-MERGE REVIEW-1 and the standing order.
+- [ ] **HEAD-ADOPTED-FOLLOWUPS** — S, lane A, after P1-SIM-MERGE and before or with P1-ONE-BATCH
+  (the same wake); from CORE-HEAD-ADOPTED's re-vote
+  (`~/tessel-orch-notes/2026-10-30/vote-core-head-adopted-2/VOTE-1..3.md`), resting on the votes and
+  the standing order. A port that never reads heads (`NoLander`, every repository without a
+  `remote`) polls a refused head read every 90 s for ever once one is owed (on `df4b39a` it stopped
+  after four): give the core the port's `reads_trunk_head()`, so such a port owes no reads and its
+  races do not wait, or stop owing once the waiting races are judged. The ReadHead path drops the
+  refusal's kind, so the log says "no head in the answer", not "no lander". A race that closes after
+  the retries are spent is judged at once with the tests unknown, although the next owed read is at
+  most 90 s away: flag it and judge it on that read. A poke resets `head_start_failures`
+  (`trunk.rs:103`), so pokes that keep coming keep a closed race waiting without bound: a per-race
+  wait start, or document it. Log wording: the log-once line goes through `failure(..)` ("head call
+  failed: races wait ..."), and `log_waiting_races` is computed before the apply, so the read that
+  releases the races can still log the wait. docs/configuration.md: "the race stays undecided until
+  a read answers" should add "or four reads have failed". The docs/dogfood.md rollback note: give
+  the store query for `"trials_await_head":true` and the remedy (wait for the read, or the 130 s).
+  Tests: a host test where a poke resets the failures while the head is adopted and a second wait is
+  logged (mutant M5 survives); the landing test checks that a race waiting on the adopted head is
+  released by a landing whose head is the adopted base; tessel-server's clock test asserts
+  `tests_passed: None` on the `RaceResult`.
 - [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
   renewal persisted below half the lease (C10). Evidence from the kill loop on CI: the server
   keeps one commit outstanding and commits each step as its own batch (`src/host/batch.rs:1`),
