@@ -668,11 +668,13 @@ fn host_an_input_queued_behind_a_failing_commit_runs_after_its_retry() {
     let first = welcomed(&mut kit, "a1");
     let second = welcomed(&mut kit, "a2");
     kit.fail_commits(1);
+    let received = kit.received(second).len();
     kit.send(first, &claim(1, "x.rs", "s"));
     kit.send(second, &claim(2, "x.rs", "t"));
     kit.deliver_next();
-    assert!(
-        kit.received(second).is_empty(),
+    assert_eq!(
+        kit.received(second).len(),
+        received,
         "the second claim waits for the retry"
     );
     kit.settle();
@@ -895,8 +897,8 @@ fn host_a_failed_commit_of_a_batch_holding_a_call_hands_out_nothing() {
     kit.settle();
     assert_eq!(
         labels_since(&kit, mark),
-        ["SetWake", "Commit", "Log", "SetWake"],
-        "the expiry is stored; the marker's batch fails and hands out no Call"
+        ["SetWake", "Commit", "Log", "Commit", "Log", "Commit", "Log", "SetWake"],
+        "the expiry is stored; the marker's batch fails every attempt and hands out no Call"
     );
     assert!(kit.calls().is_empty());
     assert!(
@@ -1572,7 +1574,11 @@ fn host_a_failed_withdrawal_is_logged_and_closes_nothing_and_sends_nothing() {
     kit.fail_next_commit();
     kit.close(a2);
     kit.settle();
-    assert_eq!(labels_since(&kit, mark), ["Commit", "Log"]);
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["Commit", "Log", "Commit", "Log", "Commit", "Log"],
+        "two retries, then the failure"
+    );
     let line = kit.logs().last().unwrap();
     assert!(line.contains("persist state and events failed"), "{line}");
     assert_eq!(kit.received(a2).len(), received);
@@ -2946,7 +2952,7 @@ fn host_a_hello_after_a_watch_is_answered_only_after_the_last_page() {
     let live = event_seqs(&received[welcome..]);
     assert_eq!(
         live,
-        [0],
+        [250],
         "the hello's own event is sent live, after the replay"
     );
 }
@@ -3045,47 +3051,34 @@ fn host_a_watch_start_is_clamped_and_live_events_below_it_are_not_sent() {
 }
 
 #[test]
-fn host_no_other_input_runs_between_a_replays_first_read_and_its_mark() {
+fn host_only_the_replaying_sockets_frames_wait_for_its_replay() {
     let mut kit = kit();
     seed_log(&mut kit, 150);
     let watcher = kit.open("w");
     let other = kit.open("a2");
     let mark = kit.history().len();
     kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
-    kit.send(other, &hello("a2"));
+    kit.send(watcher, &hello("w"));
     kit.send_binary(other);
-    kit.wake_now();
-    kit.poke();
-    kit.close(other);
-    assert_eq!(labels_since(&kit, mark), ["ReadEvents"], "all five wait");
+    kit.send(other, &hello("a2"));
+    assert_eq!(
+        labels_since(&kit, mark),
+        ["ReadEvents", "Send", "Load"],
+        "the watcher's hello waits; the other socket's frames run"
+    );
 
     kit.deliver_next();
-    let sends = labels_since(&kit, mark)
-        .iter()
-        .filter(|l| **l == "Send")
-        .count();
-    assert_eq!(sends, 100);
-    assert_eq!(
-        labels_since(&kit, mark).last(),
-        Some(&"ReadEvents"),
-        "the first page asks for the second and nothing else ran"
-    );
-    assert!(kit.received(other).is_empty());
-
     let before_last = kit.history().len();
-    kit.deliver_next();
-    let after = labels_since(&kit, before_last);
-    let mut expected = vec!["Send"; 50];
-    expected.extend(["SetSession", "Load"]);
-    assert_eq!(
-        after, expected,
-        "the queue runs once the mark is out; the hello loads first"
-    );
+    while labels_since(&kit, before_last)
+        .iter()
+        .all(|l| *l != "SetSession")
+    {
+        assert!(kit.deliver_next_but_pages() || kit.deliver_next());
+    }
     kit.settle();
-    assert!(
-        is_welcome(&kit.received(other)[0]),
-        "queued frames keep their order"
-    );
+    let received = kit.received(watcher);
+    let welcome = received.iter().position(is_welcome).expect("a welcome");
+    assert!(welcome >= 150, "the welcome follows every replayed event");
 }
 
 #[test]
@@ -3673,7 +3666,7 @@ fn host_a_watch_on_a_closed_socket_stops_at_the_first_failed_send() {
 }
 
 #[test]
-fn host_another_sockets_failed_send_waits_until_the_replay_ends() {
+fn host_another_sockets_failed_send_is_handled_during_a_replay() {
     let mut kit = kit();
     seed_log(&mut kit, 250);
     let watcher = kit.open("w");
@@ -3685,16 +3678,15 @@ fn host_another_sockets_failed_send_waits_until_the_replay_ends() {
         now_ms,
         sock: other,
     });
-    assert_eq!(kit.logs().len(), logged, "queued behind the replay");
-    assert!(kit.closed(other).is_none());
+    assert_eq!(kit.logs().len(), logged + 1, "handled during the replay");
+    assert_eq!(close_of(&kit, other), Some((1011, "send failed")));
 
     kit.settle();
     assert_eq!(kit.logs().len(), logged + 1);
-    assert_eq!(close_of(&kit, other), Some((1011, "send failed")));
     assert_eq!(
         event_seqs(kit.received(watcher)).len(),
-        250,
-        "the replay was whole"
+        251,
+        "the replay was whole: the log and the hello's event"
     );
 }
 

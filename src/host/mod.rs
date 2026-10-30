@@ -5,12 +5,14 @@
 //! `docs/reference/runtime-rules.md` lists with the test that pins each. Frozen design:
 //! `docs/proposals/real-use.md`, Architecture.
 //!
-//! The input gate. While a storage operation is outstanding (a `Load`, a `Commit` or a replay's
-//! `ReadEvents`) no other input runs: it is queued and applied once the operation is answered
-//! (R42). A `Call` is not a storage operation: inputs run while one is outstanding.
+//! The input gate. While a `Load` or a `Commit` is outstanding no other input runs: it is queued
+//! and applied once the operation is answered (R42). A failed `Commit` is handed out again
+//! before the gate opens (R30). A `Call` is not a storage operation: inputs run while one is
+//! outstanding.
 //!
-//! The replay. A `Watch` reads the stored log a page at a time and holds the gate for all of it,
-//! so the repo stalls while a replay runs. See `replay.rs`.
+//! The replay. A `Watch` reads the stored log a page at a time without closing the gate: other
+//! inputs run between its pages, and the live events committed meanwhile wait in a bounded buffer
+//! until the last page. See `replay.rs`.
 //!
 //! The wake. A wake issues its call and suspends; while a call is outstanding another `Wake`
 //! only sets the wake again. See `wake.rs`.
@@ -29,12 +31,12 @@ pub(crate) mod wake;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::coordinator::HeadRead;
 use crate::protocol::{AgentId, ClientMsg, Event, ProtocolRange, ServerMsg};
 use crate::shell::{self, Action, Session, Target, Work};
-use batch::{Committed, Discarded, Held, Pending};
+use batch::{Committed, Discarded, Held, Pending, MAX_COMMIT_ATTEMPTS};
 use call::{Call, CallAnswer, CallId, Request};
 use calls::AnswerJob;
 use core_slot::{Applied, ApplyError, CoreSlot, Prepared, Waits};
@@ -222,8 +224,6 @@ enum Gate {
     Loading(Job),
     /// `Output::Commit` is out; its sends wait for `Committed`.
     Committing(Box<Pending>),
-    /// `Output::ReadEvents` is out; the watch waits for its page.
-    Replaying(Replay),
 }
 
 /// The step machine of the call path. One per repo; it never reads a clock or does I/O.
@@ -239,11 +239,13 @@ pub struct Host {
     /// The log line that races wait for a head that could not be read is written, and no head
     /// read has answered since.
     race_wait_logged: bool,
-    /// The socket whose replay a failed send ended while its next read was out: that page is
-    /// dropped when it arrives. The adapter answers the reads of a socket in the order it was
-    /// asked, so the first page that names the socket is the one the ended replay left out, and
-    /// a replay the socket starts afterwards gets its own pages.
-    abandoned_read: Option<SocketId>,
+    /// The replays running, by socket. Each has one read out.
+    replays: BTreeMap<SocketId, Replay>,
+    /// The reads still out for a socket whose replay ended before they were answered: those
+    /// pages are dropped when they arrive. The adapter answers the reads of a socket in the order
+    /// it was asked, so the first pages that name the socket are the ones the ended replays left
+    /// out, and a replay the socket starts afterwards gets its own pages.
+    abandoned_reads: HashMap<SocketId, u32>,
     /// A wake is between two of its steps: not suspended at a call and not over.
     waking: bool,
     /// The time of the input being handled.
@@ -299,7 +301,8 @@ impl Host {
             calls: HashMap::new(),
             reading: None,
             race_wait_logged: false,
-            abandoned_read: None,
+            replays: BTreeMap::new(),
+            abandoned_reads: HashMap::new(),
             waking: false,
             now_ms: 0,
             next_batch: 0,
@@ -311,6 +314,9 @@ impl Host {
     /// operation is outstanding is queued and runs after its answer.
     pub fn step(&mut self, input: Input) -> Vec<Output> {
         let mut out = Vec::new();
+        let Some(input) = self.park_during_replay(input) else {
+            return out;
+        };
         if answers_storage(&input) || self.gate_is_open() || self.fails_replay(&input) {
             self.handle(input, &mut out);
         } else {
@@ -323,7 +329,7 @@ impl Host {
     fn gate_is_open(&self) -> bool {
         match self.gate {
             Gate::Open => true,
-            Gate::Loading(_) | Gate::Committing(_) | Gate::Replaying(_) => false,
+            Gate::Loading(_) | Gate::Committing(_) => false,
         }
     }
 
@@ -417,7 +423,7 @@ impl Host {
                 let code = CLOSE_POLICY_VIOLATION;
                 self.close_and_withdraw(now_ms, sock, code, IDENTITY_MISMATCH_REASON, out);
             }
-            Action::Watch { from_seq } => self.watch(sock, session, from_seq, out),
+            Action::Watch { from_seq } => self.watch(sock, from_seq, out),
         }
     }
 
@@ -452,7 +458,7 @@ impl Host {
             Err(e) => {
                 let abandoned = match std::mem::replace(&mut self.gate, Gate::Open) {
                     Gate::Loading(job) => Some(job),
-                    other @ (Gate::Open | Gate::Committing(_) | Gate::Replaying(_)) => {
+                    other @ (Gate::Open | Gate::Committing(_)) => {
                         self.gate = other;
                         None
                     }
@@ -469,7 +475,7 @@ impl Host {
         self.slot.install(core, stored);
         match std::mem::replace(&mut self.gate, Gate::Open) {
             Gate::Loading(job) => self.run(job, out),
-            other @ (Gate::Committing(_) | Gate::Replaying(_)) => self.gate = other,
+            other @ Gate::Committing(_) => self.gate = other,
             Gate::Open => {}
         }
     }
@@ -576,7 +582,7 @@ impl Host {
     fn take_pending(&mut self, batch: BatchId) -> Option<Pending> {
         match std::mem::replace(&mut self.gate, Gate::Open) {
             Gate::Committing(pending) if pending.id() == batch => Some(*pending),
-            other @ (Gate::Open | Gate::Loading(_) | Gate::Committing(_) | Gate::Replaying(_)) => {
+            other @ (Gate::Open | Gate::Loading(_) | Gate::Committing(_)) => {
                 self.gate = other;
                 None
             }
@@ -606,9 +612,36 @@ impl Host {
         }
     }
 
-    /// The batch is not stored: nothing it held is sent, and the core is ahead of storage, so it
-    /// is dropped (R30). The client whose message it stored is told by closing its socket (R10).
+    /// Hand the outstanding batch to the adapter again if it is `batch` and has attempts left.
+    /// The gate stays closed and nothing the batch held is sent (R30).
+    fn retry_commit(&mut self, batch: BatchId, out: &mut Vec<Output>) -> bool {
+        let Gate::Committing(pending) = &mut self.gate else {
+            return false;
+        };
+        if pending.id() != batch || !pending.retry() {
+            return false;
+        }
+        let line = format!(
+            "coordinator {}: the commit was not stored; retrying (attempt {} of {})",
+            self.config.repo,
+            pending.attempts(),
+            MAX_COMMIT_ATTEMPTS
+        );
+        out.push(Output::Log { line });
+        out.push(Output::Commit {
+            batch,
+            entries: pending.entries().to_vec(),
+        });
+        true
+    }
+
+    /// The batch is not stored: it is retried while attempts are left. When they are spent,
+    /// nothing it held is sent, and the core is ahead of storage, so it is dropped (R30). The
+    /// client whose message it stored is told by closing its socket (R10).
     fn commit_failed(&mut self, now_ms: u64, batch: BatchId, out: &mut Vec<Output>) {
+        if self.retry_commit(batch, out) {
+            return;
+        }
         let Some(discarded) = self.discard_pending(batch) else {
             out.push(self.failure("commit", "the failure names no outstanding batch"));
             return;
@@ -642,6 +675,7 @@ impl Host {
                 None => out.push(self.failure("deliver", "a message has no open socket to go to")),
             }
         }
+        self.buffer_for_replays(now_ms, &held.events, out);
         let at_ms = wake_at_ms(held.next_wake_ms, now_ms);
         out.push(Output::SetWake { at_ms });
         for call in held.calls {
@@ -661,7 +695,7 @@ impl Host {
     fn is_poke_awaiting_load(&self) -> bool {
         match &self.gate {
             Gate::Loading(Job::Poke) => true,
-            Gate::Loading(_) | Gate::Open | Gate::Committing(_) | Gate::Replaying(_) => false,
+            Gate::Loading(_) | Gate::Open | Gate::Committing(_) => false,
         }
     }
 }

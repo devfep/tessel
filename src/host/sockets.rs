@@ -13,6 +13,8 @@ use crate::shell::{self, Session, Work};
 
 /// WebSocket close code 1008: a `Hello` for an agent the connection's token was not issued for.
 pub const CLOSE_POLICY_VIOLATION: u16 = 1008;
+/// WebSocket close code 1013: the host cannot serve the socket now; try again later.
+pub const CLOSE_TRY_AGAIN_LATER: u16 = 1013;
 /// WebSocket close code 1011: the host failed while serving the socket.
 pub const CLOSE_INTERNAL_ERROR: u16 = 1011;
 
@@ -103,6 +105,7 @@ impl Host {
             out.push(self.failure("handle close", "the socket is not open"));
             return;
         };
+        self.abandon_replay(sock);
         self.withdraw(now_ms, closing, out);
     }
 
@@ -114,7 +117,6 @@ impl Host {
             return;
         };
         let agent = shell::log_agent(shell::session_agent(session));
-        self.abandon_replay(sock);
         out.push(self.failure("send to a socket", &format!("agent={agent}")));
         self.close_and_withdraw(now_ms, sock, CLOSE_INTERNAL_ERROR, SEND_FAILED_REASON, out);
     }
@@ -128,6 +130,7 @@ impl Host {
         reason: &str,
         out: &mut Vec<Output>,
     ) {
+        self.abandon_replay(sock);
         let Some(closing) = self.sockets.close(sock, code, reason, out) else {
             return;
         };

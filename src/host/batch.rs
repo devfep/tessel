@@ -3,9 +3,13 @@
 //! Protocol invariant 4 (a fence is stored before its grant is sent): the sends, the session
 //! change, the wake and the calls of a step that was persisted are in a `Held` inside a
 //! `Pending`. `Committed` is built only by `Pending::commit`, and `Host::release` takes a
-//! `Committed`, so nothing a batch held reaches an `Output` without that batch stored (C1). A
-//! failed commit drops the `Pending`. A reply that persisted nothing, such as the refusal of a
-//! call over the soft limit, is sent at once.
+//! `Committed`, so nothing a batch held reaches an `Output` without that batch stored (C1).
+//!
+//! A failed commit is retried (C8): the `Pending` stays in memory, its entries are handed to the
+//! adapter again, and nothing it held is sent until a commit succeeds. After
+//! `MAX_COMMIT_ATTEMPTS` attempts the `Pending` is dropped, which is the cut-off the retry
+//! postpones. A reply that persisted nothing, such as the refusal of a call over the soft limit,
+//! is sent at once.
 
 use crate::host::call::Call;
 use crate::host::{BatchId, Job, SocketId};
@@ -13,7 +17,8 @@ use crate::protocol::Event;
 use crate::shell::{Outbound, Session};
 
 /// How many times the host hands the adapter one batch before it gives up: the first attempt and
-/// two retries.
+/// two retries, one after the other, with no pause (the host reads no clock). An adapter that
+/// wants a pause waits inside its own commit.
 pub const MAX_COMMIT_ATTEMPTS: u32 = 3;
 
 /// What a step produced besides its stored entries.
@@ -32,6 +37,7 @@ pub struct Held {
 /// A batch handed to the adapter and not yet answered.
 pub struct Pending {
     id: BatchId,
+    attempts: u32,
     entries: Vec<(String, String)>,
     held: Held,
     then: Option<Job>,
@@ -57,6 +63,7 @@ impl Pending {
     pub fn new(id: BatchId, entries: Vec<(String, String)>, held: Held, then: Option<Job>) -> Self {
         Self {
             id,
+            attempts: 1,
             entries,
             held,
             then,
@@ -69,6 +76,20 @@ impl Pending {
 
     pub fn entries(&self) -> &[(String, String)] {
         &self.entries
+    }
+
+    /// Count another attempt at storing the batch. False when `MAX_COMMIT_ATTEMPTS` are spent.
+    pub fn retry(&mut self) -> bool {
+        if self.attempts >= MAX_COMMIT_ATTEMPTS {
+            return false;
+        }
+        self.attempts += 1;
+        true
+    }
+
+    /// The attempts made so far, the one in flight included.
+    pub fn attempts(&self) -> u32 {
+        self.attempts
     }
 
     /// The batch is stored: release what it held.
