@@ -311,7 +311,9 @@ merge and queues no trial of a closed race: the race stays undecided until a rea
 a read is owed it is read again, at 10 s, 30 s and then every 90 s for as long as it fails. A
 repository without a `remote` reads no heads: its closed race asks for the read at once, the
 no-lander port refuses it, and after four refusals (about two minutes) the race is judged with
-the tests unknown. A repository that has a head waits for nothing.
+the tests unknown: an entrant of a `tests_pass` race that no trial judged is rejected with "the
+tests did not run, so no trial judged the race", not "lost the race". A repository that has a head
+waits for nothing.
 
 The runner has no sandbox until M5. A trunk's test command runs as the runner's user, which is the
 server's user, and can write to a path `remote` and read the `token_file`, which a landing does not

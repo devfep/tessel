@@ -4,4 +4,7 @@
 # To keep a failing seed, add its line here in the change that fixes the bug. A seed's script
 # depends on the traffic in src/sim/traffic.rs (the order and weights of `act`) and on the host,
 # so after a change to either, re-find the case by sweeping and replace the seed. Blank lines and
-# `#` comments are allowed. No seed has failed yet.
+# `#` comments are allowed.
+64  # agent-base: a dispatch named the head a Hello declared (fixed by CORE-HEAD-ADOPTED)
+196  # agent-base: same (fixed by CORE-HEAD-ADOPTED)
+229  # agent-base: same (fixed by CORE-HEAD-ADOPTED)

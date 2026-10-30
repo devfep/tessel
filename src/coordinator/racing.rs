@@ -64,6 +64,11 @@ const MAX_CRITERIA: usize = 5;
 /// What every loser is told. Fixed: nothing about the winning work is quoted.
 const LOST_RACE: &str = "lost the race";
 
+/// What an entrant is told when a `TestsPass` race had no winner and no trial judged its entry
+/// (the head was unknown, or the tests never ran): not that it lost, because nothing beat it.
+/// Fixed, like `LOST_RACE`.
+const TESTS_DID_NOT_RUN: &str = "the tests did not run, so no trial judged the race";
+
 /// What every entry is told when a `HumanPick` race ran out of time. Fixed, like `LOST_RACE`.
 const NOT_PICKED: &str = "the race was not picked in time";
 
@@ -771,6 +776,7 @@ impl Coordinator {
                 msg: result.clone(),
             });
         }
+        let tests_decide = race.criteria.contains(&Criterion::TestsPass);
         let mut winning = None;
         for entrant in race.entrants {
             let Some(entered) = entrant.entered else {
@@ -779,7 +785,15 @@ impl Coordinator {
             if Some(entrant.claim) == verdict.winner {
                 winning = Some((entrant.claim, entrant.agent, entered));
             } else {
-                let rejection = verdict.rejection;
+                let unjudged = tests_decide
+                    && verdict.winner.is_none()
+                    && verdict.rejection == LOST_RACE
+                    && entered.tests_passed.is_none();
+                let rejection = if unjudged {
+                    TESTS_DID_NOT_RUN
+                } else {
+                    verdict.rejection
+                };
                 effects.extend(self.reject_loser(entrant.claim, entrant.agent, rejection, now_ms));
             }
         }
@@ -2087,8 +2101,6 @@ mod tests {
         let free = claim_as(&mut c, "outsider", "src/a.rs", OnConflict::Fail);
         assert!(is_granted(&free));
     }
-
-    const TESTS_DID_NOT_RUN: &str = "the tests did not run, so no trial judged the race";
 
     fn rejection_of(effects: &[Effect], who: &str, claim: ClaimId) -> Option<String> {
         notices(effects, who).iter().find_map(|msg| match msg {
