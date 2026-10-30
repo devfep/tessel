@@ -163,7 +163,9 @@ binaries, upgrade as below first.
 - **Nothing in flight.** Upgrade only with no dispatch in flight; held submissions are fine. A
   stop mid-test orphans the cargo process group, and an old whole-merge call may already have
   pushed, which the new core reads as a merge in doubt, not one cut off before `Land`. First read
-  what the store says, for each repository (it opens read-only, so the server may run):
+  what the store says, for each repository (it opens read-only, so the server may run; with the
+  server stopped after a clean close, read it as in step 1 of
+  [A `Land` in doubt](#a-land-in-doubt)):
 
   ```
   sqlite3 -readonly "<server dir>/stores/<tenant>/<repo>.sqlite" \
@@ -462,22 +464,30 @@ every `Welcome`, so a daemon that was offline, or a server that was stopped and 
 if it ended. The age counts from when that daemon first learned of the doubt, on its own clock.
 A lander that never answers holds the queue behind it.
 
-To find the claim without the submitter, read `server.log`: each `Land` or `Reconcile` that leaves
-a doubt logs `the landing of claim N is in doubt since <epoch ms>`, names the `base` the `Land`
-leased and the `head` it journaled, and gives the command. The lander rebases, so the submitter's
-fork commit is never on main by its sha; the commit to look for is that journaled `head`.
+To find the claim without the submitter, read `server.log` (`/var/log/tessel-server.log` after the
+[move to the service accounts](#moving-to-the-service-accounts)): each `Land` or `Reconcile`
+that leaves a doubt logs `the landing of claim N is in doubt since <epoch ms>`, names the `base`
+the `Land` leased and the `head` it journaled, and gives the command, with `--tenant` and `--repo`.
+The lander rebases, so the submitter's fork commit is never on main by its sha; the commit to look
+for is that journaled `head`.
 
-To settle it by hand, with the server stopped (`kill "$(cat <server dir>/server.pid)"`, then wait
-for the pid to exit):
+To settle it by hand, with the server stopped. Stop it and wait until it has exited:
+
+```
+kill "$(cat "<server dir>/server.pid")"
+while kill -0 "$(cat "<server dir>/server.pid")" 2>/dev/null; do sleep 1; done
+```
+
+Then:
 
 1. Read the journaled stage, claim, head and base. The store is
    `<store_dir>/<tenant>/<repo>.sqlite`, where `store_dir` is the one in
    `<server dir>/tessel-server.toml` (`<server dir>/stores` until the move to the service
-   accounts, `/var/tessel/stores` after). The read opens it read-only, but run it as the user that
-   owns the store (after the move, prefix it with `sudo -u _tessel`):
+   accounts, `/var/tessel/stores` after). Run it as the user that owns the store (after the move,
+   prefix it with `/usr/bin/sudo -u _tessel`), and without `-readonly`:
 
    ```
-   sqlite3 -readonly "<store_dir>/<tenant>/<repo>.sqlite" \
+   sqlite3 "<store_dir>/<tenant>/<repo>.sqlite" \
      "select json_extract(json, '\$.merge_in_flight.stage.stage'), \
              json_extract(json, '\$.merge_in_flight.claim'), \
              json_extract(json, '\$.merge_in_flight.stage.head'), \
@@ -487,6 +497,13 @@ for the pid to exit):
 
    The stage must be `land` or `reconcile` and the claim the one you mean; `admin resolve`
    refuses the others.
+
+   The store is in WAL mode. A stopped server that closed it cleanly leaves no `-shm` file, and
+   `sqlite3 -readonly` cannot create one, so it fails with `unable to open database file` although
+   the file is there and readable; a killed server leaves the file and the read-only open works. An
+   open that can write creates the `-shm` file, which is why the owner runs it without
+   `-readonly`; run as anyone else it can fail the same way. A wrong path, without `-readonly`,
+   fails with `no such table: kv` and leaves an empty file there, so `ls` the path first.
 2. In a checkout of the trunk (the lander's own clones are deleted after each call), run
    `git fetch origin main`, then `git merge-base --is-ancestor <head> origin/main`. Exit 0 means
    the head is on main. Exit 1 means it is not. Exit 128 means the checkout does not know the
@@ -503,10 +520,17 @@ for the pid to exit):
    ```
 
 After the [move to the service accounts](#moving-to-the-service-accounts), stop the server with
-`/usr/bin/sudo /bin/launchctl bootout system/dev.tessel.server` (not the pid kill above),
-use `--config /var/tessel/tessel-server.toml` and the binary `/opt/tessel/bin/tessel-server`, and
-run steps 1 and 3 under `/usr/bin/sudo -u _tessel`. Start it again with `launchctl bootstrap`, as
-above.
+`/usr/bin/sudo /bin/launchctl bootout system/dev.tessel.server` (not the pid kill above) and wait
+until it has gone:
+
+```
+while /usr/bin/sudo /bin/launchctl print system/dev.tessel.server >/dev/null 2>&1; do sleep 1; done
+```
+
+Use `--config /var/tessel/tessel-server.toml` and the binary `/opt/tessel/bin/tessel-server`, and
+run steps 1 and 3 under `/usr/bin/sudo -u _tessel`. Start it again with
+`/usr/bin/sudo /bin/launchctl bootstrap system /Library/LaunchDaemons/dev.tessel.server.plist`,
+and read `/var/log/tessel-server.log`.
 
 `--landed <head>` merges the claim from the base its `Land` leased, and is refused unless `<head>`
 is exactly the head the `Land` journaled; `admin resolve` prints the claim's base and head either
@@ -516,12 +540,20 @@ answers `already_merged` if the work is on main after all. Both refuse while a s
 store, and when the claim has no `Land` in flight. Then start the server. The answer is the one a
 `Reconcile` would have given: the core still applies its own rules. After `--landed`, the lane's
 daemon finds the landing in the repository's event log at its next connection and reports `claim N
-is gone from the coordinator; forgot it`, not a `merged` notice. A lane that was waiting (`--wait`)
+is gone from the coordinator; forgot it`, not a `merged` notice. `--landed` copies no notes: no
+`Merged` notice reaches the daemon, so it never copies the submission's notes to the landed commit.
+Copy them by hand, as for a merge-commit submission (`git notes add`, in `CLAUDE.md`). A lane that
+was waiting (`--wait`)
 behind the settled claim was told, when the server stopped, that its queued wait was withdrawn;
 `--landed` may have granted that wait, and the daemon then adopts the claim and says so in its
 inbox. Use that claim, or `tessel release` it. A lane whose own claim request was still
 on the way when the connection dropped is answered by that request's reply for the same claim,
 not by an adopted one.
+
+`--landed` also releases the closed races that waited for the head. Their trials are queued and
+run once the server is started, so the entrants hear the result then if they are connected; one
+that is offline finds the race decided in the event log when it reconnects. The command sends no
+notices itself.
 
 Two doubts that resolving does not fix:
 

@@ -433,17 +433,25 @@ impl Host {
 
 /// The text of the doubt log line: the claim, the main its `Land` leased and the head it
 /// journaled, and the command that settles it. `admin resolve` needs the claim number and, for
-/// `--landed`, the head, which is the rebased commit and not the submitter's fork commit. The time
-/// is the server's clock, milliseconds since the epoch, not a duration.
+/// `--landed`, the head, which is the rebased commit and not the submitter's fork commit. A repo
+/// named `tenant/name` is passed to the command with `--tenant` and `--repo`, which it needs when
+/// its configuration lists several repositories and accepts when it lists one. The time is the
+/// server's clock, milliseconds since the epoch, not a duration.
 fn doubt_line(repo: &str, doubt: &ClaimInDoubt, (base, head): (&CommitId, &CommitId)) -> String {
     let (claim, since) = (doubt.claim.0, doubt.since_ms);
     let (base, head) = (&base.0, &head.0);
+    let named = repo
+        .split_once('/')
+        .map_or_else(String::new, |(tenant, name)| {
+            format!("--tenant {tenant} --repo {name} ")
+        });
     format!(
         "coordinator {repo}: the landing of claim {claim} is in doubt since {since} (epoch ms); \
          its Land leased base {base} and journaled head {head}. With the server stopped, settle it \
-         by hand with: tessel-server admin resolve {claim} --landed {head} --config <the server's \
-         configuration file> if `git merge-base --is-ancestor {head} origin/main` succeeds in a \
-         fetched checkout of the trunk, and with --not-landed (no head) otherwise or when unsure"
+         by hand with: tessel-server admin resolve {claim} --landed {head} {named}--config <the \
+         server's configuration file> if `git merge-base --is-ancestor {head} origin/main` \
+         succeeds in a fetched checkout of the trunk, and otherwise or when unsure with \
+         --not-landed in place of `--landed {head}`"
     )
 }
 
