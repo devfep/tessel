@@ -2526,8 +2526,8 @@ pub(crate) async fn open_socket(config: &Config) -> Result<Socket, ConnectFailur
 
 /// Reads the whole event log on a short-lived second connection. `Watch { from_seq: 0 }`
 /// replays the log and then follows it live; the replay has no end of its own. So the read then
-/// sends `Hello`, which the coordinator handles after the replay is done (its host runs no other
-/// input while it reads storage; see the input gate in `src/host/mod.rs`). Its `Welcome`
+/// sends `Hello`, which the coordinator handles after the replay is done (its host keeps the
+/// frames of a replaying socket until the last page; see `src/host/replay.rs`). Its `Welcome`
 /// reply is sent before the events it caused, so the first event after the `Welcome` must be the
 /// `AgentConnected` that `Hello` logged: it comes after every event the replay held. Any other
 /// first event, a missing marker, a closed socket, `SNAPSHOT_LIMIT` or a gap in `seq` marks the

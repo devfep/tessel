@@ -5,14 +5,18 @@
 //! `docs/reference/runtime-rules.md` lists with the test that pins each. Frozen design:
 //! `docs/proposals/real-use.md`, Architecture.
 //!
-//! The input gate. While a `Load` or a `Commit` is outstanding no other input runs: it is queued
-//! and applied once the operation is answered (R42). A failed `Commit` is handed out again
-//! before the gate opens (R30). A `Call` is not a storage operation: inputs run while one is
-//! outstanding.
+//! The input gate. While a `Load` or a `Commit` is outstanding no input is applied except the
+//! answers to a storage operation (`Loaded`, `Committed`, `CommitFailed`, `ReplayPage`) and the
+//! `SendFailed` of a socket being replayed. The rest are queued and applied once the operation is
+//! answered (R42). The `SendFailed` closes the socket and ends its replay at once, but no job
+//! that needs the core runs under a closed gate: a withdrawal, or the next step of a batch, is
+//! kept in order and runs when the gate opens. A failed `Commit` is handed out again before the
+//! gate opens (R30). A `Call` is not a storage operation: inputs run while one is outstanding.
 //!
 //! The replay. A `Watch` reads the stored log a page at a time without closing the gate: other
 //! inputs run between its pages, and the live events committed meanwhile wait in a bounded buffer
-//! until the last page. See `replay.rs`.
+//! until the last page. The frames of the replaying socket wait for it, whether they arrived
+//! before or after the `Watch` ran. See `replay.rs`.
 //!
 //! The wake. A wake issues its call and suspends; while a call is outstanding another `Wake`
 //! only sets the wake again. See `wake.rs`.
@@ -81,7 +85,9 @@ pub enum Input {
     TrunkPoked { now_ms: u64 },
     /// The answer to `Output::Load`: the stored core state, or `None` for a repository with none.
     Loaded { now_ms: u64, stored: Option<String> },
-    /// The answer to `Output::ReadEvents`: a page of the stored log. `done` ends the replay.
+    /// The answer to `Output::ReadEvents`: a page of the stored log. `done` ends the replay. It
+    /// follows the answers of the storage operations asked before the read, and precedes those
+    /// asked after it.
     ReplayPage {
         now_ms: u64,
         sock: SocketId,
@@ -129,7 +135,10 @@ pub enum Output {
     /// Read the stored core state; the answer is `Input::Loaded`.
     Load,
     /// Store `entries` (key and JSON) in one transaction, then report `Committed` or
-    /// `CommitFailed` for `batch`.
+    /// `CommitFailed` for `batch`. A failed batch may be handed out again under the same id
+    /// (R30), so storing it twice must leave the same rows. Storage answers (`Committed`,
+    /// `CommitFailed`, `ReplayPage`) arrive in the order they were asked, and a read sees exactly
+    /// the commits answered before it: a replay is exact (R36) only on that contract.
     Commit {
         batch: BatchId,
         entries: Vec<(String, String)>,
@@ -145,9 +154,11 @@ pub enum Output {
         reason: String,
     },
     /// Read up to `limit` stored events from `from_seq` for `sock`'s replay; the answer is
-    /// `Input::ReplayPage`. No input reports a failed read, so the adapter must always answer:
-    /// with `done: true` (and no events) on a failed read or a closed socket. Without an answer
-    /// the gate never reopens, as with `Load` and `Commit`.
+    /// `Input::ReplayPage`. The read sees every commit already answered and none that is not, and
+    /// is answered in the order it was asked among the storage answers. No input reports a failed
+    /// read, so the adapter must always answer: with `done: true` (and no events) on a failed
+    /// read or a closed socket. Without an answer the replay never ends: its socket's frames
+    /// stay parked and the live events pile up in its buffer until it is closed.
     ReadEvents {
         sock: SocketId,
         from_seq: u64,
@@ -233,6 +244,9 @@ pub struct Host {
     sockets: Sockets,
     gate: Gate,
     queue: VecDeque<Input>,
+    /// Jobs that were to run under a closed gate, in order. They run before the queue once the
+    /// gate opens.
+    deferred: VecDeque<Job>,
     calls: HashMap<CallId, Call>,
     /// The head read the one outstanding `ReadHead` call was made against.
     reading: Option<HeadRead>,
@@ -298,6 +312,7 @@ impl Host {
             sockets: Sockets::default(),
             gate: Gate::Open,
             queue: VecDeque::new(),
+            deferred: VecDeque::new(),
             calls: HashMap::new(),
             reading: None,
             race_wait_logged: false,
@@ -314,9 +329,6 @@ impl Host {
     /// operation is outstanding is queued and runs after its answer.
     pub fn step(&mut self, input: Input) -> Vec<Output> {
         let mut out = Vec::new();
-        let Some(input) = self.park_during_replay(input) else {
-            return out;
-        };
         if answers_storage(&input) || self.gate_is_open() || self.fails_replay(&input) {
             self.handle(input, &mut out);
         } else {
@@ -335,6 +347,10 @@ impl Host {
 
     fn drain(&mut self, out: &mut Vec<Output>) {
         while self.gate_is_open() {
+            if let Some(job) = self.deferred.pop_front() {
+                self.run(job, out);
+                continue;
+            }
             let Some(input) = self.queue.pop_front() else {
                 return;
             };
@@ -343,6 +359,9 @@ impl Host {
     }
 
     fn handle(&mut self, input: Input, out: &mut Vec<Output>) {
+        let Some(input) = self.park_during_replay(input) else {
+            return;
+        };
         self.now_ms = input.now_ms();
         match input {
             Input::Opened { sock, verified, .. } => out.push(self.sockets.open(sock, verified)),
@@ -427,8 +446,13 @@ impl Host {
         }
     }
 
-    /// Run `job` once the core is loaded: ask for the load first if it is not (R19).
+    /// Run `job` once the core is loaded: ask for the load first if it is not (R19). Under a
+    /// closed gate the job waits for it: a second storage operation would replace the first.
     fn run(&mut self, job: Job, out: &mut Vec<Output>) {
+        if !self.gate_is_open() {
+            self.deferred.push_back(job);
+            return;
+        }
         if !self.slot.is_loaded() {
             out.push(Output::Load);
             self.gate = Gate::Loading(job);
@@ -568,6 +592,7 @@ impl Host {
         then: Option<Job>,
         out: &mut Vec<Output>,
     ) {
+        debug_assert!(self.gate_is_open(), "a commit started under a closed gate");
         let batch = BatchId(self.next_batch);
         self.next_batch += 1;
         let pending = Pending::new(batch, entries, held, then);

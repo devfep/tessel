@@ -13,7 +13,9 @@
 //!
 //! The socket's own frames wait for the replay, so a `Hello` the client sent after the `Watch` is
 //! answered after the last page and the CLI can take the first event after the `Welcome` for the
-//! end of the replay. Only that socket waits; the repo does not.
+//! end of the replay. A frame waits whether it reached the host before the `Watch` ran (it was
+//! queued behind a storage operation) or after; it is parked when the host would apply it, so
+//! the frames keep their order. Only that socket waits; the repo does not.
 
 use crate::host::sockets::CLOSE_TRY_AGAIN_LATER;
 use crate::host::{Host, Input, Output, SocketId};
@@ -160,6 +162,11 @@ impl Host {
             }
         }
         for sock in overflowed {
+            let session = self.sockets.session(sock);
+            let agent = shell::log_agent(session.and_then(shell::session_agent));
+            let cause =
+                format!("agent={agent} has over {REPLAY_BUFFER_EVENTS} live events waiting");
+            out.push(self.failure("replay buffer", &cause));
             let code = CLOSE_TRY_AGAIN_LATER;
             self.close_and_withdraw(now_ms, sock, code, BUFFER_FULL_REASON, out);
         }

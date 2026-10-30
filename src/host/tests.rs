@@ -644,6 +644,11 @@ fn host_a_commit_that_fails_every_attempt_drops_the_core_and_sends_nothing() {
         .logs()
         .iter()
         .any(|line| line.contains("persist state and events failed")));
+    assert_eq!(
+        count(&kit, "Load"),
+        2,
+        "the core is dropped, so the withdrawal reloads it"
+    );
 }
 
 #[test]
@@ -885,6 +890,29 @@ fn a_commit_answer_for_an_earlier_batch_is_ignored() {
         received + 1,
         "its own batch releases"
     );
+}
+
+#[test]
+fn host_a_commit_failure_for_an_earlier_batch_changes_nothing() {
+    let mut kit = kit();
+    let sock = welcomed(&mut kit, "a1");
+    kit.send(sock, &claim(1, "x.rs", "s"));
+    let received = kit.received(sock).len();
+    let mark = kit.history().len();
+    let now_ms = kit.now_ms();
+    kit.input(Input::CommitFailed {
+        now_ms,
+        batch: BatchId(0),
+    });
+    assert_eq!(labels_since(&kit, mark), ["Log"], "no retry, no drop");
+    kit.settle();
+    assert_eq!(commits_since(&kit, mark).len(), 0);
+    assert_eq!(
+        kit.received(sock).len(),
+        received + 1,
+        "its own batch releases"
+    );
+    assert_eq!(kit.closed(sock), None);
 }
 
 #[test]
@@ -3415,6 +3443,41 @@ fn host_a_replay_buffer_overflow_is_logged_with_the_agent_and_the_bound() {
 }
 
 #[test]
+fn host_a_replay_buffer_of_exactly_the_bound_stays_open() {
+    let mut kit = kit();
+    seed_log(&mut kit, 3);
+    let watcher = kit.open("w");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let held = held_events(3, REPLAY_BUFFER_EVENTS);
+    let committed = Pending::new(BatchId(99), Vec::new(), held, None).commit();
+    let mut out = Vec::new();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.execute(out);
+    assert_eq!(kit.closed(watcher), None);
+    kit.settle();
+    assert_eq!(kit.closed(watcher), None);
+    let wanted: Vec<u64> = (0..3 + REPLAY_BUFFER_EVENTS as u64).collect();
+    assert_eq!(replayed_seqs(&kit, watcher), wanted);
+}
+
+#[test]
+fn host_live_events_below_the_start_of_a_replay_are_never_buffered() {
+    let mut kit = kit();
+    seed_log(&mut kit, 3);
+    let watcher = kit.open("w");
+    let other = kit.open("a2");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 10 });
+    kit.send(other, &hello("a2"));
+    while kit.deliver_next_but_pages() {}
+    assert!(
+        kit.received(other).iter().any(is_welcome),
+        "seq 3 is stored"
+    );
+    kit.settle();
+    assert!(replayed_seqs(&kit, watcher).is_empty(), "seq 3 is below 10");
+}
+
+#[test]
 fn host_a_job_run_while_the_gate_is_closed_waits_for_it() {
     let mut kit = kit();
     welcomed(&mut kit, "a1");
@@ -3425,8 +3488,18 @@ fn host_a_job_run_while_the_gate_is_closed_waits_for_it() {
     assert_eq!(commits_in(&out), 0, "no second commit while one is out");
     assert!(matches!(kit.host.gate, super::Gate::Committing(_)));
 
-    kit.host.committed(kit.now_ms(), BatchId(99), &mut out);
-    kit.execute(out);
+    assert_eq!(kit.host.deferred.len(), 1);
+    let now_ms = kit.now_ms();
+    let mark = kit.history().len();
+    kit.input(Input::Committed {
+        now_ms,
+        batch: BatchId(99),
+    });
+    assert_eq!(
+        commits_since(&kit, mark).len(),
+        1,
+        "the poke ran once the gate opened"
+    );
     kit.settle();
     no_batch_was_lost(&kit);
 }
