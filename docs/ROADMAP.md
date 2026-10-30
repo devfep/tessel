@@ -7,10 +7,24 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-30 12:40 UTC. Main at `9188032`, where CORE-HEAD-ADOPTED landed through the
-server at 11:28 UTC as `b4e1348`..`9188032` (twelve commits on `77d5db5`; claim 125, held as merge
-path and approved by the orchestrator on a re-vote). The submission holds a merge of main
-(`109da3d`), and the daemon's note copy refuses such a submission
+**As of:** 2026-10-30 13:20 UTC. Main at `7423616`, where P1-SIM-MERGE landed through the server at
+13:04 UTC as `5d68ed7`..`7423616` (eight commits on `3b21d4d`; claim 130, held for a signature
+change in `src/sim`, not as merge path, and approved by the orchestrator on Opus REVIEW-3's "Yes").
+Its submission held a merge of main (`db16825`), so the orchestrator copied the notes by subject and
+author. CI (41060256861), which sweeps 1,000 simulator seeds, and the Adapter suite (41060256883)
+passed on `7423616`. Its history: REVIEW-1 "No", fix pass 1, REVIEW-2 "With changes", fix pass 2
+(`db16825` merge of `9188032`, `724e73f`, `7eb1ee9`; gate green, 2375 tests; by the lane's report
+the agent-base check passes on seeds 64, 196, 229, 0..300 and 1,000 seeds from first seed
+442872731007), REVIEW-3 "Yes", no must-fix
+(`~/tessel-orch-notes/2026-10-28/lane-a/sim-merge/REVIEW-3.md`). REVIEW-3's should-fix: the lane's
+reason for FIX-2 item 4 was wrong (the simulated lander does refuse `ReadHead`; the probe saw 46 of
+280 reads refused or never run). The checkers accept a race judged with the tests unknown only
+because none reads a race's verdict, and no seed reached four failed reads with a race waiting, so
+nothing in the simulator drives that path: a scripted run is in RACE-UNKNOWN-REASON. At 12:43 UTC
+the STATE commits `5e2e7ec`..`3b21d4d` landed (claim 131). Before, at 11:28 UTC, CORE-HEAD-ADOPTED
+landed through the server at 11:28 UTC as `b4e1348`..`9188032` (twelve commits on `77d5db5`; claim
+125, held as merge path and approved by the orchestrator on a re-vote). The submission holds a merge
+of main (`109da3d`), and the daemon's note copy refuses such a submission
 (`tessel-cli/src/notes.rs:229-231`; its log, 11:31 UTC), so the orchestrator copied all twelve notes
 by subject and author; this is the second landing to hit that gap, and P1-SIM-MERGE's will be the
 third. CI (41048353740) and the Adapter suite (41048353696) passed on `9188032`. Its first vote on
@@ -67,21 +81,13 @@ in `~/tessel-orch-notes/2026-10-30/`):
   `~/tessel-orch-notes/2026-10-30/lane-b/resolve-followups/BRIEF.md`): the row's items 1-7, not its
   "For later" design items. It edits `admin resolve` and its runbook, so it is merge path and goes
   to a vote.
-- P1-SIM-MERGE (lane A, sonnet; `.claude/worktrees/sim-merge`): fix pass 1 at `4c99b4e` (fork branch
-  `sim-merge-2`; gate green, 2291 tests) answers REVIEW-1's "No" except the agent-base failure,
-  which was CORE-HEAD-ADOPTED's. Opus REVIEW-2 "With changes", no must-fix of the lane's: I3's chain
-  clause cannot fire on the lander's own histories (`parent` should be `candidate.base`), a scripted
-  stale-`Tested` run, a scripted restart during a poisoned `Test`. Fix pass 2
-  (`lane-a/sim-merge/FIX-2.md`) dispatched about 11:31 UTC: a merge of main `9188032` (not a rebase:
-  its commits are pushed), REVIEW-2's should-fixes, its expected-to-fail seeds dropped,
-  `the_default_seeds_make_the_merge_path_delay_repeat_drop_and_refuse` fixed (it checks
-  `compare_and_swap_refused`), its checkers accepting a race judged with the tests unknown after
-  refused reads (an addendum from the re-vote's VOTE-3, sent about 12:30 UTC and recorded as
-  FIX-2.md item 4), and the agent-base check on seeds 64, 196, 229, a 0..300 sweep and, load
-  allowing, a 1,000-seed run on the merged tree (CORE-HEAD-ADOPTED's Done line, per its re-vote's
-  VOTE-3). Then a review and the landing. REVIEW-2 also asks that I12 be recorded as unproven at the
-  default seeds: it is, in its row. Its submission will hold a merge of main, so the orchestrator
-  copies its notes by hand.
+- RACE-UNKNOWN-REASON (lane A, sonnet, dispatched about 13:10 UTC from `7423616`,
+  `.claude/worktrees/race-unknown`; brief
+  `~/tessel-orch-notes/2026-10-30/lane-a/race-unknown/BRIEF.md`): the row's items, REVIEW-3's
+  scripted run (the lander refuses `ReadHead` four times while a race closes on the adopted head)
+  and the regressions file's AgentBase seeds; no wire change, nothing in `src/host/**` (lane B's).
+  It changes `racing.rs`, so it goes to a vote. HEAD-ADOPTED-FOLLOWUPS waits for RESOLVE-FOLLOWUPS,
+  which holds files it shares.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -145,11 +151,11 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** P1-SIM-MERGE's fix pass 2, review and landing (lane A), then HEAD-ADOPTED-FOLLOWUPS and
-RACE-UNKNOWN-REASON (lane A); RESOLVE-FOLLOWUPS, its vote and landing, then P1-HOST-HARDENING (lane
-B); then P1-ONE-BATCH. Felix makes ruleset step 3 ("Fast lane, simulator" required). Felix's
-Homebrew postgres trusts local connections on a world-writable socket; he closes it before the
-accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** RACE-UNKNOWN-REASON, its vote and landing, then HEAD-ADOPTED-FOLLOWUPS (lane A), then
+P1-FAILPOINTS (its after-edges, P1-SIM-MERGE and P1-CORE-RECONCILE, are met); RESOLVE-FOLLOWUPS, its
+vote and landing, then P1-HOST-HARDENING (lane B); then P1-ONE-BATCH. Felix makes ruleset step 3
+("Fast lane, simulator" required). Felix's Homebrew postgres trusts local connections on a
+world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
@@ -1035,7 +1041,8 @@ Lane A:
   watcher, a panicking repo task, injected store errors.
 - [ ] **P1-HOST-HARDENING** — M, after P1-CORE-RECONCILE. P1-PERSIST-RETRY (C8, flips R30),
   exact replay without stalling (C3, flips R36), COORD-UNDELIVERED-GRANT (decision 7).
-- [ ] **P1-SIM-MERGE** (dispatched 28 October) — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING;
+- [x] **P1-SIM-MERGE** (`5d68ed7`..`7423616`, landed by the server 30 October; held for a signature
+  change, approved on Opus REVIEW-3's "Yes") — L, after P1-SIM-CORE and P1-CORE-STAGED-LANDING;
   lands after P1-CORE-RECONCILE and CORE-HEAD-ADOPTED (its review). The asynchronous merge path;
   checkers I3, I6, I7, I11, I12; COORD-HEAD-FROM-AGENT's check that no dispatch uses an
   agent-declared base. Also the `dab6a22` reviews' simulator findings, moved here from
@@ -1044,7 +1051,8 @@ Lane A:
   (`src/sim/driver.rs:691` on `dab6a22`), and its lander does not model C7. I12 is unproven at the
   default seeds (at most two merges per seed); its doc says so. Done also carries
   CORE-HEAD-ADOPTED's simulator check: the agent-base check green on seeds 64, 196 and 229 and on
-  CI's sweeps of the merged tree.
+  CI's sweeps of the merged tree. Met: the lane's runs (above) and CI 41060256861's 1,000-seed sweep
+  on `7423616`.
 - [ ] **P1-FAILPOINTS** — M, after P1-SIM-MERGE and P1-CORE-RECONCILE. The crash windows of a
   landing, the candidate ref's included.
 - [x] **CORE-HEAD-ADOPTED** (`b4e1348`..`9188032`, landed by the server 30 October; held as merge
@@ -1083,12 +1091,15 @@ Lane A:
   `log_waiting_races` is computed before the apply (`host/calls.rs:377` on `9188032`), so the read
   that releases the races can still log the wait. docs/configuration.md: "the race stays undecided
   until a read answers" should add "or four reads have failed". The docs/dogfood.md rollback note:
-  give the store query for `"trials_await_head":true` and the remedy (wait for the read, or the
-  130 s). Tests: a host test where a poke resets the failures while the head is adopted and a second
+  give the store query for `"trials_await_head":true` and the remedy (wait for the read, or the 130
+  s). Tests: a host test where a poke resets the failures while the head is adopted and a second
   wait is logged (mutant M5 survives); the landing test checks that a race waiting on the adopted
   head is released by a landing whose head is the adopted base; tessel-server's clock test asserts
-  `tests_passed: None` on the `RaceResult`. Done: those tests, each failing without its change, and
-  the docs.
+  `tests_passed: None` on the `RaceResult`. From P1-SIM-MERGE's REVIEW-3 nits: the poison in
+  `a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound` is inert (the test passes
+  with `poison_fork` deleted): drop it or rename the test; say in
+  `Sim::crash_after_every_test_dispatch`'s doc why it is `pub`, or use it from `tests/simulator.rs`.
+  Done: those tests, each failing without its change, and the docs.
 - [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
   renewal persisted below half the lease (C10). Evidence from the kill loop on CI: the server
   keeps one commit outstanding and commits each step as its own batch (`src/host/batch.rs:1`),
