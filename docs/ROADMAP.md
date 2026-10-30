@@ -1193,19 +1193,19 @@ Lane B:
   survives today; `host_a_land_in_doubt_logs_the_claim_for_the_operator`). The runbook's step 1
   read: `-readonly` fails after a clean close ("unable to open database file"); run it as the
   store's owner without it, or add a read-only `admin` command printing stage, claim, base and head;
-  the runbook says what "unable to open database file" means. `tests/restart.rs`'s helper runs the
-  old two-column query, not the runbook's four-column one. The log line's command lacks
-  `--tenant`/`--repo` when the config lists several. After the move: the log path, the full
+  make the runbook say what "unable to open database file" means. `tessel-server/tests/restart.rs`'s
+  helper runs the old two-column query, not the runbook's four-column one. The log line's command
+  lacks `--tenant`/`--repo` when the config lists several. After the move: the log path, the full
   `launchctl bootstrap` command, the pid kill's quoting, a command that waits for the stop. Say that
   `--landed` copies no notes (no `Merged` notice reaches the daemon; copy them by hand). Reword M3's
   assert to what it checks or record it as equivalent in `.cargo/mutants.toml`. After
   CORE-HEAD-ADOPTED: an offline `--landed` also releases races waiting on the head and drops their
   `RaceResult` notices; a test that state and log stay right and the entrants learn on reconnect, or
-  the runbook says those results are not sent as notices. A CLI test that a waiter's daemon adopts
-  the claim granted by an offline `--landed`. For later (design, not a regression): `Merged` settled
-  by the operator is not told apart from one the lander verified (rule 6; an additive marker), and
-  the head check stops typos, not a skipped ancestry read (`admin resolve --landed` could run it
-  through the lander's `git_read`).
+  make the runbook say those results are not sent as notices. A CLI test that a waiter's daemon
+  adopts the claim granted by an offline `--landed`. For later (design, not a regression): `Merged`
+  settled by the operator is not told apart from one the lander verified (rule 6; an additive
+  marker), and the head check stops typos, not a skipped ancestry read (`admin resolve --landed`
+  could run it through the lander's `git_read`).
 - [ ] **RACE-UNKNOWN-REASON** — S, lane A, after CORE-HEAD-ADOPTED (it changes `racing.rs`), from
   that task's VOTE-1 should-fix 2, resting on the vote and the standing order. A `TestsPass` race
   judged with the tests unknown rejects every entrant with `LOST_RACE` and logs
