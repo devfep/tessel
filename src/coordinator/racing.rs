@@ -2635,6 +2635,27 @@ mod tests {
     }
 
     #[test]
+    fn an_unpicked_race_with_an_unjudged_entry_tells_it_the_race_was_not_picked() {
+        let unknown = TrialReport {
+            before: Some(TrialOutcome::Conflict {}),
+            after: None,
+        };
+        let (mut c, [one, two, _]) = human_race();
+        let results = [("a1", passed()), ("a2", unknown), ("a3", failed())];
+        run_trials(&mut c, NOW + 4, &results);
+
+        let effects = c.expire(DEADLINE + MAX_RACE_MS);
+
+        for (who, entry) in [("a1", one), ("a2", two)] {
+            assert_eq!(
+                rejection_of(&effects, who, entry.0).as_deref(),
+                Some("the race was not picked in time"),
+                "{who}"
+            );
+        }
+    }
+
+    #[test]
     fn a_race_nobody_picked_is_decided_without_a_winner_when_the_pick_window_ends() {
         let (mut c, [one, two, three]) = human_race();
         let results = [("a1", passed()), ("a2", passed()), ("a3", failed())];
