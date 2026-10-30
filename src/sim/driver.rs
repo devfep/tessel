@@ -45,8 +45,11 @@ enum Answer {
 /// A fault armed for the next outputs or answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Crash {
-    AfterOutput(u64),
-    AfterApply,
+    Output(u64),
+    Apply,
+    /// Right after every `Test` is dispatched, before any answer reaches the host. A crash does
+    /// not disarm it.
+    EveryTestDispatch,
 }
 
 /// One message a client received, in the order the adapter sent it.
@@ -223,8 +226,15 @@ impl Sim {
         &self.lander
     }
 
+    /// Lose the candidate of every `Test` and have the lander report the head as tested.
+    #[cfg(test)]
+    pub(crate) fn report_lost_candidates_as_tested(&mut self) {
+        self.lander.report_lost_candidates_as_tested();
+    }
+
     /// Cut off every call for the fork commit `fork` at its `Prepare`, or at its `Test`.
-    pub fn poison_fork(&mut self, fork: &str, at_test: bool) {
+    #[cfg(test)]
+    pub(crate) fn poison_fork(&mut self, fork: &str, at_test: bool) {
         self.lander.poison(fork, at_test);
     }
 
@@ -360,12 +370,18 @@ impl Sim {
 
     /// Crash after `outputs` more outputs have been carried out, wherever that falls.
     pub fn crash_after_outputs(&mut self, outputs: u64) {
-        self.crash = Some(Crash::AfterOutput(self.executed + outputs.max(1)));
+        self.crash = Some(Crash::Output(self.executed + outputs.max(1)));
+    }
+
+    /// Crash right after every `Test` is dispatched, before the host hears of its answer, until
+    /// `disarm`.
+    pub fn crash_after_every_test_dispatch(&mut self) {
+        self.crash = Some(Crash::EveryTestDispatch);
     }
 
     /// Crash right after the next commit is made durable, before the host hears of it.
     pub fn crash_after_apply(&mut self) {
-        self.crash = Some(Crash::AfterApply);
+        self.crash = Some(Crash::Apply);
     }
 
     /// The next commit fails; the process lives.
@@ -601,7 +617,7 @@ impl Sim {
                     self.faults.push(fault);
                     return true;
                 }
-                if self.crash == Some(Crash::AfterApply) {
+                if self.crash == Some(Crash::Apply) {
                     self.crashes_after_apply += 1;
                     self.crash_now();
                     return true;
@@ -620,7 +636,9 @@ impl Sim {
         self.log.push("crash".to_string());
         self.strike_merge_in_flight();
         self.crashes += 1;
-        self.crash = None;
+        if self.crash != Some(Crash::EveryTestDispatch) {
+            self.crash = None;
+        }
         self.host = Host::new(self.config.clone());
         self.answers.clear();
         self.open_calls.clear();
@@ -640,9 +658,16 @@ impl Sim {
     fn execute(&mut self, outputs: Vec<Output>) {
         for output in outputs {
             self.log.push(format!("out {output:?}"));
+            let dispatches_test = is_test_call(&output);
             self.carry_out(output);
             self.executed += 1;
-            if self.crash == Some(Crash::AfterOutput(self.executed)) {
+            let armed = self.crash;
+            let strikes = match armed {
+                Some(Crash::Output(at)) => at == self.executed,
+                Some(Crash::EveryTestDispatch) => dispatches_test,
+                Some(Crash::Apply) | None => false,
+            };
+            if strikes {
                 self.crash_now();
                 return;
             }
@@ -890,6 +915,15 @@ fn without_scopes(json: &str) -> String {
         }
     }
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
+}
+
+fn is_test_call(output: &Output) -> bool {
+    if let Output::Call(call) = output {
+        if let Request::Test { .. } = call.request {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

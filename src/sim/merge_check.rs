@@ -57,9 +57,25 @@ pub fn i3(events: &[Event], transcript: &[Delivery], history: &[Landing]) -> Vec
     found
 }
 
+/// The claim a `Merged` event is about.
+pub fn merged_claim(kind: &EventKind) -> Option<ClaimId> {
+    if let EventKind::Merged { claim, .. } = kind {
+        return Some(*claim);
+    }
+    None
+}
+
+/// The claim a rejection or a release ended without a merge.
+fn ended_without_merge(kind: &EventKind) -> Option<ClaimId> {
+    if let EventKind::SubmitRejected { claim, .. } | EventKind::ClaimReleased { claim, .. } = kind {
+        return Some(*claim);
+    }
+    None
+}
+
 /// Whether a claim's `Merged` at `head` is main: either the landing of one of the claim's own
 /// submissions, or, when one of them landed earlier (a retry answered `already merged`), a head on
-/// main.
+/// main at or after that landing.
 fn merged_on_main(
     forks: &BTreeMap<u64, Vec<String>>,
     claim: u64,
@@ -78,7 +94,10 @@ fn merged_on_main(
     {
         return true;
     }
-    history.iter().any(own) && (head == MAIN0 || history.iter().any(|l| l.head == head))
+    let Some(landed) = history.iter().position(own) else {
+        return false;
+    };
+    history[landed..].iter().any(|landing| landing.head == head)
 }
 
 /// A landing whose parent is not the main before it: a head put on main that was not made on it,
@@ -249,18 +268,12 @@ fn poisoned_outcome(
             .iter()
             .any(|event| wanted(&event.kind, ClaimId(*claim)))
     };
-    if ended_by(|kind, claim| matches!(kind, EventKind::Merged { claim: c, .. } if *c == claim)) {
+    if ended_by(|kind, claim| merged_claim(kind) == Some(claim)) {
         found.push(format!(
             "claim {claim} merged though its commit {fork} cuts the merge path off every time"
         ));
     }
-    let gone = ended_by(|kind, claim| {
-        matches!(
-            kind,
-            EventKind::SubmitRejected { claim: c, .. }
-                | EventKind::ClaimReleased { claim: c, .. } if *c == claim
-        )
-    });
+    let gone = ended_by(|kind, claim| ended_without_merge(kind) == Some(claim));
     if spent && !gone {
         found.push(format!(
             "claim {claim}: every try of {fork} is spent and it was not rejected"
@@ -330,7 +343,7 @@ fn landings(events: &[Event], from: usize, to: usize) -> usize {
         .iter()
         .skip(from)
         .take(to.saturating_sub(from))
-        .filter(|event| matches!(event.kind, EventKind::Merged { .. }))
+        .filter(|event| merged_claim(&event.kind).is_some())
         .count()
 }
 
@@ -521,6 +534,16 @@ mod tests {
             i3(&retry, &[], &history).is_empty(),
             "an already-merged retry"
         );
+    }
+
+    #[test]
+    fn i3_flags_a_retry_merge_at_a_head_from_before_the_claims_own_landing() {
+        let history = [landing("h1", "f1"), landing_on("h1", "h2", "f2")];
+        let before = log(vec![submitted(2, "f2"), merged(2, "h1")]);
+        let found = i3(&before, &[], &history);
+        assert_eq!(found, ["claim 2 merged at h1, which is not on main"]);
+        let at = log(vec![submitted(2, "f2"), merged(2, "h2")]);
+        assert!(i3(&at, &[], &history).is_empty());
     }
 
     #[test]

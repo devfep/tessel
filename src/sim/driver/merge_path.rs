@@ -222,10 +222,10 @@ impl Sim {
 
     /// The lander runs `call`, as `plan` says, and sends the reply it says.
     fn run_call(&mut self, call: &Call, plan: Plan, epoch: u64) {
-        let runs = !matches!(
-            plan.fate,
-            Fate::NeverRuns | Fate::RateLimited | Fate::CutOff
-        );
+        let runs = match plan.fate {
+            Fate::NeverRuns | Fate::RateLimited | Fate::CutOff => false,
+            Fate::Reply | Fate::Unknown | Fate::Lost => true,
+        };
         let truth = runs.then(|| self.lander.execute(call));
         let answer = match (plan.fate, truth) {
             (Fate::Reply, Some(answer)) => answer,
@@ -421,13 +421,16 @@ fn is_failure(input: &Input) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::host::call::Request;
     use crate::host::HostConfig;
+    use crate::merge::MAX_INFRA_RETRIES;
     use crate::protocol::{
         ClaimId, ClientMsg, CommitId, DecisionRecord, EventKind, Fence, Intent, Mode, OnConflict,
         RequestId, Scope, ScopeClaim,
     };
     use crate::sim::check::{self, Checker};
     use crate::sim::driver::{RequestKind, Sim};
+    use crate::sim::merge_check;
     use crate::sim::variant::Variant;
 
     const SLOW_MS: u64 = 2_000;
@@ -474,7 +477,7 @@ mod tests {
             .events()
             .0
             .iter()
-            .any(|event| matches!(event.kind, EventKind::Merged { .. }))
+            .any(|event| merge_check::merged_claim(&event.kind).is_some())
     }
 
     /// One agent claims a file and has it merged, every reply late and then repeated.
@@ -505,9 +508,9 @@ mod tests {
         sim
     }
 
-    /// One agent submits a commit that the merge path cuts off every time, at its `Prepare` or its
-    /// `Test`, and the clock runs past every backoff.
-    fn poisoned_commit_run(at_test: bool) -> Sim {
+    /// One agent claims a file and submits a commit, after `arm` set up the merge path. Nothing
+    /// has run past the submission.
+    fn submitted_commit(arm: impl FnOnce(&mut Sim)) -> Sim {
         let config = HostConfig {
             repo: "sim".to_string(),
             run: Some("sim".to_string()),
@@ -523,9 +526,20 @@ mod tests {
             let (claim, fence) = view.held.iter().next().expect("the agent holds a claim");
             (ClaimId(*claim), *fence)
         };
-        sim.poison_fork(&format!("{:040x}", 2), at_test);
+        arm(&mut sim);
         let work = submit(2, claim, fence, "src/a.rs");
         sim.send(agent, &work, RequestKind::Submit, Some(claim));
+        sim
+    }
+
+    fn fork() -> String {
+        format!("{:040x}", 2)
+    }
+
+    /// One agent submits a commit that the merge path cuts off every time, at its `Prepare` or its
+    /// `Test`, and the clock runs past every backoff.
+    fn poisoned_commit_run(at_test: bool) -> Sim {
+        let mut sim = submitted_commit(|sim| sim.poison_fork(&fork(), at_test));
         for _ in 0..12 {
             sim.advance(100_000);
             assert!(sim.quiet());
@@ -533,32 +547,81 @@ mod tests {
         sim
     }
 
+    fn rejection_reasons(sim: &Sim) -> Vec<String> {
+        sim.store()
+            .events()
+            .0
+            .iter()
+            .filter_map(|event| {
+                if let EventKind::SubmitRejected { reason, .. } = &event.kind {
+                    return Some(reason.clone());
+                }
+                None
+            })
+            .collect()
+    }
+
     #[test]
     fn a_poisoned_commit_uses_up_its_tries_and_is_rejected_with_the_cores_reason() {
         for at_test in [false, true] {
             let sim = poisoned_commit_run(at_test);
-            let fork = format!("{:040x}", 2);
             assert_eq!(
-                sim.lander().cutoffs().get(&fork),
+                sim.lander().cutoffs().get(&fork()),
                 Some(&4),
                 "at test: {at_test}"
             );
-            let events = sim.store().events().0.clone();
-            let reasons: Vec<&String> = events
-                .iter()
-                .filter_map(|event| {
-                    if let EventKind::SubmitRejected { reason, .. } = &event.kind {
-                        return Some(reason);
-                    }
-                    None
-                })
-                .collect();
+            let reasons = rejection_reasons(&sim);
             assert_eq!(reasons.len(), 1, "{reasons:?}");
-            assert!(crate::sim::merge_check::is_infra_rejection(reasons[0]));
+            assert!(crate::sim::merge_check::is_infra_rejection(&reasons[0]));
             assert!(!merged(&sim));
             let found = check::run(&sim, &Checker::ALL);
             assert!(found.is_empty(), "{found:?}");
         }
+    }
+
+    #[test]
+    fn a_test_reported_for_a_lost_candidate_never_merges_and_every_checker_stays_clean() {
+        let mut sim = submitted_commit(Sim::report_lost_candidates_as_tested);
+        for _ in 0..12 {
+            sim.advance(100_000);
+            assert!(sim.quiet());
+        }
+        let mut tests = 0;
+        for dispatch in sim.dispatches() {
+            if let Request::Test { .. } = dispatch.request {
+                tests += 1;
+            }
+        }
+        assert!(tests > 0, "no Test reached the lander");
+        let reasons = rejection_reasons(&sim);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(merge_check::is_infra_rejection(&reasons[0]));
+        assert!(!merged(&sim), "a lost candidate was merged");
+        let found = check::run(&sim, &Checker::ALL);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound() {
+        let bound = u64::from(MAX_INFRA_RETRIES) + 1;
+        let mut sim = submitted_commit(|sim| {
+            sim.poison_fork(&fork(), true);
+            sim.crash_after_every_test_dispatch();
+        });
+        for _ in 0..12 {
+            sim.advance(100_000);
+            assert!(sim.quiet());
+        }
+        let charged = sim.fork_strikes().get(&fork()).copied().unwrap_or(0)
+            + u64::from(sim.lander().cutoffs().get(&fork()).copied().unwrap_or(0));
+        assert_eq!(charged, bound, "{:?}", sim.fork_strikes());
+        assert_eq!(sim.crashes(), bound, "every charged failure was a restart");
+        let reasons = rejection_reasons(&sim);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(merge_check::is_infra_rejection(&reasons[0]));
+        assert!(!merged(&sim));
+        let found = check::run(&sim, &Checker::ALL);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

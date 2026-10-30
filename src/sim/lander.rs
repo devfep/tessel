@@ -33,7 +33,7 @@ enum Poison {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Landing {
     pub head: String,
-    /// Main before the head: its first parent.
+    /// The main the head was made on: its first parent.
     pub parent: String,
     /// The fork commit the head was made from. `None` for a commit someone else pushed to main.
     pub fork: Option<String>,
@@ -124,6 +124,8 @@ pub struct Lander {
     issued_at: BTreeMap<(u64, u64), usize>,
     /// Commits whose calls are cut off, and at which stage.
     poisoned: BTreeMap<String, Poison>,
+    /// Every `Test` finds its candidate gone and is reported as passing all the same.
+    stale_tests: bool,
     /// Every reply is sent this long after the call runs, with or without faults.
     slow_replies_ms: u64,
     /// Every reply is sent a second time this long after the first, with or without faults.
@@ -172,6 +174,7 @@ impl Lander {
             chaos: None,
             issued_at: BTreeMap::new(),
             poisoned: BTreeMap::new(),
+            stale_tests: false,
             slow_replies_ms: 0,
             repeat_replies_ms: None,
         }
@@ -225,8 +228,15 @@ impl Lander {
         self.poisoned.keys().cloned().collect()
     }
 
+    /// Lose the candidate of every `Test` and report the head as tested.
+    #[cfg(test)]
+    pub(crate) fn report_lost_candidates_as_tested(&mut self) {
+        self.stale_tests = true;
+    }
+
     /// Cut off every call for `fork` at its `Prepare`, or at its `Test` when `at_test`.
-    pub fn poison(&mut self, fork: &str, at_test: bool) {
+    #[cfg(test)]
+    pub(crate) fn poison(&mut self, fork: &str, at_test: bool) {
         let stage = if at_test {
             Poison::AtTest
         } else {
@@ -427,6 +437,10 @@ impl Lander {
     }
 
     fn test(&mut self, head: &str) -> CallAnswer {
+        if self.stale_tests {
+            self.candidates.remove(head);
+            return CallAnswer::Tested;
+        }
         let known = self.candidates.contains_key(head);
         let Some(chaos) = self.chaos.as_mut() else {
             return if known {
@@ -485,7 +499,8 @@ impl Lander {
             return CallAnswer::Unknown;
         }
         let fork = candidate.fork.clone();
-        let parent = std::mem::replace(&mut self.main, head.to_string());
+        let parent = candidate.base.clone();
+        self.main = head.to_string();
         self.landed_forks.insert(fork.clone());
         self.history.push(Landing {
             head: head.to_string(),
@@ -590,7 +605,10 @@ impl Lander {
 
 /// How long until the lander runs a call, and until it replies after that.
 fn timings(rng: &mut Rng, fate: Fate) -> (u64, u64) {
-    let prompt = matches!(fate, Fate::RateLimited | Fate::CutOff);
+    let prompt = match fate {
+        Fate::RateLimited | Fate::CutOff => true,
+        Fate::Reply | Fate::Unknown | Fate::Lost | Fate::NeverRuns => false,
+    };
     let run_after_ms = if prompt {
         0
     } else {

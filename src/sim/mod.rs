@@ -158,16 +158,23 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
         trials: sim
             .dispatches()
             .iter()
-            .filter(|dispatch| matches!(dispatch.request, crate::host::call::Request::Trial { .. }))
+            .filter(|dispatch| is_trial(&dispatch.request))
             .count(),
     }
+}
+
+fn is_trial(request: &crate::host::call::Request) -> bool {
+    if let crate::host::call::Request::Trial { .. } = request {
+        return true;
+    }
+    false
 }
 
 fn merged_events(sim: &Sim) -> usize {
     let (events, _) = sim.store().events();
     events
         .iter()
-        .filter(|event| matches!(event.kind, crate::protocol::EventKind::Merged { .. }))
+        .filter(|event| merge_check::merged_claim(&event.kind).is_some())
         .count()
 }
 
