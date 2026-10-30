@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-30 11:34 UTC. Main at `9188032`, where CORE-HEAD-ADOPTED landed through the
+**As of:** 2026-10-30 12:40 UTC. Main at `9188032`, where CORE-HEAD-ADOPTED landed through the
 server at 11:28 UTC as `b4e1348`..`9188032` (twelve commits on `77d5db5`; claim 125, held as merge
 path and approved by the orchestrator on a re-vote). The submission holds a merge of main
 (`109da3d`), and the daemon's note copy refuses such a submission
@@ -76,11 +76,12 @@ in `~/tessel-orch-notes/2026-10-30/`):
   its commits are pushed), REVIEW-2's should-fixes, its expected-to-fail seeds dropped,
   `the_default_seeds_make_the_merge_path_delay_repeat_drop_and_refuse` fixed (it checks
   `compare_and_swap_refused`), its checkers accepting a race judged with the tests unknown after
-  refused reads (an addendum from the re-vote's VOTE-3), and the agent-base check on seeds 64, 196,
-  229, a 0..300 sweep and, load allowing, a 1,000-seed run on the merged tree (CORE-HEAD-ADOPTED's
-  Done line, per its re-vote's VOTE-3). Then a review and the landing. REVIEW-2 also asks that I12
-  be recorded as unproven at the default seeds: it is, in its row. Its submission will hold a merge
-  of main, so the orchestrator copies its notes by hand.
+  refused reads (an addendum from the re-vote's VOTE-3, sent about 12:30 UTC and recorded as
+  FIX-2.md item 4), and the agent-base check on seeds 64, 196, 229, a 0..300 sweep and, load
+  allowing, a 1,000-seed run on the merged tree (CORE-HEAD-ADOPTED's Done line, per its re-vote's
+  VOTE-3). Then a review and the landing. REVIEW-2 also asks that I12 be recorded as unproven at the
+  default seeds: it is, in its row. Its submission will hold a merge of main, so the orchestrator
+  copies its notes by hand.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -1082,8 +1083,8 @@ Lane A:
   `log_waiting_races` is computed before the apply (`host/calls.rs:377` on `9188032`), so the read
   that releases the races can still log the wait. docs/configuration.md: "the race stays undecided
   until a read answers" should add "or four reads have failed". The docs/dogfood.md rollback note:
-  give the store query for `"trials_await_head":true` and the remedy (wait for the read, or the 130
-  s). Tests: a host test where a poke resets the failures while the head is adopted and a second
+  give the store query for `"trials_await_head":true` and the remedy (wait for the read, or the
+  130 s). Tests: a host test where a poke resets the failures while the head is adopted and a second
   wait is logged (mutant M5 survives); the landing test checks that a race waiting on the adopted
   head is released by a landing whose head is the adopted base; tessel-server's clock test asserts
   `tests_passed: None` on the `RaceResult`. Done: those tests, each failing without its change, and
