@@ -12,6 +12,9 @@ use crate::host::{Gate, Host, Input, Output, SocketId};
 use crate::protocol::{Event, ServerMsg};
 use crate::shell::{self, ReplayStep, Session};
 
+/// The most live events a replaying socket may have waiting; one more closes it.
+pub(super) const REPLAY_BUFFER_EVENTS: usize = 1_000;
+
 /// A replay in progress: the socket, where it started, and its session as it was when the watch
 /// began, which is marked once the replay ends.
 pub struct Replay {

@@ -12,6 +12,10 @@ use crate::host::{BatchId, Job, SocketId};
 use crate::protocol::Event;
 use crate::shell::{Outbound, Session};
 
+/// How many times the host hands the adapter one batch before it gives up: the first attempt and
+/// two retries.
+pub const MAX_COMMIT_ATTEMPTS: u32 = 3;
+
 /// What a step produced besides its stored entries.
 pub struct Held {
     pub outbound: Vec<Outbound>,

@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use crate::host::batch::MAX_COMMIT_ATTEMPTS;
 use crate::host::call::{Call, CallAnswer, CallId};
 use crate::host::{Host, HostConfig, Input, Output, SocketId};
 use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
@@ -36,7 +37,7 @@ pub struct Testkit {
     calls: Vec<Call>,
     logs: Vec<String>,
     history: Vec<Output>,
-    fail_next_commit: bool,
+    failing_commits: u32,
 }
 
 impl Testkit {
@@ -53,7 +54,7 @@ impl Testkit {
             calls: Vec::new(),
             logs: Vec::new(),
             history: Vec::new(),
-            fail_next_commit: false,
+            failing_commits: 0,
         }
     }
 
@@ -80,9 +81,15 @@ impl Testkit {
         self.stored(STATE_KEY)
     }
 
-    /// The next commit is answered `CommitFailed` and stores nothing.
+    /// The next batch cannot be stored: every attempt the host makes at it is answered
+    /// `CommitFailed`.
     pub fn fail_next_commit(&mut self) {
-        self.fail_next_commit = true;
+        self.fail_commits(MAX_COMMIT_ATTEMPTS);
+    }
+
+    /// The next `count` commits are answered `CommitFailed` and store nothing.
+    pub fn fail_commits(&mut self, count: u32) {
+        self.failing_commits = count;
     }
 
     /// Every later send to `sock` fails: the adapter answers `Input::SendFailed` and the client
@@ -182,6 +189,20 @@ impl Testkit {
         true
     }
 
+    /// Deliver the oldest answer that is not a replay page, so a test can let the store move
+    /// while a page is out. False when there is none.
+    pub fn deliver_next_but_pages(&mut self) -> bool {
+        let position = self
+            .answers
+            .iter()
+            .position(|answer| !matches!(answer, Input::ReplayPage { .. }));
+        let Some(answer) = position.and_then(|index| self.answers.remove(index)) else {
+            return false;
+        };
+        self.input(answer);
+        true
+    }
+
     /// Deliver answers until the host is waiting for none. A host that keeps asking (a load that
     /// never sticks, say) fails the test after `SETTLE_LIMIT` answers instead of hanging it.
     pub fn settle(&mut self) {
@@ -204,8 +225,8 @@ impl Testkit {
                     self.answers.push_back(Input::Loaded { now_ms, stored });
                 }
                 Output::Commit { batch, entries } => {
-                    if self.fail_next_commit {
-                        self.fail_next_commit = false;
+                    if self.failing_commits > 0 {
+                        self.failing_commits -= 1;
                         self.answers
                             .push_back(Input::CommitFailed { now_ms, batch });
                         continue;
