@@ -117,6 +117,11 @@ mod tests {
             .filter(|landing| landing.fork.as_deref() == Some(fork().as_str()))
             .collect();
         assert_eq!(landings.len(), 1, "{point:?}: {landings:?}");
+        let kept = sim.lander().candidate_count();
+        assert!(
+            kept <= 1,
+            "{point:?}: the lander keeps {kept} candidate refs"
+        );
         let reasons = rejection_reasons(sim);
         assert!(reasons.is_empty(), "{point:?}: {reasons:?}");
         let found = check::run(sim, &Checker::ALL);
@@ -161,6 +166,36 @@ mod tests {
         assert_eq!(calls_sent(&sim), sent, "{point:?}");
     }
 
+    /// The call at `point` arrives at the lander 5 s after it is issued, so the process dies
+    /// with the lander having run `runs` calls; the call is run after the restart, and the claim
+    /// lands once.
+    fn late_call_lands_once(point: Failpoint, runs: usize) -> Sim {
+        let mut sim = submitted_commit(|sim| {
+            sim.late_runs(5_000);
+            sim.crash_at(point);
+        });
+        for _ in 0..30 {
+            if sim.crashes() > 0 {
+                break;
+            }
+            sim.advance(1_000);
+            assert!(sim.quiet());
+        }
+        assert_eq!(sim.crashes(), 1, "{point:?} did not strike");
+        assert_eq!(
+            sim.lander().runs(),
+            runs,
+            "{point:?}: the call ran before the crash"
+        );
+        run_to_rest(&mut sim);
+        assert_landed_once(&sim, point);
+        assert!(
+            sim.lander().runs() > runs,
+            "{point:?}: the call never arrived"
+        );
+        sim
+    }
+
     #[test]
     fn window_dispatch_persisted_a_restart_before_prepare_goes_out_lands_once() {
         recovers_by(at(Step::Prepare, Moment::Persisted), [1, 1, 1, 0]);
@@ -173,10 +208,8 @@ mod tests {
 
     #[test]
     fn window_prepare_running_a_restart_before_the_call_arrives_lands_once() {
-        let sim = crash_and_land(at(Step::Prepare, Moment::Running), |sim| {
-            sim.late_runs(5_000)
-        });
-        assert!(sim.dispatches().len() >= 2);
+        let sim = late_call_lands_once(at(Step::Prepare, Moment::Running), 0);
+        assert_eq!(calls_sent(&sim), [2, 1, 1, 0], "the Prepare is sent again");
     }
 
     #[test]
@@ -194,7 +227,7 @@ mod tests {
     fn window_test_in_flight_a_restart_lands_once() {
         recovers_by(at(Step::Test, Moment::Running), [1, 2, 1, 0]);
         recovers_by(at(Step::Test, Moment::Answered), [1, 2, 1, 0]);
-        let sim = crash_and_land(at(Step::Test, Moment::Running), |sim| sim.late_runs(5_000));
+        let sim = late_call_lands_once(at(Step::Test, Moment::Running), 1);
         assert_eq!(
             calls_sent(&sim)[0..2],
             [1, 2],
@@ -212,7 +245,7 @@ mod tests {
     fn window_land_sent_outcome_not_persisted_a_restart_lands_once() {
         recovers_by(at(Step::Land, Moment::Running), [1, 1, 1, 1]);
         recovers_by(at(Step::Land, Moment::Answered), [1, 1, 1, 1]);
-        let sim = crash_and_land(at(Step::Land, Moment::Running), |sim| sim.late_runs(5_000));
+        let sim = late_call_lands_once(at(Step::Land, Moment::Running), 2);
         assert_eq!(
             calls_sent(&sim)[2..],
             [1, 1],
@@ -286,6 +319,38 @@ mod tests {
         assert_landed_once(&sim, point);
     }
 
+    /// A cut-off at the `Land` stage is outside I6: nothing after `Land` counts toward the
+    /// bound. Each restart finds the marker and reconciles at once, the `Land` is due again and
+    /// the process dies before it goes out. The claim stays in flight, never rejected, and lands
+    /// once the process survives it (an operator ends the wait with `resolve_doubt`).
+    #[test]
+    fn a_land_marker_cut_off_every_time_is_never_rejected() {
+        let point = at(Step::Land, Moment::Persisted);
+        let restarts = u64::from(MAX_INFRA_RETRIES) + 3;
+        let mut sim = submitted_commit(|sim| sim.crash_at_every(point));
+        for _ in 0..30 {
+            if sim.crashes() >= restarts {
+                break;
+            }
+            sim.advance(100_000);
+            sim.quiet();
+        }
+        assert!(sim.crashes() >= restarts, "only {} restarts", sim.crashes());
+        assert!(
+            rejection_reasons(&sim).is_empty(),
+            "a doubt rejected the claim"
+        );
+        assert_eq!(
+            merged_events(&sim),
+            0,
+            "landed while the marker kept cutting it off"
+        );
+        assert_eq!(calls_sent(&sim)[2], 0, "a Land went out past its marker");
+        sim.disarm();
+        run_to_rest(&mut sim);
+        assert_landed_after_crashes(&sim, point);
+    }
+
     #[test]
     fn window_rescheduling_a_restart_after_a_cut_off_prepare_is_recorded_rejects_once() {
         let point = at(Step::Prepare, Moment::Recorded);
@@ -295,6 +360,8 @@ mod tests {
         });
         run_to_rest(&mut sim);
         assert_eq!(sim.crashes(), 1);
+        let attempts = usize::try_from(MAX_INFRA_RETRIES).expect("a small bound") + 1;
+        assert_eq!(calls_sent(&sim), [attempts, 0, 0, 0]);
         let reasons = rejection_reasons(&sim);
         assert_eq!(reasons.len(), 1, "{reasons:?}");
         assert!(merge_check::is_infra_rejection(&reasons[0]), "{reasons:?}");
@@ -304,40 +371,49 @@ mod tests {
     }
 
     /// The process dies at each of `points` in turn, the later ones while it recovers from the
-    /// earlier ones, and the claim still lands once.
-    fn recover_through(points: &[Failpoint]) {
+    /// earlier ones, and the claim still lands once. The calls that went out are `sent`:
+    /// `[Prepare, Test, Land, Reconcile]`.
+    fn recover_through(points: &[Failpoint], sent: [usize; 4]) {
         let mut sim = submitted_commit(|sim| sim.crash_at_each(points));
         run_to_rest(&mut sim);
         assert_eq!(sim.crashes(), points.len() as u64, "{points:?}");
         assert_landed_after_crashes(&sim, points[points.len() - 1]);
+        assert_eq!(calls_sent(&sim), sent, "{points:?}");
     }
 
     #[test]
     fn window_reconcile_in_flight_a_restart_lands_once() {
-        for moment in [
-            Moment::Persisted,
-            Moment::Running,
-            Moment::Answered,
-            Moment::Recorded,
+        for (moment, after_running, after_persisted) in [
+            (Moment::Persisted, [1, 1, 1, 1], [1, 1, 1, 1]),
+            (Moment::Running, [1, 1, 1, 2], [1, 1, 1, 2]),
+            (Moment::Answered, [1, 1, 1, 2], [1, 1, 1, 2]),
+            (Moment::Recorded, [1, 1, 1, 1], [1, 1, 1, 2]),
         ] {
-            recover_through(&[at(Step::Land, Moment::Running), at(Step::Reconcile, moment)]);
-            recover_through(&[
-                at(Step::Land, Moment::Persisted),
-                at(Step::Reconcile, moment),
-            ]);
+            let reconcile = at(Step::Reconcile, moment);
+            recover_through(&[at(Step::Land, Moment::Running), reconcile], after_running);
+            recover_through(
+                &[at(Step::Land, Moment::Persisted), reconcile],
+                after_persisted,
+            );
         }
     }
 
     #[test]
     fn a_second_restart_while_recovering_still_lands_once() {
-        recover_through(&[
-            at(Step::Prepare, Moment::Running),
-            at(Step::Prepare, Moment::Persisted),
-        ]);
-        recover_through(&[
-            at(Step::Test, Moment::Running),
-            at(Step::Test, Moment::Running),
-        ]);
+        recover_through(
+            &[
+                at(Step::Prepare, Moment::Running),
+                at(Step::Prepare, Moment::Persisted),
+            ],
+            [2, 1, 1, 0],
+        );
+        recover_through(
+            &[
+                at(Step::Test, Moment::Running),
+                at(Step::Test, Moment::Running),
+            ],
+            [1, 3, 1, 0],
+        );
     }
 
     /// A race whose entrant submits, with the process dying at `point` after it did: the race is

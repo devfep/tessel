@@ -443,6 +443,11 @@ modes; where an invariant reads differently for an advisory release, the last co
 | I11 | the host's incremental counters against `Summary::from_events` over the log; each landing's evidence head against the head the lander journaled and tested | lander reports for stale commits; flipped re-runs | full, over the live log (no archive until retention); advisory releases count in `advisory_releases`, never in `merges`, and carry no evidence |
 | I12 | a ready verification is dispatched within N merges under continuous merge load; `rank_entries` is unchanged by any permutation of its input | continuous submissions; races | full; the `rank_entries` half stays a proptest, as it is pure; the checker counts landings, and a `Land` in doubt is exempt (no verification is expected while it is outstanding, since `begin_verification` waits for the merge in flight), so seeds with long runs of `Unknown` do not fail it; advisory releases dispatch no verification |
 
+I6 covers the stages before `Land`. A cut-off at the `Land` stage is not counted toward the
+bound and is never rejected: each restart finds the `Land` marker and reconciles at once, and
+the claim stays in flight until a `Land` completes or the operator ends the doubt with
+`resolve_doubt`. The test is `a_land_marker_cut_off_every_time_is_never_rejected`.
+
 ## CI: enforcing rule 9
 
 - Per pull request, required: the mutation check on changed lines (P1-CI-MUTANTS), sharded with

@@ -130,6 +130,8 @@ pub struct Lander {
     refused_head_reads: u32,
     /// Every call reaches the lander this long after it is issued, with or without faults.
     late_runs_ms: u64,
+    /// How many calls the lander has run, not counting those still on their way.
+    runs: usize,
     /// Every reply is sent this long after the call runs, with or without faults.
     slow_replies_ms: u64,
     /// Every reply is sent a second time this long after the first, with or without faults.
@@ -181,6 +183,7 @@ impl Lander {
             stale_tests: false,
             refused_head_reads: 0,
             late_runs_ms: 0,
+            runs: 0,
             slow_replies_ms: 0,
             repeat_replies_ms: None,
         }
@@ -214,6 +217,16 @@ impl Lander {
     /// Send every reply a second time `ms` after the first.
     pub fn repeat_replies(&mut self, ms: u64) {
         self.repeat_replies_ms = Some(ms);
+    }
+
+    /// How many calls the lander has run so far: a call that arrives late has not run yet.
+    pub fn runs(&self) -> usize {
+        self.runs
+    }
+
+    /// How many candidate refs the lander holds.
+    pub fn candidate_count(&self) -> usize {
+        self.candidates.len()
     }
 
     pub fn main(&self) -> &str {
@@ -418,6 +431,7 @@ impl Lander {
 
     /// Run `call`: do its work on main and return the true answer.
     pub fn execute(&mut self, call: &Call) -> CallAnswer {
+        self.runs += 1;
         match &call.request {
             Request::ReadHead { submitted } => self.read_head(submitted),
             Request::Prepare { fork_commit, .. } => self.prepare(&fork_commit.0),
