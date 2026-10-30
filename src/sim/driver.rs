@@ -232,6 +232,12 @@ impl Sim {
         self.lander.report_lost_candidates_as_tested();
     }
 
+    /// Cut off the next `count` head reads.
+    #[cfg(test)]
+    pub(crate) fn refuse_head_reads(&mut self, count: u32) {
+        self.lander.refuse_head_reads(count);
+    }
+
     /// Cut off every call for the fork commit `fork` at its `Prepare`, or at its `Test`.
     #[cfg(test)]
     pub(crate) fn poison_fork(&mut self, fork: &str, at_test: bool) {

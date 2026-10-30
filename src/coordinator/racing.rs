@@ -2088,6 +2088,89 @@ mod tests {
         assert!(is_granted(&free));
     }
 
+    const TESTS_DID_NOT_RUN: &str = "the tests did not run, so no trial judged the race";
+
+    fn rejection_of(effects: &[Effect], who: &str, claim: ClaimId) -> Option<String> {
+        notices(effects, who).iter().find_map(|msg| match msg {
+            ServerMsg::SubmitRejected {
+                claim: rejected,
+                reason,
+                ..
+            } if *rejected == claim => Some(reason.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_tests_pass_race_no_trial_judged_tells_its_entrants_the_tests_did_not_run() {
+        let unknown = TrialReport {
+            before: Some(TrialOutcome::Conflict {}),
+            after: None,
+        };
+        let mut c = core();
+        let race = open_for(&mut c, 2, vec![Criterion::TestsPass]);
+        let one = join(&mut c, "a1", race);
+        let two = join(&mut c, "a2", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        submit_at(&mut c, "a2", two, NOW + 2);
+        let effects = run_trials(&mut c, NOW + 3, &[("a1", failed()), ("a2", unknown)]);
+
+        assert_eq!(
+            rejection_of(&effects, "a1", one.0).as_deref(),
+            Some("lost the race"),
+            "a trial judged this entry"
+        );
+        assert_eq!(
+            rejection_of(&effects, "a2", two.0).as_deref(),
+            Some(TESTS_DID_NOT_RUN)
+        );
+        let logged_reasons: Vec<_> = logged(&effects)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                EventKind::SubmitRejected { claim, reason } if *claim == two.0 => Some(reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logged_reasons, [TESTS_DID_NOT_RUN]);
+    }
+
+    #[test]
+    fn with_no_known_head_the_entrants_are_told_the_tests_did_not_run() {
+        let mut c = bare_core();
+        let msg = open_msg(
+            vec![edit("src/a.rs")],
+            1,
+            DEADLINE,
+            vec![Criterion::TestsPass],
+        );
+        c.handle(&agent("felix"), msg, NOW);
+        let one = join(&mut c, "a1", RaceId(1));
+        let effects = submit_effects(&mut c, "a1", one, true, NOW + 1);
+        assert_eq!(
+            rejection_of(&effects, "a1", one.0).as_deref(),
+            Some(TESTS_DID_NOT_RUN)
+        );
+    }
+
+    #[test]
+    fn a_loser_whose_tests_did_not_run_is_still_told_it_lost_to_a_passing_entry() {
+        let unknown = TrialReport {
+            before: Some(TrialOutcome::Conflict {}),
+            after: None,
+        };
+        let mut c = core();
+        let race = open_for(&mut c, 2, vec![Criterion::TestsPass]);
+        let one = join(&mut c, "a1", race);
+        let two = join(&mut c, "a2", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        submit_at(&mut c, "a2", two, NOW + 2);
+        let effects = run_trials(&mut c, NOW + 3, &[("a1", unknown), ("a2", passed())]);
+        assert_eq!(
+            rejection_of(&effects, "a1", one.0).as_deref(),
+            Some("lost the race")
+        );
+    }
+
     // ---- trials ----
 
     /// A core whose start read is out when `felix` says hello, so the head is only adopted.

@@ -126,6 +126,8 @@ pub struct Lander {
     poisoned: BTreeMap<String, Poison>,
     /// Every `Test` finds its candidate gone and is reported as passing all the same.
     stale_tests: bool,
+    /// How many of the next `ReadHead` calls are cut off before they run.
+    refused_head_reads: u32,
     /// Every reply is sent this long after the call runs, with or without faults.
     slow_replies_ms: u64,
     /// Every reply is sent a second time this long after the first, with or without faults.
@@ -175,6 +177,7 @@ impl Lander {
             issued_at: BTreeMap::new(),
             poisoned: BTreeMap::new(),
             stale_tests: false,
+            refused_head_reads: 0,
             slow_replies_ms: 0,
             repeat_replies_ms: None,
         }
@@ -234,6 +237,12 @@ impl Lander {
         self.stale_tests = true;
     }
 
+    /// Cut off the next `count` head reads: nothing runs and `Unknown` comes back at once.
+    #[cfg(test)]
+    pub(crate) fn refuse_head_reads(&mut self, count: u32) {
+        self.refused_head_reads = count;
+    }
+
     /// Cut off every call for `fork` at its `Prepare`, or at its `Test` when `at_test`.
     #[cfg(test)]
     pub(crate) fn poison(&mut self, fork: &str, at_test: bool) {
@@ -267,6 +276,13 @@ impl Lander {
     /// Decide what happens to `call`, which the host issued at `now_ms`.
     pub fn plan(&mut self, call: &Call, now_ms: u64) -> Plan {
         self.maybe_poison(&call.request);
+        if matches!(call.request, Request::ReadHead { .. }) && self.refused_head_reads > 0 {
+            self.refused_head_reads -= 1;
+            return Plan {
+                fate: Fate::CutOff,
+                ..Plan::PROMPT
+            };
+        }
         if let Some(fork) = self.fork_of(&call.request) {
             if self.is_poisoned_at(&fork, &call.request) {
                 if let Some(chaos) = self.chaos.as_mut() {

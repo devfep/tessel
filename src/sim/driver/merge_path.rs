@@ -425,8 +425,8 @@ mod tests {
     use crate::host::HostConfig;
     use crate::merge::MAX_INFRA_RETRIES;
     use crate::protocol::{
-        ClaimId, ClientMsg, CommitId, DecisionRecord, EventKind, Fence, Intent, Mode, OnConflict,
-        RequestId, Scope, ScopeClaim,
+        ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, EventKind, Fence, Intent, Mode,
+        OnConflict, RaceId, RequestId, Scope, ScopeClaim,
     };
     use crate::sim::check::{self, Checker};
     use crate::sim::driver::{RequestKind, Sim};
@@ -620,6 +620,80 @@ mod tests {
         assert_eq!(reasons.len(), 1, "{reasons:?}");
         assert!(merge_check::is_infra_rejection(&reasons[0]));
         assert!(!merged(&sim));
+        let found = check::run(&sim, &Checker::ALL);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// A reviewer opens a `TestsPass` race on the head a `Hello` adopted, one agent enters and
+    /// submits, and the lander refuses the head read `refused` times.
+    fn race_on_an_adopted_head(refused: u32) -> Sim {
+        let config = HostConfig {
+            repo: "sim".to_string(),
+            run: Some("sim".to_string()),
+            reviewers: Some("reviewer".to_string()),
+            ..HostConfig::default()
+        };
+        let mut sim = Sim::new(config, Variant::Correct);
+        sim.refuse_head_reads(refused);
+        let reviewer = sim.connect("reviewer");
+        let agent = sim.connect("a");
+        assert!(sim.quiet());
+        let open = ClientMsg::OpenRace {
+            req: RequestId(1),
+            intent: Intent {
+                summary: "race".to_string(),
+                task_ref: None,
+                assumptions: Vec::new(),
+            },
+            scopes: vec![file("src/a.rs")],
+            max_entrants: 1,
+            deadline_ms: sim.now_ms() + 60_000,
+            criteria: vec![Criterion::TestsPass],
+        };
+        sim.send(reviewer, &open, RequestKind::Other, None);
+        let join = ClientMsg::JoinRace {
+            req: RequestId(2),
+            race: RaceId(1),
+        };
+        sim.send(agent, &join, RequestKind::Other, None);
+        assert!(sim.quiet());
+        let (claim, fence) = {
+            let view = sim.view("a").expect("the agent connected");
+            let (claim, fence) = view.held.iter().next().expect("the agent entered the race");
+            (ClaimId(*claim), *fence)
+        };
+        let work = submit(3, claim, fence, "src/a.rs");
+        sim.send(agent, &work, RequestKind::Submit, Some(claim));
+        for _ in 0..12 {
+            sim.advance(100_000);
+            assert!(sim.quiet());
+        }
+        sim
+    }
+
+    #[test]
+    fn a_race_closing_while_every_head_read_is_refused_is_decided_with_no_trial() {
+        let refused = MAX_INFRA_RETRIES + 1;
+        let sim = race_on_an_adopted_head(refused);
+        let decided = sim
+            .store()
+            .events()
+            .0
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::RaceDecided { winner: None, .. }));
+        assert!(decided, "the race was not decided");
+        for dispatch in sim.dispatches() {
+            assert!(
+                !matches!(dispatch.request, Request::Trial { .. }),
+                "a trial was dispatched: {:?}",
+                dispatch.request
+            );
+        }
+        let reasons = rejection_reasons(&sim);
+        assert_eq!(
+            reasons,
+            ["the tests did not run, so no trial judged the race"]
+        );
         let found = check::run(&sim, &Checker::ALL);
         assert!(found.is_empty(), "{found:?}");
     }
