@@ -2103,14 +2103,19 @@ mod tests {
     }
 
     fn rejection_of(effects: &[Effect], who: &str, claim: ClaimId) -> Option<String> {
-        notices(effects, who).iter().find_map(|msg| match msg {
-            ServerMsg::SubmitRejected {
+        for msg in notices(effects, who) {
+            if let ServerMsg::SubmitRejected {
                 claim: rejected,
                 reason,
                 ..
-            } if *rejected == claim => Some(reason.clone()),
-            _ => None,
-        })
+            } = msg
+            {
+                if *rejected == claim {
+                    return Some(reason.clone());
+                }
+            }
+        }
+        None
     }
 
     #[test]
@@ -2136,13 +2141,14 @@ mod tests {
             rejection_of(&effects, "a2", two.0).as_deref(),
             Some(TESTS_DID_NOT_RUN)
         );
-        let logged_reasons: Vec<_> = logged(&effects)
-            .into_iter()
-            .filter_map(|kind| match kind {
-                EventKind::SubmitRejected { claim, reason } if *claim == two.0 => Some(reason),
-                _ => None,
-            })
-            .collect();
+        let mut logged_reasons = Vec::new();
+        for kind in logged(&effects) {
+            if let EventKind::SubmitRejected { claim, reason } = kind {
+                if *claim == two.0 {
+                    logged_reasons.push(reason.as_str());
+                }
+            }
+        }
         assert_eq!(logged_reasons, [TESTS_DID_NOT_RUN]);
     }
 
