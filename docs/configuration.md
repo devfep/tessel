@@ -306,10 +306,12 @@ merge in one `Prepare` and has no `Land` to reconcile.
 When the server starts, a repository with a `remote` and no head reads main's head once, so the
 head is main's before the first agent says hello. If main cannot be read then, or a hello arrives
 first, the head is the base that hello declared, as before; a later wake of the repository reads
-again while it has no head. A head that is only the base a hello declared is read again, at 10 s,
-30 s and then every 90 s for as long as the read fails, and while it stands the repository
-records no main for a merge and queues no trial of a closed race: a race stays undecided until
-the read answers.
+again while it has no head. A head that is only the base a hello declared records no main for a
+merge and queues no trial of a closed race: the race stays undecided until a read answers. While
+a read is owed it is read again, at 10 s, 30 s and then every 90 s for as long as it fails. A
+repository without a `remote` reads no heads: its closed race asks for the read at once, the
+no-lander port refuses it, and after four refusals (about two minutes) the race is judged with
+the tests unknown. A repository that has a head waits for nothing.
 
 The runner has no sandbox until M5. A trunk's test command runs as the runner's user, which is the
 server's user, and can write to a path `remote` and read the `token_file`, which a landing does not

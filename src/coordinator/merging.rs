@@ -637,6 +637,7 @@ impl Coordinator {
             .map(|work| work.touched.clone())
             .unwrap_or_default();
         self.state.head = Some(head.clone());
+        self.state.head_from_hello = None;
         self.state.claims.remove(&claim.0);
         super::remove_locks(&mut self.locks, claim, held);
         let challenged = held
@@ -1079,6 +1080,27 @@ mod tests {
         c.begin_merge(due).expect("dispatched again");
         let flight = c.state.merge_in_flight.as_ref().expect("in flight");
         assert_eq!(flight.main, Some(read_head), "once the head is read");
+    }
+
+    #[test]
+    fn a_landing_whose_head_is_the_adopted_base_ends_the_adoption() {
+        let mut c = core();
+        let hello = ClientMsg::Hello {
+            agent: agent("a1"),
+            base: CommitId(MAIN.into()),
+            protocol: crate::protocol::PROTOCOL_VERSION,
+        };
+        c.handle(&agent("a1"), hello, NOW);
+        assert!(c.head_is_adopted());
+        let claim = grant(&mut c, "a1", vec![edit("src/a.rs")]);
+        submit(&mut c, "a1", claim, "src/a.rs");
+        c.begin_merge(NOW + 1).expect("the lander is asked");
+        c.settle_merge(c.merge_flight_id(claim.0), &merged_outcome(), NOW + 2);
+        assert_eq!(c.state.head, Some(CommitId(MAIN.into())));
+        assert!(
+            !c.head_is_adopted(),
+            "a landing set the head: it is no Hello's"
+        );
     }
 
     fn merged_outcome() -> MergeOutcome {

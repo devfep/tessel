@@ -95,6 +95,13 @@ impl CoreSlot {
             .is_some_and(|core| core.has_verification_in_flight())
     }
 
+    /// Whether a closed race waits for the head read.
+    pub fn races_await_head(&self) -> bool {
+        self.core
+            .as_ref()
+            .is_some_and(|core| core.races_await_head())
+    }
+
     /// The head read the core offers, if any (R22).
     pub fn begin_head_read(&self) -> Option<HeadRead> {
         self.core.as_ref().and_then(|core| core.begin_head_read())

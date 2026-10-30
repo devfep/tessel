@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::merge::MAX_INFRA_RETRIES;
 use crate::protocol::{
     review_reasons, uncovered, AgentId, ClaimId, ClientMsg, CommitId, Conflict, DecisionRecord,
     ErrorCode, Event, EventKind, Fence, HeldAssumption, Intent, Lock, OnConflict, ProtocolRange,
@@ -845,6 +846,8 @@ impl Coordinator {
         } else {
             if self.state.head.is_none() {
                 self.state.head_from_hello = Some(base.clone());
+                self.state.head_start_failures =
+                    self.state.head_start_failures.min(MAX_INFRA_RETRIES);
             }
             self.state.head.get_or_insert(base).clone()
         };

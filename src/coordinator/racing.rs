@@ -546,7 +546,7 @@ impl Coordinator {
     }
 
     /// Close the race to entries: release entrants that never submitted, and queue the tests of
-    /// each entry that did (`queue_race_trials`), unless the head is only adopted: then they wait
+    /// each entry that did (`queue_race_trials`), unless `trials_wait_for_head`: then they wait
     /// for the head read (`trials_await_head`).
     fn begin_judging(&mut self, race_id: RaceId, now_ms: u64) -> Vec<Effect> {
         let Some(race) = self.state.races.get_mut(&race_id.0) else {
@@ -577,9 +577,14 @@ impl Coordinator {
     }
 
     /// Whether a closing race must wait for the head read: the head is only adopted from a
-    /// `Hello` and the start read has not yet failed more than `MAX_INFRA_RETRIES` times.
+    /// `Hello` and the reads owed for it have not yet failed more than `MAX_INFRA_RETRIES` times.
     fn trials_wait_for_head(&self) -> bool {
         self.head_is_adopted() && self.state.head_start_failures <= MAX_INFRA_RETRIES
+    }
+
+    /// Whether a closed race is waiting for the head read (`trials_await_head`).
+    pub fn races_await_head(&self) -> bool {
+        self.state.races.values().any(|race| race.trials_await_head)
     }
 
     /// Queue the tests of each entry that submitted, all on the head as it is now. With nothing
@@ -2197,14 +2202,53 @@ mod tests {
             let Some(read) = c.begin_head_read() else {
                 break;
             };
-            assert!(c.next_head_read_ms(now).is_some(), "a wake is set for the read");
+            assert!(
+                c.next_head_read_ms(now).is_some(),
+                "a wake is set for the read"
+            );
             let effects = c.trunk_read(&read, None, now);
             decided |= logged(&effects)
                 .iter()
                 .any(|kind| matches!(kind, EventKind::RaceDecided { .. }));
             now += 100_000;
         }
-        assert!(decided, "the closed race is never decided: no read was owed");
+        assert!(
+            decided,
+            "the closed race is never decided: no read was owed"
+        );
+    }
+
+    #[test]
+    fn a_hello_caps_the_failures_of_the_reads_that_found_no_head() {
+        let mut c = bare_core();
+        let mut read = c.begin_head_read().expect("no head: a read is due");
+        for failure in 0..=MAX_INFRA_RETRIES + 2 {
+            c.trunk_read(&read, None, NOW + u64::from(failure));
+            read = c.begin_head_read().expect("the read stays owed");
+        }
+        let hello = ClientMsg::Hello {
+            agent: agent("felix"),
+            base: CommitId(MAIN.into()),
+            protocol: PROTOCOL_VERSION,
+        };
+        c.handle(&agent("felix"), hello, NOW + 10);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        let effects = submit_effects(&mut c, "a1", one, true, NOW + 11);
+        assert!(
+            !logged(&effects)
+                .iter()
+                .any(|kind| matches!(kind, EventKind::RaceDecided { .. })),
+            "the next read is waited for: {effects:?}"
+        );
+        let read = c.begin_head_read().expect("owed");
+        let effects = c.trunk_read(&read, None, NOW + 100_000);
+        assert!(
+            logged(&effects)
+                .iter()
+                .any(|kind| matches!(kind, EventKind::RaceDecided { .. })),
+            "one more failure judges it: {effects:?}"
+        );
     }
 
     #[test]

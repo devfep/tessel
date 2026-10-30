@@ -374,6 +374,7 @@ impl Host {
                 if head.is_none() {
                     out.push(self.failure("head call", "no head in the answer"));
                 }
+                self.log_waiting_races(head.is_some(), out);
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.trunk_read(&read, head, now_ms)
                 });
@@ -399,6 +400,18 @@ impl Host {
             Some(Job::Wake(resume)),
             out,
         );
+    }
+
+    /// Say once that closed races wait for a head read that gave no head, until a read answers.
+    fn log_waiting_races(&mut self, answered: bool, out: &mut Vec<Output>) {
+        let waiting = !answered && self.slot.races_await_head();
+        if waiting && !self.race_wait_logged {
+            out.push(self.failure(
+                "head call",
+                "races wait for the head read; if it keeps failing they are judged, tests unknown",
+            ));
+        }
+        self.race_wait_logged = waiting;
     }
 
     /// Whether the merge goes on after this answer: one is still in flight and no merge call of

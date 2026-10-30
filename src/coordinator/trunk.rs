@@ -44,8 +44,15 @@
 //!   wake that runs anyway (the server wakes once at start), because a read that was out when the
 //!   process stopped left no marker. It sets no wake of its own. If that read fails it is retried
 //!   as above, so a state that keeps failing backs off and keeps owing the read. A head a landing
-//!   or an earlier read set owes nothing, and neither does a state that was not loaded: its
-//!   `Hello` came while the start read was out, and the answer or the retries above deal with it.
+//!   or an earlier read set owes nothing.
+//! - A state that was not loaded owes no read for an adopted head while nothing waits for it: its
+//!   `Hello` may have come while the start read was out, and the answer or the retries above deal
+//!   with it. A race that waits for the head (`trials_await_head`) is different: no read need be
+//!   out, as on a port that reads no heads, where the first input is the `Hello`. So the read is
+//!   owed, and wakes at once, while a race waits. A port that cannot read heads refuses it, which
+//!   counts as a failure, so the race waits for the retries and no longer. A `Hello` that adopts
+//!   the head caps the failure count at `MAX_INFRA_RETRIES`: reads that failed while no head was
+//!   known do not judge a race before the next read has been tried, and the retry stays due.
 //! - The move is logged as `BaseMoved { by: "steward", notified: [] }`. Nobody is notified: the
 //!   touched scopes of an admin merge are unknown to the coordinator, and claims are not touched.
 
@@ -122,18 +129,19 @@ impl Coordinator {
         self.state.head.is_some() && self.state.head == self.state.head_from_hello
     }
 
-    /// The head is still unchecked and either a start read failed with retries left, or this
-    /// state was loaded from storage and no read has failed since: the read that was out when the
-    /// process stopped is gone.
+    /// The head is still unchecked and a read is owed: a start read failed with retries left, a
+    /// race waits for the head (a `Hello` adopted it with no read begun, as on a port that reads
+    /// no heads), or this state was loaded from storage and no read has failed since: the read
+    /// that was out when the process stopped is gone.
     fn start_retry_owed(&self) -> bool {
-        let failures = self.state.head_start_failures;
-        let retrying = failures >= 1;
-        let lost_with_the_process = failures == 0 && self.state.loaded;
-        self.head_is_adopted() && (retrying || lost_with_the_process)
+        let retrying = self.state.head_start_failures >= 1;
+        let lost_with_the_process = self.state.head_start_failures == 0 && self.state.loaded;
+        self.head_is_adopted() && (retrying || lost_with_the_process || self.races_await_head())
     }
 
-    /// The alarm time of the head read: now, while a poke has not been tried yet, or the end of
-    /// the backoff after a failed start read. A poke whose read failed is pending but not a
+    /// The alarm time of the head read: now, while a poke has not been tried yet or a race waits
+    /// for an adopted head that no read has failed to confirm, or the end of the backoff after a
+    /// failed start read. A poke whose read failed is pending but not a
     /// reason to wake.
     pub fn next_head_read_ms(&self, now_ms: u64) -> Option<u64> {
         self.begin_head_read()?;
@@ -141,6 +149,9 @@ impl Coordinator {
             return Some(now_ms);
         }
         let failures = self.state.head_start_failures;
+        if failures == 0 && self.head_is_adopted() && self.races_await_head() {
+            return Some(now_ms);
+        }
         let bounded = failures <= MAX_INFRA_RETRIES && self.state.head.is_none();
         if failures >= 1 && (self.head_is_adopted() || bounded) {
             return Some(self.state.head_start_retry_ms.max(now_ms));

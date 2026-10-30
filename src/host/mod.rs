@@ -236,6 +236,9 @@ pub struct Host {
     calls: HashMap<CallId, Call>,
     /// The head read the one outstanding `ReadHead` call was made against.
     reading: Option<HeadRead>,
+    /// The log line that races wait for a head that could not be read is written, and no head
+    /// read has answered since.
+    race_wait_logged: bool,
     /// The socket whose replay a failed send ended while its next read was out: that page is
     /// dropped when it arrives. The adapter answers the reads of a socket in the order it was
     /// asked, so the first page that names the socket is the one the ended replay left out, and
@@ -295,6 +298,7 @@ impl Host {
             queue: VecDeque::new(),
             calls: HashMap::new(),
             reading: None,
+            race_wait_logged: false,
             abandoned_read: None,
             waking: false,
             now_ms: 0,

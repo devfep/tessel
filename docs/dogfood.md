@@ -204,6 +204,9 @@ binaries, upgrade as below first.
   the new build wrote can still fail to decode in the old one. If the new build raised the
   version, the old build cannot open the store, and rollback means a fresh store and new claims.
   Never put a copy of an older store back: a restored store can reissue fences.
+  Rolling back past the commit that adds `trials_await_head` to a race (CORE-HEAD-ADOPTED) needs
+  no race in `Judging` with that flag set: the old build drops the flag and leaves the race
+  without trials for good. Check the stored state first.
 
 After the [move to the service accounts](#moving-to-the-service-accounts), every rule above stands;
 only the swap changes. `/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries <dir>` does it in

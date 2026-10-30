@@ -14,8 +14,9 @@ use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
 use crate::protocol::{
-    AgentId, Assumption, ClaimId, ClientMsg, CommitId, DecisionRecord, ErrorCode, Event, EventKind,
-    Fence, Intent, Mode, OnConflict, ProtocolRange, RequestId, RunId, Scope, ScopeClaim, ServerMsg,
+    AgentId, Assumption, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, ErrorCode, Event,
+    EventKind, Fence, Intent, Mode, OnConflict, ProtocolRange, RequestId, RunId, Scope, ScopeClaim,
+    ServerMsg,
 };
 use crate::shell::{self, Outbound, Work, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
 
@@ -1908,6 +1909,80 @@ fn host_a_head_read_runs_only_when_offered_and_is_stored_before_anyone_is_told()
         "then the wake is set, and the wake ends"
     );
     assert_eq!(kit.wake(), None, "main moved and nothing else is due");
+}
+
+#[test]
+fn host_logs_once_that_races_wait_for_a_head_that_cannot_be_read() {
+    let mut kit = Testkit::new(HostConfig {
+        reviewers: Some("a1".to_string()),
+        ..config()
+    });
+    let sock = welcomed(&mut kit, "a1");
+    let open = ClientMsg::OpenRace {
+        req: RequestId(1),
+        intent: Intent {
+            summary: "race".to_string(),
+            task_ref: None,
+            assumptions: Vec::new(),
+        },
+        scopes: vec![edit_file("x.rs")],
+        max_entrants: 1,
+        deadline_ms: kit.now_ms() + 60_000,
+        criteria: vec![Criterion::FirstSubmitted],
+    };
+    kit.send(sock, &open);
+    kit.settle();
+    let race = kit
+        .received(sock)
+        .iter()
+        .find_map(|msg| {
+            let ServerMsg::RaceOpened { race, .. } = msg else {
+                return None;
+            };
+            Some(*race)
+        })
+        .expect("the race opened");
+    kit.send(
+        sock,
+        &ClientMsg::JoinRace {
+            req: RequestId(2),
+            race,
+        },
+    );
+    kit.settle();
+    let (entry, fence) = granted(&kit, sock);
+    let submit = ClientMsg::Submit {
+        req: RequestId(3),
+        claim: entry,
+        fence,
+        fork_commit: CommitId("ab".repeat(20)),
+        touched: vec![edit_file("x.rs")],
+        decisions: DecisionRecord {
+            evidence: vec!["tests passed".into()],
+            ..DecisionRecord::default()
+        },
+    };
+    kit.send(sock, &submit);
+    kit.settle();
+    let waiting_lines = |kit: &Testkit| {
+        kit.logs()
+            .iter()
+            .filter(|line| line.contains("races wait for the head"))
+            .count()
+    };
+    for failure in 1..=2 {
+        wake(&mut kit);
+        let call = kit.calls().last().expect("a head read is owed").clone();
+        assert!(matches!(call.request, Request::ReadHead { .. }), "{call:?}");
+        let answer = CallAnswer::Head {
+            main: None,
+            landed: Vec::new(),
+        };
+        kit.reply(call.id, answer);
+        kit.settle();
+        assert_eq!(waiting_lines(&kit), 1, "failure {failure}: logged once");
+        kit.advance(100_000);
+    }
 }
 
 /// The calls that are not head reads: a restart may owe a read, and these are what it must not
