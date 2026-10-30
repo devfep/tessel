@@ -1142,7 +1142,7 @@ fn an_offline_landed_answer_releases_the_races_waiting_on_the_head_and_the_trial
         events(&decided)
             .iter()
             .any(|kind| matches!(kind, EventKind::RaceDecided { .. })),
-        "and the log, which a daemon reads on reconnecting, records it"
+        "and the log records it; an entrant offline now is not told"
     );
 }
 

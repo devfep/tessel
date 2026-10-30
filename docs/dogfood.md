@@ -164,14 +164,18 @@ binaries, upgrade as below first.
   stop mid-test orphans the cargo process group, and an old whole-merge call may already have
   pushed, which the new core reads as a merge in doubt, not one cut off before `Land`. First read
   what the store says, for each repository (it opens read-only, so the server may run; with the
-  server stopped after a clean close, read it as in step 1 of
-  [A `Land` in doubt](#a-land-in-doubt)):
+  server stopped, read it as in step 1 of [A `Land` in doubt](#a-land-in-doubt)):
 
   ```
-  sqlite3 -readonly "<server dir>/stores/<tenant>/<repo>.sqlite" \
+  /usr/bin/sqlite3 -readonly "<server dir>/stores/<tenant>/<repo>.sqlite" \
     "select json_type(json, '\$.merge_in_flight'), json_type(json, '\$.verification_in_flight') \
      from kv where key = 'core'"
   ```
+
+  After the move to the service accounts the stores are `/var/tessel/stores`, readable only by
+  `_tessel`; with the server running (so the `-shm` file exists), read them with
+  `/usr/bin/sudo -u _tessel /usr/bin/sqlite3 -readonly
+  /var/tessel/stores/<tenant>/<repo>.sqlite "<the same query>"`.
 
   It prints `null|null` when no merge and no verification is in flight; `object` in the first
   column is a merge, a `Land` in doubt included. A merge can also be in flight with no clone on
@@ -483,11 +487,25 @@ Then:
 1. Read the journaled stage, claim, head and base. The store is
    `<store_dir>/<tenant>/<repo>.sqlite`, where `store_dir` is the one in
    `<server dir>/tessel-server.toml` (`<server dir>/stores` until the move to the service
-   accounts, `/var/tessel/stores` after). Run it as the user that owns the store (after the move,
-   prefix it with `/usr/bin/sudo -u _tessel`), and without `-readonly`:
+   accounts, `/var/tessel/stores` after). Run it as the user that owns the store and without
+   `-readonly`; never as root, because Apple's `sqlite3` leaves `-wal` and `-shm` files behind when
+   it closes, and root-owned ones stop the `_tessel` server. Until the move, as yourself:
 
    ```
-   sqlite3 "<store_dir>/<tenant>/<repo>.sqlite" \
+   /usr/bin/sqlite3 -init /dev/null -cmd ".timeout 5000" \
+     "file:<server dir>/stores/<tenant>/<repo>.sqlite?mode=rw" \
+     "select json_extract(json, '\$.merge_in_flight.stage.stage'), \
+             json_extract(json, '\$.merge_in_flight.claim'), \
+             json_extract(json, '\$.merge_in_flight.stage.head'), \
+             json_extract(json, '\$.merge_in_flight.stage.base') \
+      from kv where key = 'core'"
+   ```
+
+   After the move, the same command under the service account:
+
+   ```
+   /usr/bin/sudo -u _tessel /usr/bin/sqlite3 -init /dev/null -cmd ".timeout 5000" \
+     "file:/var/tessel/stores/<tenant>/<repo>.sqlite?mode=rw" \
      "select json_extract(json, '\$.merge_in_flight.stage.stage'), \
              json_extract(json, '\$.merge_in_flight.claim'), \
              json_extract(json, '\$.merge_in_flight.stage.head'), \
@@ -498,12 +516,14 @@ Then:
    The stage must be `land` or `reconcile` and the claim the one you mean; `admin resolve`
    refuses the others.
 
-   The store is in WAL mode. A stopped server that closed it cleanly leaves no `-shm` file, and
-   `sqlite3 -readonly` cannot create one, so it fails with `unable to open database file` although
-   the file is there and readable; a killed server leaves the file and the read-only open works. An
-   open that can write creates the `-shm` file, which is why the owner runs it without
-   `-readonly`; run as anyone else it can fail the same way. A wrong path, without `-readonly`,
-   fails with `no such table: kv` and leaves an empty file there, so `ls` the path first.
+   The store is in WAL mode. `tessel-server` has no signal handler, so both stops above (`kill`
+   and `launchctl bootout`) leave the `-wal` and `-shm` files, and a read-only open works. Any
+   later `tessel-server admin` command (a refused `admin resolve` too) opens and closes the store
+   cleanly and removes both files. With no `-shm`, macOS's `/usr/bin/sqlite3` fails
+   `-readonly` with `unable to open database file` although the file is there, which is why this
+   read can write. The `file:...?mode=rw` form never creates a file: a wrong path (a mistyped
+   tenant directory or repository) also fails with `unable to open database file`, where a bare
+   path would make an empty file and fail with `no such table: kv`.
 2. In a checkout of the trunk (the lander's own clones are deleted after each call), run
    `git fetch origin main`, then `git merge-base --is-ancestor <head> origin/main`. Exit 0 means
    the head is on main. Exit 1 means it is not. Exit 128 means the checkout does not know the
@@ -514,9 +534,9 @@ Then:
 
    ```
    <server dir>/bin/tessel-server admin resolve <claim> --landed <head> \
-     --config <server dir>/tessel-server.toml
+     --tenant <tenant> --repo <repo> --config <server dir>/tessel-server.toml
    <server dir>/bin/tessel-server admin resolve <claim> --not-landed \
-     --config <server dir>/tessel-server.toml
+     --tenant <tenant> --repo <repo> --config <server dir>/tessel-server.toml
    ```
 
 After the [move to the service accounts](#moving-to-the-service-accounts), stop the server with
@@ -540,20 +560,20 @@ answers `already_merged` if the work is on main after all. Both refuse while a s
 store, and when the claim has no `Land` in flight. Then start the server. The answer is the one a
 `Reconcile` would have given: the core still applies its own rules. After `--landed`, the lane's
 daemon finds the landing in the repository's event log at its next connection and reports `claim N
-is gone from the coordinator; forgot it`, not a `merged` notice. `--landed` copies no notes: no
-`Merged` notice reaches the daemon, so it never copies the submission's notes to the landed commit.
-Copy them by hand, as for a merge-commit submission (`git notes add`, in `CLAUDE.md`). A lane that
-was waiting (`--wait`)
-behind the settled claim was told, when the server stopped, that its queued wait was withdrawn;
+is gone from the coordinator; forgot it`, not a `merged` notice. The daemon
+copies the submission's notes to the landed commit once it reconnects and has fetched the landed
+commits; check with `git notes show <landed commit>`, and copy them by hand only if none is there
+(`git notes add`, in `CLAUDE.md`). A lane that was waiting (`--wait`) behind the settled claim
+was told, when the server stopped, that its queued wait was withdrawn;
 `--landed` may have granted that wait, and the daemon then adopts the claim and says so in its
 inbox. Use that claim, or `tessel release` it. A lane whose own claim request was still
 on the way when the connection dropped is answered by that request's reply for the same claim,
 not by an adopted one.
 
 `--landed` also releases the closed races that waited for the head. Their trials are queued and
-run once the server is started, so the entrants hear the result then if they are connected; one
-that is offline finds the race decided in the event log when it reconnects. The command sends no
-notices itself.
+run once the server is started, so the entrants hear the result then if they are connected. One that
+is offline when the trial ends gets no notice or result; the decision is only in the event log. The
+command sends no notices itself.
 
 Two doubts that resolving does not fix:
 

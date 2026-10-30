@@ -86,11 +86,30 @@ async fn a_waiter_adopts_the_claim_an_offline_landed_resolve_granted() -> Result
         "nothing reached the waiter while offline"
     );
 
-    let before = hellos(&fake, "a2");
+    let (before, before_a1) = (hellos(&fake, "a2"), hellos(&fake, "a1"));
     fake.set_accepting(true);
     eventually(SHORT, || Ok((hellos(&fake, "a2") > before).then_some(())))
         .await
         .context("a2 never reconnected")?;
+    eventually(
+        SHORT,
+        || Ok((hellos(&fake, "a1") > before_a1).then_some(())),
+    )
+    .await
+    .context("a1 never reconnected")?;
+    eventually(SHORT, || {
+        let jobs = a1.status()?["state"]["pending_notes"]
+            .as_array()
+            .map_or(0, Vec::len);
+        Ok((jobs == 1).then_some(()))
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "the submitter's daemon queued no note copy from the logged merge: {}",
+            a1.tessel_files().unwrap_or_default()
+        )
+    })?;
     eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(())))
         .await
         .with_context(|| {

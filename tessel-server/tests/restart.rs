@@ -225,21 +225,28 @@ impl Deployment {
     }
 
     /// What `docs/dogfood.md` tells the operator to read for a `Land` in doubt, run with the
-    /// `sqlite3` the runbook names, as the store's owner and without `-readonly`: the stage, the
-    /// claim, and the head and base the `Land` journaled.
+    /// `sqlite3` the runbook names, as the store's owner, on a `mode=rw` URI (a wrong path fails
+    /// and creates nothing) and without `-readonly`: the stage, the claim, and the head and base
+    /// the `Land` journaled.
     fn journaled_land(&self) -> Result<(String, String), Box<dyn std::error::Error>> {
         let query = "select json_extract(json, '$.merge_in_flight.stage.stage'), \
                             json_extract(json, '$.merge_in_flight.claim'), \
                             json_extract(json, '$.merge_in_flight.stage.head'), \
                             json_extract(json, '$.merge_in_flight.stage.base') \
                      from kv where key = 'core'";
+        let uri = format!("file:{}?mode=rw", self.store_file()?.display());
         let out = Command::new("sqlite3")
-            .arg(self.store_file()?)
+            .args(["-init", "/dev/null", "-cmd", ".timeout 5000"])
+            .arg(uri)
             .arg(query)
             .output()
             .map_err(|e| format!("the runbook's read needs the sqlite3 command: {e}"))?;
         let text = String::from_utf8(out.stdout)?;
-        assert!(out.status.success(), "sqlite3 said {:?}", out.stderr);
+        assert!(
+            out.status.success(),
+            "sqlite3 said {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let columns: Vec<&str> = text.trim_end().split('|').collect();
         let [stage, _claim, head, base] = columns[..] else {
             return Err(format!("expected four columns, got {text:?}").into());
@@ -252,8 +259,9 @@ impl Deployment {
         Ok(RepoId::new("acme", REPO)?.store_file(&self.repos.root.path().join("stores")))
     }
 
-    /// The store as a stopped server leaves it after a clean close (the last connection closed, so
-    /// the `-wal` and `-shm` files are gone), read with the runbook's query: it names `head`.
+    /// The store as a clean opener leaves it (the server has no signal handler, so a stopped one
+    /// leaves `-wal` and `-shm`; any `tessel-server admin` command opens and closes the store
+    /// cleanly and removes them), read with the runbook's query: it names `head`.
     fn assert_the_runbook_reads_a_cleanly_closed_store(&self, head: &str) -> TestResult {
         let file = self.store_file()?;
         let conn = rusqlite::Connection::open(&file)?;
