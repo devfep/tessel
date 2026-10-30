@@ -163,19 +163,26 @@ binaries, upgrade as below first.
 - **Nothing in flight.** Upgrade only with no dispatch in flight; held submissions are fine. A
   stop mid-test orphans the cargo process group, and an old whole-merge call may already have
   pushed, which the new core reads as a merge in doubt, not one cut off before `Land`. First read
-  what the store says, for each repository (it opens read-only, so the server may run; with the
-  server stopped, read it as in step 1 of [A `Land` in doubt](#a-land-in-doubt)):
+  what the store says, for each repository. Read it as in step 1 of
+  [A `Land` in doubt](#a-land-in-doubt): `mode=rw`, never `-readonly` (it fails on a store with no
+  `-shm`) and never as root. The read changes nothing, so the server may run. Until the move:
 
   ```
-  /usr/bin/sqlite3 -readonly "<server dir>/stores/<tenant>/<repo>.sqlite" \
+  /usr/bin/sqlite3 -init /dev/null -cmd ".timeout 5000" \
+    "file:<server dir>/stores/<tenant>/<repo>.sqlite?mode=rw" \
     "select json_type(json, '\$.merge_in_flight'), json_type(json, '\$.verification_in_flight') \
      from kv where key = 'core'"
   ```
 
   After the move to the service accounts the stores are `/var/tessel/stores`, readable only by
-  `_tessel`; with the server running (so the `-shm` file exists), read them with
-  `/usr/bin/sudo -u _tessel /usr/bin/sqlite3 -readonly
-  /var/tessel/stores/<tenant>/<repo>.sqlite "<the same query>"`.
+  `_tessel`:
+
+  ```
+  /usr/bin/sudo -u _tessel /usr/bin/sqlite3 -init /dev/null -cmd ".timeout 5000" \
+    "file:/var/tessel/stores/<tenant>/<repo>.sqlite?mode=rw" \
+    "select json_type(json, '\$.merge_in_flight'), json_type(json, '\$.verification_in_flight') \
+     from kv where key = 'core'"
+  ```
 
   It prints `null|null` when no merge and no verification is in flight; `object` in the first
   column is a merge, a `Land` in doubt included. A merge can also be in flight with no clone on
