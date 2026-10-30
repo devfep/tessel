@@ -22,7 +22,7 @@ pub mod variant;
 
 use crate::host::HostConfig;
 pub use check::{Checker, Violation};
-pub use driver::Sim;
+pub use driver::{Failpoint, Moment, Sim, Step};
 pub use rng::Rng;
 pub use variant::Variant;
 
@@ -112,6 +112,8 @@ pub struct Run {
     pub stale_answers: usize,
     /// Trials the host dispatched.
     pub trials: usize,
+    /// The failpoints that struck.
+    pub failpoints: Vec<driver::Failpoint>,
 }
 
 fn host_config() -> HostConfig {
@@ -160,6 +162,7 @@ pub fn run_seed(seed: u64, variant: Variant, enabled: &[Checker]) -> Run {
             .iter()
             .filter(|dispatch| is_trial(&dispatch.request))
             .count(),
+        failpoints: sim.struck().to_vec(),
     }
 }
 

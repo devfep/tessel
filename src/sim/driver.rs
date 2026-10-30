@@ -18,8 +18,10 @@ use crate::sim::lander::Lander;
 use crate::sim::store::Store;
 use crate::sim::variant::Variant;
 
+mod failpoint;
 mod merge_path;
 
+pub use failpoint::{Failpoint, Moment, Step};
 use merge_path::Due;
 pub use merge_path::{SlotCall, SlotNote, StaleAnswer};
 
@@ -47,9 +49,15 @@ enum Answer {
 enum Crash {
     Output(u64),
     Apply,
-    /// Right after every `Test` is dispatched, before any answer reaches the host. A crash does
-    /// not disarm it.
-    EveryTestDispatch,
+    /// At a moment of a call (`Failpoint`). With `every`, a crash does not disarm it.
+    At {
+        point: Failpoint,
+        every: bool,
+    },
+    /// At the `left`th moment of any call from now: whichever the run reaches.
+    Moment {
+        left: u64,
+    },
 }
 
 /// One message a client received, in the order the adapter sent it.
@@ -135,6 +143,13 @@ pub struct Sim {
     sent: Vec<Sent>,
     log: Vec<String>,
     crash: Option<Crash>,
+    /// The step whose answer the write now staged records.
+    answered: Option<Step>,
+    /// Failpoints armed one at a time, each after the restart the one before caused.
+    then: VecDeque<Failpoint>,
+    refs_lost_in_restarts: bool,
+    /// The failpoints that struck, in order.
+    struck: Vec<Failpoint>,
     fail_next_commit: bool,
     failed_commits: u64,
     executed: u64,
@@ -188,6 +203,10 @@ impl Sim {
             sent: Vec::new(),
             log: Vec::new(),
             crash: None,
+            answered: None,
+            then: VecDeque::new(),
+            refs_lost_in_restarts: false,
+            struck: Vec::new(),
             fail_next_commit: false,
             failed_commits: 0,
             executed: 0,
@@ -232,6 +251,12 @@ impl Sim {
         self.lander.report_lost_candidates_as_tested();
     }
 
+    /// Lose every candidate ref the lander holds, in every restart from now on, so a script can
+    /// take the ref from a merge the restart finds in flight.
+    pub fn lose_candidates_in_restarts(&mut self) {
+        self.refs_lost_in_restarts = true;
+    }
+
     /// Cut off the next `count` head reads.
     #[cfg(test)]
     pub(crate) fn refuse_head_reads(&mut self, count: u32) {
@@ -242,6 +267,12 @@ impl Sim {
     #[cfg(test)]
     pub(crate) fn poison_fork(&mut self, fork: &str, at_test: bool) {
         self.lander.poison(fork, at_test);
+    }
+
+    /// Have every call reach the lander `ms` after the host issues it. A host that restarts in
+    /// between does not stop the call.
+    pub fn late_runs(&mut self, ms: u64) {
+        self.lander.late_runs(ms);
     }
 
     /// Send every reply of the merge path `ms` after its call runs.
@@ -338,6 +369,11 @@ impl Sim {
         self.crashes
     }
 
+    /// The failpoints that struck, in order.
+    pub fn struck(&self) -> &[Failpoint] {
+        &self.struck
+    }
+
     /// How many commits failed without a crash.
     pub fn failed_commits(&self) -> u64 {
         self.failed_commits
@@ -379,10 +415,33 @@ impl Sim {
         self.crash = Some(Crash::Output(self.executed + outputs.max(1)));
     }
 
-    /// Crash right after every `Test` is dispatched, before the host hears of its answer, until
-    /// `disarm`.
-    pub fn crash_after_every_test_dispatch(&mut self) {
-        self.crash = Some(Crash::EveryTestDispatch);
+    /// Crash once at `point`, wherever the merge path next reaches it.
+    pub fn crash_at(&mut self, point: Failpoint) {
+        self.crash = Some(Crash::At {
+            point,
+            every: false,
+        });
+    }
+
+    /// Crash at the `nth` moment of any call from now (the first when 0), whichever it is: the
+    /// run says where it struck (`struck`).
+    pub fn crash_at_moment(&mut self, nth: u64) {
+        self.crash = Some(Crash::Moment { left: nth.max(1) });
+    }
+
+    /// Crash at each of `points` in turn, the next one after the restart the last one caused: a
+    /// process that dies again while it recovers.
+    pub fn crash_at_each(&mut self, points: &[Failpoint]) {
+        let mut points = points.iter().copied();
+        if let Some(first) = points.next() {
+            self.crash_at(first);
+        }
+        self.then = points.collect();
+    }
+
+    /// Crash at `point` every time the merge path reaches it, until `disarm`.
+    pub fn crash_at_every(&mut self, point: Failpoint) {
+        self.crash = Some(Crash::At { point, every: true });
     }
 
     /// Crash right after the next commit is made durable, before the host hears of it.
@@ -395,9 +454,13 @@ impl Sim {
         self.fail_next_commit = true;
     }
 
-    /// Clear faults that never struck.
+    /// Clear faults that never struck, except a crash at a moment of any call: it waits for the
+    /// next call, which may be steps away.
     pub fn disarm(&mut self) {
-        self.crash = None;
+        if !matches!(self.crash, Some(Crash::Moment { .. })) {
+            self.crash = None;
+        }
+        self.then.clear();
         self.fail_next_commit = false;
     }
 
@@ -628,6 +691,14 @@ impl Sim {
                     self.crash_now();
                     return true;
                 }
+                if let Some(step) = self.answered.take() {
+                    let recorded = Failpoint::new(step, Moment::Recorded);
+                    if self.reaches(recorded) {
+                        self.crashes_after_apply += 1;
+                        self.crash_now();
+                        return true;
+                    }
+                }
                 self.input(Input::Committed { now_ms, batch });
             }
         }
@@ -642,8 +713,18 @@ impl Sim {
         self.log.push("crash".to_string());
         self.strike_merge_in_flight();
         self.crashes += 1;
-        if self.crash != Some(Crash::EveryTestDispatch) {
-            self.crash = None;
+        self.answered = None;
+        if self.refs_lost_in_restarts {
+            self.lander.lose_candidates();
+        }
+        if let Some(Crash::At { point, .. }) = self.crash {
+            self.struck.push(point);
+        }
+        if !matches!(self.crash, Some(Crash::At { every: true, .. })) {
+            self.crash = self.then.pop_front().map(|point| Crash::At {
+                point,
+                every: false,
+            });
         }
         self.host = Host::new(self.config.clone());
         self.answers.clear();
@@ -664,19 +745,44 @@ impl Sim {
     fn execute(&mut self, outputs: Vec<Output>) {
         for output in outputs {
             self.log.push(format!("out {output:?}"));
-            let dispatches_test = is_test_call(&output);
+            let step = call_step(&output);
+            if step.is_some_and(|step| self.reaches(Failpoint::new(step, Moment::Persisted))) {
+                self.crash_now();
+                return;
+            }
             self.carry_out(output);
             self.executed += 1;
-            let armed = self.crash;
-            let strikes = match armed {
+            let strikes = match self.crash {
                 Some(Crash::Output(at)) => at == self.executed,
-                Some(Crash::EveryTestDispatch) => dispatches_test,
+                Some(Crash::At { .. } | Crash::Moment { .. }) => {
+                    step.is_some_and(|step| self.reaches(Failpoint::new(step, Moment::Running)))
+                }
                 Some(Crash::Apply) | None => false,
             };
             if strikes {
                 self.crash_now();
                 return;
             }
+        }
+    }
+
+    /// Whether the armed fault strikes at `point`, which the run has just reached. A crash armed
+    /// for any moment becomes one at `point` when it strikes.
+    fn reaches(&mut self, point: Failpoint) -> bool {
+        match self.crash {
+            Some(Crash::At { point: armed, .. }) => armed == point,
+            Some(Crash::Moment { left: 1 }) => {
+                self.crash = Some(Crash::At {
+                    point,
+                    every: false,
+                });
+                true
+            }
+            Some(Crash::Moment { left }) => {
+                self.crash = Some(Crash::Moment { left: left - 1 });
+                false
+            }
+            Some(Crash::Output(_) | Crash::Apply) | None => false,
         }
     }
 
@@ -923,13 +1029,20 @@ fn without_scopes(json: &str) -> String {
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
 }
 
-fn is_test_call(output: &Output) -> bool {
-    if let Output::Call(call) = output {
-        if let Request::Test { .. } = call.request {
-            return true;
-        }
+/// The step of the call `output` hands the lander, if it is one.
+fn call_step(output: &Output) -> Option<Step> {
+    match output {
+        Output::Call(call) => Some(Step::of(&call.request)),
+        Output::Load
+        | Output::Commit { .. }
+        | Output::Send { .. }
+        | Output::SetSession { .. }
+        | Output::Close { .. }
+        | Output::ReadEvents { .. }
+        | Output::SetWake { .. }
+        | Output::Log { .. }
+        | Output::Metric { .. } => None,
     }
-    false
 }
 
 #[cfg(test)]

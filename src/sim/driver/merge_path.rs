@@ -15,7 +15,7 @@ use crate::host::call::{Call, CallAnswer, CallId, Request};
 use crate::host::Input;
 use crate::shell::{EVENT_PREFIX, STATE_KEY};
 use crate::sim::check::Waits;
-use crate::sim::driver::{Answer, Dispatch, Sim};
+use crate::sim::driver::{Answer, Dispatch, Failpoint, Moment, Sim, Step};
 use crate::sim::lander::{Fate, Plan};
 
 /// Something that happens to the merge path at a set time.
@@ -300,10 +300,17 @@ impl Sim {
             self.answered_calls.insert(call.0, open.clone());
         }
         let known = open.or_else(|| self.answered_calls.get(&call.0).cloned());
+        let step = known.as_ref().map(|known| Step::of(&known.request));
         let probe = known.and_then(|known| self.probe_for(&known));
         self.input(input);
         if let Some(probe) = probe {
             self.settle(probe);
+        }
+        if let (Some(step), true) = (step, self.store.staged().is_some()) {
+            self.answered = Some(step);
+            if self.reaches(Failpoint::new(step, Moment::Answered)) {
+                self.crash_now();
+            }
         }
     }
 
@@ -420,7 +427,7 @@ fn is_failure(input: &Input) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use crate::host::call::Request;
     use crate::host::HostConfig;
     use crate::merge::MAX_INFRA_RETRIES;
@@ -429,13 +436,13 @@ mod tests {
         OnConflict, RaceId, RequestId, Scope, ScopeClaim,
     };
     use crate::sim::check::{self, Checker};
-    use crate::sim::driver::{RequestKind, Sim};
+    use crate::sim::driver::{Failpoint, Moment, RequestKind, Sim, Step};
     use crate::sim::merge_check;
     use crate::sim::variant::Variant;
 
     const SLOW_MS: u64 = 2_000;
 
-    fn file(path: &str) -> ScopeClaim {
+    pub(in crate::sim::driver) fn file(path: &str) -> ScopeClaim {
         ScopeClaim {
             scope: Scope::File {
                 path: path.to_string(),
@@ -444,7 +451,7 @@ mod tests {
         }
     }
 
-    fn claim(req: u64, path: &str) -> ClientMsg {
+    pub(in crate::sim::driver) fn claim(req: u64, path: &str) -> ClientMsg {
         ClientMsg::Claim {
             req: RequestId(req),
             intent: Intent {
@@ -457,7 +464,12 @@ mod tests {
         }
     }
 
-    fn submit(req: u64, claim: ClaimId, fence: Fence, path: &str) -> ClientMsg {
+    pub(in crate::sim::driver) fn submit(
+        req: u64,
+        claim: ClaimId,
+        fence: Fence,
+        path: &str,
+    ) -> ClientMsg {
         ClientMsg::Submit {
             req: RequestId(req),
             claim,
@@ -472,7 +484,7 @@ mod tests {
         }
     }
 
-    fn merged(sim: &Sim) -> bool {
+    pub(in crate::sim::driver) fn merged(sim: &Sim) -> bool {
         sim.store()
             .events()
             .0
@@ -510,7 +522,7 @@ mod tests {
 
     /// One agent claims a file and submits a commit, after `arm` set up the merge path. Nothing
     /// has run past the submission.
-    fn submitted_commit(arm: impl FnOnce(&mut Sim)) -> Sim {
+    pub(in crate::sim::driver) fn submitted_commit(arm: impl FnOnce(&mut Sim)) -> Sim {
         let config = HostConfig {
             repo: "sim".to_string(),
             run: Some("sim".to_string()),
@@ -532,7 +544,7 @@ mod tests {
         sim
     }
 
-    fn fork() -> String {
+    pub(in crate::sim::driver) fn fork() -> String {
         format!("{:040x}", 2)
     }
 
@@ -547,7 +559,7 @@ mod tests {
         sim
     }
 
-    fn rejection_reasons(sim: &Sim) -> Vec<String> {
+    pub(in crate::sim::driver) fn rejection_reasons(sim: &Sim) -> Vec<String> {
         sim.store()
             .events()
             .0
@@ -606,7 +618,7 @@ mod tests {
         let bound = u64::from(MAX_INFRA_RETRIES) + 1;
         let mut sim = submitted_commit(|sim| {
             sim.poison_fork(&fork(), true);
-            sim.crash_after_every_test_dispatch();
+            sim.crash_at_every(Failpoint::new(Step::Test, Moment::Running));
         });
         for _ in 0..12 {
             sim.advance(100_000);
@@ -627,6 +639,11 @@ mod tests {
     /// A reviewer opens a `TestsPass` race on the head a `Hello` adopted, one agent enters and
     /// submits, and the lander refuses the head read `refused` times.
     fn race_on_an_adopted_head(refused: u32) -> Sim {
+        race_run(refused, |_| {})
+    }
+
+    /// `race_on_an_adopted_head`, with `arm` run just before the entrant submits.
+    pub(in crate::sim::driver) fn race_run(refused: u32, arm: impl FnOnce(&mut Sim)) -> Sim {
         let config = HostConfig {
             repo: "sim".to_string(),
             run: Some("sim".to_string()),
@@ -663,6 +680,7 @@ mod tests {
             (ClaimId(*claim), *fence)
         };
         let work = submit(3, claim, fence, "src/a.rs");
+        arm(&mut sim);
         sim.send(agent, &work, RequestKind::Submit, Some(claim));
         for _ in 0..12 {
             sim.advance(100_000);

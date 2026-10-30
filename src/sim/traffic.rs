@@ -19,6 +19,8 @@ const AGENTS: [&str; 3] = ["agent-a", "agent-b", "agent-c"];
 pub const REVIEWER: &str = "reviewer";
 const WATCHERS: [&str; 2] = ["watcher-a", "watcher-b"];
 const PATHS: [&str; 4] = ["src/a.rs", "src/b.rs", "src/c.rs", "lib/d.rs"];
+/// A crash at a moment of a call strikes at one of this many moments ahead: about a landing.
+const MOMENTS_AHEAD: usize = 14;
 const DIRS: [&str; 2] = ["src", "lib"];
 const MODES: [Mode; 4] = [
     Mode::Depend,
@@ -29,6 +31,8 @@ const MODES: [Mode; 4] = [
 
 pub struct Traffic {
     rng: Rng,
+    /// Picks the moment to crash at, so arming one leaves the script's own draws as they were.
+    moments: Rng,
     next_req: u64,
 }
 
@@ -36,6 +40,7 @@ impl Traffic {
     pub fn new(seed: u64) -> Self {
         Self {
             rng: Rng::new(seed),
+            moments: Rng::new(seed ^ 0x6d6f_6d65_6e74),
             next_req: 1,
         }
     }
@@ -61,6 +66,7 @@ impl Traffic {
             0 | 1 => sim.crash_after_outputs(1 + self.rng.below(8) as u64),
             2 => sim.crash_after_apply(),
             3 | 4 => sim.fail_next_commit(),
+            5..=7 => sim.crash_at_moment(1 + self.moments.below(MOMENTS_AHEAD) as u64),
             _ => {}
         }
     }

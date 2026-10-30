@@ -128,6 +128,8 @@ pub struct Lander {
     stale_tests: bool,
     /// How many of the next `ReadHead` calls are cut off before they run.
     refused_head_reads: u32,
+    /// Every call reaches the lander this long after it is issued, with or without faults.
+    late_runs_ms: u64,
     /// Every reply is sent this long after the call runs, with or without faults.
     slow_replies_ms: u64,
     /// Every reply is sent a second time this long after the first, with or without faults.
@@ -178,6 +180,7 @@ impl Lander {
             poisoned: BTreeMap::new(),
             stale_tests: false,
             refused_head_reads: 0,
+            late_runs_ms: 0,
             slow_replies_ms: 0,
             repeat_replies_ms: None,
         }
@@ -200,6 +203,12 @@ impl Lander {
     /// Send every reply `ms` after the call runs, for a script that needs a call to stay out.
     pub fn slow_replies(&mut self, ms: u64) {
         self.slow_replies_ms = ms;
+    }
+
+    /// Have every call reach the lander `ms` after the host issues it, for a script that kills the
+    /// host while a call is on its way.
+    pub fn late_runs(&mut self, ms: u64) {
+        self.late_runs_ms = ms;
     }
 
     /// Send every reply a second time `ms` after the first.
@@ -235,6 +244,11 @@ impl Lander {
     #[cfg(test)]
     pub(crate) fn report_lost_candidates_as_tested(&mut self) {
         self.stale_tests = true;
+    }
+
+    /// Lose every candidate ref, as a sweep or an operator would.
+    pub fn lose_candidates(&mut self) {
+        self.candidates.clear();
     }
 
     /// Cut off the next `count` head reads: nothing runs and `Unknown` comes back at once.
@@ -296,6 +310,7 @@ impl Lander {
         }
         if self.chaos.is_none() {
             return Plan {
+                run_after_ms: self.late_runs_ms,
                 reply_after_ms: self.slow_replies_ms,
                 repeat_after_ms: self.repeat_replies_ms,
                 ..Plan::PROMPT
