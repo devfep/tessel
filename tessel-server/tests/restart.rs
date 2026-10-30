@@ -209,6 +209,20 @@ impl Deployment {
         )
     }
 
+    /// The stage of the stored merge in flight (`prepare`, `test`, `land`), or `null` with none.
+    fn merge_stage(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let conn = rusqlite::Connection::open_with_flags(
+            self.store_file()?,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        Ok(conn.query_row(
+            "select coalesce(json_extract(json, '$.merge_in_flight.stage.stage'), 'null') \
+             from kv where key = 'core'",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
     /// What `docs/dogfood.md` tells the operator to run before an upgrade, as `rusqlite` runs it:
     /// the JSON type of the stored `merge_in_flight`, `null` with no merge in flight.
     fn merge_in_flight(&self) -> Result<String, Box<dyn std::error::Error>> {
@@ -594,6 +608,111 @@ async fn a_server_killed_after_the_push_and_restarted_counts_the_landing_once() 
         deployment.calls_left().is_empty()
     })
     .await?;
+    second.kill9()?;
+    Ok(())
+}
+
+/// A `post-receive` hook on the trunk that holds the push of a candidate ref open until the test
+/// releases it, as `hold_pushes_open` does for `main`. The ref is in place when the hook runs, so
+/// the lander is inside `Prepare` after its push and before it answers.
+fn hold_candidate_push_open(deployment: &Deployment) -> TestResult {
+    let marks = deployment.marks.display();
+    let hook = format!(
+        "#!/bin/sh\nwhile read old new ref; do\ncase \"$ref\" in refs/tessel/candidate/*) ;; \
+         *) continue ;; esac\n: > {marks}/hook-started\nwhile [ ! -e {marks}/hook-release ] && \
+         [ -d {marks} ]; do /bin/sleep 0.1; done\n: > {marks}/hook-done\ndone\nexit 0\n"
+    );
+    let path = deployment.repos.main.join("hooks/post-receive");
+    std::fs::create_dir_all(path.parent().ok_or("no hooks dir")?)?;
+    std::fs::write(&path, hook)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// A server killed with `SIGKILL` after `Prepare` pushed the candidate ref and before the answer,
+/// the journaled head, reached the store (candidate-ref §1, "after the push, before the answer is
+/// persisted"). The restart finds a `Prepare` marker with no head, prepares again (the same head,
+/// requirement 7, so the same ref name), and the claim lands once. The ref is gone at the end.
+#[tokio::test]
+async fn a_server_killed_after_the_candidate_push_and_restarted_lands_the_claim_once() -> TestResult
+{
+    let deployment = Deployment::new()?;
+    std::fs::write(deployment.marks.join("release"), "go")?;
+    hold_candidate_push_open(&deployment)?;
+    let before = deployment.repos.main_head();
+    let commit = deployment.repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let first = deployment.start()?;
+    submit(&first, &deployment.token, &commit).await?;
+    let pushing = deployment.marks.join("hook-started");
+    wait_for("the candidate push to reach the trunk's hook", || {
+        pushing.exists()
+    })
+    .await?;
+    assert_eq!(
+        deployment.repos.main_head(),
+        before,
+        "a Prepare does not move main"
+    );
+    let pushed = deployment.candidate_refs();
+    assert_eq!(
+        pushed.lines().count(),
+        1,
+        "the head is on its candidate ref"
+    );
+    assert_eq!(
+        deployment.merge_stage()?,
+        "prepare",
+        "and no head is journaled: the marker is still the Prepare's"
+    );
+
+    first.kill9()?;
+    std::fs::write(deployment.marks.join("hook-release"), "go")?;
+    let finished = deployment.marks.join("hook-done");
+    wait_for("the held push to finish", || finished.exists()).await?;
+
+    let second = deployment.start()?;
+    let recorded = wait_for("the landing to be recorded", || {
+        deployment.events().is_ok_and(|events| {
+            events.iter().any(|kind| {
+                matches!(
+                    kind,
+                    EventKind::Merged { .. } | EventKind::SubmitRejected { .. }
+                )
+            })
+        })
+    })
+    .await;
+    if let Err(error) = recorded {
+        return Err(format!("{error}; the second server logged {:#?}", second.log()).into());
+    }
+    let events = deployment.events()?;
+    let merges = events
+        .iter()
+        .filter(|kind| matches!(kind, EventKind::Merged { .. }))
+        .count();
+    assert_eq!(merges, 1, "the claim merged once: {events:?}");
+    let rejected = events
+        .iter()
+        .any(|kind| matches!(kind, EventKind::SubmitRejected { .. }));
+    assert!(!rejected, "nothing was rejected: {events:?}");
+    assert_eq!(
+        git(
+            &deployment.repos.main,
+            &["rev-list", "--count", &format!("{before}..main")]
+        ),
+        "1",
+        "main took one commit"
+    );
+    assert_eq!(deployment.repos.show_on_main("src/a.rs"), "two");
+    wait_for("the clones to be removed", || {
+        deployment.calls_left().is_empty()
+    })
+    .await?;
+    assert_eq!(
+        deployment.candidate_refs(),
+        "",
+        "the landing deleted the ref the first Prepare pushed"
+    );
     second.kill9()?;
     Ok(())
 }

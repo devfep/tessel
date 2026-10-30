@@ -1144,6 +1144,63 @@ async fn land_is_landed_when_main_moved_past_the_head_after_the_ref_was_deleted(
     Ok(())
 }
 
+/// A `Land` killed after its push reached main and before the ref was deleted leaves main at the
+/// head and the ref in place, whether or not the read-back ran (candidate-ref §1). Everything the
+/// core then asks must find the head landed, push nothing and leave no ref.
+#[tokio::test]
+async fn a_land_killed_after_the_push_leaves_a_head_every_later_call_finds_landed() -> TestResult {
+    let repos = Repos::new();
+    let base = repos.main_head();
+    let landing = landing(&repos, "landing-killed-after-push", passing());
+    let commit = repos.fork_commit(&[("src/a.rs", "two\n")]);
+    let (_, head) =
+        prepared(&ask(&landing, prepare_request(&commit, whole_repo()), 120_000).await)?;
+    git(&repos.main, &["update-ref", "refs/heads/main", &head]);
+    assert_eq!(
+        candidate_tip(&repos, &head),
+        Some(head.clone()),
+        "the kill left the ref"
+    );
+    let id = CommitId(head.clone());
+
+    let reconciled = ask(&landing, Request::Reconcile { head: id.clone() }, 60_000).await;
+    assert_eq!(
+        reconciled,
+        CallAnswer::Reconciled {
+            main: id.clone(),
+            landed: true
+        },
+        "the recovery's question is answered from main alone"
+    );
+    assert_eq!(
+        candidate_tip(&repos, &head),
+        Some(head.clone()),
+        "a Reconcile reads only"
+    );
+
+    let landed = CallAnswer::Landed { head: id };
+    for round in ["first", "repeated"] {
+        let answer = ask(&landing, land_request(&base, &head), 120_000).await;
+        assert_eq!(answer, landed, "the {round} Land");
+        assert_eq!(repos.main_head(), head, "the {round} Land pushed nothing");
+        assert_eq!(
+            candidate_tip(&repos, &head),
+            None,
+            "the {round} Land left no ref"
+        );
+    }
+    assert_eq!(
+        git(
+            &repos.main,
+            &["rev-list", "--count", &format!("{base}..main")]
+        ),
+        "1",
+        "main took one commit"
+    );
+    assert_no_call_dirs(&repos, "landing-killed-after-push");
+    Ok(())
+}
+
 #[tokio::test]
 async fn land_with_no_ref_and_the_head_not_on_main_is_candidate_missing() -> TestResult {
     let repos = Repos::new();
