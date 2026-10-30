@@ -681,7 +681,7 @@ mod tests {
             .0
             .iter()
             .any(|event| matches!(event.kind, EventKind::RaceDecided { winner: None, .. }));
-        assert!(decided, "the race was not decided");
+        assert!(decided, "the race was not decided without a winner");
         for dispatch in sim.dispatches() {
             assert!(
                 !matches!(dispatch.request, Request::Trial { .. }),
