@@ -7,17 +7,24 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-30 07:15 UTC. Main at `3b708cd`, where RESOLVE-NAMES-HEAD landed through the
-server at 06:50 UTC as `97ca04c`..`3b708cd` (seven commits on `d5bf531`, fast-forward, so every
+**As of:** 2026-10-30 07:10 UTC. Main at `3b708cd`, where RESOLVE-NAMES-HEAD landed through the
+server at 06:50 UTC as `97ca04c`..`3b708cd` (eight commits on `d5bf531`, fast-forward, so every
 commit kept its sha and note; claim 128, held as merge path and approved by the orchestrator on a
-vote). CI (41016436513), the Adapter suite and Own users passed on `3b708cd`. Its vote, under
-Felix's standing order of 30 October (below): three Opus devil's advocates (safety of the one path
-to `Merged` outside the lander; test honesty; the operator's runbook) each voted "Yes with
-should-fixes", with no must-fix (`~/tessel-orch-notes/2026-10-30/vote-resolve-names-head/`); their
-should-fixes are RESOLVE-FOLLOWUPS (below). Before that, Opus REVIEW-1 "With changes" and two fix
-passes (`6394810`..`3b708cd`). Lane B ran it ahead of CORE-HEAD-ADOPTED's landing: the row's "after
-CORE-HEAD-ADOPTED leaves the core files" was about two lanes in one file, which the claims enforce
-file by file, and none of its files was in claim 125. Before, at 29 October 00:31 UTC,
+vote). CI (41016436513), the Adapter suite (41016436480) and Own users (41016436479) passed on
+`3b708cd`. Its vote, under Felix's standing order of 30 October (below): three Opus devil's
+advocates (safety of the one path to `Merged` outside the lander; test honesty; operations and the
+runbook) each voted "Yes with should-fixes", with no must-fix
+(`~/tessel-orch-notes/2026-10-30/vote-resolve-names-head/`); their should-fixes are
+RESOLVE-FOLLOWUPS (below). The voters were told it would land after claim 125, rebased; it landed
+first, alone on `d5bf531`, after claim 125's hold was rejected. The vote still covers the landed
+tree: VOTE-2 ran its baselines on `3b708cd` alone, VOTE-1 and VOTE-3 found no conflict in either
+order, and CI is green on it. Before the vote: Opus REVIEW-1 "With changes", fix pass 1
+(`6394810`..`a81e0da`), REVIEW-1's re-check "With changes" (the commands after the move), and fix
+pass 2 (`3b708cd`), which only the voters read. Lane B ran it ahead of CORE-HEAD-ADOPTED's landing:
+the row's "after CORE-HEAD-ADOPTED lands or leaves the core files" was about two lanes in one file.
+It edited `merging/doubt.rs` and `merging/stages.rs` in lane A's core (the cross edit its row names)
+while claim 125 held other core files; the coordinator granted every claim (no denial), which is
+what the claims enforcing it file by file rests on. Before, at 29 October 00:31 UTC,
 P1-CORE-RECONCILE landed as `8f15d61`..`df4b39a` (eleven commits, base `93a2f6a`; claim 122, held as
 merge path and approved by the orchestrator). Felix delegated the merge-path yes for it to a vote of
 Opus voters on its final commit (as for `dab6a22`); three voters (honesty and safety, test strength,
@@ -37,30 +44,33 @@ worktree and decides holds as `orchestrator`. Two lanes ran at once four times b
 coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up.
-In flight (briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28/`):
+In flight (briefs, reports and reviews in `~/tessel-orch-notes/2026-10-28/`, the 30 October votes
+in `~/tessel-orch-notes/2026-10-30/`):
 - CORE-HEAD-ADOPTED (lane A, sonnet, dispatched 00:33 UTC from `df4b39a`,
-  `.claude/worktrees/core-head-adopted`; claim 125): `8f0816d`..`8b8c07e` (gate green, 2311
-  tests), then fix pass 1 `5f671c7` (red) and `4cac8ee` (fork branch `core-head-adopted-2`; gate
-  green, 2314), then fix pass 2 `d2bfda1` (red) and `4fdd79b` (fork branch
-  `core-head-adopted-3`; gate green, 2315). It keeps owing the head read while the head is only
-  adopted; a race closing on an adopted head waits for the read, and is judged at once with tests
-  unknown once the retries are spent; a merge goes to the lander at once rather than waiting (the
-  lane's departure from the brief, so an agent on a port that cannot read heads still hears the
-  lander is missing) and records no main (`InFlight::main` is `None`; a `Prepare` never carries
-  one); the CLI fake answers the head read. Opus REVIEW-1 "With changes" (a landing that ended
-  the adoption stranded a waiting race in `Judging`; fixed); REVIEW-2 "With changes", no
-  must-fix (a race closing after the retries waited up to 90 s; the retry threshold was not
-  pinned; both fixed in pass 2, by the lane's report, not yet re-reviewed). With P1-SIM-MERGE's
-  `4c99b4e` merged on top (scratch), seeds 196 and 229 (which fail without it) and 64 pass, and
-  0..300 has no agent-base failure. Opus REVIEW-3 "Yes" on `4fdd79b`; submitted and held as
-  merge path (`src/coordinator/` is sensitive). Its vote (30 October,
-  `~/tessel-orch-notes/2026-10-30/vote-core-head-adopted/`): VOTE-1 "No (must-fix)": a head
-  adopted from a `Hello` with no read owed (no failed read, core not loaded, no start read: a
-  `NoLander` port or an empty store) strands a closing race in `Judging` for good, a regression
-  from `df4b39a`, shown by a probe and a control at `df4b39a`; VOTE-3 "Yes with should-fixes".
-  The orchestrator rejected the hold (claim 125 active again), and fix pass 3 (`FIX-3.md`) is
-  running: the must-fix with core and `NoLander` server tests, plus the votes' small should-fixes.
-  Then a re-vote.
+  `.claude/worktrees/core-head-adopted`; claim 125): `8f0816d`..`8b8c07e` (gate green, 2311 tests),
+  then fix pass 1 `5f671c7` (red) and `4cac8ee` (fork branch `core-head-adopted-2`; gate green,
+  2314), then fix pass 2 `d2bfda1` (red) and `4fdd79b` (fork branch `core-head-adopted-3`; gate
+  green, 2315). It keeps owing the head read while the head is only adopted; a race closing on an
+  adopted head waits for the read, and is judged at once with tests unknown once the retries are
+  spent; a merge goes to the lander at once rather than waiting (the lane's departure from the
+  brief, so an agent on a port that cannot read heads still hears the lander is missing) and records
+  no main (`InFlight::main` is `None`; a `Prepare` never carries one); the CLI fake answers the head
+  read. Opus REVIEW-1 "With changes" (a landing that ended the adoption stranded a waiting race in
+  `Judging`; fixed); REVIEW-2 "With changes", no must-fix (a race closing after the retries waited
+  up to 90 s; the retry threshold was not pinned; both fixed in pass 2, re-reviewed by REVIEW-3).
+  With P1-SIM-MERGE's `4c99b4e` merged on top (scratch), seeds 196 and 229 (which fail without it)
+  and 64 pass, and 0..300 has no agent-base failure. Opus REVIEW-3 "Yes" on `4fdd79b`; submitted and
+  held as merge path (`src/coordinator/` is sensitive). Its vote (30 October,
+  `~/tessel-orch-notes/2026-10-30/vote-core-head-adopted/`): VOTE-1 "No (must-fix)": a head adopted
+  from a `Hello` with no read owed strands a closing race in `Judging` for good, a regression from
+  `df4b39a` (a probe at `4fdd79b`, a control at `df4b39a`). It needs a port that never reads heads
+  (`NoLander`, or any `reads_trunk_head() == false`) with an empty store, or a `Landing` port whose
+  fresh store's first commit failed; an empty store on a `Landing` port gets the start read and is
+  fine. VOTE-3 "Yes with should-fixes"; its should-fix 1 is the same `NoLander` case. VOTE-2 was
+  still running at 07:10 UTC. The orchestrator rejected the hold on VOTE-1's must-fix alone (claim
+  125 active again), and fix pass 3 (`FIX-3.md`) is running: the must-fix with core and `NoLander`
+  server tests, plus the votes' small should-fixes. VOTE-2's findings go to fix pass 3 or the
+  re-vote.
 - P1-SIM-MERGE (lane A): fix pass 1 at `4c99b4e` (fork branch `sim-merge-2`; gate green, 2291
   tests) answers REVIEW-1's "No" except the agent-base failure, which is CORE-HEAD-ADOPTED's.
   Opus REVIEW-2 "With changes", no must-fix of the lane's: I3's chain clause cannot fire on the
@@ -85,21 +95,22 @@ In flight (briefs, reports, reviews and votes in `~/tessel-orch-notes/2026-10-28
 P1-HOST-HARDENING follows P1-CORE-RECONCILE; P1-ONE-BATCH follows CORE-HEAD-ADOPTED;
 P1-ADAPTER-SUITE's rest follows P1-HOST-HARDENING; P1-FAILPOINTS follows P1-SIM-MERGE. The dogfood
 server runs `455c889` from `~/tessel-dogfood/bin` (restarted 27 October 22:25 UTC). Its
-upgrade's "When" (`docs/dogfood.md`) is met: P1-SERVER-STAGED, P1-CORE-STAGED-LANDING and
-P1-CORE-RECONCILE have landed. The orchestrator adds RESOLVE-NAMES-HEAD as a gate, since after the
-upgrade `admin resolve` would be live with an unchecked `--landed`; it landed at `3b708cd`, so the
-upgrade now waits only on the trial landing, which waits on Felix's token (below).
+upgrade's "When" (`docs/dogfood.md`) is met: P1-SERVER-STAGED, P1-CORE-STAGED-LANDING,
+P1-CORE-RECONCILE and RESOLVE-NAMES-HEAD (which `docs/dogfood.md` names since `3b708cd`) have
+landed. The upgrade waits on the trial landing, which waits on Felix's token (below), and on the
+page's "nothing in flight" check. Before an upgrade that includes CORE-HEAD-ADOPTED, the
+orchestrator confirms no served repository lacks a `remote` (its VOTE-1).
 `.claude/worktrees/orchestrator` holds this
 commit, `gate-main` (at `455c889`) is the gate worktree.
 **Standing order from Felix (24 October, morning):** each recommendation goes to adversarial Opus
 reviewers first; on their buy-in the orchestrator proceeds without asking.
 **Standing order from Felix (30 October):** "always vote via adversarial, devils advocate
-subagents": every merge-path yes ("Felix reviews") is a vote of three Opus devil's advocates on
-the final commit, standing in for his written yes (BUILD-PROTOCOL section 6), and "you have my
-standing order to merge your PRs": the orchestrator merges its own pull requests (`tessel.toml`,
-the server's set-up, or anything the server cannot land) after CI and review. If the auto-mode
-classifier refuses such a merge, the orchestrator gives Felix the command. Everything else lands
-through the server.
+subagents": every merge-path yes ("Felix reviews") is a vote of Opus devil's advocates (three, on
+the final commit: the orchestrator's convention, not his words), standing in for his written yes
+(BUILD-PROTOCOL section 6), and "you have my standing order to merge your PRs": the orchestrator
+merges its own pull requests (`tessel.toml`, the server's set-up, or anything the server cannot
+land) after CI and review. If the auto-mode classifier refuses such a merge, the orchestrator gives
+Felix the command. Everything else lands through the server.
 **Decided by Felix (24 October):** D1 as written, with the ruleset split below; D2 (a), private
 repos `devfep/tessel-lane-a`, `-lane-b` and `-orchestrator` (Actions off), lanes pushing a new
 branch per submission since #114; D3 accepted with landing builds capped at 6 jobs
@@ -134,8 +145,8 @@ sandbox commits use his GitHub noreply address.
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
 **Next:** CORE-HEAD-ADOPTED's fix pass 3 (lane A), its re-vote and landing; then P1-SIM-MERGE's
-fix pass 2, rebase and landing (lane A); P1-HOST-HARDENING (lane B) once claim 125 releases
-`src/host/tests.rs`, with RESOLVE-FOLLOWUPS' host test; then P1-ONE-BATCH. Felix
+fix pass 2, rebase and landing (lane A), then RACE-UNKNOWN-REASON (lane A); P1-HOST-HARDENING with
+RESOLVE-FOLLOWUPS (lane B) once claim 125 releases its files; then P1-ONE-BATCH. Felix
 makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts local
 connections on a world-writable socket; he closes it before the accounts move.
 LANDER-ADMIN-POLICY-DEAD waits for M6.
@@ -1147,56 +1158,62 @@ Lane B:
   upgrade, a gate the orchestrator adds (the live `455c889` has no `admin resolve`), resting on
   VOTE-1 and VOTE-3 should-fix 1, STATE-1029-1's review and the standing order; it adds itself to
   `docs/dogfood.md`'s "When". The should-fixes of P1-CORE-RECONCILE's merge-path vote
-  (`~/tessel-orch-notes/2026-10-28/vote-core-reconcile/VOTE-1..3.md`). `--landed` is the one path
-  to `Merged` the lander does not check, and the operator is never shown the head to check (the
-  lander rebases, so the claim's own commit is not on main by its sha): log `base` and `head` in
-  the doubt line, print them in `admin resolve`, and give the runbook's read
-  (`merge_in_flight.stage.head`, then `git merge-base --is-ancestor`) and that `--not-landed` is
-  safe when unsure. Requiring `--landed <head>` equal to the journaled head (VOTE-1's "preferably")
-  is the orchestrator's choice, an operator CLI change for Felix's review. Tests the votes found
+  (`~/tessel-orch-notes/2026-10-28/vote-core-reconcile/VOTE-1..3.md`). `--landed` is the one path to
+  `Merged` the lander does not check, and the operator is never shown the head to check (the lander
+  rebases, so the claim's own commit is not on main by its sha): log `base` and `head` in the doubt
+  line, print them in `admin resolve`, and give the runbook's read (`merge_in_flight.stage.head`,
+  then `git merge-base --is-ancestor`) and that `--not-landed` is safe when unsure. Requiring
+  `--landed <head>` equal to the journaled head (VOTE-1's "preferably") is the orchestrator's
+  choice, an operator CLI change; the vote's VOTE-3 found it acceptable. Tests the votes found
   missing (VOTE-2: missing tests, not wrong behaviour): the `--landed` / `--not-landed` mapping in
   `run_admin` (a swap survives; a binary test against a stored `Land` in doubt), `resolve_doubt`
   refusing another claim (dropping its claim filter survives), `restart.rs` keeping the candidate
-  ref, `!skippable()` for every v1 type, a waiter granted by an offline `--landed` getting its
-  grant on reconnect (every notice is dropped as unsent), and the vacuous `merge_doubt` skip test
-  dropped or made to check the count. Also: the "core retries" wording after a `Land` that ends
-  `Unknown`; an `Unstaged` doubt does end in an infrastructure rejection at the retry bound
-  (`retry_after_infrastructure`, reachable only by breaking "nothing in flight"): fix or
-  document; a `Land` whose push fails for good resends forever (document what the operator
-  fixes); the log's `--config`; run resolve as the store's owner; `docs/dogfood.md:154-155` splits
-  the fixture test's name in a code span; after `--landed` the lane sees "claim N is gone from the
-  coordinator", not `merged`, which the upgrade's "nothing in flight" check must accept. VOTE-3's
-  optional `admin resolve --reject` is not taken. Also the seven missed mutants the scheduled
-  Nightly 40853018831 found on `001606a` in P1-CORE-RECONCILE's code, which its baseline allows
-  none of: `src/coordinator/merging/doubt.rs` (`enter_doubt`: a deleted `doubts` field and
-  `+=` to `*=`; `resend_land`: a deleted `retry_at_ms`; `&&` to `||` in `reconcile_outcome` and
-  in `resolve_doubt`'s `submitted`/`work` guard, not VOTE-2's M2) and `src/merge.rs:51` (`*` to
-  `+` and `/`); until then the Nightly's baseline check fails on them. The core tests are a
-  cross edit into lane A's core, named here.
-- [ ] **RESOLVE-FOLLOWUPS** — S, lane B, after CORE-HEAD-ADOPTED lands (it releases
-  `src/host/tests.rs`), with P1-HOST-HARDENING; from RESOLVE-NAMES-HEAD's REVIEW-1 and vote
+  ref, `!skippable()` for every v1 type, a waiter granted by an offline `--landed` getting its grant
+  on reconnect (every notice is dropped as unsent), and the vacuous `merge_doubt` skip test dropped
+  or made to check the count. Also: the "core retries" wording after a `Land` that ends `Unknown`;
+  an `Unstaged` doubt does end in an infrastructure rejection at the retry bound
+  (`retry_after_infrastructure`, reachable only by breaking "nothing in flight"): fix or document; a
+  `Land` whose push fails for good resends forever (document what the operator fixes); the log's
+  `--config`; run resolve as the store's owner; `docs/dogfood.md:154-155` splits the fixture test's
+  name in a code span; after `--landed` the lane sees "claim N is gone from the coordinator", not
+  `merged`, which the upgrade's "nothing in flight" check must accept. VOTE-3's optional `admin
+  resolve --reject` is not taken. Also the seven missed mutants the scheduled Nightly 40853018831
+  found on `001606a` in P1-CORE-RECONCILE's code, which its baseline allows none of:
+  `src/coordinator/merging/doubt.rs` (`enter_doubt`: a deleted `doubts` field and `+=` to `*=`;
+  `resend_land`: a deleted `retry_at_ms`; `&&` to `||` in `reconcile_outcome` and in
+  `resolve_doubt`'s `submitted`/`work` guard, not VOTE-2's M2) and `src/merge.rs:51` (`*` to `+` and
+  `/`); until then the Nightly's baseline check fails on them. The core tests are a cross edit into
+  lane A's core, named here.
+- [ ] **RESOLVE-FOLLOWUPS** — S, lane B, after CORE-HEAD-ADOPTED lands, with P1-HOST-HARDENING; a
+  cross edit into lane A's and claim 125's files, named here: `src/host/tests.rs`,
+  `tessel-cli/tests/support/mod.rs` (the CLI waiter test), `src/coordinator/merging/stages.rs` (M3's
+  assert) and `docs/dogfood.md`; from RESOLVE-NAMES-HEAD's REVIEW-1 and vote
   (`~/tessel-orch-notes/2026-10-30/vote-resolve-names-head/VOTE-1..3.md`), resting on the votes and
   the standing order. A host test that the real base and head reach the doubt log line (a swap
   survives today; `host_a_land_in_doubt_logs_the_claim_for_the_operator`). The runbook's step 1
   read: `-readonly` fails after a clean close ("unable to open database file"); run it as the
-  store's owner without it, or add a read-only `admin` command printing stage, claim, base and
-  head. The log line's command lacks `--tenant`/`--repo` when the config lists several. After the
-  move: the log path, the full `launchctl bootstrap` command, the pid kill's quoting, a command
-  that waits for the stop. Say that `--landed` copies no notes (no `Merged` notice reaches the
-  daemon; copy them by hand). Reword M3's assert to what it checks or record it as equivalent in
-  `.cargo/mutants.toml`. After CORE-HEAD-ADOPTED: an offline `--landed` also releases races
-  waiting on the head and drops their `RaceResult` notices; a test that state and log stay right
-  and the entrants learn on reconnect. A CLI test that a waiter's daemon adopts the claim granted
-  by an offline `--landed`. For later (design, not a regression): `Merged` settled by the operator
-  is not told apart from one the lander verified (rule 6; an additive marker), and the head check
-  stops typos, not a skipped ancestry read (`admin resolve --landed` could run it through the
-  lander's `git_read`).
-- [ ] **RACE-UNKNOWN-REASON** — S, lane A, from CORE-HEAD-ADOPTED's VOTE-1 should-fix 2, resting on
-  the vote and the standing order. A `TestsPass` race judged with the tests unknown rejects every
-  entrant with `LOST_RACE` (`protocol.rs:472` filters out `None`): honest about the outcome, but an
-  agent is told it lost a race no trial judged. Keep such races waiting, or give a reason saying the
-  tests did not run (a new reason value in a logged event bumps `PROTOCOL_VERSION`: invariant 13;
-  ask Felix if so).
+  store's owner without it, or add a read-only `admin` command printing stage, claim, base and head;
+  the runbook says what "unable to open database file" means. `tests/restart.rs`'s helper runs the
+  old two-column query, not the runbook's four-column one. The log line's command lacks
+  `--tenant`/`--repo` when the config lists several. After the move: the log path, the full
+  `launchctl bootstrap` command, the pid kill's quoting, a command that waits for the stop. Say that
+  `--landed` copies no notes (no `Merged` notice reaches the daemon; copy them by hand). Reword M3's
+  assert to what it checks or record it as equivalent in `.cargo/mutants.toml`. After
+  CORE-HEAD-ADOPTED: an offline `--landed` also releases races waiting on the head and drops their
+  `RaceResult` notices; a test that state and log stay right and the entrants learn on reconnect, or
+  the runbook says those results are not sent as notices. A CLI test that a waiter's daemon adopts
+  the claim granted by an offline `--landed`. For later (design, not a regression): `Merged` settled
+  by the operator is not told apart from one the lander verified (rule 6; an additive marker), and
+  the head check stops typos, not a skipped ancestry read (`admin resolve --landed` could run it
+  through the lander's `git_read`).
+- [ ] **RACE-UNKNOWN-REASON** — S, lane A, after CORE-HEAD-ADOPTED (it changes `racing.rs`), from
+  that task's VOTE-1 should-fix 2, resting on the vote and the standing order. A `TestsPass` race
+  judged with the tests unknown rejects every entrant with `LOST_RACE` and logs
+  `ReleaseReason::LostRace` (`racing.rs:746`; `protocol.rs:472` filters out `None`): honest about
+  the outcome, but an agent is told it lost a race no trial judged. Keep such races waiting, or give
+  them a rejection text saying the tests did not run. The text is a free `String` in
+  `SubmitRejected` (`NOT_PICKED` is a second fixed text already), so a new text keeps the version; a
+  new `ReleaseReason` value bumps it (invariant 13), so ask Felix only then.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
