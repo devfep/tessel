@@ -283,7 +283,9 @@ mod tests {
 
     #[test]
     fn window_ref_lost_between_test_and_land_main_at_base_lands_once() {
-        crash_and_land_without_refs(at(Step::Land, Moment::Persisted), [2, 2, 2, 1]);
+        // The second `Prepare` makes the doubted head again, which already passed its `Test`, so
+        // it goes straight to `Land`: no later test can reject work a late `Land` may put on main.
+        crash_and_land_without_refs(at(Step::Land, Moment::Persisted), [2, 1, 2, 1]);
     }
 
     #[test]

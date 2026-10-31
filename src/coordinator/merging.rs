@@ -61,7 +61,7 @@ mod doubt;
 
 pub use doubt::{NoLandInDoubt, Reconciliation};
 
-use doubt::{mark_doubt, Pace};
+use doubt::{is_fenced, mark_doubt, Pace};
 
 use crate::merge::{
     infra_backoff_ms, MergeOutcome, MergeRecord, ReviewDecision, ReviewRecord, Verdict,
@@ -211,6 +211,7 @@ impl Coordinator {
                 return None;
             }
             if let Some(dispatch) = self.dispatch_of(&flight) {
+                self.release_doubt_wait(&flight);
                 return Some(dispatch);
             }
             self.state.merge_in_flight = None;
@@ -240,6 +241,22 @@ impl Coordinator {
         Some(dispatch)
     }
 
+    /// The `Prepare` of a submission in doubt is going out: its wait is over. The marker the host
+    /// stores before the call says so, which tells a restart that the call may have run.
+    fn release_doubt_wait(&mut self, flight: &InFlight) {
+        if flight.stage != MergeStage::Prepare || flight.doubt_since_ms.is_none() {
+            return;
+        }
+        let work = self
+            .state
+            .claims
+            .get_mut(&flight.claim.0)
+            .and_then(|held| held.work.as_mut());
+        if let Some(work) = work {
+            work.retry_at_ms = None;
+        }
+    }
+
     /// Whether `flight` is still waiting out a backoff: a `Reconcile` after an `Unknown`, or the
     /// `Prepare` of a submission kept in doubt (see `doubt`). Any other flight began after its
     /// backoff.
@@ -253,6 +270,14 @@ impl Coordinator {
             && self
                 .retry_at_ms(flight.claim)
                 .is_some_and(|due| due > now_ms)
+    }
+
+    /// Whether `flight` is the `Prepare` that `wait_in_doubt` made and no call has gone out for:
+    /// `begin_merge` clears the wait when it offers it. A wake finds it at any time after its
+    /// backoff, and must not read it as a `Prepare` a restart cut off, or it would renew the wait
+    /// for ever.
+    fn waits_in_doubt(&self, flight: &InFlight) -> bool {
+        flight.doubt_since_ms.is_some() && self.retry_at_ms(flight.claim).is_some()
     }
 
     fn retry_at_ms(&self, claim: ClaimId) -> Option<u64> {
@@ -302,6 +327,10 @@ impl Coordinator {
                 self.state.merge_in_flight = Some(flight);
                 return Vec::new();
             }
+            MergeStage::Prepare if self.waits_in_doubt(&flight) => {
+                self.state.merge_in_flight = Some(flight);
+                return Vec::new();
+            }
             MergeStage::Prepare | MergeStage::Unstaged => {}
         }
         let doubt = (
@@ -313,19 +342,21 @@ impl Coordinator {
 
     /// A restart cut off a `Test`: the head is journaled and its candidate ref survives
     /// (candidate-ref §1), so the same `Test` goes out again under a new dispatch id instead of a
-    /// `Prepare` and a push. It counts as an infrastructure failure and cannot be in doubt. It
-    /// goes out at once, with no backoff: the restart was this process's, not a lander that
-    /// failed, and `MAX_INFRA_RETRIES` bounds it, except for a claim in doubt, which counts
-    /// nothing and is never rejected. If the ref is gone the lander answers `CandidateMissing`
-    /// and the claim goes back to `Prepare`.
+    /// `Prepare` and a push. It counts as an infrastructure failure. It goes out at once, with no
+    /// backoff: the restart was this process's, not a lander that failed, and `MAX_INFRA_RETRIES`
+    /// bounds it. If the ref is gone the lander answers `CandidateMissing` and the claim goes back
+    /// to `Prepare`. A claim in doubt of a `Land` is neither counted nor rejected, and is not
+    /// resent: it waits the doubts' capped backoff and goes back to `Prepare`
+    /// (`wait_in_doubt`), so a commit that kills the server at its `Test` cannot loop at once.
     fn resend_test(&mut self, flight: InFlight, held: ActiveClaim, now_ms: u64) -> Vec<Effect> {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
         };
-        if !work.in_doubt {
-            work.infra_failures += 1;
+        if is_fenced(&work) {
+            return self.wait_in_doubt(flight, held, now_ms);
         }
-        if work.infra_failures > MAX_INFRA_RETRIES && !work.in_doubt {
+        work.infra_failures += 1;
+        if work.infra_failures > MAX_INFRA_RETRIES {
             let reason = infra_rejection(work.infra_failures);
             return self.reject_work(flight.claim, held, Rejection::plain(reason), now_ms);
         }
@@ -401,7 +432,7 @@ impl Coordinator {
             flight.stage.dispatched_from(flight.main.as_ref()),
             flight.stage.may_have_landed(),
         );
-        let in_doubt = held.work.as_ref().is_some_and(|work| work.in_doubt);
+        let fenced = held.work.as_ref().is_some_and(is_fenced);
         match (&flight.stage, outcome.verdict()) {
             (MergeStage::Prepare, Verdict::Prepared { base, head }) => {
                 self.prepared(flight, held, (base, head))
@@ -424,7 +455,7 @@ impl Coordinator {
             (MergeStage::Land { .. } | MergeStage::Reconcile { .. }, verdict) => {
                 self.land_stage_outcome(flight, held, verdict, now_ms)
             }
-            (MergeStage::Test { .. }, Verdict::Rejected { .. }) if in_doubt => {
+            (MergeStage::Prepare | MergeStage::Test { .. }, Verdict::Rejected { .. }) if fenced => {
                 self.wait_in_doubt(flight, held, now_ms)
             }
             (
@@ -434,12 +465,7 @@ impl Coordinator {
             (
                 MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged,
                 Verdict::MainMoved,
-            ) => {
-                let told = flight.doubt_since_ms.is_some();
-                let (held, mut effects) = self.end_doubt(claim, held, told);
-                effects.extend(self.retry_after_move(claim, held, now_ms));
-                effects
-            }
+            ) => self.main_moved_before_land(flight, held, now_ms),
             (MergeStage::Test { .. }, Verdict::CandidateMissing) => {
                 self.retry_after_missing_candidate(flight, held, now_ms)
             }
@@ -457,11 +483,35 @@ impl Coordinator {
         }
     }
 
-    /// The `Prepare` of `flight` answered `base` and `head`. A submission whose `Land` is in doubt
+    /// `MainMoved` came back to a `Prepare` or a `Test`. A submission in doubt of a `Land` first
+    /// asks a `Reconcile` whether the head landed (`reconcile_before_ending`); otherwise the doubt
+    /// ends, if the submitter was told of it, and the move is counted.
+    fn main_moved_before_land(
+        &mut self,
+        flight: InFlight,
+        held: ActiveClaim,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let claim = flight.claim;
+        let pair = held
+            .work
+            .as_ref()
+            .filter(|work| is_fenced(work))
+            .and_then(|work| work.doubted_land.clone());
+        if let Some(pair) = pair {
+            return self.reconcile_before_ending(flight, held, pair, now_ms);
+        }
+        let told = flight.doubt_since_ms.is_some();
+        let (held, mut effects) = self.end_doubt(claim, held, told);
+        effects.extend(self.retry_after_move(claim, held, now_ms));
+        effects
+    }
+
+    /// The `Prepare` of `flight` answered `base` and `head`. A submission in doubt of a `Land`
     /// goes on from what it knows: a `base` other than the one that `Land` leased ends the doubt,
     /// since main has left it and that `Land` can never succeed; the doubted pair itself goes
     /// straight to `Land`, as its head already passed the `Test`; any other head is tested, still
-    /// in doubt.
+    /// in doubt. A doubt with no pair is not ended by a `Prepared`: it has no lease to compare.
     fn prepared(
         &mut self,
         flight: InFlight,
@@ -479,17 +529,20 @@ impl Coordinator {
         let mut flight = flight;
         let mut effects = Vec::new();
         let told = flight.doubt_since_ms.is_some();
-        if told && work.unanswered_from.as_ref() != Some(&base) {
-            let (cleared, ended) = self.end_doubt(claim, held, told);
-            self.state.claims.insert(claim.0, cleared);
-            flight = InFlight {
-                doubts: 0,
-                doubt_since_ms: None,
-                ..flight
-            };
-            effects = ended;
-        } else if work.in_doubt && work.doubted_head.as_ref() == Some(&head) {
-            next = MergeStage::Land { base, head };
+        let doubted = work.doubted_land.clone().filter(|_| is_fenced(&work));
+        if let Some((leased, doubted_head)) = doubted {
+            if leased != base {
+                let (cleared, ended) = self.end_doubt(claim, held, told);
+                self.state.claims.insert(claim.0, cleared);
+                flight = InFlight {
+                    doubts: 0,
+                    doubt_since_ms: None,
+                    ..flight
+                };
+                effects = ended;
+            } else if doubted_head == head {
+                next = MergeStage::Land { base, head };
+            }
         }
         self.advance(flight, next);
         effects
@@ -874,10 +927,10 @@ impl Coordinator {
     /// `dispatched_from` is main as the attempt began; a `Land` that did not finish may have landed
     /// on it, and the claim is then in doubt. A `Prepare` or a `Test` cannot have changed main.
     ///
-    /// A claim in doubt is never rejected for it. One the submitter was told of (a `Land` left it
-    /// in doubt) counts nothing more and goes back to `Prepare` after the doubts' capped backoff
-    /// (`wait_in_doubt`). One from a marker stored before the staged landing has no merge in
-    /// flight while it waits; it counts as before but waits the same capped backoff.
+    /// A claim in doubt is never rejected for it. One in doubt of a `Land` (it has a doubted pair)
+    /// counts nothing more and goes back to `Prepare` after the doubts' capped backoff
+    /// (`wait_in_doubt`). One from a marker stored before the staged landing has no pair and no
+    /// merge in flight while it waits; it counts as before but waits the same capped backoff.
     fn retry_after_infrastructure(
         &mut self,
         flight: InFlight,
@@ -892,8 +945,7 @@ impl Coordinator {
         if may_have_landed {
             mark_doubt(&mut work, dispatched_from, None);
         }
-        let told = flight.doubt_since_ms.is_some();
-        if work.in_doubt && told {
+        if is_fenced(&work) {
             let held = ActiveClaim {
                 work: Some(work),
                 ..held

@@ -12,13 +12,20 @@
 //!   dispatch id as contention (`moved`), and the doubt is over.
 //!
 //! The doubt outlives the `Land`. A copy of it that has not run yet may land the head any time
-//! main is still at its base, and the core's own `Prepare` re-makes the candidate ref it needs. So
-//! while the submission is in doubt (`Submission::in_doubt`) nothing in its merge rejects it: a
-//! refusal or a missing candidate at `Test` or `Land`, a failed `Prepare` and a cut-off all send it
-//! back to `Prepare` after the capped backoff (`wait_in_doubt`), counting nothing. A `Prepare` that
-//! answers the doubted base and head goes straight to `Land`. The doubt ends only when the work
-//! lands, or when main is known to have left the leased base (`MainMoved`, a `Prepared` on another
-//! base, or a reconcile that finds main elsewhere).
+//! main is still at its base, and the core's own `Prepare` re-makes the candidate ref it needs. The
+//! doubt carries that `Land`'s own `(base, head)` (`Submission::doubted_land`, written at every
+//! doubt), and while it does nothing in the merge rejects the work: a refusal at any stage, a
+//! missing candidate, a failed `Prepare`, a cut-off and a restart all send it back to `Prepare`
+//! after the capped backoff (`wait_in_doubt`), counting nothing. A `Prepare` that answers the
+//! doubted pair goes straight to `Land`. The doubt ends only when the work lands, when the operator
+//! says it did not, or when main is known to have left the doubted base: a `Prepared` on another
+//! base, a `MainMoved` once a `Reconcile` has found the head not on main, or a reconcile that finds
+//! main elsewhere.
+//!
+//! A doubt with no pair (a marker stored before the staged landing) has no late `Land` to fence: a
+//! refusal rejects it as it did, an infrastructure failure counts and waits the capped backoff
+//! without rejecting, and a `Prepared` never ends it. It cannot be resolved by the operator, who
+//! resolves a `Land`; the runbook's "Nothing in flight" check forbids upgrading with one.
 //!
 //! None of it counts toward `MAX_INFRA_RETRIES`, and none of it rejects. What bounds it is the
 //! rate: each `Unknown`, from the `Land` or from a `Reconcile`, waits the capped infrastructure
@@ -57,14 +64,26 @@ impl std::fmt::Display for NoLandInDoubt {
 impl std::error::Error for NoLandInDoubt {}
 
 /// Record that an attempt may have landed. The first baseline is kept through later doubts: a
-/// landing found later spans from the first main the work may have been landed on. `head` is the
-/// head of the `Land` in doubt, if there is one.
-pub(super) fn mark_doubt(work: &mut Submission, from: Option<CommitId>, head: Option<CommitId>) {
+/// landing found later spans from the first main the work may have been landed on. `land` is the
+/// `(base, head)` of the `Land` in doubt, if there is one; it replaces the pair of an earlier
+/// doubt, since it is the lease of the latest `Land` that a late copy can still use.
+pub(super) fn mark_doubt(
+    work: &mut Submission,
+    from: Option<CommitId>,
+    land: Option<(CommitId, CommitId)>,
+) {
     if !work.in_doubt {
         work.in_doubt = true;
         work.unanswered_from = from;
-        work.doubted_head = head;
     }
+    if land.is_some() {
+        work.doubted_land = land;
+    }
+}
+
+/// The submission is in doubt of a `Land` whose lease a late copy can still use.
+pub(super) fn is_fenced(work: &Submission) -> bool {
+    work.in_doubt && work.doubted_land.is_some()
 }
 
 /// How the next `Reconcile` is paced.
@@ -95,7 +114,11 @@ impl Coordinator {
             let wait = infra_backoff_ms(doubts.min(MAX_INFRA_RETRIES));
             work.retry_at_ms = Some(now_ms.saturating_add(wait));
         }
-        mark_doubt(&mut work, Some(base.clone()), Some(head.clone()));
+        mark_doubt(
+            &mut work,
+            Some(base.clone()),
+            Some((base.clone(), head.clone())),
+        );
         let first = flight.doubt_since_ms.is_none();
         let since = flight.doubt_since_ms.unwrap_or(now_ms);
         let (claim, agent) = (flight.claim, held.agent.clone());
@@ -141,6 +164,29 @@ impl Coordinator {
         Self::doubt_notice(first, claim, agent, since)
     }
 
+    /// `MainMoved` came back to a `Prepare` or a `Test` of a submission in doubt of the `pair`: a
+    /// late copy of that `Land` may be the move (the lander's pin and its clone are separate
+    /// reads), so the doubt is not ended on the word of a call that cannot tell. A `Reconcile`
+    /// under a new dispatch id asks whether the head is on main; its answer lands the work or ends
+    /// the doubt as any `Reconcile` does. Nothing is counted, and it goes out at once.
+    pub(super) fn reconcile_before_ending(
+        &mut self,
+        flight: InFlight,
+        held: ActiveClaim,
+        pair: (CommitId, CommitId),
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let dispatch = self.state.last_dispatch + 1;
+        self.state.last_dispatch = dispatch;
+        let flight = InFlight { dispatch, ..flight };
+        let work = held.work.clone().map(|work| Submission {
+            retry_at_ms: None,
+            ..work
+        });
+        let held = ActiveClaim { work, ..held };
+        self.enter_doubt(flight, held, pair, (Pace::AtOnce, now_ms))
+    }
+
     /// Tell the submitter their landing is in doubt, the first time only.
     fn doubt_notice(first: bool, claim: ClaimId, agent: AgentId, since: u64) -> Vec<Effect> {
         if !first {
@@ -154,7 +200,7 @@ impl Coordinator {
     }
 
     /// The doubt about `claim`'s `Land` is over and the work did not land: forget the baseline, the
-    /// doubted head and the wait, and tell the submitter if it was told of the doubt. A doubt the
+    /// doubted pair and the wait, and tell the submitter if it was told of the doubt. A doubt the
     /// submitter was not told of is left as it is: it began before the staged landing, and its
     /// baseline outlives a move of main (see `Submission::unanswered_from`).
     pub(super) fn end_doubt(
@@ -170,7 +216,7 @@ impl Coordinator {
         let work = held.work.clone().map(|work| Submission {
             in_doubt: false,
             unanswered_from: None,
-            doubted_head: None,
+            doubted_land: None,
             retry_at_ms: None,
             ..work
         });
@@ -279,10 +325,7 @@ impl Coordinator {
     /// round `Prepare` and `Test` again.
     fn doubted_pair(&self, claim: ClaimId) -> Option<(CommitId, CommitId)> {
         let work = self.state.claims.get(&claim.0)?.work.as_ref()?;
-        if !work.in_doubt {
-            return None;
-        }
-        Some((work.unanswered_from.clone()?, work.doubted_head.clone()?))
+        work.in_doubt.then(|| work.doubted_land.clone())?
     }
 
     /// What the lander's answer means to a merge at its `Land` (or at the `Reconcile` that follows
@@ -318,9 +361,9 @@ impl Coordinator {
             return Vec::new();
         }
         let told = flight.doubt_since_ms.is_some();
-        let in_doubt = held.work.as_ref().is_some_and(|work| work.in_doubt);
+        let fenced = held.work.as_ref().is_some_and(is_fenced);
         match verdict {
-            Verdict::Rejected { .. } if in_doubt => self.wait_in_doubt(flight, held, now_ms),
+            Verdict::Rejected { .. } if fenced => self.wait_in_doubt(flight, held, now_ms),
             Verdict::Rejected { reason } => {
                 self.reject_work(claim, held, Rejection::plain(reason), now_ms)
             }
@@ -341,7 +384,8 @@ impl Coordinator {
     }
 
     /// Main is still at the base the `Land` leased and does not hold the head: the same `Land`
-    /// goes out again under its dispatch id, which `begin_merge` offers.
+    /// goes out again under its dispatch id, which `begin_merge` offers. Its pair is kept as the
+    /// doubted one, which gives a doubt stored before the pair existed the pair it lacks.
     fn resend_land(
         &mut self,
         flight: InFlight,
@@ -353,6 +397,7 @@ impl Coordinator {
         };
         let work = Submission {
             retry_at_ms: None,
+            doubted_land: Some((base.clone(), head.clone())),
             ..work
         };
         self.keep_work(flight.claim, held, work);

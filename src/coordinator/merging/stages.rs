@@ -1383,7 +1383,7 @@ fn a_restart_at_test_in_doubt_waits_the_doubts_backoff_counts_nothing_and_never_
         let due = retry_at(&c, claim);
         assert!(due > now, "restart {restart}");
         assert!(
-            due - now <= infra_backoff_ms(MAX_INFRA_RETRIES),
+            due - c.state.clock_ms <= infra_backoff_ms(MAX_INFRA_RETRIES),
             "{restart}: capped"
         );
         assert_eq!(
@@ -1771,6 +1771,30 @@ fn main_moved_at_prepare_or_test_ends_only_a_doubt_the_submitter_was_told_of() {
         (work(&c, claim).in_doubt, work(&c, claim).moved),
         (false, 1)
     );
+}
+
+#[test]
+fn a_wake_before_a_doubted_prepare_is_due_does_not_recover_it_as_cut_off() {
+    let (mut c, claim, again) = resent_land();
+    c.merge_outcome(again.id, &MergeOutcome::CandidateMissing {}, NOW + 10_001);
+    let due = retry_at(&c, claim);
+    for wake in [due - 1, due, due + 50_000] {
+        assert!(c.recover_merge(wake).is_empty(), "wake {wake}");
+        assert_eq!(
+            retry_at(&c, claim),
+            due,
+            "wake {wake}: the wait is not renewed"
+        );
+    }
+    let prepare = c
+        .begin_merge(due)
+        .expect("the Prepare goes out when it is due");
+    assert_eq!(prepare.stage, MergeStage::Prepare);
+    assert!(
+        c.recover_merge(due + 1).is_empty(),
+        "a restart after the dispatch"
+    );
+    assert!(retry_at(&c, claim) > due, "cut off: it waits again");
 }
 
 // ---- Welcome lists the claims in doubt ----
