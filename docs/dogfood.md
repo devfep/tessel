@@ -194,6 +194,22 @@ binaries, upgrade as below first.
   records the landing in the repository's event log, and the lane finds out from that log when it
   reconnects), the lanes are idle, `server.log` has no timeout or push warning after the latest of
   those outcomes, and `<server dir>/lander/devfep/tessel` holds no `call-*` directory.
+
+  The build running now marks a claim `in_doubt` on any infrastructure failure of its one call, and
+  clears it only when the work lands or is rejected. That claim has no merge in flight between its
+  dispatches, so the query above passes it. Read the claims with the same command (the
+  service-account form is the one above with `sudo -u _tessel` and the path
+  `/var/tessel/stores`):
+
+  ```
+  /usr/bin/sqlite3 -init /dev/null -cmd ".timeout 5000" \
+    "file:<server dir>/stores/<tenant>/<repo>.sqlite?mode=rw" \
+    "select c.key from kv, json_each(kv.json, '\$.claims') as c \
+     where kv.key = 'core' and json_extract(c.value, '\$.work.in_doubt') = 1"
+  ```
+
+  It prints nothing when no claim is in doubt. Wait until it does: each printed claim is one the
+  running build may have landed, and the new core cannot resolve it (it has no `Land` to ask about).
 - **The build.** Build only from a landed `main` whose CI is green, in a checkout of that commit,
   and copy `tessel-server` and `tessel` with `install -m 755` into `<server dir>/bin.next`. Leave
   `<server dir>/bin` alone until the swap: git's askpass hook is the running server's own
@@ -508,7 +524,9 @@ Then:
      "select json_extract(json, '\$.merge_in_flight.stage.stage'), \
              json_extract(json, '\$.merge_in_flight.claim'), \
              json_extract(json, '\$.merge_in_flight.stage.head'), \
-             json_extract(json, '\$.merge_in_flight.stage.base') \
+             json_extract(json, '\$.merge_in_flight.stage.base'), \
+             json_extract(json, '\$.claims.' || json_extract(json, '\$.merge_in_flight.claim') \
+                                 || '.work.doubted_land') \
       from kv where key = 'core'"
    ```
 
@@ -520,12 +538,16 @@ Then:
      "select json_extract(json, '\$.merge_in_flight.stage.stage'), \
              json_extract(json, '\$.merge_in_flight.claim'), \
              json_extract(json, '\$.merge_in_flight.stage.head'), \
-             json_extract(json, '\$.merge_in_flight.stage.base') \
+             json_extract(json, '\$.merge_in_flight.stage.base'), \
+             json_extract(json, '\$.claims.' || json_extract(json, '\$.merge_in_flight.claim') \
+                                 || '.work.doubted_land') \
       from kv where key = 'core'"
    ```
 
-   The stage must be `land` or `reconcile` and the claim the one you mean; `admin resolve`
-   refuses the others.
+   The claim must be the one you mean. At stage `land` or `reconcile` the third and fourth columns
+   are the head and base. At `prepare` or `test` (a doubt that went round again) they are empty:
+   the head and base are the last column, `["<base>","<head>"]`, the `Land` the doubt is about.
+   `admin resolve` refuses a claim with no such pair (see the last point below).
 
    The store is in WAL mode. `tessel-server` has no signal handler, so both stops above (`kill`
    and `launchctl bootout`) leave the `-wal` and `-shm` files, and a read-only open works. Any
@@ -594,13 +616,20 @@ Two doubts that resolving does not fix:
   shows a repeated `push` warning while the claim stays in doubt. Fix the credential or the
   ruleset; `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`,
   and `--landed` is for a push that reached main. No command rejects the work. A refusal of a
-  `Land` that was sent again behaves the same way, and `--landed` and `--not-landed` now work
-  while the merge is at `Prepare` or `Test` too.
-- A store written before the staged landing (`unstaged`) that holds a merge in flight starts a
-  fresh `Prepare` that counts as an infrastructure failure. If that `Prepare` and the next ones
-  fail, the claim is not rejected while it is in doubt: it waits the capped backoff (10, 30, then
-  90 seconds) and tries again. It is reachable only by upgrading with a merge in flight, which
-  "Nothing in flight" above forbids.
+  `Land` that was sent again behaves the same way, and so does a refusal at `Prepare` (a fork
+  branch deleted or force-pushed while in doubt): a late copy of the `Land` may still land the
+  head, so the claim waits until main moves or you answer `--not-landed`. `--landed` and
+  `--not-landed` work while the merge is at `Prepare` or `Test` too, for a doubt that has a `Land`
+  behind it.
+- A doubt with no `Land` behind it: a store written before the staged landing (`unstaged`) that
+  holds a merge in flight, or a claim the running build left `in_doubt`. It starts a fresh
+  `Prepare` that counts as an infrastructure failure. If that `Prepare` and the next ones fail,
+  the claim is not rejected while it is in doubt: it waits the capped backoff (10, 30, then 90
+  seconds) and tries again. A refusal or failing tests do reject it, as they always did: there is
+  no late `Land` to fence. `tessel status` does not show this doubt, `server.log` does not log
+  it, and `admin resolve` answers `claim N has no Land in doubt`, since there is no `Land` to
+  reconcile. It ends when the work lands or is rejected. It is reachable only by upgrading with a
+  merge in flight or a claim in doubt, which "Nothing in flight" above forbids.
 
 ## D3, the load on the Mac
 

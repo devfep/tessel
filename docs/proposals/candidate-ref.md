@@ -154,20 +154,35 @@ two premises fail: `Stop` is check-then-act (a push already started outlives it)
 backstop comes too late, since the core's own re-`Prepare` re-creates the same ref before a copy of
 the first `Land` that has not run yet, and a bound that rejects work then loses to that copy
 landing it (simulator seed 69962521). The only fence a late copy cannot get round is its lease:
-it changes main only while main is still at its `base`. So, keyed on the submission's doubt
-(`in_doubt`, `unanswered_from`), not on the flight:
-- `CandidateMissing`, or a refusal, to a `Test` or `Land` while the work is in doubt keeps it in
-  doubt and goes back to `Prepare` after the doubts' capped backoff. Nothing is counted and
-  nothing is rejected, and neither is any other failure of the merge path in doubt.
-- A `Prepared` on `unanswered_from` with the head the doubted `Land` carried (persisted as
-  `Submission::doubted_head`) goes straight to `Land`: that head passed its `Test`, and the ref
-  `Prepare` re-made lets either copy land it.
-- The doubt ends only on `Landed`, `AlreadyMerged` (landed from `unanswered_from`), `MainMoved`, a
-  `Prepared` whose base is not `unanswered_from`, or a reconcile that finds main elsewhere. Then
-  the counting and the bound apply again.
+it changes main only while main is still at its `base`. So each doubt carries the lease of its own
+latest `Land`: `Submission::doubted_land` holds that `Land`'s `(base, head)`, written at every
+doubt, while `unanswered_from` stays the baseline a landing is verified from (the first doubt's).
+A doubt with a pair (a "fenced" doubt) is kept on the submission, not on the flight:
+- `CandidateMissing`, or a refusal, at any stage of the merge (`Prepare` included: a fork branch
+  force-pushed while in doubt reads `CommitNotInFork`, and a late copy can still land the re-made
+  ref) keeps it in doubt and goes back to `Prepare` after the doubts' capped backoff. A restart
+  that cut off a `Test` or a `Prepare` does the same. Nothing is counted and nothing is rejected,
+  and neither is any other failure of the merge path in doubt.
+- A `Prepared` on the pair's base with the pair's head goes straight to `Land`: that head passed
+  its `Test`, and the ref `Prepare` re-made lets either copy land it.
+- The doubt ends only on `Landed`, `AlreadyMerged` (landed from `unanswered_from`), the operator's
+  not-landed answer, a `Prepared` whose base is not the pair's base, or a reconcile that finds
+  main elsewhere. `MainMoved` at `Prepare` or `Test` does not end it by itself: the lander's pin
+  and its clone are separate reads, so a late copy landing in between reads as a move. A
+  `Reconcile` under a new dispatch id asks first, and its answer lands the work or ends the doubt.
+  Then the counting and the bound apply again.
+- A doubt with no pair (a marker stored before the staged landing, or an infrastructure failure in
+  doubt from the build before it) has no late `Land` to fence, so it behaves as at 042b87a: a
+  refusal or `TestsFailed` rejects, an infrastructure failure counts and waits the capped backoff
+  without rejecting, and a `Prepared` does not end it. It gets a pair the first time a `Land` is
+  sent for it. Until then the operator has nothing to resolve (`resolve_doubt` answers a `Land`),
+  which the runbook's "Nothing in flight" check makes moot.
 - The cost: a ref that keeps vanishing after a doubted `Land` holds the queue, at the capped
-  backoff, until main moves or the operator runs `resolve_doubt`, which now works at any stage.
-  That is the wait `real-use.md` ("Calls") already accepts for a doubt.
+  backoff, until main moves or the operator runs `resolve_doubt`, which works at any stage of a
+  fenced doubt. That is the wait `real-use.md` ("Calls") already accepts for a doubt.
+- The `Prepare` that `wait_in_doubt` makes is in flight with no call out until `begin_merge`
+  offers it (which clears the wait). A wake that finds it before then is not a restart that cut
+  a call off, and must not renew the wait.
 
 ## 3. Cleanup of orphaned refs
 
