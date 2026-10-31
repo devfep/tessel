@@ -314,22 +314,13 @@ async fn a_race_is_decided_on_a_port_that_reads_no_heads_with_an_empty_store() -
         },
     };
     send_msg(&mut socket, &submit).await?;
-    let mut result = None;
-    for _ in 0..8 {
-        clock.advance(100_000);
-        while let Ok(Ok(message)) =
-            tokio::time::timeout(Duration::from_millis(300), next(&mut socket)).await
-        {
-            if matches!(message, ServerMsg::RaceResult { .. }) {
-                result = Some(message);
-            }
+    let entries = loop {
+        let message = next(&mut socket)
+            .await
+            .map_err(|err| format!("not decided at once, with the clock frozen: {err}"))?;
+        if let ServerMsg::RaceResult { entries, .. } = message {
+            break entries;
         }
-        if result.is_some() {
-            break;
-        }
-    }
-    let Some(ServerMsg::RaceResult { entries, .. }) = result else {
-        return Err("the closed race was never decided".into());
     };
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].tests_passed, None, "no trial judged the entry");

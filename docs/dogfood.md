@@ -249,8 +249,9 @@ binaries, upgrade as below first.
   ```
 
   `1` means a closed race waits for a head read. Do not roll back yet: wait until it prints `0`,
-  which is when a read answers or about 130 s after the race closed (four failed reads), and on a
-  repository without a `remote` when the next head read has failed; then check again.
+  which is when a read answers or about 130 s after the race closed (four failed reads); then check
+  again. On a repository without a `remote` this build makes no head read: it releases the race
+  on the first wake after a load.
   The rollback needs a store the old build opens, so also read the version, on the same store
   with `select value from meta where key = 'state_version'`, and compare it with the old build's
   `MIGRATIONS` in `tessel-server/src/store.rs`.
