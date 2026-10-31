@@ -1409,7 +1409,7 @@ Lane B:
   section 2 records the decision. Done: core tests red first (VOTE-1's list and VOTE-3's (B′) flaky
   re-`Test`), the seed green, a sweep green.
 - [ ] **HOST-HARDENING-FOLLOWUPS** — S, lane B, after CORE-LATE-LAND and HEAD-ADOPTED-FOLLOWUPS
-  (both edit `src/host/calls.rs` and `src/host/tests.rs`); from P1-HOST-HARDENING's re-vote
+  (both edit `src/host`, `src/host/tests.rs` among it); from P1-HOST-HARDENING's re-vote
   (`~/tessel-orch-notes/2026-10-30/vote-host-hardening-2/VOTE-1..3.md`), resting on it and the
   standing order. Pin the two orders the fix relies on (a deferred `then` job before the socket's
   next frame; parked frames before queued ones when a replay ends under a closed gate), with the
@@ -1443,9 +1443,10 @@ Lane B:
 - [ ] **CLAIM-LEASE-LAPSE** — S, lane B, from 30-31 October: lane A's claim 137 lapsed
   (`lease_expired` in its inbox) while its daemon was running and online and its agent idle, and the
   pre-push hook then refused the push; lane A's next agent found claim 138 gone too and took 139
-  (its report). Claim 125, by contrast, held for hours while its agent was stopped. Find out whether
-  the daemon stops renewing an idle claim, whether the lease is meant to end then (the skill and
-  `docs/configuration.md` say what), and fix the code or the docs; a test either way.
+  (its report). Claim 125, by contrast, kept its lease for hours while its agent was stopped
+  (submitted and held for review then). Find out whether the daemon stops renewing an idle claim,
+  whether the lease is meant to end then (the skill and `docs/configuration.md` say what), and fix
+  the code or the docs; a test either way.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
