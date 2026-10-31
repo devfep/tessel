@@ -1508,6 +1508,21 @@ Lane B:
   and `tessel-runner/tests/runner/running.rs` `the_command_reads_a_closed_stdin` (a 3 s bound; it
   failed a landing's test run). Both pass in about 1 s at low load. Make the bounds about progress
   (an event or a deadline the test controls), not wall-clock under an unknown load.
+- [ ] **REGRESSION-SEED-69962521-STALE** — S, lane B, after SIM-R30-MODEL (it edits the same
+  files); `tests/simulator-regressions.txt`, `src/sim`; from SIM-R30-MODEL's REVIEW-1 (should-fix
+  2, `~/tessel-orch-notes/2026-10-31/lane-b/sim-r30-model/`). Seed 69962521 passes on `6dccb3e`,
+  where the late-`Land` bug it was recorded for (CORE-LATE-LAND) was still present, so it no
+  longer catches that bug. With the bug restored (`src/coordinator/` as of `6dccb3e`, keeping
+  main's `src/sim/merge_check.rs`, since `6dccb3e`'s checker has the seed-2796343632 false
+  positive; or a mutant that ends the doubt on `CandidateMissing`), sweep for a seed that breaks
+  I6, replace 69962521 with it and record the finding. Done: the new seed fails with the bug
+  restored and passes on main.
+- [ ] **CLIENT-1013-CAUSE** — S, lane A (the CLI); from P1-HOST-HARDENING's votes (first vote
+  VOTE-3 S1, re-vote VOTE-3 S4), moved out of SIM-R30-MODEL on 31 October because the code is
+  outside `src/sim`: the daemon logs the cause of a 1013 close in `read_log`
+  (`tessel-cli/src/daemon.rs` ~2576; the swarm's `tessel-swarm/src/conn.rs` ~240-245 already
+  reports "code N: reason"). Done: `daemon.log` names a 1013 close and its reason, with a test
+  that fails without it.
 - [ ] **CLAIM-LEASE-LAPSE** — S, lane B, from 30-31 October: lane A's claim 137 lapsed
   (`lease_expired` in its inbox) while its daemon was running and online and its agent idle, and the
   pre-push hook then refused the push; lane A's next agent found claim 138 gone too and took 139
