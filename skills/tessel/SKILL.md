@@ -202,8 +202,9 @@ tessel submit --evidence "cargo test passed (42 tests)" [--evidence "..."]
   (release first if nothing is uncommitted) or drop the changes outside it.
 - **Accepted (exit 0)** prints the queue position (exit 7 if held for review instead). The result
   arrives in `tessel inbox`: `merged`, `submit_rejected` (the claim is active again: fix, push,
-  submit again), `uncovered` or `review_required`. A submitted claim cannot be released: keep the
-  daemon running until `merged` or `submit_rejected` shows.
+  submit again; for a race entry the claim has ended, see "Join the race"), `uncovered` or
+  `review_required`. A submitted claim cannot be released: keep the daemon running until `merged`
+  or `submit_rejected` shows.
 
 ## For reviewers
 
@@ -258,7 +259,10 @@ settings). Choose one:
 - **Other work**: a task or scope that does not overlap. The denial stays in `tessel inbox`.
 - **Join the race**: `tessel race join <race>` makes an entry holding exactly the race's scopes;
   commit, push and `tessel submit` before its deadline. `race_result` in the inbox names the
-  winner, if any.
+  winner, if any. If your entry loses, is unjudged or the race is not picked in time, the
+  `submit_rejected` says "your race entry ... ended": the claim is gone, so do not submit again,
+  and your fork is untouched. To ship the work, claim the freed scopes and `tessel submit`, or ask
+  the race's opener to reopen the race. `race_result` says when the tests gave no result.
 - **Narrow the claim**: a file or symbol (`path/file.rs::name`) instead of a directory.
 - **`--mode depend --assume "<what you rely on>"`**: build on their signatures without editing
   the scope. Not offered against `edit-signature`, for a `create` request or when you already

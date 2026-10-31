@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tessel_coordinator::protocol::{ClaimId, ServerMsg};
 
-use crate::render::{needs_attention, notice_text};
+use crate::render::{is_race_rejection, needs_attention, notice_text};
 use crate::rpc::{self, Reply, Request};
 use crate::state::{self, Connection, Notice, NoticeKind, State};
 use crate::worktree::Worktree;
@@ -352,11 +352,37 @@ async fn wait_for_landing(
 
 /// The unread notices (the rejection among them), as the reason for keeping the agent going.
 fn rejection(worktree: &Worktree) -> Result<HookOutput, String> {
+    let only_race_entries = only_race_entries_rejected(worktree)?;
     let text = framed_notices(worktree)?.unwrap_or_default();
+    if only_race_entries {
+        return Ok(block(&format!(
+            "Your race entry was rejected and its claim ended; your fork is untouched. Do not end \
+             your turn without deciding how to ship the work: claim the freed scopes and run \
+             `tessel submit`, or ask the race's opener to reopen the race.\n{text}"
+        )));
+    }
     Ok(block(&format!(
         "Your submission did not merge and your claim is active again. Do not end your turn: \
          fix the cause, push, and run `tessel submit` again.\n{text}"
     )))
+}
+
+/// True when every unread rejection or uncovered notice is a race entry ending: no claim is left.
+fn only_race_entries_rejected(worktree: &Worktree) -> Result<bool, String> {
+    let unread = state::unread_notices(worktree).map_err(|e| e.to_string())?;
+    let mut rejections = unread
+        .iter()
+        .filter(|notice| {
+            matches!(
+                notice.kind,
+                NoticeKind::SubmitRejected | NoticeKind::Uncovered
+            )
+        })
+        .peekable();
+    if rejections.peek().is_none() {
+        return Ok(false);
+    }
+    Ok(rejections.all(|notice| notice.server.as_ref().is_some_and(is_race_rejection)))
 }
 
 fn still_pending(submitted: &[ClaimId], wait: Duration) -> String {

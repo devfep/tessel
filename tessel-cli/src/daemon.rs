@@ -28,6 +28,7 @@ use crate::config::Config;
 use crate::notes::{self, Step};
 use crate::plan::escalate;
 use crate::reconcile::{self, Local, Plan, ServerClaim};
+use crate::render::is_race_rejection;
 use crate::rpc::{self, ClaimOutcome, Reply, Request, SubmitOutcome};
 use crate::state::{
     append_notice, Connection, HeldClaim, NoteJob, Notice, NoticeKind, QueuedWait, State,
@@ -1711,14 +1712,19 @@ impl Daemon {
 
     fn on_submit_rejected(&mut self, claim: ClaimId, msg: ServerMsg) {
         self.set_submitted(claim, false, None);
-        self.notify(
-            NoticeKind::SubmitRejected,
-            &format!(
+        let note = if is_race_rejection(&msg) {
+            format!(
+                "the race rejected claim {}, your entry; the claim ended and your fork is \
+                 untouched",
+                claim.0
+            )
+        } else {
+            format!(
                 "the merge of claim {} was refused; the claim is active again with the same fence",
                 claim.0
-            ),
-            Some(msg),
-        );
+            )
+        };
+        self.notify(NoticeKind::SubmitRejected, &note, Some(msg));
     }
 
     /// The coordinator cannot say whether the landing of `claim` took effect (`since_ms` set), or

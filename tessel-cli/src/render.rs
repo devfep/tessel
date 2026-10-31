@@ -499,6 +499,34 @@ fn reviewer_label(reviewer: Option<&str>) -> String {
     }
 }
 
+/// The reasons the core gives a race entry it rejects (`LOST_RACE`, `TESTS_GAVE_NO_RESULT` and
+/// `NOT_PICKED` in `src/coordinator/racing.rs`). The wire carries no other mark of a race loser.
+const RACE_REJECTIONS: [&str; 3] = [
+    "lost the race",
+    "the tests gave no result, so no trial judged this entry",
+    "the race was not picked in time",
+];
+
+/// True for a `SubmitRejected` that ended a race entry: exactly one of the core's fixed race
+/// reasons, with no reviewer and no note. Any other text is an ordinary rejection, whatever it
+/// says.
+pub fn is_race_rejection(msg: &ServerMsg) -> bool {
+    let ServerMsg::SubmitRejected {
+        reason,
+        reviewer,
+        note,
+        ..
+    } = msg
+    else {
+        return false;
+    };
+    ends_race_entry(reason, reviewer.as_ref(), note.as_deref())
+}
+
+fn ends_race_entry(reason: &str, reviewer: Option<&AgentId>, note: Option<&str>) -> bool {
+    reviewer.is_none() && note.is_none() && RACE_REJECTIONS.contains(&reason)
+}
+
 /// The card for a rejected submission: the fixed reason, then the reviewer's note if any, quoted.
 fn rejected_text(
     claim: ClaimId,
@@ -506,11 +534,20 @@ fn rejected_text(
     reviewer: Option<&AgentId>,
     note: Option<&str>,
 ) -> String {
-    let mut out = format!(
-        "  claim {} is active again with the same fence; fix the cause, push, and \
-         `tessel submit` again\n",
-        claim.0
-    );
+    let mut out = if ends_race_entry(reason, reviewer, note) {
+        format!(
+            "  claim {}, your race entry, ended: the claim is gone and your fork is untouched. To \
+             ship the work, claim the freed scopes and run `tessel submit`, or ask the race's \
+             opener to reopen the race\n",
+            claim.0
+        )
+    } else {
+        format!(
+            "  claim {} is active again with the same fence; fix the cause, push, and \
+             `tessel submit` again\n",
+            claim.0
+        )
+    };
     out.push_str(&quote_untrusted("the coordinator", reason));
     if let Some(note) = note {
         out.push_str(&quote_untrusted(
@@ -677,6 +714,19 @@ pub fn race_refused_text(what: &str, code: Option<ErrorCode>, message: &str) -> 
     )
 }
 
+/// "; the tests gave no result for claim 3, claim 4" for the entries no test judged, else "".
+fn no_result_text(entries: &[RaceEntry]) -> String {
+    let unjudged: Vec<String> = entries
+        .iter()
+        .filter(|entry| entry.tests_passed.is_none())
+        .map(|entry| format!("claim {}", entry.claim.0))
+        .collect();
+    if unjudged.is_empty() {
+        return String::new();
+    }
+    format!("; the tests gave no result for {}", unjudged.join(", "))
+}
+
 fn tests_text(passed: Option<bool>) -> &'static str {
     match passed {
         Some(true) => "tests passed",
@@ -720,7 +770,11 @@ pub fn race_result_text(
             claim.0,
             agent_of(claim)
         ),
-        None if ranking.is_empty() => format!("  race {}: no entry survived\n", race.0),
+        None if ranking.is_empty() => format!(
+            "  race {}: no entry survived{}\n",
+            race.0,
+            no_result_text(entries)
+        ),
         None => format!(
             "  race {}: no winner named; this race is decided by a human pick, and if none comes \
              before the window closes, every entry gets submit_rejected\n",
