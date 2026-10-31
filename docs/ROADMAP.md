@@ -7,8 +7,18 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 12:45 UTC. Main at `cd8a718`, where RUNNER-TIMING-FLAKES landed through the
-server at 12:15 UTC as `114bccd`..`cd8a718` (claim 143; tests only; Opus REVIEW-1 "No": the sudo
+**As of:** 2026-10-31 18:00 UTC. Main at `20cd015` (the STATE commits `bc0a9cb`..`20cd015` landed
+at 12:33 UTC, claim 145). At 17:55 UTC the orchestrator dispatched HEAD-ADOPTED-FOLLOWUPS (lane A,
+claim 147, merge path: a vote follows) and SUDO-STOP-RUN-RACE (lane B, claim 146, Opus review),
+both from `20cd015` (`~/tessel-orch-notes/2026-10-31/lane-a/head-adopted-followups/`,
+`lane-b/sudo-stop-run/`). SIM-R30-MODEL, which Felix asked to start with them, waits for the first
+lane to come free: it is lane A's row, and one agent cannot safely run two worktrees at once (the
+shell sends a `Notify` to every socket bound to the agent, `src/shell.rs:83-84`, and the core never
+blocks an agent's claim on its own locks, `blocked_by` in `src/coordinator.rs`). Running it under
+the orchestrator's identity would mean approving its own hold. Two P1-SIM-MERGE REVIEW-3 nits moved
+from HEAD-ADOPTED-FOLLOWUPS to SIM-R30-MODEL, which holds `src/sim` (both rows below). Before that,
+RUNNER-TIMING-FLAKES landed through the server at 12:15 UTC as `114bccd`..`cd8a718` (claim 143;
+tests only; Opus REVIEW-1 "No": the sudo
 test's 300 ms cancel timer raced the stub's pid write and three guards had become vacuous (two sudo
 tests and `landing.rs`'s deadline test); fix pass 1 drives the cancels by events, runs the stub's
 child for 600 s, asserts the run was cut short, and holds the landing test's runner 120 s with an
@@ -239,12 +249,13 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** HEAD-ADOPTED-FOLLOWUPS (lane A, now unblocked) and SUDO-STOP-RUN-RACE (lane B); then
-HOST-HARDENING-FOLLOWUPS (lane B; it shares `src/host` with HEAD-ADOPTED-FOLLOWUPS); then
-SIM-R30-MODEL (lane A; it kills the Nightly's missed mutant), RACE-TEXTS-SHARED (lane B),
-CLAIM-LEASE-LAPSE and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH. Felix makes ruleset step 3 ("Fast
-lane, simulator" required). Felix's Homebrew postgres trusts local connections on a world-writable
-socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** HEAD-ADOPTED-FOLLOWUPS (lane A) and SUDO-STOP-RUN-RACE (lane B) are running; then
+SIM-R30-MODEL (the first lane free; it kills the Nightly's missed mutant); then
+HOST-HARDENING-FOLLOWUPS (lane B; it shares `src/host` with HEAD-ADOPTED-FOLLOWUPS),
+RACE-TEXTS-SHARED (lane B), CLAIM-LEASE-LAPSE and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH.
+Felix makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts
+local connections on a world-writable socket; he closes it before the accounts move.
+LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1203,10 +1214,8 @@ Lane A:
   adopted base; tessel-server's clock test asserts `tests_passed: None` on the `RaceResult`. From
   RACE-UNKNOWN-REASON (its item 2 and its vote's VOTE-3 should-fixes 3-4): an operator log line when
   a race is judged with the tests unknown (the core has no channel for it; it belongs in
-  `src/host/**`); the opener's `RaceResult` line is RACE-LOSER-TEXT's. From P1-SIM-MERGE's REVIEW-3
-  nits: the poison in `a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound` is
-  inert (the test passes with `poison_fork` deleted): drop it or rename the test; say in
-  `Sim::crash_after_every_test_dispatch`'s doc why it is `pub`, or use it from `tests/simulator.rs`.
+  `src/host/**`); the opener's `RaceResult` line is RACE-LOSER-TEXT's. (P1-SIM-MERGE's REVIEW-3
+  nits moved to SIM-R30-MODEL on 31 October: they are in `src/sim`.)
   Done: those tests, each failing without its change, and the docs.
 - [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
   renewal persisted below half the lease (C10). Evidence from the kill loop on CI: the server
@@ -1461,8 +1470,14 @@ Lane B:
   vote VOTE-3 S1, re-vote VOTE-3 S4). The testkit's `fail_next_commit` now fails all three attempts
   while the sim's fails one: one name, two meanings. Also kill the missed mutant
   `src/sim/driver.rs:379` `Sim::failed_commits -> 0` (Nightly 41189134845; only
-  `tests/simulator.rs:1658` reads it). Done: the sim reaches the spent-retry path, a test that fails
-  without each change, and that mutant killed.
+  `tests/simulator.rs:1658` reads it). From P1-SIM-MERGE's REVIEW-3 nits (moved here from
+  HEAD-ADOPTED-FOLLOWUPS on 31 October): the poison in
+  `a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound`
+  (`src/sim/driver/merge_path.rs`) is inert (the test passes with `poison_fork` deleted): make it
+  bite, or drop it and rename the test; say in `Sim::crash_at_every`'s doc (REVIEW-3 named it
+  `crash_after_every_test_dispatch`) why it is `pub`, or use it from `tests/simulator.rs`. The
+  naming fix stays on the sim side: `src/host/testkit.rs` is HEAD-ADOPTED-FOLLOWUPS'. Done: the sim
+  reaches the spent-retry path, a test that fails without each change, and that mutant killed.
 - [x] **RUNNER-TIMING-FLAKES** (`114bccd`..`cd8a718`, two commits, landed by the server 31 October,
   run by lane A; Opus review "No", then "Yes") — S, lane B; observed 30 October under load 60-95
   from other projects: `tessel-server/tests/sudo_runner.rs`
