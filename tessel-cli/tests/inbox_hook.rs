@@ -494,6 +494,87 @@ async fn stop_blocks_with_the_quoted_reason_when_the_submission_is_rejected() ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_tells_a_race_loser_its_claim_ended_and_how_to_ship_the_work() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = submitted_claim(&a1)?;
+    let (done, _took) = stop_with_push(&a1, 20_000, || {
+        fake.push(
+            "a1",
+            ServerMsg::SubmitRejected {
+                claim: ClaimId(claim),
+                reason: "lost the race".into(),
+                reviewer: None,
+                note: None,
+            },
+        );
+    })?;
+    let shown = blocked_reason(&done)?;
+    assert!(
+        shown.contains("race entry was rejected and its claim ended"),
+        "{shown}"
+    );
+    assert!(shown.contains("your fork is untouched"), "{shown}");
+    assert!(shown.contains("claim the freed scopes"), "{shown}");
+    assert!(shown.contains("reopen the race"), "{shown}");
+    assert!(
+        !shown.contains("active again") && !shown.contains("submit again"),
+        "{shown}"
+    );
+    Ok(())
+}
+
+/// Pushes `rejections` (claim, reason) to the agent and waits until its daemon filed the first.
+async fn push_rejections(fake: &Fake, a1: &Agent, rejections: &[(u64, &str)]) -> Result<()> {
+    for (claim, reason) in rejections {
+        fake.push(
+            "a1",
+            ServerMsg::SubmitRejected {
+                claim: ClaimId(*claim),
+                reason: (*reason).into(),
+                reviewer: None,
+                note: None,
+            },
+        );
+    }
+    eventually(SHORT, || {
+        Ok((a1.status()?["state"]["claims"][0]["submitted"] == false).then_some(()))
+    })
+    .await?;
+    eventually(SHORT, || {
+        let inbox = std::fs::read_to_string(a1.root().join(".tessel/inbox.jsonl"))?;
+        let filed = inbox.matches("\"kind\":\"submit_rejected\"").count();
+        Ok((filed == rejections.len()).then_some(()))
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_tells_an_unread_race_rejection_the_same_when_nothing_is_submitted() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = submitted_claim(&a1)?;
+    push_rejections(&fake, &a1, &[(claim, "the race was not picked in time")]).await?;
+    let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
+    assert!(shown.contains("its claim ended"), "{shown}");
+    assert!(!shown.contains("active again"), "{shown}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_keeps_the_ordinary_text_when_a_rejection_is_mixed_with_a_race_one() -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = submitted_claim(&a1)?;
+    let mixed = [(claim, "lost the race"), (claim + 50, "merge conflict")];
+    push_rejections(&fake, &a1, &mixed).await?;
+    let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
+    assert!(shown.contains("`tessel submit` again"), "{shown}");
+    assert!(
+        shown.contains(&format!("claim {claim}, your race entry, ended")),
+        "{shown}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_blocks_when_the_coordinator_finds_the_work_uncovered() -> Result<()> {
     let (fake, a1) = world().await?;
     let claim = submitted_claim(&a1)?;

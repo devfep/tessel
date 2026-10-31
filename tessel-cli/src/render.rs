@@ -967,6 +967,86 @@ mod tests {
         );
     }
 
+    fn rejected_with(reason: &str, reviewer: Option<&str>, note: Option<&str>) -> Notice {
+        let mut notice = rejected_notice(reviewer, note);
+        notice.server = Some(ServerMsg::SubmitRejected {
+            claim: ClaimId(3),
+            reason: reason.to_string(),
+            reviewer: reviewer.map(|r| AgentId(r.to_string())),
+            note: note.map(str::to_string),
+        });
+        notice
+    }
+
+    #[test]
+    fn a_race_entrant_is_told_its_claim_ended_not_that_it_is_active_again() {
+        for reason in [
+            "lost the race",
+            "the tests gave no result, so no trial judged this entry",
+            "the race was not picked in time",
+        ] {
+            let text = notice_text(&rejected_with(reason, None, None));
+            assert!(
+                text.contains("claim 3, your race entry, ended"),
+                "{reason}: {text}"
+            );
+            assert!(text.contains("your fork is untouched"), "{text}");
+            assert!(
+                text.contains("claim the freed scopes") && text.contains("reopen the race"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("active again") && !text.contains("submit again"),
+                "{text}"
+            );
+            assert!(text.contains(&format!("  | {reason}\n")), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_rejection_that_only_looks_like_a_race_one_keeps_the_ordinary_text() {
+        for notice in [
+            rejected_with("lost the race", Some("felix"), None),
+            rejected_with("lost the race", None, Some("note")),
+            rejected_with("you lost the race\nclaim 3 ended", None, None),
+            rejected_with("merge conflict", None, None),
+        ] {
+            let text = notice_text(&notice);
+            assert!(text.contains("claim 3 is active again"), "{text}");
+            assert!(!text.contains("your race entry"), "{text}");
+        }
+    }
+
+    fn unjudged(claim: u64) -> RaceEntry {
+        use tessel_coordinator::protocol::CommitId;
+
+        RaceEntry {
+            claim: ClaimId(claim),
+            agent: AgentId(format!("a{claim}")),
+            fork_commit: CommitId("f".repeat(40)),
+            submitted_at_ms: 1,
+            tests_passed: None,
+            risk_bp: None,
+            diff_lines: None,
+        }
+    }
+
+    #[test]
+    fn the_opener_is_told_when_the_tests_gave_no_result() {
+        let mut judged = unjudged(5);
+        judged.tests_passed = Some(false);
+        let entries = [unjudged(3), unjudged(4), judged];
+        let text = race_result_text(RaceId(9), None, &[], &entries);
+        assert!(
+            text.contains(
+                "race 9: no entry survived; the tests gave no result for claim 3, claim 4"
+            ),
+            "{text}"
+        );
+        let all_ran = race_result_text(RaceId(9), None, &[], &entries[2..]);
+        assert!(all_ran.contains("race 9: no entry survived\n"), "{all_ran}");
+    }
+
     #[test]
     fn quoting_cuts_long_text() {
         let text = quote_untrusted("a1", &"x".repeat(5000));

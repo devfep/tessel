@@ -3233,6 +3233,22 @@ async fn a_race_result_names_the_winner_the_ranking_and_each_entrants_place() ->
         "{lost}"
     );
     assert!(lost.contains(&ranking), "{lost}");
+    assert!(
+        lost.contains(&format!(
+            "the race rejected claim {second}, your entry; the claim ended and your fork is \
+             untouched"
+        )),
+        "{lost}"
+    );
+    assert!(
+        lost.contains(&format!("claim {second}, your race entry, ended")),
+        "{lost}"
+    );
+    assert!(lost.contains("claim the freed scopes"), "{lost}");
+    assert!(
+        !lost.contains("active again") && !lost.contains("submit again"),
+        "a race loser's claim is gone: {lost}"
+    );
     Ok(())
 }
 
