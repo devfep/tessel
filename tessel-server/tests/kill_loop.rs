@@ -947,7 +947,7 @@ async fn a_grant_that_has_arrived_ends_the_wait_at_once() {
     };
     traffic.record(1, "a1", granted);
     let began = Instant::now();
-    progress_within(&traffic, 0, Duration::from_secs(30))
+    progress_within(&traffic, 0, Duration::from_secs(120))
         .await
         .expect("a grant beyond the 0 already received");
     assert!(

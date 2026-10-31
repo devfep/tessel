@@ -646,7 +646,7 @@ async fn a_test_past_its_deadline_is_given_up_its_tree_removed_and_nothing_lands
         let _ = released
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .recv_timeout(Duration::from_secs(20));
+            .recv_timeout(Duration::from_secs(120));
         let _ = finished_tx
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -665,6 +665,10 @@ async fn a_test_past_its_deadline_is_given_up_its_tree_removed_and_nothing_lands
         began.elapsed() < Duration::from_secs(60),
         "answered at the deadline"
     );
+    assert!(
+        finished.try_recv().is_err(),
+        "answered only after the test finished"
+    );
     started.recv_timeout(Duration::from_secs(1))?;
     assert!(
         call_dirs(&repos, "landing-late").is_empty(),
@@ -678,7 +682,7 @@ async fn a_test_past_its_deadline_is_given_up_its_tree_removed_and_nothing_lands
     );
 
     release.send(())?;
-    finished.recv_timeout(Duration::from_secs(20))?;
+    finished.recv_timeout(Duration::from_secs(120))?;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
         repos.main_head(),

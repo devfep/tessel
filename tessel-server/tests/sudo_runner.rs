@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tessel_runner::{RequestTest, ResultStep, RunRequest, RunResult, RunnerError};
 use tessel_server::landing::{SudoRunner, SudoRunnerSettings, TestRunner};
@@ -60,12 +60,13 @@ exec "$@""#,
         rig.script(
             "tessel-runner",
             r#"cat > STATE/request.json
+[ -f STATE/slowstart ] && sleep 1
 echo "$$" >> STATE/procs
 echo "start $(date +%s%N)" >> STATE/timeline
 case "$(cat STATE/mode)" in
 ok) cat STATE/result.json ;;
 slow) sleep 0.4; cat STATE/result.json ;;
-sleep) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; wait ;;
+sleep) sleep 600 >/dev/null 2>&1 & echo "$!" >> STATE/procs; wait ;;
 leaves-a-child) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; cat STATE/result.json ;;
 two-lines) cat STATE/result.json; echo; echo garbage ;;
 forged) echo '{"step":"test","exit_code":0,"passed":true,"timed_out":false,"stdout":"forged","stderr":"","stdout_truncated":false,"stderr_truncated":false,"first_failure":null,"wall_ms":1}'; cat STATE/result.json; echo ;;
@@ -110,6 +111,23 @@ exit $found"#,
 
     fn touch(&self, name: &str) {
         fs::write(self.state().join(name), "").expect("touch");
+    }
+
+    /// A cancel that fires once the stand-in runner has recorded its own pid and its child's,
+    /// however slowly the machine got it there, and stays fired.
+    fn cancel_once_started(&self) -> impl Fn() -> bool + Send + 'static {
+        let procs = self.state().join("procs");
+        let fired = AtomicBool::new(false);
+        move || {
+            let recorded = fs::read_to_string(&procs)
+                .unwrap_or_default()
+                .lines()
+                .count();
+            if recorded >= 2 {
+                fired.store(true, Ordering::SeqCst);
+            }
+            fired.load(Ordering::SeqCst)
+        }
     }
 
     fn read(&self, name: &str) -> String {
@@ -306,24 +324,23 @@ fn a_call_given_up_mid_run_kills_the_account_itself_and_frees_the_gate() {
     let rig = Rig::new();
     let runner = Arc::new(rig.runner());
     rig.set_mode("sleep");
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&stop);
-    let timer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        flag.store(true, Ordering::SeqCst);
-    });
+    rig.touch("slowstart");
+    let cancel = rig.cancel_once_started();
     let (done, returned) = std::sync::mpsc::channel();
     let caller = Arc::clone(&runner);
     std::thread::spawn(move || {
-        let outcome = caller.run_cancellable(&request(), &|| stop.load(Ordering::SeqCst));
+        let outcome = caller.run_cancellable(&request(), &cancel);
         let _ = done.send(outcome);
     });
     let error = returned
         .recv_timeout(Duration::from_secs(120))
         .expect("no deadlock: the given-up call returned")
         .unwrap_err();
-    timer.join().expect("timer");
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    assert!(
+        !rig.read("timeline").contains("end"),
+        "the run was left to finish"
+    );
     for pid in rig.read("procs").lines() {
         assert!(!alive(pid), "{pid} survived the kill");
     }
@@ -479,16 +496,10 @@ fn a_call_directory_is_closed_again_after_a_cancelled_run() {
     rig.set_mode("sleep");
     let dir = call_dir(&rig, "a.b.call-1");
     let runner = rig.runner();
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&stop);
-    let timer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        flag.store(true, Ordering::SeqCst);
-    });
+    let cancel = rig.cancel_once_started();
     let error = runner
-        .run_cancellable(&request_in(&dir), &|| stop.load(Ordering::SeqCst))
+        .run_cancellable(&request_in(&dir), &cancel)
         .unwrap_err();
-    timer.join().expect("timer");
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
     assert_eq!(mode_of(&dir), 0o700);
 }
@@ -524,31 +535,26 @@ fn a_kill_that_fails_on_a_cancelled_call_closes_the_gate_and_the_wait_is_bounded
     let runner = rig.runner();
     rig.set_mode("sleep");
     rig.touch("stubborn");
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&stop);
-    let timer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
-        flag.store(true, Ordering::SeqCst);
+    let cancel = rig.cancel_once_started();
+    let runner = Arc::new(runner);
+    let caller = Arc::clone(&runner);
+    let (done, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(caller.run_cancellable(&request(), &cancel));
     });
-    let started = Instant::now();
-    let error = runner
-        .run_cancellable(&request(), &|| stop.load(Ordering::SeqCst))
-        .unwrap_err();
-    timer.join().expect("timer");
-    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
-    assert!(
-        started.elapsed() < Duration::from_secs(120),
-        "bounded: {:?}",
-        started.elapsed()
-    );
-    let again = runner.run_cancellable(&request(), &never).unwrap_err();
-    assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+    let outcome = returned.recv_timeout(Duration::from_secs(120));
     for pid in rig.read("procs").lines() {
         let _ = std::process::Command::new("/bin/kill")
             .args(["-9", pid])
             .stderr(std::process::Stdio::null())
             .status();
     }
+    let error = outcome
+        .expect("bounded: the wait for sudo gave up")
+        .unwrap_err();
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    let again = runner.run_cancellable(&request(), &never).unwrap_err();
+    assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
 }
 
 #[test]
