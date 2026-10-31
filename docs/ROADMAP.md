@@ -7,27 +7,29 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 00:40 UTC. Main at `6b5e921`, where P1-FAILPOINTS landed through the server at
+**As of:** 2026-10-31 00:27 UTC. Main at `6b5e921`, where P1-FAILPOINTS landed through the server at
 00:19 UTC as `574e63d`..`6b5e921` (six commits on `042b87a`; claim 139, held for signature changes,
 not merge path, and approved by the orchestrator on Opus review: REVIEW-1 "With changes", no
 must-fix, fix pass 1 `984caf5`, a re-check "With changes", fix pass 2 `6b5e921`;
-`~/tessel-orch-notes/2026-10-30/lane-a/failpoints/`). Each landing window has a scripted crash: in
-the simulator (`src/sim/driver/failpoint.rs`) and, where the real lander is needed, in
-`tessel-server/tests/{restart,landing}.rs`; no core bug found. Its phase-1.md I6 cell changed: a
-crash after a recorded `Test` is reconciled and lands, so "`Test` running" replaces "tested, not
-landed", and a note says a cut-off at the `Land` stage is a doubt, outside I6, resolved by
-`resolve_doubt` (a restart at every `Land` marker loops by design until then). The notes were copied
-by hand (a merge of main in the submission). CI (41149575702) and the Adapter suite (41149575736)
-passed on `6b5e921`. At 21:14 UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a` (four commits on
-`e07e6f5`; claim 136, merge path): its first vote (`vote-host-hardening/`) went 3-0 "No" (a core job
-or commit could run under a closed gate; frames a replaying socket queued before its `Watch` were
-not parked), fix pass 1 (`222b923`, `042b87a`) closed both, and the re-vote
-(`vote-host-hardening-2/`) went 3-0 "Yes with should-fixes" (HOST-HARDENING-FOLLOWUPS, below). Its
-first landing attempt (21:04 UTC) failed only `tessel-runner/tests/runner/running.rs`
-`the_command_reads_a_closed_stdin` (a 3 s wall-clock bound, untouched, at load about 60); the same
-commit was resubmitted and landed. CI on `042b87a` (41129573797) FAILED: the 1,000-seed simulator
-sweep found seed 69962521 breaking I6 (a claim rejected as an infrastructure failure though its work
-is on main); the Adapter suite passed. An Opus investigation
+`~/tessel-orch-notes/2026-10-30/lane-a/failpoints/`). Each landing window has a scripted crash,
+except the `Land` window between main's push and the ref delete, whose state `landing.rs` builds
+with `git update-ref`: in the simulator (`src/sim/driver/failpoint.rs`) and, where the real lander
+is needed, in `tessel-server/tests/{restart,landing}.rs`; no core bug found. Its phase-1.md I6 cell
+changed: a crash after a recorded `Test` is reconciled and lands, so "`Test` running" replaces
+"tested, not landed", and a note says a cut-off at the `Land` stage is a doubt, outside I6, that
+stays in flight until a `Land` completes or the operator ends it with `resolve_doubt` (a restart at
+every `Land` marker loops by design until then). The notes were copied by hand (a merge of main in
+the submission). CI (41149575702) and the Adapter suite (41149575736) passed on `6b5e921`. At 21:14
+UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a` (four commits on `e07e6f5`; claim 136, merge
+path): its first vote (`vote-host-hardening/`) went 3-0 "No" (a core job or commit could run under a
+closed gate; frames a replaying socket queued before its `Watch` were not parked), fix pass 1
+(`222b923`, `042b87a`) closed both, and the re-vote (`vote-host-hardening-2/`) went 3-0 "Yes with
+should-fixes" (HOST-HARDENING-FOLLOWUPS, below). Its first landing attempt (21:04 UTC) failed first
+on `tessel-runner/tests/runner/running.rs` `the_command_reads_a_closed_stdin` (a 3 s wall-clock
+bound, untouched; server.log records only the first failure), with the load high from other
+projects; the same commit was resubmitted and landed. CI on `042b87a` (41129573797) FAILED: the
+1,000-seed simulator sweep found seed 69962521 breaking I6 (a claim rejected as an infrastructure
+failure though its work is on main); the Adapter suite passed. An Opus investigation
 (`~/tessel-orch-notes/2026-10-30/vote-late-land/I6-69962521.md`) found a real core bug that
 P1-HOST-HARDENING did not introduce (the merge code is the same on `8f0f2b4`; the persist retry only
 changed the path the seed takes): a resent `Land` answered `CandidateMissing` ends the doubt
@@ -39,18 +41,18 @@ green again on `6b5e921` only because its sweep starts at another seed. Load: on
 gates (no cargo job cap) and voters overlapped and pushed the shared Mac to 85 at 15:45 and 195-524
 at 18:05-18:25 EDT; two of Mukaase's UI tests timed out. Every gate script now exports
 `CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2` and takes a machine-wide lock
-(`~/tessel-orch-notes/cargo.lock.d`), so one tessel cargo job runs at a time. The STATE commits
-`c416075`..`e07e6f5` landed at 19:36 UTC (claim 135). Before, at 19:08 UTC, RESOLVE-FOLLOWUPS landed
-through the server at 19:08 UTC as `68ea3e6`..`ca864b2` (four commits on `e23690e`; claim 134, held
-as merge path and approved by the orchestrator on a re-vote). CI (41112834681) and the Adapter suite
-(41112834446) passed on `ca864b2`; `tessel-server/tests/restart.rs` now runs the `sqlite3` CLI, and
-CI's runner has it (CI 41112834681 ran
-`restart::a_server_killed_after_the_push_and_restarted_counts_the_landing_once`, which passed). The
-submission held a merge of main (`3e73289`), so the daemon copied no notes; the orchestrator copied
-all four by subject and author (the fourth landing to hit that gap). RACE-UNKNOWN-REASON's six
-commits were linear, and their notes were in place after the landing. Its first vote on `3e73289`
-(`~/tessel-orch-notes/2026-10-30/vote-resolve-followups/`): VOTE-1 "No" (after the move, step 1 ran
-a bare `sqlite3` under `sudo -u _tessel`, which a lane-writable `PATH` entry such as
+(`~/tessel-orch-notes/cargo.lock.d`), so one gate's cargo job runs at a time; the server's landing
+runs are not under the lock. The STATE commits `c416075`..`e07e6f5` landed at 19:36 UTC (claim 135).
+Before, at 19:08 UTC, RESOLVE-FOLLOWUPS landed through the server as `68ea3e6`..`ca864b2` (four
+commits on `e23690e`; claim 134, held as merge path and approved by the orchestrator on a re-vote).
+CI (41112834681) and the Adapter suite (41112834446) passed on `ca864b2`;
+`tessel-server/tests/restart.rs` now runs the `sqlite3` CLI, and CI's runner has it (CI 41112834681
+ran `restart::a_server_killed_after_the_push_and_restarted_counts_the_landing_once`, which passed).
+The submission held a merge of main (`3e73289`), so the daemon copied no notes; the orchestrator
+copied all four by subject and author (the fourth landing to hit that gap). RACE-UNKNOWN-REASON's
+six commits were linear, and their notes were in place after the landing. Its first vote on
+`3e73289` (`~/tessel-orch-notes/2026-10-30/vote-resolve-followups/`): VOTE-1 "No" (after the move,
+step 1 ran a bare `sqlite3` under `sudo -u _tessel`, which a lane-writable `PATH` entry such as
 `/opt/homebrew/bin` could hijack as `_tessel`, the account that owns the keys, the GitHub token and
 the stores; fix: `/usr/bin/sqlite3` in full, before and after the move), VOTE-2 "No" (the runbook's
 "`--landed` copies no notes" was false: the submitter's daemon queues the copy from the logged
@@ -136,13 +138,13 @@ the coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice)
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up.
 In flight (each item gives its brief's path; votes in `~/tessel-orch-notes/2026-10-30/`):
-- CORE-LATE-LAND (lane B, sonnet, dispatched about 00:10 UTC 31 October from `042b87a`,
+- CORE-LATE-LAND (lane B, sonnet, dispatched about 00:05 UTC 31 October from `042b87a`,
   `.claude/worktrees/core-late-land`; brief
   `~/tessel-orch-notes/2026-10-30/lane-b/core-late-land/BRIEF.md`): option B as the votes' B+/B'
   specify; seed 69962521 into `tests/simulator-regressions.txt`; the I6 checker widened to every
   rejection; candidate-ref.md gets Felix's decision. A cross edit into lane A's core and
   `src/sim/merge_check.rs`. Merge path, so it goes to a vote.
-- RACE-LOSER-TEXT (lane A, sonnet, dispatched about 00:30 UTC 31 October from `6b5e921`,
+- RACE-LOSER-TEXT (lane A, sonnet, dispatched about 00:20 UTC 31 October from `6b5e921`,
   `.claude/worktrees/race-loser-text`; brief
   `~/tessel-orch-notes/2026-10-31/lane-a/race-loser-text/BRIEF.md`): the row says lane B; the
   orchestrator moved it to lane A because lane B holds the core and HEAD-ADOPTED-FOLLOWUPS shares
@@ -212,18 +214,20 @@ sandbox commits use his GitHub noreply address.
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
 **Next:** CORE-LATE-LAND, its vote and landing (lane B); RACE-LOSER-TEXT, its review and landing
-(lane A); then HEAD-ADOPTED-FOLLOWUPS (lane A, after CORE-LATE-LAND) and HOST-HARDENING-FOLLOWUPS
-(lane B); then SIM-R30-MODEL and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH. Agent tokens expire 31
-October (see above). Felix makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew
-postgres trusts local connections on a world-writable socket; he closes it before the accounts move.
-LANDER-ADMIN-POLICY-DEAD waits for M6.
+(lane A); then HEAD-ADOPTED-FOLLOWUPS (lane A, after CORE-LATE-LAND), then HOST-HARDENING-FOLLOWUPS
+(lane B; they share `src/host`); then SIM-R30-MODEL and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH.
+Agent tokens expire 31 October (see above). Felix makes ruleset step 3 ("Fast lane, simulator"
+required). Felix's Homebrew postgres trusts local connections on a world-writable socket; he closes
+it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
 (`~/tessel-orch-notes/2026-10-30/vote-late-land/`): while the work is in doubt and main is at the
-leased base, a `CandidateMissing` or a refusal never ends the doubt or rejects; a fresh `Prepare`
-re-arms the ref and the work lands; the doubt ends only when main leaves the leased base or the work
-lands. This partly reverses M5-7 below (`CandidateMissing` is a fact only outside a doubt).
+leased base, nothing rejects it (no infrastructure bound; a `CandidateMissing` or a refusal at
+`Test` or `Land` keeps the doubt); a fresh `Prepare` re-arms the ref and the doubted head goes to
+`Land`; the doubt ends when main leaves the leased base, the work lands, or an operator runs
+`resolve_doubt`. This partly reverses M5-7 below (`CandidateMissing` is a fact only outside a
+doubt).
 **Decided by Felix (25 October), M5-7:** the CANDIDATE-REF shape as the note describes, with
 `CandidateMissing` as a `Call` change (decision 12); the plan's lander fork and its account steps
 are dropped.
@@ -1145,9 +1149,9 @@ Lane A:
   Done. The row, its lane and its place before P1-SIM-MERGE's landing (which delays P1-FAILPOINTS)
   rest on P1-SIM-MERGE REVIEW-1 and the standing order.
 - [ ] **HEAD-ADOPTED-FOLLOWUPS** — S, lane A, Felix reviews (`src/coordinator/` and the host: merge
-  path, voted), after P1-HOST-HARDENING and CORE-LATE-LAND (it shares the core) (it shares
-  `src/host/calls.rs` and `src/host/tests.rs`) and before or with P1-ONE-BATCH (the same wake), and
-  before RESOLVE-RUNBOOK-NITS (it shares `docs/dogfood.md` and `src/host/calls.rs`); from
+  path, voted), after P1-HOST-HARDENING (it shares `src/host/calls.rs` and `src/host/tests.rs`) and
+  CORE-LATE-LAND (it shares the core) and before or with P1-ONE-BATCH (the same wake), and before
+  RESOLVE-RUNBOOK-NITS (it shares `docs/dogfood.md` and `src/host/calls.rs`); from
   CORE-HEAD-ADOPTED's re-vote
   (`~/tessel-orch-notes/2026-10-30/vote-core-head-adopted-2/VOTE-1..3.md`), resting on the votes and
   the standing order. A port that never reads heads (`NoLander`, every repository without a
@@ -1402,39 +1406,45 @@ Lane B:
   ends on `Landed`, `AlreadyMerged`, `MainMoved`, a `Prepared` on another base or `NotLanded` with
   main off the base; `resolve_doubt` at any stage. Seed 69962521 in
   `tests/simulator-regressions.txt`; the I6 checker applies to every rejection; candidate-ref.md
-  section 2 records the decision. Done: core tests red first (VOTE-1's list and B''s flaky
+  section 2 records the decision. Done: core tests red first (VOTE-1's list and VOTE-3's (B′) flaky
   re-`Test`), the seed green, a sweep green.
-- [ ] **HOST-HARDENING-FOLLOWUPS** — S, lane B, after CORE-LATE-LAND; from P1-HOST-HARDENING's
-  re-vote (`~/tessel-orch-notes/2026-10-30/vote-host-hardening-2/VOTE-1..3.md`), resting on it and
-  the standing order. Pin the two orders the fix relies on (a deferred `then` job before the
-  socket's next frame; parked frames before queued ones when a replay ends under a closed gate),
-  with the voters' probes; say in R42 and the mod.rs gate doc that deferred jobs run before every
-  queued input. An overflow withdrawal starts mid-`release`, before the batch's `SetWake` and calls:
-  push it to `deferred`, with a test of the `waking` case. Prune the replay buffer per page (`seq <=
+- [ ] **HOST-HARDENING-FOLLOWUPS** — S, lane B, after CORE-LATE-LAND and HEAD-ADOPTED-FOLLOWUPS
+  (both edit `src/host/calls.rs` and `src/host/tests.rs`); from P1-HOST-HARDENING's re-vote
+  (`~/tessel-orch-notes/2026-10-30/vote-host-hardening-2/VOTE-1..3.md`), resting on it and the
+  standing order. Pin the two orders the fix relies on (a deferred `then` job before the socket's
+  next frame; parked frames before queued ones when a replay ends under a closed gate), with the
+  voters' probes; say in R42 and the mod.rs gate doc that deferred jobs run before every queued
+  input. An overflow withdrawal starts mid-`release`, before the batch's `SetWake` and calls: push
+  it to `deferred`, with a test of the `waking` case. Prune the replay buffer per page (`seq <=
   last_sent`) so the bound counts only owed events. R36's "none missed" holds only while reads
   succeed (a failed read answers an empty `done` page): qualify it or close the socket. Rename
   `host_a_replay_buffer_that_overflows_in_a_release_withdraws_after_the_batch_and_its_next_job` to
   what it asserts. Reword the adapter contract to the real requirement (a read holds every commit
   answered before its replay began and none answered after the page). Retry backoff for real SQLite
-  errors was not assessed. Done: each with a test failing without it.
+  errors was not assessed, and the ignored kill -9 adapter test was not run on this change (re-vote
+  VOTE-2, VOTE-3 S5): run it on CI or in P1-ADAPTER-SUITE's rest. Done: each with a test failing
+  without it.
 - [ ] **SIM-R30-MODEL** — S, lane A, after P1-FAILPOINTS and CORE-LATE-LAND; from
   P1-HOST-HARDENING's first vote (VOTE-1 S3, VOTE-3 S4) and the late-`Land` investigation.
-  `src/sim/driver.rs` (~743) still strikes the merge in flight on a failed commit, though a failed
-  commit is now retried and no longer drops the core: add a "fail every attempt" fault and drop the
-  strike for a rescued failure. `src/sim/driver/merge_path.rs:7`'s header says the lander does not
-  outlive the call's connection; the code (rightly) runs late calls: fix the header. The client logs
-  the cause of a 1013 close in `read_log`. Done: the sim reaches the spent-retry path, a test that
-  fails without each change.
+  `src/sim/driver.rs` (`commit`, ~846-849 on `6b5e921`) still strikes the merge in flight on a
+  failed commit, though a failed commit is now retried and no longer drops the core: add a "fail
+  every attempt" fault and drop the strike for a rescued failure. `src/sim/driver/merge_path.rs:7`'s
+  header says the lander does not outlive the call's connection; the code (rightly) runs late calls:
+  fix the header. The client logs the cause of a 1013 close in `read_log` (P1-HOST-HARDENING's first
+  vote VOTE-3 S1, re-vote VOTE-3 S4). The testkit's `fail_next_commit` now fails all three attempts
+  while the sim's fails one: one name, two meanings. Done: the sim reaches the spent-retry path, a
+  test that fails without each change.
 - [ ] **RUNNER-TIMING-FLAKES** — S, lane B; observed 30 October under load 60-95 from other
   projects: `tessel-server/tests/sudo_runner.rs`
   `a_call_given_up_mid_run_kills_the_account_itself_and_frees_the_gate` (a 10 s bound, took 15.4 s)
   and `tessel-runner/tests/runner/running.rs` `the_command_reads_a_closed_stdin` (a 3 s bound; it
   failed a landing's test run). Both pass in about 1 s at low load. Make the bounds about progress
   (an event or a deadline the test controls), not wall-clock under an unknown load.
-- [ ] **CLAIM-LEASE-LAPSE** — S, from 30-31 October: lane A's claims 137 and 138 lapsed
-  (`lease_expired`) while its daemon was running and online, its agent idle, and the pre-push hook
-  then refused the push; claim 125 and others held for hours the same way. Find out whether the
-  daemon stops renewing an idle claim, whether the lease is meant to end then (the skill and
+- [ ] **CLAIM-LEASE-LAPSE** — S, lane B, from 30-31 October: lane A's claim 137 lapsed
+  (`lease_expired` in its inbox) while its daemon was running and online and its agent idle, and the
+  pre-push hook then refused the push; lane A's next agent found claim 138 gone too and took 139
+  (its report). Claim 125, by contrast, held for hours while its agent was stopped. Find out whether
+  the daemon stops renewing an idle claim, whether the lease is meant to end then (the skill and
   `docs/configuration.md` say what), and fix the code or the docs; a test either way.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
