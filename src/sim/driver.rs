@@ -44,6 +44,11 @@ enum Answer {
     },
 }
 
+/// How many attempts at one batch the host makes before it drops the core: the first and two
+/// retries. The host's own bound is private to it; the simulator test that fails every attempt
+/// (tests/simulator.rs) counts the failures the host is told of and fails if the two differ.
+const COMMIT_ATTEMPTS: u32 = 3;
+
 /// How the store answers the attempts at a commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommitFault {
@@ -159,6 +164,8 @@ pub struct Sim {
     /// The failpoints that struck, in order.
     struck: Vec<Failpoint>,
     commit_fault: CommitFault,
+    /// The batch whose attempts failed in a row, and how many.
+    failing_batch: Option<(BatchId, u32)>,
     failed_commits: u64,
     executed: u64,
     crashes: u64,
@@ -216,6 +223,7 @@ impl Sim {
             refs_lost_in_restarts: false,
             struck: Vec::new(),
             commit_fault: CommitFault::None,
+            failing_batch: None,
             failed_commits: 0,
             executed: 0,
             crashes: 0,
@@ -447,7 +455,9 @@ impl Sim {
         self.then = points.collect();
     }
 
-    /// Crash at `point` every time the merge path reaches it, until `disarm`.
+    /// Crash at `point` every time the merge path reaches it, until `disarm`. It is `pub` like the
+    /// other arms, so that a test outside the crate can arm it; the crate's own failpoint and
+    /// merge-path tests use it today.
     pub fn crash_at_every(&mut self, point: Failpoint) {
         self.crash = Some(Crash::At { point, every: true });
     }
@@ -477,6 +487,7 @@ impl Sim {
         }
         self.then.clear();
         self.commit_fault = CommitFault::None;
+        self.failing_batch = None;
     }
 
     fn open_socket(&mut self, agent: &str) -> SocketId {
@@ -728,6 +739,7 @@ impl Sim {
         self.log.push("crash".to_string());
         self.strike_merge_in_flight();
         self.crashes += 1;
+        self.failing_batch = None;
         self.answered = None;
         if self.refs_lost_in_restarts {
             self.lander.lose_candidates();
@@ -856,6 +868,22 @@ impl Sim {
         }
     }
 
+    /// A failed attempt at `batch`. Only the one that spends the host's retries drops the core,
+    /// so only that one is charged to the merge in flight; a retry that stores the batch costs
+    /// the merge nothing.
+    fn count_failed_attempt(&mut self, batch: BatchId) {
+        let attempts = match self.failing_batch {
+            Some((failing, attempts)) if failing == batch => attempts + 1,
+            Some(_) | None => 1,
+        };
+        if attempts >= COMMIT_ATTEMPTS {
+            self.failing_batch = None;
+            self.strike_merge_in_flight();
+        } else {
+            self.failing_batch = Some((batch, attempts));
+        }
+    }
+
     fn commit(&mut self, batch: BatchId, mut entries: Vec<(String, String)>) {
         let now_ms = self.now_ms();
         if self.commit_fault != CommitFault::None {
@@ -863,7 +891,7 @@ impl Sim {
                 self.commit_fault = CommitFault::None;
             }
             self.failed_commits += 1;
-            self.strike_merge_in_flight();
+            self.count_failed_attempt(batch);
             let failed = Input::CommitFailed { now_ms, batch };
             self.answers.push_back(Answer::Input(failed));
             return;
@@ -875,6 +903,7 @@ impl Sim {
                 }
             }
         }
+        self.failing_batch = None;
         self.store.stage(batch, entries);
         self.answers.push_back(Answer::Commit(batch));
     }

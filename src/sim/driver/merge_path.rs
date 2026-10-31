@@ -4,8 +4,9 @@
 //! adapter's deadline instead. Everything that happens later waits on the timeline, in time order,
 //! until `quiet` finds it due.
 //!
-//! An answer sent before a restart is never received: the lander does not outlive the call's
-//! connection to the host, though what the lander did, such as a push, stays done.
+//! An answer sent before a restart is never received, because the connection it was sent on is
+//! gone. The lander does outlive the restart: a call it reaches late still runs, and what it did,
+//! such as a push, stays done.
 
 use std::collections::BTreeMap;
 
@@ -614,10 +615,9 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound() {
+    fn a_restart_during_every_test_is_rejected_at_exactly_the_bound() {
         let bound = u64::from(MAX_INFRA_RETRIES) + 1;
         let mut sim = submitted_commit(|sim| {
-            sim.poison_fork(&fork(), true);
             sim.crash_at_every(Failpoint::new(Step::Test, Moment::Running));
         });
         for _ in 0..12 {
