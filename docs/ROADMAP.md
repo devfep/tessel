@@ -7,46 +7,58 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 12:20 UTC. Main at `cd8a718`, where RUNNER-TIMING-FLAKES landed through the
+**As of:** 2026-10-31 12:45 UTC. Main at `cd8a718`, where RUNNER-TIMING-FLAKES landed through the
 server at 12:15 UTC as `114bccd`..`cd8a718` (claim 143; tests only; Opus REVIEW-1 "No": the sudo
-test's 300 ms cancel timer raced the stub's pid write and two guards had become vacuous; fix pass 1
-drives the cancels by events, runs the stub's child for 600 s and asserts the run was cut short; the
-re-check "Yes"; `~/tessel-orch-notes/2026-10-31/lane-a/runner-flakes/`). At 10:48 UTC CORE-LATE-LAND
-landed as `8707f38`..`01869ca` (ten commits on `6dccb3e`; claim 140, merge path), building Felix's
-option B: its first vote went 3-0 "No" (a doubt was fenced on the verification baseline, not on its
-own `Land`'s lease), its re-vote 2 "Yes with should-fixes" and 1 "No" (a refused `Prepare` in a
-fenced doubt never asked where main was), and after fix pass 2 the "No" voter's re-check was "Yes
-with should-fixes" (`~/tessel-orch-notes/2026-10-31/vote-core-late-land{,-2}/`); a 500-seed sweep
-from 149891420 passed before the submit, and CI (41194230450) and the Adapter suite (41194230447)
-passed on `01869ca`. Its last commit also fixes an I6 checker false positive, seed 2796343632, which
-had turned CI red on `a6accf4` (41151845130): `poisoned_outcome` judged the claim, not the poisoned
-submission, so a claim rejected for a poisoned commit that then merged other work was flagged;
-P1-HOST-HARDENING's retry exposed it (an Opus investigation, `scratchpad/I6-2796343632.md` of
-session 69ad1e78). Seeds 69962521 and 2796343632 are in `tests/simulator-regressions.txt`. At 02:19
-UTC RACE-LOSER-TEXT landed as `e78b6fe`..`6dccb3e` (claim 141; CLI only; Opus REVIEW-1 "With
-changes", the daemon kept a dead race claim locally, fixed; re-check "Yes"; its first landing run at
-02:12 failed first on the sudo timing test, then landed unchanged with the orchestrator holding the
-cargo lock). The STATE commits `caefdb7`..`a6accf4` landed at 00:45 UTC (claim 142). Felix asked on
-31 October for his items to be done in Claude in Chrome: its tools are not loaded in this session;
-lowering the landing build cap (`<server dir>/.cargo/config.toml`, `jobs = 6`, D3) and making "Fast
-lane, simulator" required (ruleset 25345043, the payload prepared) were both refused by the
-auto-mode classifier as shared-resource changes, so they wait for Felix. Before, at 00:19 UTC,
-P1-FAILPOINTS landed through the server at 00:19 UTC as `574e63d`..`6b5e921` (six commits on
-`042b87a`; claim 139, held for signature changes, not merge path, and approved by the orchestrator
-on Opus review: REVIEW-1 "With changes", no must-fix, fix pass 1 `984caf5`, a re-check "With
-changes", fix pass 2 `6b5e921`; `~/tessel-orch-notes/2026-10-30/lane-a/failpoints/`). Each landing
-window has a scripted crash, except the `Land` window between main's push and the ref delete, whose
-state `landing.rs` builds with `git update-ref`: in the simulator (`src/sim/driver/failpoint.rs`)
-and, where the real lander is needed, in `tessel-server/tests/{restart,landing}.rs`; the failpoints
-found no core bug. Its phase-1.md I6 cell changed: a crash after a recorded `Test` is reconciled and
-lands, so "`Test` running" replaces "tested, not landed", and a note says a cut-off at the `Land`
-stage is a doubt, outside I6, that stays in flight until a `Land` completes or the operator ends it
-with `resolve_doubt` (a restart at every `Land` marker loops by design until then). The notes were
-copied by hand (a merge of main in the submission). CI (41149575702) and the Adapter suite
-(41149575736) passed on `6b5e921`. At 21:14 UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a`
-(four commits on `e07e6f5`; claim 136, merge path): its first vote (`vote-host-hardening/`) went 3-0
-"No" (a core job or commit could run under a closed gate; frames a replaying socket queued before
-its `Watch` were not parked), fix pass 1 (`222b923`, `042b87a`) closed both, and the re-vote
+test's 300 ms cancel timer raced the stub's pid write and three guards had become vacuous (two sudo
+tests and `landing.rs`'s deadline test); fix pass 1 drives the cancels by events, runs the stub's
+child for 600 s, asserts the run was cut short, and holds the landing test's runner 120 s with an
+answered-before-finished check; the re-check "Yes"; CI (41200314710), the Adapter suite
+(41200314669) and Own users (41200314679) passed on `cd8a718`;
+`~/tessel-orch-notes/2026-10-31/lane-a/runner-flakes/`). At 10:48 UTC CORE-LATE-LAND landed as
+`8707f38`..`01869ca` (ten commits on `6dccb3e`; claim 140, merge path), building Felix's option B:
+its first vote went 3-0 "No" (a doubt was fenced on the verification baseline, not on its own
+`Land`'s lease), its re-vote 2 "Yes with should-fixes" and 1 "No" (a refused `Prepare` in a fenced
+doubt never asked where main was), and after fix pass 2 the "No" voter's re-check was "Yes with
+should-fixes" (`~/tessel-orch-notes/2026-10-31/vote-core-late-land{,-2}/`); the orchestrator ran a
+500-seed sweep from 149891420 on `24d0ed7` before the submit (no log kept), and Linux CI, the
+voter's other condition, ran only after the landing: CI (41194230450) and the Adapter suite
+(41194230447) passed on `01869ca`. Its last commit also fixes an I6 checker false positive, seed
+2796343632, which had turned CI red on `a6accf4` (41151845130): `poisoned_outcome` judged the claim,
+not the poisoned submission, so a claim rejected for a poisoned commit that then merged other work
+was flagged; P1-HOST-HARDENING's retry exposed it (an Opus investigation,
+`scratchpad/I6-2796343632.md` of session 69ad1e78). Seeds 69962521 and 2796343632 are in
+`tests/simulator-regressions.txt`. The scheduled Nightly 41189134845 (09:32 UTC on `6dccb3e`, before
+the fix) FAILED: its sweep broke I6 on seeds 415141587, 415142220, 415144131, 415147323 and
+415148924 with the same message, and all five pass on `cd8a718` (run by the orchestrator, one seed
+each); its full-mutants job found one missed mutant beyond the baseline, `src/sim/driver.rs:379`
+`Sim::failed_commits -> 0`, so the next Nightly fails its baseline check until SIM-R30-MODEL kills
+it. At 02:19 UTC RACE-LOSER-TEXT landed as `e78b6fe`..`6dccb3e` (claim 141; CLI only; Opus REVIEW-1
+"With changes", the daemon kept a dead race claim locally, fixed; re-check "Yes"; the re-check was
+"With changes" for one line over 100 characters, which the orchestrator closed with its own commit
+`550be1b` in the lane's submission, and its addendum "Yes"; its first landing run at 02:12 failed
+first on the sudo timing test, then landed unchanged with the orchestrator holding the cargo lock).
+The STATE commits `caefdb7`..`a6accf4` landed at 00:45 UTC (claim 142). Felix asked on 31 October
+for his items to be done in Claude in Chrome: its tools are not loaded in this session; lowering the
+landing build cap (`<server dir>/.cargo/config.toml` from `jobs = 6`, D3, to 2) and making "Fast
+lane, simulator" required (ruleset 25345043; the payload is `scratchpad/ruleset-25345043-new.json`
+of session 69ad1e78) were both refused by the auto-mode classifier as shared-resource changes, so
+they wait for Felix. Before, at 00:19 UTC, P1-FAILPOINTS landed through the server as
+`574e63d`..`6b5e921` (six commits on `042b87a`; claim 139, held for signature changes, not merge
+path, and approved by the orchestrator on Opus review: REVIEW-1 "With changes", no must-fix, fix
+pass 1 `984caf5`, a re-check "With changes", fix pass 2 `6b5e921`;
+`~/tessel-orch-notes/2026-10-30/lane-a/failpoints/`). Each landing window has a scripted crash,
+except the `Land` window between main's push and the ref delete, whose state `landing.rs` builds
+with `git update-ref`: in the simulator (`src/sim/driver/failpoint.rs`) and, where the real lander
+is needed, in `tessel-server/tests/{restart,landing}.rs`; the failpoints found no core bug. Its
+phase-1.md I6 cell changed: a crash after a recorded `Test` is reconciled and lands, so "`Test`
+running" replaces "tested, not landed", and a note says a cut-off at the `Land` stage is a doubt,
+outside I6, that stays in flight until a `Land` completes or the operator ends it with
+`resolve_doubt` (a restart at every `Land` marker loops by design until then). The notes were copied
+by hand (a merge of main in the submission). CI (41149575702) and the Adapter suite (41149575736)
+passed on `6b5e921`. At 21:14 UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a` (four commits on
+`e07e6f5`; claim 136, merge path): its first vote (`vote-host-hardening/`) went 3-0 "No" (a core job
+or commit could run under a closed gate; frames a replaying socket queued before its `Watch` were
+not parked), fix pass 1 (`222b923`, `042b87a`) closed both, and the re-vote
 (`vote-host-hardening-2/`) went 3-0 "Yes with should-fixes" (HOST-HARDENING-FOLLOWUPS, below). Its
 first landing attempt (21:04 UTC) failed first on `tessel-runner/tests/runner/running.rs`
 `the_command_reads_a_closed_stdin` (a 3 s wall-clock bound, untouched; server.log records only the
@@ -160,7 +172,7 @@ lane's worktree and decides holds as `orchestrator`. Two lanes ran at once four 
 the coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up.
-In flight (each item gives its brief's path; votes in `~/tessel-orch-notes/2026-10-30/`):
+In flight (votes and briefs in `~/tessel-orch-notes/2026-10-30/` and `2026-10-31/`):
 - None: both lanes are idle; the next dispatches are in Next.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
@@ -209,27 +221,30 @@ required checks, the repository admin role as bypass; always). Proven first on
 `tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
-**Waiting on Felix:** whether CLAUDE.md rule 1 should also name a never-logged live
-notice an older daemon can skip and stay correct as additive (invariant 13 since `f1ea1f6`); the
-plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps
-`state_version` "only if the old binary can still read the new state", a case the store's
-`refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
+**Waiting on Felix:** today, 31 October, renewing the agent tokens (when they lapse, lanes cannot
+claim or submit); lowering the landing build cap from 6 to 2 jobs (D3) and ruleset step 3, both of
+which the orchestrator tried and the permission classifier refused (STATE above);  whether CLAUDE.md
+rule 1 should also name a never-logged live notice an older daemon can skip and stay correct as
+additive (invariant 13 since `f1ea1f6`); the plan's rule (d) (`docs/proposals/phase-1.md`), which
+says a build bumps `state_version` "only if the old binary can still read the new state", a case the
+store's `refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
 `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
 P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
 lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
 itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
 `tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged pull
-requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word).
-Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the
-sandbox commits use his GitHub noreply address.
+requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word). Note:
+commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
+commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** HEAD-ADOPTED-FOLLOWUPS (lane A, after CORE-LATE-LAND), then HOST-HARDENING-FOLLOWUPS (lane
-B; they share `src/host`); then SIM-R30-MODEL and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH.
-Agent tokens expire 31 October (see above). Felix makes ruleset step 3 ("Fast lane, simulator"
-required). Felix's Homebrew postgres trusts local connections on a world-writable socket; he closes
-it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** HEAD-ADOPTED-FOLLOWUPS (lane A, now unblocked) and SUDO-STOP-RUN-RACE (lane B); then
+HOST-HARDENING-FOLLOWUPS (lane B; it shares `src/host` with HEAD-ADOPTED-FOLLOWUPS); then
+SIM-R30-MODEL (lane A; it kills the Nightly's missed mutant), RACE-TEXTS-SHARED (lane B),
+CLAIM-LEASE-LAPSE and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH. Felix makes ruleset step 3 ("Fast
+lane, simulator" required). Felix's Homebrew postgres trusts local connections on a world-writable
+socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1466,15 +1481,20 @@ Lane B:
   account and `ps -U` find nothing, `kill_all` returns Ok, `stop_run` waits passively for
   `EXIT_GRACE` while `sudo` goes on to exec the real runner, then sets `closed`, so the gate stays
   shut until a restart. Safe, but it costs availability; the window opens when a call gets the gate
-  with almost no deadline left. Keep running kill rounds while waiting within `EXIT_GRACE`; a test
-  with the slow-start stub that the gate is free afterwards.
+  with almost no deadline left. Keep running kill rounds while waiting within `EXIT_GRACE`; Done: a
+  test with the slow-start stub that the gate is free afterwards.
 - [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
   the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
   `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
   now catch a drift, but the copies stay. Make them `pub const`s in `src/protocol.rs` and use them
-  in the CLI (additive, no wire change). Also the `HumanPick` race's final `RaceResult` after the
-  window closed renders the same "if none comes before the window closes" line as the earlier
-  recommendation; the wire cannot tell them apart today.
+  in the CLI (additive, no wire change); a cross edit into lane A's `tessel-cli/src/render.rs`,
+  named here. Also from that review: drop the no-op `self.fresh.insert(claim)`
+  (`tessel-cli/src/daemon.rs:1722`); make
+  `an_entry_no_trial_judged_is_told_the_tests_gave_no_result` (`tessel-cli/tests/cli.rs:3300`) wait
+  on the notice, not a fixed number of reads; have the stop hook use the race mark as the daemon
+  does. Done: the CLI uses the core's constants, and a test for each change. (Telling a timed-out
+  `HumanPick` race's final `RaceResult` from the earlier recommendation needs an optional wire
+  field; not in this row.)
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
