@@ -1428,15 +1428,40 @@ fn a_failed_commit_is_answered_as_failed_and_disarm_clears_it() {
     };
     let mut sim = script();
     let a = agent_socket(&sim, "agent-a");
-    sim.fail_next_commit();
+    sim.fail_next_commit_attempt();
     sim.disarm();
     sim.send(a, &claim_msg(30, "src/d.rs"), RequestKind::Claim, None);
     assert!(sim.quiet());
     assert_eq!(failed(&sim), 0);
-    sim.fail_next_commit();
+    sim.fail_next_commit_attempt();
     sim.send(a, &claim_msg(31, "src/e.rs"), RequestKind::Claim, None);
     assert!(sim.quiet());
     assert_eq!(failed(&sim), 1);
+    assert_eq!(
+        sim.failed_commits(),
+        1,
+        "the count is the failures the host was told of"
+    );
+}
+
+#[test]
+fn every_attempt_at_a_commit_can_fail_until_the_host_gives_up() {
+    let mut sim = script();
+    let a = agent_socket(&sim, "agent-a");
+    sim.fail_every_commit_attempt();
+    sim.send(a, &claim_msg(32, "src/f.rs"), RequestKind::Claim, None);
+    assert!(sim.quiet());
+    let told = sim
+        .log()
+        .iter()
+        .filter(|l| l.contains("CommitFailed"))
+        .count();
+    assert_eq!(told, 3, "the first attempt and two retries");
+    assert_eq!(sim.failed_commits(), 3);
+    sim.disarm();
+    sim.send(a, &claim_msg(33, "src/g.rs"), RequestKind::Claim, None);
+    assert!(sim.quiet());
+    assert_eq!(sim.failed_commits(), 3, "disarm ended the fault");
 }
 
 #[test]

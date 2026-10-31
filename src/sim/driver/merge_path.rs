@@ -636,6 +636,56 @@ pub(super) mod tests {
         assert!(found.is_empty(), "{found:?}");
     }
 
+    /// A commit is submitted and the clock runs until the core holds a merge in flight.
+    fn with_a_merge_in_flight() -> Sim {
+        let mut sim = submitted_commit(|sim| sim.slow_replies(10_000));
+        for _ in 0..60 {
+            let in_flight = sim
+                .stored_state_value()
+                .is_some_and(|state| state.pointer("/merge_in_flight/claim").is_some());
+            if in_flight {
+                return sim;
+            }
+            sim.advance(1_000);
+            assert!(sim.quiet());
+        }
+        unreachable!("no merge came in flight");
+    }
+
+    fn strikes_on_the_fork(sim: &Sim) -> u64 {
+        sim.fork_strikes().get(&fork()).copied().unwrap_or(0)
+    }
+
+    #[test]
+    fn a_failed_commit_the_retry_rescues_is_not_charged_to_the_merge_in_flight() {
+        let mut sim = with_a_merge_in_flight();
+        let before = strikes_on_the_fork(&sim);
+        sim.fail_next_commit_attempt();
+        sim.advance(100_000);
+        assert!(sim.quiet());
+        assert_eq!(sim.failed_commits(), 1, "the fault struck");
+        assert_eq!(sim.crashes(), 0);
+        assert_eq!(strikes_on_the_fork(&sim), before);
+    }
+
+    #[test]
+    fn a_commit_that_fails_every_attempt_is_charged_once_to_the_merge_in_flight() {
+        let mut sim = with_a_merge_in_flight();
+        let before = strikes_on_the_fork(&sim);
+        sim.fail_every_commit_attempt();
+        sim.advance(100_000);
+        assert!(sim.quiet());
+        sim.disarm();
+        assert_eq!(sim.failed_commits(), 3, "the first attempt and two retries");
+        assert_eq!(strikes_on_the_fork(&sim), before + 1);
+        for _ in 0..12 {
+            sim.advance(100_000);
+            assert!(sim.quiet());
+        }
+        let found = check::run(&sim, &Checker::ALL);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
     /// A reviewer opens a `TestsPass` race on the head a `Hello` adopted, one agent enters and
     /// submits, and the lander refuses the head read `refused` times.
     fn race_on_an_adopted_head(refused: u32) -> Sim {

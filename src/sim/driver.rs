@@ -44,6 +44,14 @@ enum Answer {
     },
 }
 
+/// How the store answers the attempts at a commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitFault {
+    None,
+    NextAttempt,
+    EveryAttempt,
+}
+
 /// A fault armed for the next outputs or answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Crash {
@@ -150,7 +158,7 @@ pub struct Sim {
     refs_lost_in_restarts: bool,
     /// The failpoints that struck, in order.
     struck: Vec<Failpoint>,
-    fail_next_commit: bool,
+    commit_fault: CommitFault,
     failed_commits: u64,
     executed: u64,
     crashes: u64,
@@ -207,7 +215,7 @@ impl Sim {
             then: VecDeque::new(),
             refs_lost_in_restarts: false,
             struck: Vec::new(),
-            fail_next_commit: false,
+            commit_fault: CommitFault::None,
             failed_commits: 0,
             executed: 0,
             crashes: 0,
@@ -374,7 +382,7 @@ impl Sim {
         &self.struck
     }
 
-    /// How many commits failed without a crash.
+    /// How many attempts at a commit failed without a crash.
     pub fn failed_commits(&self) -> u64 {
         self.failed_commits
     }
@@ -449,9 +457,16 @@ impl Sim {
         self.crash = Some(Crash::Apply);
     }
 
-    /// The next commit fails; the process lives.
-    pub fn fail_next_commit(&mut self) {
-        self.fail_next_commit = true;
+    /// The next attempt at a commit fails and the process lives. The host retries a failed
+    /// commit, so the retry stores it.
+    pub fn fail_next_commit_attempt(&mut self) {
+        self.commit_fault = CommitFault::NextAttempt;
+    }
+
+    /// Every attempt at a commit fails, until `disarm`: the host spends its retries and drops the
+    /// core, as it does for a store that is down.
+    pub fn fail_every_commit_attempt(&mut self) {
+        self.commit_fault = CommitFault::EveryAttempt;
     }
 
     /// Clear faults that never struck, except a crash at a moment of any call: it waits for the
@@ -461,7 +476,7 @@ impl Sim {
             self.crash = None;
         }
         self.then.clear();
-        self.fail_next_commit = false;
+        self.commit_fault = CommitFault::None;
     }
 
     fn open_socket(&mut self, agent: &str) -> SocketId {
@@ -843,8 +858,10 @@ impl Sim {
 
     fn commit(&mut self, batch: BatchId, mut entries: Vec<(String, String)>) {
         let now_ms = self.now_ms();
-        if self.fail_next_commit {
-            self.fail_next_commit = false;
+        if self.commit_fault != CommitFault::None {
+            if self.commit_fault == CommitFault::NextAttempt {
+                self.commit_fault = CommitFault::None;
+            }
             self.failed_commits += 1;
             self.strike_merge_in_flight();
             let failed = Input::CommitFailed { now_ms, batch };
