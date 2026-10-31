@@ -1258,24 +1258,230 @@ fn resent_land() -> (Coordinator, ClaimId, MergeDispatch) {
 }
 
 #[test]
-fn a_resent_land_refused_ends_the_doubt_and_says_so() {
+fn a_resent_land_refused_stays_in_doubt_and_rejects_nothing() {
     let (mut c, claim, again) = resent_land();
     let refused = MergeOutcome::Refused {
         kind: RuleKind::ProtectedRef,
     };
     let effects = c.merge_outcome(again.id, &refused, NOW + 10_001);
-    assert!(rejected(&effects));
-    assert_eq!(doubt_notices(&effects), vec![(claim, None)]);
+    assert!(!rejected(&effects));
+    assert_eq!(doubt_notices(&effects), vec![]);
+    let work = work(&c, claim);
+    assert_eq!((work.in_doubt, work.infra_failures), (true, 0));
+    assert_eq!(work.unanswered_from, Some(commit(OLD)));
+}
+
+/// The `Land` sent again was answered `CandidateMissing`, and the core's `Prepare` is due.
+fn doubted_prepare() -> (Coordinator, ClaimId, MergeDispatch, MergeDispatch) {
+    let (mut c, claim, again) = resent_land();
+    let effects = c.merge_outcome(again.id, &MergeOutcome::CandidateMissing {}, NOW + 10_001);
+    assert!(effects.is_empty(), "{effects:?}");
+    let due = work(&c, claim).retry_at_ms.expect("a backoff");
+    let prepare = c.begin_merge(due).expect("the Prepare is due");
+    assert_eq!(prepare.stage, MergeStage::Prepare);
+    (c, claim, again, prepare)
+}
+
+/// A `Prepare` answer for the doubted base and another head.
+fn prepared_other_head() -> MergeOutcome {
+    MergeOutcome::Prepared {
+        base: commit(OLD),
+        head: commit(MOVED),
+    }
+}
+
+fn retry_at(c: &Coordinator, claim: ClaimId) -> u64 {
+    work(c, claim).retry_at_ms.expect("a backoff")
 }
 
 #[test]
-fn a_resent_land_whose_candidate_is_gone_ends_the_doubt_and_says_so() {
+fn a_resent_land_whose_candidate_is_gone_stays_in_doubt_and_counts_nothing() {
     let (mut c, claim, again) = resent_land();
     let effects = c.merge_outcome(again.id, &MergeOutcome::CandidateMissing {}, NOW + 10_001);
+    assert!(!rejected(&effects));
+    assert_eq!(doubt_notices(&effects), vec![], "the doubt is not over");
+    let work = work(&c, claim);
+    assert!(work.in_doubt);
+    assert_eq!(work.unanswered_from, Some(commit(OLD)));
+    assert_eq!((work.infra_failures, work.moved), (0, 0));
+    let due = work.retry_at_ms.expect("the doubts' backoff");
+    assert_eq!(due, c.state.clock_ms + infra_backoff_ms(2));
+    assert_eq!(c.begin_merge(due - 1), None, "the backoff is kept");
+    let prepare = c.begin_merge(due).expect("a Prepare re-makes the ref");
+    assert_eq!(prepare.stage, MergeStage::Prepare);
+    assert!(prepare.id > again.id);
+    assert!(c.merge_in_doubt().is_some_and(|doubt| doubt.claim == claim));
+}
+
+#[test]
+fn a_prepare_of_the_doubted_pair_goes_straight_to_land_and_landed_merges_the_work() {
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    let land = next_after(&mut c, &prepare, &prepared());
+    let pair = MergeStage::Land {
+        base: commit(OLD),
+        head: commit(HEAD),
+    };
+    assert_eq!(land.stage, pair, "that head was tested at the doubted Land");
+    assert!(c.merge_in_doubt().is_some_and(|doubt| doubt.claim == claim));
+    let effects = c.merge_outcome(land.id, &merged(), NOW + 20_000);
+    let span = (Some(commit(OLD)), commit(HEAD));
+    assert_eq!(merged_span(&effects), Some(span));
+}
+
+#[test]
+fn a_prepare_of_the_same_base_and_another_head_is_tested_and_keeps_the_doubt() {
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    let test = next_after(&mut c, &prepare, &prepared_other_head());
+    let pair = MergeStage::Test {
+        base: commit(OLD),
+        head: commit(MOVED),
+    };
+    assert_eq!(test.stage, pair);
+    let effects = c.merge_outcome(test.id, &failed_tests(), NOW + 20_000);
+    assert!(!rejected(&effects), "a flaky test of the doubted work");
+    assert!(work(&c, claim).in_doubt);
+}
+
+#[test]
+fn nothing_rejects_the_work_in_doubt_however_often_the_merge_path_fails() {
+    let (mut c, claim, _, mut prepare) = doubted_prepare();
+    let mut now = NOW + 20_000;
+    for failure in 1..=2 * MAX_INFRA_RETRIES + 2 {
+        let outcome = if failure % 2 == 0 {
+            MergeOutcome::Timeout {}
+        } else {
+            MergeOutcome::CandidateMissing {}
+        };
+        let effects = c.merge_outcome(prepare.id, &outcome, now);
+        assert!(!rejected(&effects), "failure {failure}");
+        let work = work(&c, claim);
+        assert_eq!((work.in_doubt, work.infra_failures), (true, 0), "{failure}");
+        let due = retry_at(&c, claim);
+        let wait = due - c.state.clock_ms;
+        assert!(
+            wait <= infra_backoff_ms(MAX_INFRA_RETRIES),
+            "{failure}: capped"
+        );
+        now = due;
+        prepare = c.begin_merge(now).expect("a Prepare is due again");
+    }
+}
+
+#[test]
+fn a_restart_at_test_in_doubt_sends_it_again_and_never_rejects() {
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    next_after(&mut c, &prepare, &prepared_other_head());
+    for restart in 1..=MAX_INFRA_RETRIES + 2 {
+        let effects = c.recover_merge(NOW + 20_000);
+        assert!(!rejected(&effects), "restart {restart}");
+        let test = c
+            .begin_merge(NOW + 20_000)
+            .expect("the Test goes out again");
+        assert!(matches!(test.stage, MergeStage::Test { .. }));
+    }
+    assert!(work(&c, claim).in_doubt);
+}
+
+#[test]
+fn a_marker_stored_before_the_staged_landing_never_rejects_in_doubt() {
+    let stored = store_written_before_the_staged_landing();
+    let mut c: Coordinator = serde_json::from_str(&stored).unwrap();
+    let claim = ClaimId(*c.state.claims.keys().next().unwrap());
+    let mut now = NOW + 4;
+    for restart in 1..=MAX_INFRA_RETRIES + 3 {
+        let effects = c.recover_merge(now);
+        assert!(!rejected(&effects), "restart {restart}");
+        now = retry_at(&c, claim);
+        let prepare = c.begin_merge(now).expect("the claim in doubt goes first");
+        assert_eq!(prepare.stage, MergeStage::Prepare);
+    }
+    assert!(work(&c, claim).in_doubt);
+}
+
+#[test]
+fn a_rule_refusal_at_test_or_land_in_doubt_rejects_nothing() {
+    let refused = MergeOutcome::Refused {
+        kind: RuleKind::RequiredCheck,
+    };
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    let land = next_after(&mut c, &prepare, &prepared());
+    let effects = c.merge_outcome(land.id, &refused, NOW + 20_000);
+    assert!(!rejected(&effects), "at Land");
+    assert!(work(&c, claim).in_doubt);
+    let due = retry_at(&c, claim);
+    let prepare = c.begin_merge(due).expect("a Prepare is due");
+    let test = next_after(&mut c, &prepare, &prepared_other_head());
+    let effects = c.merge_outcome(test.id, &refused, due + 1);
+    assert!(!rejected(&effects), "at Test");
+    assert!(work(&c, claim).in_doubt);
+}
+
+#[test]
+fn a_prepare_on_another_base_ends_the_doubt_and_the_bound_applies_again() {
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    let elsewhere = MergeOutcome::Prepared {
+        base: commit(MOVED),
+        head: commit(HEAD),
+    };
+    let effects = c.merge_outcome(prepare.id, &elsewhere, NOW + 20_000);
     assert_eq!(doubt_notices(&effects), vec![(claim, None)]);
     let work = work(&c, claim);
     assert_eq!((work.in_doubt, work.unanswered_from.clone()), (false, None));
-    assert_eq!(work.infra_failures, 1, "counted, as a missing candidate is");
+    assert_eq!(c.merge_in_doubt(), None);
+    let mut test = c.begin_merge(NOW + 20_000).expect("tested again");
+    assert!(matches!(test.stage, MergeStage::Test { .. }));
+    let mut now = NOW + 20_001;
+    for failure in 1..=MAX_INFRA_RETRIES + 1 {
+        let effects = c.merge_outcome(test.id, &MergeOutcome::Timeout {}, now);
+        if failure > MAX_INFRA_RETRIES {
+            assert!(rejected(&effects), "the fourth rejects again");
+            break;
+        }
+        assert!(!rejected(&effects), "failure {failure}");
+        now = retry_at(&c, claim);
+        let prepare = c.begin_merge(now).expect("a Prepare");
+        test = next_after(&mut c, &prepare, &elsewhere);
+    }
+}
+
+#[test]
+fn already_merged_at_a_prepare_in_doubt_lands_the_work_from_the_leased_base() {
+    let (mut c, _, _, prepare) = doubted_prepare();
+    let already = MergeOutcome::AlreadyMerged { base: commit(HEAD) };
+    let effects = c.merge_outcome(prepare.id, &already, NOW + 20_000);
+    let span = (Some(commit(OLD)), commit(HEAD));
+    assert_eq!(merged_span(&effects), Some(span));
+}
+
+#[test]
+fn the_operator_can_resolve_a_doubt_at_prepare_or_test() {
+    for landed_there in [true, false] {
+        for at_test in [false, true] {
+            let (mut c, claim, _, prepare) = doubted_prepare();
+            if at_test {
+                next_after(&mut c, &prepare, &prepared_other_head());
+            }
+            let journaled = Some((commit(OLD), commit(HEAD)));
+            assert_eq!(c.journaled_land(claim), journaled, "test {at_test}");
+            let effects = c
+                .resolve_doubt(claim, landed_there, NOW + 30_000)
+                .expect("a doubt at any stage");
+            assert_eq!(landed(&effects), landed_there, "test {at_test}");
+            if !landed_there {
+                assert!(!work(&c, claim).in_doubt);
+                assert_eq!(c.merge_in_doubt(), None);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_doubted_pair_survives_the_store() {
+    let (c, claim, _, _) = doubted_prepare();
+    let stored = serde_json::to_string(&c).unwrap();
+    let back: Coordinator = serde_json::from_str(&stored).unwrap();
+    let journaled = Some((commit(OLD), commit(HEAD)));
+    assert_eq!(back.journaled_land(claim), journaled);
 }
 
 // ---- Welcome lists the claims in doubt ----
