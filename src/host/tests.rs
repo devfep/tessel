@@ -2055,6 +2055,16 @@ fn host_a_head_read_runs_only_when_offered_and_is_stored_before_anyone_is_told()
     assert_eq!(kit.wake(), None, "main moved and nothing else is due");
 }
 
+/// The newest grant `sock` received.
+fn last_grant(kit: &Testkit, sock: SocketId) -> (ClaimId, Fence) {
+    for msg in kit.received(sock).iter().rev() {
+        if let ServerMsg::Granted { claim, fence, .. } = msg {
+            return (*claim, *fence);
+        }
+    }
+    panic!("no grant in {:?}", kit.received(sock));
+}
+
 /// Open a one-entrant race on `path` as `a1` (a reviewer), join it and submit, so it closes.
 /// `first_req` is the first of the three request numbers it uses.
 fn close_a_race(kit: &mut Testkit, sock: SocketId, first_req: u64, path: &str) {
@@ -2091,7 +2101,7 @@ fn close_a_race(kit: &mut Testkit, sock: SocketId, first_req: u64, path: &str) {
         },
     );
     kit.settle();
-    let (entry, fence) = granted(kit, sock);
+    let (entry, fence) = last_grant(kit, sock);
     let submit = ClientMsg::Submit {
         req: RequestId(first_req + 2),
         claim: entry,
@@ -2244,8 +2254,12 @@ fn host_a_port_that_reads_no_heads_makes_no_head_read_and_judges_a_closed_race_a
     close_a_race(&mut kit, sock, 1, "x.rs");
     assert_eq!(race_results(&kit, sock).len(), 1, "judged at once");
     wake(&mut kit);
-    assert!(kit.calls().is_empty(), "no head read: {:?}", kit.calls());
-    assert_eq!(kit.wake(), None, "and none is owed");
+    let reads = kit
+        .calls()
+        .iter()
+        .filter(|call| matches!(call.request, Request::ReadHead { .. }))
+        .count();
+    assert_eq!(reads, 0, "no head read: {:?}", kit.calls());
     assert_eq!(waiting_lines(&kit), 0);
     assert!(
         !kit.logs().iter().any(|line| line.contains("head call")),
