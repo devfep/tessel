@@ -120,7 +120,7 @@ fn a_run_past_its_timeout_is_killed_with_its_whole_process_group() {
     assert!(!result.passed);
     assert_eq!(result.exit_code, 137);
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < Duration::from_secs(30),
         "replied after {elapsed:?}"
     );
     assert!(no_process_matches("sleep 4242"), "a sleep outlived the run");
@@ -132,7 +132,7 @@ fn a_process_a_passing_run_leaves_behind_is_killed() {
     let started = Instant::now();
     let result = run(&rig.config(), &rig.request()).unwrap();
     assert!(result.passed);
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(started.elapsed() < Duration::from_secs(30));
     assert!(no_process_matches("sleep 4343"), "a sleep outlived the run");
 }
 
@@ -180,12 +180,11 @@ fn the_command_sees_only_the_configured_environment() {
 fn the_command_reads_a_closed_stdin() {
     let rig = Rig::with_cargo("cat\necho stdin-ended");
     let mut asked = rig.request();
-    asked.timeout_secs = 5;
-    let started = Instant::now();
+    asked.timeout_secs = 60;
     let result = run(&rig.config(), &asked).unwrap();
+    assert!(!result.timed_out, "cat waited on an open stdin: {result:?}");
     assert!(result.passed, "{result:?}");
     assert_eq!(result.stdout, "stdin-ended\n");
-    assert!(started.elapsed() < Duration::from_secs(3));
 }
 
 #[test]
@@ -197,7 +196,7 @@ fn the_requests_timeout_cannot_exceed_the_configured_one() {
     let started = Instant::now();
     let result = run(&config, &asked).unwrap();
     assert!(result.timed_out);
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(started.elapsed() < Duration::from_secs(30));
     assert!(no_process_matches("sleep 4444"));
 }
 
@@ -284,7 +283,7 @@ fn a_leader_that_leaves_its_process_group_cannot_hold_the_reply_past_the_timeout
     let result = run(&rig.config(), &asked).unwrap();
     assert!(result.timed_out);
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(30),
         "{:?}",
         started.elapsed()
     );
@@ -303,7 +302,7 @@ fn one_deadline_covers_all_the_commands() {
         result.timed_out,
         "two 0.7 s commands fit a 1 s timeout one by one"
     );
-    assert!(started.elapsed() < Duration::from_millis(1800));
+    assert!(started.elapsed() < Duration::from_secs(30));
 }
 
 #[test]

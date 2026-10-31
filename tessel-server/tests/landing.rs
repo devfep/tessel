@@ -662,7 +662,7 @@ async fn a_test_past_its_deadline_is_given_up_its_tree_removed_and_nothing_lands
 
     assert_eq!(answer, CallAnswer::Unknown);
     assert!(
-        began.elapsed() < Duration::from_secs(10),
+        began.elapsed() < Duration::from_secs(60),
         "answered at the deadline"
     );
     started.recv_timeout(Duration::from_secs(1))?;

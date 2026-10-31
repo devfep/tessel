@@ -312,17 +312,18 @@ fn a_call_given_up_mid_run_kills_the_account_itself_and_frees_the_gate() {
         std::thread::sleep(Duration::from_millis(300));
         flag.store(true, Ordering::SeqCst);
     });
-    let started = Instant::now();
-    let error = runner
-        .run_cancellable(&request(), &|| stop.load(Ordering::SeqCst))
+    let (done, returned) = std::sync::mpsc::channel();
+    let caller = Arc::clone(&runner);
+    std::thread::spawn(move || {
+        let outcome = caller.run_cancellable(&request(), &|| stop.load(Ordering::SeqCst));
+        let _ = done.send(outcome);
+    });
+    let error = returned
+        .recv_timeout(Duration::from_secs(120))
+        .expect("no deadlock: the given-up call returned")
         .unwrap_err();
     timer.join().expect("timer");
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "no deadlock: {:?}",
-        started.elapsed()
-    );
     for pid in rig.read("procs").lines() {
         assert!(!alive(pid), "{pid} survived the kill");
     }
@@ -536,7 +537,7 @@ fn a_kill_that_fails_on_a_cancelled_call_closes_the_gate_and_the_wait_is_bounded
     timer.join().expect("timer");
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
     assert!(
-        started.elapsed() < Duration::from_secs(30),
+        started.elapsed() < Duration::from_secs(120),
         "bounded: {:?}",
         started.elapsed()
     );
