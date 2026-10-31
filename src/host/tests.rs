@@ -2303,20 +2303,11 @@ fn host_a_stored_race_waiting_for_the_head_is_judged_on_the_first_wake_of_an_unr
         trunk_head_unreadable: true,
         ..config()
     });
-    let sock = welcomed(&mut kit, "a1");
     wake(&mut kit);
-    let results = race_results(&kit, sock);
-    let [ServerMsg::RaceResult { entries, .. }] = &results[..] else {
-        panic!("expected one RaceResult, got {results:?}");
-    };
-    assert_eq!(
-        entries[0].tests_passed, None,
-        "judged with the tests unknown"
-    );
     assert_eq!(
         state(&kit)["races"],
         json!({}),
-        "the race and its scopes are gone"
+        "the first wake, before any client says hello, ended the race"
     );
     let judged = kit
         .logs()
@@ -2324,6 +2315,7 @@ fn host_a_stored_race_waiting_for_the_head_is_judged_on_the_first_wake_of_an_unr
         .filter(|line| line.contains("judged with the tests unknown"))
         .count();
     assert_eq!(judged, 1, "{:?}", kit.logs());
+    welcomed(&mut kit, "a1");
     let reads = kit
         .calls()
         .iter()
@@ -2331,6 +2323,7 @@ fn host_a_stored_race_waiting_for_the_head_is_judged_on_the_first_wake_of_an_unr
         .count();
     assert_eq!(reads, 0, "and no head is read");
 }
+
 #[test]
 fn host_a_port_that_reads_no_heads_makes_no_head_read_and_judges_a_closed_race_at_once() {
     let mut kit = Testkit::new(HostConfig {
