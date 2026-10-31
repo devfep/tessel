@@ -233,6 +233,12 @@ binaries, upgrade as below first.
   the new build wrote can still fail to decode in the old one. If the new build raised the
   version, the old build cannot open the store, and rollback means a fresh store and new claims.
   Never put a copy of an older store back: a restored store can reissue fences.
+  Rolling back past the commit that adds `doubted_land` to a submission (CORE-LATE-LAND) needs no
+  claim in doubt of a `Land`: the old build sends a waiting doubted `Prepare` at once, rejects the
+  work under the old rules (the late `Land` can still put it on main), and drops the pair on its
+  next write, so a later roll forward finds a doubt with no pair. Check the stored state first: the
+  claim query under "Nothing in flight", with `'\$.work.doubted_land' is not null` in place of
+  `'\$.work.in_doubt' = 1`, prints nothing.
   Rolling back past the commit that adds `trials_await_head` to a race (CORE-HEAD-ADOPTED) needs
   no race in `Judging` with that flag set: the old build drops the flag and leaves the race
   without trials for good. Check the stored state first.
@@ -492,8 +498,11 @@ if it ended. The age counts from when that daemon first learned of the doubt, on
 A lander that never answers holds the queue behind it. A `Land` sent again that is refused, or
 whose candidate ref is gone, does not end the doubt: the merge goes back through `Prepare` (which
 makes the ref again, and the same head goes straight to `Land`), `tessel status` keeps showing the
-doubt, and nothing is rejected. The doubt ends when the work lands or main moves past the base the
-`Land` leased.
+doubt, and nothing is rejected. The doubt ends when the work lands, when you answer it with `admin
+resolve`, or when main is known to have moved past the base the `Land` leased: a `Reconcile` or a
+`Prepare` finds it elsewhere, or a `Land` is answered `main_moved` (the server's lander answers
+that as unknown, so with it this one does not happen). While a doubt holds the merge, the core
+reads no head and verifies no race: they wait for it.
 
 To find the claim without the submitter, read `server.log` (`/var/log/tessel-server.log` after the
 [move to the service accounts](#moving-to-the-service-accounts)): each `Land` or `Reconcile`
@@ -545,9 +554,11 @@ Then:
    ```
 
    The claim must be the one you mean. At stage `land` or `reconcile` the third and fourth columns
-   are the head and base. At `prepare` or `test` (a doubt that went round again) they are empty:
-   the head and base are the last column, `["<base>","<head>"]`, the `Land` the doubt is about.
-   `admin resolve` refuses a claim with no such pair (see the last point below).
+   are the head and base. At `prepare` they are empty; at `test` they are the `Test`'s own head and
+   base, which can differ from the pair the doubt is about. At `prepare` and `test` (a doubt that
+   went round again) the head and base of the `Land` the doubt is about are the last column,
+   `["<base>","<head>"]`; use that pair, not the third and fourth columns. `admin resolve` refuses
+   a claim with no such pair (see the last point below).
 
    The store is in WAL mode. `tessel-server` has no signal handler, so both stops above (`kill`
    and `launchctl bootout`) leave the `-wal` and `-shm` files, and a read-only open works. Any
@@ -616,19 +627,23 @@ Two doubts that resolving does not fix:
   shows a repeated `push` warning while the claim stays in doubt. Fix the credential or the
   ruleset; `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`,
   and `--landed` is for a push that reached main. No command rejects the work. A refusal of a
-  `Land` that was sent again behaves the same way, and so does a refusal at `Prepare` (a fork
-  branch deleted or force-pushed while in doubt): a late copy of the `Land` may still land the
-  head, so the claim waits until main moves or you answer `--not-landed`. `--landed` and
+  `Land` that was sent again behaves the same way. A refusal at `Prepare` (a fork branch deleted
+  or force-pushed while in doubt) says nothing of where main is, so the core asks a `Reconcile`
+  after the same backoff. Main still at the base sends the `Land` again, and the claim goes round
+  `Prepare`, `Reconcile` and `Land` until you answer `--not-landed` (the next refusal then rejects
+  it), because a late copy of the `Land` may still land the head. Main elsewhere ends the doubt
+  and the fresh `Prepare` rejects the work. The head on main lands it. `server.log` repeats the
+  doubt line on each pass, with the reason of the refusal quoted at its end. `--landed` and
   `--not-landed` work while the merge is at `Prepare` or `Test` too, for a doubt that has a `Land`
   behind it.
 - A doubt with no `Land` behind it: a store written before the staged landing (`unstaged`) that
   holds a merge in flight, or a claim the running build left `in_doubt`. It starts a fresh
-  `Prepare` that counts as an infrastructure failure. If that `Prepare` and the next ones fail,
-  the claim is not rejected while it is in doubt: it waits the capped backoff (10, 30, then 90
-  seconds) and tries again. A refusal or failing tests do reject it, as they always did: there is
-  no late `Land` to fence. `tessel status` does not show this doubt, `server.log` does not log
-  it, and `admin resolve` answers `claim N has no Land in doubt`, since there is no `Land` to
-  reconcile. It ends when the work lands or is rejected. It is reachable only by upgrading with a
+  `Prepare` that counts as an infrastructure failure. If that `Prepare` and the next ones fail
+  (a `Test` that hangs included), the claim is rejected after the fourth, as it always was. A
+  refusal or failing tests reject it too: there is no late `Land` to fence. `tessel status` does
+  not show this doubt, `server.log` does not log it, and `admin resolve` answers `claim N has no
+  Land in doubt`, since there is no `Land` to reconcile. It ends when the work lands or is
+  rejected. It is reachable only by upgrading with a
   merge in flight or a claim in doubt, which "Nothing in flight" above forbids.
 
 ## D3, the load on the Mac
