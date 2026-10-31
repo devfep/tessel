@@ -37,7 +37,7 @@ use crate::merge::{
     PREPARE_CALL_TIMEOUT_MS, REASON_OUTPUT_MAX_CHARS, RECONCILE_CALL_TIMEOUT_MS,
     STEWARD_CALL_TIMEOUT_MS, TEST_CALL_TIMEOUT_MS,
 };
-use crate::protocol::{ClaimInDoubt, CommitId, ServerMsg};
+use crate::protocol::{ClaimInDoubt, CommitId, Event, EventKind, ServerMsg};
 use crate::shell::{Outbound, Work};
 
 /// How long a head read waits: one ref, not a test run (R38).
@@ -469,16 +469,30 @@ impl Host {
         self.race_wait_logged = waiting;
     }
 
-    /// One line per race in `outbound` whose result went out with an entry no trial judged, for
-    /// the operator: the agents are told they lost or must pick, and the core has no channel for
-    /// this. The claims are numbers, never text from an agent.
-    pub(super) fn tests_unknown_logs(&self, outbound: &[Outbound]) -> Vec<Output> {
+    /// One line per race decided in `events` whose result went out in `outbound` with an entry no
+    /// trial judged, for the operator: the agents are told they lost, and the core has no channel
+    /// for this. A recommendation that waits for a pick is not a decision and logs nothing. The
+    /// claims are numbers, never text from an agent.
+    pub(super) fn tests_unknown_logs(
+        &self,
+        outbound: &[Outbound],
+        events: &[Event],
+    ) -> Vec<Output> {
+        let mut decided = BTreeSet::new();
+        for event in events {
+            if let EventKind::RaceDecided { race, .. } = &event.kind {
+                decided.insert(race.0);
+            }
+        }
         let mut unjudged: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
         for sent in outbound {
             let (Outbound::Reply(msg) | Outbound::Notify { msg, .. }) = sent;
             let ServerMsg::RaceResult { race, entries, .. } = msg else {
                 continue;
             };
+            if !decided.contains(&race.0) {
+                continue;
+            }
             for entry in entries {
                 if entry.tests_passed.is_none() {
                     unjudged.entry(race.0).or_default().insert(entry.claim.0);

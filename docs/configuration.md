@@ -314,9 +314,11 @@ failures the reads already had, so a race that closes after four have failed wai
 read, at most 90 s, and is judged on it if it fails; a trunk poke does not restart the count. The
 race is then judged with the tests unknown: an entrant of a `tests_pass` race that no trial judged
 is rejected with "the tests gave no result, so no trial judged this entry", not "lost the race".
-The log says it once per race: `race <n> was judged with the tests unknown: no trial result for
-claim <m>`. A failed read is logged with its cause (`head call failed: no lander`, `... no usable
-answer`, `... no head in the answer`), and the first closed race that waits is logged once.
+The log says it once per race, when it is decided: `race <n> was judged with the tests unknown: no
+trial result for claim <m>`. A failed read is logged with its cause (`head call failed: no usable
+answer`, `... no head in the answer`, `... refused`), and the first closed race that waits is logged
+once. `... no lander` appears only from a port that says it reads heads and then refuses with
+`NoLander`.
 
 A repository without a `remote` has no lander and its port cannot read a head. The server tells
 the core so: it owes no head read, makes no head call and logs no refused read, and a closed race

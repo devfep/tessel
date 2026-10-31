@@ -11,15 +11,15 @@ use super::core_slot::{ApplyError, CoreSlot, Prepared, Waits};
 use super::replay::REPLAY_BUFFER_EVENTS;
 use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
-use super::{BatchId, HostConfig, Input, Output, SocketId};
+use super::{BatchId, Host, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
 use crate::merge::{
     MergeOutcome, RuleKind, INFRA_BACKOFF_BASE_MS, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
 };
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, ErrorCode, Event,
-    EventKind, Fence, Intent, Mode, OnConflict, ProtocolRange, RequestId, RunId, Scope, ScopeClaim,
-    ServerMsg,
+    EventKind, Fence, Intent, Mode, OnConflict, ProtocolRange, RaceEntry, RaceId, RequestId, RunId,
+    Scope, ScopeClaim, ServerMsg,
 };
 use crate::shell::{self, Outbound, Work, HARD_ENTRY_BYTES, SOFT_ENTRY_BYTES, STATE_LIMIT_MESSAGE};
 
@@ -2243,6 +2243,49 @@ fn host_the_read_that_releases_the_races_does_not_log_the_wait_and_the_judging_i
     assert_eq!(entries[0].tests_passed, None);
 }
 
+#[test]
+fn host_a_race_recommended_for_a_pick_logs_nothing_and_its_decision_logs_once() {
+    let host = Host::new(config());
+    let result = ServerMsg::RaceResult {
+        race: RaceId(1),
+        winner: None,
+        ranking: vec![ClaimId(2)],
+        entries: vec![RaceEntry {
+            claim: ClaimId(2),
+            agent: AgentId("a1".into()),
+            fork_commit: CommitId("ab".repeat(20)),
+            submitted_at_ms: 1,
+            tests_passed: None,
+            risk_bp: None,
+            diff_lines: None,
+        }],
+    };
+    let to = |who: &str| Outbound::Notify {
+        agent: AgentId(who.into()),
+        msg: result.clone(),
+    };
+    let sent = [to("a1"), to("reviewer")];
+    assert!(
+        host.tests_unknown_logs(&sent, &[]).is_empty(),
+        "a recommendation is not a decision"
+    );
+    let decided = Event {
+        seq: 0,
+        at_ms: 0,
+        run: RunId("test".into()),
+        kind: EventKind::RaceDecided {
+            race: RaceId(1),
+            winner: Some(ClaimId(2)),
+            ranking: vec![ClaimId(2)],
+        },
+    };
+    let lines = host.tests_unknown_logs(&sent, &[decided]);
+    assert_eq!(
+        lines.len(),
+        1,
+        "once for the race, not once per result sent"
+    );
+}
 #[test]
 fn host_a_port_that_reads_no_heads_makes_no_head_read_and_judges_a_closed_race_at_once() {
     let mut kit = Testkit::new(HostConfig {

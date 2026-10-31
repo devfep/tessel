@@ -131,11 +131,12 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 pub trait CallPort: Send + Sync + 'static {
     fn answer(&self, call: Call) -> BoxFuture<CallAnswer>;
 
-    /// Whether this port can read main's head. A repository whose port can wakes once when the
-    /// server starts, so a fresh repository knows main's head before its first agent says hello.
-    fn reads_trunk_head(&self) -> bool {
-        false
-    }
+    /// Whether this port can answer `Request::ReadHead`. Each port decides; there is no default.
+    /// A port that says `false` is owed no head read: the core makes none, ignores trunk pokes for
+    /// reads, and judges a closed race at once with no trials (tests unknown). A port that says
+    /// `true` wakes once when the server starts, so a fresh repository knows main's head before its
+    /// first agent says hello.
+    fn reads_trunk_head(&self) -> bool;
 }
 
 /// Stands for "no lander configured". Every call is refused with a typed refusal the core reports
@@ -154,6 +155,10 @@ impl CallPort for NoLander {
                 },
             }
         })
+    }
+
+    fn reads_trunk_head(&self) -> bool {
+        false
     }
 }
 

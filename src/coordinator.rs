@@ -620,6 +620,9 @@ impl Coordinator {
     /// `ClaimReleased { LeaseExpired }` and notifies the owner. Waiters that the freed scopes
     /// unblock are then granted. The host calls this from its wake.
     ///
+    /// On a port that cannot read heads it also judges, tests unknown, any race still waiting for
+    /// a head read, as a state stored before the port was known to be unreadable may hold one.
+    ///
     /// `now_ms` is clamped to the latest time the core has seen, as in `handle`.
     pub fn expire(&mut self, now_ms: u64) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
@@ -648,6 +651,9 @@ impl Coordinator {
             if let ClaimKind::Entry(race) = expired.kind {
                 effects.extend(self.entrant_left(race, claim, now_ms));
             }
+        }
+        if self.state.head_unreadable {
+            effects.extend(self.release_races_awaiting_head(false, now_ms));
         }
         effects.extend(self.judge_races_past_deadline(now_ms));
         if any_expired {

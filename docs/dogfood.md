@@ -259,8 +259,8 @@ binaries, upgrade as below first.
   `trials_await_head` but not `trunk_head_unreadable` judges its closed races only after about
   130 s and then asks for a refused head read every 90 s for ever; this build owes that port no
   read and judges a closed race at once. A race a build without the fix closed on such a
-  repository and that still waits when this one starts stays so, since nothing lands there: upgrade
-  only when the query above prints `0`.
+  repository and that still waits when this one starts is released by the first wake after the
+  start, judged with the tests unknown.
 
 After the [move to the service accounts](#moving-to-the-service-accounts), every rule above stands;
 only the swap changes. `/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries <dir>` does it in
