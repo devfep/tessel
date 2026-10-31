@@ -15,8 +15,8 @@
 //! deadline it kills the account until `sudo` has exited: `sudo` exits only after the kill, and
 //! the thread that called it is not cancelled by the call's timeout. A cancel that comes before
 //! `sudo` has switched to the account finds nothing to kill, and `sudo` then starts the runner, so
-//! the kill is repeated each second until `sudo` has exited, and once more after it. A `sudo` still
-//! there after `EXIT_GRACE` closes the gate. Every wait is bounded.
+//! the kill is repeated each round until `sudo` has exited. A `sudo` still there once
+//! `EXIT_GRACE` has passed closes the gate. Every wait is bounded.
 //!
 //! A call's directory in the handoff directory is private (0700) while the call is made. Only
 //! while its own run holds the gate is it opened to the runner's group (0750), and it is closed
@@ -48,11 +48,11 @@ const MAX_REPLY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_STDERR_BYTES: u64 = 2048;
 /// How long to wait for the reply once the runner has exited.
 const REPLY_GRACE: Duration = Duration::from_secs(5);
-/// How long to wait for `sudo` to exit after the account was killed.
+/// How long the kills are repeated while `sudo` has not exited; a `sudo` left then closes the gate.
 const EXIT_GRACE: Duration = Duration::from_secs(15);
 const RUN_POLL: Duration = Duration::from_millis(20);
 const PS_POLL: Duration = Duration::from_millis(50);
-/// How long between two kills while processes are left.
+/// How long between two kills while processes are left, and how long a round waits for `sudo`.
 const KILL_ROUND: Duration = Duration::from_secs(1);
 const CLOSED: u32 = 0o700;
 const OPEN_TO_GROUP: u32 = 0o750;
@@ -234,29 +234,32 @@ impl SudoRunner {
         }
     }
 
-    /// Kills the account until `sudo` has exited, for at most `EXIT_GRACE`. A cancel can come
-    /// before `sudo` has switched to the account: the first kill then finds nothing, and `sudo`
-    /// goes on to start the runner, so the kill is repeated each round until `sudo` is gone. One
-    /// last kill follows its exit. A kill that fails, or a `sudo` that outlives the grace, closes
-    /// the gate.
+    /// Kills the account each round until `sudo` has exited or `EXIT_GRACE` has passed. A cancel
+    /// can come before `sudo` has switched to the account: the first kill then finds nothing, and
+    /// `sudo` goes on to start the runner, so the kill is repeated until `sudo` is gone. A kill
+    /// that fails, or a `sudo` still there after the grace, closes the gate.
     fn stop_run(&self, child: &mut Child) {
         let end = Instant::now() + EXIT_GRACE;
-        let outcome = loop {
+        loop {
             if let Err(error) = self.kill_all() {
-                break Err(Some(error));
+                tracing::error!(error = %error, "cannot stop the runner's account; no more runs");
+                self.closed.store(true, Ordering::SeqCst);
+                return;
             }
-            if Self::wait_bounded(child, KILL_ROUND).is_some() {
-                break self.kill_all().map_err(Some);
+            let left = end
+                .saturating_duration_since(Instant::now())
+                .min(KILL_ROUND);
+            if Self::wait_bounded(child, left).is_some() {
+                return;
             }
             if Instant::now() >= end {
-                break Err(None);
+                tracing::error!(
+                    "sudo did not exit within {} s of the kills; no more runs until a restart",
+                    EXIT_GRACE.as_secs()
+                );
+                self.closed.store(true, Ordering::SeqCst);
+                return;
             }
-        };
-        if let Err(error) = outcome {
-            if let Some(error) = error {
-                tracing::error!(error = %error, "cannot stop the runner's account; no more runs");
-            }
-            self.closed.store(true, Ordering::SeqCst);
         }
     }
 

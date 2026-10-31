@@ -46,6 +46,7 @@ impl Rig {
         let state = rig.state();
         fs::create_dir(&state).expect("state dir");
         fs::write(state.join("procs"), "").expect("procs");
+        fs::write(state.join("emptyps"), "").expect("emptyps");
         fs::write(state.join("mode"), "ok").expect("mode");
         let result = serde_json::to_string(&result(0, None)).expect("serialize the result");
         fs::write(state.join("result.json"), result).expect("result");
@@ -61,6 +62,15 @@ exec "$@""#,
             "tessel-runner",
             r#"cat > STATE/request.json
 [ -f STATE/slowstart ] && sleep 1
+if [ -f STATE/afterkill ]; then
+  n=0
+  until [ "$(wc -l < STATE/emptyps)" -ge 2 ]; do
+    n=$((n + 1))
+    [ "$n" -le 600 ] || { touch STATE/hung; exit 9; }
+    sleep 0.1
+  done
+  touch STATE/late
+fi
 [ -f STATE/unrecorded ] || echo "$$" >> STATE/procs
 echo "start $(date +%s%N)" >> STATE/timeline
 case "$(cat STATE/mode)" in
@@ -90,6 +100,7 @@ while read -r pid; do kill -9 "$pid" 2>/dev/null; done < STATE/procs
             r#"if [ -f STATE/psfail ]; then echo "ps: no such user" >&2; exit 2; fi
 found=1
 while read -r pid; do kill -0 "$pid" 2>/dev/null && echo "$pid" && found=0; done < STATE/procs
+[ "$found" = 1 ] && echo empty >> STATE/emptyps
 exit $found"#,
         );
         rig
@@ -129,6 +140,22 @@ exit $found"#,
             }
             fired.load(Ordering::SeqCst)
         }
+    }
+
+    /// A cancel that fires once `sudo` has started the runner: the first line of `sudo.log` is the
+    /// kill at start, the second is the runner's start.
+    fn cancel_once_sudo_ran(&self) -> impl Fn() -> bool + Send + 'static {
+        let log = self.state().join("sudo.log");
+        move || fs::read_to_string(&log).is_ok_and(|text| text.lines().count() >= 2)
+    }
+
+    /// Whether the stand-in `ps` finds no process of the account.
+    fn account_is_empty(&self) -> bool {
+        std::process::Command::new(self.dir.path().join("ps"))
+            .status()
+            .expect("run the stand-in ps")
+            .code()
+            == Some(1)
     }
 
     fn read(&self, name: &str) -> String {
@@ -357,35 +384,35 @@ fn a_call_given_up_before_sudo_starts_the_runner_still_kills_it_and_frees_the_ga
     let rig = Rig::new();
     let runner = Arc::new(rig.runner());
     rig.set_mode("sleep");
-    rig.touch("slowstart");
+    rig.touch("afterkill");
     let caller = Arc::clone(&runner);
-    let sudo_log = rig.state().join("sudo.log");
+    let cancel = rig.cancel_once_sudo_ran();
     let (done, returned) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        // The first line is the kill at start; the second is `sudo` starting the runner.
-        let sudo_ran = || fs::read_to_string(&sudo_log).is_ok_and(|log| log.lines().count() >= 2);
-        let _ = done.send(caller.run_cancellable(&request(), &sudo_ran));
+        let _ = done.send(caller.run_cancellable(&request(), &cancel));
     });
     let outcome = returned.recv_timeout(Duration::from_secs(120));
-    let started = rig.read("timeline").contains("start");
-    let survivors: Vec<String> = rig
-        .read("procs")
-        .lines()
-        .filter(|pid| alive(pid))
-        .map(str::to_owned)
-        .collect();
-    for pid in &survivors {
+    let emptied = rig.account_is_empty();
+    for pid in rig.read("procs").lines() {
         let _ = std::process::Command::new("/bin/kill")
             .args(["-9", pid])
+            .stderr(std::process::Stdio::null())
             .status();
     }
     let error = outcome.expect("the given-up call returned").unwrap_err();
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
     assert!(
-        started,
-        "the runner started after the cancel, which is what this test is about"
+        !rig.state().join("hung").exists(),
+        "the stand-in runner never saw the cancel's kill"
     );
-    assert!(survivors.is_empty(), "{survivors:?} survived the kills");
+    assert!(
+        rig.state().join("late").exists(),
+        "the runner started after the cancel's kill, which is what this test is about"
+    );
+    assert!(
+        emptied,
+        "the account still had a process when the call returned"
+    );
     rig.set_mode("ok");
     assert!(
         runner.run_cancellable(&request(), &never).is_ok(),
@@ -400,11 +427,10 @@ fn a_sudo_that_outlives_the_grace_after_the_kills_closes_the_gate() {
     rig.set_mode("hidden");
     rig.touch("unrecorded");
     let caller = Arc::clone(&runner);
-    let sudo_log = rig.state().join("sudo.log");
+    let cancel = rig.cancel_once_sudo_ran();
     let (done, returned) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let sudo_ran = || fs::read_to_string(&sudo_log).is_ok_and(|log| log.lines().count() >= 2);
-        let _ = done.send(caller.run_cancellable(&request(), &sudo_ran));
+        let _ = done.send(caller.run_cancellable(&request(), &cancel));
     });
     let outcome = returned.recv_timeout(Duration::from_secs(120));
     let hidden = rig.read("hidden.pid");
