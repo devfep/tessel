@@ -7,12 +7,32 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 18:00 UTC. Main at `20cd015` (the STATE commits `bc0a9cb`..`20cd015` landed
-at 12:33 UTC, claim 145). At 17:55 UTC the orchestrator dispatched HEAD-ADOPTED-FOLLOWUPS (lane A,
-claim 147, merge path: a vote follows) and SUDO-STOP-RUN-RACE (lane B, claim 146, Opus review),
-both from `20cd015` (`~/tessel-orch-notes/2026-10-31/lane-a/head-adopted-followups/`,
-`lane-b/sudo-stop-run/`). SIM-R30-MODEL, which Felix asked to start with them, waits for the first
-lane to come free: it is lane A's row, and one agent cannot safely run two worktrees at once (the
+**As of:** 2026-10-31 19:35 UTC. Main at `f16f9ed` (the STATE commit landed at 18:19 UTC, claim
+148; CI 41228804696 and the Adapter suite 41228804721 passed). The agent tokens expired at 19:25:14
+UTC (`server.log`: "token is expired"): every new connection is refused, so `tessel review`, which
+opens one, cannot approve a held submission until Felix renews them (`docs/dogfood.md`, "Tokens
+last 7 days"); claims still go through the daemons' open connections.
+SUDO-STOP-RUN-RACE (claim 146, `bf844ba`, `7259939`,
+`97c825b`; lane gate 2472 green): Opus REVIEW-1 "With changes" (the red test was timed; the grace
+close logged nothing; a doc said "at most `EXIT_GRACE`"; an untested kill after `sudo` exited), fix
+pass 1 `97c825b`, re-check "Yes"; its submit was held for `tessel-server/src/landing/` (sensitive),
+so it went to a vote (`~/tessel-orch-notes/2026-10-31/vote-sudo-stop-run/`), 3-0 "Yes with
+should-fixes", no must-fix; the should-fixes are SUDO-GATE-FOLLOWUPS (below). The orchestrator's
+`tessel review --approve 146` at 19:25 UTC was refused (401, the expired token), so it is still
+held. HEAD-ADOPTED-FOLLOWUPS (claim 147, `fcd3eca`..`23d23d9`; gate 2477 green; seeds 69962521,
+2796343632 and a 300-seed sweep green) went to a vote
+(`~/tessel-orch-notes/2026-10-31/vote-head-adopted-followups/`): VOTE-1 "No (must-fix)" (a race
+stored waiting on the head and loaded on a port that reads no heads waits for good with its scopes
+held, where main ends it after about 130 s), VOTE-3 "Yes with should-fixes" (the same case first),
+VOTE-2 not in yet; fix pass 1 (`lane-a/head-adopted-followups/FIX-1.md`) runs, and needs no token.
+At dispatch the orchestrator classed SUDO-STOP-RUN-RACE as review-only, which was wrong: every
+change under a sensitive path is merge path. Before that, the STATE commits `bc0a9cb`..`20cd015`
+landed at 12:33 UTC (claim 145). At 17:55 UTC
+the orchestrator dispatched HEAD-ADOPTED-FOLLOWUPS (lane A, claim 147, merge path: a vote
+follows) and SUDO-STOP-RUN-RACE (lane B, claim 146, Opus review), both from `20cd015`
+(`~/tessel-orch-notes/2026-10-31/lane-a/head-adopted-followups/`, `lane-b/sudo-stop-run/`).
+SIM-R30-MODEL, which Felix asked to start with them, goes to lane B, the first lane free (its row
+said lane A); it waited because one agent cannot safely run two worktrees at once (the
 shell sends a `Notify` to every socket bound to the agent, `src/shell.rs:83-84`, and the core never
 blocks an agent's claim on its own locks, `blocked_by` in `src/coordinator.rs`). Running it under
 the orchestrator's identity would mean approving its own hold. Two P1-SIM-MERGE REVIEW-3 nits moved
@@ -249,8 +269,11 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** HEAD-ADOPTED-FOLLOWUPS (lane A) and SUDO-STOP-RUN-RACE (lane B) are running; then
-SIM-R30-MODEL (the first lane free; it kills the Nightly's missed mutant); then
+**Next:** after Felix renews the tokens: approve and land SUDO-STOP-RUN-RACE (claim 146), then watch
+ci.yml and own-users.yml on main for its first Linux evidence (VOTE-2); finish
+HEAD-ADOPTED-FOLLOWUPS' vote and land it; then SIM-R30-MODEL (lane B; worktree and brief ready,
+`~/tessel-orch-notes/2026-10-31/lane-b/sim-r30-model/`; it kills the Nightly's missed mutant); then
+SUDO-GATE-FOLLOWUPS (lane B);
 HOST-HARDENING-FOLLOWUPS (lane B; it shares `src/host` with HEAD-ADOPTED-FOLLOWUPS),
 RACE-TEXTS-SHARED (lane B), CLAIM-LEASE-LAPSE and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH.
 Felix makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts
@@ -1460,7 +1483,7 @@ Lane B:
   errors was not assessed, and the ignored kill -9 adapter test was not run on this change (re-vote
   VOTE-2, VOTE-3 S5): run it on CI or in P1-ADAPTER-SUITE's rest. Done: each with a test failing
   without it.
-- [ ] **SIM-R30-MODEL** — S, lane A, after P1-FAILPOINTS and CORE-LATE-LAND; from
+- [ ] **SIM-R30-MODEL** — S, lane B (was lane A), after P1-FAILPOINTS and CORE-LATE-LAND; from
   P1-HOST-HARDENING's first vote (VOTE-1 S3, VOTE-3 S4) and the late-`Land` investigation.
   `src/sim/driver.rs` (`commit`, ~846-849 on `6b5e921`) still strikes the merge in flight on a
   failed commit, though a failed commit is now retried and no longer drops the core: add a "fail
@@ -1500,6 +1523,24 @@ Lane B:
   shut until a restart. Safe, but it costs availability; the window opens when a call gets the gate
   with almost no deadline left. Keep running kill rounds while waiting within `EXIT_GRACE`; Done: a
   test with the slow-start stub that the gate is free afterwards.
+- [ ] **SUDO-GATE-FOLLOWUPS** — S, lane B, merge path (`tessel-server/src/landing/`: voted); from
+  SUDO-STOP-RUN-RACE's vote (`~/tessel-orch-notes/2026-10-31/vote-sudo-stop-run/VOTE-1..3.md`, all
+  "Yes with should-fixes"), resting on it and the standing order. In
+  `tessel-server/src/landing/sudo.rs`: a `try_wait` error makes `wait_bounded` return at once, so
+  `stop_run` runs `kill_all` (a `sudo` and a `ps`) back to back for `EXIT_GRACE` and then logs the
+  grace-close line, which is wrong for it (the `run_locked` error path, ~298); close the gate and
+  log
+  the error at once on that error, with a test (VOTE-1). `kill_once` and `survivors` call
+  `Command::output()`
+  with no timeout, though the module doc says every wait is bounded: bound them or say so
+  (VOTE-3). The four lines that close the gate are worded differently and none names the account:
+  one wording, naming the account and "until a restart" (VOTE-3). A test for the grace-close log
+  (a shared `OnceLock` subscriber in `tessel-server/tests/sudo_runner.rs`; VOTE-2). A
+  `sudo_runner_real.rs` case: a cancel on the first poll after the spawn, which real `sudo` usually
+  meets before it switches; the gate frees and the account is empty (VOTE-1, VOTE-2). Docs:
+  `docs/configuration.md` (~428) lists a `sudo` alive after the grace as a cause of a closed gate
+  and says the gate stays shut until a restart; `docs/dogfood.md` gets the operator's steps for a
+  closed gate (VOTE-3). Done: a test for each code change, and the docs.
 - [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
   the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
   `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
