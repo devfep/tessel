@@ -352,6 +352,47 @@ fn a_call_given_up_mid_run_kills_the_account_itself_and_frees_the_gate() {
 }
 
 #[test]
+fn a_call_given_up_before_sudo_starts_the_runner_still_kills_it_and_frees_the_gate() {
+    let rig = Rig::new();
+    let runner = Arc::new(rig.runner());
+    rig.set_mode("sleep");
+    rig.touch("slowstart");
+    let caller = Arc::clone(&runner);
+    let sudo_log = rig.state().join("sudo.log");
+    let (done, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // The first line is the kill at start; the second is `sudo` starting the runner.
+        let sudo_ran = || fs::read_to_string(&sudo_log).is_ok_and(|log| log.lines().count() >= 2);
+        let _ = done.send(caller.run_cancellable(&request(), &sudo_ran));
+    });
+    let outcome = returned.recv_timeout(Duration::from_secs(120));
+    let started = rig.read("timeline").contains("start");
+    let survivors: Vec<String> = rig
+        .read("procs")
+        .lines()
+        .filter(|pid| alive(pid))
+        .map(str::to_owned)
+        .collect();
+    for pid in &survivors {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-9", pid])
+            .status();
+    }
+    let error = outcome.expect("the given-up call returned").unwrap_err();
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    assert!(
+        started,
+        "the runner started after the cancel, which is what this test is about"
+    );
+    assert!(survivors.is_empty(), "{survivors:?} survived the kills");
+    rig.set_mode("ok");
+    assert!(
+        runner.run_cancellable(&request(), &never).is_ok(),
+        "the gate is free again"
+    );
+}
+
+#[test]
 fn two_runs_never_overlap_even_from_two_threads() {
     let rig = Rig::new();
     rig.set_mode("slow");
