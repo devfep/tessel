@@ -1,0 +1,94 @@
+{
+  "claims": {
+    "1": {
+      "agent": "a",
+      "denial": null,
+      "expires_at_ms": 31000,
+      "fence": 1,
+      "intent": {
+        "assumptions": [],
+        "summary": "s",
+        "task_ref": null
+      },
+      "kind": "real",
+      "scopes": [
+        {
+          "mode": "edit_body",
+          "scope": {
+            "kind": "file",
+            "path": "src/a.rs"
+          }
+        }
+      ],
+      "submitted": 0,
+      "work": {
+        "awaiting_review": false,
+        "challenged": [],
+        "decisions": {
+          "evidence": [
+            "tests passed"
+          ],
+          "rejected": [],
+          "transcript": null
+        },
+        "fork_commit": "abababababababababababababababababababab",
+        "in_doubt": true,
+        "infra_failures": 0,
+        "moved": 0,
+        "retry_at_ms": 11004,
+        "review": null,
+        "submit_req": 9,
+        "touched": [
+          {
+            "mode": "edit_body",
+            "scope": {
+              "kind": "file",
+              "path": "src/a.rs"
+            }
+          }
+        ],
+        "unanswered_from": "dddddddddddddddddddddddddddddddddddddddd"
+      }
+    }
+  },
+  "clock_ms": 1000,
+  "config": {
+    "lease_ms": 30000,
+    "run": "stages",
+    "shadow_enabled": true
+  },
+  "head": "dddddddddddddddddddddddddddddddddddddddd",
+  "head_from_hello": null,
+  "head_pokes": 0,
+  "head_start_failures": 0,
+  "head_start_retry_ms": 0,
+  "head_synced": 0,
+  "head_tried": 0,
+  "last_dispatch": 3,
+  "merge_in_flight": {
+    "attempt": 1,
+    "claim": 1,
+    "dispatch": 3,
+    "doubt_since_ms": 1004,
+    "doubts": 1,
+    "main": "dddddddddddddddddddddddddddddddddddddddd",
+    "stage": {
+      "base": "dddddddddddddddddddddddddddddddddddddddd",
+      "head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "stage": "reconcile"
+    }
+  },
+  "merges_past_verification": 0,
+  "next_claim": 2,
+  "next_fence": 2,
+  "next_race": 1,
+  "next_seq": 2,
+  "next_submission": 1,
+  "next_verification": 0,
+  "races": {},
+  "reviewers": [],
+  "sensitive": [],
+  "verification_in_flight": null,
+  "verifications": [],
+  "waiting": []
+}
