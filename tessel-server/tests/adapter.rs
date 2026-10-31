@@ -748,6 +748,10 @@ impl CallPort for Landing {
             }
         })
     }
+
+    fn reads_trunk_head(&self) -> bool {
+        true
+    }
 }
 
 #[tokio::test]
@@ -1008,6 +1012,10 @@ impl CallPort for Recording {
             }
         })
     }
+
+    fn reads_trunk_head(&self) -> bool {
+        true
+    }
 }
 
 /// Submits one claim to a server whose calls `Recording` answers; returns what it saw once the
@@ -1048,14 +1056,15 @@ async fn after_a_landing_the_host_reads_main_again_and_after_a_refusal_it_does_n
     let landed = tempfile::tempdir()?;
     assert_eq!(
         submit_and_record(landed.path(), true).await?,
-        ["prepare", "test", "land", "read_head"],
-        "the landing, and only the landing, moved main, so the host reads the head after it"
+        ["read_head", "prepare", "test", "land", "read_head"],
+        "a port that reads heads is read at the start, and the landing, which moved main, is read \
+         again"
     );
     let refused = tempfile::tempdir()?;
     assert_eq!(
         submit_and_record(refused.path(), false).await?,
-        ["prepare"],
-        "a refusal moved nothing"
+        ["read_head", "prepare"],
+        "a refusal moved nothing: only the start read"
     );
     Ok(())
 }
