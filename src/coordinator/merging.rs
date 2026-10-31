@@ -790,7 +790,7 @@ impl Coordinator {
             self.record_verifications(&challenged, &before, &head);
             self.record_shadow_verifications(claim, &before, &head);
         }
-        effects.extend(self.release_races_awaiting_head(now_ms));
+        effects.extend(self.release_races_awaiting_head(false, now_ms));
         effects
     }
 

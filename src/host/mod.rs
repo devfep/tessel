@@ -692,6 +692,7 @@ impl Host {
         if let Some((sock, session)) = held.bind {
             out.push(self.sockets.bind(sock, session));
         }
+        out.extend(self.tests_unknown_logs(&held.outbound));
         let (socks, sessions) = self.sockets.listing();
         for (target, msg) in shell::plan_delivery(&held.outbound, &held.events, &sessions) {
             let sock = match target {

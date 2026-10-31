@@ -263,8 +263,8 @@ async fn send_msg(socket: &mut Socket, msg: &ClientMsg) -> TestResult {
 }
 
 /// A repository whose port reads no heads, with no stored state, adopts its head from the first
-/// `Hello` and has no start read. A race that closes there is still decided: the head reads the
-/// core owes are refused, and once they have failed the race is judged with the tests unknown.
+/// `Hello` and owes no head read. A race that closes there is decided at once, with the tests
+/// unknown: no entry carries a test result.
 #[tokio::test]
 async fn a_race_is_decided_on_a_port_that_reads_no_heads_with_an_empty_store() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -328,7 +328,11 @@ async fn a_race_is_decided_on_a_port_that_reads_no_heads_with_an_empty_store() -
             break;
         }
     }
-    assert!(result.is_some(), "the closed race was never decided");
+    let Some(ServerMsg::RaceResult { entries, .. }) = result else {
+        return Err("the closed race was never decided".into());
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].tests_passed, None, "no trial judged the entry");
     server.stop().await;
     Ok(())
 }

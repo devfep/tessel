@@ -102,6 +102,11 @@ pub(super) struct Race {
     /// queued yet: a trial names the head as both sides, and the head read has not confirmed it.
     #[serde(default)]
     trials_await_head: bool,
+    /// Head reads that failed while this race waited for the head, counted from the failures the
+    /// reads already had when it closed. The race is judged once they pass `MAX_INFRA_RETRIES`.
+    /// A poke resets the global count, not this one.
+    #[serde(default)]
+    head_reads_failed: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +301,7 @@ impl Coordinator {
             entrants: Vec::new(),
             phase: Phase::Open,
             trials_await_head: false,
+            head_reads_failed: 0,
         };
         place_race_locks(&mut self.locks, id, &race);
         let opened = EventKind::RaceOpened {
@@ -575,8 +581,10 @@ impl Coordinator {
             effects.extend(self.claim_released(claim, ReleaseReason::LostRace, now_ms));
         }
         if any_submitted && self.trials_wait_for_head() {
+            let failed = self.state.head_start_failures.min(MAX_INFRA_RETRIES);
             if let Some(race) = self.state.races.get_mut(&race_id.0) {
                 race.trials_await_head = true;
+                race.head_reads_failed = failed;
             }
             return effects;
         }
@@ -585,9 +593,10 @@ impl Coordinator {
     }
 
     /// Whether a closing race must wait for the head read: the head is only adopted from a
-    /// `Hello` and the reads owed for it have not yet failed more than `MAX_INFRA_RETRIES` times.
+    /// `Hello` and the port can read heads. A race that closes with the retries spent waits for
+    /// the next owed read, which judges it if it fails.
     fn trials_wait_for_head(&self) -> bool {
-        self.head_is_adopted() && self.state.head_start_failures <= MAX_INFRA_RETRIES
+        self.head_is_adopted() && !self.state.head_unreadable
     }
 
     /// Whether a closed race is waiting for the head read (`trials_await_head`).
@@ -621,21 +630,34 @@ impl Coordinator {
 
     /// Release the races that closed while the head was only adopted. Called wherever the head
     /// stops being adopted (a head read, a landing): their trials are queued on the head as it is
-    /// now. Once the start read has failed more than `MAX_INFRA_RETRIES` times they are judged with
-    /// no trials instead, tests unknown, as with no head; the read stays owed.
-    pub(super) fn release_races_awaiting_head(&mut self, now_ms: u64) -> Vec<Effect> {
-        if self.trials_wait_for_head() {
-            return Vec::new();
-        }
-        let mut waiting = Vec::new();
+    /// now. A read that failed (`read_failed`) leaves a race waiting until it has seen more than
+    /// `MAX_INFRA_RETRIES` failed reads, counting from when it closed; then it is judged with no
+    /// trials, tests unknown, as with no head. The read stays owed.
+    pub(super) fn release_races_awaiting_head(
+        &mut self,
+        read_failed: bool,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let still_adopted = self.trials_wait_for_head();
+        let mut released = Vec::new();
         for (id, race) in &mut self.state.races {
-            if race.trials_await_head {
-                race.trials_await_head = false;
-                waiting.push(RaceId(*id));
+            if !race.trials_await_head {
+                continue;
             }
+            if still_adopted {
+                if !read_failed {
+                    continue;
+                }
+                race.head_reads_failed = race.head_reads_failed.saturating_add(1);
+                if race.head_reads_failed <= MAX_INFRA_RETRIES {
+                    continue;
+                }
+            }
+            race.trials_await_head = false;
+            released.push(RaceId(*id));
         }
         let mut effects = Vec::new();
-        for race_id in waiting {
+        for race_id in released {
             effects.extend(self.queue_race_trials(race_id, now_ms));
         }
         effects

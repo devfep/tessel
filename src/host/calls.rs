@@ -24,6 +24,8 @@
 //! claim is not left waiting for an answer nobody will send. What stays uncovered is an
 //! adapter that neither answers, panics nor dies: a bug in the adapter, not a state of the call.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::coordinator::{MergeDispatch, MergeStage, Reconciliation, VerifyDispatch};
 use crate::host::call::{
     Call, CallAnswer, CallId, DispatchId, Refusal, Request, TestFailure, TrialResult,
@@ -31,12 +33,12 @@ use crate::host::call::{
 use crate::host::wake::WakeStep;
 use crate::host::{Host, Job, Output};
 use crate::merge::{
-    MergeOutcome, StepExit, TrialOutcome, TrialReport, Verdict, LAND_CALL_TIMEOUT_MS,
+    MergeOutcome, RuleKind, StepExit, TrialOutcome, TrialReport, Verdict, LAND_CALL_TIMEOUT_MS,
     PREPARE_CALL_TIMEOUT_MS, REASON_OUTPUT_MAX_CHARS, RECONCILE_CALL_TIMEOUT_MS,
     STEWARD_CALL_TIMEOUT_MS, TEST_CALL_TIMEOUT_MS,
 };
-use crate::protocol::{ClaimInDoubt, CommitId};
-use crate::shell::Work;
+use crate::protocol::{ClaimInDoubt, CommitId, ServerMsg};
+use crate::shell::{Outbound, Work};
 
 /// How long a head read waits: one ref, not a test run (R38).
 pub const HEAD_CALL_TIMEOUT_MS: u64 = 30_000;
@@ -294,6 +296,39 @@ pub fn head_of(answer: &CallAnswer) -> Option<CommitId> {
     }
 }
 
+/// Why a head read gave no head, for the operator's log: the refusal's kind when the port
+/// refused, so a repository without a lander says "no lander".
+fn head_failure_cause(answer: &CallAnswer) -> String {
+    match answer {
+        CallAnswer::Refused {
+            refusal: Refusal::Rule { rule, .. },
+        } => match rule {
+            RuleKind::NoLander => "no lander".to_string(),
+            RuleKind::ProtectedRef
+            | RuleKind::RequiredCheck
+            | RuleKind::ForkMissing
+            | RuleKind::GateInvalid
+            | RuleKind::Other => format!("refused by a rule ({rule:?})"),
+        },
+        CallAnswer::Refused {
+            refusal:
+                Refusal::Conflict { .. }
+                | Refusal::Uncovered { .. }
+                | Refusal::GateChanged
+                | Refusal::TestsFailed { .. }
+                | Refusal::CommitNotInFork,
+        } => "refused".to_string(),
+        CallAnswer::Unknown => "no usable answer".to_string(),
+        CallAnswer::Head { .. }
+        | CallAnswer::Prepared { .. }
+        | CallAnswer::Tested
+        | CallAnswer::Landed { .. }
+        | CallAnswer::Trialled { .. }
+        | CallAnswer::Reconciled { .. }
+        | CallAnswer::CandidateMissing => "no head in the answer".to_string(),
+    }
+}
+
 /// The log line for a refusal by a rule, which carries the rule's own message: the one place the
 /// message goes, since the agent reads a fixed reason for the kind. The message is untrusted, so it
 /// is cut to `REASON_OUTPUT_MAX_CHARS` characters again here and written as a JSON string.
@@ -388,12 +423,12 @@ impl Host {
                 };
                 let head = head_of(&answer);
                 if head.is_none() {
-                    out.push(self.failure("head call", "no head in the answer"));
+                    out.push(self.failure("head call", &head_failure_cause(&answer)));
                 }
-                self.log_waiting_races(head.is_some(), out);
                 let prepared = self.slot.apply(Work::Plain, waits, now_ms, |core| {
                     core.trunk_read(&read, head, now_ms)
                 });
+                self.log_waiting_races(out);
                 ("apply trunk head", prepared)
             }
             Request::Reconcile { .. } => {
@@ -418,16 +453,51 @@ impl Host {
         );
     }
 
-    /// Say once that closed races wait for a head read that gave no head, until a read answers.
-    fn log_waiting_races(&mut self, answered: bool, out: &mut Vec<Output>) {
-        let waiting = !answered && self.slot.races_await_head();
+    /// Say once that closed races wait for a head read, until none waits. Computed after the
+    /// answer is applied, so the read that releases the races does not log a wait.
+    fn log_waiting_races(&mut self, out: &mut Vec<Output>) {
+        let waiting = self.slot.races_await_head();
         if waiting && !self.race_wait_logged {
-            out.push(self.failure(
-                "head call",
-                "races wait for the head read; if it keeps failing they are judged, tests unknown",
-            ));
+            out.push(Output::Log {
+                line: format!(
+                    "coordinator {}: races wait for the head read; if it keeps failing they are \
+                     judged, tests unknown",
+                    self.config.repo
+                ),
+            });
         }
         self.race_wait_logged = waiting;
+    }
+
+    /// One line per race in `outbound` whose result went out with an entry no trial judged, for
+    /// the operator: the agents are told they lost or must pick, and the core has no channel for
+    /// this. The claims are numbers, never text from an agent.
+    pub(super) fn tests_unknown_logs(&self, outbound: &[Outbound]) -> Vec<Output> {
+        let mut unjudged: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+        for sent in outbound {
+            let (Outbound::Reply(msg) | Outbound::Notify { msg, .. }) = sent;
+            let ServerMsg::RaceResult { race, entries, .. } = msg else {
+                continue;
+            };
+            for entry in entries {
+                if entry.tests_passed.is_none() {
+                    unjudged.entry(race.0).or_default().insert(entry.claim.0);
+                }
+            }
+        }
+        let mut lines = Vec::new();
+        for (race, claims) in unjudged {
+            let claims: Vec<String> = claims.iter().map(u64::to_string).collect();
+            lines.push(Output::Log {
+                line: format!(
+                    "coordinator {}: race {race} was judged with the tests unknown: no trial \
+                     result for claim {}",
+                    self.config.repo,
+                    claims.join(", ")
+                ),
+            });
+        }
+        lines
     }
 
     /// Whether the merge goes on after this answer: one is still in flight and no merge call of

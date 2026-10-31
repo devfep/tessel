@@ -35,9 +35,12 @@
 //!   lander's `Prepare` answer carries the base, and a lander that refuses or cannot read heads
 //!   still answers the agent. A race that closes queues no trials, which name the head as both
 //!   sides: its entries stay in `Judging` with `trials_await_head`, and the read queues them on
-//!   the head it read, or on the head a landing sets (`release_races_awaiting_head`). When the
-//!   read has failed more than `MAX_INFRA_RETRIES` times they are judged with no trials, tests
-//!   unknown, and the read stays owed. A race entry hears nothing until the race is decided.
+//!   the head it read, or on the head a landing sets (`release_races_awaiting_head`). Each waiting
+//!   race counts the reads that fail while it waits, starting from the failures the reads already
+//!   had when it closed (at most `MAX_INFRA_RETRIES`), and is judged with no trials, tests
+//!   unknown, when the count passes `MAX_INFRA_RETRIES`; the read stays owed. So a race that
+//!   closes with the retries spent waits for the next owed read, and pokes, which reset the global
+//!   count, do not restart a race's wait. A race entry hears nothing until the race is decided.
 //!   Agents already welcomed learn nothing new: the next `Welcome` and the next dispatch carry
 //!   the head.
 //! - A state loaded from storage whose head is still the `Hello`'s owes one read at the first
@@ -48,9 +51,10 @@
 //! - A state that was not loaded owes no read for an adopted head while nothing waits for it: its
 //!   `Hello` may have come while the start read was out, and the answer or the retries above deal
 //!   with it. A race that waits for the head (`trials_await_head`) is different: no read need be
-//!   out, as on a port that reads no heads, where the first input is the `Hello`. So the read is
-//!   owed, and wakes at once, while a race waits. A port that cannot read heads refuses it, which
-//!   counts as a failure, so the race waits for the retries and no longer. A `Hello` that adopts
+//!   out, as when the first input is the `Hello`. So the read is
+//!   owed, and wakes at once, while a race waits. A port the host says cannot read heads
+//!   (`set_reads_trunk_head`, as `NoLander` or a repository without a `remote`) owes no read at
+//!   all, and its races do not wait: they are judged at once, tests unknown. A `Hello` that adopts
 //!   the head caps the failure count at `MAX_INFRA_RETRIES`: reads that failed while no head was
 //!   known do not judge a race before the next read has been tried, and the retry stays due.
 //! - The move is logged as `BaseMoved { by: "steward", notified: [] }`. Nobody is notified: the
@@ -117,11 +121,13 @@ impl Coordinator {
     }
 
     /// A poke is unanswered, or no head is known: the first `Hello` would otherwise make an
-    /// agent's declared base the head, unchecked.
+    /// agent's declared base the head, unchecked. A port that cannot read heads
+    /// (`set_reads_trunk_head`) owes none.
     fn head_read_due(&self) -> bool {
-        self.state.head_pokes > self.state.head_synced
-            || self.state.head.is_none()
-            || self.start_retry_owed()
+        !self.state.head_unreadable
+            && (self.state.head_pokes > self.state.head_synced
+                || self.state.head.is_none()
+                || self.start_retry_owed())
     }
 
     /// `head` is the base a `Hello` declared, not something read from main or landed.
@@ -193,7 +199,7 @@ impl Coordinator {
             Some(head) if !is_null_head(&head) => head,
             Some(_) | None => {
                 self.note_start_read_failed(now_ms);
-                return self.release_races_awaiting_head(now_ms);
+                return self.release_races_awaiting_head(true, now_ms);
             }
         };
         self.state.head_synced = self.state.head_synced.max(read.pokes);
@@ -214,7 +220,7 @@ impl Coordinator {
                 ));
             }
         }
-        effects.extend(self.release_races_awaiting_head(now_ms));
+        effects.extend(self.release_races_awaiting_head(false, now_ms));
         effects
     }
 }
