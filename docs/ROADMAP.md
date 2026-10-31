@@ -7,7 +7,29 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 19:35 UTC. Main at `f16f9ed` (the STATE commit landed at 18:19 UTC, claim
+**As of:** 2026-10-31 23:00 UTC. Main at `d6a66ad`. Felix renewed the agent tokens at 21:24 UTC
+(`setup.sh`; the server configuration is unchanged and `bin/` holds the same build). Then, through
+the server, the first three approved by the orchestrator on their vote or review and each followed
+by green CI on main: SUDO-STOP-RUN-RACE at 21:31 UTC as `b5a520d`..`80dba09` (claim 146; CI
+41243983794, the Adapter suite 41243983627 and Own users 41243983653, its first Linux evidence,
+passed on `80dba09`); HEAD-ADOPTED-FOLLOWUPS at 22:24 UTC as `6497952`..`eec53d1` (twelve commits,
+claim 147); SIM-R30-MODEL at 22:37 UTC as `98451f5`..`10e4030` (claim 150); and two follow-up rows
+at 22:50 UTC as `d6a66ad` (claim 151). Every landed commit has its note. HEAD-ADOPTED-FOLLOWUPS'
+vote: VOTE-1 "No" (a race stored waiting on the head and loaded on a port that reads no heads waited
+for good with its scopes held), VOTE-2 "No" (the clock test advanced the clock, so it did not prove
+"at once"), VOTE-3 "Yes with should-fixes"; four fix passes closed them, and each voter's last vote
+was a Yes (VOTE-1 "Yes with should-fixes" on `e4148d6`, VOTE-3 "Yes with should-fixes" on `23d23d9`,
+VOTE-2 a plain "Yes" on `0af278e`, the head landed;
+`~/tessel-orch-notes/2026-10-31/vote-head-adopted-followups/`). SIM-R30-MODEL: Opus REVIEW-1 "With
+changes" (its new traffic arm changed the seeded runs, so regression seed 2796343632 no longer
+caught its bug); fix pass 1 dropped the arm, and the re-check "Yes" found the transcripts of the
+five regression seeds and default seeds 0-19 identical to `f16f9ed`'s and the seed catching the old
+checker's bug again (`~/tessel-orch-notes/2026-10-31/lane-b/sim-r30-model/`). Found today: a held
+submission does not block the merge queue (the STATE commit, queued behind the held claim 146,
+landed at 19:51 UTC); submits and claims go through a daemon's open connection after the tokens
+expire, approvals do not. SIM-R30-MODEL ran in lane B's SUDO-STOP-RUN-RACE worktree beside its held
+claim, since one worktree may hold several claims. Before, at 19:51 UTC, the STATE commit `676cbd9`
+landed (claim 149). At 19:35 UTC main was at `f16f9ed` (the STATE commit landed at 18:19 UTC, claim
 148; CI 41228804696 and the Adapter suite 41228804721 passed). The agent tokens expired at 19:25:14
 UTC (`server.log`: "token is expired"): every new connection is refused, so `tessel review`, which
 opens one, cannot approve a held submission until Felix renews them (`docs/dogfood.md`, "Tokens
@@ -269,16 +291,12 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** after Felix renews the tokens: approve and land SUDO-STOP-RUN-RACE (claim 146), then watch
-ci.yml and own-users.yml on main for its first Linux evidence (VOTE-2); finish
-HEAD-ADOPTED-FOLLOWUPS' vote and land it; then SIM-R30-MODEL (lane B; worktree and brief ready,
-`~/tessel-orch-notes/2026-10-31/lane-b/sim-r30-model/`; it kills the Nightly's missed mutant); then
-SUDO-GATE-FOLLOWUPS (lane B);
-HOST-HARDENING-FOLLOWUPS (lane B; it shares `src/host` with HEAD-ADOPTED-FOLLOWUPS),
-RACE-TEXTS-SHARED (lane B), CLAIM-LEASE-LAPSE and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH.
-Felix makes ruleset step 3 ("Fast lane, simulator" required). Felix's Homebrew postgres trusts
-local connections on a world-writable socket; he closes it before the accounts move.
-LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** HOST-HARDENING-FOLLOWUPS (lane B; HEAD-ADOPTED-FOLLOWUPS has landed) and
+SUDO-GATE-FOLLOWUPS (lane B, merge path); then RESOLVE-RUNBOOK-NITS, RACE-TEXTS-SHARED,
+CLAIM-LEASE-LAPSE, REGRESSION-SEED-69962521-STALE, SIM-HEAD-UNREADABLE and CLIENT-1013-CAUSE; then
+P1-ONE-BATCH (it flips R20, an M5 done check). Felix makes ruleset step 3 ("Fast lane, simulator"
+required). Felix's Homebrew postgres trusts local connections on a world-writable socket; he closes
+it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1208,11 +1226,12 @@ Lane A:
   CI 41048353740. The simulator's agent-base check is on main since `7423616`; see P1-SIM-MERGE's
   Done. The row, its lane and its place before P1-SIM-MERGE's landing (which delays P1-FAILPOINTS)
   rest on P1-SIM-MERGE REVIEW-1 and the standing order.
-- [ ] **HEAD-ADOPTED-FOLLOWUPS** — S, lane A, Felix reviews (`src/coordinator/` and the host: merge
-  path, voted), after P1-HOST-HARDENING (it shares `src/host/calls.rs` and `src/host/tests.rs`) and
-  CORE-LATE-LAND (it shares the core) and before or with P1-ONE-BATCH (the same wake), and before
-  RESOLVE-RUNBOOK-NITS (it shares `docs/dogfood.md` and `src/host/calls.rs`); from
-  CORE-HEAD-ADOPTED's re-vote
+- [x] **HEAD-ADOPTED-FOLLOWUPS** (`6497952`..`eec53d1`, twelve commits, landed by the server 31
+  October; a vote, VOTE-1 and VOTE-2 "No", four fix passes, then each voter's last vote "Yes") — S,
+  lane A, Felix reviews (`src/coordinator/` and the host: merge path, voted), after
+  P1-HOST-HARDENING (it shares `src/host/calls.rs` and `src/host/tests.rs`) and CORE-LATE-LAND (it
+  shares the core) and before or with P1-ONE-BATCH (the same wake), and before RESOLVE-RUNBOOK-NITS
+  (it shares `docs/dogfood.md` and `src/host/calls.rs`); from CORE-HEAD-ADOPTED's re-vote
   (`~/tessel-orch-notes/2026-10-30/vote-core-head-adopted-2/VOTE-1..3.md`), resting on the votes and
   the standing order. A port that never reads heads (`NoLander`, every repository without a
   `remote`) polls a refused head read every 90 s for ever once one is owed (on `df4b39a` it stopped
@@ -1237,9 +1256,9 @@ Lane A:
   adopted base; tessel-server's clock test asserts `tests_passed: None` on the `RaceResult`. From
   RACE-UNKNOWN-REASON (its item 2 and its vote's VOTE-3 should-fixes 3-4): an operator log line when
   a race is judged with the tests unknown (the core has no channel for it; it belongs in
-  `src/host/**`); the opener's `RaceResult` line is RACE-LOSER-TEXT's. (P1-SIM-MERGE's REVIEW-3
-  nits moved to SIM-R30-MODEL on 31 October: they are in `src/sim`.)
-  Done: those tests, each failing without its change, and the docs.
+  `src/host/**`); the opener's `RaceResult` line is RACE-LOSER-TEXT's. (P1-SIM-MERGE's REVIEW-3 nits
+  moved to SIM-R30-MODEL on 31 October: they are in `src/sim`.) Done: those tests, each failing
+  without its change, and the docs.
 - [ ] **P1-ONE-BATCH** — M, after P1-CORE-RECONCILE. One batch per wake (flips R20) and lease
   renewal persisted below half the lease (C10). Evidence from the kill loop on CI: the server
   keeps one commit outstanding and commits each step as its own batch (`src/host/batch.rs:1`),
@@ -1483,18 +1502,21 @@ Lane B:
   errors was not assessed, and the ignored kill -9 adapter test was not run on this change (re-vote
   VOTE-2, VOTE-3 S5): run it on CI or in P1-ADAPTER-SUITE's rest. Done: each with a test failing
   without it.
-- [ ] **SIM-R30-MODEL** — S, lane B (was lane A), after P1-FAILPOINTS and CORE-LATE-LAND; from
-  P1-HOST-HARDENING's first vote (VOTE-1 S3, VOTE-3 S4) and the late-`Land` investigation.
-  `src/sim/driver.rs` (`commit`, ~846-849 on `6b5e921`) still strikes the merge in flight on a
-  failed commit, though a failed commit is now retried and no longer drops the core: add a "fail
-  every attempt" fault and drop the strike for a rescued failure. `src/sim/driver/merge_path.rs:7`'s
-  header says the lander does not outlive the call's connection; the code (rightly) runs late calls:
-  fix the header. The client logs the cause of a 1013 close in `read_log` (P1-HOST-HARDENING's first
-  vote VOTE-3 S1, re-vote VOTE-3 S4). The testkit's `fail_next_commit` now fails all three attempts
-  while the sim's fails one: one name, two meanings. Also kill the missed mutant
-  `src/sim/driver.rs:379` `Sim::failed_commits -> 0` (Nightly 41189134845; only
-  `tests/simulator.rs:1658` reads it). From P1-SIM-MERGE's REVIEW-3 nits (moved here from
-  HEAD-ADOPTED-FOLLOWUPS on 31 October): the poison in
+- [x] **SIM-R30-MODEL** (`98451f5`..`10e4030`, landed by the server 31 October; Opus review "With
+  changes", then "Yes"; the poisoned test is now
+  `a_restart_during_every_test_is_rejected_at_exactly_the_bound`; the 1013 cause moved to
+  CLIENT-1013-CAUSE; `trunk_head_unreadable` coverage moved to SIM-HEAD-UNREADABLE) — S, lane B (was
+  lane A), after P1-FAILPOINTS and CORE-LATE-LAND; from P1-HOST-HARDENING's first vote (VOTE-1 S3,
+  VOTE-3 S4) and the late-`Land` investigation. `src/sim/driver.rs` (`commit`, ~846-849 on
+  `6b5e921`) still strikes the merge in flight on a failed commit, though a failed commit is now
+  retried and no longer drops the core: add a "fail every attempt" fault and drop the strike for a
+  rescued failure. `src/sim/driver/merge_path.rs:7`'s header says the lander does not outlive the
+  call's connection; the code (rightly) runs late calls: fix the header. The client logs the cause
+  of a 1013 close in `read_log` (P1-HOST-HARDENING's first vote VOTE-3 S1, re-vote VOTE-3 S4). The
+  testkit's `fail_next_commit` now fails all three attempts while the sim's fails one: one name, two
+  meanings. Also kill the missed mutant `src/sim/driver.rs:379` `Sim::failed_commits -> 0` (Nightly
+  41189134845; only `tests/simulator.rs:1658` reads it). From P1-SIM-MERGE's REVIEW-3 nits (moved
+  here from HEAD-ADOPTED-FOLLOWUPS on 31 October): the poison in
   `a_restart_during_every_poisoned_test_is_rejected_at_exactly_the_bound`
   (`src/sim/driver/merge_path.rs`) is inert (the test passes with `poison_fork` deleted): make it
   bite, or drop it and rename the test; say in `Sim::crash_at_every`'s doc (REVIEW-3 named it
@@ -1517,6 +1539,13 @@ Lane B:
   positive; or a mutant that ends the doubt on `CandidateMissing`), sweep for a seed that breaks
   I6, replace 69962521 with it and record the finding. Done: the new seed fails with the bug
   restored and passes on main.
+- [ ] **SIM-HEAD-UNREADABLE** — S, lane B, after REGRESSION-SEED-69962521-STALE (both edit
+  `src/sim`); from HEAD-ADOPTED-FOLLOWUPS' vote (VOTE-1 should-fix 2), deferred by SIM-R30-MODEL
+  until HEAD-ADOPTED-FOLLOWUPS landed (it has). The simulator never sets
+  `HostConfig::trunk_head_unreadable`, so a port that reads no heads has no simulator coverage: add
+  traffic or a scripted run with it set, checked by the I-invariants, without changing the seeded
+  runs of the recorded regression seeds. Done: a simulator test with the flag set, failing when
+  the core's unreadable-port release is removed.
 - [ ] **CLIENT-1013-CAUSE** — S, lane A (the CLI); from P1-HOST-HARDENING's votes (first vote
   VOTE-3 S1, re-vote VOTE-3 S4), moved out of SIM-R30-MODEL on 31 October because the code is
   outside `src/sim`: the daemon logs the cause of a 1013 close in `read_log`
@@ -1530,14 +1559,16 @@ Lane B:
   (submitted and held for review then). Find out whether the daemon stops renewing an idle claim,
   whether the lease is meant to end then (the skill and `docs/configuration.md` say what), and fix
   the code or the docs; a test either way.
-- [ ] **SUDO-STOP-RUN-RACE** — S, lane B; from RUNNER-TIMING-FLAKES' REVIEW-1 ("For the
-  orchestrator"), resting on it and the standing order. A cancel that arrives before `sudo` has
-  switched to the account (`tessel-server/src/landing/sudo.rs` `stop_run`): `kill -KILL -1` as the
-  account and `ps -U` find nothing, `kill_all` returns Ok, `stop_run` waits passively for
-  `EXIT_GRACE` while `sudo` goes on to exec the real runner, then sets `closed`, so the gate stays
-  shut until a restart. Safe, but it costs availability; the window opens when a call gets the gate
-  with almost no deadline left. Keep running kill rounds while waiting within `EXIT_GRACE`; Done: a
-  test with the slow-start stub that the gate is free afterwards.
+- [x] **SUDO-STOP-RUN-RACE** (`b5a520d`..`80dba09`, landed by the server 31 October; Opus review
+  "With changes", then "Yes"; a vote, 3-0 "Yes with should-fixes", which are SUDO-GATE-FOLLOWUPS) —
+  S, lane B; from RUNNER-TIMING-FLAKES' REVIEW-1 ("For the orchestrator"), resting on it and the
+  standing order. A cancel that arrives before `sudo` has switched to the account
+  (`tessel-server/src/landing/sudo.rs` `stop_run`): `kill -KILL -1` as the account and `ps -U` find
+  nothing, `kill_all` returns Ok, `stop_run` waits passively for `EXIT_GRACE` while `sudo` goes on
+  to exec the real runner, then sets `closed`, so the gate stays shut until a restart. Safe, but it
+  costs availability; the window opens when a call gets the gate with almost no deadline left. Keep
+  running kill rounds while waiting within `EXIT_GRACE`; Done: a test with the slow-start stub that
+  the gate is free afterwards.
 - [ ] **SUDO-GATE-FOLLOWUPS** — S, lane B, merge path (`tessel-server/src/landing/`: voted); from
   SUDO-STOP-RUN-RACE's vote (`~/tessel-orch-notes/2026-10-31/vote-sudo-stop-run/VOTE-1..3.md`, all
   "Yes with should-fixes"), resting on it and the standing order. In
