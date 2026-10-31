@@ -297,10 +297,7 @@ async fn try_stop(
 /// headless agent would otherwise end its run without acting on it.
 fn unread_rejection(worktree: &Worktree) -> Result<HookOutput, String> {
     let unread = state::unread_notices(worktree).map_err(|e| e.to_string())?;
-    let rejected = unread
-        .iter()
-        .any(|n| n.kind == NoticeKind::SubmitRejected || n.kind == NoticeKind::Uncovered);
-    if rejected {
+    if unread.iter().any(is_rejection) {
         return rejection(worktree);
     }
     Ok(allow(""))
@@ -357,8 +354,9 @@ fn rejection(worktree: &Worktree) -> Result<HookOutput, String> {
     if only_race_entries {
         return Ok(block(&format!(
             "Your race entry was rejected and its claim ended; your fork is untouched. Do not end \
-             your turn without deciding how to ship the work: claim the freed scopes and run \
-             `tessel submit`, or ask the race's opener to reopen the race.\n{text}"
+             your turn without deciding whether and how to ship the work: claim the race's scopes \
+             once they are free (`tessel claim --wait` queues for them) and run `tessel submit`, \
+             or ask the race's opener to reopen the race.\n{text}"
         )));
     }
     Ok(block(&format!(
@@ -367,17 +365,17 @@ fn rejection(worktree: &Worktree) -> Result<HookOutput, String> {
     )))
 }
 
+/// A refused submission or work the coordinator found uncovered.
+fn is_rejection(notice: &Notice) -> bool {
+    notice.kind == NoticeKind::SubmitRejected || notice.kind == NoticeKind::Uncovered
+}
+
 /// True when every unread rejection or uncovered notice is a race entry ending: no claim is left.
 fn only_race_entries_rejected(worktree: &Worktree) -> Result<bool, String> {
     let unread = state::unread_notices(worktree).map_err(|e| e.to_string())?;
     let mut rejections = unread
         .iter()
-        .filter(|notice| {
-            matches!(
-                notice.kind,
-                NoticeKind::SubmitRejected | NoticeKind::Uncovered
-            )
-        })
+        .filter(|notice| is_rejection(notice))
         .peekable();
     if rejections.peek().is_none() {
         return Ok(false);

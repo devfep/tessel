@@ -261,7 +261,8 @@ settings). Choose one:
   commit, push and `tessel submit` before its deadline. `race_result` in the inbox names the
   winner, if any. If your entry loses, is unjudged or the race is not picked in time, the
   `submit_rejected` says "your race entry ... ended": the claim is gone, so do not submit again,
-  and your fork is untouched. To ship the work, claim the freed scopes and `tessel submit`, or ask
+  and your fork is untouched. A winner holds the race's scopes until it merges. To ship the work,
+  claim them once they are free (`tessel claim --wait` queues for them) and `tessel submit`, or ask
   the race's opener to reopen the race. `race_result` says when the tests gave no result.
 - **Narrow the claim**: a file or symbol (`path/file.rs::name`) instead of a directory.
 - **`--mode depend --assume "<what you rely on>"`**: build on their signatures without editing

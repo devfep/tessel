@@ -1711,8 +1711,20 @@ impl Daemon {
     }
 
     fn on_submit_rejected(&mut self, claim: ClaimId, msg: ServerMsg) {
-        self.set_submitted(claim, false, None);
-        let note = if is_race_rejection(&msg) {
+        let race_entry = self
+            .state
+            .claims
+            .iter()
+            .any(|held| held.claim == claim && held.race.is_some());
+        let ended = race_entry && is_race_rejection(&msg);
+        if ended {
+            self.state.claims.retain(|held| held.claim != claim);
+            self.fresh.insert(claim);
+            self.persist();
+        } else {
+            self.set_submitted(claim, false, None);
+        }
+        let note = if ended {
             format!(
                 "the race rejected claim {}, your entry; the claim ended and your fork is \
                  untouched",

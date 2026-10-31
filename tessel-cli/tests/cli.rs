@@ -3259,10 +3259,21 @@ async fn a_race_result_names_the_winner_the_ranking_and_each_entrants_place() ->
     let claimed = a2.tessel(&["claim", "src/a.rs"])?;
     assert_eq!(claimed.code, 0, "{}", claimed.all());
     let root = a2.root();
-    std::fs::write(root.join("src/a.rs"), "pub fn a() {}\n")?;
+    std::fs::write(
+        root.join("src/a.rs"),
+        "pub fn a() {\n    let _ = \"after the loss\";\n}\n",
+    )?;
     git(&root, &["commit", "-q", "-am", "a"])?;
-    let submitted = a2.tessel(&["submit", "--evidence", "tests passed"])?;
-    assert_eq!(submitted.code, 0, "{}", submitted.all());
+    // The fork still carries the lost entry's commit, which the new claim does not cover, so the
+    // submit is refused; what matters is that it speaks of the new claim alone.
+    let new_claim = a2.status()?["state"]["claims"][0]["claim"].as_u64();
+    let submitted = a2.tessel(&["submit", "--evidence", "tests passed"])?.all();
+    assert!(!submitted.contains("several claims"), "{submitted}");
+    let new_claim = new_claim.context("no new claim")?;
+    assert!(
+        submitted.contains(&format!("claim {new_claim} ")),
+        "{submitted}"
+    );
     Ok(())
 }
 

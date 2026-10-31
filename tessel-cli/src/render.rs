@@ -537,8 +537,9 @@ fn rejected_text(
     let mut out = if ends_race_entry(reason, reviewer, note) {
         format!(
             "  claim {}, your race entry, ended: the claim is gone and your fork is untouched. To \
-             ship the work, claim the freed scopes and run `tessel submit`, or ask the race's \
-             opener to reopen the race\n",
+             ship the work, claim the race's scopes once they are free (a winner holds them until it \
+             merges; `tessel claim --wait` queues for them) and run `tessel submit`, or ask the \
+             race's opener to reopen the race\n",
             claim.0
         )
     } else {
@@ -731,7 +732,7 @@ fn tests_text(passed: Option<bool>) -> &'static str {
     match passed {
         Some(true) => "tests passed",
         Some(false) => "tests failed",
-        None => "tests not run",
+        None => "tests gave no result",
     }
 }
 
@@ -788,7 +789,9 @@ pub fn race_result_text(
             let tests = entries
                 .iter()
                 .find(|entry| entry.claim == *claim)
-                .map_or("tests not run", |entry| tests_text(entry.tests_passed));
+                .map_or("tests gave no result", |entry| {
+                    tests_text(entry.tests_passed)
+                });
             format!(
                 "{}. claim {} (agent {}, {tests})",
                 index + 1,
@@ -1046,7 +1049,9 @@ mod tests {
             );
             assert!(text.contains("your fork is untouched"), "{text}");
             assert!(
-                text.contains("claim the freed scopes") && text.contains("reopen the race"),
+                text.contains("claim the race's scopes once they are free")
+                    && text.contains("`tessel claim --wait` queues for them")
+                    && text.contains("reopen the race"),
                 "{text}"
             );
             assert!(
@@ -1099,6 +1104,13 @@ mod tests {
         );
         let all_ran = race_result_text(RaceId(9), None, &[], &entries[2..]);
         assert!(all_ran.contains("race 9: no entry survived\n"), "{all_ran}");
+    }
+
+    #[test]
+    fn a_ranked_entry_without_a_test_result_is_listed_as_such() {
+        let entries = [unjudged(3)];
+        let text = race_result_text(RaceId(9), None, &[ClaimId(3)], &entries);
+        assert!(text.contains("(agent a3, tests gave no result)"), "{text}");
     }
 
     #[test]
