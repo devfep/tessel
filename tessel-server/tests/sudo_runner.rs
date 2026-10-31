@@ -61,11 +61,12 @@ exec "$@""#,
             "tessel-runner",
             r#"cat > STATE/request.json
 [ -f STATE/slowstart ] && sleep 1
-echo "$$" >> STATE/procs
+[ -f STATE/unrecorded ] || echo "$$" >> STATE/procs
 echo "start $(date +%s%N)" >> STATE/timeline
 case "$(cat STATE/mode)" in
 ok) cat STATE/result.json ;;
 slow) sleep 0.4; cat STATE/result.json ;;
+hidden) echo "$$" > STATE/hidden.pid; exec sleep 600 ;;
 sleep) sleep 600 >/dev/null 2>&1 & echo "$!" >> STATE/procs; wait ;;
 leaves-a-child) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; cat STATE/result.json ;;
 two-lines) cat STATE/result.json; echo; echo garbage ;;
@@ -390,6 +391,34 @@ fn a_call_given_up_before_sudo_starts_the_runner_still_kills_it_and_frees_the_ga
         runner.run_cancellable(&request(), &never).is_ok(),
         "the gate is free again"
     );
+}
+
+#[test]
+fn a_sudo_that_outlives_the_grace_after_the_kills_closes_the_gate() {
+    let rig = Rig::new();
+    let runner = Arc::new(rig.runner());
+    rig.set_mode("hidden");
+    rig.touch("unrecorded");
+    let caller = Arc::clone(&runner);
+    let sudo_log = rig.state().join("sudo.log");
+    let (done, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let sudo_ran = || fs::read_to_string(&sudo_log).is_ok_and(|log| log.lines().count() >= 2);
+        let _ = done.send(caller.run_cancellable(&request(), &sudo_ran));
+    });
+    let outcome = returned.recv_timeout(Duration::from_secs(120));
+    let hidden = rig.read("hidden.pid");
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-9", hidden.trim()])
+        .stderr(std::process::Stdio::null())
+        .status();
+    let error = outcome.expect("bounded: the wait gave up").unwrap_err();
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    rig.set_mode("ok");
+    let started = rig.read("timeline").matches("start").count();
+    let again = runner.run_cancellable(&request(), &never).unwrap_err();
+    assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+    assert_eq!(rig.read("timeline").matches("start").count(), started);
 }
 
 #[test]

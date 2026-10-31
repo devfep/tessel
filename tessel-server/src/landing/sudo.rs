@@ -12,8 +12,11 @@
 //! a later run would share the account with a survivor, so no later run starts.
 //!
 //! The holder of the gate is this runner itself. It polls whether its call was given up, and on a
-//! deadline it kills the account before it waits for `sudo`: `sudo` exits only after the kill, and
-//! the thread that called it is not cancelled by the call's timeout. Every wait is bounded.
+//! deadline it kills the account until `sudo` has exited: `sudo` exits only after the kill, and
+//! the thread that called it is not cancelled by the call's timeout. A cancel that comes before
+//! `sudo` has switched to the account finds nothing to kill, and `sudo` then starts the runner, so
+//! the kill is repeated each second until `sudo` has exited, and once more after it. A `sudo` still
+//! there after `EXIT_GRACE` closes the gate. Every wait is bounded.
 //!
 //! A call's directory in the handoff directory is private (0700) while the call is made. Only
 //! while its own run holds the gate is it opened to the runner's group (0750), and it is closed
@@ -231,13 +234,26 @@ impl SudoRunner {
         }
     }
 
-    /// Kills the account and waits for `sudo` to follow. A kill that fails, or a `sudo` that does
-    /// not exit, closes the gate.
+    /// Kills the account until `sudo` has exited, for at most `EXIT_GRACE`. A cancel can come
+    /// before `sudo` has switched to the account: the first kill then finds nothing, and `sudo`
+    /// goes on to start the runner, so the kill is repeated each round until `sudo` is gone. One
+    /// last kill follows its exit. A kill that fails, or a `sudo` that outlives the grace, closes
+    /// the gate.
     fn stop_run(&self, child: &mut Child) {
-        let killed = self.kill_all();
-        let exited = Self::wait_bounded(child, EXIT_GRACE).is_some();
-        if killed.is_err() || !exited {
-            if let Err(error) = &killed {
+        let end = Instant::now() + EXIT_GRACE;
+        let outcome = loop {
+            if let Err(error) = self.kill_all() {
+                break Err(Some(error));
+            }
+            if Self::wait_bounded(child, KILL_ROUND).is_some() {
+                break self.kill_all().map_err(Some);
+            }
+            if Instant::now() >= end {
+                break Err(None);
+            }
+        };
+        if let Err(error) = outcome {
+            if let Some(error) = error {
                 tracing::error!(error = %error, "cannot stop the runner's account; no more runs");
             }
             self.closed.store(true, Ordering::SeqCst);
