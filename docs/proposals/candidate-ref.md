@@ -148,6 +148,27 @@ Felix's credential can write any non-main ref) without rejecting on the first lo
 use `MAX_MAIN_MOVED`, which counts contention. The core test: `CandidateMissing` after a journaled
 head re-dispatches `Prepare` under a new id, is not in doubt, and the fourth in a row rejects.
 
+**After (30 October, decided by Felix): a fact outside a doubt, not inside one.** The paragraph
+above holds for a `Land` that was never in doubt. For a submission whose `Land` is in doubt, the
+two premises fail: `Stop` is check-then-act (a push already started outlives it), and the C7
+backstop comes too late, since the core's own re-`Prepare` re-creates the same ref before a copy of
+the first `Land` that has not run yet, and a bound that rejects work then loses to that copy
+landing it (simulator seed 69962521). The only fence a late copy cannot get round is its lease:
+it changes main only while main is still at its `base`. So, keyed on the submission's doubt
+(`in_doubt`, `unanswered_from`), not on the flight:
+- `CandidateMissing`, or a refusal, to a `Test` or `Land` while the work is in doubt keeps it in
+  doubt and goes back to `Prepare` after the doubts' capped backoff. Nothing is counted and
+  nothing is rejected, and neither is any other failure of the merge path in doubt.
+- A `Prepared` on `unanswered_from` with the head the doubted `Land` carried (persisted as
+  `Submission::doubted_head`) goes straight to `Land`: that head passed its `Test`, and the ref
+  `Prepare` re-made lets either copy land it.
+- The doubt ends only on `Landed`, `AlreadyMerged` (landed from `unanswered_from`), `MainMoved`, a
+  `Prepared` whose base is not `unanswered_from`, or a reconcile that finds main elsewhere. Then
+  the counting and the bound apply again.
+- The cost: a ref that keeps vanishing after a doubted `Land` holds the queue, at the capped
+  backoff, until main moves or the operator runs `resolve_doubt`, which now works at any stage.
+  That is the wait `real-use.md` ("Calls") already accepts for a doubt.
+
 ## 3. Cleanup of orphaned refs
 
 Orphans come from a kill after the push, a rejected submission, a failed delete, and a head the
@@ -159,8 +180,10 @@ core abandoned (main moved, a new `Prepare`).
   `ls-remote refs/tessel/candidate/*` and deletes the other refs in a separate, best-effort push:
   one refspec per ref, each with `--force-with-lease=<ref>:<listed sha>`, not atomic, so a ref
   that vanished meanwhile fails only itself. Its failure is logged, never an answer. This is
-  safe because the merge queue is serial: while a `Land` is in flight or in doubt the core
-  dispatches no `Prepare`, and an earlier submission's head is dead once its stage is over.
+  safe because the merge queue is serial and one submission has one head per base: a `Prepare`
+  that follows a `Land` in doubt (see section 2, "After (30 October...)") makes the same head on the
+  same base, so the sweep keeps its ref, and an earlier submission's head is dead once its stage
+  is over.
 - **Parsing:** lines are accepted only as `<40-hex> refs/tessel/candidate/<40-hex>`; anything else
   is skipped, since another writer controls those names (rule 3).
 - **Bound:** the sweep reads at most 1000 listed lines and deletes at most 50 refs per `Prepare`,

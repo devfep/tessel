@@ -197,6 +197,11 @@ struct Submission {
     /// An attempt is in doubt (see `unanswered_from`), whether or not main was known then.
     #[serde(default)]
     in_doubt: bool,
+    /// The head the `Land` in doubt carried, which passed its `Test`. A `Prepare` that answers
+    /// `unanswered_from` and this head goes straight to `Land`: no later test of the same commit
+    /// can reject work a late copy of that `Land` may still put on main.
+    #[serde(default)]
+    doubted_head: Option<CommitId>,
     /// The submission's decision record, which the lander writes into the merge's evidence
     /// record. `None` for a race entry and for a submission stored before this field existed: the
     /// record then says it was not supplied. Free text in it is the agent's, untrusted.
@@ -227,6 +232,7 @@ impl Submission {
             retry_at_ms: None,
             unanswered_from: None,
             in_doubt: false,
+            doubted_head: None,
             decisions: None,
             review: None,
         }

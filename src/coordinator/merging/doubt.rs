@@ -11,6 +11,15 @@
 //!   a `Land` is a compare-and-swap on its base, so the claim goes back to `Prepare` under a new
 //!   dispatch id as contention (`moved`), and the doubt is over.
 //!
+//! The doubt outlives the `Land`. A copy of it that has not run yet may land the head any time
+//! main is still at its base, and the core's own `Prepare` re-makes the candidate ref it needs. So
+//! while the submission is in doubt (`Submission::in_doubt`) nothing in its merge rejects it: a
+//! refusal or a missing candidate at `Test` or `Land`, a failed `Prepare` and a cut-off all send it
+//! back to `Prepare` after the capped backoff (`wait_in_doubt`), counting nothing. A `Prepare` that
+//! answers the doubted base and head goes straight to `Land`. The doubt ends only when the work
+//! lands, or when main is known to have left the leased base (`MainMoved`, a `Prepared` on another
+//! base, or a reconcile that finds main elsewhere).
+//!
 //! None of it counts toward `MAX_INFRA_RETRIES`, and none of it rejects. What bounds it is the
 //! rate: each `Unknown`, from the `Land` or from a `Reconcile`, waits the capped infrastructure
 //! backoff before the next `Reconcile`. A restart that finds a `Land` marker reconciles at once.
@@ -48,11 +57,13 @@ impl std::fmt::Display for NoLandInDoubt {
 impl std::error::Error for NoLandInDoubt {}
 
 /// Record that an attempt may have landed. The first baseline is kept through later doubts: a
-/// landing found later spans from the first main the work may have been landed on.
-pub(super) fn mark_doubt(work: &mut Submission, from: Option<CommitId>) {
+/// landing found later spans from the first main the work may have been landed on. `head` is the
+/// head of the `Land` in doubt, if there is one.
+pub(super) fn mark_doubt(work: &mut Submission, from: Option<CommitId>, head: Option<CommitId>) {
     if !work.in_doubt {
         work.in_doubt = true;
         work.unanswered_from = from;
+        work.doubted_head = head;
     }
 }
 
@@ -84,18 +95,54 @@ impl Coordinator {
             let wait = infra_backoff_ms(doubts.min(MAX_INFRA_RETRIES));
             work.retry_at_ms = Some(now_ms.saturating_add(wait));
         }
-        mark_doubt(&mut work, Some(base.clone()));
+        mark_doubt(&mut work, Some(base.clone()), Some(head.clone()));
         let first = flight.doubt_since_ms.is_none();
         let since = flight.doubt_since_ms.unwrap_or(now_ms);
-        let agent = held.agent.clone();
-        self.keep_work(flight.claim, held, work);
-        let claim = flight.claim;
+        let (claim, agent) = (flight.claim, held.agent.clone());
+        self.keep_work(claim, held, work);
         self.state.merge_in_flight = Some(InFlight {
             stage: MergeStage::Reconcile { base, head },
             doubts,
             doubt_since_ms: Some(since),
             ..flight
         });
+        Self::doubt_notice(first, claim, agent, since)
+    }
+
+    /// The submission is in doubt and a step of the merge failed or was refused: nothing is
+    /// counted and nothing is rejected. After the doubts' capped backoff the merge goes back to
+    /// `Prepare` under a new dispatch id, which makes the candidate ref again for a copy of the
+    /// `Land` that has not run yet.
+    pub(super) fn wait_in_doubt(
+        &mut self,
+        flight: InFlight,
+        held: ActiveClaim,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let Some(mut work) = held.work.clone() else {
+            return Vec::new();
+        };
+        let doubts = flight.doubts + 1;
+        let wait = infra_backoff_ms(doubts.min(MAX_INFRA_RETRIES));
+        work.retry_at_ms = Some(now_ms.saturating_add(wait));
+        let first = flight.doubt_since_ms.is_none();
+        let since = flight.doubt_since_ms.unwrap_or(now_ms);
+        let (claim, agent) = (flight.claim, held.agent.clone());
+        self.keep_work(claim, held, work);
+        let dispatch = self.state.last_dispatch + 1;
+        self.state.last_dispatch = dispatch;
+        self.state.merge_in_flight = Some(InFlight {
+            dispatch,
+            stage: MergeStage::Prepare,
+            doubts,
+            doubt_since_ms: Some(since),
+            ..flight
+        });
+        Self::doubt_notice(first, claim, agent, since)
+    }
+
+    /// Tell the submitter their landing is in doubt, the first time only.
+    fn doubt_notice(first: bool, claim: ClaimId, agent: AgentId, since: u64) -> Vec<Effect> {
         if !first {
             return Vec::new();
         }
@@ -106,8 +153,10 @@ impl Coordinator {
         vec![Effect::Notify { agent, msg }]
     }
 
-    /// The doubt about `claim`'s `Land` is over and the work did not land: forget the baseline and
-    /// the wait, and tell the submitter if it was told of the doubt.
+    /// The doubt about `claim`'s `Land` is over and the work did not land: forget the baseline, the
+    /// doubted head and the wait, and tell the submitter if it was told of the doubt. A doubt the
+    /// submitter was not told of is left as it is: it began before the staged landing, and its
+    /// baseline outlives a move of main (see `Submission::unanswered_from`).
     pub(super) fn end_doubt(
         &mut self,
         claim: ClaimId,
@@ -121,6 +170,7 @@ impl Coordinator {
         let work = held.work.clone().map(|work| Submission {
             in_doubt: false,
             unanswered_from: None,
+            doubted_head: None,
             retry_at_ms: None,
             ..work
         });
@@ -207,7 +257,8 @@ impl Coordinator {
     }
 
     /// The base and head that the `Land` of `claim` journaled, while that `Land` (or the
-    /// `Reconcile` that follows it) is the merge in flight. The lander rebases, so this head, not
+    /// `Reconcile` that follows it) is the merge in flight, or while the claim is still in doubt
+    /// at another stage of the same merge. The lander rebases, so this head, not
     /// the submitter's fork commit, is what must be on main for the work to have landed.
     pub fn journaled_land(&self, claim: ClaimId) -> Option<(CommitId, CommitId)> {
         let flight = self.state.merge_in_flight.as_ref()?;
@@ -218,15 +269,29 @@ impl Coordinator {
             MergeStage::Land { base, head } | MergeStage::Reconcile { base, head } => {
                 Some((base.clone(), head.clone()))
             }
-            MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged => None,
+            MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged => {
+                self.doubted_pair(claim)
+            }
         }
+    }
+
+    /// The base and head of the `Land` that left `claim` in doubt, kept while the merge goes
+    /// round `Prepare` and `Test` again.
+    fn doubted_pair(&self, claim: ClaimId) -> Option<(CommitId, CommitId)> {
+        let work = self.state.claims.get(&claim.0)?.work.as_ref()?;
+        if !work.in_doubt {
+            return None;
+        }
+        Some((work.unanswered_from.clone()?, work.doubted_head.clone()?))
     }
 
     /// What the lander's answer means to a merge at its `Land` (or at the `Reconcile` that follows
     /// one). Only a landing of the journaled head acts at a `Reconcile`; a late answer to the
-    /// `Land` otherwise says nothing the `Reconcile` will not. At a `Land`, a refusal, a move of
-    /// main or a missing candidate ends a doubt a resent `Land` was in, and says so; an answer
-    /// the `Land` did not ask for leaves it in doubt, reconciled and not counted.
+    /// `Land` otherwise says nothing the `Reconcile` will not. At a `Land`, a move of main ends a
+    /// doubt a resent `Land` was in, and says so. A refusal or a missing candidate does not end
+    /// it: a copy of the `Land` that has not run yet may still land the head, so a submission in
+    /// doubt goes back to `Prepare` and is not rejected (`wait_in_doubt`). An answer the `Land`
+    /// did not ask for leaves it in doubt, reconciled and not counted.
     pub(super) fn land_stage_outcome(
         &mut self,
         flight: InFlight,
@@ -253,22 +318,18 @@ impl Coordinator {
             return Vec::new();
         }
         let told = flight.doubt_since_ms.is_some();
+        let in_doubt = held.work.as_ref().is_some_and(|work| work.in_doubt);
         match verdict {
+            Verdict::Rejected { .. } if in_doubt => self.wait_in_doubt(flight, held, now_ms),
             Verdict::Rejected { reason } => {
-                let (held, mut effects) = self.end_doubt(claim, held, told);
-                effects.extend(self.reject_work(claim, held, Rejection::plain(reason), now_ms));
-                effects
+                self.reject_work(claim, held, Rejection::plain(reason), now_ms)
             }
             Verdict::MainMoved => {
                 let (held, mut effects) = self.end_doubt(claim, held, told);
                 effects.extend(self.retry_after_move(claim, held, now_ms));
                 effects
             }
-            Verdict::CandidateMissing => {
-                let (held, mut effects) = self.end_doubt(claim, held, told);
-                effects.extend(self.retry_after_missing_candidate(claim, held, now_ms));
-                effects
-            }
+            Verdict::CandidateMissing => self.retry_after_missing_candidate(flight, held, now_ms),
             Verdict::Prepared { .. }
             | Verdict::Tested
             | Verdict::Landed { .. }
@@ -306,7 +367,8 @@ impl Coordinator {
     /// the core is fed what a `Reconcile` would have answered, so its rules still apply. `landed`
     /// lands the work from the base the `Land` leased; otherwise the claim goes back to `Prepare`,
     /// which is safe whatever main is (a head already on main is answered `already_merged`).
-    /// Refused when `claim` has no `Land` in flight, in doubt or not yet recovered after a restart.
+    /// Refused when `claim` has no `Land` in flight, in doubt at any stage of its merge or not yet
+    /// recovered after a restart.
     pub fn resolve_doubt(
         &mut self,
         claim: ClaimId,
@@ -332,7 +394,11 @@ impl Coordinator {
             }
             MergeStage::Reconcile { .. } => {}
             MergeStage::Prepare | MergeStage::Test { .. } | MergeStage::Unstaged => {
-                return Err(NoLandInDoubt { claim })
+                let Some(pair) = self.doubted_pair(claim) else {
+                    return Err(NoLandInDoubt { claim });
+                };
+                self.state.merge_in_flight = None;
+                effects.extend(self.enter_doubt(flight, held, pair, (Pace::AtOnce, now_ms)));
             }
         }
         let found = if landed {

@@ -473,7 +473,11 @@ server tells the daemon when the doubt begins and ends, and lists the agent's cl
 every `Welcome`, so a daemon that was offline, or a server that was stopped and restarted (as
 `admin resolve` needs), is right at its next connection: the doubt is shown if it stands and gone
 if it ended. The age counts from when that daemon first learned of the doubt, on its own clock.
-A lander that never answers holds the queue behind it.
+A lander that never answers holds the queue behind it. A `Land` sent again that is refused, or
+whose candidate ref is gone, does not end the doubt: the merge goes back through `Prepare` (which
+makes the ref again, and the same head goes straight to `Land`), `tessel status` keeps showing the
+doubt, and nothing is rejected. The doubt ends when the work lands or main moves past the base the
+`Land` leased.
 
 To find the claim without the submitter, read `server.log` (`/var/log/tessel-server.log` after the
 [move to the service accounts](#moving-to-the-service-accounts)): each `Land` or `Reconcile`
@@ -589,12 +593,14 @@ Two doubts that resolving does not fix:
   the clone and push of each try), forever, each time with a fresh clone of main. The `server.log`
   shows a repeated `push` warning while the claim stays in doubt. Fix the credential or the
   ruleset; `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`,
-  and `--landed` is for a push that reached main. No command rejects the work.
+  and `--landed` is for a push that reached main. No command rejects the work. A refusal of a
+  `Land` that was sent again behaves the same way, and `--landed` and `--not-landed` now work
+  while the merge is at `Prepare` or `Test` too.
 - A store written before the staged landing (`unstaged`) that holds a merge in flight starts a
   fresh `Prepare` that counts as an infrastructure failure. If that `Prepare` and the next ones
-  fail until the bound, the claim is rejected as an infrastructure failure although the old call
-  may have pushed. It is reachable only by upgrading with a merge in flight, which "Nothing in
-  flight" above forbids.
+  fail, the claim is not rejected while it is in doubt: it waits the capped backoff (10, 30, then
+  90 seconds) and tries again. It is reachable only by upgrading with a merge in flight, which
+  "Nothing in flight" above forbids.
 
 ## D3, the load on the Mac
 

@@ -8,3 +8,4 @@
 64  # agent-base: a dispatch named the head a Hello declared (fixed by CORE-HEAD-ADOPTED)
 196  # agent-base: same (fixed by CORE-HEAD-ADOPTED)
 229  # agent-base: same (fixed by CORE-HEAD-ADOPTED)
+69962521  # I6: a late copy of a resent Land landed work the core rejected (CORE-LATE-LAND)

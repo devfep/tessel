@@ -178,7 +178,7 @@ pub struct MergePath<'a> {
 /// during one of its merges, which can lose a count), then its claim is rejected and never merged.
 /// A claim is rejected as an infrastructure failure only after that many of its own calls were cut
 /// off or such failures struck, so no claim is rejected because of another's commit, and work that
-/// is on main is never rejected.
+/// is on main is never rejected, whatever the reason.
 pub fn i6(events: &[Event], path: &MergePath<'_>) -> Vec<String> {
     let mut found = Vec::new();
     let by_claim = forks_by_claim(events);
@@ -197,7 +197,8 @@ pub fn i6(events: &[Event], path: &MergePath<'_>) -> Vec<String> {
     found
 }
 
-/// Each rejection as an infrastructure failure: charged enough, and not for landed work.
+/// Each rejection: an infrastructure failure is charged enough, and no rejection is for work
+/// that is on main.
 fn infra_rejections(
     events: &[Event],
     by_claim: &BTreeMap<u64, Vec<String>>,
@@ -215,23 +216,8 @@ fn infra_rejections(
         let EventKind::SubmitRejected { claim, reason } = &event.kind else {
             continue;
         };
-        if !is_infra_rejection(reason) {
-            continue;
-        }
-        let charged: u64 = by_claim
-            .get(&claim.0)
-            .into_iter()
-            .flatten()
-            .map(|fork| {
-                u64::from(path.cutoffs.get(fork).copied().unwrap_or(0))
-                    + path.strikes.get(fork).copied().unwrap_or(0)
-            })
-            .sum();
-        if charged <= u64::from(MAX_INFRA_RETRIES) {
-            found.push(format!(
-                "claim {} was rejected as an infrastructure failure after only {charged} failures",
-                claim.0
-            ));
+        if is_infra_rejection(reason) {
+            found.extend(undercharged(claim.0, by_claim, path));
         }
         let landed = latest.get(&claim.0).is_some_and(|fork| {
             path.history
@@ -240,12 +226,33 @@ fn infra_rejections(
         });
         if landed {
             found.push(format!(
-                "claim {} was rejected as an infrastructure failure though its work is on main",
+                "claim {} was rejected though its work is on main: {reason}",
                 claim.0
             ));
         }
     }
     found
+}
+
+/// An infrastructure rejection of `claim` that fewer failures than the bound back.
+fn undercharged(
+    claim: u64,
+    by_claim: &BTreeMap<u64, Vec<String>>,
+    path: &MergePath<'_>,
+) -> Option<String> {
+    let charged: u64 = by_claim
+        .get(&claim)
+        .into_iter()
+        .flatten()
+        .map(|fork| {
+            u64::from(path.cutoffs.get(fork).copied().unwrap_or(0))
+                + path.strikes.get(fork).copied().unwrap_or(0)
+        })
+        .sum();
+    let message = format!(
+        "claim {claim} was rejected as an infrastructure failure after only {charged} failures"
+    );
+    (charged <= u64::from(MAX_INFRA_RETRIES)).then_some(message)
 }
 
 /// What became of the claim that submitted a poisoned commit: it must not merge, and once every
@@ -683,7 +690,9 @@ mod tests {
         let found = i6(&events, &path(&cutoffs, &[], &history));
         assert_eq!(
             found,
-            ["claim 2 was rejected as an infrastructure failure though its work is on main"]
+            [format!(
+                "claim 2 was rejected though its work is on main: {INFRA}"
+            )]
         );
         let other = log(vec![submitted(2, "f3"), rejected(2, INFRA)]);
         let cutoffs = BTreeMap::from([("f3".to_string(), 4)]);
@@ -696,7 +705,20 @@ mod tests {
             submitted(2, "f2"),
             rejected(2, "tests failed (exit code 1)"),
         ]);
-        assert!(i6(&events, &path(&BTreeMap::new(), &[], &[landing("h", "f2")])).is_empty());
+        assert!(i6(&events, &path(&BTreeMap::new(), &[], &[])).is_empty());
+    }
+
+    #[test]
+    fn i6_flags_work_that_is_on_main_rejected_for_any_reason() {
+        let reason = "tests failed (exit code 1)";
+        let events = log(vec![submitted(2, "f2"), rejected(2, reason)]);
+        let found = i6(&events, &path(&BTreeMap::new(), &[], &[landing("h", "f2")]));
+        assert_eq!(
+            found,
+            [format!(
+                "claim 2 was rejected though its work is on main: {reason}"
+            )]
+        );
     }
 
     // ---- I7 ----

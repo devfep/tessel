@@ -1544,12 +1544,9 @@ fn a_welcome_lists_nothing_once_the_doubt_is_over_however_it_ended() {
             "landed {landed}"
         );
     }
-    // A resent Land was refused, so the work went back to its agent.
+    // A resent Land found main elsewhere, so the work went back to Prepare.
     let (mut c, _, again) = resent_land();
-    let refused = MergeOutcome::Refused {
-        kind: RuleKind::ProtectedRef,
-    };
-    c.merge_outcome(again.id, &refused, NOW + 10_001);
+    c.merge_outcome(again.id, &MergeOutcome::MainMoved {}, NOW + 10_001);
     assert!(welcome_doubts(&mut c, "a", NOW + 10_002).is_empty());
 }
 
