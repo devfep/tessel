@@ -523,8 +523,11 @@ async fn stop_tells_a_race_loser_its_claim_ended_and_how_to_ship_the_work() -> R
         shown.contains("deciding whether and how to ship the work"),
         "{shown}"
     );
+    // The fake's claim is no race entry, so the daemon's own note keeps the ordinary text; the
+    // hook's lead line is what is pinned here.
+    let lead = shown.lines().next().unwrap_or_default();
     assert!(
-        !shown.contains("active again") && !shown.contains("submit again"),
+        !lead.contains("active again") && !lead.contains("submit again"),
         "{shown}"
     );
     Ok(())
@@ -562,7 +565,8 @@ async fn stop_tells_an_unread_race_rejection_the_same_when_nothing_is_submitted(
     push_rejections(&fake, &a1, &[(claim, "the race was not picked in time")]).await?;
     let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
     assert!(shown.contains("its claim ended"), "{shown}");
-    assert!(!shown.contains("active again"), "{shown}");
+    let lead = shown.lines().next().unwrap_or_default();
+    assert!(!lead.contains("active again"), "{shown}");
     Ok(())
 }
 
