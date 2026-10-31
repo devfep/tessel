@@ -164,6 +164,12 @@ impl Testkit {
         self.answers.clear();
     }
 
+    /// Like `restart`, over the same store but with `config`: the port may have changed.
+    pub fn restart_with(&mut self, config: HostConfig) {
+        self.config = config;
+        self.restart();
+    }
+
     /// The call `call` was answered.
     pub fn reply(&mut self, call: CallId, answer: CallAnswer) {
         let now_ms = self.now_ms;

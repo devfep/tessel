@@ -2286,6 +2286,51 @@ fn host_a_race_recommended_for_a_pick_logs_nothing_and_its_decision_logs_once() 
         "once for the race, not once per result sent"
     );
 }
+
+#[test]
+fn host_a_stored_race_waiting_for_the_head_is_judged_on_the_first_wake_of_an_unreadable_port() {
+    let mut kit = a_reviewer_kit();
+    let sock = welcomed(&mut kit, "a1");
+    close_a_race(&mut kit, sock, 1, "x.rs");
+    assert!(
+        race_results(&kit, sock).is_empty(),
+        "the race waits for the head"
+    );
+    assert_ne!(state(&kit)["races"], json!({}), "and is stored waiting");
+
+    kit.restart_with(HostConfig {
+        reviewers: Some("a1".to_string()),
+        trunk_head_unreadable: true,
+        ..config()
+    });
+    let sock = welcomed(&mut kit, "a1");
+    wake(&mut kit);
+    let results = race_results(&kit, sock);
+    let [ServerMsg::RaceResult { entries, .. }] = &results[..] else {
+        panic!("expected one RaceResult, got {results:?}");
+    };
+    assert_eq!(
+        entries[0].tests_passed, None,
+        "judged with the tests unknown"
+    );
+    assert_eq!(
+        state(&kit)["races"],
+        json!({}),
+        "the race and its scopes are gone"
+    );
+    let judged = kit
+        .logs()
+        .iter()
+        .filter(|line| line.contains("judged with the tests unknown"))
+        .count();
+    assert_eq!(judged, 1, "{:?}", kit.logs());
+    let reads = kit
+        .calls()
+        .iter()
+        .filter(|call| matches!(call.request, Request::ReadHead { .. }))
+        .count();
+    assert_eq!(reads, 0, "and no head is read");
+}
 #[test]
 fn host_a_port_that_reads_no_heads_makes_no_head_read_and_judges_a_closed_race_at_once() {
     let mut kit = Testkit::new(HostConfig {

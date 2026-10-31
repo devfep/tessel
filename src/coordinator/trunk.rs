@@ -145,12 +145,13 @@ impl Coordinator {
         self.head_is_adopted() && (retrying || lost_with_the_process || self.races_await_head())
     }
 
-    /// On a port that cannot read heads no read is made, but a race left waiting for one by an
-    /// earlier state is released by the next expiry (`expire`), so that wake is due now.
     /// The alarm time of the head read: now, while a poke has not been tried yet or a race waits
     /// for an adopted head that no read has failed to confirm, or the end of the backoff after a
     /// failed start read. A poke whose read failed is pending but not a
     /// reason to wake.
+    ///
+    /// On a port that cannot read heads no read is made, but a race left waiting for one by an
+    /// earlier state is released by the next expiry (`expire`), so that wake is due now.
     pub fn next_head_read_ms(&self, now_ms: u64) -> Option<u64> {
         if self.state.head_unreadable {
             return self.races_await_head().then_some(now_ms);
