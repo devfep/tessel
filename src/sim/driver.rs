@@ -903,7 +903,6 @@ impl Sim {
                 }
             }
         }
-        self.failing_batch = None;
         self.store.stage(batch, entries);
         self.answers.push_back(Answer::Commit(batch));
     }
