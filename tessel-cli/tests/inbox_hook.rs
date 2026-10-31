@@ -514,8 +514,15 @@ async fn stop_tells_a_race_loser_its_claim_ended_and_how_to_ship_the_work() -> R
         "{shown}"
     );
     assert!(shown.contains("your fork is untouched"), "{shown}");
-    assert!(shown.contains("claim the freed scopes"), "{shown}");
+    assert!(
+        shown.contains("claim the race's scopes once they are free"),
+        "{shown}"
+    );
     assert!(shown.contains("reopen the race"), "{shown}");
+    assert!(
+        shown.contains("deciding whether and how to ship the work"),
+        "{shown}"
+    );
     assert!(
         !shown.contains("active again") && !shown.contains("submit again"),
         "{shown}"
@@ -571,6 +578,30 @@ async fn stop_keeps_the_ordinary_text_when_a_rejection_is_mixed_with_a_race_one(
         shown.contains(&format!("claim {claim}, your race entry, ended")),
         "{shown}"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_keeps_the_ordinary_text_when_a_race_rejection_comes_with_an_uncovered_notice(
+) -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = submitted_claim(&a1)?;
+    push_rejections(&fake, &a1, &[(claim, "lost the race")]).await?;
+    fake.push(
+        "a1",
+        ServerMsg::Uncovered {
+            req: None,
+            claim: ClaimId(claim),
+            scopes: vec![],
+        },
+    );
+    eventually(SHORT, || {
+        let inbox = std::fs::read_to_string(a1.root().join(".tessel/inbox.jsonl"))?;
+        Ok(inbox.contains("\"kind\":\"uncovered\"").then_some(()))
+    })
+    .await?;
+    let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
+    assert!(shown.contains("`tessel submit` again"), "{shown}");
     Ok(())
 }
 

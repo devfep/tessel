@@ -3244,11 +3244,77 @@ async fn a_race_result_names_the_winner_the_ranking_and_each_entrants_place() ->
         lost.contains(&format!("claim {second}, your race entry, ended")),
         "{lost}"
     );
-    assert!(lost.contains("claim the freed scopes"), "{lost}");
     assert!(
-        !lost.contains("active again") && !lost.contains("submit again"),
+        lost.contains("claim the race's scopes once they are free")
+            && lost.contains("`tessel claim --wait` queues for them"),
+        "{lost}"
+    );
+    assert!(
+        !lost.contains("active again") && !lost.contains("submit again") && !lost.contains("freed"),
         "a race loser's claim is gone: {lost}"
     );
+    // The dead entry is not kept locally: no claim is listed, and new work submits on its own.
+    let held = a2.status()?["state"]["claims"].to_string();
+    assert!(!held.contains(&format!("\"claim\":{second},")), "{held}");
+    let claimed = a2.tessel(&["claim", "src/a.rs"])?;
+    assert_eq!(claimed.code, 0, "{}", claimed.all());
+    let root = a2.root();
+    std::fs::write(root.join("src/a.rs"), "pub fn a() {}\n")?;
+    git(&root, &["commit", "-q", "-am", "a"])?;
+    let submitted = a2.tessel(&["submit", "--evidence", "tests passed"])?;
+    assert_eq!(submitted.code, 0, "{}", submitted.all());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_entry_of_a_race_nobody_picked_is_told_its_claim_ended() -> Result<()> {
+    let (fake, _a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "1", "human_pick")?;
+    a2.start("race for b")?;
+    assert_eq!(a2.tessel(&["race", "join", &race.to_string()])?.code, 0);
+    let entry = submit_entry(&a2, "only")?;
+    eventually(SHORT, || Ok(fake.verify_next(true).then_some(()))).await?;
+    fake.advance_clock(3 * 60 * 60 * 1000);
+    fake.settle_expiry().await;
+    let told = inbox_with(&a2, "the race was not picked in time").await?;
+    assert!(
+        told.contains(&format!("claim {entry}, your race entry, ended")),
+        "{told}"
+    );
+    assert!(!told.contains("active again"), "{told}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_entry_no_trial_judged_is_told_the_tests_gave_no_result() -> Result<()> {
+    let (fake, _a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "1", "tests_pass")?;
+    a2.start("race for b")?;
+    assert_eq!(a2.tessel(&["race", "join", &race.to_string()])?.code, 0);
+    let entry = submit_entry(&a2, "only")?;
+    // The host retries a trial that gave no result with a backoff, until the retries are spent.
+    let mut told = String::new();
+    for _ in 0..8 {
+        eventually(SHORT, || {
+            Ok(fake.verify_next_without_result().then_some(()))
+        })
+        .await?;
+        fake.advance_clock(5 * 60 * 1000);
+        fake.settle_expiry().await;
+        told = a2.tessel(&["inbox", "--all"])?.stdout;
+        if told.contains("the tests gave no result, so no trial judged this entry") {
+            break;
+        }
+    }
+    assert!(
+        told.contains("the tests gave no result, so no trial judged this entry"),
+        "{told}"
+    );
+    assert!(
+        told.contains(&format!("claim {entry}, your race entry, ended")),
+        "{told}"
+    );
+    assert!(!told.contains("active again"), "{told}");
     Ok(())
 }
 

@@ -927,19 +927,29 @@ impl Fake {
     /// Answers the next verification (a race entry's trial) the host has asked the lander for,
     /// with its tests passing or failing. Returns false when nothing was ready to run.
     pub fn verify_next(&self, passed: bool) -> bool {
-        let mut guard = lock(&self.inner.state);
-        let st = &mut *guard;
-        let Some(call) = self.inner.call_of(st, is_trial_call) else {
-            return false;
-        };
         let result = if passed {
             TrialResult::Clean
         } else {
             TrialResult::TestsFailed
         };
+        self.answer_trial(Some(result))
+    }
+
+    /// Answers the next verification with no result for the tested tree, as when the trial hit a
+    /// conflict or timed out. Returns false when nothing was ready to run.
+    pub fn verify_next_without_result(&self) -> bool {
+        self.answer_trial(None)
+    }
+
+    fn answer_trial(&self, after: Option<TrialResult>) -> bool {
+        let mut guard = lock(&self.inner.state);
+        let st = &mut *guard;
+        let Some(call) = self.inner.call_of(st, is_trial_call) else {
+            return false;
+        };
         let answer = CallAnswer::Trialled {
             before: None,
-            after: Some(result),
+            after,
         };
         self.inner.answer(st, &call, answer);
         true
