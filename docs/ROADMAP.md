@@ -14,32 +14,32 @@ must-fix, fix pass 1 `984caf5`, a re-check "With changes", fix pass 2 `6b5e921`;
 `~/tessel-orch-notes/2026-10-30/lane-a/failpoints/`). Each landing window has a scripted crash,
 except the `Land` window between main's push and the ref delete, whose state `landing.rs` builds
 with `git update-ref`: in the simulator (`src/sim/driver/failpoint.rs`) and, where the real lander
-is needed, in `tessel-server/tests/{restart,landing}.rs`; no core bug found. Its phase-1.md I6 cell
-changed: a crash after a recorded `Test` is reconciled and lands, so "`Test` running" replaces
-"tested, not landed", and a note says a cut-off at the `Land` stage is a doubt, outside I6, that
-stays in flight until a `Land` completes or the operator ends it with `resolve_doubt` (a restart at
-every `Land` marker loops by design until then). The notes were copied by hand (a merge of main in
-the submission). CI (41149575702) and the Adapter suite (41149575736) passed on `6b5e921`. At 21:14
-UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a` (four commits on `e07e6f5`; claim 136, merge
-path): its first vote (`vote-host-hardening/`) went 3-0 "No" (a core job or commit could run under a
-closed gate; frames a replaying socket queued before its `Watch` were not parked), fix pass 1
-(`222b923`, `042b87a`) closed both, and the re-vote (`vote-host-hardening-2/`) went 3-0 "Yes with
-should-fixes" (HOST-HARDENING-FOLLOWUPS, below). Its first landing attempt (21:04 UTC) failed first
-on `tessel-runner/tests/runner/running.rs` `the_command_reads_a_closed_stdin` (a 3 s wall-clock
-bound, untouched; server.log records only the first failure), with the load high from other
-projects; the same commit was resubmitted and landed. CI on `042b87a` (41129573797) FAILED: the
-1,000-seed simulator sweep found seed 69962521 breaking I6 (a claim rejected as an infrastructure
-failure though its work is on main); the Adapter suite passed. An Opus investigation
-(`~/tessel-orch-notes/2026-10-30/vote-late-land/I6-69962521.md`) found a real core bug that
-P1-HOST-HARDENING did not introduce (the merge code is the same on `8f0f2b4`; the persist retry only
-changed the path the seed takes): a resent `Land` answered `CandidateMissing` ends the doubt
-(`merging/doubt.rs:267-271`), the core's fresh `Prepare` re-pushes the same candidate ref (C7), the
-late first `Land` lands the work, and the core rejects the claim at the bound. A design vote
-(`vote-late-land/`) went 2-1 for option B (keep the doubt while main is at the leased base); B
-partly reverses M5-7, so it went to Felix, who chose B (below). CORE-LATE-LAND builds it. CI is
-green again on `6b5e921` only because its sweep starts at another seed. Load: on 30 October tessel's
-gates (no cargo job cap) and voters overlapped and pushed the shared Mac to 85 at 15:45 and 195-524
-at 18:05-18:25 EDT; two of Mukaase's UI tests timed out. Every gate script now exports
+is needed, in `tessel-server/tests/{restart,landing}.rs`; the failpoints found no core bug. Its
+phase-1.md I6 cell changed: a crash after a recorded `Test` is reconciled and lands, so "`Test`
+running" replaces "tested, not landed", and a note says a cut-off at the `Land` stage is a doubt,
+outside I6, that stays in flight until a `Land` completes or the operator ends it with
+`resolve_doubt` (a restart at every `Land` marker loops by design until then). The notes were copied
+by hand (a merge of main in the submission). CI (41149575702) and the Adapter suite (41149575736)
+passed on `6b5e921`. At 21:14 UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a` (four commits on
+`e07e6f5`; claim 136, merge path): its first vote (`vote-host-hardening/`) went 3-0 "No" (a core job
+or commit could run under a closed gate; frames a replaying socket queued before its `Watch` were
+not parked), fix pass 1 (`222b923`, `042b87a`) closed both, and the re-vote
+(`vote-host-hardening-2/`) went 3-0 "Yes with should-fixes" (HOST-HARDENING-FOLLOWUPS, below). Its
+first landing attempt (21:04 UTC) failed first on `tessel-runner/tests/runner/running.rs`
+`the_command_reads_a_closed_stdin` (a 3 s wall-clock bound, untouched; server.log records only the
+first failure), with the load high from other projects; the same commit was resubmitted and landed.
+CI on `042b87a` (41129573797) FAILED: the 1,000-seed simulator sweep found seed 69962521 breaking I6
+(a claim rejected as an infrastructure failure though its work is on main); the Adapter suite
+passed. An Opus investigation (`~/tessel-orch-notes/2026-10-30/vote-late-land/I6-69962521.md`) found
+a real core bug that P1-HOST-HARDENING did not introduce (the merge code is the same on `8f0f2b4`;
+the persist retry only changed the path the seed takes): a resent `Land` answered `CandidateMissing`
+ends the doubt (`merging/doubt.rs:267-271`), the core's fresh `Prepare` re-pushes the same candidate
+ref (C7), the late first `Land` lands the work, and the core rejects the claim at the bound. A
+design vote (`vote-late-land/`) went 2-1 for option B (keep the doubt while main is at the leased
+base); B partly reverses M5-7, so it went to Felix, who chose B (below). CORE-LATE-LAND builds it.
+CI is green again on `6b5e921` only because its sweep starts at another seed. Load: on 30 October
+tessel's gates (no cargo job cap) and voters overlapped and pushed the shared Mac to 85 at 15:45 and
+195-524 at 18:05-18:25 EDT; two of Mukaase's UI tests timed out. Every gate script now exports
 `CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=2` and takes a machine-wide lock
 (`~/tessel-orch-notes/cargo.lock.d`), so one gate's cargo job runs at a time; the server's landing
 runs are not under the lock. The STATE commits `c416075`..`e07e6f5` landed at 19:36 UTC (claim 135).
@@ -1396,15 +1396,15 @@ Lane B:
   (RACE-UNKNOWN-REASON's VOTE-3 should-fix 3). A cross edit into lane A's
   `tessel-cli/src/daemon.rs`, named here. Done: tests of the race-loser text in the CLI, the notice
   and the hook, and of the opener's line.
-- [ ] **CORE-LATE-LAND** (dispatched 31 October) — S, lane B, Felix reviews (the merge path: voted),
-  resting on Felix's decision of 30 October (STATE) and the late-`Land` vote. Seed 69962521 breaks
-  I6 on main `042b87a`: a resent `Land` answered `CandidateMissing` ends the doubt, the core's fresh
-  `Prepare` re-pushes the same ref, a late first `Land` lands the work, and the core rejects it at
-  the bound. Build option B: key on the submission's doubt; while in doubt nothing is counted or
-  rejected (`resend_test`, `retry_after_infrastructure`, the `Unstaged` path, a refusal at `Test` or
-  `Land`); a `Prepared` on the leased base with the doubted head goes straight to `Land`; the doubt
-  ends on `Landed`, `AlreadyMerged`, `MainMoved`, a `Prepared` on another base or `NotLanded` with
-  main off the base; `resolve_doubt` at any stage. Seed 69962521 in
+- [ ] **CORE-LATE-LAND** (dispatched 31 October) — S/M, lane B, Felix reviews (the merge path:
+  voted), resting on Felix's decision of 30 October (STATE) and the late-`Land` vote. Seed 69962521
+  breaks I6 on main `042b87a`: a resent `Land` answered `CandidateMissing` ends the doubt, the
+  core's fresh `Prepare` re-pushes the same ref, a late first `Land` lands the work, and the core
+  rejects it at the bound. Build option B: key on the submission's doubt; while in doubt nothing is
+  counted or rejected (`resend_test`, `retry_after_infrastructure`, the `Unstaged` path, a refusal
+  at `Test` or `Land`); a `Prepared` on the leased base with the doubted head goes straight to
+  `Land`; the doubt ends on `Landed`, `AlreadyMerged`, `MainMoved`, a `Prepared` on another base or
+  `NotLanded` with main off the base; `resolve_doubt` at any stage. Seed 69962521 in
   `tests/simulator-regressions.txt`; the I6 checker applies to every rejection; candidate-ref.md
   section 2 records the decision. Done: core tests red first (VOTE-1's list and VOTE-3's (B′) flaky
   re-`Test`), the seed green, a sweep green.
