@@ -316,7 +316,8 @@ race is then judged with the tests unknown: an entrant of a `tests_pass` race th
 is rejected with "the tests gave no result, so no trial judged this entry", not "lost the race".
 The log says it once per race, when it is decided: `race <n> was judged with the tests unknown: no
 trial result for claim <m>`. A failed read is logged with its cause (`head call failed: no usable
-answer`, `... no head in the answer`, `... refused`), and the first closed race that waits is logged
+answer`, `... no head in the answer`, `... refused` for a refusal that is not a rule, `... refused by
+a rule (<Rule>)` for a rule other than `NoLander`), and the first closed race that waits is logged
 once. `... no lander` appears only from a port that says it reads heads and then refuses with
 `NoLander`.
 
