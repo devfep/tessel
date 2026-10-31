@@ -537,9 +537,9 @@ fn rejected_text(
     let mut out = if ends_race_entry(reason, reviewer, note) {
         format!(
             "  claim {}, your race entry, ended: the claim is gone and your fork is untouched. To \
-             ship the work, claim the race's scopes once they are free (a winner holds them until it \
-             merges; `tessel claim --wait` queues for them) and run `tessel submit`, or ask the \
-             race's opener to reopen the race\n",
+             ship the work, claim the race's scopes once they are free (a winner holds them until \
+             it merges; `tessel claim --wait` queues for them) and run `tessel submit`, or ask \
+             the race's opener to reopen the race\n",
             claim.0
         )
     } else {
