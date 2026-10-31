@@ -190,6 +190,9 @@ pub struct HostConfig {
     pub protocol_range: Option<ProtocolRange>,
     /// How long a claim lives without a heartbeat, in milliseconds; `None` is `shell::LEASE_MS`.
     pub lease_ms: Option<u64>,
+    /// The call port cannot read main's head (`NoLander`, a repository without a `remote`): the
+    /// core owes no head read and its races do not wait for one. Applied on every load.
+    pub trunk_head_unreadable: bool,
 }
 
 /// A client message to handle: the expiry step that precedes it runs as its own write first.

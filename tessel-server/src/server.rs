@@ -199,6 +199,7 @@ async fn start_repositories(
             sensitive: repository.sensitive_list(),
             lease_ms: repository.lease_ms,
             shadow_enabled: repository.shadow_enabled.then(|| "true".to_string()),
+            trunk_head_unreadable: !calls.reads_trunk_head(),
             ..HostConfig::default()
         };
         let running = repo::spawn(

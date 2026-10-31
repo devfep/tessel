@@ -392,6 +392,10 @@ struct CoordinatorState {
     /// main, because the read that was out when the process stopped left no marker (see `trunk`).
     #[serde(skip, default = "loaded_from_storage")]
     loaded: bool,
+    /// Whether the port cannot read main's head. Never stored: the host sets it on every load
+    /// (`set_reads_trunk_head`). Such a port owes no head read and its races do not wait for one.
+    #[serde(skip)]
+    head_unreadable: bool,
     next_claim: u64,
     next_fence: u64,
     next_seq: u64,
@@ -493,6 +497,13 @@ impl Coordinator {
         self.state.reviewers = reviewers;
     }
 
+    /// Say whether the port can read main's head. It comes from the port and is applied on every
+    /// load. A port that cannot owes no head read, and a race on an adopted head does not wait
+    /// for one (see `trunk`).
+    pub fn set_reads_trunk_head(&mut self, reads: bool) {
+        self.state.head_unreadable = !reads;
+    }
+
     /// Replace the protocol versions `Welcome` announces. They come from the host's settings and
     /// are applied on every load.
     pub fn set_protocol_range(&mut self, range: ProtocolRange) {
@@ -555,6 +566,7 @@ impl Coordinator {
             head_start_failures: 0,
             head_start_retry_ms: 0,
             loaded: false,
+            head_unreadable: false,
             next_claim: 1,
             next_fence: 1,
             next_seq: 0,

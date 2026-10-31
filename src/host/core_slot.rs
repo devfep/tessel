@@ -219,6 +219,7 @@ pub fn build_core(
     }
     core.set_lease_ms(config.lease_ms.unwrap_or(shell::LEASE_MS))
         .map_err(LoadError::InvalidConfig)?;
+    core.set_reads_trunk_head(!config.trunk_head_unreadable);
     core.set_shadow_enabled(shell::parse_shadow_enabled(
         config.shadow_enabled.as_deref(),
     )?);

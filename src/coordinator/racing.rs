@@ -2207,13 +2207,9 @@ mod tests {
         (c, start)
     }
 
-    #[test]
-    fn a_landing_that_ends_the_adoption_releases_the_race_waiting_for_the_head() {
-        let landed_head = CommitId("e".repeat(40));
-        let (mut c, start) = adopted_core();
-        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
-        let one = join(&mut c, "a1", race);
-        let other = claim_as(&mut c, "x1", "src/x.rs", OnConflict::Fail);
+    /// Claim `src/x.rs` as `x1` and submit it, so it queues for merge.
+    fn submit_x1(c: &mut Coordinator) -> ClaimId {
+        let other = claim_as(c, "x1", "src/x.rs", OnConflict::Fail);
         let [ServerMsg::Granted { claim, fence, .. }] = replies(&other)[..] else {
             panic!("expected Granted");
         };
@@ -2228,14 +2224,46 @@ mod tests {
                 ..DecisionRecord::default()
             },
         };
+        let claim = *claim;
         c.handle(&agent("x1"), msg, NOW + 1);
+        claim
+    }
+
+    #[test]
+    fn a_landing_whose_head_is_the_adopted_base_releases_the_race_waiting_for_the_head() {
+        let (mut c, _start) = adopted_core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        let claim = submit_x1(&mut c);
+        submit_at(&mut c, "a1", one, NOW + 2);
+        assert!(c.races_await_head());
+        c.begin_merge(NOW + 3).expect("x1's merge");
+        let landed = MergeOutcome::Merged {
+            base: CommitId("b".repeat(40)),
+            head: CommitId(MAIN.into()),
+        };
+        c.settle_merge(c.merge_flight_id(claim), &landed, NOW + 4);
+        assert!(!c.races_await_head(), "the landing released the race");
+        let trial = c
+            .begin_verification(NOW + 5)
+            .expect("its trial is queued on the landed head");
+        assert_eq!(trial.main, CommitId(MAIN.into()));
+    }
+
+    #[test]
+    fn a_landing_that_ends_the_adoption_releases_the_race_waiting_for_the_head() {
+        let landed_head = CommitId("e".repeat(40));
+        let (mut c, start) = adopted_core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        let claim = submit_x1(&mut c);
         submit_at(&mut c, "a1", one, NOW + 2);
         c.begin_merge(NOW + 3).expect("x1's merge");
         let landed = MergeOutcome::Merged {
             base: CommitId("b".repeat(40)),
             head: landed_head.clone(),
         };
-        c.settle_merge(c.merge_flight_id(*claim), &landed, NOW + 4);
+        c.settle_merge(c.merge_flight_id(claim), &landed, NOW + 4);
         c.trunk_read(&start, Some(CommitId(MAIN.into())), NOW + 5);
         let trial = c
             .begin_verification(NOW + 6)
@@ -2268,24 +2296,94 @@ mod tests {
         assert!(c.state.verifications.is_empty(), "no trial names the base");
     }
 
-    #[test]
-    fn a_race_that_closes_after_the_retries_are_spent_is_judged_at_once() {
+    fn decided(effects: &[Effect]) -> bool {
+        logged(effects)
+            .iter()
+            .any(|kind| matches!(kind, EventKind::RaceDecided { .. }))
+    }
+
+    /// An adopted core whose reads have failed until the retries are spent.
+    fn adopted_core_with_the_retries_spent() -> Coordinator {
         let (mut c, start) = adopted_core();
         let mut read = start;
         for failure in 0..=MAX_INFRA_RETRIES {
             c.trunk_read(&read, None, NOW + u64::from(failure));
             read = c.begin_head_read().expect("the read stays owed");
         }
+        c
+    }
+
+    #[test]
+    fn a_race_that_closes_after_the_retries_are_spent_is_judged_on_the_next_owed_read() {
+        let mut c = adopted_core_with_the_retries_spent();
         let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
         let one = join(&mut c, "a1", race);
         let effects = submit_effects(&mut c, "a1", one, true, NOW + 100);
+        assert!(!decided(&effects), "the next owed read is waited for");
+        assert!(c.races_await_head());
+        let read = c.begin_head_read().expect("the read stays owed");
         assert!(
-            logged(&effects)
-                .iter()
-                .any(|kind| matches!(kind, EventKind::RaceDecided { .. })),
-            "{effects:?}"
+            c.next_head_read_ms(NOW + 100).is_some(),
+            "and it has a wake"
         );
+        let effects = c.trunk_read(&read, None, NOW + 200);
+        assert!(decided(&effects), "a failed read judges it: {effects:?}");
         assert!(c.state.verifications.is_empty(), "no trial names the base");
+    }
+
+    #[test]
+    fn a_race_that_closes_after_the_retries_are_spent_is_tried_when_the_next_read_answers() {
+        let mut c = adopted_core_with_the_retries_spent();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 100);
+        let read = c.begin_head_read().expect("the read stays owed");
+        let effects = c.trunk_read(&read, Some(CommitId("c".repeat(40))), NOW + 200);
+        assert!(!decided(&effects), "the trial is queued, not skipped");
+        assert_eq!(c.state.verifications.len(), 1);
+    }
+
+    #[test]
+    fn pokes_that_keep_coming_do_not_keep_a_closed_race_waiting_without_bound() {
+        let (mut c, start) = adopted_core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        let mut read = start;
+        let mut now = NOW + 3;
+        for failure in 1..=MAX_INFRA_RETRIES + 1 {
+            let effects = c.trunk_read(&read, None, now);
+            assert_eq!(
+                decided(&effects),
+                failure == MAX_INFRA_RETRIES + 1,
+                "failure {failure}: a poke between reads does not start the race's wait again"
+            );
+            now += 100_000;
+            c.trunk_moved(now);
+            read = c.begin_head_read().expect("the read stays owed");
+        }
+    }
+
+    #[test]
+    fn a_port_that_reads_no_heads_owes_no_read_and_its_races_do_not_wait() {
+        let mut c = bare_core();
+        c.set_reads_trunk_head(false);
+        assert_eq!(c.begin_head_read(), None, "no head, and nothing to read it");
+        let hello = ClientMsg::Hello {
+            agent: agent("felix"),
+            base: CommitId(MAIN.into()),
+            protocol: PROTOCOL_VERSION,
+        };
+        c.handle(&agent("felix"), hello, NOW);
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        let effects = submit_effects(&mut c, "a1", one, true, NOW + 1);
+        assert!(decided(&effects), "judged at once: {effects:?}");
+        assert!(!c.races_await_head());
+        assert_eq!(c.begin_head_read(), None, "the adopted head owes no read");
+        assert_eq!(c.next_head_read_ms(NOW + 2), None);
+        c.trunk_moved(NOW + 3);
+        assert_eq!(c.begin_head_read(), None, "not even for a poke");
     }
 
     #[test]

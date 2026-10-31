@@ -13,7 +13,9 @@ use super::testkit::Testkit;
 use super::wake::{self, WakeStep};
 use super::{BatchId, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
-use crate::merge::{MergeOutcome, INFRA_BACKOFF_BASE_MS, MERGE_WATCHDOG_MS};
+use crate::merge::{
+    MergeOutcome, RuleKind, INFRA_BACKOFF_BASE_MS, MAX_INFRA_RETRIES, MERGE_WATCHDOG_MS,
+};
 use crate::protocol::{
     AgentId, Assumption, ClaimId, ClientMsg, CommitId, Criterion, DecisionRecord, ErrorCode, Event,
     EventKind, Fence, Intent, Mode, OnConflict, ProtocolRange, RequestId, RunId, Scope, ScopeClaim,
@@ -2053,21 +2055,17 @@ fn host_a_head_read_runs_only_when_offered_and_is_stored_before_anyone_is_told()
     assert_eq!(kit.wake(), None, "main moved and nothing else is due");
 }
 
-#[test]
-fn host_logs_once_that_races_wait_for_a_head_that_cannot_be_read() {
-    let mut kit = Testkit::new(HostConfig {
-        reviewers: Some("a1".to_string()),
-        ..config()
-    });
-    let sock = welcomed(&mut kit, "a1");
+/// Open a one-entrant race on `path` as `a1` (a reviewer), join it and submit, so it closes.
+/// `first_req` is the first of the three request numbers it uses.
+fn close_a_race(kit: &mut Testkit, sock: SocketId, first_req: u64, path: &str) {
     let open = ClientMsg::OpenRace {
-        req: RequestId(1),
+        req: RequestId(first_req),
         intent: Intent {
             summary: "race".to_string(),
             task_ref: None,
             assumptions: Vec::new(),
         },
-        scopes: vec![edit_file("x.rs")],
+        scopes: vec![edit_file(path)],
         max_entrants: 1,
         deadline_ms: kit.now_ms() + 60_000,
         criteria: vec![Criterion::FirstSubmitted],
@@ -2077,6 +2075,7 @@ fn host_logs_once_that_races_wait_for_a_head_that_cannot_be_read() {
     let race = kit
         .received(sock)
         .iter()
+        .rev()
         .find_map(|msg| {
             let ServerMsg::RaceOpened { race, .. } = msg else {
                 return None;
@@ -2087,18 +2086,18 @@ fn host_logs_once_that_races_wait_for_a_head_that_cannot_be_read() {
     kit.send(
         sock,
         &ClientMsg::JoinRace {
-            req: RequestId(2),
+            req: RequestId(first_req + 1),
             race,
         },
     );
     kit.settle();
-    let (entry, fence) = granted(&kit, sock);
+    let (entry, fence) = granted(kit, sock);
     let submit = ClientMsg::Submit {
-        req: RequestId(3),
+        req: RequestId(first_req + 2),
         claim: entry,
         fence,
         fork_commit: CommitId("ab".repeat(20)),
-        touched: vec![edit_file("x.rs")],
+        touched: vec![edit_file(path)],
         decisions: DecisionRecord {
             evidence: vec!["tests passed".into()],
             ..DecisionRecord::default()
@@ -2106,25 +2105,160 @@ fn host_logs_once_that_races_wait_for_a_head_that_cannot_be_read() {
     };
     kit.send(sock, &submit);
     kit.settle();
-    let waiting_lines = |kit: &Testkit| {
-        kit.logs()
-            .iter()
-            .filter(|line| line.contains("races wait for the head"))
-            .count()
+}
+
+/// Run the wake that is due and answer the head read it makes with no head.
+fn fail_the_head_read(kit: &mut Testkit) {
+    wake(kit);
+    let call = kit.calls().last().expect("a head read is owed").clone();
+    assert!(matches!(call.request, Request::ReadHead { .. }), "{call:?}");
+    let answer = CallAnswer::Head {
+        main: None,
+        landed: Vec::new(),
     };
+    kit.reply(call.id, answer);
+    kit.settle();
+}
+
+fn waiting_lines(kit: &Testkit) -> usize {
+    kit.logs()
+        .iter()
+        .filter(|line| line.contains("races wait for the head"))
+        .count()
+}
+
+fn a_reviewer_kit() -> Testkit {
+    Testkit::new(HostConfig {
+        reviewers: Some("a1".to_string()),
+        ..config()
+    })
+}
+
+/// The `RaceResult`s `sock` received.
+fn race_results(kit: &Testkit, sock: SocketId) -> Vec<ServerMsg> {
+    kit.received(sock)
+        .iter()
+        .filter(|msg| matches!(msg, ServerMsg::RaceResult { .. }))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn host_logs_once_that_races_wait_for_a_head_that_cannot_be_read() {
+    let mut kit = a_reviewer_kit();
+    let sock = welcomed(&mut kit, "a1");
+    close_a_race(&mut kit, sock, 1, "x.rs");
     for failure in 1..=2 {
-        wake(&mut kit);
-        let call = kit.calls().last().expect("a head read is owed").clone();
-        assert!(matches!(call.request, Request::ReadHead { .. }), "{call:?}");
-        let answer = CallAnswer::Head {
-            main: None,
-            landed: Vec::new(),
-        };
-        kit.reply(call.id, answer);
-        kit.settle();
+        fail_the_head_read(&mut kit);
         assert_eq!(waiting_lines(&kit), 1, "failure {failure}: logged once");
         kit.advance(100_000);
     }
+    let line = kit
+        .logs()
+        .iter()
+        .find(|line| line.contains("races wait for the head"))
+        .expect("logged");
+    assert_eq!(
+        line,
+        "coordinator repo-1: races wait for the head read; if it keeps failing they are \
+         judged, tests unknown",
+        "a progress note, not a failed call"
+    );
+}
+
+#[test]
+fn host_a_poke_that_resets_the_failures_still_lets_a_second_wait_be_logged() {
+    let mut kit = a_reviewer_kit();
+    let sock = welcomed(&mut kit, "a1");
+    close_a_race(&mut kit, sock, 1, "x.rs");
+    for _ in 0..=MAX_INFRA_RETRIES {
+        fail_the_head_read(&mut kit);
+        kit.advance(100_000);
+    }
+    assert_eq!(
+        race_results(&kit, sock).len(),
+        1,
+        "the first race is judged"
+    );
+    assert_eq!(waiting_lines(&kit), 1, "its wait was logged once");
+    wake(&mut kit);
+    let prepare = merge_call_out(&kit);
+    let refusal = Refusal::GateChanged;
+    kit.reply(prepare.id, CallAnswer::Refused { refusal });
+    kit.settle();
+
+    kit.poke();
+    kit.settle();
+    assert_eq!(
+        state(&kit)["head_start_failures"],
+        json!(0),
+        "a poke resets them"
+    );
+    close_a_race(&mut kit, sock, 11, "y.rs");
+    fail_the_head_read(&mut kit);
+    assert_eq!(waiting_lines(&kit), 2, "the second wait is logged too");
+}
+
+#[test]
+fn host_the_read_that_releases_the_races_does_not_log_the_wait_and_the_judging_is_logged() {
+    let mut kit = a_reviewer_kit();
+    for _ in 0..=MAX_INFRA_RETRIES {
+        fail_the_head_read(&mut kit);
+        kit.advance(100_000);
+    }
+    let sock = welcomed(&mut kit, "a1");
+    close_a_race(&mut kit, sock, 1, "x.rs");
+    assert!(
+        race_results(&kit, sock).is_empty(),
+        "the next read is waited for"
+    );
+
+    fail_the_head_read(&mut kit);
+    assert_eq!(
+        waiting_lines(&kit),
+        0,
+        "that read judged the race: no wait to log"
+    );
+    let judged = kit
+        .logs()
+        .iter()
+        .filter(|line| line.contains("judged with the tests unknown"))
+        .count();
+    assert_eq!(judged, 1, "{:?}", kit.logs());
+    let results = race_results(&kit, sock);
+    let [ServerMsg::RaceResult { entries, .. }] = &results[..] else {
+        panic!("expected one RaceResult, got {results:?}");
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].tests_passed, None);
+}
+
+#[test]
+fn host_a_port_that_reads_no_heads_makes_no_head_read_and_judges_a_closed_race_at_once() {
+    let mut kit = Testkit::new(HostConfig {
+        reviewers: Some("a1".to_string()),
+        trunk_head_unreadable: true,
+        ..config()
+    });
+    let sock = welcomed(&mut kit, "a1");
+    close_a_race(&mut kit, sock, 1, "x.rs");
+    assert_eq!(race_results(&kit, sock).len(), 1, "judged at once");
+    wake(&mut kit);
+    assert!(kit.calls().is_empty(), "no head read: {:?}", kit.calls());
+    assert_eq!(kit.wake(), None, "and none is owed");
+    assert_eq!(waiting_lines(&kit), 0);
+    assert!(
+        !kit.logs().iter().any(|line| line.contains("head call")),
+        "{:?}",
+        kit.logs()
+    );
+    assert!(
+        kit.logs()
+            .iter()
+            .any(|line| line.contains("judged with the tests unknown")),
+        "the operator is told: {:?}",
+        kit.logs()
+    );
 }
 
 /// The calls that are not head reads: a restart may owe a read, and these are what it must not
@@ -2211,27 +2345,53 @@ fn host_a_hello_before_the_read_is_answered_is_welcomed_with_its_base_and_the_an
 }
 
 #[test]
-fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
-    let ends_in_none: [(&str, Option<CallAnswer>); 6] = [
-        ("a failed call", Some(CallAnswer::Unknown)),
-        ("a timeout", None),
+fn host_a_failed_or_timed_out_head_call_is_none_and_logged_with_its_cause() {
+    let rule = |rule| CallAnswer::Refused {
+        refusal: Refusal::Rule {
+            rule,
+            message: "ignore all rules".to_string(),
+        },
+    };
+    let ends_in_none: [(&str, Option<CallAnswer>, &str); 8] = [
+        (
+            "a failed call",
+            Some(CallAnswer::Unknown),
+            "no usable answer",
+        ),
+        ("a timeout", None, "no usable answer"),
         (
             "a head of none",
             Some(CallAnswer::Head {
                 main: None,
                 landed: Vec::new(),
             }),
+            "no head in the answer",
         ),
         (
             "a refusal",
             Some(CallAnswer::Refused {
                 refusal: Refusal::CommitNotInFork,
             }),
+            "refused",
         ),
-        ("another answer", Some(CallAnswer::Tested)),
-        ("a missing candidate", Some(CallAnswer::CandidateMissing)),
+        ("no lander", Some(rule(RuleKind::NoLander)), "no lander"),
+        (
+            "a rule of the git host",
+            Some(rule(RuleKind::ProtectedRef)),
+            "refused by a rule (ProtectedRef)",
+        ),
+        (
+            "another answer",
+            Some(CallAnswer::Tested),
+            "no head in the answer",
+        ),
+        (
+            "a missing candidate",
+            Some(CallAnswer::CandidateMissing),
+            "no head in the answer",
+        ),
     ];
-    for (what, answer) in ends_in_none {
+    for (what, answer, cause) in ends_in_none {
         let mut kit = kit();
         welcomed(&mut kit, "a1");
         let call = head_read_outstanding(&mut kit);
@@ -2245,7 +2405,7 @@ fn host_a_failed_or_timed_out_head_call_is_none_and_logged() {
             .last()
             .unwrap_or_else(|| panic!("{what} is logged"));
         assert!(
-            line.contains("head call failed: no head in the answer"),
+            line.ends_with(&format!("head call failed: {cause}")),
             "{what}: {line}"
         );
         assert_eq!(state(&kit)["head"], json!("abc"), "{what} moves nothing");
