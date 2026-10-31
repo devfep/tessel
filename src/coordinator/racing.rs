@@ -2387,6 +2387,30 @@ mod tests {
     }
 
     #[test]
+    fn a_race_stored_waiting_for_the_head_is_released_when_the_port_can_no_longer_read_it() {
+        let (mut c, _start) = adopted_core();
+        let race = open_for(&mut c, 1, vec![Criterion::FirstSubmitted]);
+        let one = join(&mut c, "a1", race);
+        submit_at(&mut c, "a1", one, NOW + 1);
+        assert!(c.races_await_head());
+        let stored = serde_json::to_string(&c).unwrap();
+        let mut loaded: Coordinator = serde_json::from_str(&stored).unwrap();
+        loaded.set_reads_trunk_head(false);
+        let now = NOW + 2;
+        let wake = loaded
+            .next_wake_ms(false, false, now)
+            .expect("a wake is set");
+        assert!(wake <= now, "the release is due at once: {wake}");
+        let effects = loaded.expire(now);
+        assert!(decided(&effects), "the race is judged: {effects:?}");
+        assert!(!loaded.races_await_head());
+        assert!(
+            loaded.state.verifications.is_empty(),
+            "no trial names the base"
+        );
+    }
+
+    #[test]
     fn a_port_that_reads_no_heads_owes_no_read_and_its_races_do_not_wait() {
         let mut c = bare_core();
         c.set_reads_trunk_head(false);
