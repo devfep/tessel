@@ -7,23 +7,46 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 00:27 UTC. Main at `6b5e921`, where P1-FAILPOINTS landed through the server at
-00:19 UTC as `574e63d`..`6b5e921` (six commits on `042b87a`; claim 139, held for signature changes,
-not merge path, and approved by the orchestrator on Opus review: REVIEW-1 "With changes", no
-must-fix, fix pass 1 `984caf5`, a re-check "With changes", fix pass 2 `6b5e921`;
-`~/tessel-orch-notes/2026-10-30/lane-a/failpoints/`). Each landing window has a scripted crash,
-except the `Land` window between main's push and the ref delete, whose state `landing.rs` builds
-with `git update-ref`: in the simulator (`src/sim/driver/failpoint.rs`) and, where the real lander
-is needed, in `tessel-server/tests/{restart,landing}.rs`; the failpoints found no core bug. Its
-phase-1.md I6 cell changed: a crash after a recorded `Test` is reconciled and lands, so "`Test`
-running" replaces "tested, not landed", and a note says a cut-off at the `Land` stage is a doubt,
-outside I6, that stays in flight until a `Land` completes or the operator ends it with
-`resolve_doubt` (a restart at every `Land` marker loops by design until then). The notes were copied
-by hand (a merge of main in the submission). CI (41149575702) and the Adapter suite (41149575736)
-passed on `6b5e921`. At 21:14 UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a` (four commits on
-`e07e6f5`; claim 136, merge path): its first vote (`vote-host-hardening/`) went 3-0 "No" (a core job
-or commit could run under a closed gate; frames a replaying socket queued before its `Watch` were
-not parked), fix pass 1 (`222b923`, `042b87a`) closed both, and the re-vote
+**As of:** 2026-10-31 12:20 UTC. Main at `cd8a718`, where RUNNER-TIMING-FLAKES landed through the
+server at 12:15 UTC as `114bccd`..`cd8a718` (claim 143; tests only; Opus REVIEW-1 "No": the sudo
+test's 300 ms cancel timer raced the stub's pid write and two guards had become vacuous; fix pass 1
+drives the cancels by events, runs the stub's child for 600 s and asserts the run was cut short; the
+re-check "Yes"; `~/tessel-orch-notes/2026-10-31/lane-a/runner-flakes/`). At 10:48 UTC CORE-LATE-LAND
+landed as `8707f38`..`01869ca` (ten commits on `6dccb3e`; claim 140, merge path), building Felix's
+option B: its first vote went 3-0 "No" (a doubt was fenced on the verification baseline, not on its
+own `Land`'s lease), its re-vote 2 "Yes with should-fixes" and 1 "No" (a refused `Prepare` in a
+fenced doubt never asked where main was), and after fix pass 2 the "No" voter's re-check was "Yes
+with should-fixes" (`~/tessel-orch-notes/2026-10-31/vote-core-late-land{,-2}/`); a 500-seed sweep
+from 149891420 passed before the submit, and CI (41194230450) and the Adapter suite (41194230447)
+passed on `01869ca`. Its last commit also fixes an I6 checker false positive, seed 2796343632, which
+had turned CI red on `a6accf4` (41151845130): `poisoned_outcome` judged the claim, not the poisoned
+submission, so a claim rejected for a poisoned commit that then merged other work was flagged;
+P1-HOST-HARDENING's retry exposed it (an Opus investigation, `scratchpad/I6-2796343632.md` of
+session 69ad1e78). Seeds 69962521 and 2796343632 are in `tests/simulator-regressions.txt`. At 02:19
+UTC RACE-LOSER-TEXT landed as `e78b6fe`..`6dccb3e` (claim 141; CLI only; Opus REVIEW-1 "With
+changes", the daemon kept a dead race claim locally, fixed; re-check "Yes"; its first landing run at
+02:12 failed first on the sudo timing test, then landed unchanged with the orchestrator holding the
+cargo lock). The STATE commits `caefdb7`..`a6accf4` landed at 00:45 UTC (claim 142). Felix asked on
+31 October for his items to be done in Claude in Chrome: its tools are not loaded in this session;
+lowering the landing build cap (`<server dir>/.cargo/config.toml`, `jobs = 6`, D3) and making "Fast
+lane, simulator" required (ruleset 25345043, the payload prepared) were both refused by the
+auto-mode classifier as shared-resource changes, so they wait for Felix. Before, at 00:19 UTC,
+P1-FAILPOINTS landed through the server at 00:19 UTC as `574e63d`..`6b5e921` (six commits on
+`042b87a`; claim 139, held for signature changes, not merge path, and approved by the orchestrator
+on Opus review: REVIEW-1 "With changes", no must-fix, fix pass 1 `984caf5`, a re-check "With
+changes", fix pass 2 `6b5e921`; `~/tessel-orch-notes/2026-10-30/lane-a/failpoints/`). Each landing
+window has a scripted crash, except the `Land` window between main's push and the ref delete, whose
+state `landing.rs` builds with `git update-ref`: in the simulator (`src/sim/driver/failpoint.rs`)
+and, where the real lander is needed, in `tessel-server/tests/{restart,landing}.rs`; the failpoints
+found no core bug. Its phase-1.md I6 cell changed: a crash after a recorded `Test` is reconciled and
+lands, so "`Test` running" replaces "tested, not landed", and a note says a cut-off at the `Land`
+stage is a doubt, outside I6, that stays in flight until a `Land` completes or the operator ends it
+with `resolve_doubt` (a restart at every `Land` marker loops by design until then). The notes were
+copied by hand (a merge of main in the submission). CI (41149575702) and the Adapter suite
+(41149575736) passed on `6b5e921`. At 21:14 UTC P1-HOST-HARDENING landed as `97fb0d9`..`042b87a`
+(four commits on `e07e6f5`; claim 136, merge path): its first vote (`vote-host-hardening/`) went 3-0
+"No" (a core job or commit could run under a closed gate; frames a replaying socket queued before
+its `Watch` were not parked), fix pass 1 (`222b923`, `042b87a`) closed both, and the re-vote
 (`vote-host-hardening-2/`) went 3-0 "Yes with should-fixes" (HOST-HARDENING-FOLLOWUPS, below). Its
 first landing attempt (21:04 UTC) failed first on `tessel-runner/tests/runner/running.rs`
 `the_command_reads_a_closed_stdin` (a 3 s wall-clock bound, untouched; server.log records only the
@@ -138,18 +161,7 @@ the coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice)
 `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
 claimed the file after the holder landed or left it to a follow-up.
 In flight (each item gives its brief's path; votes in `~/tessel-orch-notes/2026-10-30/`):
-- CORE-LATE-LAND (lane B, sonnet, dispatched about 00:05 UTC 31 October from `042b87a`,
-  `.claude/worktrees/core-late-land`; brief
-  `~/tessel-orch-notes/2026-10-30/lane-b/core-late-land/BRIEF.md`): option B as the votes' B+/B'
-  specify; seed 69962521 into `tests/simulator-regressions.txt`; the I6 checker widened to every
-  rejection; candidate-ref.md gets Felix's decision. A cross edit into lane A's core and
-  `src/sim/merge_check.rs`. Merge path, so it goes to a vote.
-- RACE-LOSER-TEXT (lane A, sonnet, dispatched about 00:20 UTC 31 October from `6b5e921`,
-  `.claude/worktrees/race-loser-text`; brief
-  `~/tessel-orch-notes/2026-10-31/lane-a/race-loser-text/BRIEF.md`): the row says lane B; the
-  orchestrator moved it to lane A because lane B holds the core and HEAD-ADOPTED-FOLLOWUPS shares
-  the core and `docs/dogfood.md` with CORE-LATE-LAND. It touches only `tessel-cli` and
-  `skills/tessel/SKILL.md`.
+- None: both lanes are idle; the next dispatches are in Next.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -213,9 +225,8 @@ sandbox commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** CORE-LATE-LAND, its vote and landing (lane B); RACE-LOSER-TEXT, its review and landing
-(lane A); then HEAD-ADOPTED-FOLLOWUPS (lane A, after CORE-LATE-LAND), then HOST-HARDENING-FOLLOWUPS
-(lane B; they share `src/host`); then SIM-R30-MODEL and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH.
+**Next:** HEAD-ADOPTED-FOLLOWUPS (lane A, after CORE-LATE-LAND), then HOST-HARDENING-FOLLOWUPS (lane
+B; they share `src/host`); then SIM-R30-MODEL and RESOLVE-RUNBOOK-NITS; then P1-ONE-BATCH.
 Agent tokens expire 31 October (see above). Felix makes ruleset step 3 ("Fast lane, simulator"
 required). Felix's Homebrew postgres trusts local connections on a world-writable socket; he closes
 it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
@@ -1379,32 +1390,33 @@ Lane B:
   with nothing tying the two; `journaled_land` runs a bare `sqlite3` (Homebrew's on the Mac, not the
   Apple build the runbook names). For later: a read-only `admin` command printing the doubt (first
   vote's VOTE-3 should-fix 8). Done: the doc edits, and each test change failing without it.
-- [ ] **RACE-LOSER-TEXT** (dispatched 31 October, run by lane A: see STATE) — S, lane B, after
-  P1-HOST-HARDENING; from RACE-UNKNOWN-REASON's vote (VOTE-1 should-fix 4, VOTE-3 should-fix 2),
-  resting on it and the standing order. The CLI's `rejected_text` (`tessel-cli/src/render.rs` ~509)
-  tells every rejected entrant "claim N is active again with the same fence; fix the cause, push,
-  and `tessel submit` again"; for a race entrant that is false (`reject_loser` removes the claim).
-  So do the daemon's `on_submit_rejected` notice (`tessel-cli/src/daemon.rs:1712-1721` on `ca864b2`,
-  "the claim is active again with the same fence") and the Stop hook
-  (`tessel-cli/src/inbox_hook.rs:354-359`, "Do not end your turn: fix the cause, push, and run
-  `tessel submit` again", which pushes a race entrant toward a resubmit that fails with
-  `UnknownClaim`). Say that the entry's claim ended and its fork is untouched, and how to ship the
-  work (claim the freed scopes and submit, or ask the opener to reopen the race);
-  `skills/tessel/SKILL.md` ~204 says the same for every `submit_rejected` and has no race-loser
-  paragraph. Also the opener's `RaceResult` line, which renders "no entry survived"
-  (`tessel-cli/src/render.rs:723` on `ca864b2`), should say when the tests gave no result
-  (RACE-UNKNOWN-REASON's VOTE-3 should-fix 3). A cross edit into lane A's
+- [x] **RACE-LOSER-TEXT** (`e78b6fe`..`6dccb3e`, landed by the server 31 October, run by lane A;
+  Opus review "With changes", then "Yes") — S, lane B, after P1-HOST-HARDENING; from
+  RACE-UNKNOWN-REASON's vote (VOTE-1 should-fix 4, VOTE-3 should-fix 2), resting on it and the
+  standing order. The CLI's `rejected_text` (`tessel-cli/src/render.rs` ~509) tells every rejected
+  entrant "claim N is active again with the same fence; fix the cause, push, and `tessel submit`
+  again"; for a race entrant that is false (`reject_loser` removes the claim). So do the daemon's
+  `on_submit_rejected` notice (`tessel-cli/src/daemon.rs:1712-1721` on `ca864b2`, "the claim is
+  active again with the same fence") and the Stop hook (`tessel-cli/src/inbox_hook.rs:354-359`, "Do
+  not end your turn: fix the cause, push, and run `tessel submit` again", which pushes a race
+  entrant toward a resubmit that fails with `UnknownClaim`). Say that the entry's claim ended and
+  its fork is untouched, and how to ship the work (claim the freed scopes and submit, or ask the
+  opener to reopen the race); `skills/tessel/SKILL.md` ~204 says the same for every
+  `submit_rejected` and has no race-loser paragraph. Also the opener's `RaceResult` line, which
+  renders "no entry survived" (`tessel-cli/src/render.rs:723` on `ca864b2`), should say when the
+  tests gave no result (RACE-UNKNOWN-REASON's VOTE-3 should-fix 3). A cross edit into lane A's
   `tessel-cli/src/daemon.rs`, named here. Done: tests of the race-loser text in the CLI, the notice
   and the hook, and of the opener's line.
-- [ ] **CORE-LATE-LAND** (dispatched 31 October) — S/M, lane B, Felix reviews (the merge path:
-  voted), resting on Felix's decision of 30 October (STATE) and the late-`Land` vote. Seed 69962521
-  breaks I6 on main `042b87a`: a resent `Land` answered `CandidateMissing` ends the doubt, the
-  core's fresh `Prepare` re-pushes the same ref, a late first `Land` lands the work, and the core
-  rejects it at the bound. Build option B: key on the submission's doubt; while in doubt nothing is
-  counted or rejected (`resend_test`, `retry_after_infrastructure`, the `Unstaged` path, a refusal
-  at `Test` or `Land`); a `Prepared` on the leased base with the doubted head goes straight to
-  `Land`; the doubt ends on `Landed`, `AlreadyMerged`, `MainMoved`, a `Prepared` on another base or
-  `NotLanded` with main off the base; `resolve_doubt` at any stage. Seed 69962521 in
+- [x] **CORE-LATE-LAND** (`8707f38`..`01869ca`, landed by the server 31 October; held as merge path,
+  approved after two fix passes on the votes) — S/M, lane B, Felix reviews (the merge path: voted),
+  resting on Felix's decision of 30 October (STATE) and the late-`Land` vote. Seed 69962521 breaks
+  I6 on main `042b87a`: a resent `Land` answered `CandidateMissing` ends the doubt, the core's fresh
+  `Prepare` re-pushes the same ref, a late first `Land` lands the work, and the core rejects it at
+  the bound. Build option B: key on the submission's doubt; while in doubt nothing is counted or
+  rejected (`resend_test`, `retry_after_infrastructure`, the `Unstaged` path, a refusal at `Test` or
+  `Land`); a `Prepared` on the leased base with the doubted head goes straight to `Land`; the doubt
+  ends on `Landed`, `AlreadyMerged`, `MainMoved`, a `Prepared` on another base or `NotLanded` with
+  main off the base; `resolve_doubt` at any stage. Seed 69962521 in
   `tests/simulator-regressions.txt`; the I6 checker applies to every rejection; candidate-ref.md
   section 2 records the decision. Done: core tests red first (VOTE-1's list and VOTE-3's (B′) flaky
   re-`Test`), the seed green, a sweep green.
@@ -1434,7 +1446,8 @@ Lane B:
   vote VOTE-3 S1, re-vote VOTE-3 S4). The testkit's `fail_next_commit` now fails all three attempts
   while the sim's fails one: one name, two meanings. Done: the sim reaches the spent-retry path, a
   test that fails without each change.
-- [ ] **RUNNER-TIMING-FLAKES** — S, lane B; observed 30 October under load 60-95 from other
+- [x] **RUNNER-TIMING-FLAKES** (`114bccd`..`cd8a718`, landed by the server 31 October, run by lane
+  A; Opus review "No", then "Yes") — S, lane B; observed 30 October under load 60-95 from other
   projects: `tessel-server/tests/sudo_runner.rs`
   `a_call_given_up_mid_run_kills_the_account_itself_and_frees_the_gate` (a 10 s bound, took 15.4 s)
   and `tessel-runner/tests/runner/running.rs` `the_command_reads_a_closed_stdin` (a 3 s bound; it
@@ -1447,6 +1460,21 @@ Lane B:
   (submitted and held for review then). Find out whether the daemon stops renewing an idle claim,
   whether the lease is meant to end then (the skill and `docs/configuration.md` say what), and fix
   the code or the docs; a test either way.
+- [ ] **SUDO-STOP-RUN-RACE** — S, lane B; from RUNNER-TIMING-FLAKES' REVIEW-1 ("For the
+  orchestrator"), resting on it and the standing order. A cancel that arrives before `sudo` has
+  switched to the account (`tessel-server/src/landing/sudo.rs` `stop_run`): `kill -KILL -1` as the
+  account and `ps -U` find nothing, `kill_all` returns Ok, `stop_run` waits passively for
+  `EXIT_GRACE` while `sudo` goes on to exec the real runner, then sets `closed`, so the gate stays
+  shut until a restart. Safe, but it costs availability; the window opens when a call gets the gate
+  with almost no deadline left. Keep running kill rounds while waiting within `EXIT_GRACE`; a test
+  with the slow-start stub that the gate is free afterwards.
+- [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
+  the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
+  `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
+  now catch a drift, but the copies stay. Make them `pub const`s in `src/protocol.rs` and use them
+  in the CLI (additive, no wire change). Also the `HumanPick` race's final `RaceResult` after the
+  window closed renders the same "if none comes before the window closes" line as the earlier
+  recommendation; the wire cannot tell them apart today.
 - [x] **GATE-PARITY-FMT** (`455c889`, landed by the server; held for review, approved by the
   orchestrator) — lane B, run ahead of its slot. The lander's gate and the steward's parser accept
   exactly `cargo fmt --all --check`; the runner quotes rustfmt's first `Diff in` line as the
