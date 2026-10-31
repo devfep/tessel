@@ -1682,9 +1682,9 @@ fn a_doubt_with_no_land_behind_it_rejects_work_whose_test_keeps_hanging() {
 fn a_doubt_with_no_land_behind_it_cut_off_at_test_is_counted_and_rejected_at_the_bound() {
     let (mut c, claim, prepare) = unstaged_doubt();
     next_after(&mut c, &prepare, &prepared());
-    let mut now = NOW + 20_000;
     let mut rejected_at = None;
     for restart in 1..=MAX_INFRA_RETRIES + 1 {
+        let now = NOW + 20_000 + u64::from(restart);
         let effects = c.recover_merge(now);
         if rejected(&effects) {
             rejected_at = Some(restart);
@@ -1695,7 +1695,6 @@ fn a_doubt_with_no_land_behind_it_cut_off_at_test_is_counted_and_rejected_at_the
             matches!(test.stage, MergeStage::Test { .. }),
             "restart {restart}"
         );
-        now += 1;
     }
     assert!(rejected_at.is_some(), "claim {}: it must not loop", claim.0);
 }
