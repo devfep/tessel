@@ -9,3 +9,4 @@
 196  # agent-base: same (fixed by CORE-HEAD-ADOPTED)
 229  # agent-base: same (fixed by CORE-HEAD-ADOPTED)
 69962521  # I6: a late copy of a resent Land landed work the core rejected (CORE-LATE-LAND)
+2796343632  # I6: a claim rejected for a poisoned commit merged other work, not the poisoned one

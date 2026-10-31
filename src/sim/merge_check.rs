@@ -191,7 +191,7 @@ pub fn i6(events: &[Event], path: &MergePath<'_>) -> Vec<String> {
                 "{fork} was dispatched {seen} times past its {allowed} tries"
             ));
         }
-        found.extend(poisoned_outcome(events, &by_claim, fork, seen >= allowed));
+        found.extend(poisoned_outcome(events, fork, seen >= allowed));
     }
     found.extend(infra_rejections(events, &by_claim, path));
     found
@@ -255,35 +255,41 @@ fn undercharged(
     (charged <= u64::from(MAX_INFRA_RETRIES)).then_some(message)
 }
 
-/// What became of the claim that submitted a poisoned commit: it must not merge, and once every
-/// try is spent it must have been rejected (or have ended some other way).
-fn poisoned_outcome(
-    events: &[Event],
-    by_claim: &BTreeMap<u64, Vec<String>>,
-    fork: &str,
-    spent: bool,
-) -> Vec<String> {
+/// What became of the submission of a poisoned commit: it must not merge, and once every try is
+/// spent it must have been rejected (or its claim ended, or the claim submitted other work). A
+/// claim rejected for the poisoned commit may submit other work, and that work may merge.
+fn poisoned_outcome(events: &[Event], fork: &str, spent: bool) -> Vec<String> {
     let mut found = Vec::new();
-    let Some((claim, _)) = by_claim
-        .iter()
-        .find(|(_, forks)| forks.iter().any(|f| f == fork))
-    else {
-        return found;
-    };
-    let ended_by = |wanted: fn(&EventKind, ClaimId) -> bool| {
-        events
-            .iter()
-            .any(|event| wanted(&event.kind, ClaimId(*claim)))
-    };
-    if ended_by(|kind, claim| merged_claim(kind) == Some(claim)) {
-        found.push(format!(
-            "claim {claim} merged though its commit {fork} cuts the merge path off every time"
-        ));
+    let mut live: Option<ClaimId> = None;
+    for event in events {
+        if let EventKind::Submitted {
+            claim, fork_commit, ..
+        } = &event.kind
+        {
+            live = if fork_commit.0 == fork {
+                Some(*claim)
+            } else {
+                live.filter(|owner| owner != claim)
+            };
+            continue;
+        }
+        let Some(claim) = live else {
+            continue;
+        };
+        if merged_claim(&event.kind) == Some(claim) {
+            found.push(format!(
+                "claim {} merged though its commit {fork} cuts the merge path off every time",
+                claim.0
+            ));
+        }
+        if ended_without_merge(&event.kind) == Some(claim) {
+            live = None;
+        }
     }
-    let gone = ended_by(|kind, claim| ended_without_merge(kind) == Some(claim));
-    if spent && !gone {
+    if let Some(claim) = live.filter(|_| spent) {
         found.push(format!(
-            "claim {claim}: every try of {fork} is spent and it was not rejected"
+            "claim {}: every try of {fork} is spent and it was not rejected",
+            claim.0
         ));
     }
     found
@@ -628,6 +634,30 @@ mod tests {
         assert!(
             found[0].contains("merged though its commit f1"),
             "{found:?}"
+        );
+    }
+
+    #[test]
+    fn i6_is_silent_when_a_claim_rejected_for_a_poisoned_commit_merges_other_work() {
+        let poisoned = ["f1".to_string()];
+        let cutoffs = BTreeMap::from([("f1".to_string(), 4)]);
+        let events = log(vec![
+            submitted(1, "f1"),
+            rejected(1, INFRA),
+            submitted(1, "f2"),
+            merged(1, "h1"),
+        ]);
+        let history = [landing("h1", "f2")];
+        assert!(i6(&events, &path(&cutoffs, &poisoned, &history)).is_empty());
+        let again = log(vec![
+            submitted(1, "f2"),
+            submitted(1, "f1"),
+            merged(1, "h1"),
+        ]);
+        let found = i6(&again, &path(&BTreeMap::new(), &poisoned, &history));
+        assert_eq!(
+            found,
+            ["claim 1 merged though its commit f1 cuts the merge path off every time"]
         );
     }
 
