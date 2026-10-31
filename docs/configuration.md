@@ -307,13 +307,21 @@ When the server starts, a repository with a `remote` and no head reads main's he
 head is main's before the first agent says hello. If main cannot be read then, or a hello arrives
 first, the head is the base that hello declared, as before; a later wake of the repository reads
 again while it has no head. A head that is only the base a hello declared records no main for a
-merge and queues no trial of a closed race: the race stays undecided until a read answers. While
-a read is owed it is read again, at 10 s, 30 s and then every 90 s for as long as it fails. A
-repository without a `remote` reads no heads: its closed race asks for the read at once, the
-no-lander port refuses it, and after four refusals (about two minutes) the race is judged with
-the tests unknown: an entrant of a `tests_pass` race that no trial judged is rejected with "the
-tests gave no result, so no trial judged this entry", not "lost the race". A repository that has a
-head waits for nothing.
+merge and queues no trial of a closed race: the race stays undecided until a read answers or four
+reads have failed. While a read is owed it is read again, at 10 s, 30 s and then every 90 s for as
+long as it fails. Each closed race counts the failed reads from when it closed, starting from the
+failures the reads already had, so a race that closes after four have failed waits for the next
+read, at most 90 s, and is judged on it if it fails; a trunk poke does not restart the count. The
+race is then judged with the tests unknown: an entrant of a `tests_pass` race that no trial judged
+is rejected with "the tests gave no result, so no trial judged this entry", not "lost the race".
+The log says it once per race: `race <n> was judged with the tests unknown: no trial result for
+claim <m>`. A failed read is logged with its cause (`head call failed: no lander`, `... no usable
+answer`, `... no head in the answer`), and the first closed race that waits is logged once.
+
+A repository without a `remote` has no lander and its port cannot read a head. The server tells
+the core so: it owes no head read, makes no head call and logs no refused read, and a closed race
+is judged at once with the tests unknown and the line above. A repository that has a head waits
+for nothing.
 
 The runner has no sandbox until M5. A trunk's test command runs as the runner's user, which is the
 server's user, and can write to a path `remote` and read the `token_file`, which a landing does not

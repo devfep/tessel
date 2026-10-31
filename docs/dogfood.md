@@ -241,7 +241,26 @@ binaries, upgrade as below first.
   `'\$.work.in_doubt' = 1`, prints nothing.
   Rolling back past the commit that adds `trials_await_head` to a race (CORE-HEAD-ADOPTED) needs
   no race in `Judging` with that flag set: the old build drops the flag and leaves the race
-  without trials for good. Check the stored state first.
+  without trials for good, holding its scopes. Check the stored state first, with the store read
+  of "Nothing in flight" and this query, which prints `0` when no race waits:
+
+  ```
+  select instr(json, '"trials_await_head":true') > 0 from kv where key = 'core'
+  ```
+
+  `1` means a closed race waits for a head read. Do not roll back yet: wait until it prints `0`,
+  which is when a read answers or about 130 s after the race closed (four failed reads), and on a
+  repository without a `remote` when the next head read has failed; then check again.
+  The rollback needs a store the old build opens, so also read the version, on the same store
+  with `select value from meta where key = 'state_version'`, and compare it with the old build's
+  `MIGRATIONS` in `tessel-server/src/store.rs`.
+  Before an upgrade, check that every served repository has a `remote` in the server's
+  configuration. A repository without one has the no-lander port. A build that has
+  `trials_await_head` but not `trunk_head_unreadable` judges its closed races only after about
+  130 s and then asks for a refused head read every 90 s for ever; this build owes that port no
+  read and judges a closed race at once. A race a build without the fix closed on such a
+  repository and that still waits when this one starts stays so, since nothing lands there: upgrade
+  only when the query above prints `0`.
 
 After the [move to the service accounts](#moving-to-the-service-accounts), every rule above stands;
 only the swap changes. `/usr/bin/sudo /opt/tessel/sbin/upgrade.sh --binaries <dir>` does it in
