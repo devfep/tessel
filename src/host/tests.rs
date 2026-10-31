@@ -2475,6 +2475,63 @@ fn host_unknown_from_a_land_is_reconciled_after_a_backoff_and_a_land_sent_again_
 }
 
 #[test]
+fn host_a_refused_prepare_in_doubt_logs_why_with_the_doubt_line_on_every_pass() {
+    let mut kit = kit();
+    submitted(&mut kit);
+    wake(&mut kit);
+    let land = merge_call_out_after(&mut kit);
+    kit.reply(land.id, CallAnswer::Unknown);
+    kit.settle();
+    kit.advance(INFRA_BACKOFF_BASE_MS);
+    wake(&mut kit);
+    let reconcile = merge_call_out(&kit);
+    kit.reply(reconcile.id, reconciled("old", false));
+    kit.settle();
+    let again = merge_call_out(&kit);
+    kit.reply(again.id, CallAnswer::CandidateMissing);
+    kit.settle();
+    for pass in 1..=3 {
+        kit.advance(90_000);
+        wake(&mut kit);
+        let prepare = merge_call_out(&kit);
+        assert!(matches!(prepare.request, Request::Prepare { .. }), "{pass}");
+        kit.reply(
+            prepare.id,
+            CallAnswer::Refused {
+                refusal: Refusal::CommitNotInFork,
+            },
+        );
+        kit.settle();
+        let line = kit
+            .logs()
+            .last()
+            .unwrap_or_else(|| panic!("no log in pass {pass}"));
+        for part in [
+            "is in doubt",
+            "admin resolve 1",
+            "not on any branch of your fork",
+        ] {
+            assert!(
+                line.contains(part),
+                "pass {pass}: {part:?} missing from {line}"
+            );
+        }
+        kit.advance(90_000);
+        wake(&mut kit);
+        let reconcile = merge_call_out(&kit);
+        assert!(
+            matches!(reconcile.request, Request::Reconcile { .. }),
+            "{pass}"
+        );
+        kit.reply(reconcile.id, reconciled("old", false));
+        kit.settle();
+        let again = merge_call_out(&kit);
+        kit.reply(again.id, CallAnswer::CandidateMissing);
+        kit.settle();
+    }
+}
+
+#[test]
 fn host_a_reconcile_that_finds_main_elsewhere_sends_the_claim_back_to_prepare() {
     let mut kit = kit();
     submitted(&mut kit);

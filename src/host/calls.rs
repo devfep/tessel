@@ -31,7 +31,7 @@ use crate::host::call::{
 use crate::host::wake::WakeStep;
 use crate::host::{Host, Job, Output};
 use crate::merge::{
-    MergeOutcome, StepExit, TrialOutcome, TrialReport, LAND_CALL_TIMEOUT_MS,
+    MergeOutcome, StepExit, TrialOutcome, TrialReport, Verdict, LAND_CALL_TIMEOUT_MS,
     PREPARE_CALL_TIMEOUT_MS, REASON_OUTPUT_MAX_CHARS, RECONCILE_CALL_TIMEOUT_MS,
     STEWARD_CALL_TIMEOUT_MS, TEST_CALL_TIMEOUT_MS,
 };
@@ -304,12 +304,18 @@ fn rule_refusal_log(repo: &str, answer: &CallAnswer) -> Option<Output> {
     else {
         return None;
     };
-    let cut: String = message.chars().take(REASON_OUTPUT_MAX_CHARS).collect();
-    let more = if cut.len() < message.len() { "..." } else { "" };
-    let quoted = serde_json::Value::String(cut);
+    let quoted = bounded_quote(message);
     Some(Output::Log {
-        line: format!("coordinator {repo}: a rule ({rule:?}) refused the merge: {quoted}{more}"),
+        line: format!("coordinator {repo}: a rule ({rule:?}) refused the merge: {quoted}"),
     })
+}
+
+/// `text` cut to `REASON_OUTPUT_MAX_CHARS` characters, written as a JSON string, and followed by
+/// `...` when it was cut.
+fn bounded_quote(text: &str) -> String {
+    let cut: String = text.chars().take(REASON_OUTPUT_MAX_CHARS).collect();
+    let more = if cut.len() < text.len() { "..." } else { "" };
+    format!("{}{more}", serde_json::Value::String(cut))
 }
 
 /// The answer of a call, to be applied once the core is loaded.
@@ -350,7 +356,17 @@ impl Host {
                     core.merge_outcome(dispatch, &outcome, now_ms)
                 });
                 resume = resume_after(&call.request, self.merge_continues());
-                out.extend(self.doubt_log());
+                let refusal = match outcome.verdict() {
+                    Verdict::Rejected { reason } => Some(reason),
+                    Verdict::Prepared { .. }
+                    | Verdict::Tested
+                    | Verdict::CandidateMissing
+                    | Verdict::Landed { .. }
+                    | Verdict::AlreadyLanded { .. }
+                    | Verdict::MainMoved
+                    | Verdict::Infrastructure => None,
+                };
+                out.extend(self.doubt_log(refusal.as_deref()));
                 ("apply merge outcome", prepared)
             }
             Request::Trial { .. } => {
@@ -389,7 +405,7 @@ impl Host {
                     core.reconcile_outcome(dispatch, &found, now_ms)
                 });
                 resume = resume_after(&call.request, self.merge_continues());
-                out.extend(self.doubt_log());
+                out.extend(self.doubt_log(None));
                 ("apply reconcile outcome", prepared)
             }
         };
@@ -421,12 +437,13 @@ impl Host {
     }
 
     /// The log line that names the claim whose landing is in doubt, for the operator who looks
-    /// for it without the submitter.
-    fn doubt_log(&self) -> Option<Output> {
+    /// for it without the submitter. `refusal` is why the call just answered was refused, if it
+    /// was: a doubt waits through a refusal, and this line is the only place that says why.
+    fn doubt_log(&self, refusal: Option<&str>) -> Option<Output> {
         let doubt = self.slot.merge_in_doubt()?;
         let (base, head) = self.slot.journaled_land(doubt.claim)?;
         Some(Output::Log {
-            line: doubt_line(&self.config.repo, &doubt, (&base, &head)),
+            line: doubt_line(&self.config.repo, &doubt, (&base, &head), refusal),
         })
     }
 }
@@ -437,8 +454,17 @@ impl Host {
 /// named `tenant/name` is passed to the command with `--tenant` and `--repo`, which it needs when
 /// its configuration lists several repositories and accepts when it lists one. The time is the
 /// server's clock, milliseconds since the epoch, not a duration.
-fn doubt_line(repo: &str, doubt: &ClaimInDoubt, (base, head): (&CommitId, &CommitId)) -> String {
+fn doubt_line(
+    repo: &str,
+    doubt: &ClaimInDoubt,
+    (base, head): (&CommitId, &CommitId),
+    refusal: Option<&str>,
+) -> String {
     let (claim, since) = (doubt.claim.0, doubt.since_ms);
+    let refused = refusal.map_or_else(String::new, |reason| {
+        let quoted = bounded_quote(reason);
+        format!(". The call just answered was refused, and the doubt waits: {quoted}")
+    });
     let (base, head) = (&base.0, &head.0);
     let named = repo
         .split_once('/')
@@ -451,7 +477,7 @@ fn doubt_line(repo: &str, doubt: &ClaimInDoubt, (base, head): (&CommitId, &Commi
          by hand with: tessel-server admin resolve {claim} --landed {head} {named}--config <the \
          server's configuration file> if `git merge-base --is-ancestor {head} origin/main` \
          succeeds in a fetched checkout of the trunk, and otherwise or when unsure with \
-         --not-landed in place of `--landed {head}`"
+         --not-landed in place of `--landed {head}`{refused}"
     )
 }
 
@@ -471,7 +497,12 @@ mod tests {
             claim: ClaimId(7),
             since_ms: 1_234,
         };
-        let line = doubt_line("acme/demo", &doubt, (&commit("base1"), &commit("head1")));
+        let line = doubt_line(
+            "acme/demo",
+            &doubt,
+            (&commit("base1"), &commit("head1")),
+            None,
+        );
         for part in [
             "acme/demo",
             "claim 7 is in doubt since 1234 (epoch ms)",

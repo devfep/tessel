@@ -14,18 +14,21 @@
 //! The doubt outlives the `Land`. A copy of it that has not run yet may land the head any time
 //! main is still at its base, and the core's own `Prepare` re-makes the candidate ref it needs. The
 //! doubt carries that `Land`'s own `(base, head)` (`Submission::doubted_land`, written at every
-//! doubt), and while it does nothing in the merge rejects the work: a refusal at any stage, a
-//! missing candidate, a failed `Prepare`, a cut-off and a restart all send it back to `Prepare`
-//! after the capped backoff (`wait_in_doubt`), counting nothing. A `Prepare` that answers the
-//! doubted pair goes straight to `Land`. The doubt ends only when the work lands, when the operator
-//! says it did not, or when main is known to have left the doubted base: a `Prepared` on another
-//! base, a `MainMoved` once a `Reconcile` has found the head not on main, or a reconcile that finds
-//! main elsewhere.
+//! doubt), and while it does nothing in the merge rejects the work: a refusal at `Test` or `Land`,
+//! a missing candidate, a failed `Prepare`, a cut-off and a restart all send it back to `Prepare`
+//! after the capped backoff (`wait_in_doubt`), counting nothing. A refusal at `Prepare` asks a
+//! `Reconcile` first, after that backoff (`reconcile_refused_prepare`), since it says nothing of
+//! where main is. A `Prepare` that answers the doubted pair goes straight to `Land`. The doubt
+//! ends only when the work lands, when the operator says it did not, or when main is known to have
+//! left the doubted base: a `Prepared` on another base, a `MainMoved` once a `Reconcile` has found
+//! the head not on main, a `MainMoved` answered to a `Land`, or a reconcile that finds main
+//! elsewhere.
 //!
-//! A doubt with no pair (a marker stored before the staged landing) has no late `Land` to fence: a
-//! refusal rejects it as it did, an infrastructure failure counts and waits the capped backoff
-//! without rejecting, and a `Prepared` never ends it. It cannot be resolved by the operator, who
-//! resolves a `Land`; the runbook's "Nothing in flight" check forbids upgrading with one.
+//! A doubt with no pair (a marker stored before the staged landing) has no late `Land` to fence:
+//! a refusal rejects it as it did, an infrastructure failure counts and is rejected at
+//! `MAX_INFRA_RETRIES` like any other, and a `Prepared` never ends it. It cannot be resolved by
+//! the operator, who resolves a `Land`; the runbook's "Nothing in flight" check forbids upgrading
+//! with one.
 //!
 //! None of it counts toward `MAX_INFRA_RETRIES`, and none of it rejects. What bounds it is the
 //! rate: each `Unknown`, from the `Land` or from a `Reconcile`, waits the capped infrastructure
@@ -164,17 +167,18 @@ impl Coordinator {
         Self::doubt_notice(first, claim, agent, since)
     }
 
-    /// `MainMoved` came back to a `Prepare` or a `Test` of a submission in doubt of the `pair`: a
-    /// late copy of that `Land` may be the move (the lander's pin and its clone are separate
-    /// reads), so the doubt is not ended on the word of a call that cannot tell. A `Reconcile`
-    /// under a new dispatch id asks whether the head is on main; its answer lands the work or ends
-    /// the doubt as any `Reconcile` does. Nothing is counted, and it goes out at once.
+    /// A `Prepare` or a `Test` of a submission in doubt of the `pair` cannot say where main is
+    /// (`MainMoved` may be a late copy of that `Land`: the lander's pin and its clone are separate
+    /// reads; a refusal says nothing of the base at all), so the doubt is neither ended nor waited
+    /// out on its word. A `Reconcile` under a new dispatch id asks whether the head is on main;
+    /// its answer lands the work, sends the `Land` again or ends the doubt as any `Reconcile`
+    /// does. Nothing is counted. `pace` says whether it goes out at once or after the backoff.
     pub(super) fn reconcile_before_ending(
         &mut self,
         flight: InFlight,
         held: ActiveClaim,
         pair: (CommitId, CommitId),
-        now_ms: u64,
+        (pace, now_ms): (Pace, u64),
     ) -> Vec<Effect> {
         let dispatch = self.state.last_dispatch + 1;
         self.state.last_dispatch = dispatch;
@@ -184,7 +188,28 @@ impl Coordinator {
             ..work
         });
         let held = ActiveClaim { work, ..held };
-        self.enter_doubt(flight, held, pair, (Pace::AtOnce, now_ms))
+        self.enter_doubt(flight, held, pair, (pace, now_ms))
+    }
+
+    /// The `Prepare` of a submission in doubt was refused. A refusal carries no base, and the
+    /// ones that persist (a fork branch gone, a conflict after main moved outside the queue) say
+    /// nothing of whether main is still where the `Land` leased it, so a `Reconcile` asks, paced
+    /// by the doubts' backoff: main at the base sends the `Land` again, main elsewhere ends the
+    /// doubt so that the next `Prepare` rejects, and the head on main lands the work.
+    pub(super) fn reconcile_refused_prepare(
+        &mut self,
+        flight: InFlight,
+        held: ActiveClaim,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let pair = held
+            .work
+            .as_ref()
+            .and_then(|work| work.doubted_land.clone());
+        let Some(pair) = pair else {
+            return self.wait_in_doubt(flight, held, now_ms);
+        };
+        self.reconcile_before_ending(flight, held, pair, (Pace::Backoff, now_ms))
     }
 
     /// Tell the submitter their landing is in doubt, the first time only.

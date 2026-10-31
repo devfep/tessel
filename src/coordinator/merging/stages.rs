@@ -1403,25 +1403,24 @@ fn a_restart_at_test_in_doubt_waits_the_doubts_backoff_counts_nothing_and_never_
 }
 
 #[test]
-fn a_marker_stored_before_the_staged_landing_never_rejects_in_doubt() {
+fn a_marker_stored_before_the_staged_landing_is_counted_and_rejected_at_the_bound() {
     let stored = store_written_before_the_staged_landing();
     let mut c: Coordinator = serde_json::from_str(&stored).unwrap();
     let claim = ClaimId(*c.state.claims.keys().next().unwrap());
     let mut now = NOW + 4;
-    for restart in 1..=MAX_INFRA_RETRIES + 3 {
+    for restart in 1..=MAX_INFRA_RETRIES {
         let effects = c.recover_merge(now);
         assert!(!rejected(&effects), "restart {restart}");
         let wait = retry_at(&c, claim) - c.state.clock_ms;
-        assert_eq!(
-            wait,
-            infra_backoff_ms(restart.min(MAX_INFRA_RETRIES)),
-            "restart {restart}"
-        );
+        assert_eq!(wait, infra_backoff_ms(restart), "restart {restart}");
+        assert!(work(&c, claim).in_doubt);
         now = retry_at(&c, claim);
         let prepare = c.begin_merge(now).expect("the claim in doubt goes first");
         assert_eq!(prepare.stage, MergeStage::Prepare);
     }
-    assert!(work(&c, claim).in_doubt);
+    let effects = c.recover_merge(now);
+    assert!(rejected(&effects), "no late Land can put it on main");
+    assert!(!c.has_merge_in_flight());
 }
 
 #[test]
@@ -1880,22 +1879,11 @@ fn main_moved_at_prepare_or_test_in_doubt_asks_a_reconcile_before_the_doubt_ends
 }
 
 #[test]
-fn main_moved_at_prepare_or_test_ends_only_a_doubt_the_submitter_was_told_of() {
-    // Not told: a doubt from before the staged landing stays, and the move counts.
+fn main_moved_at_prepare_to_a_doubt_with_no_pair_keeps_the_doubt_and_counts_the_move() {
     let (mut c, claim, prepare) = unstaged_doubt();
     let effects = c.merge_outcome(prepare.id, &MergeOutcome::MainMoved {}, NOW + 20_000);
     assert_eq!(doubt_notices(&effects), vec![]);
     assert_eq!((work(&c, claim).in_doubt, work(&c, claim).moved), (true, 1));
-    // Told, with no pair to reconcile: it ends at once and says so.
-    let (mut c, claim, prepare) = unstaged_doubt();
-    let flight = c.state.merge_in_flight.as_mut().expect("a Prepare is out");
-    flight.doubt_since_ms = Some(NOW + 4);
-    let effects = c.merge_outcome(prepare.id, &MergeOutcome::MainMoved {}, NOW + 20_000);
-    assert_eq!(doubt_notices(&effects), vec![(claim, None)]);
-    assert_eq!(
-        (work(&c, claim).in_doubt, work(&c, claim).moved),
-        (false, 1)
-    );
 }
 
 #[test]

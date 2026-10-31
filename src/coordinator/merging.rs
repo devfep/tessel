@@ -455,7 +455,10 @@ impl Coordinator {
             (MergeStage::Land { .. } | MergeStage::Reconcile { .. }, verdict) => {
                 self.land_stage_outcome(flight, held, verdict, now_ms)
             }
-            (MergeStage::Prepare | MergeStage::Test { .. }, Verdict::Rejected { .. }) if fenced => {
+            (MergeStage::Prepare, Verdict::Rejected { .. }) if fenced => {
+                self.reconcile_refused_prepare(flight, held, now_ms)
+            }
+            (MergeStage::Test { .. }, Verdict::Rejected { .. }) if fenced => {
                 self.wait_in_doubt(flight, held, now_ms)
             }
             (
@@ -484,8 +487,9 @@ impl Coordinator {
     }
 
     /// `MainMoved` came back to a `Prepare` or a `Test`. A submission in doubt of a `Land` first
-    /// asks a `Reconcile` whether the head landed (`reconcile_before_ending`); otherwise the doubt
-    /// ends, if the submitter was told of it, and the move is counted.
+    /// asks a `Reconcile` whether the head landed (`reconcile_before_ending`), at once. Otherwise
+    /// the move is counted: a doubt with no pair was never told to the submitter (only a `Land`
+    /// tells it), so there is none to end.
     fn main_moved_before_land(
         &mut self,
         flight: InFlight,
@@ -499,12 +503,9 @@ impl Coordinator {
             .filter(|work| is_fenced(work))
             .and_then(|work| work.doubted_land.clone());
         if let Some(pair) = pair {
-            return self.reconcile_before_ending(flight, held, pair, now_ms);
+            return self.reconcile_before_ending(flight, held, pair, (Pace::AtOnce, now_ms));
         }
-        let told = flight.doubt_since_ms.is_some();
-        let (held, mut effects) = self.end_doubt(claim, held, told);
-        effects.extend(self.retry_after_move(claim, held, now_ms));
-        effects
+        self.retry_after_move(claim, held, now_ms)
     }
 
     /// The `Prepare` of `flight` answered `base` and `head`. A submission in doubt of a `Land`
@@ -927,10 +928,10 @@ impl Coordinator {
     /// `dispatched_from` is main as the attempt began; a `Land` that did not finish may have landed
     /// on it, and the claim is then in doubt. A `Prepare` or a `Test` cannot have changed main.
     ///
-    /// A claim in doubt is never rejected for it. One in doubt of a `Land` (it has a doubted pair)
-    /// counts nothing more and goes back to `Prepare` after the doubts' capped backoff
+    /// A claim in doubt of a `Land` (it has a doubted pair) is never rejected for it: it counts
+    /// nothing more and goes back to `Prepare` after the doubts' capped backoff
     /// (`wait_in_doubt`). One from a marker stored before the staged landing has no pair and no
-    /// merge in flight while it waits; it counts as before but waits the same capped backoff.
+    /// late `Land` to fence: it counts as any attempt does and is rejected at the bound.
     fn retry_after_infrastructure(
         &mut self,
         flight: InFlight,
@@ -953,7 +954,7 @@ impl Coordinator {
             return self.wait_in_doubt(flight, held, now_ms);
         }
         work.infra_failures += 1;
-        if work.infra_failures > MAX_INFRA_RETRIES && !work.in_doubt {
+        if work.infra_failures > MAX_INFRA_RETRIES {
             let reason = infra_rejection(work.infra_failures);
             return self.reject_work(claim, held, Rejection::plain(reason), now_ms);
         }
