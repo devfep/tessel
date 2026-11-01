@@ -91,9 +91,9 @@ other write bit, and still `WrongUser` for a login that is not its own.
 The agents' tokens are not secrets from the lanes. Felix's shell makes them:
 `sudo -u _tessel /opt/tessel/bin/tessel-server admin token ... > ~/.tessel/tokens/<agent>` with
 `umask 077`, because `_tessel` cannot write under his home and a file it made there would be
-unreadable to him. The key stays with `_tessel`. The `jobs = 6` cap moves to
-`/var/tessel/cargo/config.toml`, since cargo would not find `<server dir>/.cargo` above the
-runner's tree.
+unreadable to him. The key stays with `_tessel`. The build cap (`jobs = 2` and 2 test threads
+since 1 November) moves to `/var/tessel/cargo/config.toml`, since cargo would not find
+`<server dir>/.cargo` above the runner's tree.
 
 ## 2. The runner channel
 

@@ -63,9 +63,10 @@ Run the script. It makes the server directory, both configurations, the signing 
 unless it exists, and a token for `lane-a`, `lane-b` and `orchestrator` in `<server dir>/tokens`,
 each valid 7 days. It copies `tessel-server` and `tessel` into `<server dir>/bin` on every run,
 because git's askpass hook is the server's own executable and a later `cargo build` must not
-replace it mid-landing. It writes `<server dir>/.cargo/config.toml` with `jobs = 6`, which cargo
-reads from the runner's clone upward, so a landing build uses 6 of the 12 cores. The cap limits
-compile jobs, not test threads. A `.cargo/config.toml` inside a submission would take precedence
+replace it mid-landing. It writes `<server dir>/.cargo/config.toml` with `jobs = 2` and, under
+`[env]`, `RUST_TEST_THREADS = "2"`, which cargo reads from the runner's clone upward, so a
+landing build uses 2 of the 12 cores and its tests 2 threads, leaving the shared machine room.
+A `.cargo/config.toml` inside a submission would take precedence
 over it, but that file lands only as a held change, because `.cargo/` is sensitive. The `tessel`
 copy is the one every worktree runs `init` from, so its git hooks point at a binary that stays.
 It never calls `gh` and never starts the server.
@@ -673,4 +674,5 @@ fresh worktree, not a fresh clone. The load was 9 at the start and rose to 75 du
 runner's `timeout_secs` is 720. The lander asks the runner for what is left of its 13-minute
 deadline less 5 s, about 775 s when the clone, fetch and rebase are quick, so 720 cuts first unless
 they take more than about 55 s. The gate's parser refuses `-j 2`, so the cap lives in
-`<server dir>/.cargo/config.toml` (`jobs = 6`) instead. D3 is accepted with that cap.
+`<server dir>/.cargo/config.toml` (`jobs = 6`) instead. D3 is accepted with that cap. Felix
+lowered it on 1 November to 2 jobs and 2 test threads, which `scripts/dogfood/setup.sh` writes.

@@ -51,7 +51,7 @@ for binary in tessel-server tessel; do
 	echo "copied $binary into $dir/bin"
 done
 
-printf '[build]\njobs = 6\n' >"$dir/.cargo/config.toml"
+printf '[build]\njobs = 2\n\n[env]\nRUST_TEST_THREADS = "2"\n' >"$dir/.cargo/config.toml"
 
 printf '[runner]\nuser = "%s"\ntimeout_secs = %s\n' "$(id -un)" "$runner_timeout_secs" \
 	>"$dir/tessel-runner.toml"

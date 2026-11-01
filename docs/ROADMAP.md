@@ -7,9 +7,11 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-01 01:20 UTC. Main at `8577cd5`. Felix lowered the landing build cap (D3) by
+**As of:** 2026-11-01 01:45 UTC. Main at `8577cd5`. Felix made ruleset step 3 at about 01:35
+UTC: ruleset 25345043 now also requires "Fast lane, simulator" (read back: its rules equal the
+prepared payload). Felix lowered the landing build cap (D3) by
 01:10 UTC: `<server dir>/.cargo/config.toml` now says `jobs = 2` and `RUST_TEST_THREADS = "2"`
-(checked). `scripts/dogfood/setup.sh` still writes `jobs = 6`, so a re-run of it puts the cap back.
+(checked); `scripts/dogfood/setup.sh` now writes the same, so a re-run keeps it.
 For the head branches of merged pull requests, the orchestrator wrote a script for Felix to run,
 `~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` (51 branches, each still at its merged
 pull request's head; the list beside it keeps the shas). Earlier, on 31 October, Felix renewed the
@@ -279,8 +281,8 @@ required checks, the repository admin role as bypass; always). Proven first on
 `tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
-**Waiting on Felix:** ruleset step 3, which the orchestrator tried and the permission classifier
-refused (STATE above; the tokens were renewed and the build cap lowered); whether CLAUDE.md
+**Waiting on Felix** (the tokens were renewed, the build cap lowered and ruleset step 3 made, STATE
+above): whether CLAUDE.md
 rule 1 should also name a never-logged live notice an older daemon can skip and stay correct as
 additive (invariant 13 since `f1ea1f6`); the plan's rule (d) (`docs/proposals/phase-1.md`), which
 says a build bumps `state_version` "only if the old binary can still read the new state", a case the
@@ -300,9 +302,9 @@ cannot see the flake (see its entry).
 **Next:** HOST-HARDENING-FOLLOWUPS (lane B; HEAD-ADOPTED-FOLLOWUPS has landed) and
 SUDO-GATE-FOLLOWUPS (lane B, merge path); then RESOLVE-RUNBOOK-NITS, RACE-TEXTS-SHARED,
 CLAIM-LEASE-LAPSE, REGRESSION-SEED-69962521-STALE, SIM-HEAD-UNREADABLE and CLIENT-1013-CAUSE; then
-P1-ONE-BATCH (it flips R20, an M5 done check). Felix makes ruleset step 3 ("Fast lane, simulator"
-required). Felix's Homebrew postgres trusts local connections on a world-writable socket; he closes
-it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections
+on a world-writable socket; he closes it before the accounts move.
+LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1176,7 +1178,7 @@ Lane A:
 - [x] **P1-CI-SIM** (#120, merged) — lane A. Code landed with the stack (`cc59a08`): seeds from
   `TESSEL_SIM_FIRST_SEED`, every failing seed printed with its rerun line (at most 20), kept seeds
   in `tests/simulator-regressions.txt` replayed first. The workflow, #120: 1,000 seeds per pull
-  request and push (2 min 4 s on a GitHub runner), 20,000 nightly. Ruleset step 3 is Felix's next.
+  request and push (2 min 4 s on a GitHub runner), 20,000 nightly. Ruleset step 3 made 1 November.
   Its first nightly full mutants found 61 missed mutants beyond the baseline, all in `src/sim/`
   (SIM-MUTANTS).
 - [x] **SIM-MUTANTS** (`dfceb8a`, landed by the server) — from #120's nightly. `.cargo/mutants.toml`
