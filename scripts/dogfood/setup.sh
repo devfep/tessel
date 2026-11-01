@@ -13,8 +13,9 @@
 # `tessel` on PATH, and copies both into <server dir>/bin: git's askpass hook is the server's own
 # current_exe, so it must run from a copy that a later cargo build cannot replace mid-landing, and
 # the docs run `tessel init` from the `tessel` copy so the git hooks it installs point at it.
-# <server dir>/.cargo/config.toml caps landing builds at 6 jobs, as cargo reads it upward from the
-# runner's clone; a submission's own .cargo/ is held as sensitive. Tokens are never printed.
+# <server dir>/.cargo/config.toml caps landing builds at 2 jobs and 2 test threads, as cargo reads
+# it upward from the runner's clone; a submission's own .cargo/ is held as sensitive. Tokens are
+# never printed.
 set -euo pipefail
 
 kid="2026-10"
@@ -51,7 +52,7 @@ for binary in tessel-server tessel; do
 	echo "copied $binary into $dir/bin"
 done
 
-printf '[build]\njobs = 6\n' >"$dir/.cargo/config.toml"
+printf '[build]\njobs = 2\n\n[env]\nRUST_TEST_THREADS = "2"\n' >"$dir/.cargo/config.toml"
 
 printf '[runner]\nuser = "%s"\ntimeout_secs = %s\n' "$(id -un)" "$runner_timeout_secs" \
 	>"$dir/tessel-runner.toml"

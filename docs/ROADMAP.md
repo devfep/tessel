@@ -7,19 +7,31 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 23:00 UTC. Main at `d6a66ad`. Felix renewed the agent tokens at 21:24 UTC
-(`setup.sh`; the server configuration is unchanged and `bin/` holds the same build). Then, through
-the server, the first three approved by the orchestrator on their vote or review and each followed
-by green CI on main: SUDO-STOP-RUN-RACE at 21:31 UTC as `b5a520d`..`80dba09` (claim 146; CI
-41243983794, the Adapter suite 41243983627 and Own users 41243983653, its first Linux evidence,
-passed on `80dba09`); HEAD-ADOPTED-FOLLOWUPS at 22:24 UTC as `6497952`..`eec53d1` (twelve commits,
-claim 147); SIM-R30-MODEL at 22:37 UTC as `98451f5`..`10e4030` (claim 150); and two follow-up rows
-at 22:50 UTC as `d6a66ad` (claim 151). Every landed commit has its note. HEAD-ADOPTED-FOLLOWUPS'
-vote: VOTE-1 "No" (a race stored waiting on the head and loaded on a port that reads no heads waited
-for good with its scopes held), VOTE-2 "No" (the clock test advanced the clock, so it did not prove
-"at once"), VOTE-3 "Yes with should-fixes"; four fix passes closed them, and each voter's last vote
-was a Yes (VOTE-1 "Yes with should-fixes" on `e4148d6`, VOTE-3 "Yes with should-fixes" on `23d23d9`,
-VOTE-2 a plain "Yes" on `0af278e`, the head landed;
+**As of:** 2026-11-01 01:45 UTC. Main at `8577cd5`. Felix made ruleset step 3 at about 01:35 UTC:
+ruleset 25345043 now also requires "Fast lane, simulator" (read back: its rules equal the prepared
+payload). Felix lowered the landing build cap (D3) by 01:10 UTC: `<server dir>/.cargo/config.toml`
+now says `jobs = 2` and `RUST_TEST_THREADS = "2"` (checked); `scripts/dogfood/setup.sh` and
+`install.sh` now write the same, so a re-run keeps it. No landing at 2 jobs is timed yet against the
+runner's 720 s budget; the orchestrator times the next one. These changes were claim 153
+(`d7957f9`..`19b0d71`), held for sensitive paths; `orchestrator` is the server's only reviewer and
+may not decide its own submission, so they land by pull request (`docs/dogfood.md`, its
+introduction) and claim 153 stays held, its five files claimed, until another reviewer decides it.
+For the head branches of merged pull
+requests, the orchestrator wrote a script for Felix to run,
+`~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` (51 branches, each still at its merged
+pull request's head; the list beside it keeps the shas). Earlier, on 31 October, Felix renewed the
+agent tokens at 21:24 UTC (`setup.sh`; the server configuration is unchanged and `bin/` holds the
+same build). Then, through the server, the first three approved by the orchestrator on their vote or
+review and each followed by green CI on main: SUDO-STOP-RUN-RACE at 21:31 UTC as
+`b5a520d`..`80dba09` (claim 146; CI 41243983794, the Adapter suite 41243983627 and Own users
+41243983653, its first Linux evidence, passed on `80dba09`); HEAD-ADOPTED-FOLLOWUPS at 22:24 UTC as
+`6497952`..`eec53d1` (twelve commits, claim 147); SIM-R30-MODEL at 22:37 UTC as `98451f5`..`10e4030`
+(claim 150); and two follow-up rows at 22:50 UTC as `d6a66ad` (claim 151). Every landed commit has
+its note. HEAD-ADOPTED-FOLLOWUPS' vote: VOTE-1 "No" (a race stored waiting on the head and loaded on
+a port that reads no heads waited for good with its scopes held), VOTE-2 "No" (the clock test
+advanced the clock, so it did not prove "at once"), VOTE-3 "Yes with should-fixes"; four fix passes
+closed them, and each voter's last vote was a Yes (VOTE-1 "Yes with should-fixes" on `e4148d6`,
+VOTE-3 "Yes with should-fixes" on `23d23d9`, VOTE-2 a plain "Yes" on `0af278e`, the head landed;
 `~/tessel-orch-notes/2026-10-31/vote-head-adopted-followups/`). SIM-R30-MODEL: Opus REVIEW-1 "With
 changes" (its new traffic arm changed the seeded runs, so regression seed 2796343632 no longer
 caught its bug); fix pass 1 dropped the arm, and the re-check "Yes" found the transcripts of the
@@ -32,40 +44,38 @@ claim, since one worktree may hold several claims. Before, at 19:51 UTC, the STA
 landed (claim 149). At 19:35 UTC main was at `f16f9ed` (the STATE commit landed at 18:19 UTC, claim
 148; CI 41228804696 and the Adapter suite 41228804721 passed). The agent tokens expired at 19:25:14
 UTC (`server.log`: "token is expired"): every new connection is refused, so `tessel review`, which
-opens one, cannot approve a held submission until Felix renews them (`docs/dogfood.md`, "Tokens
-last 7 days"); claims still go through the daemons' open connections.
-SUDO-STOP-RUN-RACE (claim 146, `bf844ba`, `7259939`,
-`97c825b`; lane gate 2472 green): Opus REVIEW-1 "With changes" (the red test was timed; the grace
-close logged nothing; a doc said "at most `EXIT_GRACE`"; an untested kill after `sudo` exited), fix
-pass 1 `97c825b`, re-check "Yes"; its submit was held for `tessel-server/src/landing/` (sensitive),
-so it went to a vote (`~/tessel-orch-notes/2026-10-31/vote-sudo-stop-run/`), 3-0 "Yes with
-should-fixes", no must-fix; the should-fixes are SUDO-GATE-FOLLOWUPS (below). The orchestrator's
-`tessel review --approve 146` at 19:25 UTC was refused (401, the expired token), so it is still
-held. HEAD-ADOPTED-FOLLOWUPS (claim 147, `fcd3eca`..`23d23d9`; gate 2477 green; seeds 69962521,
-2796343632 and a 300-seed sweep green) went to a vote
-(`~/tessel-orch-notes/2026-10-31/vote-head-adopted-followups/`): VOTE-1 "No (must-fix)" (a race
-stored waiting on the head and loaded on a port that reads no heads waits for good with its scopes
-held, where main ends it after about 130 s), VOTE-3 "Yes with should-fixes" (the same case first),
-VOTE-2 not in yet; fix pass 1 (`lane-a/head-adopted-followups/FIX-1.md`) runs, and needs no token.
-At dispatch the orchestrator classed SUDO-STOP-RUN-RACE as review-only, which was wrong: every
-change under a sensitive path is merge path. Before that, the STATE commits `bc0a9cb`..`20cd015`
-landed at 12:33 UTC (claim 145). At 17:55 UTC
-the orchestrator dispatched HEAD-ADOPTED-FOLLOWUPS (lane A, claim 147, merge path: a vote
-follows) and SUDO-STOP-RUN-RACE (lane B, claim 146, Opus review), both from `20cd015`
+opens one, cannot approve a held submission until Felix renews them (`docs/dogfood.md`, "Tokens last
+7 days"); claims still go through the daemons' open connections. SUDO-STOP-RUN-RACE (claim 146,
+`bf844ba`, `7259939`, `97c825b`; lane gate 2472 green): Opus REVIEW-1 "With changes" (the red test
+was timed; the grace close logged nothing; a doc said "at most `EXIT_GRACE`"; an untested kill after
+`sudo` exited), fix pass 1 `97c825b`, re-check "Yes"; its submit was held for
+`tessel-server/src/landing/` (sensitive), so it went to a vote
+(`~/tessel-orch-notes/2026-10-31/vote-sudo-stop-run/`), 3-0 "Yes with should-fixes", no must-fix;
+the should-fixes are SUDO-GATE-FOLLOWUPS (below). The orchestrator's `tessel review --approve 146`
+at 19:25 UTC was refused (401, the expired token), so it is still held. HEAD-ADOPTED-FOLLOWUPS
+(claim 147, `fcd3eca`..`23d23d9`; gate 2477 green; seeds 69962521, 2796343632 and a 300-seed sweep
+green) went to a vote (`~/tessel-orch-notes/2026-10-31/vote-head-adopted-followups/`): VOTE-1 "No
+(must-fix)" (a race stored waiting on the head and loaded on a port that reads no heads waits for
+good with its scopes held, where main ends it after about 130 s), VOTE-3 "Yes with should-fixes"
+(the same case first), VOTE-2 not in yet; fix pass 1 (`lane-a/head-adopted-followups/FIX-1.md`)
+runs, and needs no token. At dispatch the orchestrator classed SUDO-STOP-RUN-RACE as review-only,
+which was wrong: every change under a sensitive path is merge path. Before that, the STATE commits
+`bc0a9cb`..`20cd015` landed at 12:33 UTC (claim 145). At 17:55 UTC the orchestrator dispatched
+HEAD-ADOPTED-FOLLOWUPS (lane A, claim 147, merge path: a vote follows) and SUDO-STOP-RUN-RACE (lane
+B, claim 146, Opus review), both from `20cd015`
 (`~/tessel-orch-notes/2026-10-31/lane-a/head-adopted-followups/`, `lane-b/sudo-stop-run/`).
 SIM-R30-MODEL, which Felix asked to start with them, goes to lane B, the first lane free (its row
-said lane A); it waited because one agent cannot safely run two worktrees at once (the
-shell sends a `Notify` to every socket bound to the agent, `src/shell.rs:83-84`, and the core never
-blocks an agent's claim on its own locks, `blocked_by` in `src/coordinator.rs`). Running it under
-the orchestrator's identity would mean approving its own hold. Two P1-SIM-MERGE REVIEW-3 nits moved
-from HEAD-ADOPTED-FOLLOWUPS to SIM-R30-MODEL, which holds `src/sim` (both rows below). Before that,
+said lane A); it waited because one agent cannot safely run two worktrees at once (the shell sends a
+`Notify` to every socket bound to the agent, `src/shell.rs:83-84`, and the core never blocks an
+agent's claim on its own locks, `blocked_by` in `src/coordinator.rs`). Running it under the
+orchestrator's identity would mean approving its own hold. Two P1-SIM-MERGE REVIEW-3 nits moved from
+HEAD-ADOPTED-FOLLOWUPS to SIM-R30-MODEL, which holds `src/sim` (both rows below). Before that,
 RUNNER-TIMING-FLAKES landed through the server at 12:15 UTC as `114bccd`..`cd8a718` (claim 143;
-tests only; Opus REVIEW-1 "No": the sudo
-test's 300 ms cancel timer raced the stub's pid write and three guards had become vacuous (two sudo
-tests and `landing.rs`'s deadline test); fix pass 1 drives the cancels by events, runs the stub's
-child for 600 s, asserts the run was cut short, and holds the landing test's runner 120 s with an
-answered-before-finished check; the re-check "Yes"; CI (41200314710), the Adapter suite
-(41200314669) and Own users (41200314679) passed on `cd8a718`;
+tests only; Opus REVIEW-1 "No": the sudo test's 300 ms cancel timer raced the stub's pid write and
+three guards had become vacuous (two sudo tests and `landing.rs`'s deadline test); fix pass 1 drives
+the cancels by events, runs the stub's child for 600 s, asserts the run was cut short, and holds the
+landing test's runner 120 s with an answered-before-finished check; the re-check "Yes"; CI
+(41200314710), the Adapter suite (41200314669) and Own users (41200314679) passed on `cd8a718`;
 `~/tessel-orch-notes/2026-10-31/lane-a/runner-flakes/`). At 10:48 UTC CORE-LATE-LAND landed as
 `8707f38`..`01869ca` (ten commits on `6dccb3e`; claim 140, merge path), building Felix's option B:
 its first vote went 3-0 "No" (a doubt was fenced on the verification baseline, not on its own
@@ -216,15 +226,14 @@ upgrade on. The submission held a merge of main, so the daemon copied no notes; 
 copied all eleven by subject. Before this, main was `93a2f6a` (STATE). P1-CORE-STAGED-LANDING
 (`05b6ec1`..`55528c9`, 28 October 18:23 UTC) was voted the same way (`vote-dab6a22/`). The daemon
 copying no notes for a submission with a merge commit is a gap CLAUDE.md's dogfooding paragraph does
-not mention.
-Agent tokens are valid to 31 October (set when Felix issued them); Felix renews them. Lanes cannot
-push (Felix's `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each lane commit to
-a new branch of its fork; the reviewer reads it there; the orchestrator runs `tessel submit` in the
-lane's worktree and decides holds as `orchestrator`. Two lanes ran at once four times by 25 October;
-the coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and lane B
-`src/coordinator/verifying.rs` (three times), each while the other lane held it, and the denied lane
-claimed the file after the holder landed or left it to a follow-up.
-In flight (votes and briefs in `~/tessel-orch-notes/2026-10-30/` and `2026-10-31/`):
+not mention. Agent tokens are valid to 31 October (set when Felix issued them); Felix renews them.
+Lanes cannot push (Felix's `~/.claude/hooks/block-lane-push.sh`), so the orchestrator pushes each
+lane commit to a new branch of its fork; the reviewer reads it there; the orchestrator runs `tessel
+submit` in the lane's worktree and decides holds as `orchestrator`. Two lanes ran at once four times
+by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configuration.md` (twice) and
+lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
+denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
+briefs in `~/tessel-orch-notes/2026-10-30/` and `2026-10-31/`):
 - None: both lanes are idle; the next dispatches are in Next.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
@@ -273,20 +282,20 @@ required checks, the repository admin role as bypass; always). Proven first on
 `tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
-**Waiting on Felix:** today, 31 October, renewing the agent tokens (when they lapse, lanes cannot
-claim or submit); lowering the landing build cap from 6 to 2 jobs (D3) and ruleset step 3, both of
-which the orchestrator tried and the permission classifier refused (STATE above); whether CLAUDE.md
-rule 1 should also name a never-logged live notice an older daemon can skip and stay correct as
-additive (invariant 13 since `f1ea1f6`); the plan's rule (d) (`docs/proposals/phase-1.md`), which
-says a build bumps `state_version` "only if the old binary can still read the new state", a case the
-store's `refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
-`tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
-P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
-lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
-itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
-`tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged pull
-requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word). Note:
-commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
+**Waiting on Felix** (the tokens were renewed, the build cap lowered and ruleset step 3 made, STATE
+above): whether CLAUDE.md rule 1 should also name a never-logged live notice an older daemon can
+skip and stay correct as additive (invariant 13 since `f1ea1f6`); the plan's rule (d)
+(`docs/proposals/phase-1.md`), which says a build bumps `state_version` "only if the old binary can
+still read the new state", a case the store's `refuse_unknown` rules out (#125 follows the code); a
+GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the
+dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the
+sandbox trunk now that lanes push branches; the suggested patch to his push hook that exempts only a
+URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API
+token in `tessel-steward/.dev.vars` revoked at M6's deletion at the latest (no workflow and no
+repository secret uses Cloudflare; the token is in his Cloudflare account, so he revokes it);
+running `delete-merged-branches.sh` (STATE above; the orchestrator deletes nothing on the remote); a
+second reviewer in the server's `reviewers` (only `orchestrator` now), to decide claim 153.
+Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
@@ -294,9 +303,9 @@ cannot see the flake (see its entry).
 **Next:** HOST-HARDENING-FOLLOWUPS (lane B; HEAD-ADOPTED-FOLLOWUPS has landed) and
 SUDO-GATE-FOLLOWUPS (lane B, merge path); then RESOLVE-RUNBOOK-NITS, RACE-TEXTS-SHARED,
 CLAIM-LEASE-LAPSE, REGRESSION-SEED-69962521-STALE, SIM-HEAD-UNREADABLE and CLIENT-1013-CAUSE; then
-P1-ONE-BATCH (it flips R20, an M5 done check). Felix makes ruleset step 3 ("Fast lane, simulator"
-required). Felix's Homebrew postgres trusts local connections on a world-writable socket; he closes
-it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections
+on a world-writable socket; he closes it before the accounts move.
+LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1170,7 +1179,7 @@ Lane A:
 - [x] **P1-CI-SIM** (#120, merged) — lane A. Code landed with the stack (`cc59a08`): seeds from
   `TESSEL_SIM_FIRST_SEED`, every failing seed printed with its rerun line (at most 20), kept seeds
   in `tests/simulator-regressions.txt` replayed first. The workflow, #120: 1,000 seeds per pull
-  request and push (2 min 4 s on a GitHub runner), 20,000 nightly. Ruleset step 3 is Felix's next.
+  request and push (2 min 4 s on a GitHub runner), 20,000 nightly. Ruleset step 3 made 1 November.
   Its first nightly full mutants found 61 missed mutants beyond the baseline, all in `src/sim/`
   (SIM-MUTANTS).
 - [x] **SIM-MUTANTS** (`dfceb8a`, landed by the server) — from #120's nightly. `.cargo/mutants.toml`

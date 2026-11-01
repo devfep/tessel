@@ -279,10 +279,11 @@ PLIST
 install_cargo_config() {
 	local path=/var/tessel/cargo/config.toml
 	if [ "$dry" = 1 ]; then
-		echo "would write $path as $server (0644): [build] jobs = 6"
+		echo "would write $path as $server (0644): [build] jobs = 2, [env] RUST_TEST_THREADS = 2"
 		return
 	fi
-	printf '[build]\njobs = 6\n' | as_server /usr/bin/tee "$path" >/dev/null
+	printf '[build]\njobs = 2\n\n[env]\nRUST_TEST_THREADS = "2"\n' |
+		as_server /usr/bin/tee "$path" >/dev/null
 	as_server /bin/chmod 0644 "$path"
 }
 
