@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-01 03:31 UTC. Main at `94414cf` (#126). Felix made ruleset step 3 at about
+**As of:** 2026-11-01 13:12 UTC. Main at `d51c9f5` (#127). Felix made ruleset step 3 at about
 01:35 UTC: ruleset 25345043 now also requires "Fast lane, simulator" (read back: its rules equal the
 prepared payload). Felix lowered the landing build cap (D3) by 01:10 UTC: `<server
 dir>/.cargo/config.toml` now says `jobs = 2` and `RUST_TEST_THREADS = "2"` (checked);
@@ -23,7 +23,11 @@ moves it, so the CLI measures the orchestrator's new work from `8577cd5` and cou
 files in it: this STATE commit went by pull request too (a daemon started at `94414cf` measures
 from there). Felix ran `~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` at about 03:30
 UTC: the 51 head branches of merged pull requests deleted, none skipped (the list beside it keeps
-the shas); `main` and `build-cap-2` (#126's head, merged) are left. Earlier, on 31 October,
+the shas); Felix then deleted `build-cap-2` and `state-1101-1` (#126 and #127, merged), so only
+`main` is left. Felix deleted the Cloudflare account token `tessel-steward-queues` (Queues read and
+write, the `CLOUDFLARE_API_TOKEN` of `tessel-steward/.dev.vars`, last used in early October) on 1
+November; Cloudflare refuses it since, and the orchestrator removed its line from the file. Earlier,
+on 31 October,
 Felix renewed the agent tokens at 21:24 UTC (`setup.sh`; the server configuration is unchanged and
 `bin/` holds the
 same build). Then, through the server, the first three approved by the orchestrator on their vote or
@@ -295,11 +299,8 @@ still read the new state", a case the store's `refuse_unknown` rules out (#125 f
 GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the
 dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the
 sandbox trunk now that lanes push branches; the suggested patch to his push hook that exempts only a
-URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API
-token in `tessel-steward/.dev.vars` revoked at M6's deletion at the latest (no workflow and no
-repository secret uses Cloudflare; the token is in his Cloudflare account, so he revokes it);
-deleting the merged branch `build-cap-2` (the orchestrator deletes nothing on the remote); a second
-reviewer in the server's `reviewers` (only `orchestrator` now), to decide claim 153.
+URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); a second reviewer in
+the server's `reviewers` (only `orchestrator` now), to decide claim 153.
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
