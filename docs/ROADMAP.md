@@ -17,12 +17,13 @@ changes were first claim 153 (`d7957f9`..`19b0d71`), held for sensitive paths; `
 the server's only reviewer and may not decide its own submission, so they landed by pull request
 #126 (`docs/dogfood.md`, its introduction; checks and main CI green, Opus review "With changes",
 re-check Yes on `127603f`), and claim 153 stays held, its five files claimed, until another
-reviewer decides it. Until the coordinator's head moves past `8577cd5` (a landing through the
-server does that), the CLI measures new work against `8577cd5`, so it also counts #126's five
-files: this STATE commit went by pull request too. Felix ran
-`~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` at about 03:30 UTC: the 51 head branches
-of merged pull requests deleted, none skipped (the list beside it keeps the shas); `main` and
-`build-cap-2` (#126's head, merged) are left. Earlier, on 31 October,
+reviewer decides it. The orchestrator's daemon keeps its start commit `8577cd5` while it holds a
+claim, and the coordinator's head is `8577cd5` until a landing or a head read after a trunk poke
+moves it, so the CLI measures the orchestrator's new work from `8577cd5` and counts #126's five
+files in it: this STATE commit went by pull request too (a daemon started at `94414cf` measures
+from there). Felix ran `~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` at about 03:30
+UTC: the 51 head branches of merged pull requests deleted, none skipped (the list beside it keeps
+the shas); `main` and `build-cap-2` (#126's head, merged) are left. Earlier, on 31 October,
 Felix renewed the agent tokens at 21:24 UTC (`setup.sh`; the server configuration is unchanged and
 `bin/` holds the
 same build). Then, through the server, the first three approved by the orchestrator on their vote or
@@ -281,7 +282,7 @@ from Felix's push hook. Claude Code deny rules on the server directory were not 
 the orchestrator's subagents and share its permissions; the orchestrator runs `tessel init` in
 each worktree before handing it over instead.
 **Ruleset split (24 October):** "main: no rewrite" (25786281: deletion, non-fast-forward, no
-bypass; `current_user_can_bypass` never) and "main: CI required" (25345043: pull request and the 7
+bypass; `current_user_can_bypass` never) and "main: CI required" (25345043: pull request and the 8
 required checks, the repository admin role as bypass; always). Proven first on
 `tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
@@ -297,8 +298,8 @@ sandbox trunk now that lanes push branches; the suggested patch to his push hook
 URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API
 token in `tessel-steward/.dev.vars` revoked at M6's deletion at the latest (no workflow and no
 repository secret uses Cloudflare; the token is in his Cloudflare account, so he revokes it);
-the merged branch `build-cap-2` (the orchestrator deletes nothing on the remote); a
-second reviewer in the server's `reviewers` (only `orchestrator` now), to decide claim 153.
+deleting the merged branch `build-cap-2` (the orchestrator deletes nothing on the remote); a second
+reviewer in the server's `reviewers` (only `orchestrator` now), to decide claim 153.
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
