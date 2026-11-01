@@ -24,7 +24,10 @@ files in it: this STATE commit went by pull request too (a daemon started at `94
 from there). Felix ran `~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` at about 03:30
 UTC: the 51 head branches of merged pull requests deleted, none skipped (the list beside it keeps
 the shas); Felix then deleted `build-cap-2` and `state-1101-1` (#126 and #127, merged), so only
-`main` is left. Earlier, on 31 October,
+`main` is left. Felix deleted the Cloudflare account token `tessel-steward-queues` (Queues read and
+write, the `CLOUDFLARE_API_TOKEN` of `tessel-steward/.dev.vars`, last used in early October) on 1
+November; Cloudflare refuses it since, and the orchestrator removed its line from the file. Earlier,
+on 31 October,
 Felix renewed the agent tokens at 21:24 UTC (`setup.sh`; the server configuration is unchanged and
 `bin/` holds the
 same build). Then, through the server, the first three approved by the orchestrator on their vote or
@@ -296,10 +299,8 @@ still read the new state", a case the store's `refuse_unknown` rules out (#125 f
 GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the
 dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the
 sandbox trunk now that lanes push branches; the suggested patch to his push hook that exempts only a
-URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API
-token in `tessel-steward/.dev.vars` revoked at M6's deletion at the latest (no workflow and no
-repository secret uses Cloudflare; the token is in his Cloudflare account, so he revokes it); a
-second reviewer in the server's `reviewers` (only `orchestrator` now), to decide claim 153.
+URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); a second reviewer in
+the server's `reviewers` (only `orchestrator` now), to decide claim 153.
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
