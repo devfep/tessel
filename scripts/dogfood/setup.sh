@@ -13,8 +13,9 @@
 # `tessel` on PATH, and copies both into <server dir>/bin: git's askpass hook is the server's own
 # current_exe, so it must run from a copy that a later cargo build cannot replace mid-landing, and
 # the docs run `tessel init` from the `tessel` copy so the git hooks it installs point at it.
-# <server dir>/.cargo/config.toml caps landing builds at 6 jobs, as cargo reads it upward from the
-# runner's clone; a submission's own .cargo/ is held as sensitive. Tokens are never printed.
+# <server dir>/.cargo/config.toml caps landing builds at 2 jobs and 2 test threads, as cargo reads
+# it upward from the runner's clone; a submission's own .cargo/ is held as sensitive. Tokens are
+# never printed.
 set -euo pipefail
 
 kid="2026-10"

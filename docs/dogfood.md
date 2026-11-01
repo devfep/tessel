@@ -65,7 +65,8 @@ each valid 7 days. It copies `tessel-server` and `tessel` into `<server dir>/bin
 because git's askpass hook is the server's own executable and a later `cargo build` must not
 replace it mid-landing. It writes `<server dir>/.cargo/config.toml` with `jobs = 2` and, under
 `[env]`, `RUST_TEST_THREADS = "2"`, which cargo reads from the runner's clone upward, so a
-landing build uses 2 of the 12 cores and its tests 2 threads, leaving the shared machine room.
+landing build runs 2 compile jobs and each test binary 2 test threads. Processes the tests start
+(the CLI and swarm tests run real binaries) are not capped.
 A `.cargo/config.toml` inside a submission would take precedence
 over it, but that file lands only as a held change, because `.cargo/` is sensitive. The `tessel`
 copy is the one every worktree runs `init` from, so its git hooks point at a binary that stays.
@@ -676,3 +677,4 @@ deadline less 5 s, about 775 s when the clone, fetch and rebase are quick, so 72
 they take more than about 55 s. The gate's parser refuses `-j 2`, so the cap lives in
 `<server dir>/.cargo/config.toml` (`jobs = 6`) instead. D3 is accepted with that cap. Felix
 lowered it on 1 November to 2 jobs and 2 test threads, which `scripts/dogfood/setup.sh` writes.
+The 720 s budget above was measured without a cap; a cold landing at 2 jobs is not timed yet.
