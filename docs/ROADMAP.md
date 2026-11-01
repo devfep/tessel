@@ -7,7 +7,13 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-10-31 23:00 UTC. Main at `d6a66ad`. Felix renewed the agent tokens at 21:24 UTC
+**As of:** 2026-11-01 01:20 UTC. Main at `8577cd5`. Felix lowered the landing build cap (D3) by
+01:10 UTC: `<server dir>/.cargo/config.toml` now says `jobs = 2` and `RUST_TEST_THREADS = "2"`
+(checked). `scripts/dogfood/setup.sh` still writes `jobs = 6`, so a re-run of it puts the cap back.
+For the head branches of merged pull requests, the orchestrator wrote a script for Felix to run,
+`~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` (51 branches, each still at its merged
+pull request's head; the list beside it keeps the shas). Earlier, on 31 October, Felix renewed the
+agent tokens at 21:24 UTC
 (`setup.sh`; the server configuration is unchanged and `bin/` holds the same build). Then, through
 the server, the first three approved by the orchestrator on their vote or review and each followed
 by green CI on main: SUDO-STOP-RUN-RACE at 21:31 UTC as `b5a520d`..`80dba09` (claim 146; CI
@@ -273,9 +279,8 @@ required checks, the repository admin role as bypass; always). Proven first on
 `tessel-sandbox/m4-trunk` (public): the trial server landed `8c878d3` through the bypass, and
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
-**Waiting on Felix:** today, 31 October, renewing the agent tokens (when they lapse, lanes cannot
-claim or submit); lowering the landing build cap from 6 to 2 jobs (D3) and ruleset step 3, both of
-which the orchestrator tried and the permission classifier refused (STATE above); whether CLAUDE.md
+**Waiting on Felix:** ruleset step 3, which the orchestrator tried and the permission classifier
+refused (STATE above; the tokens were renewed and the build cap lowered); whether CLAUDE.md
 rule 1 should also name a never-logged live notice an older daemon can skip and stay correct as
 additive (invariant 13 since `f1ea1f6`); the plan's rule (d) (`docs/proposals/phase-1.md`), which
 says a build bumps `state_version` "only if the old binary can still read the new state", a case the
@@ -284,8 +289,9 @@ store's `refuse_unknown` rules out (#125 follows the code); a GitHub token that 
 P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
 lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
 itself (`~/tessel-dogfood/push-hook-resolved-url.patch`); the Cloudflare API token in
-`tessel-steward/.dev.vars` revoked at M6's deletion at the latest; the head branches of merged pull
-requests on `devfep/tessel` (the orchestrator deletes nothing on the remote without his word). Note:
+`tessel-steward/.dev.vars` revoked at M6's deletion at the latest (no workflow and no repository
+secret uses Cloudflare; the token is in his Cloudflare account, so he revokes it); running
+`delete-merged-branches.sh` (STATE above; the orchestrator deletes nothing on the remote). Note:
 commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
