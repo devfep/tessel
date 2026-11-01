@@ -20,8 +20,8 @@ re-check Yes on `127603f`), and claim 153 stays held, its five files claimed, un
 reviewer decides it. Until the coordinator's head moves past `8577cd5` (a landing through the
 server does that), the CLI measures new work against `8577cd5`, so it also counts #126's five
 files: this STATE commit went by pull request too. Felix ran
-`~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` at about 03:30 UTC: the 51 head branches of merged pull requests deleted, none skipped (the list beside it
-keeps the shas); `main` and `build-cap-2` (#126's head, merged) are left. Earlier, on 31 October,
+`~/tessel-orch-notes/2026-11-01/delete-merged-branches.sh` at about 03:30 UTC: the 51 head
+branches of merged pull requests deleted, none skipped (the list beside it keeps the shas); `main` and `build-cap-2` (#126's head, merged) are left. Earlier, on 31 October,
 Felix renewed the agent tokens at 21:24 UTC (`setup.sh`; the server configuration is unchanged and
 `bin/` holds the
 same build). Then, through the server, the first three approved by the orchestrator on their vote or
