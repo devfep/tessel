@@ -190,24 +190,32 @@ impl SudoRunner {
         let stdout = read_capped(child.stdout.take(), MAX_COMMAND_BYTES);
         let stderr = read_capped(child.stderr.take(), MAX_COMMAND_BYTES);
         let waited = Self::wait_bounded(&mut || child.try_wait(), self.settings.settle);
-        let timed_out = || {
-            let secs = self.settings.settle.as_secs();
-            failed(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("no exit within {secs} s"),
-            ))
+        let status = match waited {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                reap(child);
+                let secs = self.settings.settle.as_secs();
+                let why = format!("no exit within {secs} s");
+                return Err(failed(io::Error::new(io::ErrorKind::TimedOut, why)));
+            }
+            Err(error) => {
+                reap(child);
+                return Err(failed(error));
+            }
         };
-        let Some(status) = waited.map_err(failed)? else {
-            child.kill().ok();
-            thread::spawn(move || child.wait().ok());
-            return Err(timed_out());
-        };
-        let stdout = stdout.recv_timeout(REPLY_GRACE).map_err(|_| timed_out())?;
-        let stderr = stderr.recv_timeout(REPLY_GRACE).map_err(|_| timed_out())?;
+        let collect =
+            |stream: mpsc::Receiver<io::Result<Vec<u8>>>| match stream.recv_timeout(REPLY_GRACE) {
+                Ok(read) => read.map_err(failed),
+                Err(_) => {
+                    let secs = REPLY_GRACE.as_secs();
+                    let why = format!("exited, but its output did not end within {secs} s");
+                    Err(failed(io::Error::new(io::ErrorKind::TimedOut, why)))
+                }
+            };
         Ok(Output {
             status,
-            stdout,
-            stderr,
+            stdout: collect(stdout)?,
+            stderr: collect(stderr)?,
         })
     }
 
@@ -279,8 +287,10 @@ impl SudoRunner {
     /// `sudo` goes on to start the runner, so the kill is repeated until `sudo` is gone. A kill
     /// that fails, a wait that cannot see `sudo` exit, or a `sudo` still there after the grace,
     /// closes the gate.
-    fn stop_run(&self, child: &mut Child) {
-        self.stop_polling(&mut || child.try_wait());
+    fn stop_run(&self, mut child: Child) {
+        if !self.stop_polling(&mut || child.try_wait()) {
+            reap(child);
+        }
     }
 
     /// Closes the gate for good: every line that does says what failed, whose account it is and
@@ -293,28 +303,29 @@ impl SudoRunner {
         self.closed.store(true, Ordering::SeqCst);
     }
 
-    fn stop_polling(&self, poll: Poll<'_>) {
+    /// True when `sudo` was seen to exit; false when the gate was closed instead.
+    fn stop_polling(&self, poll: Poll<'_>) -> bool {
         let end = Instant::now() + EXIT_GRACE;
         loop {
             if let Err(error) = self.kill_all() {
                 self.close_gate(&format!("cannot stop the account's processes: {error}"));
-                return;
+                return false;
             }
             let left = end
                 .saturating_duration_since(Instant::now())
                 .min(KILL_ROUND);
             match Self::wait_bounded(poll, left) {
-                Ok(Some(_)) => return,
+                Ok(Some(_)) => return true,
                 Ok(None) => {}
                 Err(error) => {
                     self.close_gate(&format!("cannot tell whether sudo has exited: {error}"));
-                    return;
+                    return false;
                 }
             }
             if Instant::now() >= end {
                 let secs = EXIT_GRACE.as_secs();
                 self.close_gate(&format!("sudo did not exit within {secs} s of the kills"));
-                return;
+                return false;
             }
         }
     }
@@ -352,7 +363,7 @@ impl SudoRunner {
                 Ok(Some(status)) => break status,
                 Ok(None) => {}
                 Err(error) => {
-                    self.stop_run(&mut child);
+                    self.stop_run(child);
                     return Err(RunnerError::Unsupervised {
                         what: "wait",
                         kind: error.kind(),
@@ -361,14 +372,16 @@ impl SudoRunner {
             }
             if cancelled() {
                 // The account first, then the wait: sudo exits only once its command is dead.
-                self.stop_run(&mut child);
+                self.stop_run(child);
                 return Err(unsupervised("cancelled"));
             }
             thread::sleep(RUN_POLL);
         };
         writer.join().ok();
         let bytes = reply.recv_timeout(REPLY_GRACE).unwrap_or_default();
-        let stderr = said.recv_timeout(REPLY_GRACE).unwrap_or_default();
+        // The stderr is only logged, so a read that failed is logged as empty.
+        let stderr = said.recv_timeout(REPLY_GRACE).ok().and_then(Result::ok);
+        let stderr = stderr.unwrap_or_default();
         match status.code() {
             Some(0) if bytes.len() <= MAX_REPLY_BYTES => serde_json::from_slice(&bytes)
                 .map(bound)
@@ -421,15 +434,27 @@ fn whole_reply(stdout: Option<std::process::ChildStdout>) -> mpsc::Receiver<Vec<
     receiver
 }
 
-/// A stream to its end or to `limit` bytes, whichever comes first, on a thread.
-fn read_capped<R: Read + Send + 'static>(stream: Option<R>, limit: u64) -> mpsc::Receiver<Vec<u8>> {
+/// Ends a child the server will not wait for: the kill may be refused (`sudo` is root's), and a
+/// thread reaps it whenever it does exit, so that it never stays a zombie.
+fn reap(mut child: Child) {
+    child.kill().ok();
+    thread::spawn(move || child.wait().ok());
+}
+
+/// A stream to its end or to `limit` bytes, whichever comes first, on a thread. A read that
+/// fails is sent as the error, never as the bytes before it.
+fn read_capped<R: Read + Send + 'static>(
+    stream: Option<R>,
+    limit: u64,
+) -> mpsc::Receiver<io::Result<Vec<u8>>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        if let Some(stream) = stream {
-            stream.take(limit).read_to_end(&mut bytes).ok();
-        }
-        sender.send(bytes).ok();
+        let read = match stream {
+            Some(stream) => stream.take(limit).read_to_end(&mut bytes).map(|_| bytes),
+            None => Ok(bytes),
+        };
+        sender.send(read).ok();
     });
     receiver
 }
@@ -599,6 +624,27 @@ mod tests {
             text.contains("no more runs as _tessel-runner until a restart"),
             "{text}"
         );
+    }
+
+    struct FailingRead;
+
+    impl Read for FailingRead {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("the pipe broke"))
+        }
+    }
+
+    #[test]
+    fn a_read_that_fails_is_an_error_and_not_the_bytes_before_it() {
+        let failed = read_capped(Some(FailingRead), 10).recv().unwrap();
+        assert!(failed.is_err());
+        let read = read_capped(Some(&b"123 456"[..]), 3).recv().unwrap();
+        assert_eq!(read.unwrap(), b"123");
+        assert!(read_capped(None::<&[u8]>, 3)
+            .recv()
+            .unwrap()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
