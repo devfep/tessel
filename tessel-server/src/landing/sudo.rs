@@ -57,6 +57,9 @@ const KILL_ROUND: Duration = Duration::from_secs(1);
 const CLOSED: u32 = 0o700;
 const OPEN_TO_GROUP: u32 = 0o750;
 
+/// A child's `try_wait`, as the waits poll it.
+type Poll<'a> = &'a mut dyn FnMut() -> io::Result<Option<ExitStatus>>;
+
 /// Where the programs are, and who the runner is. Every path is absolute in production, because
 /// the sudoers rule pins them.
 #[derive(Debug, Clone)]
@@ -222,11 +225,11 @@ impl SudoRunner {
         fs::set_permissions(dir, fs::Permissions::from_mode(mode))
     }
 
-    /// Waits for `child` to exit for at most `grace`.
-    fn wait_bounded(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
+    /// Polls for an exit, `poll` being the child's `try_wait`, for at most `grace`.
+    fn wait_bounded(poll: Poll<'_>, grace: Duration) -> Option<ExitStatus> {
         let end = Instant::now() + grace;
         loop {
-            match child.try_wait() {
+            match poll() {
                 Ok(Some(status)) => return Some(status),
                 Ok(None) if Instant::now() < end => thread::sleep(RUN_POLL),
                 Ok(None) | Err(_) => return None,
@@ -239,6 +242,10 @@ impl SudoRunner {
     /// `sudo` goes on to start the runner, so the kill is repeated until `sudo` is gone. A kill
     /// that fails, or a `sudo` still there after the grace, closes the gate.
     fn stop_run(&self, child: &mut Child) {
+        self.stop_polling(&mut || child.try_wait());
+    }
+
+    fn stop_polling(&self, poll: Poll<'_>) {
         let end = Instant::now() + EXIT_GRACE;
         loop {
             if let Err(error) = self.kill_all() {
@@ -249,7 +256,7 @@ impl SudoRunner {
             let left = end
                 .saturating_duration_since(Instant::now())
                 .min(KILL_ROUND);
-            if Self::wait_bounded(child, left).is_some() {
+            if Self::wait_bounded(poll, left).is_some() {
                 return;
             }
             if Instant::now() >= end {
@@ -457,5 +464,96 @@ impl TestRunner for SudoRunner {
             self.closed.store(true, Ordering::SeqCst);
         }
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+    use std::sync::{Arc, OnceLock};
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The one subscriber of this test binary; global, because a callsite that first ran with none
+    /// would stay silent for a scoped one.
+    fn captured() -> &'static Captured {
+        static CAPTURED: OnceLock<Captured> = OnceLock::new();
+        CAPTURED.get_or_init(|| {
+            let sink = Captured::default();
+            let writer = sink.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || writer.clone())
+                .with_ansi(false)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber).unwrap();
+            sink
+        })
+    }
+
+    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn runner_with_quiet_account(dir: &Path) -> SudoRunner {
+        let quiet = script(dir, "quiet", "exit 1");
+        SudoRunner {
+            settings: SudoRunnerSettings {
+                user: "_tessel-runner".to_owned(),
+                sudo: quiet.clone(),
+                runner: quiet.clone(),
+                runner_config: quiet.clone(),
+                kill: quiet.clone(),
+                ps: quiet,
+                handoff_dir: dir.join("handoff"),
+                settle: Duration::from_secs(3),
+            },
+            gate: Mutex::new(()),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn a_wait_that_cannot_be_polled_closes_the_gate_at_once_and_says_why() {
+        let log = captured();
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner_with_quiet_account(dir.path());
+        let started = Instant::now();
+        runner.stop_polling(&mut || Err(io::Error::other("waitpid lost the child")));
+        assert!(
+            started.elapsed() < EXIT_GRACE / 3,
+            "kills were repeated for {:?}",
+            started.elapsed()
+        );
+        assert!(runner.closed.load(Ordering::SeqCst));
+        let text = String::from_utf8_lossy(&log.0.lock().unwrap()).into_owned();
+        assert!(text.contains("waitpid lost the child"), "{text}");
+        assert!(!text.contains("did not exit within"), "{text}");
+    }
+
+    #[test]
+    fn a_wait_that_sees_the_exit_leaves_the_gate_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner_with_quiet_account(dir.path());
+        runner.stop_polling(&mut || Ok(Some(ExitStatus::from_raw(0))));
+        assert!(!runner.closed.load(Ordering::SeqCst));
     }
 }

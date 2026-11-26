@@ -11,7 +11,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tessel_runner::{RequestTest, ResultStep, RunRequest, RunResult, RunnerError};
@@ -91,13 +91,15 @@ echo "end $(date +%s%N)" >> STATE/timeline"#,
         rig.script(
             "kill",
             r#"echo "$*" >> STATE/kill.log
+[ -f STATE/killhang ] && sleep 20
 [ -f STATE/stubborn ] && exit 0
 while read -r pid; do kill -9 "$pid" 2>/dev/null; done < STATE/procs
 : > STATE/procs"#,
         );
         rig.script(
             "ps",
-            r#"if [ -f STATE/psfail ]; then echo "ps: no such user" >&2; exit 2; fi
+            r#"[ -f STATE/pshang ] && sleep 20
+if [ -f STATE/psfail ]; then echo "ps: no such user" >&2; exit 2; fi
 found=1
 while read -r pid; do kill -0 "$pid" 2>/dev/null && echo "$pid" && found=0; done < STATE/procs
 [ "$found" = 1 ] && echo empty >> STATE/emptyps
@@ -300,6 +302,7 @@ fn a_process_left_by_an_earlier_server_is_killed_at_start() {
 
 #[test]
 fn a_survivor_closes_the_gate_and_no_later_run_starts() {
+    let log = captured_log();
     let rig = Rig::new();
     let runner = rig.runner();
     rig.set_mode("leaves-a-child");
@@ -320,6 +323,8 @@ fn a_survivor_closes_the_gate_and_no_later_run_starts() {
         started,
         "the runner did not start"
     );
+    let line = line_with(&logged(log), "the account cannot be cleared");
+    assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
     for pid in rig.read("procs").lines() {
         let _ = std::process::Command::new("/bin/kill")
             .args(["-9", pid])
@@ -422,6 +427,7 @@ fn a_call_given_up_before_sudo_starts_the_runner_still_kills_it_and_frees_the_ga
 
 #[test]
 fn a_sudo_that_outlives_the_grace_after_the_kills_closes_the_gate() {
+    let log = captured_log();
     let rig = Rig::new();
     let runner = Arc::new(rig.runner());
     rig.set_mode("hidden");
@@ -445,6 +451,8 @@ fn a_sudo_that_outlives_the_grace_after_the_kills_closes_the_gate() {
     let again = runner.run_cancellable(&request(), &never).unwrap_err();
     assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
     assert_eq!(rig.read("timeline").matches("start").count(), started);
+    let line = line_with(&logged(log), "did not exit within");
+    assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
 }
 
 #[test]
@@ -627,6 +635,7 @@ fn a_ps_that_fails_is_not_read_as_nothing_left() {
 
 #[test]
 fn a_kill_that_fails_on_a_cancelled_call_closes_the_gate_and_the_wait_is_bounded() {
+    let log = captured_log();
     let rig = Rig::new();
     let runner = rig.runner();
     rig.set_mode("sleep");
@@ -651,6 +660,8 @@ fn a_kill_that_fails_on_a_cancelled_call_closes_the_gate_and_the_wait_is_bounded
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
     let again = runner.run_cancellable(&request(), &never).unwrap_err();
     assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+    let line = line_with(&logged(log), "cannot stop the account's processes");
+    assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
 }
 
 #[test]
@@ -705,6 +716,43 @@ fn a_reply_of_more_than_one_line_is_refused_and_what_one_line_holds_is_bounded_a
         .is_some_and(|text| text.len() <= tessel_runner::MAX_FIRST_FAILURE_BYTES));
 }
 
+/// Every line of the account's closing the gate says who, and that only a restart reopens it.
+const GATE_CLOSED_FOR_ACCOUNT: &str = "no more runs as _tessel-runner until a restart";
+
+/// The one subscriber of this test binary, installed by the first test that asks for it. Global: a
+/// callsite that first ran with no subscriber would stay silent for a scoped one.
+fn captured_log() -> &'static Captured {
+    static CAPTURED: OnceLock<Captured> = OnceLock::new();
+    CAPTURED.get_or_init(|| {
+        let sink = Captured::default();
+        let writer = sink.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("the one subscriber of this binary");
+        sink
+    })
+}
+
+fn logged(captured: &Captured) -> String {
+    String::from_utf8_lossy(
+        &captured
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .into_owned()
+}
+
+/// The log line that holds `needle` (empty if none), so that one line must carry the account and
+/// the restart too.
+fn line_with(log: &str, needle: &str) -> String {
+    let line = log.lines().find(|line| line.contains(needle));
+    line.unwrap_or_default().to_owned()
+}
+
 #[derive(Clone, Default)]
 struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -723,26 +771,13 @@ impl std::io::Write for Captured {
 
 #[test]
 fn a_refusal_logs_what_the_runner_said() {
-    let captured = Captured::default();
-    let sink = captured.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(move || sink.clone())
-        .with_ansi(false)
-        .finish();
+    let captured = captured_log();
     let rig = Rig::new();
     let runner = rig.runner();
     rig.set_mode("refuse");
-    // Global: a callsite that first ran with no subscriber would stay silent for a scoped one.
-    tracing::subscriber::set_global_default(subscriber).expect("the one subscriber of this binary");
     let error = runner.run_cancellable(&request(), &never).unwrap_err();
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
-    let log = String::from_utf8_lossy(
-        &captured
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned();
+    let log = logged(captured);
     assert!(log.contains("the compiler is not the channel"), "{log}");
 }
 
@@ -765,4 +800,31 @@ fn a_tree_whose_path_climbs_out_of_the_handoff_directory_is_refused_and_nothing_
         "the directory above the handoff one was opened"
     );
     assert_eq!(rig.read("timeline"), "", "the runner never started");
+}
+
+/// Runs one call on its own thread and waits for it, so a hung program fails the test and does not
+/// hang it.
+fn run_within(runner: &Arc<SudoRunner>, seconds: u64) -> Option<Result<RunResult, RunnerError>> {
+    let caller = Arc::clone(runner);
+    let (done, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(caller.run_cancellable(&request(), &never));
+    });
+    returned.recv_timeout(Duration::from_secs(seconds)).ok()
+}
+
+#[test]
+fn a_kill_or_a_ps_that_hangs_is_cut_off_and_closes_the_gate() {
+    let log = captured_log();
+    for hang in ["pshang", "killhang"] {
+        let rig = Rig::new();
+        let runner = Arc::new(rig.runner());
+        rig.touch(hang);
+        let outcome = run_within(&runner, 15).expect("bounded: a hung program was waited for");
+        assert!(outcome.is_ok(), "the run's own result stands: {hang}");
+        let line = line_with(&logged(log), "the account cannot be cleared");
+        assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{hang}: {line}");
+        let again = runner.run_cancellable(&request(), &never).unwrap_err();
+        assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+    }
 }
