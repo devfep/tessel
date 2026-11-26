@@ -203,15 +203,14 @@ impl SudoRunner {
                 return Err(failed(error));
             }
         };
-        let collect =
-            |stream: mpsc::Receiver<io::Result<Vec<u8>>>| match stream.recv_timeout(REPLY_GRACE) {
-                Ok(read) => read.map_err(failed),
-                Err(_) => {
-                    let secs = REPLY_GRACE.as_secs();
-                    let why = format!("exited, but its output did not end within {secs} s");
-                    Err(failed(io::Error::new(io::ErrorKind::TimedOut, why)))
-                }
-            };
+        let collect = |stream: mpsc::Receiver<io::Result<Vec<u8>>>| {
+            if let Ok(read) = stream.recv_timeout(REPLY_GRACE) {
+                return read.map_err(failed);
+            }
+            let secs = REPLY_GRACE.as_secs();
+            let why = format!("exited, but its output did not end within {secs} s");
+            Err(failed(io::Error::new(io::ErrorKind::TimedOut, why)))
+        };
         Ok(Output {
             status,
             stdout: collect(stdout)?,
@@ -640,11 +639,8 @@ mod tests {
         assert!(failed.is_err());
         let read = read_capped(Some(&b"123 456"[..]), 3).recv().unwrap();
         assert_eq!(read.unwrap(), b"123");
-        assert!(read_capped(None::<&[u8]>, 3)
-            .recv()
-            .unwrap()
-            .unwrap()
-            .is_empty());
+        let none = read_capped(None::<&[u8]>, 3).recv().unwrap();
+        assert_eq!(none.unwrap(), Vec::<u8>::new());
     }
 
     #[test]
