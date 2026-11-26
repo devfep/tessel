@@ -16,7 +16,8 @@
 //! the thread that called it is not cancelled by the call's timeout. A cancel that comes before
 //! `sudo` has switched to the account finds nothing to kill, and `sudo` then starts the runner, so
 //! the kill is repeated each round until `sudo` has exited. A `sudo` still there once
-//! `EXIT_GRACE` has passed closes the gate. Every wait is bounded.
+//! `EXIT_GRACE` has passed closes the gate. Every wait is bounded: a `kill` or a `ps` that has not
+//! exited within `settle` is cut off and counts as a failure of that command.
 //!
 //! A call's directory in the handoff directory is private (0700) while the call is made. Only
 //! while its own run holds the gate is it opened to the runner's group (0750), and it is closed
@@ -30,7 +31,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex, PoisonError};
 use std::thread;
@@ -46,6 +47,8 @@ use super::ports::TestRunner;
 const MAX_REPLY_BYTES: usize = 8 * 1024 * 1024;
 /// The most bytes of the runner's standard error kept for the log.
 const MAX_STDERR_BYTES: u64 = 2048;
+/// The most bytes of a `kill` or `ps` output the server reads: a pid list, or a message.
+const MAX_COMMAND_BYTES: u64 = 1024 * 1024;
 /// How long to wait for the reply once the runner has exited.
 const REPLY_GRACE: Duration = Duration::from_secs(5);
 /// How long the kills are repeated while `sudo` has not exited; a `sudo` left then closes the gate.
@@ -77,7 +80,8 @@ pub struct SudoRunnerSettings {
     pub ps: PathBuf,
     /// Where each call's directory is; the one a request's tree lies in is opened for its run.
     pub handoff_dir: PathBuf,
-    /// How long processes of the account may take to disappear after a kill.
+    /// How long processes of the account may take to disappear after a kill, and how long one
+    /// `kill` or `ps` may take before it is cut off.
     pub settle: Duration,
 }
 
@@ -156,22 +160,55 @@ impl SudoRunner {
     }
 
     fn kill_once(&self) -> Result<(), SudoError> {
-        let output = self
-            .sudo()
-            .arg(&self.settings.kill)
-            .args(["-KILL", "-1"])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|source| SudoError::Run {
-                what: "sudo",
-                source,
-            })?;
+        let mut command = self.sudo();
+        command.arg(&self.settings.kill).args(["-KILL", "-1"]);
+        let output = self.output_bounded(command, "sudo")?;
         // `kill -1` with nothing to kill exits non-zero, which is fine; a `sudo:` line is not.
         let stderr = String::from_utf8_lossy(&output.stderr);
         if let Some(line) = stderr.lines().find(|line| line.starts_with("sudo:")) {
             return Err(SudoError::SudoRefused(line.chars().take(200).collect()));
         }
         Ok(())
+    }
+
+    /// Runs `command` to its end and collects its output, but waits at most `settle` for it. A
+    /// command cut off at that time is an error, never an empty answer. `sudo` is root's, so the
+    /// kill that cuts it off may be refused; its process is then left to end on its own and is
+    /// reaped by a thread.
+    fn output_bounded(
+        &self,
+        mut command: Command,
+        what: &'static str,
+    ) -> Result<Output, SudoError> {
+        let failed = |source: io::Error| SudoError::Run { what, source };
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(failed)?;
+        let stdout = read_capped(child.stdout.take(), MAX_COMMAND_BYTES);
+        let stderr = read_capped(child.stderr.take(), MAX_COMMAND_BYTES);
+        let waited = Self::wait_bounded(&mut || child.try_wait(), self.settings.settle);
+        let timed_out = || {
+            let secs = self.settings.settle.as_secs();
+            failed(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("no exit within {secs} s"),
+            ))
+        };
+        let Some(status) = waited.map_err(failed)? else {
+            child.kill().ok();
+            thread::spawn(move || child.wait().ok());
+            return Err(timed_out());
+        };
+        let stdout = stdout.recv_timeout(REPLY_GRACE).map_err(|_| timed_out())?;
+        let stderr = stderr.recv_timeout(REPLY_GRACE).map_err(|_| timed_out())?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     /// The pids of the account's processes, from `ps`, which needs no privilege. `ps` exits 1 when
@@ -182,12 +219,11 @@ impl SudoRunner {
             what: "ps",
             source: io::Error::other(why),
         };
-        let output = Command::new(&self.settings.ps)
+        let mut command = Command::new(&self.settings.ps);
+        command
             .env_clear()
-            .args(["-U", &self.settings.user, "-o", "pid="])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|source| SudoError::Run { what: "ps", source })?;
+            .args(["-U", &self.settings.user, "-o", "pid="]);
+        let output = self.output_bounded(command, "ps")?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         if !stderr.trim().is_empty() {
             return Err(failed(stderr.trim().chars().take(200).collect()));
@@ -225,14 +261,15 @@ impl SudoRunner {
         fs::set_permissions(dir, fs::Permissions::from_mode(mode))
     }
 
-    /// Polls for an exit, `poll` being the child's `try_wait`, for at most `grace`.
-    fn wait_bounded(poll: Poll<'_>, grace: Duration) -> Option<ExitStatus> {
+    /// Polls for an exit, `poll` being the child's `try_wait`, for at most `grace`. An error from
+    /// the poll is the caller's to act on: the exit can no longer be seen.
+    fn wait_bounded(poll: Poll<'_>, grace: Duration) -> io::Result<Option<ExitStatus>> {
         let end = Instant::now() + grace;
         loop {
-            match poll() {
-                Ok(Some(status)) => return Some(status),
-                Ok(None) if Instant::now() < end => thread::sleep(RUN_POLL),
-                Ok(None) | Err(_) => return None,
+            match poll()? {
+                Some(status) => return Ok(Some(status)),
+                None if Instant::now() < end => thread::sleep(RUN_POLL),
+                None => return Ok(None),
             }
         }
     }
@@ -240,31 +277,43 @@ impl SudoRunner {
     /// Kills the account each round until `sudo` has exited or `EXIT_GRACE` has passed. A cancel
     /// can come before `sudo` has switched to the account: the first kill then finds nothing, and
     /// `sudo` goes on to start the runner, so the kill is repeated until `sudo` is gone. A kill
-    /// that fails, or a `sudo` still there after the grace, closes the gate.
+    /// that fails, a wait that cannot see `sudo` exit, or a `sudo` still there after the grace,
+    /// closes the gate.
     fn stop_run(&self, child: &mut Child) {
         self.stop_polling(&mut || child.try_wait());
+    }
+
+    /// Closes the gate for good: every line that does says what failed, whose account it is and
+    /// that only a restart reopens it.
+    fn close_gate(&self, what: &str) {
+        tracing::error!(
+            "{what}; no more runs as {} until a restart",
+            self.settings.user
+        );
+        self.closed.store(true, Ordering::SeqCst);
     }
 
     fn stop_polling(&self, poll: Poll<'_>) {
         let end = Instant::now() + EXIT_GRACE;
         loop {
             if let Err(error) = self.kill_all() {
-                tracing::error!(error = %error, "cannot stop the runner's account; no more runs");
-                self.closed.store(true, Ordering::SeqCst);
+                self.close_gate(&format!("cannot stop the account's processes: {error}"));
                 return;
             }
             let left = end
                 .saturating_duration_since(Instant::now())
                 .min(KILL_ROUND);
-            if Self::wait_bounded(poll, left).is_some() {
-                return;
+            match Self::wait_bounded(poll, left) {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(error) => {
+                    self.close_gate(&format!("cannot tell whether sudo has exited: {error}"));
+                    return;
+                }
             }
             if Instant::now() >= end {
-                tracing::error!(
-                    "sudo did not exit within {} s of the kills; no more runs until a restart",
-                    EXIT_GRACE.as_secs()
-                );
-                self.closed.store(true, Ordering::SeqCst);
+                let secs = EXIT_GRACE.as_secs();
+                self.close_gate(&format!("sudo did not exit within {secs} s of the kills"));
                 return;
             }
         }
@@ -297,7 +346,7 @@ impl SudoRunner {
             }
         });
         let reply = whole_reply(child.stdout.take());
-        let said = bounded_stderr(child.stderr.take());
+        let said = read_capped(child.stderr.take(), MAX_STDERR_BYTES);
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -372,12 +421,13 @@ fn whole_reply(stdout: Option<std::process::ChildStdout>) -> mpsc::Receiver<Vec<
     receiver
 }
 
-fn bounded_stderr(stderr: Option<std::process::ChildStderr>) -> mpsc::Receiver<Vec<u8>> {
+/// A stream to its end or to `limit` bytes, whichever comes first, on a thread.
+fn read_capped<R: Read + Send + 'static>(stream: Option<R>, limit: u64) -> mpsc::Receiver<Vec<u8>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        if let Some(stderr) = stderr {
-            stderr.take(MAX_STDERR_BYTES).read_to_end(&mut bytes).ok();
+        if let Some(stream) = stream {
+            stream.take(limit).read_to_end(&mut bytes).ok();
         }
         sender.send(bytes).ok();
     });
@@ -454,14 +504,12 @@ impl TestRunner for SudoRunner {
         let outcome = self.run_locked(request, cancelled);
         if let Some(dir) = &call_dir {
             if let Err(error) = Self::set_mode(dir, CLOSED) {
-                tracing::error!(error = %error, "cannot close a call's directory; no more runs");
-                self.closed.store(true, Ordering::SeqCst);
+                self.close_gate(&format!("cannot close a call's directory: {error}"));
             }
         }
         if let Err(error) = self.kill_all() {
             // The run's own result stands; the next run would share the account with a survivor.
-            tracing::error!(error = %error, "the runner account cannot be cleared; no more runs");
-            self.closed.store(true, Ordering::SeqCst);
+            self.close_gate(&format!("the account cannot be cleared: {error}"));
         }
         outcome
     }
