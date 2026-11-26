@@ -437,10 +437,10 @@ starts the runner as its own account through `sudo -n -u <user> <runner> --confi
 (`docs/proposals/own-users.md`), one run at a time across every repository, and after each run it
 runs `kill -KILL -1` as that account and polls `ps -U <user>` until nothing is left. If a process
 survives, or `ps` or the kill fails or takes longer than `settle_secs`, the gate stays closed and no
-later run starts. So does a call past its deadline whose `sudo` is still there 15 s after
-the kills or whose exit cannot be read, or a call directory that cannot be closed. A closed gate
-stays shut until the server restarts; each cause logs one line ending `no more runs as <user>
-until a restart` (`docs/dogfood.md` has the operator's steps). The gate does
+later run starts. So does a call whose `sudo` cannot be waited for, a call past its deadline whose
+`sudo` is still there 15 s after the kills, or a call directory that cannot be closed. A closed gate
+stays shut until the server restarts; each cause logs a line ending `no more runs as <user> until a
+restart`. The gate does
 not see launchd, cron or at jobs that are not running; `scripts/dogfood/check-own-users.sh` denies
 and probes those. The runner's reply must be exactly one line followed by the end of its output; a second line, from
 a process of the same account writing into the stream, fails the reply (on Linux the runner also
