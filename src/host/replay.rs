@@ -6,10 +6,12 @@
 //! Exact means no event twice and none missed. A live event is sent to a socket only once it is
 //! a watcher, so the events committed while the replay runs wait in the replay's buffer, in
 //! commit order, and are sent right after the last page, then the mark, in one step. A page may
-//! hold an event that is also in the buffer, because the read ran after its commit; the buffer
-//! drops every event at or below the last `seq` the pages sent. Every event is therefore in a
-//! page (it was stored before the last read) or in the buffer (it was released after the watch
-//! began). The buffer is bounded: one event over `REPLAY_BUFFER_EVENTS` closes the socket.
+//! hold an event that is also in the buffer, because the read ran after its commit; after each
+//! page the buffer drops every event at or below the last `seq` the pages sent, and an event
+//! released later is not buffered if a page already sent it. Every event is therefore in a page
+//! (it was stored before the last read) or in the buffer (it was released after the watch began).
+//! The buffer holds only events still owed, and is bounded: one event over
+//! `REPLAY_BUFFER_EVENTS` closes the socket.
 //!
 //! The socket's own frames wait for the replay, so a `Hello` the client sent after the `Watch` is
 //! answered after the last page and the CLI can take the first event after the `Welcome` for the
@@ -97,6 +99,9 @@ impl Host {
                 msg: ServerMsg::Event { event },
             });
         }
+        if let Some(sent) = replay.last_sent {
+            replay.buffer.retain(|event| event.seq > sent);
+        }
         match shell::after_page(page_len, last_seq) {
             ReplayStep::Next { start_seq } if !done => out.push(read_page(sock, start_seq)),
             ReplayStep::Next { .. } | ReplayStep::Done => self.end_replay(sock, out),
@@ -153,7 +158,8 @@ impl Host {
         let mut overflowed = Vec::new();
         for (sock, replay) in &mut self.replays {
             for event in events {
-                if event.seq >= replay.from_seq {
+                let owed = replay.last_sent.is_none_or(|sent| event.seq > sent);
+                if event.seq >= replay.from_seq && owed {
                     replay.buffer.push(event.clone());
                 }
             }
@@ -168,7 +174,7 @@ impl Host {
                 format!("agent={agent} has over {REPLAY_BUFFER_EVENTS} live events waiting");
             out.push(self.failure("replay buffer", &cause));
             let code = CLOSE_TRY_AGAIN_LATER;
-            self.close_and_withdraw(now_ms, sock, code, BUFFER_FULL_REASON, out);
+            self.close_and_defer_withdraw(now_ms, sock, code, BUFFER_FULL_REASON, out);
         }
     }
 
@@ -183,9 +189,6 @@ impl Host {
             return;
         };
         for event in replay.buffer {
-            if replay.last_sent.is_some_and(|sent| event.seq <= sent) {
-                continue;
-            }
             out.push(Output::Send {
                 sock,
                 msg: ServerMsg::Event { event },

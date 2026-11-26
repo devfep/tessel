@@ -10,8 +10,14 @@
 //! `SendFailed` of a socket being replayed. The rest are queued and applied once the operation is
 //! answered (R42). The `SendFailed` closes the socket and ends its replay at once, but no job
 //! that needs the core runs under a closed gate: a withdrawal, or the next step of a batch, is
-//! kept in order and runs when the gate opens. A failed `Commit` is handed out again before the
-//! gate opens (R30). A `Call` is not a storage operation: inputs run while one is outstanding.
+//! kept in order and runs when the gate opens. Those deferred jobs run before every queued input,
+//! including inputs that arrived before the job was made: a withdrawal of a dead waiter runs
+//! before an earlier-queued `Release` could grant to it. A withdrawal started in the middle of
+//! `release` (a replay buffer that overflowed) is deferred too, so it runs after the batch's wake
+//! and calls and the job that follows the batch. The frames a replay parked run before the
+//! frames queued while the replay ended under a closed gate. A failed `Commit` is handed out
+//! again before the gate opens (R30). A `Call` is not a storage operation: inputs run while one
+//! is outstanding.
 //!
 //! The replay. A `Watch` reads the stored log a page at a time without closing the gate: other
 //! inputs run between its pages, and the live events committed meanwhile wait in a bounded buffer
@@ -137,8 +143,10 @@ pub enum Output {
     /// Store `entries` (key and JSON) in one transaction, then report `Committed` or
     /// `CommitFailed` for `batch`. A failed batch may be handed out again under the same id
     /// (R30), so storing it twice must leave the same rows. Storage answers (`Committed`,
-    /// `CommitFailed`, `ReplayPage`) arrive in the order they were asked, and a read sees exactly
-    /// the commits answered before it: a replay is exact (R36) only on that contract.
+    /// `CommitFailed`, `ReplayPage`) arrive in the order they were asked, and a read holds every
+    /// commit answered before its replay began and none answered after its page: a replay is
+    /// exact (R36) only on that contract. A commit asked before the read but answered after it
+    /// may or may not be in the page; the replay's buffer covers it either way.
     Commit {
         batch: BatchId,
         entries: Vec<(String, String)>,
@@ -154,11 +162,14 @@ pub enum Output {
         reason: String,
     },
     /// Read up to `limit` stored events from `from_seq` for `sock`'s replay; the answer is
-    /// `Input::ReplayPage`. The read sees every commit already answered and none that is not, and
-    /// is answered in the order it was asked among the storage answers. No input reports a failed
-    /// read, so the adapter must always answer: with `done: true` (and no events) on a failed
-    /// read or a closed socket. Without an answer the replay never ends: its socket's frames
-    /// stay parked and the live events pile up in its buffer until it is closed.
+    /// `Input::ReplayPage`. The read holds every commit answered before its replay began and
+    /// none answered after the page, and is answered in the order it was asked among the storage
+    /// answers. No input reports a failed read, so the adapter must always answer: with
+    /// `done: true` (and no events) on a failed read or a closed socket. The host cannot tell
+    /// that answer from the end of the log: it marks the watcher and sends the buffered live
+    /// events, so the stored events the read failed to return are missing (R36). Without an
+    /// answer the replay never ends: its socket's frames stay parked and the live events pile up
+    /// in its buffer until it is closed.
     ReadEvents {
         sock: SocketId,
         from_seq: u64,

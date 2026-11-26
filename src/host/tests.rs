@@ -3686,6 +3686,7 @@ fn host_an_overflow_withdrawal_runs_after_the_releases_next_job() {
     let mark = kit.history().len();
     let mut out = Vec::new();
     kit.host.committed(kit.now_ms(), BatchId(99), &mut out);
+    kit.host.drain(&mut out);
     assert_eq!(
         commits_in(&out),
         1,
@@ -3720,6 +3721,7 @@ fn host_an_overflow_withdrawal_between_wake_steps_sets_no_wake_failure() {
     let mark = kit.history().len();
     let mut out = Vec::new();
     kit.host.committed(kit.now_ms(), BatchId(99), &mut out);
+    kit.host.drain(&mut out);
     kit.execute(out);
     kit.settle();
 
@@ -3854,6 +3856,7 @@ fn host_two_replays_that_overflow_in_one_release_are_both_withdrawn() {
     let committed = Pending::new(BatchId(99), Vec::new(), held, None).commit();
     let mut out = Vec::new();
     kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.host.drain(&mut out);
     assert_eq!(commits_in(&out), 1, "one withdrawal at a time");
     kit.execute(out);
     kit.settle();

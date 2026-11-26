@@ -137,6 +137,27 @@ impl Host {
         self.withdraw(now_ms, closing, out);
     }
 
+    /// Close `sock` from here, and queue the withdrawal of its agent's queued request in
+    /// `deferred` instead of starting it. For a caller in the middle of `release`, whose batch
+    /// has not yet set its wake or handed out its calls.
+    pub(super) fn close_and_defer_withdraw(
+        &mut self,
+        now_ms: u64,
+        sock: SocketId,
+        code: u16,
+        reason: &str,
+        out: &mut Vec<Output>,
+    ) {
+        self.abandon_replay(sock);
+        let Some(closing) = self.sockets.close(sock, code, reason, out) else {
+            return;
+        };
+        if closing.agent.is_some() {
+            let job = Job::Withdraw(WithdrawJob { now_ms, closing });
+            self.deferred.push_back(job);
+        }
+    }
+
     /// An error handling the message of `origin` (a socket and the time of its message) closes
     /// that socket with 1011 (R10).
     pub(super) fn close_for_error(
