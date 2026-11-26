@@ -3,7 +3,9 @@
 //! A watch reads the stored log from its start a page at a time, sends each page to the socket,
 //! then marks the socket a watcher. The gate stays open: other inputs run between the pages (C3).
 //!
-//! Exact means no event twice and none missed. A live event is sent to a socket only once it is
+//! Exact means no event twice and none missed, while every read succeeds: the adapter answers a
+//! failed read `done` with no events, which ends the replay unmarked and closes the socket with
+//! 1011, so no gap is ever sent as complete (R36). A live event is sent to a socket only once it is
 //! a watcher, so the events committed while the replay runs wait in the replay's buffer, in
 //! commit order, and are sent right after the last page, then the mark, in one step. A page may
 //! hold an event that is also in the buffer, because the read ran after its commit; after each
@@ -19,7 +21,7 @@
 //! queued behind a storage operation) or after; it is parked when the host would apply it, so
 //! the frames keep their order. Only that socket waits; the repo does not.
 
-use crate::host::sockets::CLOSE_TRY_AGAIN_LATER;
+use crate::host::sockets::{CLOSE_INTERNAL_ERROR, CLOSE_TRY_AGAIN_LATER};
 use crate::host::{Host, Input, Output, SocketId};
 use crate::protocol::{Event, ServerMsg};
 use crate::shell::{self, ReplayStep};
@@ -28,6 +30,7 @@ use crate::shell::{self, ReplayStep};
 pub(super) const REPLAY_BUFFER_EVENTS: usize = 1_000;
 
 const BUFFER_FULL_REASON: &str = "replay buffer full";
+const READ_FAILED_REASON: &str = "replay read failed";
 
 /// A replay in progress: where it started, the last `seq` its pages sent, the live events
 /// committed since, and the frames its socket sent after the `Watch`.
@@ -86,6 +89,10 @@ impl Host {
         if self.drop_abandoned_read(sock) {
             return;
         }
+        if done && events.is_empty() && self.replays.contains_key(&sock) {
+            self.fail_replay_read(sock, out);
+            return;
+        }
         let Some(replay) = self.replays.get_mut(&sock) else {
             out.push(self.failure("replay events", "no replay waits for this page"));
             return;
@@ -106,6 +113,17 @@ impl Host {
             ReplayStep::Next { start_seq } if !done => out.push(read_page(sock, start_seq)),
             ReplayStep::Next { .. } | ReplayStep::Done => self.end_replay(sock, out),
         }
+    }
+
+    /// The adapter answered `done` with no events, which it does only for a read that failed (a
+    /// read of the end of the log is a short or empty page that is not `done`): the pages sent
+    /// so far leave a gap, so the replay ends unmarked and the socket is closed with 1011 (R36).
+    /// No read is out for it now, so the replay is removed without counting an abandoned read.
+    fn fail_replay_read(&mut self, sock: SocketId, out: &mut Vec<Output>) {
+        self.replays.remove(&sock);
+        out.push(self.failure("replay events", "the adapter could not read the stored log"));
+        let code = CLOSE_INTERNAL_ERROR;
+        self.close_and_defer_withdraw(self.now_ms, sock, code, READ_FAILED_REASON, out);
     }
 
     /// Whether the page is the answer to a read of a replay that already ended; it is dropped.

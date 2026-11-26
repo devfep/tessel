@@ -14,10 +14,12 @@
 //! including inputs that arrived before the job was made: a withdrawal of a dead waiter runs
 //! before an earlier-queued `Release` could grant to it. A withdrawal started in the middle of
 //! `release` (a replay buffer that overflowed) is deferred too, so it runs after the batch's wake
-//! and calls and the job that follows the batch. The frames a replay parked run before the
-//! frames queued while the replay ended under a closed gate. A failed `Commit` is handed out
-//! again before the gate opens (R30). A `Call` is not a storage operation: inputs run while one
-//! is outstanding.
+//! and calls. The job that follows a batch (`then`) runs at once if it is a wake step, which
+//! sets no wake failure for a withdrawal; any other job (a client call, a poke) waits behind the
+//! deferred jobs, so a dead waiter is withdrawn before it can be granted. The frames a replay
+//! parked run before the frames queued while the replay ended under a closed gate. A failed
+//! `Commit` is handed out again before the gate opens (R30). A `Call` is not a storage
+//! operation: inputs run while one is outstanding.
 //!
 //! The replay. A `Watch` reads the stored log a page at a time without closing the gate: other
 //! inputs run between its pages, and the live events committed meanwhile wait in a bounded buffer
@@ -145,8 +147,9 @@ pub enum Output {
     /// (R30), so storing it twice must leave the same rows. Storage answers (`Committed`,
     /// `CommitFailed`, `ReplayPage`) arrive in the order they were asked, and a read holds every
     /// commit answered before its replay began and none answered after its page: a replay is
-    /// exact (R36) only on that contract. A commit asked before the read but answered after it
-    /// may or may not be in the page; the replay's buffer covers it either way.
+    /// exact (R36) only on that contract. A commit asked before the read and stored while it
+    /// ran may or may not be in the page; it is answered before the page, so the replay's buffer
+    /// covers it either way.
     Commit {
         batch: BatchId,
         entries: Vec<(String, String)>,
@@ -165,11 +168,11 @@ pub enum Output {
     /// `Input::ReplayPage`. The read holds every commit answered before its replay began and
     /// none answered after the page, and is answered in the order it was asked among the storage
     /// answers. No input reports a failed read, so the adapter must always answer: with
-    /// `done: true` (and no events) on a failed read or a closed socket. The host cannot tell
-    /// that answer from the end of the log: it marks the watcher and sends the buffered live
-    /// events, so the stored events the read failed to return are missing (R36). Without an
-    /// answer the replay never ends: its socket's frames stay parked and the live events pile up
-    /// in its buffer until it is closed.
+    /// `done: true` (and no events) on a failed read or a closed socket, and never for the end
+    /// of the log, which is a short or empty page that is not `done`. The host takes `done` with
+    /// no events for a failed read: it ends the replay unmarked and closes the socket with 1011
+    /// (R36). Without an answer the replay never ends: its socket's frames stay parked and the
+    /// live events pile up in its buffer until it is closed.
     ReadEvents {
         sock: SocketId,
         from_seq: u64,
@@ -646,8 +649,13 @@ impl Host {
         };
         let then = committed.take_then();
         self.release(now_ms, committed, out);
-        if let Some(job) = then {
+        let Some(job) = then else {
+            return;
+        };
+        if job.is_wake() || self.deferred.is_empty() {
             self.run(job, out);
+        } else {
+            self.deferred.push_back(job);
         }
     }
 
