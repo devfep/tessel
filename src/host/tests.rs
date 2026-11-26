@@ -3676,7 +3676,7 @@ fn host_a_failed_send_to_a_replaying_socket_during_a_commit_withdraws_it_after_t
 }
 
 #[test]
-fn host_a_replay_buffer_that_overflows_in_a_release_withdraws_after_the_batch_and_its_next_job() {
+fn host_an_overflow_withdrawal_runs_after_the_releases_next_job() {
     let mut kit = kit();
     let (_a1, a2) = a2_waits_behind_a1(&mut kit);
     kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
@@ -3689,9 +3689,10 @@ fn host_a_replay_buffer_that_overflows_in_a_release_withdraws_after_the_batch_an
     assert_eq!(
         commits_in(&out),
         1,
-        "the withdrawal's commit, and not the poke's"
+        "the poke's commit, and not the withdrawal's"
     );
     kit.execute(out);
+    assert!(queued(&kit, "a2"), "a2 is withdrawn only after the poke");
     kit.settle();
 
     no_batch_was_lost(&kit);
@@ -3700,8 +3701,144 @@ fn host_a_replay_buffer_that_overflows_in_a_release_withdraws_after_the_batch_an
     assert_eq!(
         commits_since(&kit, mark).len(),
         2,
-        "the poke ran after the withdrawal"
+        "the withdrawal ran after"
     );
+}
+
+#[test]
+fn host_an_overflow_withdrawal_between_wake_steps_sets_no_wake_failure() {
+    let mut kit = kit();
+    let (_a1, a2) = a2_waits_behind_a1(&mut kit);
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    kit.host.waking = true;
+    kit.host.now_ms = kit.now_ms();
+    let held = held_events(100, REPLAY_BUFFER_EVENTS + 1);
+    let then = Some(super::Job::Wake(WakeStep::Finish));
+    let pending = Pending::new(BatchId(99), Vec::new(), held, then);
+    kit.host.gate = super::Gate::Committing(Box::new(pending));
+    kit.fail_next_commit();
+    let mark = kit.history().len();
+    let mut out = Vec::new();
+    kit.host.committed(kit.now_ms(), BatchId(99), &mut out);
+    kit.execute(out);
+    kit.settle();
+
+    let retry = kit.now_ms() + wake::RETRY_MS;
+    let wakes = setwakes_since(&kit, mark);
+    assert!(!wakes.contains(&Some(retry)), "no wake failed: {wakes:?}");
+    assert!(!kit.host.waking, "the wake ended at its last step");
+}
+
+#[test]
+fn host_a_deferred_withdrawal_runs_before_a_release_queued_earlier() {
+    let mut kit = kit();
+    let (a1, a2) = a2_waits_behind_a1(&mut kit);
+    let release = release_of(&kit, a1);
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(a1, &claim(9, "y.rs", "t"));
+    kit.send(a1, &release);
+    let now_ms = kit.now_ms();
+    kit.input(Input::SendFailed { now_ms, sock: a2 });
+    kit.settle();
+
+    no_batch_was_lost(&kit);
+    let grants = |kit: &Testkit| {
+        let granted = kit.received(a2).iter();
+        granted
+            .filter(|m| matches!(m, ServerMsg::Granted { .. }))
+            .count()
+    };
+    assert_eq!(
+        grants(&kit),
+        0,
+        "the dead waiter is withdrawn before the release"
+    );
+    assert!(!queued(&kit, "a2"));
+}
+
+#[test]
+fn host_parked_frames_run_before_frames_queued_while_the_replay_ends_under_a_closed_gate() {
+    let mut kit = kit();
+    seed_log(&mut kit, 3);
+    let a1 = welcomed(&mut kit, "a1");
+    let watcher = kit.open("w");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    kit.send(watcher, &hello("w"));
+    kit.send(a1, &claim(1, "x.rs", "s"));
+    kit.send(watcher, &claim(2, "z.rs", "t"));
+    assert!(kit.deliver_next(), "the last page ends the replay");
+    assert!(
+        kit.received(watcher).iter().all(|m| !is_welcome(m)),
+        "the gate is closed: the parked hello waits"
+    );
+    kit.settle();
+
+    let received = kit.received(watcher);
+    let welcome = received.iter().position(is_welcome).expect("a welcome");
+    let grant = received
+        .iter()
+        .position(|m| matches!(m, ServerMsg::Granted { .. }));
+    assert!(
+        grant > Some(welcome),
+        "the claim followed the hello: {received:?}"
+    );
+    let refused = received
+        .iter()
+        .any(|m| matches!(m, ServerMsg::Error { .. }));
+    assert!(!refused, "the claim was not refused: {received:?}");
+}
+
+#[test]
+fn host_a_replay_buffer_counts_only_the_events_still_owed() {
+    let mut kit = kit();
+    seed_log(&mut kit, 1_500);
+    let watcher = kit.open("w");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let first = held_events(100, REPLAY_BUFFER_EVENTS);
+    let mut out = Vec::new();
+    let committed = Pending::new(BatchId(98), Vec::new(), first, None).commit();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.execute(out);
+    for _ in 0..REPLAY_BUFFER_EVENTS / shell::REPLAY_PAGE {
+        assert!(kit.deliver_next());
+    }
+    let mut out = Vec::new();
+    let committed = Pending::new(BatchId(99), Vec::new(), held_events(1_100, 1), None).commit();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.execute(out);
+    assert_eq!(
+        kit.closed(watcher),
+        None,
+        "the pages already sent 1,000 of them"
+    );
+    kit.settle();
+    assert_eq!(replayed_seqs(&kit, watcher), (0..1_500).collect::<Vec<_>>());
+}
+
+#[test]
+fn host_a_read_answered_done_with_no_events_marks_the_watcher_over_the_gap() {
+    let mut kit = kit();
+    seed_log(&mut kit, 3);
+    let watcher = kit.open("w");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let committed = Pending::new(BatchId(99), Vec::new(), held_events(3, 2), None).commit();
+    let mut out = Vec::new();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.execute(out);
+    let now_ms = kit.now_ms();
+    let page = Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: Vec::new(),
+        done: true,
+    };
+    kit.input(page);
+    assert_eq!(
+        replayed_seqs(&kit, watcher),
+        vec![3, 4],
+        "events 0 to 2 are a gap"
+    );
+    assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
 }
 
 #[test]
