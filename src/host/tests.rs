@@ -3676,7 +3676,7 @@ fn host_a_failed_send_to_a_replaying_socket_during_a_commit_withdraws_it_after_t
 }
 
 #[test]
-fn host_an_overflow_withdrawal_runs_after_the_releases_next_job() {
+fn host_an_overflow_withdrawal_runs_before_the_releases_next_job() {
     let mut kit = kit();
     let (_a1, a2) = a2_waits_behind_a1(&mut kit);
     kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
@@ -3687,22 +3687,17 @@ fn host_an_overflow_withdrawal_runs_after_the_releases_next_job() {
     let mut out = Vec::new();
     kit.host.committed(kit.now_ms(), BatchId(99), &mut out);
     kit.host.drain(&mut out);
-    assert_eq!(
-        commits_in(&out),
-        1,
-        "the poke's commit, and not the withdrawal's"
-    );
+    assert_eq!(commits_in(&out), 1, "one commit at a time");
     kit.execute(out);
-    assert!(queued(&kit, "a2"), "a2 is withdrawn only after the poke");
+    assert!(!queued(&kit, "a2"), "the withdrawal's commit came first");
     kit.settle();
 
     no_batch_was_lost(&kit);
     assert_eq!(close_of(&kit, a2), Some((1013, "replay buffer full")));
-    assert!(!queued(&kit, "a2"), "a2 is withdrawn");
     assert_eq!(
         commits_since(&kit, mark).len(),
         2,
-        "the withdrawal ran after"
+        "the poke ran after the withdrawal"
     );
 }
 
@@ -3818,7 +3813,7 @@ fn host_a_replay_buffer_counts_only_the_events_still_owed() {
 }
 
 #[test]
-fn host_a_read_answered_done_with_no_events_marks_the_watcher_over_the_gap() {
+fn host_a_read_answered_done_with_no_events_closes_the_socket_unmarked() {
     let mut kit = kit();
     seed_log(&mut kit, 3);
     let watcher = kit.open("w");
@@ -3835,12 +3830,107 @@ fn host_a_read_answered_done_with_no_events_marks_the_watcher_over_the_gap() {
         done: true,
     };
     kit.input(page);
+    assert_eq!(close_of(&kit, watcher), Some((1011, "replay read failed")));
     assert_eq!(
-        replayed_seqs(&kit, watcher),
-        vec![3, 4],
-        "events 0 to 2 are a gap"
+        kit.session(watcher).unwrap().watch_from,
+        None,
+        "never marked"
     );
-    assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
+    assert!(
+        replayed_seqs(&kit, watcher).is_empty(),
+        "no events over a gap"
+    );
+    let line = kit
+        .logs()
+        .iter()
+        .find(|l| l.contains("replay events failed"));
+    assert!(
+        line.is_some(),
+        "the failed read is logged: {:?}",
+        kit.logs()
+    );
+}
+
+#[test]
+fn host_an_event_a_page_already_sent_is_not_counted_against_the_bound() {
+    let mut kit = kit();
+    seed_log(&mut kit, 1_500);
+    let watcher = kit.open("w");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let owed = held_events(200, REPLAY_BUFFER_EVENTS);
+    let mut out = Vec::new();
+    let committed = Pending::new(BatchId(98), Vec::new(), owed, None).commit();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.execute(out);
+    assert!(kit.deliver_next(), "the first page, seqs 0 to 99");
+    let last_sent = shell::REPLAY_PAGE as u64 - 1;
+    let mut out = Vec::new();
+    let committed = Pending::new(BatchId(99), Vec::new(), held_events(last_sent, 1), None).commit();
+    kit.host.release(kit.now_ms(), committed, &mut out);
+    kit.host.drain(&mut out);
+    kit.execute(out);
+    assert_eq!(
+        kit.closed(watcher),
+        None,
+        "seq {last_sent} was already sent"
+    );
+    kit.settle();
+    assert_eq!(replayed_seqs(&kit, watcher), (0..1_500).collect::<Vec<_>>());
+}
+
+/// a1 holds x.rs, a2 waits behind it and replays, and a3's lease is due; a1's `Release` runs
+/// after the expiry of a3's lease. The expiry's event is the one that overflows a2's buffer
+/// (`overflow`), or a send to a2 fails while the expiry commit is out.
+fn expiry_then_release_with_a_replaying_waiter(overflow: bool) -> (Testkit, SocketId) {
+    let mut kit = kit();
+    let a3 = welcomed(&mut kit, "a3");
+    kit.send(a3, &claim(3, "y.rs", "s"));
+    kit.settle();
+    kit.advance(shell::LEASE_MS / 2);
+    let (a1, a2) = a2_waits_behind_a1(&mut kit);
+    let release = release_of(&kit, a1);
+    kit.send(a2, &ClientMsg::Watch { from_seq: 0 });
+    if overflow {
+        let held = held_events(10_000, REPLAY_BUFFER_EVENTS);
+        let committed = Pending::new(BatchId(98), Vec::new(), held, None).commit();
+        let mut out = Vec::new();
+        kit.host.release(kit.now_ms(), committed, &mut out);
+        kit.execute(out);
+    }
+    kit.advance(shell::LEASE_MS / 2 + 1);
+    kit.send(a1, &release);
+    if !overflow {
+        let now_ms = kit.now_ms();
+        kit.input(Input::SendFailed { now_ms, sock: a2 });
+    }
+    while kit.deliver_next_but_pages() {}
+    kit.settle();
+    (kit, a2)
+}
+
+fn grants_to(kit: &Testkit, sock: SocketId) -> usize {
+    let received = kit.received(sock).iter();
+    received
+        .filter(|m| matches!(m, ServerMsg::Granted { .. }))
+        .count()
+}
+
+#[test]
+fn host_an_overflow_in_an_expiry_batch_withdraws_before_the_next_release_can_grant() {
+    let (kit, a2) = expiry_then_release_with_a_replaying_waiter(true);
+    no_batch_was_lost(&kit);
+    assert_eq!(close_of(&kit, a2), Some((1013, "replay buffer full")));
+    assert_eq!(grants_to(&kit, a2), 0, "the closed waiter was granted");
+    assert!(!queued(&kit, "a2"));
+}
+
+#[test]
+fn host_a_failed_send_during_an_expiry_commit_withdraws_before_the_next_release_can_grant() {
+    let (kit, a2) = expiry_then_release_with_a_replaying_waiter(false);
+    no_batch_was_lost(&kit);
+    assert_eq!(close_of(&kit, a2), Some((1011, "send failed")));
+    assert_eq!(grants_to(&kit, a2), 0, "the closed waiter was granted");
+    assert!(!queued(&kit, "a2"));
 }
 
 #[test]
