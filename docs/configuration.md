@@ -210,7 +210,7 @@ affect the server. `[identity]` `keys` is read only at start.
 | `[lander.sudo_runner]` | table | none | Run the tests as another account through `sudo` ([Runner](#runner-tessel-runner)) instead of in this process. With it, `runner_config` is the path the sudoers rule allows the runner to be given, and the server stops at start if `sudo` refuses or a process of the account survives a `kill -KILL -1`. |
 | `[lander.sudo_runner]` `user`, `sudo`, `runner`, `kill`, `ps` | account name, paths | `_tessel-runner`, `/usr/bin/sudo`, `/opt/tessel/bin/tessel-runner`, `/bin/kill`, `/bin/ps` | The account and the programs. Every path is absolute, because the sudoers rule pins them. |
 | `[lander.sudo_runner]` `handoff_dir` | path | `/var/tessel/handoff` | Where each call makes the tree to test, in a directory named `<tenant>-<repo>-call-<n>`. The server removes it with the call and removes a killed server's at start. |
-| `[lander.sudo_runner]` `settle_secs` | seconds | 10 | How long processes of the account may take to disappear after a kill, from 1 to 60. |
+| `[lander.sudo_runner]` `settle_secs` | seconds | 10 | How long processes of the account may take to disappear after a kill, from 1 to 60. One `kill` or `ps` that takes longer is cut off and counts as a failure. |
 | `[lander]` `token_file` | path | none | A file holding the git host's token, for a `remote` or `fork` that is a URL which needs one. At start, and again before every call, the file must exist, be a regular file with no group or other permission bits (mode 0600) and be non-empty after one trailing newline is dropped; otherwise the server does not start, or the call ends as `Unknown`, and the error names the file and the key, never any content. Git reads it through its askpass hook: the user name `x-access-token` and the file's content, read when git asks, so a replaced file takes effect on the next git command. The token is in no argument, URL, environment value, log line or error; the environment carries only the file's path. The hook answers only a prompt whose host (the URL's authority without user information, lowercased) equals the host of the `remote` or the `fork`, so a look-alike such as `github.com.evil.com` gets nothing, and a token with a line break inside is refused. The file's owner and its directory's mode are not checked: only the file's mode, re-checked on the open handle at each prompt (the target's mode for a symlink). On Linux the hook is named by the server's executable path, so a server left running across a binary upgrade cannot answer prompts until it is restarted. The tests the runner runs are the server's user and can read the file ([Landing](#landing)). |
 | `[identity]` `keys` | path | none | The directory of Ed25519 keys. |
 | `[identity]` `audience` | name | none | The `aud` a token must carry. |
@@ -436,7 +436,11 @@ command that leaves its process group outlives the kill. With `[lander.sudo_runn
 starts the runner as its own account through `sudo -n -u <user> <runner> --config <runner_config>`
 (`docs/proposals/own-users.md`), one run at a time across every repository, and after each run it
 runs `kill -KILL -1` as that account and polls `ps -U <user>` until nothing is left. If a process
-survives, or `ps` or the kill fails, the gate stays closed and no later run starts. The gate does
+survives, or `ps` or the kill fails or takes longer than `settle_secs`, the gate stays closed and no
+later run starts. So does a call past its deadline whose `sudo` is still there 15 s after
+the kills or whose exit cannot be read, or a call directory that cannot be closed. A closed gate
+stays shut until the server restarts; each cause logs one line ending `no more runs as <user>
+until a restart` (`docs/dogfood.md` has the operator's steps). The gate does
 not see launchd, cron or at jobs that are not running; `scripts/dogfood/check-own-users.sh` denies
 and probes those. The runner's reply must be exactly one line followed by the end of its output; a second line, from
 a process of the same account writing into the stream, fails the reply (on Linux the runner also
