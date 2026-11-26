@@ -224,8 +224,10 @@ fn a_call_given_up_mid_run_kills_a_child_that_left_the_process_group_and_frees_t
 #[ignore = "needs the accounts of scripts/ci/own-users-linux.sh; run as _tessel"]
 fn a_call_given_up_on_the_first_poll_after_the_spawn_frees_the_gate_and_empties_the_account() {
     let runner = runner();
-    // False at the check before the spawn, true from the first poll after it: real `sudo` has
-    // usually not yet switched to the account then, so the first kill finds nothing to kill.
+    // False at the check before the spawn, true from the first poll after it. The first kill may
+    // meet `sudo` before it switches to the account, and then finds nothing to kill; either way
+    // the gate must free and the account empty. Real `sudo` makes that a race, so this case does
+    // not always meet it; the stub rig's slow-start case does, every time.
     let asked = AtomicUsize::new(0);
     let started = Instant::now();
     let error = runner

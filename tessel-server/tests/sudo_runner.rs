@@ -76,6 +76,7 @@ echo "start $(date +%s%N)" >> STATE/timeline
 case "$(cat STATE/mode)" in
 ok) cat STATE/result.json ;;
 slow) sleep 0.4; cat STATE/result.json ;;
+rmcall) tree=$(sed 's/.*"tree":"\([^"]*\)".*/\1/' STATE/request.json); rm -r "$(dirname "$tree")"; cat STATE/result.json ;;
 hidden) echo "$$" > STATE/hidden.pid; exec sleep 600 ;;
 sleep) sleep 600 >/dev/null 2>&1 & echo "$!" >> STATE/procs; wait ;;
 leaves-a-child) sleep 30 >/dev/null 2>&1 & echo "$!" >> STATE/procs; cat STATE/result.json ;;
@@ -91,14 +92,15 @@ echo "end $(date +%s%N)" >> STATE/timeline"#,
         rig.script(
             "kill",
             r#"echo "$*" >> STATE/kill.log
-[ -f STATE/killhang ] && sleep 20
+[ -f STATE/killhang ] && { echo "$$" > STATE/hung.pid; exec sleep 600; }
 [ -f STATE/stubborn ] && exit 0
 while read -r pid; do kill -9 "$pid" 2>/dev/null; done < STATE/procs
 : > STATE/procs"#,
         );
         rig.script(
             "ps",
-            r#"[ -f STATE/pshang ] && sleep 20
+            r#"[ -f STATE/pshang ] && { echo "$$" > STATE/hung.pid; exec sleep 600; }
+[ -f STATE/psheld ] && { sleep 20 & exit 1; }
 if [ -f STATE/psfail ]; then echo "ps: no such user" >&2; exit 2; fi
 found=1
 while read -r pid; do kill -0 "$pid" 2>/dev/null && echo "$pid" && found=0; done < STATE/procs
@@ -323,7 +325,17 @@ fn a_survivor_closes_the_gate_and_no_later_run_starts() {
         started,
         "the runner did not start"
     );
-    let line = line_with(&logged(log), "the account cannot be cleared");
+    let survivor = rig
+        .read("procs")
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .to_owned();
+    let line = line_with(&logged(log), &["the account cannot be cleared", &survivor]);
+    assert!(
+        line.contains("are left"),
+        "no line names the survivor {survivor}"
+    );
     assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
     for pid in rig.read("procs").lines() {
         let _ = std::process::Command::new("/bin/kill")
@@ -451,7 +463,7 @@ fn a_sudo_that_outlives_the_grace_after_the_kills_closes_the_gate() {
     let again = runner.run_cancellable(&request(), &never).unwrap_err();
     assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
     assert_eq!(rig.read("timeline").matches("start").count(), started);
-    let line = line_with(&logged(log), "did not exit within");
+    let line = line_with(&logged(log), &["did not exit within"]);
     assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
 }
 
@@ -660,7 +672,7 @@ fn a_kill_that_fails_on_a_cancelled_call_closes_the_gate_and_the_wait_is_bounded
     assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
     let again = runner.run_cancellable(&request(), &never).unwrap_err();
     assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
-    let line = line_with(&logged(log), "cannot stop the account's processes");
+    let line = line_with(&logged(log), &["cannot stop the account's processes"]);
     assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
 }
 
@@ -746,10 +758,12 @@ fn logged(captured: &Captured) -> String {
     .into_owned()
 }
 
-/// The log line that holds `needle` (empty if none), so that one line must carry the account and
-/// the restart too.
-fn line_with(log: &str, needle: &str) -> String {
-    let line = log.lines().find(|line| line.contains(needle));
+/// The first log line that holds every one of `needles` (empty if none), so that one line must
+/// carry the account and the restart too.
+fn line_with(log: &str, needles: &[&str]) -> String {
+    let line = log
+        .lines()
+        .find(|line| needles.iter().all(|needle| line.contains(needle)));
     line.unwrap_or_default().to_owned()
 }
 
@@ -816,15 +830,96 @@ fn run_within(runner: &Arc<SudoRunner>, seconds: u64) -> Option<Result<RunResult
 #[test]
 fn a_kill_or_a_ps_that_hangs_is_cut_off_and_closes_the_gate() {
     let log = captured_log();
-    for hang in ["pshang", "killhang"] {
+    for (hang, cause) in [
+        ("pshang", "cannot run ps: no exit within"),
+        ("killhang", "cannot run sudo: no exit within"),
+    ] {
         let rig = Rig::new();
         let runner = Arc::new(rig.runner());
         rig.touch(hang);
-        let outcome = run_within(&runner, 15).expect("bounded: a hung program was waited for");
+        // The stub sleeps for 600 s: only a hang is slower than this.
+        let outcome = run_within(&runner, 120).expect("bounded: a hung program was waited for");
         assert!(outcome.is_ok(), "the run's own result stands: {hang}");
-        let line = line_with(&logged(log), "the account cannot be cleared");
+        let line = line_with(&logged(log), &["the account cannot be cleared", cause]);
         assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{hang}: {line}");
         let again = runner.run_cancellable(&request(), &never).unwrap_err();
         assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+        let stub = rig.read("hung.pid");
+        assert!(
+            gone_and_reaped(stub.trim()),
+            "{hang}: the hung stub {stub} is still there"
+        );
     }
+}
+
+/// Whether `pid` is no longer a process, not even a zombie, within a few seconds.
+fn gone_and_reaped(pid: &str) -> bool {
+    for _ in 0..100 {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .expect("run ps");
+        if String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+#[test]
+fn a_ps_that_exits_but_leaves_its_output_open_closes_the_gate_and_says_so() {
+    let log = captured_log();
+    let rig = Rig::new();
+    let runner = Arc::new(rig.runner());
+    rig.touch("psheld");
+    let outcome = run_within(&runner, 120).expect("bounded: the open output was waited for");
+    assert!(outcome.is_ok(), "the run's own result stands");
+    let line = line_with(
+        &logged(log),
+        &["the account cannot be cleared", "output did not end"],
+    );
+    assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
+    assert!(!line.contains("no exit within"), "the ps did exit: {line}");
+    let again = runner.run_cancellable(&request(), &never).unwrap_err();
+    assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+}
+
+#[test]
+fn a_call_directory_that_cannot_be_closed_closes_the_gate_and_says_so() {
+    let log = captured_log();
+    let rig = Rig::new();
+    let runner = rig.runner();
+    let dir = call_dir(&rig, "c-removed");
+    rig.set_mode("rmcall");
+    let outcome = runner.run_cancellable(&request_in(&dir), &never);
+    assert!(outcome.is_ok(), "the run's own result stands");
+    let line = line_with(&logged(log), &["cannot close a call's directory"]);
+    assert!(line.contains(GATE_CLOSED_FOR_ACCOUNT), "{line}");
+    let again = runner.run_cancellable(&request(), &never).unwrap_err();
+    assert!(matches!(again, RunnerError::Unsupervised { .. }), "{again}");
+}
+
+#[test]
+fn the_sudo_of_a_run_given_up_behind_a_stubborn_kill_is_reaped_once_it_dies() {
+    let rig = Rig::new();
+    let runner = Arc::new(rig.runner());
+    rig.set_mode("sleep");
+    rig.touch("stubborn");
+    let cancel = rig.cancel_once_started();
+    let caller = Arc::clone(&runner);
+    let (done, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(caller.run_cancellable(&request(), &cancel));
+    });
+    let outcome = returned.recv_timeout(Duration::from_secs(120));
+    assert!(outcome.expect("bounded").is_err());
+    let procs = rig.read("procs");
+    let sudo_pid = procs.lines().next().unwrap_or_default().to_owned();
+    for pid in procs.lines() {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-9", pid])
+            .status();
+    }
+    assert!(gone_and_reaped(&sudo_pid), "{sudo_pid} is a zombie");
 }

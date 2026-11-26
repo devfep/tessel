@@ -595,6 +595,10 @@ mod tests {
         let text = String::from_utf8_lossy(&log.0.lock().unwrap()).into_owned();
         assert!(text.contains("waitpid lost the child"), "{text}");
         assert!(!text.contains("did not exit within"), "{text}");
+        assert!(
+            text.contains("no more runs as _tessel-runner until a restart"),
+            "{text}"
+        );
     }
 
     #[test]
