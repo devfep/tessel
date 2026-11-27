@@ -36,7 +36,7 @@ const DOUBT_MODE_LAND_DELAY_MS: u64 = 1_000;
 /// and a `Prepare` in doubt, and the traffic waits a doubt out (`Traffic::step`) instead of leaving
 /// the run to end inside it.
 pub fn doubt_mode(seed: u64) -> bool {
-    seed % DOUBT_MODE_EVERY != 0
+    !seed.is_multiple_of(DOUBT_MODE_EVERY)
 }
 
 /// How many merge calls in a row a rate limit refuses once it starts.
