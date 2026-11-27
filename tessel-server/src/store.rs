@@ -615,13 +615,14 @@ mod tests {
     }
 
     fn code_of(error: &StoreError) -> Option<rusqlite::ErrorCode> {
-        match error {
-            StoreError::Sql {
-                source: rusqlite::Error::SqliteFailure(failure, _),
-                ..
-            } => Some(failure.code),
-            _ => None,
-        }
+        let StoreError::Sql {
+            source: rusqlite::Error::SqliteFailure(failure, _),
+            ..
+        } = error
+        else {
+            return None;
+        };
+        Some(failure.code)
     }
 
     fn stored(store: &Store, key: &str) -> bool {
