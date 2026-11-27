@@ -133,7 +133,7 @@ expect "install makes /var/tessel root-owned" 0 "install -d -o root -g wheel -m 
 	"$install_sh" --binaries "$bins" --dry-run
 expect "install stages root's work in /opt/tessel/tmp" 0 "install -d -o root -g wheel -m 700 /opt/tessel/tmp" \
 	"$install_sh" --binaries "$bins" --dry-run
-expect "install writes the sudoers rule with the two commands" 0 "/bin/kill -KILL -1" \
+expect "install writes the sudoers rule with the two commands" 0 "/bin/kill -KILL -- -1" \
 	"$install_sh" --binaries "$bins" --dry-run
 expect "install disables the plist until the move" 0 "launchctl disable system/dev.tessel.server" \
 	"$install_sh" --binaries "$bins" --dry-run
@@ -278,7 +278,7 @@ Matching Defaults entries for _tessel on host:
 
 User _tessel may run the following commands on host:
     (_tessel-runner) NOPASSWD: /opt/tessel/bin/tessel-runner --config
-        /var/tessel-runner/tessel-runner.toml, /bin/kill -KILL -1
+        /var/tessel-runner/tessel-runner.toml, /bin/kill -KILL -- -1
 LISTING
 expect "a wrapped sudoers listing of the two commands passes" 0 "exactly the runner and kill" \
 	run_check --sudo-rule

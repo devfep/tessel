@@ -313,7 +313,7 @@ check_plist() {
 
 check_sudo_rule() {
 	local out rules want
-	want="(_tessel-runner) NOPASSWD: /opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml, /bin/kill -KILL -1"
+	want="(_tessel-runner) NOPASSWD: /opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml, /bin/kill -KILL -- -1"
 	if ! "$sudo" -n /usr/bin/true >/dev/null 2>&1; then
 		skip "the sudoers rule of $tessel_name: needs 'sudo -v'"
 		return
@@ -324,7 +324,7 @@ check_sudo_rule() {
 	rules=$(echo "$out" | /usr/bin/awk '/may run the following commands/ { on = 1; next } on && NF { sub(/\\$/, ""); print }' |
 		/usr/bin/tr '\n\t' '  ' | /usr/bin/tr -s ' ' | /usr/bin/sed -e 's/^ //' -e 's/ $//')
 	if [ "$rules" = "$want" ]; then
-		ok "$tessel_name may run exactly the runner and kill -KILL -1"
+		ok "$tessel_name may run exactly the runner and kill -KILL -- -1"
 	else
 		bad "the sudoers rule of $tessel_name is not exactly the two commands of the design; it is: $rules"
 	fi
