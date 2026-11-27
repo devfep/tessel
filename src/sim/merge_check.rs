@@ -302,8 +302,45 @@ fn poisoned_outcome(events: &[Event], fork: &str, spent: bool) -> Vec<String> {
 /// it and told the submitter. The doubt code (`wait_in_doubt`, `reconcile_before_ending`) rests on
 /// it.
 pub fn fenced_rule(state: Option<&Value>) -> Vec<String> {
-    let _ = state;
-    Vec::new()
+    let Some(state) = state else {
+        return Vec::new();
+    };
+    let Some(claims) = state.get("claims").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let flight = state
+        .get("merge_in_flight")
+        .filter(|flight| !flight.is_null());
+    let owner = flight
+        .and_then(|flight| flight.get("claim"))
+        .and_then(Value::as_u64);
+    let told = flight
+        .and_then(|flight| flight.get("doubt_since_ms"))
+        .is_some_and(Value::is_u64);
+    let mut found = Vec::new();
+    for (id, held) in claims {
+        let Some(work) = held.get("work").filter(|work| !work.is_null()) else {
+            continue;
+        };
+        if work.get("doubted_land").is_none_or(Value::is_null) {
+            continue;
+        }
+        if work.get("in_doubt") != Some(&Value::Bool(true)) {
+            found.push(format!(
+                "claim {id} holds a doubted Land but is not in doubt"
+            ));
+        }
+        if owner != id.parse::<u64>().ok() {
+            found.push(format!(
+                "claim {id} is in doubt of a Land, but the merge in flight is {owner:?}"
+            ));
+        } else if !told {
+            found.push(format!(
+                "claim {id} is in doubt of a Land, but its merge in flight was never told"
+            ));
+        }
+    }
+    found
 }
 
 /// I7: an answer for a dispatch that was not in flight changes nothing the host stores.
@@ -949,5 +986,54 @@ mod tests {
             poisoned_outcome(&events, "bad", false),
             Vec::<String>::new()
         );
+    }
+
+    fn fenced_state(in_doubt: bool, flight: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "claims": {
+                "1": {"work": {"in_doubt": in_doubt, "doubted_land": ["a", "b"]}},
+                "2": {"work": null},
+                "3": {"work": {"in_doubt": true, "doubted_land": null}},
+            },
+            "merge_in_flight": flight,
+        })
+    }
+
+    #[test]
+    fn the_fenced_rule_is_silent_for_a_told_flight_and_for_claims_that_hold_no_pair() {
+        let told = serde_json::json!({"claim": 1, "doubt_since_ms": 5});
+        assert!(fenced_rule(Some(&fenced_state(true, told))).is_empty());
+        assert!(fenced_rule(None).is_empty());
+        assert!(fenced_rule(Some(&serde_json::json!({}))).is_empty());
+        let no_pair = serde_json::json!({"claims": {"3": {"work": {"in_doubt": true}}}});
+        assert!(
+            fenced_rule(Some(&no_pair)).is_empty(),
+            "a doubt with no pair is not fenced"
+        );
+    }
+
+    #[test]
+    fn the_fenced_rule_flags_a_flight_that_is_missing_untold_or_another_claims() {
+        let untold = serde_json::json!({"claim": 1, "doubt_since_ms": null});
+        let missing_field = serde_json::json!({"claim": 1});
+        let other = serde_json::json!({"claim": 2, "doubt_since_ms": 5});
+        for flight in [untold, missing_field] {
+            let found = fenced_rule(Some(&fenced_state(true, flight)));
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert!(found[0].contains("never told"), "{found:?}");
+        }
+        for flight in [other, serde_json::Value::Null] {
+            let found = fenced_rule(Some(&fenced_state(true, flight)));
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert!(found[0].contains("merge in flight is"), "{found:?}");
+        }
+    }
+
+    #[test]
+    fn the_fenced_rule_flags_a_pair_that_outlives_the_doubt() {
+        let told = serde_json::json!({"claim": 1, "doubt_since_ms": 5});
+        let found = fenced_rule(Some(&fenced_state(false, told)));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("not in doubt"), "{found:?}");
     }
 }
