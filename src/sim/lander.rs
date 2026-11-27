@@ -225,7 +225,8 @@ impl Lander {
     }
 
     /// How many candidate refs the lander holds.
-    pub fn candidate_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn candidate_count(&self) -> usize {
         self.candidates.len()
     }
 
@@ -417,7 +418,7 @@ impl Lander {
                 chaos.counted("rate_limited", Fate::RateLimited)
             }
             13..=27 if land => chaos.counted("pushed_then_lost_reply", Fate::Lost),
-            17..=18 if !land => chaos.counted("lost_reply", Fate::Lost),
+            17..=18 => chaos.counted("lost_reply", Fate::Lost),
             _ => Fate::Reply,
         }
     }
@@ -1133,5 +1134,16 @@ mod tests {
             assert_eq!(lander.faults().get("flipped_on_rerun"), Some(&6));
         }
         assert!(flaky > 0, "no seed made a head flaky");
+    }
+
+    #[test]
+    fn the_lander_counts_the_candidate_refs_it_holds() {
+        let mut lander = Lander::new();
+        assert_eq!(lander.candidate_count(), 0);
+        prepared_head(&mut lander, "f1");
+        prepared_head(&mut lander, "f2");
+        assert_eq!(lander.candidate_count(), 2);
+        lander.lose_candidates();
+        assert_eq!(lander.candidate_count(), 0);
     }
 }

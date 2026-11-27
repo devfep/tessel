@@ -217,7 +217,7 @@ impl Sim {
                 answer,
                 epoch,
             } => self.send_reply(call, answer, 0, epoch),
-            Due::Deadline { call, epoch } => self.expire_call(call, epoch),
+            Due::Deadline { call, .. } => self.expire_call(call),
         }
     }
 
@@ -268,11 +268,9 @@ impl Sim {
     }
 
     /// The adapter's deadline for `call` passed with no answer: it answers `Unknown`, or tells the
-    /// host the call was lost, which the host reads the same.
-    fn expire_call(&mut self, call: CallId, epoch: u64) {
-        if epoch != self.crashes || !self.open_calls.contains_key(&call.0) {
-            return;
-        }
+    /// host the call was lost, which the host reads the same. Only a live deadline gets here
+    /// (`is_live`): the restart it was set in is the current one and the call is still open.
+    fn expire_call(&mut self, call: CallId) {
         let now_ms = self.now_ms();
         let input = if call.0.is_multiple_of(2) {
             Input::Replied {
@@ -784,6 +782,10 @@ pub(super) mod tests {
         assert!(found.is_empty(), "{found:?}");
     }
 
+    /// The restart sets the wake itself (`crash_now`), so this cannot see the core schedule its
+    /// own release wake; the core test
+    /// `a_race_stored_waiting_for_the_head_is_released_when_the_port_can_no_longer_read_it`
+    /// covers that.
     #[test]
     fn a_race_waiting_for_a_head_is_released_when_the_port_stops_reading_heads() {
         let mut sim = race_submitted(race_config(), 1, |_| {});

@@ -324,11 +324,6 @@ impl Sim {
         self.tally.summary()
     }
 
-    /// How many times the host restarted: an answer sent before a restart is never received.
-    pub fn epoch(&self) -> u64 {
-        self.crashes
-    }
-
     pub fn now_ms(&self) -> u64 {
         self.clock.now_ms()
     }
@@ -741,8 +736,8 @@ impl Sim {
 
     /// The process dies and restarts: the host forgets everything, staged writes are lost and
     /// every socket closes. The wake lived in the process, so it is gone; a restarted adapter
-    /// wakes once at once, as `tessel-server` does (`wake_on_start`: it holds state, or its port
-    /// reads main's head, which the simulated lander port does).
+    /// wakes once at once, as `tessel-server` does (`wake_on_start`): the host holds state, which
+    /// is enough whatever the port can read.
     fn crash_now(&mut self) {
         self.log.push("crash".to_string());
         self.strike_merge_in_flight();
