@@ -93,6 +93,18 @@ pub enum CommandError {
          (older git ignores GIT_CONFIG_COUNT, which drops the fixed settings)"
     )]
     UnsupportedGit { found: String },
+    #[error("git --version failed ({}): {stderr:?}", describe_exit(*exit_code))]
+    VersionFailed {
+        exit_code: Option<i32>,
+        stderr: String,
+    },
+}
+
+fn describe_exit(exit_code: Option<i32>) -> String {
+    exit_code.map_or_else(
+        || "killed by a signal".to_owned(),
+        |code| format!("exit code {code}"),
+    )
 }
 
 const MIN_GIT_MAJOR: u32 = 2;
@@ -201,6 +213,12 @@ impl Git {
     pub fn check_version(&self) -> Result<(), CommandError> {
         let output = run(&self.command(&["--version"], LOCAL_TIMEOUT))
             .map_err(|source| CommandError::VersionCheck { source })?;
+        if !output.success() {
+            return Err(CommandError::VersionFailed {
+                exit_code: output.exit_code,
+                stderr: output.stderr.trim().to_owned(),
+            });
+        }
         ensure_supported_git(&output.stdout)
     }
 
