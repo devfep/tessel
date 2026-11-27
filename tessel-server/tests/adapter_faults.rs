@@ -15,14 +15,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use tessel_coordinator::host::call::Call;
+use tessel_coordinator::host::call::CallAnswer;
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, Fence, Intent, Mode, OnConflict, RequestId, Scope,
-    ScopeClaim, ServerMsg, PROTOCOL_VERSION,
+    AgentId, ClaimId, ClientMsg, CommitId, DecisionRecord, Fence, Intent, Mode, OnConflict,
+    RequestId, Scope, ScopeClaim, ServerMsg, PROTOCOL_VERSION,
 };
 use tessel_coordinator::shell;
 use tessel_server::config::{Config, RepositoryConfig};
 use tessel_server::id::RepoId;
-use tessel_server::repo::{CallPort, NoLander};
+use tessel_server::repo::{BoxFuture, CallPort, NoLander};
 use tessel_server::server::{self, Deps, RunningServer, StartError};
 use tessel_server::store::Store;
 use tessel_server::ws::{Refusal, Verifier};
@@ -60,38 +62,52 @@ impl Verifier for Tokens {
     }
 }
 
-fn config(dir: &Path) -> Config {
+fn config(dir: &Path, repos: &[&str]) -> Config {
     Config {
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         store_dir: dir.join("stores"),
         identity: None,
         lander: None,
-        repositories: vec![RepositoryConfig {
-            tenant: "acme".to_string(),
-            name: "demo".to_string(),
-            run: "test".to_string(),
-            reviewers: Vec::new(),
-            sensitive: Vec::new(),
-            remote: None,
-            fork: None,
-            lease_ms: None,
-            shadow_enabled: false,
-        }],
+        repositories: repos
+            .iter()
+            .map(|name| RepositoryConfig {
+                tenant: "acme".to_string(),
+                name: (*name).to_string(),
+                run: "test".to_string(),
+                reviewers: Vec::new(),
+                sensitive: Vec::new(),
+                remote: None,
+                fork: None,
+                lease_ms: None,
+                shadow_enabled: false,
+            })
+            .collect(),
     }
 }
 
 async fn start(dir: &Path) -> Result<RunningServer, StartError> {
-    let calls: Arc<dyn CallPort> = Arc::new(NoLander);
+    start_with(dir, &["demo"], Arc::new(NoLander)).await
+}
+
+async fn start_with(
+    dir: &Path,
+    repos: &[&str],
+    calls: Arc<dyn CallPort>,
+) -> Result<RunningServer, StartError> {
     let verifier: Arc<dyn Verifier> = Arc::new(Tokens);
     let deps = Deps {
         verifier: Some(verifier),
         calls,
     };
-    server::start(&config(dir), deps).await
+    server::start(&config(dir, repos), deps).await
 }
 
 async fn connect(addr: SocketAddr, token: &str) -> Result<Socket, WsError> {
-    let mut request = format!("ws://{addr}{DEMO}/ws").into_client_request()?;
+    connect_to(addr, DEMO, token).await
+}
+
+async fn connect_to(addr: SocketAddr, path: &str, token: &str) -> Result<Socket, WsError> {
+    let mut request = format!("ws://{addr}{path}/ws").into_client_request()?;
     request
         .headers_mut()
         .insert("authorization", format!("Bearer {token}").parse()?);
@@ -347,6 +363,84 @@ async fn a_state_row_that_does_not_load_closes_the_sender_1011_until_it_is_repai
     let mut agent = connect(server.local_addr(), TOKEN_A1).await?;
     send(&mut agent, &hello("a1")).await?;
     let welcome = next(&mut agent).await?;
+    assert!(
+        matches!(welcome, Some(ServerMsg::Welcome { .. })),
+        "{welcome:?}"
+    );
+    server.stop().await;
+    Ok(())
+}
+
+/// A call port that panics while it is asked, which is inside the repository's task: a panic in
+/// the future it returns would be contained as a lost call, and this is not.
+struct PanicsWhenAsked;
+
+impl CallPort for PanicsWhenAsked {
+    fn answer(&self, _call: Call) -> BoxFuture<CallAnswer> {
+        panic!("the call port panicked on purpose");
+    }
+
+    fn reads_trunk_head(&self) -> bool {
+        false
+    }
+}
+
+fn submit(claim: ClaimId, fence: Fence) -> ClientMsg {
+    ClientMsg::Submit {
+        req: RequestId(2),
+        claim,
+        fence,
+        fork_commit: CommitId("cd".repeat(20)),
+        touched: vec![ScopeClaim {
+            scope: Scope::File {
+                path: "src/a.rs".to_string(),
+            },
+            mode: Mode::EditBody,
+        }],
+        decisions: DecisionRecord {
+            evidence: vec!["cargo test passed".to_string()],
+            ..DecisionRecord::default()
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repository_task_that_panics_is_logged_by_name_and_refuses_new_sockets() -> TestResult {
+    support::capture_logs();
+    let dir = tempfile::tempdir()?;
+    let server = start_with(dir.path(), &["demo", "other"], Arc::new(PanicsWhenAsked)).await?;
+    let addr = server.local_addr();
+    let mut agent = connect(addr, TOKEN_A1).await?;
+    send(&mut agent, &hello("a1")).await?;
+    next(&mut agent).await?;
+    send(&mut agent, &claim(1, "src/a.rs")).await?;
+    let (id, fence) = next(&mut agent)
+        .await?
+        .as_ref()
+        .and_then(granted)
+        .ok_or("no grant")?;
+    send(&mut agent, &submit(id, fence)).await?;
+    // The submission makes the host ask the port, which panics the task: the socket ends.
+    while next(&mut agent).await?.is_some() {}
+
+    let refused = connect(addr, TOKEN_W).await;
+    let status = match refused {
+        Err(WsError::Http(response)) => response.status().as_u16(),
+        other => return Err(format!("expected a refusal, got {:?}", other.err()).into()),
+    };
+    assert_eq!(
+        status, 503,
+        "a repository whose task is gone is unavailable"
+    );
+    let lines = support::log_lines_with("acme/demo");
+    assert!(
+        lines.iter().any(|line| line.contains("task panicked")),
+        "the panic is logged with the repository's name: {lines:?}"
+    );
+
+    let mut other = connect_to(addr, "/tenant/acme/repo/other", TOKEN_A1).await?;
+    send(&mut other, &hello("a1")).await?;
+    let welcome = next(&mut other).await?;
     assert!(
         matches!(welcome, Some(ServerMsg::Welcome { .. })),
         "{welcome:?}"
