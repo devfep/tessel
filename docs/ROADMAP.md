@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 09:00 UTC. Main and the coordinator's head at `623e919`. RACE-TEXTS-SHARED
+**As of:** 2026-11-27 09:12 UTC. Main and the coordinator's head at `623e919`. RACE-TEXTS-SHARED
 landed through the server at 08:53 UTC as `32cb515`..`623e919` (claim 195, rebased; the daemon
 copied no notes, the submission holding a merge of main, so the orchestrator copied all seven by
 subject and author), on a re-vote: VOTE-2 and VOTE-3 had voted "No" on `cb9f8e0` with one must-fix
@@ -28,10 +28,14 @@ The STATE read found a race in removing a dead holder's lock (two waiters could 
 two runs hold it); waiters now remove it one at a time under a short reaper lock, and only if its
 owner file still names the dead pid. A test of 20 rounds of six waiters on a dead lock saw no
 overlap; whether that test can see one (against the old removal) is not shown: the check was refused
-by Claude Code's removal safety check. Dispatched at about 08:55 UTC: SIM-RACE-TEXT-LITERAL with
-SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF (lane A), which merged as #134
-(`64b51b0`; Opus review Yes; 15 checks green on `20b66d5`, its new sharded job skipped as the pull
-request touched neither crate).
+by Claude Code's removal safety check. The re-read then found the helper held no lock under zsh, the
+agents' tool shell (an EXIT trap set in a function runs when the function returns there), so the
+lanes' one-line cargo runs held none; it now sets POSIX_TRAPS under zsh, and a pid the system reused
+reads as dead (the owner file records the holder's start time); tested under zsh and bash.
+Dispatched at about 08:55 UTC: SIM-RACE-TEXT-LITERAL with SIM-FENCED-RULE-CHECKER (lane B) and
+MUTANTS-SERVER-CLI-IN-DIFF (lane A), which merged as #134 (`64b51b0`; Opus review Yes on `b65db81`,
+its two optional edits made in `20b66d5`; 15 checks green on `20b66d5`, its new sharded job skipped
+as the pull request touched neither crate).
 **Earlier (27 November 08:20 UTC):** Main and the coordinator's head at `a38b570`.
 MUTANTS-DOUBT-PACING landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198,
 rebased; the submission held a merge of main, so the daemon copied no notes and the orchestrator
@@ -1787,13 +1791,14 @@ Lane B:
   forks the runner under a parent `sudo` (every stub now `exec`s, which hides parent and child), and
   move the Own users job back to `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green
   on ubuntu-26.04.
-- [x] **MUTANTS-SERVER-CLI-IN-DIFF** (#134, merged 27 November as `64b51b0`; Opus review Yes; its
-  sharded job's first live run is the next change to tessel-server or tessel-cli) — S, lane A
-  (`.github/workflows/`, by pull request); from LANDING-MUTANTS-IN-DIFF. The per-change mutants
-  mutate only tessel-coordinator and tessel-lander, so tessel-server and tessel-cli changes are
-  never mutated (PR #130's VOTE-1). Their tests take about 75 s and 113 s per mutant, too slow for
-  the current four 30-minute shards: give them shards of their own, or another bound. Done: a change
-  to either crate is mutated on its pull request or push.
+- [x] **MUTANTS-SERVER-CLI-IN-DIFF** (#134, merged 27 November as `64b51b0`; Opus review Yes on
+  `b65db81`, its two optional edits made in `20b66d5`; its sharded job's first live run is the next
+  change to tessel-server or tessel-cli) — S, lane A (`.github/workflows/`, by pull request); from
+  LANDING-MUTANTS-IN-DIFF. The per-change mutants mutate only tessel-coordinator and tessel-lander,
+  so tessel-server and tessel-cli changes are never mutated (PR #130's VOTE-1). Their tests take
+  about 75 s and 113 s per mutant, too slow for the current four 30-minute shards: give them shards
+  of their own, or another bound. Done: a change to either crate is mutated on its pull request or
+  push.
 - [ ] **SIM-FENCED-RULE-CHECKER** — S, lane B (`src/sim`); from MUTANTS-DOUBT-PACING's VOTE-2. The
   removals there rest on a rule (a fenced claim's merge in flight is that claim's, with
   `doubt_since_ms` set) that a `debug_assert!` and a stage walk now check; add it to the
