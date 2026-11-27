@@ -28,6 +28,9 @@ pub enum Request {
         /// Make a separate claim even when the one open claim could be amended.
         #[serde(default)]
         new: bool,
+        /// Add the scopes to this open claim, whatever else the agent holds.
+        #[serde(default)]
+        into: Option<ClaimId>,
     },
     /// Make sure held claims cover these scopes. Where the agent would hold too many symbols of
     /// one file, the daemon claims the file instead (see `plan::escalate`).

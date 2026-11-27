@@ -2077,6 +2077,7 @@ impl Daemon {
                 wait,
                 assumptions,
                 new,
+                into,
             } => {
                 if !new && self.claim_in_flight() {
                     let request = Request::Claim {
@@ -2084,8 +2085,13 @@ impl Daemon {
                         wait,
                         assumptions,
                         new,
+                        into,
                     };
                     self.deferred.push_back((request, reply));
+                    return;
+                }
+                if let Some(claim) = into {
+                    self.amend_named(claim, scopes, reply);
                     return;
                 }
                 self.start_claim(scopes, wait, &assumptions, new, reply);
@@ -2129,6 +2135,54 @@ impl Daemon {
             return None;
         }
         Some((only.claim, only.fence))
+    }
+
+    /// `tessel claim --into <claim>`: adds the scopes to the named claim if it is an open claim
+    /// of this agent that can take them, and says why not otherwise, sending nothing.
+    fn amend_named(
+        &mut self,
+        claim: ClaimId,
+        scopes: Vec<ScopeClaim>,
+        reply: oneshot::Sender<Reply>,
+    ) {
+        let found = self.state.claims.iter().find(|held| held.claim == claim);
+        let why = match found {
+            None => Some(format!(
+                "claim {} is not one of your open claims (it may be released, merged, lapsed or \
+                 another agent's); run `tessel status` to see the claims you hold",
+                claim.0
+            )),
+            Some(held) if held.submitted => Some(format!(
+                "claim {} is submitted and cannot take more scopes; run `tessel status`, wait \
+                 for it to merge or be rejected, or claim the scopes on their own with \
+                 `tessel claim --new`",
+                claim.0
+            )),
+            Some(held) if held.race.is_some() => Some(format!(
+                "claim {} is a race entry; its scopes are the race's and cannot be extended, \
+                 so claim these on their own with `tessel claim --new`",
+                claim.0
+            )),
+            Some(_) => None,
+        };
+        if let Some(message) = why {
+            let _ = reply.send(refused(None, &message));
+            return;
+        }
+        if !self.is_online() {
+            let why = self
+                .state
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "not welcomed yet".to_string());
+            let message = format!("not connected to the coordinator ({why}); retrying");
+            let _ = reply.send(refused(None, &message));
+            return;
+        }
+        let Some(fence) = found.map(|held| held.fence) else {
+            return;
+        };
+        self.start_amend(claim, fence, scopes, reply);
     }
 
     fn ensure(&mut self, wanted: &[ScopeClaim], reply: oneshot::Sender<Reply>) {

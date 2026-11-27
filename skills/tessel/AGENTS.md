@@ -20,7 +20,7 @@ worktree:
 
 1. Claim before editing: `tessel claim <scope>... [--mode depend|edit-body|edit-signature|create]`.
    Your claims join one claim (a later claim amends it), so one `tessel submit` covers a mixed
-   change; `--new` makes a separate claim.
+   change; `--new` makes a separate claim, and `--into <claim>` adds to the one you name.
    Scopes are `dir/`, `path/file`, or `path/file::qualified::name`. The hook also claims for you
    before each edit: the one symbol you edit (`edit-body`, or `edit-signature` if you touch its
    signature), else the file; a rewrite with `Write` or an edit that adds a symbol claims the file

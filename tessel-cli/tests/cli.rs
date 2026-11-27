@@ -3543,6 +3543,7 @@ async fn claim_into_a_claim_that_cannot_take_scopes_is_refused_and_sends_nothing
     assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
     std::fs::write(a1.root().join("src/c.rs"), "pub fn c() {}\n")?;
     a2.start("another agent")?;
+    std::fs::write(a2.root().join("src/d.rs"), "pub fn d() {}\n")?;
     assert_eq!(a2.tessel(&["claim", "src/d.rs"])?.code, 0);
     let theirs = claim_ids(&a2)?[0];
     let ids = claim_ids(&a1)?;
@@ -3581,5 +3582,28 @@ async fn claim_into_a_claim_that_cannot_take_scopes_is_refused_and_sends_nothing
             "{target}: a message went out"
         );
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_into_cannot_be_combined_with_flags_an_amend_cannot_carry() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("flags")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    let id = claim_ids(&a1)?[0].to_string();
+    let sent = sent_claims_and_amends(&fake, "a1");
+    for flag in [&["--new"][..], &["--wait"], &["--assume", "x"]] {
+        let mut args = vec!["claim", "--into", &id];
+        args.extend_from_slice(flag);
+        args.push("src/b.rs");
+        let refused = a1.tessel(&args)?;
+        assert_ne!(refused.code, 0, "{flag:?}: {}", refused.all());
+        assert!(
+            refused.stderr.contains("cannot be used with"),
+            "{flag:?}: {}",
+            refused.all()
+        );
+    }
+    assert_eq!(sent_claims_and_amends(&fake, "a1"), sent);
     Ok(())
 }

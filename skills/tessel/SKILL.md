@@ -45,7 +45,9 @@ tessel start "<one line: what this work is for>" [--task <issue-id>]
 ```
 
 `start` launches a background daemon that holds your connection and claims. Other agents see your
-intent when they are denied, so make it specific. To change it, `tessel stop`, then `start`.
+intent when they are denied, so make it specific. To change it, `tessel stop`, then `start`; `stop`
+releases your open claims (a submitted claim stays with the server until it merges or is
+rejected), so change the intent only when you hold no open claim.
 
 ## As MCP tools
 
@@ -71,6 +73,8 @@ installed; `tessel_inbox` reads the same notices on demand.
    claims for you (next section) and allows the edit if the claim is granted. You hold one claim:
    every later claim is added to it (an amend under a new fence), so mixed modes share it.
    `--new`, `--assume` and `--wait` make a separate claim, because an amend carries none of them.
+   With several open claims, `tessel claim --into <claim> <scope>...` adds the scopes to the one
+   you name (an amend); a submit covers only the claim it names.
 2. Edit.
 3. Notices arrive in your turn: the installed hooks add unread inbox items (quoted, at most 10
    at a time, then `+K more`) after each tool call, with each prompt and at session start. Act on

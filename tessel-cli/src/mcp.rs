@@ -76,6 +76,10 @@ struct ClaimArgs {
     /// Make a separate claim instead of adding the scopes to your one open claim.
     #[serde(default)]
     new: bool,
+    /// Add the scopes to this open claim, whatever else you hold; not with `new`, `wait` or
+    /// `assume`.
+    #[serde(default)]
+    into: Option<u64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -193,6 +197,7 @@ impl Tessel {
             wait: args.wait,
             assume: args.assume,
             new: args.new,
+            into: args.into,
         };
         answer(commands::claim(&self.root, &args.scopes, options).await)
     }

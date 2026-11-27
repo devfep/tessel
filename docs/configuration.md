@@ -521,6 +521,7 @@ denied (`main.rs:47-52`).
 | `--wait` | off | Queue behind the holder instead of failing. Allowed only when the agent holds no other claim; otherwise the coordinator refuses with `wait_while_holding` (`src/coordinator.rs:799-806`). An agent with a queued request may not claim at all (`:768-771`). Exit 4 when queued. |
 | `--assume "<text>"` | none | Behaviour relied on but not owned in the first scope. Repeatable. Attaches to a new claim. |
 | `--new` | off | Make a separate claim instead of adding the scopes to the one open claim. |
+| `--into <claim>` | none | Add the scopes to this open claim of the agent (an `Amend`), whatever else it holds. Refused, with nothing sent, when the claim is unknown, another agent's, submitted or a race entry. Cannot be combined with `--new`, `--wait` or `--assume`. |
 | `--json` | off | Print one JSON envelope with the outcome and the moves open to the agent. |
 
 `--assume` and `--wait` also start a separate claim, because an amend carries neither.

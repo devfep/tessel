@@ -97,6 +97,7 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
             wait,
             assume,
             new,
+            into,
             json,
         } => {
             let options = ClaimOptions {
@@ -104,6 +105,7 @@ pub async fn run(command: Command) -> anyhow::Result<ExitCode> {
                 wait,
                 assume,
                 new,
+                into,
             };
             let report = if json {
                 claim_json(&cwd, &scopes, options).await?
@@ -366,6 +368,8 @@ pub struct ClaimOptions {
     pub wait: bool,
     pub assume: Vec<String>,
     pub new: bool,
+    /// Add the scopes to this open claim instead of choosing one.
+    pub into: Option<u64>,
 }
 
 /// What a claim command learned: the daemon's answer, what the agent asked and held, and the
@@ -387,6 +391,7 @@ async fn ask_for_claim(
         wait,
         assume,
         new,
+        into,
     } = options;
     let worktree = Worktree::discover(cwd)?;
     let mut scopes = Vec::new();
@@ -407,6 +412,7 @@ async fn ask_for_claim(
         wait,
         assumptions: assume,
         new,
+        into: into.map(ClaimId),
     };
     let Reply::Claim { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
