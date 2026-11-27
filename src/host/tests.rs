@@ -4499,6 +4499,57 @@ fn host_a_watch_on_a_closed_socket_stops_at_the_first_failed_send() {
 }
 
 #[test]
+fn host_a_watch_on_a_closed_socket_is_not_logged_as_a_failed_read() {
+    let mut kit = kit();
+    seed_log(&mut kit, 3);
+    let sock = kit.open("a1");
+    kit.send(sock, &hello("someone-else"));
+    kit.send(sock, &ClientMsg::Watch { from_seq: 0 });
+    let now_ms = kit.now_ms();
+    let mark = kit.history().len();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock,
+        events: Vec::new(),
+        done: true,
+    });
+    assert!(kit
+        .logs()
+        .iter()
+        .all(|l| !l.contains("replay events failed")));
+    assert_eq!(
+        labels_since(&kit, mark),
+        Vec::<&str>::new(),
+        "nothing more is done"
+    );
+    assert_eq!(close_of(&kit, sock), Some((1008, "identity mismatch")));
+}
+
+#[test]
+fn host_a_failed_read_log_line_names_the_agent() {
+    let mut kit = kit();
+    seed_log(&mut kit, 3);
+    let watcher = kit.open("w9");
+    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let now_ms = kit.now_ms();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: Vec::new(),
+        done: true,
+    });
+    let line = kit
+        .logs()
+        .iter()
+        .find(|l| l.contains("replay events failed"));
+    assert!(
+        line.is_some_and(|l| l.contains("agent=w9")),
+        "{:?}",
+        kit.logs()
+    );
+}
+
+#[test]
 fn host_another_sockets_failed_send_is_handled_during_a_replay() {
     let mut kit = kit();
     seed_log(&mut kit, 250);
