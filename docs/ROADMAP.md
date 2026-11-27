@@ -7,27 +7,31 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 08:30 UTC. Main at `7fc1bb2` (#131); the coordinator's head is `d9da509` (a
+**As of:** 2026-11-27 07:45 UTC. Main at `7fc1bb2` (#131); the coordinator's head is `d9da509` (a
 pull-request merge does not move it). Since the record below, through the server, each after its
 review or vote and followed by green CI: REGRESSION-SEED-69962521-STALE as `3489af8` (claim 159;
 seed 5000397 replaces 69962521, which no longer caught the late-`Land` bug; an Opus review found it
 also breaks I6 under a one-line `is_fenced` = false mutant of main); SIM-HEAD-UNREADABLE as
 `574457a` (claim 163; review Yes, 25 seed transcripts identical); CLIENT-1013-CAUSE as
-`81b48fb`..`15e6cbc` (claim 171; review Yes after one fix pass; the daemon logs the code and quoted
-reason of a close that ends a log read early); the CLAIM-LEASE-LAPSE docs as `bef0465`..`b1a61bb`
-(claim 187; review Yes after two passes); SIM-MUTANTS-2 as `6ea5508`..`d9da509` (claim 192; review
-Yes after one fix: of the 50 simulator names, 41 killed, 2 no longer generated, 6 removed with their
+`81b48fb`..`15e6cbc` (claim 171; review Yes; after the fix pass for its should-fixes, the re-check
+asked for one edit, a 152-character test line, made in `15e6cbc` and not re-checked; the daemon logs
+the code and quoted reason of a close that ends a log read early); the CLAIM-LEASE-LAPSE docs as
+`bef0465`..`b1a61bb` (claim 187; review Yes after two passes); SIM-MUTANTS-2 as `6ea5508`..`d9da509`
+(claim 192; review With changes, its one must-fix (the exclusion's false reason) made in `ffa7e9c`,
+re-check Yes: of the 50 simulator names, 41 killed, 2 no longer generated, 6 removed with their
 code, 1 excluded). By pull request, merged by the orchestrator under the standing order: #130,
-SUDO-RS-RUNNER, as `0ed8cb8` (vote 3-0 Yes after two fix passes: ubuntu-26.04 ships sudo-rs 0.2.13,
-through which `kill -KILL -1` fails to parse; the runner and the sudoers rule now use `kill -KILL --
--1`; a `sudo-rs:` prefix check that matched nothing real was removed; kill's and sudo's messages are
-shown quoted; Own users runs on ubuntu-24.04 and ubuntu-26.04, 8 of 8 real-sudo tests green on
-both); #131, LANDING-MUTANTS-IN-DIFF, as `7fc1bb2` (review Yes after one edit: the per-change
-mutants also run on pushes to main, which server landings make, and push runs are keyed by commit so
-a newer push no longer cancels an earlier one's run; its first push run resolved `before` to
-`d9da509` and diffed it, a workflow-only change with no Rust to mutate, so mutants on a Rust push
-are not yet seen live). CLAIM-LEASE-LAPSE: the CLI is right; a coordinator stall or a sleep of the
-lease less one heartbeat or more (20 s at the default) lapses a connected agent's open claims,
+SUDO-RS-RUNNER, as `0ed8cb8` (vote 3-0 for, after two fix passes: VOTE-1 Yes on `4fb78ca`, VOTE-2
+Yes on `a56d0ab`, VOTE-3 Yes with should-fixes on `a56d0ab`, PR text only; ubuntu-26.04 ships
+sudo-rs 0.2.13, through which `kill -KILL -1` fails to parse; the runner and the sudoers rule now
+use `kill -KILL -- -1`; a `sudo-rs:` prefix check that matched nothing real was removed; kill's and
+sudo's messages are shown quoted; Own users runs on ubuntu-24.04 and ubuntu-26.04, 8 of 8 real-sudo
+tests green on both); #131, LANDING-MUTANTS-IN-DIFF, as `7fc1bb2` (review Yes after one edit: the
+per-change mutants also run on pushes to main, which server landings make, and push runs are keyed
+by commit so a newer push no longer cancels an earlier one's run; its first push run resolved
+`before` to `d9da509` and diffed it, a workflow-only change with no Rust to mutate, so mutants on a
+Rust push are not yet seen live). CLAIM-LEASE-LAPSE: the CLI is right; a coordinator stall longer
+than the lease (30 s at the default; one over 20 s can, depending on where it falls between beats)
+or a sleep of the lease less one heartbeat or more (20 s) lapses a connected agent's open claims,
 because every client message runs `expire` before it is routed (`src/coordinator.rs:609-614`) and
 the next heartbeat is stamped after the sleep; the docs say so. An adversarial read rejected
 expiring on silence after a clock jump (a jump cannot be told from an idle host) and proposed
@@ -37,7 +41,8 @@ claim` adds to the agent's open claim only when it holds exactly one, so a lane 
 scatters its scopes over many claims, and `tessel submit` covers only the claim it names
 (`src/coordinator.rs:1425`): the orchestrator consolidated by releasing and re-claiming
 (CLAIM-SCATTER, below); `tessel stop` releases the agent's claims; the pre-push hook measures
-against the daemon's last view of the coordinator's head, stale until its next `Welcome`.
+against the daemon's last view of the coordinator's head, stale until its next `Welcome`, `Merged`
+or `BaseMoved` (`tessel-cli/src/state.rs:92`).
 **Earlier (27 November 02:10 UTC):** Main at `9e1bb97`. Felix resumed the build on 26 November after
 a pause from 1 November (his word). The Mac had rebooted about 13 November, so the dogfood server
 was down; the agent tokens had lapsed (about 7 November) and the GitHub token
@@ -1662,14 +1667,15 @@ Lane B:
   logs the cause of a 1013 close in `read_log` (`tessel-cli/src/daemon.rs` ~2576; the swarm's
   `tessel-swarm/src/conn.rs` ~240-245 already reports "code N: reason"). Done: `daemon.log` names a
   1013 close and its reason, with a test that fails without it.
-- [ ] **CLAIM-LEASE-LAPSE** (docs `bef0465`..`b1a61bb`, landed 27 November; the cause and the code
-  fix wait for Felix's decision on pausing leases while suspended) — S, lane B, from 30-31 October:
-  lane A's claim 137 lapsed (`lease_expired` in its inbox) while its daemon was running and online
-  and its agent idle, and the pre-push hook then refused the push; lane A's next agent found claim
-  138 gone too and took 139 (its report). Claim 125, by contrast, kept its lease for hours while its
-  agent was stopped (submitted and held for review then). Find out whether the daemon stops renewing
-  an idle claim, whether the lease is meant to end then (the skill and `docs/configuration.md` say
-  what), and fix the code or the docs; a test either way.
+- [ ] **CLAIM-LEASE-LAPSE** (docs `bef0465`..`b1a61bb`, landed 27 November; the mechanism is found,
+  claim 137's own lapse is not proven; the code fix waits for Felix's decision on pausing leases
+  while suspended) — S, lane B, from 30-31 October: lane A's claim 137 lapsed (`lease_expired` in
+  its inbox) while its daemon was running and online and its agent idle, and the pre-push hook then
+  refused the push; lane A's next agent found claim 138 gone too and took 139 (its report). Claim
+  125, by contrast, kept its lease for hours while its agent was stopped (submitted and held for
+  review then). Find out whether the daemon stops renewing an idle claim, whether the lease is meant
+  to end then (the skill and `docs/configuration.md` say what), and fix the code or the docs; a test
+  either way.
 - [x] **SUDO-STOP-RUN-RACE** (`b5a520d`..`80dba09`, landed by the server 31 October; Opus review
   "With changes", then "Yes"; a vote, 3-0 "Yes with should-fixes", which are SUDO-GATE-FOLLOWUPS) —
   S, lane B; from RUNNER-TIMING-FLAKES' REVIEW-1 ("For the orchestrator"), resting on it and the
@@ -1681,26 +1687,26 @@ Lane B:
   running kill rounds while waiting within `EXIT_GRACE`; Done: a test with the slow-start stub that
   the gate is free afterwards.
 - [ ] **SUDO-GATE-FOLLOWUPS** (code `930748f`..`9e1bb97`, landed by the server 27 November; vote 3-0
-  "Yes" after one fix pass; left: the `docs/dogfood.md` steps, blocked by claim 153 (Own users is
-  green on both images since #130); tick after them. Also left from the vote, small: a test driving
-  a read error through `output_bounded`; the real-account comment names the wrong stub test; a reap
-  after a failed wait may signal a reused pid if anything ever reaps children it did not start) — S,
-  lane B, merge path (`tessel-server/src/landing/`: voted); from SUDO-STOP-RUN-RACE's vote
-  (`~/tessel-orch-notes/2026-10-31/vote-sudo-stop-run/VOTE-1..3.md`, all "Yes with should-fixes"),
-  resting on it and the standing order. In `tessel-server/src/landing/sudo.rs`: a `try_wait` error
-  makes `wait_bounded` return at once, so `stop_run` runs `kill_all` (a `sudo` and a `ps`) back to
-  back for `EXIT_GRACE` and then logs the grace-close line, which is wrong for it (the `run_locked`
-  error path, ~298); close the gate and log the error at once on that error, with a test (VOTE-1).
-  `kill_once` and `survivors` call `Command::output()` with no timeout, though the module doc says
-  every wait is bounded: bound them or say so (VOTE-3). The four lines that close the gate are
-  worded differently and none names the account: one wording, naming the account and "until a
-  restart" (VOTE-3). A test for the grace-close log (a shared `OnceLock` subscriber in
-  `tessel-server/tests/sudo_runner.rs`; VOTE-2). A `sudo_runner_real.rs` case: a cancel on the first
-  poll after the spawn, which real `sudo` usually meets before it switches; the gate frees and the
-  account is empty (VOTE-1, VOTE-2). Docs: `docs/configuration.md` (~428) lists a `sudo` alive after
-  the grace as a cause of a closed gate and says the gate stays shut until a restart;
-  `docs/dogfood.md` gets the operator's steps for a closed gate (VOTE-3). Done: a test for each code
-  change, and the docs.
+  "Yes" after one fix pass; left: the `docs/dogfood.md` steps, blocked by claim 153 (Own users
+  passed on both images on #130's merge, 45938317308); tick after them. Also left from the vote,
+  small: a test driving a read error through `output_bounded`; the real-account comment names the
+  wrong stub test; a reap after a failed wait may signal a reused pid if anything ever reaps
+  children it did not start) — S, lane B, merge path (`tessel-server/src/landing/`: voted); from
+  SUDO-STOP-RUN-RACE's vote (`~/tessel-orch-notes/2026-10-31/vote-sudo-stop-run/VOTE-1..3.md`, all
+  "Yes with should-fixes"), resting on it and the standing order. In
+  `tessel-server/src/landing/sudo.rs`: a `try_wait` error makes `wait_bounded` return at once, so
+  `stop_run` runs `kill_all` (a `sudo` and a `ps`) back to back for `EXIT_GRACE` and then logs the
+  grace-close line, which is wrong for it (the `run_locked` error path, ~298); close the gate and
+  log the error at once on that error, with a test (VOTE-1). `kill_once` and `survivors` call
+  `Command::output()` with no timeout, though the module doc says every wait is bounded: bound them
+  or say so (VOTE-3). The four lines that close the gate are worded differently and none names the
+  account: one wording, naming the account and "until a restart" (VOTE-3). A test for the
+  grace-close log (a shared `OnceLock` subscriber in `tessel-server/tests/sudo_runner.rs`; VOTE-2).
+  A `sudo_runner_real.rs` case: a cancel on the first poll after the spawn, which real `sudo`
+  usually meets before it switches; the gate frees and the account is empty (VOTE-1, VOTE-2). Docs:
+  `docs/configuration.md` (~428) lists a `sudo` alive after the grace as a cause of a closed gate
+  and says the gate stays shut until a restart; `docs/dogfood.md` gets the operator's steps for a
+  closed gate (VOTE-3). Done: a test for each code change, and the docs.
 - [ ] **MUTANTS-DOUBT-PACING** — S, lane A, merge path (`src/coordinator/`: voted); from the Nightly
   of 1 November and the triage (`~/tessel-orch-notes/2026-11-26/nightly-mutants/TRIAGE.md`). Kill
   `Coordinator::prepared`'s `doubts` reset (a doubt a `Prepared` on another base ends restarts at
@@ -1711,15 +1717,17 @@ Lane B:
   handling) and the unreachable `wait_in_doubt` branch of `reconcile_refused_prepare`; a host test
   of the "retrying (attempt N of 3)" line (`Pending::attempts`). Done: the 9 core and host names are
   no longer missed and the baseline does not grow.
-- [x] **SIM-MUTANTS-2** (`6ea5508`..`d9da509`, landed by the server 27 November; Opus review Yes) —
-  M, lane B (`src/sim`), after SIM-HEAD-UNREADABLE; from the same triage. Tests for the 42 simulator
-  mutants that are real gaps: `Lander` unit tests (`test`'s flaky flip, `fate_of`'s rate window,
-  `reconcile`'s run of `Unknown`s, `plan`'s counters), a `stored_difference` unit test, scripted
-  I12, I6 and `expire_call` cases, the harness arms' assertions, a golden `candidate_head`; delete
-  `Sim::epoch` (no callers) and `fate_of`'s redundant guard; exclude in `.cargo/mutants.toml` only
-  the 8 names whose criterion SIM-MUTANTS set holds (the fault dice and `note_late_land`), each with
-  its reason. Claims `--mode edit-signature` on `src/sim/driver.rs` (`Sim::epoch` goes), so the
-  submission is held for review. Done: the Nightly's full mutants job passes its baseline.
+- [x] **SIM-MUTANTS-2** (`6ea5508`..`d9da509`, landed by the server 27 November; Opus review With
+  changes, its must-fix made in `ffa7e9c`, re-check Yes; the Done's Nightly pass is not yet seen: it
+  also needs MUTANTS-DOUBT-PACING's 9 names) — M, lane B (`src/sim`), after SIM-HEAD-UNREADABLE;
+  from the same triage. Tests for the 42 simulator mutants that are real gaps: `Lander` unit tests
+  (`test`'s flaky flip, `fate_of`'s rate window, `reconcile`'s run of `Unknown`s, `plan`'s
+  counters), a `stored_difference` unit test, scripted I12, I6 and `expire_call` cases, the harness
+  arms' assertions, a golden `candidate_head`; delete `Sim::epoch` (no callers) and `fate_of`'s
+  redundant guard; exclude in `.cargo/mutants.toml` only the 8 names whose criterion SIM-MUTANTS set
+  holds (the fault dice and `note_late_land`), each with its reason. Claims `--mode edit-signature`
+  on `src/sim/driver.rs` (`Sim::epoch` goes), so the submission is held for review. Done: the
+  Nightly's full mutants job passes its baseline.
 - [x] **LANDING-MUTANTS-IN-DIFF** (#131, merged 27 November as `7fc1bb2`; Opus review Yes;
   tessel-server and tessel-cli not added: MUTANTS-SERVER-CLI-IN-DIFF) — S, lane B
   (`.github/workflows/`); from the triage. The per-change mutants job runs only on pull requests
@@ -1729,16 +1737,17 @@ Lane B:
 - [ ] **HOST-SQLITE-RETRY-BACKOFF** — S, lane B; from HOST-HARDENING-FOLLOWUPS (its row's item,
   dropped by the brief, unassessed). The persist retry repeats at once; decide, with a test,
   whether real SQLite failures (busy, disk full, I/O) need a backoff.
-- [x] **SUDO-RS-RUNNER** (#130, merged 27 November as `0ed8cb8`; vote 3-0 Yes after two fix passes)
-  — M, lane A, merge path if `tessel-server/src/landing/` changes; from Own users 45921694300 and
-  the rerun of 41243983653 (27 November). On ubuntu-26.04 the account's processes survive `kill
-  -KILL -1` after a cancelled run and the script's `sudo -l -U` check fails, on code that passed
-  there on 24.04 (`80dba09`, 31 October); anyone running the accounts on Ubuntu 26.04 likely meets
-  the same. Find which `sudo` the image ships and why (a diagnostic run that dumps `ps -o
-  pid,ppid,stat,comm -U _tessel-runner` and `sudo -V`), make `SudoRunner` and
-  `scripts/ci/own-users-linux.sh` work with it, add a stub that forks the runner under a parent
-  `sudo` (every stub now `exec`s, which hides parent and child), and move the Own users job back to
-  `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green on ubuntu-26.04.
+- [x] **SUDO-RS-RUNNER** (#130, merged 27 November as `0ed8cb8`; vote 3-0 for, after two fix passes;
+  VOTE-3's last vote Yes with should-fixes, PR text only) — M, lane A, merge path if
+  `tessel-server/src/landing/` changes; from Own users 45921694300 and the rerun of 41243983653 (27
+  November). On ubuntu-26.04 the account's processes survive `kill -KILL -1` after a cancelled run
+  and the script's `sudo -l -U` check fails, on code that passed there on 24.04 (`80dba09`, 31
+  October); anyone running the accounts on Ubuntu 26.04 likely meets the same. Find which `sudo` the
+  image ships and why (a diagnostic run that dumps `ps -o pid,ppid,stat,comm -U _tessel-runner` and
+  `sudo -V`), make `SudoRunner` and `scripts/ci/own-users-linux.sh` work with it, add a stub that
+  forks the runner under a parent `sudo` (every stub now `exec`s, which hides parent and child), and
+  move the Own users job back to `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green
+  on ubuntu-26.04.
 - [ ] **MUTANTS-SERVER-CLI-IN-DIFF** — S, lane A (`.github/workflows/`, by pull request); from
   LANDING-MUTANTS-IN-DIFF. The per-change mutants mutate only tessel-coordinator and tessel-lander,
   so tessel-server and tessel-cli changes are never mutated (PR #130's VOTE-1). Their tests take
@@ -1753,8 +1762,10 @@ Lane B:
   agent's open claim only when it holds exactly one; a lane holding two tasks' claims gets a new
   claim per `tessel claim`, and `tessel submit --claim` covers only the claim it names
   (`src/coordinator.rs:1425`), so the orchestrator had to release and re-claim to submit. Let a
-  claim be extended by number (`tessel claim --into <claim>`) or submit cover several claims;
-  decide with a test. Also say in the skill that `tessel stop` releases claims.
+  claim be extended by number (`tessel claim --into <claim>`) or submit cover several claims; decide
+  with a test. Also make the skill's "To change it, `tessel stop`, then `start`" (SKILL.md:48) say
+  that this releases the claims. Submit covering several claims changes `Submit`, which names one
+  claim: additive under rule 1, or ask Felix.
 - [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
   the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
   `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
