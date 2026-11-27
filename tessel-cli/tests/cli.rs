@@ -3629,3 +3629,37 @@ async fn claim_into_a_race_entry_is_refused_and_sends_nothing() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_claim_whose_grant_fails_to_send_is_held_and_the_notice_says_so() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("hold it")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("need it")?;
+    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
+    let before = hellos(&fake, "a2");
+    fake.fail_next_grant("a2");
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    back_online(&fake, &a2, before).await?;
+    eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(()))).await?;
+    assert_eq!(
+        claim_ids(&a2)?.len(),
+        1,
+        "exactly the claim that was granted"
+    );
+    let inbox = a2.tessel(&["inbox", "--all"])?;
+    assert!(
+        !inbox.stdout.contains("claim again"),
+        "the notice sends the agent to claim what it holds: {}",
+        inbox.stdout
+    );
+    assert!(
+        inbox
+            .stdout
+            .contains("--wait claim queued before the connection dropped was granted"),
+        "{}",
+        inbox.stdout
+    );
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 3, "a2 holds it");
+    Ok(())
+}

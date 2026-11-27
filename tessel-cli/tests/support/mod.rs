@@ -136,6 +136,8 @@ struct Inner {
     hold_watch: AtomicBool,
     watch_gate: Notify,
     lose: Mutex<Vec<(String, Lose)>>,
+    /// Agents whose next `Granted` fails to send: the adapter reports `SendFailed` for it.
+    fail_grants: Mutex<Vec<String>>,
     /// Milliseconds the coordinator clock runs ahead of the real one (`Fake::advance_clock`).
     skew_ms: AtomicU64,
     /// When `Fake::freeze_clock` stopped the coordinator clock; zero while it runs.
@@ -267,7 +269,13 @@ impl Inner {
                     st.store.extend(entries);
                     pending.push_back(Input::Committed { now_ms, batch });
                 }
-                HostOutput::Send { sock, msg } => self.send(st, sock, msg),
+                HostOutput::Send { sock, msg } => {
+                    if self.grant_fails(st, sock, &msg) {
+                        pending.push_back(Input::SendFailed { now_ms, sock });
+                    } else {
+                        self.send(st, sock, msg);
+                    }
+                }
                 HostOutput::SetSession { sock, session } => set_session(st, sock, session),
                 HostOutput::Close { sock, code, reason } => {
                     if let Some(entry) = st.sockets.get(&sock) {
@@ -326,6 +334,27 @@ impl Inner {
             .take(limit)
             .collect();
         (page, false)
+    }
+
+    /// Whether `msg` is the `Granted` that `fail_next_grant` marked for the agent of `sock`: it is
+    /// never written, and the host is told the send failed, as a broken socket tells it.
+    fn grant_fails(&self, st: &State, sock: SocketId, msg: &ServerMsg) -> bool {
+        if !matches!(msg, ServerMsg::Granted { .. }) {
+            return false;
+        }
+        let agent = st
+            .sockets
+            .get(&sock)
+            .and_then(|entry| entry.session.verified.as_ref());
+        let Some(agent) = agent else {
+            return false;
+        };
+        let mut marked = lock(&self.fail_grants);
+        let Some(at) = marked.iter().position(|who| *who == agent.0) else {
+            return false;
+        };
+        marked.remove(at);
+        true
     }
 
     /// Writes `msg` to `sock`, unless it is the socket whose frame is being handled and its
@@ -735,6 +764,7 @@ impl Fake {
             hold_watch: AtomicBool::new(false),
             watch_gate: Notify::new(),
             lose: Mutex::new(Vec::new()),
+            fail_grants: Mutex::new(Vec::new()),
             skew_ms: AtomicU64::new(0),
             frozen_at_ms: AtomicU64::new(0),
             wake_changed: Notify::new(),
@@ -1038,6 +1068,12 @@ impl Fake {
     /// and `1011 replay read failed` do. `None` goes back to a close without a code.
     pub fn cut_replay_close(&self, close: Option<(u16, &str)>) {
         *lock(&self.inner.cut_close) = close.map(|(code, reason)| (code, reason.to_string()));
+    }
+
+    /// Makes the next `Granted` the coordinator sends to `agent` fail to send: the claim is
+    /// granted and stored, the host closes the socket as for any failed send.
+    pub fn fail_next_grant(&self, agent: &str) {
+        lock(&self.inner.fail_grants).push(agent.to_string());
     }
 
     /// Loses the next message of this kind from `agent`.
