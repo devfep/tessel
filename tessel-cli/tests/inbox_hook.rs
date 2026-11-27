@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use support::{eventually, git, Agent, Done, Fake};
 use tessel_coordinator::protocol::{
     AgentId, ClaimId, ClientMsg, CommitId, RequestId, ReviewReason, Scope, ServerMsg, LOST_RACE,
-    NOT_PICKED,
+    NOT_PICKED, TESTS_GAVE_NO_RESULT,
 };
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -521,40 +521,36 @@ async fn push_rejections(fake: &Fake, a1: &Agent, rejections: &[(u64, &str)]) ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_keeps_the_ordinary_text_when_a_rejection_is_mixed_with_a_race_one() -> Result<()> {
-    let (fake, a1) = world().await?;
-    let claim = submitted_claim(&a1)?;
-    let mixed = [(claim, LOST_RACE), (claim + 50, "merge conflict")];
-    push_rejections(&fake, &a1, &mixed).await?;
+    let (_fake, a1) = world().await?;
+    a1.start("mixed")?;
+    append_ended_entry(&a1, 9, LOST_RACE, Some(true))?;
+    append_ended_entry(&a1, 10, "merge conflict", Some(false))?;
     let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
-    assert!(shown.contains("`tessel submit` again"), "{shown}");
-    assert!(
-        shown.contains(&format!("claim {claim}, your race entry, ended")),
-        "{shown}"
-    );
+    let lead = shown.lines().next().unwrap_or_default();
+    assert!(lead.contains("claim is active again"), "{shown}");
+    assert!(!lead.contains("race entry was rejected"), "{shown}");
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_keeps_the_ordinary_text_when_a_race_rejection_comes_with_an_uncovered_notice(
 ) -> Result<()> {
-    let (fake, a1) = world().await?;
-    let claim = submitted_claim(&a1)?;
-    push_rejections(&fake, &a1, &[(claim, LOST_RACE)]).await?;
-    fake.push(
-        "a1",
-        ServerMsg::Uncovered {
-            req: None,
-            claim: ClaimId(claim),
-            scopes: vec![],
-        },
-    );
-    eventually(SHORT, || {
-        let inbox = std::fs::read_to_string(a1.root().join(".tessel/inbox.jsonl"))?;
-        Ok(inbox.contains("\"kind\":\"uncovered\"").then_some(()))
-    })
-    .await?;
+    let (_fake, a1) = world().await?;
+    a1.start("uncovered")?;
+    append_ended_entry(&a1, 9, LOST_RACE, Some(true))?;
+    let uncovered = ServerMsg::Uncovered {
+        req: None,
+        claim: ClaimId(10),
+        scopes: vec![],
+    };
+    append_line(
+        &a1,
+        &serde_json::from_str(&server_line("uncovered", &uncovered)?)?,
+    )?;
     let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
-    assert!(shown.contains("`tessel submit` again"), "{shown}");
+    let lead = shown.lines().next().unwrap_or_default();
+    assert!(lead.contains("claim is active again"), "{shown}");
+    assert!(!lead.contains("race entry was rejected"), "{shown}");
     Ok(())
 }
 
@@ -833,17 +829,20 @@ async fn stop_keeps_the_ordinary_text_for_a_race_text_on_a_claim_that_is_no_race
     let claim = submitted_claim(&a1)?;
     push_rejections(&fake, &a1, &[(claim, LOST_RACE)]).await?;
     let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
+    let inbox = std::fs::read_to_string(a1.root().join(".tessel/inbox.jsonl"))?;
+    assert!(inbox.contains(r#""race_entry_ended":false"#), "{inbox}");
     // The claim is still held and active again: the daemon found no race mark on it, so the hook
     // must not say its claim ended.
     assert!(shown.contains("`tessel submit` again"), "{shown}");
     assert!(!shown.contains("its claim ended"), "{shown}");
+    // The card says the same: a held claim is not a dead race entry, whatever the text says.
+    assert!(!shown.contains("your race entry, ended"), "{shown}");
     Ok(())
 }
 
 /// Appends a notice the daemon would have written for a race entry that ended: the core's text
 /// and the daemon's own mark.
-fn append_ended_entry(agent: &Agent, claim: u64, reason: &str, ended: bool) -> Result<()> {
-    use std::io::Write;
+fn append_ended_entry(agent: &Agent, claim: u64, reason: &str, ended: Option<bool>) -> Result<()> {
     let msg = ServerMsg::SubmitRejected {
         claim: ClaimId(claim),
         reason: reason.into(),
@@ -851,7 +850,15 @@ fn append_ended_entry(agent: &Agent, claim: u64, reason: &str, ended: bool) -> R
         note: None,
     };
     let mut line: Value = serde_json::from_str(&server_line("submit_rejected", &msg)?)?;
-    line["race_entry_ended"] = json!(ended);
+    if let Some(ended) = ended {
+        line["race_entry_ended"] = json!(ended);
+    }
+    append_line(agent, &line)
+}
+
+/// Appends one line to the agent's inbox, as the daemon would.
+fn append_line(agent: &Agent, line: &Value) -> Result<()> {
+    use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -862,10 +869,17 @@ fn append_ended_entry(agent: &Agent, claim: u64, reason: &str, ended: bool) -> R
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_tells_a_race_loser_its_claim_ended_and_how_to_ship_the_work() -> Result<()> {
-    for reason in [LOST_RACE, NOT_PICKED] {
+    // `None` is a line written by a daemon before the mark existed: the text decides.
+    let cases = [
+        (LOST_RACE, Some(true)),
+        (NOT_PICKED, Some(true)),
+        (TESTS_GAVE_NO_RESULT, Some(true)),
+        (NOT_PICKED, None),
+    ];
+    for (reason, mark) in cases {
         let (_fake, a1) = world().await?;
         a1.start("race loser")?;
-        append_ended_entry(&a1, 9, reason, true)?;
+        append_ended_entry(&a1, 9, reason, mark)?;
         let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
         assert!(
             shown.contains("race entry was rejected and its claim ended"),

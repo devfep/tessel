@@ -3446,3 +3446,39 @@ async fn a_stop_whose_log_read_is_closed_early_logs_the_close() -> Result<()> {
     assert!(log.contains(shown), "{log}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stop_hook_of_a_real_race_loser_says_its_claim_ended_before_any_inbox_read(
+) -> Result<()> {
+    let (fake, _a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "1", "human_pick")?;
+    a2.start("race for b")?;
+    assert_eq!(a2.tessel(&["race", "join", &race.to_string()])?.code, 0);
+    submit_entry(&a2, "only")?;
+    eventually(SHORT, || Ok(fake.verify_next(true).then_some(()))).await?;
+    fake.advance_clock(3 * 60 * 60 * 1000);
+    fake.settle_expiry().await;
+    // Read the inbox file, not `tessel inbox`: the hook reads only notices nobody has read.
+    let inbox = a2.root().join(".tessel/inbox.jsonl");
+    let line = eventually(SHORT, || {
+        let text = std::fs::read_to_string(&inbox).unwrap_or_default();
+        Ok(text
+            .lines()
+            .find(|line| line.contains(NOT_PICKED))
+            .map(str::to_owned))
+    })
+    .await?;
+    assert!(line.contains(r#""race_entry_ended":true"#), "{line}");
+    let root = a2.root().display().to_string();
+    let stop = r#"{"hook_event_name":"Stop","stop_hook_active":false}"#;
+    let done =
+        a2.tessel_with_stdin(&["hook", "stop", "--root", &root, "--wait-ms", "600"], stop)?;
+    let doc: Value = serde_json::from_str(&done.stdout).with_context(|| done.all())?;
+    let shown = doc["reason"].as_str().context("no reason")?;
+    assert!(
+        shown.contains("race entry was rejected and its claim ended"),
+        "{shown}"
+    );
+    assert!(!shown.contains("claim is active again"), "{shown}");
+    Ok(())
+}
