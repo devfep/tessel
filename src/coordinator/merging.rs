@@ -243,10 +243,11 @@ impl Coordinator {
 
     /// The `Prepare` of a submission in doubt is going out: its wait is over. The marker the host
     /// stores before the call says so, which tells a restart that the call may have run.
+    ///
+    /// Only the `Prepare` of a submission in doubt can still hold a wait that has not run out:
+    /// any other flight is offered once its backoff is over, so a wait it holds is already past
+    /// and clearing it changes no decision (every reader compares it with the clock).
     fn release_doubt_wait(&mut self, flight: &InFlight) {
-        if flight.stage != MergeStage::Prepare || flight.doubt_since_ms.is_none() {
-            return;
-        }
         let work = self
             .state
             .claims
@@ -943,15 +944,11 @@ impl Coordinator {
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
         };
+        if is_fenced(&work) {
+            return self.wait_in_doubt(flight, held, now_ms);
+        }
         if may_have_landed {
             mark_doubt(&mut work, dispatched_from, None);
-        }
-        if is_fenced(&work) {
-            let held = ActiveClaim {
-                work: Some(work),
-                ..held
-            };
-            return self.wait_in_doubt(flight, held, now_ms);
         }
         work.infra_failures += 1;
         if work.infra_failures > MAX_INFRA_RETRIES {

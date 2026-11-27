@@ -138,7 +138,8 @@ impl Coordinator {
     /// The submission is in doubt and a step of the merge failed or was refused: nothing is
     /// counted and nothing is rejected. After the doubts' capped backoff the merge goes back to
     /// `Prepare` under a new dispatch id, which makes the candidate ref again for a copy of the
-    /// `Land` that has not run yet.
+    /// `Land` that has not run yet. The submitter is told nothing here: the claim is fenced, so a
+    /// `Land` left it in doubt (`enter_doubt`), told them, and set the flight's `doubt_since_ms`.
     pub(super) fn wait_in_doubt(
         &mut self,
         flight: InFlight,
@@ -151,20 +152,16 @@ impl Coordinator {
         let doubts = flight.doubts + 1;
         let wait = infra_backoff_ms(doubts.min(MAX_INFRA_RETRIES));
         work.retry_at_ms = Some(now_ms.saturating_add(wait));
-        let first = flight.doubt_since_ms.is_none();
-        let since = flight.doubt_since_ms.unwrap_or(now_ms);
-        let (claim, agent) = (flight.claim, held.agent.clone());
-        self.keep_work(claim, held, work);
+        self.keep_work(flight.claim, held, work);
         let dispatch = self.state.last_dispatch + 1;
         self.state.last_dispatch = dispatch;
         self.state.merge_in_flight = Some(InFlight {
             dispatch,
             stage: MergeStage::Prepare,
             doubts,
-            doubt_since_ms: Some(since),
             ..flight
         });
-        Self::doubt_notice(first, claim, agent, since)
+        Vec::new()
     }
 
     /// A `Prepare` or a `Test` of a submission in doubt of the `pair` cannot say where main is
@@ -183,11 +180,6 @@ impl Coordinator {
         let dispatch = self.state.last_dispatch + 1;
         self.state.last_dispatch = dispatch;
         let flight = InFlight { dispatch, ..flight };
-        let work = held.work.clone().map(|work| Submission {
-            retry_at_ms: None,
-            ..work
-        });
-        let held = ActiveClaim { work, ..held };
         self.enter_doubt(flight, held, pair, (pace, now_ms))
     }
 
@@ -206,10 +198,8 @@ impl Coordinator {
             .work
             .as_ref()
             .and_then(|work| work.doubted_land.clone());
-        let Some(pair) = pair else {
-            return self.wait_in_doubt(flight, held, now_ms);
-        };
-        self.reconcile_before_ending(flight, held, pair, (Pace::Backoff, now_ms))
+        pair.map(|pair| self.reconcile_before_ending(flight, held, pair, (Pace::Backoff, now_ms)))
+            .unwrap_or_default()
     }
 
     /// Tell the submitter their landing is in doubt, the first time only.
