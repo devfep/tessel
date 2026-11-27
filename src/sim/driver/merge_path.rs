@@ -826,10 +826,7 @@ pub(super) mod tests {
             );
         }
         let reasons = rejection_reasons(&sim);
-        assert_eq!(
-            reasons,
-            ["the tests gave no result, so no trial judged this entry"]
-        );
+        assert_eq!(reasons, [crate::protocol::TESTS_GAVE_NO_RESULT]);
         let found = check::run(&sim, &Checker::ALL);
         assert!(found.is_empty(), "{found:?}");
     }
