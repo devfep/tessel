@@ -876,3 +876,17 @@ async fn an_approval_that_lands_while_offline_is_rebuilt_from_the_log_on_reconne
     assert!(reason.contains("server's lander"), "{reason}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_keeps_the_ordinary_text_for_a_race_text_on_a_claim_that_is_no_race_entry(
+) -> Result<()> {
+    let (fake, a1) = world().await?;
+    let claim = submitted_claim(&a1)?;
+    push_rejections(&fake, &a1, &[(claim, "lost the race")]).await?;
+    let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
+    // The claim is still held and active again: the daemon found no race mark on it, so the hook
+    // must not say its claim ended.
+    assert!(shown.contains("`tessel submit` again"), "{shown}");
+    assert!(!shown.contains("its claim ended"), "{shown}");
+    Ok(())
+}
