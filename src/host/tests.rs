@@ -4674,3 +4674,25 @@ fn host_a_restart_with_a_hello_adopted_head_reads_main_at_its_first_wake_and_not
     assert_eq!(state(&kit)["head_from_hello"], json!(null));
     assert_eq!(kit.wake(), None, "and nothing more is owed");
 }
+
+#[test]
+fn host_an_empty_done_page_nobody_waits_for_closes_nothing() {
+    let mut kit = kit();
+    let a1 = welcomed(&mut kit, "a1");
+    let now_ms = kit.now_ms();
+    let mark = kit.history().len();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: a1,
+        events: Vec::new(),
+        done: true,
+    });
+    assert_eq!(labels_since(&kit, mark), ["Log"]);
+    assert_eq!(
+        close_of(&kit, a1),
+        None,
+        "an open socket with no replay stays open"
+    );
+    let line = kit.logs().last().unwrap();
+    assert!(line.contains("no replay waits for this page"), "{line}");
+}
