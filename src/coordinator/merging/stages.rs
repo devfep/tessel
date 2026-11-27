@@ -2382,31 +2382,3 @@ fn an_answer_to_the_waiting_prepare_of_a_doubt_changes_nothing_until_it_is_offer
         "an offered Prepare is answered"
     );
 }
-
-#[test]
-fn an_answer_to_the_reconcile_that_waits_changes_nothing_until_it_is_offered() {
-    let (mut c, claim, _) = in_doubt_after_unknown();
-    let due = retry_at(&c, claim);
-    let before = state_without_clock(&c);
-    let landed = Reconciliation::Landed;
-    let dispatch = c
-        .state
-        .merge_in_flight
-        .as_ref()
-        .expect("a Reconcile waits")
-        .dispatch;
-    let effects = c.reconcile_outcome(dispatch, &landed, due - 1);
-    assert!(effects.is_empty(), "{effects:?}");
-    assert_eq!(
-        state_without_clock(&c),
-        before,
-        "an unoffered Reconcile was answered"
-    );
-    let offered = c.begin_merge(due).expect("the Reconcile is due");
-    c.reconcile_outcome(offered.id, &landed, due + 1);
-    assert_ne!(
-        state_without_clock(&c),
-        before,
-        "an offered Reconcile is answered"
-    );
-}

@@ -174,9 +174,9 @@ impl Coordinator {
     /// out on its word. A `Reconcile` under a new dispatch id asks whether the head is on main;
     /// its answer lands the work, sends the `Land` again or ends the doubt as any `Reconcile`
     /// does. Nothing is counted. `pace` says whether it goes out at once or after the backoff.
-    /// Only an offered dispatch is answered (see `release_wait`): the flight answered here was
-    /// offered, so the wait its claim held is already cleared or past, and `AtOnce` need not
-    /// clear it.
+    /// Only an offered dispatch is answered (see `release_wait`; `merge_outcome` ignores the answer
+    /// to an unoffered `Prepare`): the flight answered here was offered, so the wait its claim held
+    /// is already cleared or past, and `AtOnce` need not clear it.
     pub(super) fn reconcile_before_ending(
         &mut self,
         flight: InFlight,

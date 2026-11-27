@@ -248,9 +248,10 @@ impl Coordinator {
     /// flight is offered once its backoff is over, so a wait it holds is already past and clearing
     /// it changes no decision (every reader compares it with the clock).
     ///
-    /// This assumes only an offered dispatch is answered, as the host and the simulator do: an
-    /// answer to the `Prepare` of a wait that `begin_merge` has not offered yet would be taken
-    /// before its backoff, with the wait still set.
+    /// `merge_outcome` ignores an answer to the waiting `Prepare` (`is_unoffered_prepare`), so no
+    /// answer takes it early with its wait still set. A `Reconcile` that waits is not ignored: the
+    /// operator's `resolve_doubt` answers it, and a late answer to the `Land` shares its
+    /// dispatch id.
     fn release_wait(&mut self, flight: &InFlight) {
         let work = self
             .state
@@ -260,6 +261,18 @@ impl Coordinator {
         if let Some(work) = work {
             work.retry_at_ms = None;
         }
+    }
+
+    /// Whether `dispatch` is the merge in flight and `begin_merge` has not offered it yet: its
+    /// `Prepare` is the one `wait_in_doubt` made, still inside its backoff. No call went out for
+    /// it, so no answer to it can be real; one is ignored like an answer to a stale dispatch.
+    pub(super) fn is_unoffered_prepare(&self, dispatch: u64, now_ms: u64) -> bool {
+        let flight = self.state.merge_in_flight.as_ref();
+        flight.is_some_and(|flight| {
+            flight.dispatch == dispatch
+                && flight.stage == MergeStage::Prepare
+                && self.flight_waits(flight, now_ms)
+        })
     }
 
     /// Whether `flight` is still waiting out a backoff: a `Reconcile` after an `Unknown`, or the
@@ -419,6 +432,9 @@ impl Coordinator {
         now_ms: u64,
     ) -> Vec<Effect> {
         let now_ms = self.advance_clock(now_ms);
+        if self.is_unoffered_prepare(dispatch, now_ms) {
+            return Vec::new();
+        }
         let Some(flight) = self
             .state
             .merge_in_flight
