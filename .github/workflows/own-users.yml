@@ -48,7 +48,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 26.04 ships sudo-rs and a procps whose kill does not parse `-KILL -1`.
+        # On ubuntu-26.04 `kill -KILL -1` run through the rule fails to parse; `kill -KILL -- -1`
+        # works. The job prints the sudo and kill each image ran.
         os: [ubuntu-24.04, ubuntu-26.04]
     timeout-minutes: 20
     steps:
@@ -57,7 +58,7 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          shared-key: own-users
+          shared-key: own-users-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the runner and the real-sudo test
         run: |
@@ -69,6 +70,10 @@ jobs:
           test -s "$RUNNER_TEMP/test-binary"
       - name: Shell lint
         run: shellcheck -s bash scripts/ci/own-users-linux.sh
+      - name: Show the sudo and kill of this image
+        run: |
+          sudo -V | head -1
+          /usr/bin/kill --version
       - name: Check the account boundary
         run: |
           sudo scripts/ci/own-users-linux.sh target/release/tessel-runner \
