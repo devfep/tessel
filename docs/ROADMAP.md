@@ -7,7 +7,49 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 12:40 UTC. Main and the coordinator's head at `98d1a51`. Three landings
+**As of:** 2026-11-27 17:50 UTC. Main and the coordinator's head at `228f5d1`.
+COORD-UNDELIVERED-GRANT landed through the server at 17:44 UTC as `121461c`..`228f5d1` (claim 212,
+rebased onto `4b1032f`), on an Opus review (REVIEW-1 "No", five must-fixes; re-check 1 "No", one
+test-only must-fix; re-check 2 "Yes" on `7ce3c76`;
+`~/tessel-orch-notes/2026-11-27/lane-b/coord-undelivered-grant/`), in the CLI only. A `Granted` that
+fails to send already left the claim held (decision 7, pinned by
+`host_a_grant_that_fails_to_send_keeps_the_claim_until_its_lease_lapses`), and the daemon's
+reconnect already adopted it on a complete log read, so there was no orphan; but the daemon told a
+`--wait` caller "withdrawn, claim again" and called the claim unexplained. Now the reconnect plan
+matches a lost wait (same scopes, ahead of lost requests, once per wait) and says it was granted and
+is tracked; after a cut log read it says the outcome is unknown and heartbeats keep the claim until
+a complete read adopts it. Its first submission failed in the runner on an unrelated test
+(`tessel-server/tests/landing.rs`
+`a_rebase_over_another_landing_keeps_what_a_note_follows_a_commit_by`: `Landing::new` got
+`UnsupportedGit { found: "" }`, an empty `git --version`); the orchestrator resubmitted it once,
+with that failure as evidence (LANDER-VERSION-CHECK). Main's Adapter suite (46044219237) passed on
+`228f5d1`; its CI (46044219286) passed. Both lanes' claims, 207 (lane A) and 209 (lane B), lapsed at
+the same millisecond, 13:29:07.744 UTC, under load from a VM that isn't ours (about 117 at 14:52
+UTC; not read at 13:29), which fits one expiry step after the server stalled past the lease less a
+heartbeat (an inference: the server logs no info line then), the CLAIM-LEASE-LAPSE mechanism under
+load rather than sleep. Lane B re-claimed as 212; lane A's 210 and 211 lapsed too, 1 ms apart at
+15:02:38.812 UTC (lease_expired in its inbox, its daemon connected), and it took 213. The same load
+hung `tessel-swarm`'s `the_tasks_a_cut_off_agent_never_took_are_done_by_the_others` for 85 minutes
+while lane B's gate held the cargo lock; the orchestrator stopped that test, which then passed alone
+in 8 s; the briefs now run cargo under `timeout 600`. The Nightly (45995920783, on `941db87`) failed
+its full-mutants job: 5 missed in all, 3 in the baseline and 2 new (NIGHTLY-MISSED-1127; the 26
+November Nightly: 67 missed, 59 new), and 3 timeouts, which it only warns about (`src/shell.rs:32`,
+`src/host/mod.rs:471`, `src/host/testkit.rs:201`). NIGHTLY-MISSED-1127 went to lane A (claim 213);
+its merge-path vote on `d857f4d` was one "No" and two "Yes with should-fixes"
+(`~/tessel-orch-notes/2026-11-27/vote-nightly-missed-1127/`): the new test killed the
+`replay.rs:187` mutant only by releasing an event the store never held, and the voters' replacements
+answer storage out of order, which the host's contract (`src/host/mod.rs`) excludes; lane B's
+read-only look (`lane-b/replay-order-contract/REPORT.md`, no run) proposes one in-order case, a
+failed commit attempt that stored its rows, which no current adapter produces; VOTE-2 and VOTE-3
+found that the retain after each page already drops what the check lets in, so fix pass 1 first
+checks whether that case can tell `<` apart. The `resend_land` mutant is baselined with its line
+kept: a past-due wait can reach that line (the lane's note said none could; VOTE-2 and VOTE-3 showed
+one), and no reader can tell it from none. SIM-DOUBT-PREPARED-TRAFFIC's Opus review was "No" on
+`0875abb` (`lane-a/sim-doubt-prepared-traffic/REVIEW-1.md`): the row's `prepared()` break is still
+caught on 0 of seeds 0..19, because the new knob mostly drives `resend_land`, not `prepared()`; its
+fix pass follows NIGHTLY-MISSED-1127's. P1-ADAPTER-SUITE's rest went to lane B at 17:45 UTC. PR #137
+(the 12:40 record) merged as `4b1032f`.
+**Earlier (27 November 12:40 UTC):** Main and the coordinator's head at `98d1a51`. Three landings
 through the server since 10:20. HOST-SQLITE-RETRY-BACKOFF at 10:58 UTC as `3507e72`..`941db87`
 (claim 203, rebased onto `ff6e7af`; the orchestrator copied the five notes at 10:59:07 UTC, nine
 seconds before the daemon's retry found them noted), on a 3-0 vote after two fix passes (all three
@@ -431,10 +473,16 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- SIM-DOUBT-PREPARED-TRAFFIC (lane A, dispatched about 12:15 UTC, branch
-  task-sim-doubt-prepared-traffic from `5eff16e`;
+- NIGHTLY-MISSED-1127 (lane A, claim 213, branch task-nightly-missed-1127 from `98d1a51`; fix pass 1
+  after the vote; `~/tessel-orch-notes/2026-11-27/nightly-missed-1127/`).
+- SIM-DOUBT-PREPARED-TRAFFIC (lane A, branch task-sim-doubt-prepared-traffic at `0875abb`; Opus
+  review "No"; fix pass 1 begun, paused as a local WIP commit until NIGHTLY-MISSED-1127's;
   `~/tessel-orch-notes/2026-11-27/lane-a/sim-doubt-prepared-traffic/`).
-- Lane B: idle; its next task follows this record.
+- P1-ADAPTER-SUITE's rest (lane B, dispatched 17:45 UTC, branch task-adapter-suite-rest from
+  `228f5d1`; design approved: a watcher that never reads, corrupt store rows, and a panicking repo
+  task, whose only code change is a wrapper in `tessel-server/src/repo.rs` that logs the panic with
+  the repository; no `src/host` or core change;
+  `~/tessel-orch-notes/2026-11-27/lane-b/adapter-suite-rest/`).
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -484,29 +532,32 @@ Felix's own force-push was refused. A `pre-push` hook in the checkout's shared h
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
 **Waiting on Felix** (the tokens were renewed, the build cap lowered and ruleset step 3 made, STATE
 above): whether leases pause while the machine is suspended (CLAIM-LEASE-LAPSE, PROPOSAL-SUSPEND.md
-above; it changes I10); a second reviewer, to decide claim 153, which now also blocks lanes (the
-coordinator denied SUDO-GATE-FOLLOWUPS' `docs/dogfood.md` claim, by lane A's report);
-RUNNER-OWN-UID's sudo steps; whether the simulator gets a check that the merge path drains (a run
-that never finishes its work fails; most of the 50 simulator mutants survive for want of one; scope,
-rule 10); whether to define GA (no phase is called that; the nearest is Phase 3's end) as a proposed
-PLAN change; deleting branch `state-1101-2`; whether CLAUDE.md rule 1 should also name a
-never-logged live notice an older daemon can skip and stay correct as additive (invariant 13 since
-`f1ea1f6`); the plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps
-`state_version` "only if the old binary can still read the new state", a case the store's
-`refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
-`tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
-P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
-lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
-itself (`~/tessel-dogfood/push-hook-resolved-url.patch`). The second reviewer goes in the server's
-`reviewers` (only `orchestrator` now).
+above; it changes I10; two claims lapsing together under load at 13:29 UTC, above, is new evidence,
+by inference, that a stalled server, not only a sleeping one, lapses open claims); a second
+reviewer, to decide claim 153, which now also blocks lanes (the coordinator denied
+SUDO-GATE-FOLLOWUPS' `docs/dogfood.md` claim, by lane A's report); RUNNER-OWN-UID's sudo steps;
+whether the simulator gets a check that the merge path drains (a run that never finishes its work
+fails; most of the 50 simulator mutants survive for want of one; scope, rule 10); whether to define
+GA (no phase is called that; the nearest is Phase 3's end) as a proposed PLAN change; deleting
+branch `state-1101-2`; whether CLAUDE.md rule 1 should also name a never-logged live notice an older
+daemon can skip and stay correct as additive (invariant 13 since `f1ea1f6`); the plan's rule (d)
+(`docs/proposals/phase-1.md`), which says a build bumps `state_version` "only if the old binary can
+still read the new state", a case the store's `refuse_unknown` rules out (#125 follows the code); a
+GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the
+dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the
+sandbox trunk now that lanes push branches; the suggested patch to his push hook that exempts only a
+URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`). The second reviewer
+goes in the server's `reviewers` (only `orchestrator` now).
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** SIM-DOUBT-PREPARED-TRAFFIC (lane A), running; the Nightly on `941db87` shows whether the
-mutants baseline passes; then SIM-DOUBT-LIVENESS; CLAIM-LEASE-LAPSE's code on Felix's decision; the
-dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
+**Next:** NIGHTLY-MISSED-1127's fix pass and re-vote (lane A), then SIM-DOUBT-PREPARED-TRAFFIC's fix
+pass (lane A); P1-ADAPTER-SUITE's rest (lane B); then SIM-DOUBT-LIVENESS (after
+SIM-DOUBT-PREPARED-TRAFFIC: both change `src/sim/variant.rs`); LANDER-VERSION-CHECK;
+DAEMON-CUT-READ-REQUEST-TEXT; NIGHTLY-MUTANT-TIMEOUTS; CLAIM-LEASE-LAPSE's code on Felix's decision;
+the dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
 P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on
 a world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for
 M6.
@@ -1777,7 +1828,11 @@ Lane B:
   125, by contrast, kept its lease for hours while its agent was stopped (submitted and held for
   review then). Find out whether the daemon stops renewing an idle claim, whether the lease is meant
   to end then (the skill and `docs/configuration.md` say what), and fix the code or the docs; a test
-  either way.
+  either way. 27 November: claims 207 and 209 (two lanes, both daemons online) lapsed at the same
+  millisecond, 13:29:07.744 UTC, under load from a VM that isn't ours (about 117 at 14:52 UTC): this
+  fits the server stalling past the lease less a heartbeat and expiring both in one step (an
+  inference; it logs no info line then). Claims 210 and 211 (lane A) lapsed 1 ms apart at
+  15:02:38.812 UTC, its daemon still connected.
 - [x] **SUDO-STOP-RUN-RACE** (`b5a520d`..`80dba09`, landed by the server 31 October; Opus review
   "With changes", then "Yes"; a vote, 3-0 "Yes with should-fixes", which are SUDO-GATE-FOLLOWUPS) —
   S, lane B; from RUNNER-TIMING-FLAKES' REVIEW-1 ("For the orchestrator"), resting on it and the
@@ -1901,6 +1956,36 @@ Lane B:
   one that drops every `Reconcile` answer; unit tests catch both. Add a checker that flags a claim
   in doubt redispatched without progress past a bound, with a planted variant that fails it and the
   correct core silent on a 300-seed sweep. Done: the planted variant fails a default run.
+- [ ] **NIGHTLY-MISSED-1127** — S, lane A; from the Nightly 45995920783 on `941db87` (27 November),
+  whose full-mutants job found 2 missed mutants beyond the baseline. `src/host/replay.rs` (~187) `>`
+  to `<` in `Host::buffer_for_replays`: no test failed under it (the buffer-bound test reaches it
+  after a page was sent; VOTE-2); a test of an in-order case that tells `<` apart, if one exists
+  (lane B's candidate, a failed commit attempt that stored its rows, which no current adapter
+  produces; VOTE-3: `<` loses events, it does not duplicate them, since the retain after each page
+  drops the rest), and one sentence on `Output::Commit` saying a failed attempt may have stored its
+  rows. `src/coordinator/merging/doubt.rs` `resend_land`'s `retry_at_ms: None`: equivalent (a
+  past-due wait can reach it; every reader compares with the clock, and every path to a `Prepare`
+  rewrites or clears the wait), so the mutant is baselined with the line kept. Done: the next
+  Nightly reports neither beyond the baseline.
+- [ ] **LANDER-VERSION-CHECK** — S; from COORD-UNDELIVERED-GRANT's first landing (27 November 17:33
+  UTC). The runner's `cargo test` failed in `tessel-server/tests/landing.rs`
+  `a_rebase_over_another_landing_keeps_what_a_note_follows_a_commit_by`: `Landing::new` returned
+  `UnsupportedGit { found: "" }`. `Git::check_version` (`tessel-lander/src/git.rs` ~201) reads only
+  stdout and drops `git --version`'s exit code and stderr, so the cause is lost; git is found on the
+  process's `PATH` (~147). Make the error carry the exit code and stderr, with a test; then name the
+  cause if it recurs (a guess, not shown: macOS's `/usr/bin/git` shim under load). Done: a failed
+  version check says why.
+- [ ] **DAEMON-CUT-READ-REQUEST-TEXT** — S, lane B; from COORD-UNDELIVERED-GRANT's REVIEW-1. After a
+  cut log read, the daemon tells a caller whose claim reply was lost to "run `tessel status`, then
+  run it again" (`tessel-cli/src/daemon.rs` ~1386 on `228f5d1`), but status shows only the claims
+  the daemon tracks, so a claim the coordinator holds is not there. Say what is true, as
+  COORD-UNDELIVERED-GRANT does for a lost wait, with a test. Done: no notice points at a command
+  that cannot show the answer.
+- [ ] **NIGHTLY-MUTANT-TIMEOUTS** — S; from the Nightly 45995920783. Three mutants time out (the
+  workflow warns, it does not fail): `src/shell.rs:32`, `src/host/mod.rs:471` and
+  `src/host/testkit.rs:201`, the last in test support; each costs about 3 minutes of its shard.
+  Confirm each is a hang a test detects, and exclude or speed up the testkit one. Done: each timeout
+  explained in the workflow or gone.
 - [x] **LOCK-OWNER** (done 27 November in `~/tessel-orch-notes/lib/cargo-lock.sh`, outside the
   repository; the gate scripts and the landing template use it) — S, orchestrator (the gate scripts
   in `~/tessel-orch-notes/`, not the repository); found 27 November. The machine-wide cargo lock is
@@ -1986,8 +2071,13 @@ Kept, and scheduled where they fit:
   roadmap had left the box open.
 - [x] **SWARM-PUSH-PHRASES** — already done before Phase 0 (all four phrases are in the transient
   set with tests, `tessel-swarm/src/git.rs`); the contest roadmap had left the box open.
-- [ ] **COORD-UNDELIVERED-GRANT** — a `Granted` that fails to send closes the socket but leaves the
-  claim held until its lease lapses. M5, P1-HOST-HARDENING (decision 7).
+- [x] **COORD-UNDELIVERED-GRANT** (`121461c`..`228f5d1`, landed by the server 27 November; Opus
+  "Yes" after two fix passes) — a `Granted` that fails to send closes the socket but leaves the
+  claim held until its lease lapses. M5, P1-HOST-HARDENING (decision 7). Done in the CLI: the
+  coordinator keeps the claim (decision 7, pinned by
+  `host_a_grant_that_fails_to_send_keeps_the_claim_until_its_lease_lapses`), the daemon's reconnect
+  adopts it, and the reconnect plan now matches a lost `--wait` to it, so the waiter is told it was
+  granted; after a cut log read it is told the outcome is unknown.
 - [x] **COORD-APPLY-LOADED** — already done before Phase 0 (`apply_loaded` reloads the core before
   applying a steward outcome, `src/runtime.rs`); the contest roadmap had left the box open.
 - [x] **COORD-WAKE-WHILE-VERIFYING** (`35202e7`, #56) — from the P0-MQ-PROPTEST review:
