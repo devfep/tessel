@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::{json, Value};
 use tessel_coordinator::protocol::{
     AgentId, ClaimId, Conflict, ErrorCode, HeldAssumption, Mode, RaceEntry, RaceId, ReviewReason,
-    Scope, ScopeClaim, ServerMsg, LOST_RACE, NOT_PICKED, RACE_REJECTIONS, TESTS_GAVE_NO_RESULT,
+    Scope, ScopeClaim, ServerMsg, RACE_REJECTIONS,
 };
 
 use crate::moves::{denial_moves, next_moves, Move, Situation};
@@ -875,6 +875,7 @@ pub fn status_text(state: &State, running: bool, unread: usize, now_ms: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tessel_coordinator::protocol::{LOST_RACE, NOT_PICKED, TESTS_GAVE_NO_RESULT};
 
     fn status_with_claim(since: Option<u64>) -> State {
         State {
