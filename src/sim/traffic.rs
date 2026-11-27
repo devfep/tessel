@@ -268,13 +268,14 @@ impl Traffic {
             .and_then(|view| view.scopes.get(&claim.0))
             .cloned()
             .unwrap_or_default();
-        let touched = if claimed.is_empty() || self.rng.chance(0.1) {
+        // A doubt-mode run is about merges: its submissions are covered and say what they ran.
+        let touched = if claimed.is_empty() || (self.rng.chance(0.1) && !self.doubt_mode) {
             vec![self.scope()]
         } else {
             vec![claimed[self.rng.below(claimed.len())].clone()]
         };
         let req = self.req();
-        let evidence = if self.rng.chance(0.75) {
+        let evidence = if self.rng.chance(0.75) || self.doubt_mode {
             vec!["tests passed".to_string()]
         } else {
             Vec::new()

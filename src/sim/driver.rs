@@ -412,9 +412,8 @@ impl Sim {
         self.agents.get(agent)
     }
 
-    /// The wake the platform holds.
-    /// Whether the merge in flight is a `Land` left in doubt (it carries `doubt_since_ms`), as the
-    /// stored state says.
+    /// Whether the stored merge in flight carries `doubt_since_ms`, at whatever stage it is (a
+    /// `Reconcile`, a `Prepare` that waits in doubt, or a `Land` sent again).
     pub fn merge_in_doubt(&self) -> bool {
         let state = self
             .store
@@ -426,6 +425,7 @@ impl Sim {
             .is_some_and(|since| since.is_u64())
     }
 
+    /// The wake the platform holds.
     pub fn wake(&self) -> Option<u64> {
         self.wake
     }
@@ -924,9 +924,10 @@ impl Sim {
             }
         }
         if self.variant == Variant::DoubtClearedAtLand {
+            let before = self.store.state().map(str::to_string);
             for (key, json) in &mut entries {
                 if key == STATE_KEY {
-                    *json = without_doubt_at_land(json);
+                    *json = without_doubt_after_prepare(before.as_deref(), json);
                 }
             }
         }
@@ -1096,23 +1097,43 @@ fn without_doubt_since(json: &str) -> String {
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
 }
 
-/// `json` with the `doubt_since_ms` of a merge in flight that is at `Land` left null.
-fn without_doubt_at_land(json: &str) -> String {
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
+/// What a stored state says of its merge in flight: the stage, the dispatch id and whether the
+/// merge carries no `doubt_since_ms`.
+fn flight_facts(state: &serde_json::Value) -> Option<(String, u64, bool)> {
+    let flight = state.get("merge_in_flight")?;
+    let stage = flight.get("stage")?.get("stage")?.as_str()?.to_string();
+    let untold = flight
+        .get("doubt_since_ms")
+        .is_none_or(serde_json::Value::is_null);
+    Some((stage, flight.get("dispatch")?.as_u64()?, untold))
+}
+
+/// `json`, a stored state about to be written, with the `doubt_since_ms` of its merge in flight
+/// left null from the moment that merge moves from a `Prepare` to a `Land` under a new dispatch
+/// id, for as long as it stays at that `Land`: what a core does that cleared the doubt when the
+/// answer to a `Prepare` in doubt sent the doubted pair on to `Land` (the doubt is lost in its
+/// memory, so every state it writes lacks it). A `Land` sent again after a `Reconcile` keeps its
+/// dispatch id and is left alone, and so is a merge that leaves `Land`: the next doubt sets a new
+/// `doubt_since_ms`.
+fn without_doubt_after_prepare(before: Option<&str>, json: &str) -> String {
+    let parse = |text: &str| serde_json::from_str::<serde_json::Value>(text).ok();
+    let (Some(mut value), Some(old)) = (parse(json), before.and_then(parse)) else {
         return json.to_string();
+    };
+    let lost = match (flight_facts(&old), flight_facts(&value)) {
+        (Some((from, was, _)), Some((to, now, _))) if from == "prepare" => {
+            to == "land" && now != was
+        }
+        (Some((from, was, true)), Some((to, now, _))) => {
+            from == "land" && to == "land" && now == was
+        }
+        _ => false,
     };
     let flight = value
         .get_mut("merge_in_flight")
         .and_then(|flight| flight.as_object_mut());
-    if let Some(flight) = flight {
-        let at_land = flight
-            .get("stage")
-            .and_then(|stage| stage.get("stage"))
-            .and_then(|stage| stage.as_str())
-            == Some("land");
-        if at_land {
-            flight.insert("doubt_since_ms".to_string(), serde_json::Value::Null);
-        }
+    if let (true, Some(flight)) = (lost, flight) {
+        flight.insert("doubt_since_ms".to_string(), serde_json::Value::Null);
     }
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
 }
