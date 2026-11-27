@@ -174,9 +174,10 @@ impl Coordinator {
     /// out on its word. A `Reconcile` under a new dispatch id asks whether the head is on main;
     /// its answer lands the work, sends the `Land` again or ends the doubt as any `Reconcile`
     /// does. Nothing is counted. `pace` says whether it goes out at once or after the backoff.
-    /// Only an offered dispatch is answered (see `release_wait`; `merge_outcome` ignores the answer
-    /// to an unoffered `Prepare`): the flight answered here was offered, so the wait its claim held
-    /// is already cleared or past, and `AtOnce` need not clear it.
+    /// Only an offered dispatch is answered, and the core enforces it (see `release_wait`): the
+    /// flight answered here (a `Prepare` or a `Test`) was offered, so the wait its claim held is
+    /// already cleared or past, and `AtOnce` need not clear it. The `Reconcile` made here waits out
+    /// its backoff when paced, and `reconcile_outcome` ignores an answer to it until it is offered.
     pub(super) fn reconcile_before_ending(
         &mut self,
         flight: InFlight,
@@ -248,8 +249,26 @@ impl Coordinator {
     }
 
     /// The answer to the `Reconcile` of the merge in flight under `dispatch`. Only that dispatch
-    /// can be answered; any other answer is stale and changes nothing.
+    /// can be answered; any other answer is stale and changes nothing. So is one to a `Reconcile`
+    /// that still waits out its backoff: `begin_merge` has not offered it, so no call is out.
     pub fn reconcile_outcome(
+        &mut self,
+        dispatch: u64,
+        found: &Reconciliation,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let now_ms = self.advance_clock(now_ms);
+        let waiting = self.waiting_stage(dispatch, now_ms);
+        if matches!(waiting, Some(MergeStage::Reconcile { .. })) {
+            return Vec::new();
+        }
+        self.apply_reconciliation(dispatch, found, now_ms)
+    }
+
+    /// What a `Reconcile` found, applied to the merge in flight under `dispatch`: the body of
+    /// `reconcile_outcome`, and what `resolve_doubt` feeds the core, which is not an answer to a
+    /// call and so applies at once.
+    fn apply_reconciliation(
         &mut self,
         dispatch: u64,
         found: &Reconciliation,
@@ -470,7 +489,7 @@ impl Coordinator {
         } else {
             Reconciliation::NotLanded { main: None }
         };
-        effects.extend(self.reconcile_outcome(dispatch, &found, now_ms));
+        effects.extend(self.apply_reconciliation(dispatch, &found, now_ms));
         Ok(effects)
     }
 }

@@ -2363,7 +2363,18 @@ fn an_answer_to_the_waiting_prepare_of_a_doubt_changes_nothing_until_it_is_offer
         .dispatch;
     let due = retry_at(&c, claim);
     let before = state_without_clock(&c);
-    for outcome in [prepared(), prepared_other_head(), MergeOutcome::Tested {}] {
+    let refusal = MergeOutcome::Conflict {
+        files: Vec::new(),
+        total: None,
+    };
+    let outcomes = [
+        prepared(),
+        prepared_other_head(),
+        MergeOutcome::Tested {},
+        MergeOutcome::MainMoved {},
+        refusal,
+    ];
+    for outcome in outcomes {
         let effects = c.merge_outcome(waiting, &outcome, due - 1);
         assert!(effects.is_empty(), "{effects:?}");
         assert_eq!(
@@ -2375,12 +2386,15 @@ fn an_answer_to_the_waiting_prepare_of_a_doubt_changes_nothing_until_it_is_offer
     assert_eq!(retry_at(&c, claim), due, "the wait is still set");
     let offered = c.begin_merge(due).expect("the Prepare is due");
     assert_eq!(offered.id, waiting);
+    let offered_state = state_without_clock(&c);
     c.merge_outcome(offered.id, &prepared_other_head(), due + 1);
-    assert_ne!(
-        state_without_clock(&c),
-        before,
+    assert_ne!(state_without_clock(&c), offered_state);
+    let flight = c.state.merge_in_flight.as_ref().expect("the merge goes on");
+    assert!(
+        matches!(flight.stage, MergeStage::Test { .. }),
         "an offered Prepare is answered"
     );
+    assert_ne!(flight.dispatch, waiting, "under a new dispatch id");
 }
 
 #[test]
