@@ -7,11 +7,12 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 08:40 UTC. Main and the coordinator's head at `a38b570`. MUTANTS-DOUBT-PACING
+**As of:** 2026-11-27 08:20 UTC. Main and the coordinator's head at `a38b570`. MUTANTS-DOUBT-PACING
 landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198, rebased; the submission
 held a merge of main, so the daemon copied no notes and the orchestrator copied all six by subject
-and author), approved on a 3-0 vote after four fix passes
-(`~/tessel-orch-notes/2026-11-27/vote-mutants-doubt-pacing/`): the removals rest on a rule (a fenced
+and author), approved on a 3-0 vote after four fix passes (VOTE-1 and VOTE-2 Yes on `72fe146`, fix
+pass 2; VOTE-3 Yes on `ccdc60a`; passes 3 and 4 changed only tests and doc comments;
+`~/tessel-orch-notes/2026-11-27/vote-mutants-doubt-pacing/`): the removals rest on a rule (a fenced
 claim's merge in flight is that claim's, with `doubt_since_ms` set) now checked by a `debug_assert!`
 and a seeded stage walk that answers refusals and landings, starts some seeds in doubt and answers
 only dispatches `begin_merge` offered; every break the voters planted fails a test; `release_wait`
@@ -413,13 +414,13 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** RACE-TEXTS-SHARED lands on its re-vote; the next Nightly shows whether the mutants
-baseline passes; then HOST-SQLITE-RETRY-BACKOFF, LOCK-OWNER, SIM-FENCED-RULE-CHECKER,
-MUTANTS-SERVER-CLI-IN-DIFF and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the
-dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
-P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on
-a world-writable socket; he closes it before the accounts move.
-LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** RACE-TEXTS-SHARED lands on its re-vote, then SIM-RACE-TEXT-LITERAL; the next Nightly shows
+whether the mutants baseline passes; then HOST-SQLITE-RETRY-BACKOFF, LOCK-OWNER,
+SIM-FENCED-RULE-CHECKER, MERGE-OUTCOME-UNOFFERED (merge path, a vote), MUTANTS-SERVER-CLI-IN-DIFF
+and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md steps of
+SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH (it flips
+R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a world-writable
+socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1720,8 +1721,9 @@ Lane B:
   and says the gate stays shut until a restart; `docs/dogfood.md` gets the operator's steps for a
   closed gate (VOTE-3). Done: a test for each code change, and the docs.
 - [x] **MUTANTS-DOUBT-PACING** (`7d08141`..`a38b570`, landed by the server 27 November; vote 3-0 Yes
-  after four fix passes; the simulator checker of its rule is SIM-FENCED-RULE-CHECKER) — S, lane A,
-  merge path (`src/coordinator/`: voted); from the Nightly of 1 November and the triage
+  after four fix passes (VOTE-1 and VOTE-2 last re-checked `72fe146`, VOTE-3 `ccdc60a`); the
+  simulator checker of its rule is SIM-FENCED-RULE-CHECKER) — S, lane A, merge path
+  (`src/coordinator/`: voted); from the Nightly of 1 November and the triage
   (`~/tessel-orch-notes/2026-11-26/nightly-mutants/TRIAGE.md`). Kill `Coordinator::prepared`'s
   `doubts` reset (a doubt a `Prepared` on another base ends restarts at `infra_backoff_ms(1)`) and
   `wait_in_doubt`'s `doubts` (the backoff tests in `stages.rs` assert the exact wait, not only the
@@ -1791,10 +1793,10 @@ Lane B:
   shared constant from `src/protocol.rs` once RACE-TEXTS-SHARED lands.
 - [ ] **LOCK-OWNER** — S, orchestrator (the gate scripts in `~/tessel-orch-notes/`, not the
   repository); found 27 November. The machine-wide cargo lock is a bare `mkdir`, so a killed gate or
-  voter run leaves it held with no owner (three times on 27 November, 15 to 26 minutes each), and
-  others cannot tell a live holder from a dead one. Write the holder's pid and command into the
-  lock, and have waiters remove a lock whose pid is gone. Done: the briefs' lock snippet and
-  every gate script use it.
+  voter run leaves it held with no owner (at least twice on 27 November, about 16 and 26 minutes, by
+  the agents' reports), and others cannot tell a live holder from a dead one. Write the holder's pid
+  and command into the lock, and have waiters remove a lock whose pid is gone. Done: the briefs'
+  lock snippet and every gate script use it.
 - [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
   the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
   `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
