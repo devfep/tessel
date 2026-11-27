@@ -333,6 +333,9 @@ struct Daemon {
     deferred: VecDeque<(Request, oneshot::Sender<Reply>)>,
     /// Claim requests whose answer was lost with the socket; their callers are still waiting.
     lost_requests: Vec<PendingClaim>,
+    /// The scopes of `--wait` claims that were queued when the socket dropped. The grant may have
+    /// been stored before its send failed, so the log read after the next welcome says which.
+    lost_waits: Vec<Vec<ScopeClaim>>,
     /// Claims released just before the socket dropped; the release may not have arrived.
     lost_releases: HashSet<ClaimId>,
     /// Frames skipped in the last event-log read.
@@ -572,6 +575,7 @@ impl Daemon {
             submits: HashMap::new(),
             deferred: VecDeque::new(),
             lost_requests: Vec::new(),
+            lost_waits: Vec::new(),
             lost_releases: HashSet::new(),
             log_skips: 0,
             live_event_skips: Vec::new(),
@@ -910,12 +914,7 @@ impl Daemon {
         // Its caller keeps waiting; the event log read after the next welcome decides.
         for (_, pending) in std::mem::take(&mut self.pending) {
             if pending.queued {
-                self.notify(
-                    NoticeKind::WaitWithdrawn,
-                    "connection lost while a --wait claim was queued; the coordinator withdraws \
-                     it, claim again after reconnecting",
-                    None,
-                );
+                self.lost_waits.push(pending.scopes);
             } else if pending.amend.is_some() {
                 // The amend may have been applied; the log read after the next welcome repairs the
                 // claim's fence and scopes (`reconcile`), so the caller is told to look.
@@ -1302,6 +1301,7 @@ impl Daemon {
     /// the difference. The rules are in `reconcile`.
     async fn on_snapshot(&mut self, log: Result<LogRead, String>) {
         let lost = std::mem::take(&mut self.lost_requests);
+        let lost_waits = std::mem::take(&mut self.lost_waits);
         let lost_releases = std::mem::take(&mut self.lost_releases);
         let LogRead {
             events,
@@ -1325,6 +1325,7 @@ impl Daemon {
                     answer(pending.replies, &refused(None, message));
                 }
                 self.lost_releases = lost_releases;
+                self.settle_lost_waits(lost_waits, false);
                 return;
             }
         };
@@ -1365,6 +1366,7 @@ impl Daemon {
         let plan = reconcile::plan(&local, &live, &events);
         if complete {
             self.apply_plan(plan, lost, &in_flight_keys);
+            self.settle_lost_waits(lost_waits, true);
             return;
         }
         self.notify(
@@ -1380,6 +1382,40 @@ impl Daemon {
             answer(pending.replies, &refused(None, message));
         }
         self.apply_plan(plan, Vec::new(), &in_flight_keys);
+        self.settle_lost_waits(lost_waits, false);
+    }
+
+    /// Tells the user what became of each `--wait` claim that was queued when the socket dropped:
+    /// the grant may have been stored before its send failed. A claim held with exactly those
+    /// scopes was granted (the plan adopted it); with the log read to its end, no such claim means
+    /// the coordinator withdrew the wait; otherwise the outcome is not known.
+    fn settle_lost_waits(&mut self, waits: Vec<Vec<ScopeClaim>>, complete: bool) {
+        for scopes in waits {
+            let held = self.state.claims.iter().find(|held| held.scopes == scopes);
+            let (kind, note) = match (held, complete) {
+                (Some(held), _) => (
+                    NoticeKind::Reconciled,
+                    format!(
+                        "the --wait claim queued before the connection dropped was granted \
+                         (claim {}); it is held",
+                        held.claim.0
+                    ),
+                ),
+                (None, true) => (
+                    NoticeKind::WaitWithdrawn,
+                    "the --wait claim queued before the connection dropped was withdrawn; \
+                     queue it again"
+                        .to_string(),
+                ),
+                (None, false) => (
+                    NoticeKind::WaitWithdrawn,
+                    "the --wait claim queued before the connection dropped may have been \
+                     granted; run `tessel status` to see whether it is held"
+                        .to_string(),
+                ),
+            };
+            self.notify(kind, &note, None);
+        }
     }
 
     /// Moves the diff base forward to the newest of this agent's submissions that the log shows
@@ -2056,6 +2092,7 @@ impl Daemon {
                 self.submits.clear();
                 self.deferred.clear();
                 self.lost_requests.clear();
+                self.lost_waits.clear();
                 self.close_connection().await;
                 let _ = reply.send(Reply::Stopping {
                     unreleased,
