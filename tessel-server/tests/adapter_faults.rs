@@ -214,7 +214,8 @@ async fn a_watcher_that_never_reads_is_dropped_and_the_repo_goes_on() -> TestRes
     // writer queue was full, so that line is the proof the queue filled and not a kernel buffer.
     let dropped = async {
         loop {
-            if !support::log_lines_with("send to a socket failed").is_empty() {
+            let lines = support::log_lines_with("send to a socket failed");
+            if lines.iter().any(|line| line.contains("agent=watcher")) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -474,6 +475,12 @@ async fn a_repository_task_that_panics_is_logged_by_name_and_refuses_new_sockets
         lines.iter().any(|line| line.contains("task panicked")),
         "the panic is logged with the repository's name: {lines:?}"
     );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("the call port panicked on purpose")),
+        "and says why: {lines:?}"
+    );
 
     let mut other = connect_to(addr, "/tenant/acme/repo/other", TOKEN_A1).await?;
     send(&mut other, &hello("a1")).await?;
@@ -481,6 +488,17 @@ async fn a_repository_task_that_panics_is_logged_by_name_and_refuses_new_sockets
     assert!(
         matches!(welcome, Some(ServerMsg::Welcome { .. })),
         "{welcome:?}"
+    );
+    server.stop().await;
+
+    // The operator's next step: restart, and the repository serves again.
+    let server = start_with(dir.path(), &["demo", "other"], Arc::new(NoLander)).await?;
+    let mut again = connect(server.local_addr(), TOKEN_A1).await?;
+    send(&mut again, &hello("a1")).await?;
+    let welcome = next(&mut again).await?;
+    assert!(
+        matches!(welcome, Some(ServerMsg::Welcome { .. })),
+        "restarted: {welcome:?}"
     );
     server.stop().await;
     Ok(())

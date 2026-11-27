@@ -280,8 +280,15 @@ async fn supervised(task: RepoTask) {
     let id = task.id.clone();
     if let Err(error) = tokio::spawn(task.run()).await {
         if error.is_panic() {
+            let payload = error.into_panic();
+            let cause = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
             tracing::error!(
                 repo = %id,
+                cause = %cause,
                 "the repository task panicked; this repository stops serving until a restart"
             );
         }
