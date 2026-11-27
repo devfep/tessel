@@ -16,7 +16,8 @@
 //! `release` (a replay buffer that overflowed) is deferred too, so it runs after the batch's wake
 //! and calls. The job that follows a batch (`then`) runs at once if it is a wake step, which
 //! sets no wake failure for a withdrawal; any other job (a client call, a poke) waits behind the
-//! deferred jobs, so a dead waiter is withdrawn before it can be granted. The frames a replay
+//! deferred jobs, so a dead waiter is withdrawn before a call or poke can grant to it (a wake
+//! step still runs first). The frames a replay
 //! parked run before the frames queued while the replay ended under a closed gate. A failed
 //! `Commit` is handed out again before the gate opens (R30). A `Call` is not a storage
 //! operation: inputs run while one is outstanding.
@@ -170,9 +171,10 @@ pub enum Output {
     /// answers. No input reports a failed read, so the adapter must always answer: with
     /// `done: true` (and no events) on a failed read or a closed socket, and never for the end
     /// of the log, which is a short or empty page that is not `done`. The host takes `done` with
-    /// no events for a failed read: it ends the replay unmarked and closes the socket with 1011
-    /// (R36). Without an answer the replay never ends: its socket's frames stay parked and the
-    /// live events pile up in its buffer until it is closed.
+    /// no events for a failed read: it ends the replay unmarked and closes the socket with 1011,
+    /// unless the host had already closed the socket, when the replay just ends (R36). Without an
+    /// answer the replay never ends: its socket's frames stay parked and the live events pile
+    /// up in its buffer until it is closed.
     ReadEvents {
         sock: SocketId,
         from_seq: u64,

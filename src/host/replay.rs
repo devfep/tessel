@@ -115,13 +115,21 @@ impl Host {
         }
     }
 
-    /// The adapter answered `done` with no events, which it does only for a read that failed (a
-    /// read of the end of the log is a short or empty page that is not `done`): the pages sent
-    /// so far leave a gap, so the replay ends unmarked and the socket is closed with 1011 (R36).
-    /// No read is out for it now, so the replay is removed without counting an abandoned read.
+    /// The adapter answered `done` with no events, which it does for a read that failed or for a
+    /// socket it is closing (a read of the end of the log is a short or empty page that is not
+    /// `done`). On a socket the host already closed the replay just ends. Otherwise the pages
+    /// sent so far leave a gap: the replay ends unmarked and the socket is closed with 1011
+    /// (R36). No read is out for it now, so the replay is removed without counting an abandoned
+    /// read.
     fn fail_replay_read(&mut self, sock: SocketId, out: &mut Vec<Output>) {
         self.replays.remove(&sock);
-        out.push(self.failure("replay events", "the adapter could not read the stored log"));
+        let session = self.sockets.session(sock);
+        if session.is_some_and(|session| session.closed) {
+            return;
+        }
+        let agent = shell::log_agent(session.and_then(shell::session_agent));
+        let cause = format!("the adapter could not read the stored log: agent={agent}");
+        out.push(self.failure("replay events", &cause));
         let code = CLOSE_INTERNAL_ERROR;
         self.close_and_defer_withdraw(self.now_ms, sock, code, READ_FAILED_REASON, out);
     }
