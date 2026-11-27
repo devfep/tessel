@@ -286,10 +286,10 @@ something you rely on: re-read that code and adjust before you finish.
 Other inbox kinds marked `!`: `denied`, `submit_rejected`, `uncovered`, `review_required`,
 `base_moved` (main moved; re-read affected files),
 `lease_expired` (the claim is gone, even while your daemon is online: the host stalled or slept for
-about the lease (30 s by default) or longer. Before editing, run `tessel claim` again for the same
-scopes with the same `--assume` statements. If you already changed files, the pre-commit and
-pre-push hooks refuse the change and print the exact `tessel claim` command; run it, add your
-`--assume` statements, and retry),
+two thirds of the lease or more (20 s at the default 30 s). Before editing, run `tessel claim` again
+for the same scopes with the same `--assume` statements. If you already changed files, the
+pre-commit and pre-push hooks refuse the change and print the exact `tessel claim` command; run it,
+add your `--assume` statements, and retry),
 `wait_withdrawn` (queue again), `error`. `reconciled` means the daemon repaired its claims after a
 reconnect; check `tessel status` (`--json` for machine-readable state).
 
