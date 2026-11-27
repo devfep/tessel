@@ -170,9 +170,9 @@ impl SudoRunner {
         }
     }
 
-    /// Kills the account once. What the kill said on its standard error is returned (bounded, on
-    /// one line, "nothing" if empty): its exit is not an error by itself, because a kill with
-    /// nothing to kill exits non-zero too.
+    /// Kills the account once. What the kill said on its standard error is returned, on one line,
+    /// quoted and bounded: it is the account's own free text. The kill's exit is not an error by
+    /// itself, because a kill with nothing to kill exits non-zero too.
     fn kill_once(&self) -> Result<String, SudoError> {
         let mut command = self.sudo();
         command.arg(&self.settings.kill).args(["-KILL", "--", "-1"]);
@@ -181,16 +181,13 @@ impl SudoRunner {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if let Some(line) = stderr.lines().find(|line| line.starts_with("sudo:")) {
             return Err(SudoError::SudoRefused {
-                said: line.chars().take(200).collect(),
+                said: quote(line, MAX_LOGGED_CHARS),
                 command: format!("{} -KILL -- -1", self.settings.kill.display()),
                 user: self.settings.user.clone(),
             });
         }
         let said = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
-        if said.is_empty() {
-            return Ok("nothing".to_owned());
-        }
-        Ok(said.chars().take(200).collect())
+        Ok(quote(&said, MAX_LOGGED_CHARS))
     }
 
     /// Runs `command` to its end and collects its output, but waits at most `settle` for it. A
