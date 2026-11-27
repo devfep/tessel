@@ -202,7 +202,7 @@ install_sudoers() {
 Defaults:$server env_reset, !setenv, !use_pty, secure_path="/usr/bin:/bin"
 Cmnd_Alias TESSEL_RUN = \\
   /opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml, \\
-  /bin/kill -KILL -1
+  /bin/kill -KILL -- -1
 $server ALL = ($runner) NOPASSWD: TESSEL_RUN
 RULE
 	)

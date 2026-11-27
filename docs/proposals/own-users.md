@@ -107,7 +107,7 @@ only authentication is who may run sudo; there is no socket and nothing listenin
 Defaults:_tessel env_reset, !setenv, !use_pty, secure_path="/usr/bin:/bin"
 Cmnd_Alias TESSEL_RUN = \
   /opt/tessel/bin/tessel-runner --config /var/tessel-runner/tessel-runner.toml, \
-  /bin/kill -KILL -1
+  /bin/kill -KILL -- -1
 _tessel ALL = (_tessel-runner) NOPASSWD: TESSEL_RUN
 ```
 
@@ -130,17 +130,18 @@ What the rule pins, and why `_tessel` cannot widen it:
 
 The runner's process-group kill misses a child that calls `setsid` (RUNNER-SANDBOX). The account
 boundary replaces it: after every run, and when the server gave the call up at its deadline, the
-server runs `sudo -n -u _tessel-runner /bin/kill -KILL -1`. On macOS `kill(-1)` signals every
-process of the caller's uid and no one else's. `pkill -U` from outside is not used: `_tessel`
-could not signal another account's processes. The server then polls `ps -U _tessel-runner -o
-pid=`, which needs no privilege, until it is empty for up to 10 s, repeating the kill. If it is
-not empty, the gate stays closed: the call answers `Unknown` and no run starts. The server's
-gate does not look at launchd. A `StartInterval` or `WatchPaths` job that is not running when `ps`
-polls would survive into the next submission, so what keeps it out is `check-own-users.sh`'s
-`launchctl` probe (a job the account can submit must fail, and one that succeeds is removed with
-`launchctl remove`) and the cron and at denial below, run by Felix after the install and after any
-change. A runner-side listing of its own launchd domain was considered and deferred until the
-probe shows it is needed.
+server runs `sudo -n -u _tessel-runner -- /bin/kill -KILL -- -1` (the second `--` ends kill's
+options, so `-1` is read as the pid; on ubuntu-26.04 `kill -KILL -1` run through the rule fails to
+parse). On macOS `kill(-1)` signals every process of the caller's uid and no one else's. `pkill -U`
+from outside is not used: `_tessel` could not signal another account's processes. The server then
+polls `ps -U _tessel-runner -o pid=`, which needs no privilege, until it is empty for up to 10 s,
+repeating the kill. If it is not empty, the gate stays closed: the call answers `Unknown` and no run
+starts. The server's gate does not look at launchd. A `StartInterval` or `WatchPaths` job that is
+not running when `ps` polls would survive into the next submission, so what keeps it out is
+`check-own-users.sh`'s `launchctl` probe (a job the account can submit must fail, and one that
+succeeds is removed with `launchctl remove`) and the cron and at denial below, run by Felix after
+the install and after any change. A runner-side listing of its own launchd domain was considered and
+deferred until the probe shows it is needed.
 
 `cron` and `at` are denied unconditionally, a Felix step: `_tessel-runner` goes into
 `/usr/lib/cron/cron.deny` and `at.deny`. Neither can be inspected without root, so denial and

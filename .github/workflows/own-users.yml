@@ -2,7 +2,7 @@ name: Own users
 
 # The account boundary of docs/proposals/own-users.md, with real accounts on a Linux runner: the
 # runner account cannot read the token or write what it runs from, the sudoers rule allows two
-# commands, a child that leaves its process group dies to `kill -KILL -1`, and `SudoRunner` works
+# commands, a child that leaves its process group dies to `kill -KILL -- -1`, and `SudoRunner` works
 # through the real rule (tessel-server/tests/sudo_runner_real.rs).
 
 on:
@@ -44,10 +44,13 @@ env:
 jobs:
   accounts:
     name: Runner accounts, Linux
-    # Pinned: on ubuntu-26.04 (ubuntu-latest since November 2026) the account's processes survive
-    # `kill -KILL -1` after a cancelled run, on code that passed on 24.04. SUDO-RS-RUNNER in
-    # docs/ROADMAP.md makes SudoRunner work there and moves this job.
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # On ubuntu-26.04 `kill -KILL -1` run through the rule fails to parse; `kill -KILL -- -1`
+        # works. The job prints the sudo and kill each image ran.
+        os: [ubuntu-24.04, ubuntu-26.04]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -55,7 +58,7 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          shared-key: own-users
+          shared-key: own-users-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the runner and the real-sudo test
         run: |
@@ -67,6 +70,10 @@ jobs:
           test -s "$RUNNER_TEMP/test-binary"
       - name: Shell lint
         run: shellcheck -s bash scripts/ci/own-users-linux.sh
+      - name: Show the sudo and kill of this image
+        run: |
+          sudo -V | head -1
+          /usr/bin/kill --version
       - name: Check the account boundary
         run: |
           sudo scripts/ci/own-users-linux.sh target/release/tessel-runner \

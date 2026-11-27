@@ -53,9 +53,11 @@ impl Rig {
         rig.script(
             "sudo",
             r#"if [ -f STATE/refuse ]; then echo "sudo: a password is required" >&2; exit 1; fi
+if [ -f STATE/refusenoisy ]; then printf 'sudo: said "y"\033[31m\n' >&2; exit 1; fi
 [ "$1" = -n ] && [ "$2" = -u ] && [ "$4" = -- ] || { echo "sudo: unexpected arguments: $*" >&2; exit 1; }
 echo "$3 $5 $6 $7" >> STATE/sudo.log
 shift 4
+if [ -f STATE/forkparent ]; then "$@"; exit $?; fi
 exec "$@""#,
         );
         rig.script(
@@ -92,6 +94,9 @@ echo "end $(date +%s%N)" >> STATE/timeline"#,
         rig.script(
             "kill",
             r#"echo "$*" >> STATE/kill.log
+[ -f STATE/killnoisy ] && { printf 'kill: said "x"\n\033[31m second line\n' >&2; exit 1; }
+[ -f STATE/killbroken ] && { echo "kill: failed to parse argument: '(null)'" >&2; exit 1; }
+[ "$*" = "-KILL -- -1" ] || { echo "kill: failed to parse argument: '(null)'" >&2; exit 1; }
 [ -f STATE/killhang ] && { echo "$$" > STATE/hung.pid; exec sleep 600; }
 [ -f STATE/stubborn ] && exit 0
 while read -r pid; do kill -9 "$pid" 2>/dev/null; done < STATE/procs
@@ -284,8 +289,10 @@ fn everything_the_account_owns_is_killed_after_every_run_and_at_start() {
         rig.read("kill.log")
     );
     assert!(
-        rig.read("kill.log").lines().all(|line| line == "-KILL -1"),
-        "the kill is exactly kill -KILL -1: {}",
+        rig.read("kill.log")
+            .lines()
+            .all(|line| line == "-KILL -- -1"),
+        "the kill is exactly kill -KILL -- -1: {}",
         rig.read("kill.log")
     );
     for pid in rig.read("procs").lines() {
@@ -362,6 +369,85 @@ fn a_sudo_that_refuses_stops_the_server_from_starting() {
     rig.touch("refuse");
     let error = SudoRunner::new(rig.settings()).err().expect("an error");
     assert!(error.to_string().contains("sudo"), "{error}");
+    let command = format!("{} -KILL -- -1", rig.settings().kill.display());
+    assert!(
+        error.to_string().contains(&command),
+        "the command the rule must allow: {error}"
+    );
+}
+
+#[test]
+fn what_the_kill_and_sudo_say_is_shown_quoted_on_one_line() {
+    let rig = Rig::new();
+    rig.touch("refusenoisy");
+    let said = SudoRunner::new(rig.settings())
+        .err()
+        .expect("an error")
+        .to_string();
+    assert!(
+        said.contains(r#"\"y\""#) && said.contains("\\u{1b}"),
+        "unquoted: {said}"
+    );
+    assert!(!said.contains('\n'), "{said}");
+    let rig = Rig::new();
+    let pid = stray_process();
+    fs::write(rig.state().join("procs"), format!("{pid}\n")).expect("record it");
+    rig.touch("killnoisy");
+    let said = SudoRunner::new(rig.settings())
+        .err()
+        .expect("an error")
+        .to_string();
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-9", &pid])
+        .status();
+    assert!(
+        said.contains(r#"\"x\""#) && said.contains("\\u{1b}"),
+        "unquoted: {said}"
+    );
+    assert!(!said.contains('\n'), "{said}");
+}
+
+#[test]
+fn a_kill_that_fails_to_run_shows_its_own_message_next_to_the_survivors() {
+    let rig = Rig::new();
+    let pid = stray_process();
+    fs::write(rig.state().join("procs"), format!("{pid}\n")).expect("record it");
+    rig.touch("killbroken");
+    let error = SudoRunner::new(rig.settings()).err().expect("an error");
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-9", &pid])
+        .status();
+    let text = error.to_string();
+    assert!(text.contains(&pid), "{text}");
+    assert!(
+        text.contains("failed to parse argument"),
+        "the kill said nothing: {text}"
+    );
+}
+
+#[test]
+fn a_call_given_up_under_a_sudo_that_forks_its_command_empties_the_account_and_frees_the_gate() {
+    let rig = Rig::new();
+    let runner = Arc::new(rig.runner());
+    rig.set_mode("sleep");
+    rig.touch("forkparent");
+    let cancel = rig.cancel_once_started();
+    let (done, returned) = std::sync::mpsc::channel();
+    let caller = Arc::clone(&runner);
+    std::thread::spawn(move || {
+        let _ = done.send(caller.run_cancellable(&request(), &cancel));
+    });
+    let error = returned
+        .recv_timeout(Duration::from_secs(120))
+        .expect("no deadlock: the given-up call returned")
+        .unwrap_err();
+    assert!(matches!(error, RunnerError::Unsupervised { .. }), "{error}");
+    assert!(rig.account_is_empty(), "the account still has a process");
+    rig.set_mode("ok");
+    assert!(
+        runner.run_cancellable(&request(), &never).is_ok(),
+        "the gate is free again"
+    );
 }
 
 #[test]
