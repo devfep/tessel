@@ -929,8 +929,8 @@ impl Daemon {
                 let message = "the connection dropped before the coordinator answered; the scopes \
                                may have been added to your claim. `tessel status` shows them \
                                once the daemon has read the coordinator's log to its end after \
-                               reconnecting; until then do not claim them again, which is \
-                               refused as stale";
+                               reconnecting; until then do not claim them again: that is \
+                               refused as stale if the first amend was applied";
                 answer(pending.replies, &refused(None, message));
             } else {
                 self.lost_requests.push(pending);
