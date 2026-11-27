@@ -127,9 +127,8 @@ async fn next(socket: &mut Socket) -> Result<Option<ServerMsg>, Box<dyn std::err
     loop {
         match tokio::time::timeout(LIVE, socket.next()).await? {
             Some(Ok(Message::Text(text))) => return Ok(Some(serde_json::from_str(&text)?)),
-            Some(Ok(Message::Close(_) | Message::Binary(_))) | None => return Ok(None),
+            Some(Ok(Message::Close(_) | Message::Binary(_)) | Err(_)) | None => return Ok(None),
             Some(Ok(_)) => {}
-            Some(Err(_)) => return Ok(None),
         }
     }
 }
@@ -258,7 +257,7 @@ async fn closed_with(socket: &mut Socket) -> Result<(u16, String), Box<dyn std::
             Some(Ok(Message::Close(Some(frame)))) => {
                 return Ok((frame.code.into(), frame.reason.to_string()));
             }
-            Some(Err(_)) | None | Some(Ok(Message::Close(None))) => {
+            None | Some(Err(_) | Ok(Message::Close(None))) => {
                 return Err("the socket ended without a close frame".into());
             }
             Some(Ok(_)) => {}
@@ -376,6 +375,7 @@ async fn a_state_row_that_does_not_load_closes_the_sender_1011_until_it_is_repai
 struct PanicsWhenAsked;
 
 impl CallPort for PanicsWhenAsked {
+    #[expect(clippy::panic, reason = "the panic is what this test port is for")]
     fn answer(&self, _call: Call) -> BoxFuture<CallAnswer> {
         panic!("the call port panicked on purpose");
     }
