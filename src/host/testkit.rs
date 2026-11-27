@@ -209,6 +209,18 @@ impl Testkit {
         true
     }
 
+    /// Deliver every answer that is not a replay page, like `settle` for the rest. A host that
+    /// keeps asking, or a `deliver_next_but_pages` that never says false, fails the test after
+    /// `SETTLE_LIMIT` answers instead of hanging it.
+    pub fn settle_but_pages(&mut self) {
+        for _ in 0..SETTLE_LIMIT {
+            if !self.deliver_next_but_pages() {
+                return;
+            }
+        }
+        panic!("the host still hands the adapter answers after {SETTLE_LIMIT} deliveries");
+    }
+
     /// Deliver answers until the host is waiting for none. A host that keeps asking (a load that
     /// never sticks, say) fails the test after `SETTLE_LIMIT` answers instead of hanging it.
     pub fn settle(&mut self) {

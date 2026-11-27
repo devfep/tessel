@@ -1213,10 +1213,23 @@ fn core_json_over_the_hard_limit_with_one_lease_due() -> String {
     );
     let summary = "x".repeat(10_000);
     let mut made = 0;
-    while serde_json::to_string(&core).unwrap().len() <= HARD_ENTRY_BYTES + 20_000 {
-        made += 1;
-        let agent = AgentId(format!("filler-{made}"));
-        core.handle(&agent, claim(1, &format!("f{made}.rs"), &summary), NOW_MS);
+    let mut fill = |core: &mut Core, count: usize| {
+        for _ in 0..count {
+            made += 1;
+            let agent = AgentId(format!("filler-{made}"));
+            core.handle(&agent, claim(1, &format!("f{made}.rs"), &summary), NOW_MS);
+        }
+    };
+    // One serialisation per probe, not per claim: the first two fillers give the size of one.
+    fill(&mut core, 1);
+    let one = serde_json::to_string(&core).unwrap().len();
+    fill(&mut core, 1);
+    let two = serde_json::to_string(&core).unwrap().len();
+    let each = two - one;
+    let target = HARD_ENTRY_BYTES + 20_000;
+    fill(&mut core, target.saturating_sub(two).div_ceil(each));
+    while serde_json::to_string(&core).unwrap().len() <= target {
+        fill(&mut core, 1);
     }
     let mut stored = serde_json::to_value(&core).unwrap();
     let claims = stored["claims"].as_object_mut().unwrap();
@@ -3430,10 +3443,16 @@ fn host_only_the_replaying_sockets_frames_wait_for_its_replay() {
 
     kit.deliver_next();
     let before_last = kit.history().len();
+    let mut delivered = 0;
     while labels_since(&kit, before_last)
         .iter()
         .all(|l| *l != "SetSession")
     {
+        assert!(
+            delivered < 1_000,
+            "no SetSession after {delivered} deliveries"
+        );
+        delivered += 1;
         assert!(kit.deliver_next_but_pages() || kit.deliver_next());
     }
     kit.settle();
@@ -3543,7 +3562,7 @@ fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
     let other = kit.open("a2");
     kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
     kit.send(other, &hello("a2"));
-    while kit.deliver_next_but_pages() {}
+    kit.settle_but_pages();
     assert!(kit.received(other).iter().any(is_welcome));
     assert!(
         replayed_seqs(&kit, watcher).is_empty(),
@@ -3985,7 +4004,7 @@ fn expiry_then_release_with_a_replaying_waiter(overflow: bool) -> (Testkit, Sock
         let now_ms = kit.now_ms();
         kit.input(Input::SendFailed { now_ms, sock: a2 });
     }
-    while kit.deliver_next_but_pages() {}
+    kit.settle_but_pages();
     kit.settle();
     (kit, a2)
 }
@@ -4092,7 +4111,7 @@ fn host_live_events_below_the_start_of_a_replay_are_never_buffered() {
     let other = kit.open("a2");
     kit.send(watcher, &ClientMsg::Watch { from_seq: 10 });
     kit.send(other, &hello("a2"));
-    while kit.deliver_next_but_pages() {}
+    kit.settle_but_pages();
     assert!(
         kit.received(other).iter().any(is_welcome),
         "seq 3 is stored"

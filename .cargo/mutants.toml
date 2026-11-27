@@ -19,6 +19,12 @@
 #   or goes; only a golden plan could kill it. It is the only `+` in `plan`.
 # - mod.rs: `cut_off_replays`' `&&` and `==`, and `failure_report`'s count line, which only
 #   describe a run.
+# Known timeouts, not exclusions: `delete ! in Host::run` (src/host/mod.rs) makes `Host::drain`
+# re-defer every job forever, so the host tests hang and cargo-mutants reports a timeout after
+# about 189 s.
+# It is a detection by hanging, and the nightly warns about it instead of failing; no nextest
+# per-test timeout is set, because the slowest baseline test takes 23 s and a bound would cost every
+# run to save about 2 minutes of one shard.
 # The patterns match the names `cargo mutants --list` prints: re-check with it after any edit.
 exclude_re = [
     'src/sim/driver\.rs:.*replace Sim::awaiting_review -> .* with Box::leak\(Box::new\(BTreeSet::from_iter\(\[[01]\]\)\)\)$',
