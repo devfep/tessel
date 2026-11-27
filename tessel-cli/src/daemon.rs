@@ -926,9 +926,11 @@ impl Daemon {
             } else if pending.amend.is_some() {
                 // The amend may have been applied; the log read after the next welcome repairs the
                 // claim's fence and scopes (`reconcile`), so the caller is told to look.
-                let message = "the connection dropped before the coordinator answered; the \
-                               scopes may have been added to your claim, so run `tessel status` \
-                               and claim again if they are missing";
+                let message = "the connection dropped before the coordinator answered; the scopes \
+                               may have been added to your claim. `tessel status` shows them \
+                               once the daemon has read the coordinator's log to its end after \
+                               reconnecting; until then do not claim them again, which is \
+                               refused as stale";
                 answer(pending.replies, &refused(None, message));
             } else {
                 self.lost_requests.push(pending);
@@ -937,8 +939,9 @@ impl Daemon {
         // A submission in flight may have been accepted without us hearing of it; the event log
         // read after the next welcome marks the claim submitted if it was.
         let message = "the connection dropped before the coordinator answered; the submission may \
-                       still have arrived, so run `tessel status`: a claim shown as submitted was \
-                       accepted";
+                       still have arrived. `tessel status` shows the claim as submitted once the \
+                       daemon has read the coordinator's log to its end after reconnecting and \
+                       the log shows it accepted; until then the outcome is unknown";
         for (_, pending) in std::mem::take(&mut self.submits) {
             let _ = pending.reply.send(submit_refused(None, message));
         }
