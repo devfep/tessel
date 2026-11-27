@@ -93,18 +93,35 @@ pub enum CommandError {
          (older git ignores GIT_CONFIG_COUNT, which drops the fixed settings)"
     )]
     UnsupportedGit { found: String },
-    #[error("git --version failed ({}): {stderr:?}", describe_exit(*exit_code))]
+    #[error(
+        "git --version failed ({}); stdout {stdout:?}, stderr {stderr:?}",
+        describe_exit(*exit_code)
+    )]
     VersionFailed {
         exit_code: Option<i32>,
+        stdout: String,
         stderr: String,
     },
 }
 
 fn describe_exit(exit_code: Option<i32>) -> String {
-    exit_code.map_or_else(
-        || "killed by a signal".to_owned(),
-        |code| format!("exit code {code}"),
-    )
+    match exit_code {
+        None => "killed by a signal".to_owned(),
+        Some(0) => "exit code 0, printed no version".to_owned(),
+        Some(code) => format!("exit code {code}"),
+    }
+}
+
+/// Most characters of git output kept in a version error.
+const MAX_VERSION_TEXT_CHARS: usize = 1200;
+
+/// Trims git output and cuts it to [`MAX_VERSION_TEXT_CHARS`], marking the cut.
+fn bounded_version_text(text: &str) -> String {
+    let text = text.trim();
+    match text.char_indices().nth(MAX_VERSION_TEXT_CHARS) {
+        Some((end, _)) => format!("{}...[cut]", &text[..end]),
+        None => text.to_owned(),
+    }
 }
 
 const MIN_GIT_MAJOR: u32 = 2;
@@ -113,7 +130,7 @@ const MIN_GIT_MINOR: u32 = 31;
 /// Accepts the output of `git --version` when it names git 2.31 or newer.
 pub fn ensure_supported_git(version_output: &str) -> Result<(), CommandError> {
     let unsupported = || CommandError::UnsupportedGit {
-        found: version_output.trim().to_owned(),
+        found: bounded_version_text(version_output),
     };
     let numbers = version_output
         .trim()
@@ -213,10 +230,11 @@ impl Git {
     pub fn check_version(&self) -> Result<(), CommandError> {
         let output = run(&self.command(&["--version"], LOCAL_TIMEOUT))
             .map_err(|source| CommandError::VersionCheck { source })?;
-        if !output.success() {
+        if !output.success() || output.stdout.trim().is_empty() {
             return Err(CommandError::VersionFailed {
                 exit_code: output.exit_code,
-                stderr: output.stderr.trim().to_owned(),
+                stdout: bounded_version_text(&output.stdout),
+                stderr: bounded_version_text(&output.stderr),
             });
         }
         ensure_supported_git(&output.stdout)
