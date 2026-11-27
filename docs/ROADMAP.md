@@ -29,13 +29,14 @@ two runs hold it); waiters now remove it one at a time under a short reaper lock
 owner file still names the dead pid. A test of 20 rounds of six waiters on a dead lock saw no
 overlap; whether that test can see one (against the old removal) is not shown: the check was refused
 by Claude Code's removal safety check. The re-read then found the helper held no lock under zsh, the
-agents' tool shell (an EXIT trap set in a function runs when the function returns there), so the
-lanes' one-line cargo runs held none; it now sets POSIX_TRAPS under zsh, and a pid the system reused
-reads as dead (the owner file records the holder's start time); tested under zsh and bash.
-Dispatched at about 08:55 UTC: SIM-RACE-TEXT-LITERAL with SIM-FENCED-RULE-CHECKER (lane B) and
-MUTANTS-SERVER-CLI-IN-DIFF (lane A), which merged as #134 (`64b51b0`; Opus review Yes on `b65db81`,
-its two optional edits made in `20b66d5`; 15 checks green on `20b66d5`, its new sharded job skipped
-as the pull request touched neither crate).
+agents' tool shell (an EXIT trap set in a function runs when the function returns there), so a
+one-line cargo run made in that shell held none (lane B's seed runs went through a bash script and
+held it); it now sets POSIX_TRAPS under zsh, and a pid the system reused reads as dead (the owner
+file records the holder's start time); tested under zsh and bash. Dispatched at about 08:55 UTC:
+SIM-RACE-TEXT-LITERAL with SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF (lane A),
+which merged as #134 (`64b51b0`; Opus review Yes on `b65db81`, its two optional edits made in
+`20b66d5`; 15 checks green on `20b66d5`, its new sharded job skipped as the pull request touched
+neither crate).
 **Earlier (27 November 08:20 UTC):** Main and the coordinator's head at `a38b570`.
 MUTANTS-DOUBT-PACING landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198,
 rebased; the submission held a merge of main, so the daemon copied no notes and the orchestrator
