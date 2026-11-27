@@ -94,6 +94,7 @@ echo "end $(date +%s%N)" >> STATE/timeline"#,
         rig.script(
             "kill",
             r#"echo "$*" >> STATE/kill.log
+[ -f STATE/killbroken ] && { echo "kill: failed to parse argument: '(null)'" >&2; exit 1; }
 [ "$*" = "-KILL -- -1" ] || { echo "kill: failed to parse argument: '(null)'" >&2; exit 1; }
 [ -f STATE/killhang ] && { echo "$$" > STATE/hung.pid; exec sleep 600; }
 [ -f STATE/stubborn ] && exit 0
@@ -367,6 +368,29 @@ fn a_sudo_that_refuses_stops_the_server_from_starting() {
     rig.touch("refuse");
     let error = SudoRunner::new(rig.settings()).err().expect("an error");
     assert!(error.to_string().contains("sudo"), "{error}");
+    let command = format!("{} -KILL -- -1", rig.settings().kill.display());
+    assert!(
+        error.to_string().contains(&command),
+        "the command the rule must allow: {error}"
+    );
+}
+
+#[test]
+fn a_kill_that_fails_to_run_shows_its_own_message_next_to_the_survivors() {
+    let rig = Rig::new();
+    let pid = stray_process();
+    fs::write(rig.state().join("procs"), format!("{pid}\n")).expect("record it");
+    rig.touch("killbroken");
+    let error = SudoRunner::new(rig.settings()).err().expect("an error");
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-9", &pid])
+        .status();
+    let text = error.to_string();
+    assert!(text.contains(&pid), "{text}");
+    assert!(
+        text.contains("failed to parse argument"),
+        "the kill said nothing: {text}"
+    );
 }
 
 #[test]
