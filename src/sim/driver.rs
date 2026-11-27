@@ -413,6 +413,19 @@ impl Sim {
     }
 
     /// The wake the platform holds.
+    /// Whether the merge in flight is a `Land` left in doubt (it carries `doubt_since_ms`), as the
+    /// stored state says.
+    pub fn merge_in_doubt(&self) -> bool {
+        let state = self
+            .store
+            .state()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+        state
+            .and_then(|state| state.get("merge_in_flight").cloned())
+            .and_then(|flight| flight.get("doubt_since_ms").cloned())
+            .is_some_and(|since| since.is_u64())
+    }
+
     pub fn wake(&self) -> Option<u64> {
         self.wake
     }

@@ -19,6 +19,26 @@ use crate::sim::rng::Rng;
 /// (`driver::BASE`), so a dispatch built on the declared head names a commit main never held.
 pub const MAIN0: &str = "1111111111111111111111111111111111111111";
 
+/// Every this-many seeds (the seeds that leave this remainder, see `doubt_mode`) the lander is in
+/// doubt mode: the first `Land` of the run is refused as rate limited, so it is left in doubt and
+/// read as not landed, and the `Land` is sent again with its doubt still held. Without it that
+/// path is rare (a run has two or three `Land`s), and a core that forgot the doubt on it would
+/// pass a default sweep.
+const DOUBT_MODE_EVERY: u64 = 4;
+
+/// The remainder of `seed % DOUBT_MODE_EVERY` that is in doubt mode. The seeds that were pinned
+/// (`tests/simulator-regressions.txt`) leave other remainders, so their scripts stay as they were.
+const DOUBT_MODE_REMAINDER: u64 = 3;
+
+/// How long at least a `Land` waits to run in doubt mode.
+const DOUBT_MODE_LAND_DELAY_MS: u64 = 1_000;
+
+/// Whether `seed` runs in doubt mode: the lander refuses more `Land`s, and the traffic waits a
+/// doubt out (`Traffic::step`) instead of leaving the run to end inside it.
+pub fn doubt_mode(seed: u64) -> bool {
+    seed % DOUBT_MODE_EVERY == DOUBT_MODE_REMAINDER
+}
+
 /// How many merge calls in a row a rate limit refuses once it starts.
 const RATE_LIMIT_MS: u64 = 15_000;
 
@@ -92,6 +112,10 @@ pub type FaultCounts = BTreeMap<&'static str, u64>;
 #[derive(Debug)]
 struct Chaos {
     rng: Rng,
+    /// The seed is in doubt mode (`DOUBT_MODE_EVERY`).
+    doubt_mode: bool,
+    /// The first `Land` is still to be refused as rate limited.
+    refuse_first_land: bool,
     seen_forks: BTreeSet<String>,
     limited_until_ms: u64,
     /// Reconcile answers still owed as `Unknown`.
@@ -193,6 +217,8 @@ impl Lander {
     pub fn with_faults(mut self, seed: u64) -> Self {
         self.chaos = Some(Chaos {
             rng: Rng::new(seed ^ 0x6c61_6e64_6572),
+            doubt_mode: doubt_mode(seed),
+            refuse_first_land: doubt_mode(seed),
             seen_forks: BTreeSet::new(),
             limited_until_ms: 0,
             reconcile_unknowns: 0,
@@ -338,7 +364,11 @@ impl Lander {
         let Some(chaos) = self.chaos.as_mut() else {
             return Plan::PROMPT;
         };
-        let (run_after_ms, reply_after_ms) = timings(&mut chaos.rng, fate);
+        let (mut run_after_ms, reply_after_ms) = timings(&mut chaos.rng, fate);
+        if chaos.doubt_mode && is_land(&call.request) && fate != Fate::RateLimited {
+            // The `Land` is still out when the step ends, so a checker sees the merge at `Land`.
+            run_after_ms = run_after_ms.max(DOUBT_MODE_LAND_DELAY_MS);
+        }
         let repeat = chaos.rng.chance(0.08);
         let repeat_after_ms = repeat.then(|| 1 + chaos.rng.below(30_000) as u64);
         if run_after_ms > 0 {
@@ -410,6 +440,10 @@ impl Lander {
         }
         let roll = chaos.rng.below(100);
         let land = is_land(request);
+        if land && std::mem::take(&mut chaos.refuse_first_land) {
+            chaos.limited_until_ms = now_ms + RATE_LIMIT_MS;
+            return chaos.counted("rate_limited", Fate::RateLimited);
+        }
         match roll {
             0..=5 => chaos.counted("unknown", Fate::Unknown),
             6..=9 => chaos.counted("never_runs", Fate::NeverRuns),

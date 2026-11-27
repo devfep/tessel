@@ -34,6 +34,8 @@ pub struct Traffic {
     /// Picks the moment to crash at, so arming one leaves the script's own draws as they were.
     moments: Rng,
     next_req: u64,
+    /// A doubt of the merge in flight is waited out: see `lander::doubt_mode`.
+    doubt_mode: bool,
 }
 
 impl Traffic {
@@ -42,6 +44,7 @@ impl Traffic {
             rng: Rng::new(seed),
             moments: Rng::new(seed ^ 0x6d6f_6d65_6e74),
             next_req: 1,
+            doubt_mode: crate::sim::lander::doubt_mode(seed),
         }
     }
 
@@ -54,6 +57,9 @@ impl Traffic {
         if sim.view(agent).and_then(|view| view.sock).is_none() {
             sim.connect(agent);
             finished = sim.quiet();
+        }
+        if self.doubt_mode && sim.merge_in_doubt() {
+            sim.jump_to_wake();
         }
         self.act(sim, agent);
         finished &= sim.quiet();
