@@ -245,7 +245,7 @@ jobs:
                  cat mutants.out/missed.txt
                  exit 2
                fi
-               echo "::warning::Timeouts only, no missed mutants (exit 3). See mutants.out/timeout.txt." ;;
+               echo "::warning::Timeouts only (exit 3): mutants.out/timeout.txt, .cargo/mutants.toml." ;;
             *) echo "::error::cargo mutants exited $code (2 missed, 4 baseline failed, 5 or 6 bad diff)."
                exit "$code" ;;
           esac

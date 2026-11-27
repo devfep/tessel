@@ -9,7 +9,7 @@ use super::call::{Call, CallAnswer, CallId, DispatchId, Request};
 use super::call::{Refusal, TrialResult};
 use super::core_slot::{ApplyError, CoreSlot, Prepared, Waits};
 use super::replay::REPLAY_BUFFER_EVENTS;
-use super::testkit::Testkit;
+use super::testkit::{Testkit, SETTLE_LIMIT};
 use super::wake::{self, WakeStep};
 use super::{BatchId, Host, HostConfig, Input, Output, SocketId};
 use crate::coordinator::{Coordinator as Core, Effect};
@@ -3449,7 +3449,7 @@ fn host_only_the_replaying_sockets_frames_wait_for_its_replay() {
         .all(|l| *l != "SetSession")
     {
         assert!(
-            delivered < 1_000,
+            delivered < SETTLE_LIMIT,
             "no SetSession after {delivered} deliveries"
         );
         delivered += 1;

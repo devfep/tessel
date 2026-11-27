@@ -19,12 +19,6 @@
 #   or goes; only a golden plan could kill it. It is the only `+` in `plan`.
 # - mod.rs: `cut_off_replays`' `&&` and `==`, and `failure_report`'s count line, which only
 #   describe a run.
-# Known timeouts, not exclusions: `delete ! in Host::run` (src/host/mod.rs) makes `Host::drain`
-# re-defer every job forever, so the host tests hang and cargo-mutants reports a timeout after
-# about 189 s.
-# It is a detection by hanging, and the nightly warns about it instead of failing; no nextest
-# per-test timeout is set, because the slowest baseline test takes 23 s and a bound would cost every
-# run to save about 2 minutes of one shard.
 # The patterns match the names `cargo mutants --list` prints: re-check with it after any edit.
 exclude_re = [
     'src/sim/driver\.rs:.*replace Sim::awaiting_review -> .* with Box::leak\(Box::new\(BTreeSet::from_iter\(\[[01]\]\)\)\)$',
@@ -44,3 +38,11 @@ exclude_re = [
     'src/sim/mod\.rs:.*replace (&& with \|\||== with !=) in cut_off_replays$',
     'src/sim/mod\.rs:.*replace > with >= in failure_report$',
 ]
+
+# Known timeouts, not exclusions. `delete ! in Host::run` at src/host/mod.rs:471:12 (the gate
+# check; the 475:12 mutant is caught in seconds) makes `Host::drain` re-defer every job forever, so
+# the host tests hang and cargo-mutants reports a timeout after about 189 s. That is a detection by
+# hanging; the nightly and the pull-request run warn about timeouts instead of failing. A per-test
+# bound is left out on purpose: a nextest profile used only by the mutants step needs its own config
+# file and a bound kept above the slowest baseline test (23.7 s measured), and a 60 s bound ends
+# this mutant's run at 67 s instead of 189 s, which saves about 2 minutes of one shard.

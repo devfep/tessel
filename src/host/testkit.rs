@@ -14,7 +14,7 @@ use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
 use crate::shell::{Session, EVENT_PREFIX, STATE_KEY};
 
 /// The most answers `settle` delivers: far more than any test needs.
-const SETTLE_LIMIT: usize = 1_000;
+pub(crate) const SETTLE_LIMIT: usize = 1_000;
 
 /// What one client has been given.
 #[derive(Debug, Default)]
