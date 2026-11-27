@@ -285,9 +285,11 @@ something you rely on: re-read that code and adjust before you finish.
 
 Other inbox kinds marked `!`: `denied`, `submit_rejected`, `uncovered`, `review_required`,
 `base_moved` (main moved; re-read affected files),
-`lease_expired` (claim again before editing: a claim lapses when the coordinator stalls for longer
-than the 30 s lease, a busy or sleeping host, even while your daemon is online; the git hooks then
-refuse the change and print the `tessel claim` to run),
+`lease_expired` (the claim is gone, even while your daemon is online: the host stalled or slept for
+about the lease (30 s by default) or longer. Before editing, run `tessel claim` again for the same
+scopes with the same `--assume` statements. If you already changed files, the pre-commit and
+pre-push hooks refuse the change and print the exact `tessel claim` command; run it, add your
+`--assume` statements, and retry),
 `wait_withdrawn` (queue again), `error`. `reconciled` means the daemon repaired its claims after a
 reconnect; check `tessel status` (`--json` for machine-readable state).
 
