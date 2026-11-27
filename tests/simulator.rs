@@ -1702,9 +1702,11 @@ fn eight_fixed_seeds_make_claims_that_rely_on_files_they_do_not_own() {
         let (events, _) = sim.store().events();
         relied_on += events
             .iter()
-            .filter(|event| match &event.kind {
-                EventKind::ClaimGranted { intent, .. } => !intent.assumptions.is_empty(),
-                _ => false,
+            .filter(|event| {
+                let EventKind::ClaimGranted { intent, .. } = &event.kind else {
+                    return false;
+                };
+                !intent.assumptions.is_empty()
             })
             .count();
     }
