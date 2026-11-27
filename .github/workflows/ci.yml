@@ -256,8 +256,9 @@ jobs:
   # Changes to tessel-server and tessel-cli get their own mutants job: a mutant there runs its own
   # crate's tests (cargo-mutants tests the package it mutated, not the workspace), measured at about
   # 75 s for tessel-server and 113 s plus 9 s for tessel-cli, so about 2 to 3 minutes a mutant with
-  # its rebuild. With 2 jobs a 60-minute shard fits 40 to 60 mutants, 8 shards 320 to 480; a changed
-  # file yields 40 to 80. A diff past that times out, which fails the gate, never passes it.
+  # its rebuild. With 2 jobs a 60-minute shard fits about 40 to 60 mutants less its cold build and
+  # its baseline run of both packages' tests (no rust-cache), so a run holds roughly 300 to 450; a
+  # changed file yields 40 to 80. A diff past that times out, which fails the gate, never passes it.
   # A change that touches neither crate skips the sharded job, so it costs one 5-minute job.
   mutants-wire-scope:
     name: Slow lane, mutants scope (server and CLI)
