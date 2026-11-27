@@ -53,6 +53,7 @@ impl Rig {
         rig.script(
             "sudo",
             r#"if [ -f STATE/refuse ]; then echo "sudo: a password is required" >&2; exit 1; fi
+if [ -f STATE/refusenoisy ]; then printf 'sudo: said "y"\033[31m\n' >&2; exit 1; fi
 [ "$1" = -n ] && [ "$2" = -u ] && [ "$4" = -- ] || { echo "sudo: unexpected arguments: $*" >&2; exit 1; }
 echo "$3 $5 $6 $7" >> STATE/sudo.log
 shift 4
@@ -93,6 +94,7 @@ echo "end $(date +%s%N)" >> STATE/timeline"#,
         rig.script(
             "kill",
             r#"echo "$*" >> STATE/kill.log
+[ -f STATE/killnoisy ] && { printf 'kill: said "x"\n\033[31m second line\n' >&2; exit 1; }
 [ -f STATE/killbroken ] && { echo "kill: failed to parse argument: '(null)'" >&2; exit 1; }
 [ "$*" = "-KILL -- -1" ] || { echo "kill: failed to parse argument: '(null)'" >&2; exit 1; }
 [ -f STATE/killhang ] && { echo "$$" > STATE/hung.pid; exec sleep 600; }
@@ -372,6 +374,37 @@ fn a_sudo_that_refuses_stops_the_server_from_starting() {
         error.to_string().contains(&command),
         "the command the rule must allow: {error}"
     );
+}
+
+#[test]
+fn what_the_kill_and_sudo_say_is_shown_quoted_on_one_line() {
+    let rig = Rig::new();
+    rig.touch("refusenoisy");
+    let said = SudoRunner::new(rig.settings())
+        .err()
+        .expect("an error")
+        .to_string();
+    assert!(
+        said.contains(r#"\"y\""#) && said.contains("\\u{1b}"),
+        "unquoted: {said}"
+    );
+    assert!(!said.contains('\n'), "{said}");
+    let rig = Rig::new();
+    let pid = stray_process();
+    fs::write(rig.state().join("procs"), format!("{pid}\n")).expect("record it");
+    rig.touch("killnoisy");
+    let said = SudoRunner::new(rig.settings())
+        .err()
+        .expect("an error")
+        .to_string();
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-9", &pid])
+        .status();
+    assert!(
+        said.contains(r#"\"x\""#) && said.contains("\\u{1b}"),
+        "unquoted: {said}"
+    );
+    assert!(!said.contains('\n'), "{said}");
 }
 
 #[test]
