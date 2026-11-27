@@ -49,7 +49,7 @@ intent when they are denied, so make it specific. To change it, `tessel stop`, t
 releases your open claims (a submitted claim stays with the server until it merges or is
 rejected), so change the intent only when you hold no open claim. If the daemon is offline when you
 stop it, it drops your claims locally and reports them as unreleased: the coordinator keeps them
-until their lease (30 s) ends.
+until their lease ends (30 s by default, the server's `lease_ms`).
 
 ## As MCP tools
 

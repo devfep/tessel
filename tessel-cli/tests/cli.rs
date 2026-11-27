@@ -3512,14 +3512,14 @@ async fn claim_into_adds_the_scopes_to_the_named_claim_when_several_are_open() -
     let ids = claim_ids(&a1)?;
     assert_eq!(ids.len(), 2);
     // The second claim is named, so a mutant that amends the first open claim is caught.
-    let (other, first) = (ids[0], ids[1]);
-    let fence_before = claim_of(&a1, first)?["fence"].as_u64().context("fence")?;
+    let (other, target) = (ids[0], ids[1]);
+    let fence_before = claim_of(&a1, target)?["fence"].as_u64().context("fence")?;
     let other_before = claim_of(&a1, other)?;
 
-    let done = a1.tessel(&["claim", "--into", &first.to_string(), "src/c.rs"])?;
+    let done = a1.tessel(&["claim", "--into", &target.to_string(), "src/c.rs"])?;
     assert_eq!(done.code, 0, "{}", done.all());
     assert_eq!(claim_ids(&a1)?, ids, "no third claim");
-    let grown = claim_of(&a1, first)?;
+    let grown = claim_of(&a1, target)?;
     assert!(grown["scopes"].to_string().contains("src/c.rs"), "{grown}");
     assert!(grown["fence"].as_u64().context("fence")? > fence_before);
     assert_eq!(
@@ -3530,7 +3530,7 @@ async fn claim_into_adds_the_scopes_to_the_named_claim_when_several_are_open() -
     let amends = fake
         .received("a1")
         .into_iter()
-        .filter(|msg| matches!(msg, ClientMsg::Amend { claim, .. } if claim.0 == first))
+        .filter(|msg| matches!(msg, ClientMsg::Amend { claim, .. } if claim.0 == target))
         .count();
     assert_eq!(amends, 1);
     Ok(())
