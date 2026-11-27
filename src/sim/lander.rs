@@ -900,4 +900,238 @@ mod tests {
         assert!(plans.iter().any(|plan| plan.run_after_ms > 60_000));
         assert!(plans.iter().any(|plan| plan.repeat_after_ms.is_some()));
     }
+
+    fn read_head(n: u64) -> Call {
+        call(
+            n,
+            Request::ReadHead {
+                submitted: Vec::new(),
+            },
+        )
+    }
+
+    fn band(ms: u64, bands: &[(u64, u64)]) -> usize {
+        let found = bands
+            .iter()
+            .position(|(low, high)| (*low..*high).contains(&ms));
+        found.unwrap_or_else(|| panic!("{ms} ms is in no band of {bands:?}"))
+    }
+
+    fn within(seen: &[usize], shares: &[usize], total: usize) {
+        for (seen, share) in seen.iter().zip(shares) {
+            let percent = seen * 100 / total;
+            assert!(
+                percent.abs_diff(*share) <= 3,
+                "{percent}% of the calls, not about {share}%: {seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_call_runs_and_replies_after_a_delay_from_one_of_its_bands() {
+        let run_bands = [(0, 1), (1_000, 5_000), (5_000, 40_000), (60_000, 400_000)];
+        let reply_bands = [(0, 1), (500, 8_000), (20_000, 120_000)];
+        let (mut run_seen, mut reply_seen) = ([0; 4], [0; 3]);
+        let mut rng = Rng::new(3);
+        for _ in 0..20_000 {
+            let (run, reply) = timings(&mut rng, Fate::Reply);
+            run_seen[band(run, &run_bands)] += 1;
+            reply_seen[band(reply, &reply_bands)] += 1;
+        }
+        within(&run_seen, &[70, 20, 7, 3], 20_000);
+        within(&reply_seen, &[75, 20, 5], 20_000);
+        for fate in [Fate::RateLimited, Fate::CutOff] {
+            for _ in 0..200 {
+                assert_eq!(timings(&mut rng, fate).0, 0, "{fate:?} answers at once");
+            }
+        }
+    }
+
+    #[test]
+    fn a_refused_head_read_count_runs_down_one_head_read_at_a_time() {
+        let mut lander = Lander::new();
+        lander.refuse_head_reads(2);
+        assert_eq!(lander.plan(&call(1, prepare("f")), 0), Plan::PROMPT);
+        assert_eq!(lander.refused_head_reads, 2, "only head reads count");
+        let cut_off = Plan {
+            fate: Fate::CutOff,
+            ..Plan::PROMPT
+        };
+        assert_eq!(lander.plan(&read_head(2), 0), cut_off);
+        assert_eq!(lander.refused_head_reads, 1);
+        assert_eq!(lander.plan(&read_head(3), 0), cut_off);
+        assert_eq!(
+            lander.plan(&read_head(4), 0),
+            Plan::PROMPT,
+            "the third is read"
+        );
+        assert_eq!(lander.refused_head_reads, 0);
+    }
+
+    #[test]
+    fn a_run_of_unknown_reconciles_is_two_to_six_long_and_starts_three_times_in_ten() {
+        let reconcile = |n| {
+            let head = CommitId("h".to_string());
+            call(n, Request::Reconcile { head })
+        };
+        let owed = |lander: &Lander| lander.chaos.as_ref().map_or(0, |c| c.reconcile_unknowns);
+        let (mut lengths, mut starts, mut rolls) = (BTreeSet::new(), 0, 0);
+        for seed in 0..40 {
+            let mut lander = Lander::new().with_faults(seed);
+            for n in 0..200 {
+                let before = owed(&lander);
+                let answer = lander.execute(&reconcile(n));
+                if before > 0 {
+                    assert_eq!(answer, CallAnswer::Unknown, "inside a run");
+                    assert_eq!(owed(&lander), before - 1, "one fewer is owed");
+                    continue;
+                }
+                rolls += 1;
+                if answer == CallAnswer::Unknown {
+                    starts += 1;
+                    lengths.insert(owed(&lander) + 1);
+                }
+            }
+        }
+        assert_eq!(lengths, BTreeSet::from([2, 3, 4, 5, 6]));
+        let percent = starts * 100 / rolls;
+        assert!(
+            (20..=40).contains(&percent),
+            "{percent}% of the rolls start a run"
+        );
+    }
+
+    #[test]
+    fn the_seed_of_the_lander_is_mixed_in_not_merged_with_its_salt() {
+        let plans = |seed: u64| {
+            let mut lander = Lander::new().with_faults(seed);
+            (0..40)
+                .map(|n| lander.plan(&call(n, prepare("f")), n * 20_000))
+                .collect::<Vec<_>>()
+        };
+        let salt = 0x6c61_6e64_6572;
+        assert_ne!(plans(0), plans(salt), "two seeds, two sets of faults");
+    }
+
+    #[test]
+    fn a_candidate_head_is_the_same_for_the_same_pair_and_differs_for_any_other() {
+        assert_eq!(
+            candidate_head("f1", MAIN0),
+            "a61246a563590220d4ac6b204414c248a61246a5"
+        );
+        let heads: BTreeSet<String> = (0..200)
+            .map(|n| candidate_head(&format!("fork{n}"), MAIN0))
+            .collect();
+        assert_eq!(heads.len(), 200);
+        assert_ne!(candidate_head("a", "b"), candidate_head("b", "a"));
+    }
+
+    #[test]
+    fn a_rate_limit_lasts_one_window_from_the_call_that_started_it() {
+        let request = prepare("f");
+        let (mut limited, mut released) = (0, 0);
+        for seed in 0..200 {
+            let mut lander = Lander::new().with_faults(seed);
+            if lander.fate_of(&request, 1_000) != Fate::RateLimited {
+                continue;
+            }
+            limited += 1;
+            let until = lander
+                .chaos
+                .as_ref()
+                .map_or(0, |chaos| chaos.limited_until_ms);
+            assert_eq!(until, 1_000 + RATE_LIMIT_MS);
+            let inside = lander.fate_of(&request, until - 1);
+            assert_eq!(inside, Fate::RateLimited, "seed {seed}: inside the window");
+            if lander.fate_of(&request, until) != Fate::RateLimited {
+                released += 1;
+            }
+        }
+        assert!(limited > 0, "no seed started a rate limit");
+        assert!(
+            released > 0,
+            "the window never ended at its last millisecond"
+        );
+    }
+
+    #[test]
+    fn a_land_is_late_only_if_main_moved_since_it_was_issued() {
+        let mut lander = Lander::new().with_faults(1);
+        let (base, head) = prepared_head(&mut lander, "f1");
+        lander.execute(&call(2, land(&base, &head)));
+        assert_eq!(lander.history().len(), 1);
+        lander.issued_at.insert((7, 7), 1);
+        lander.execute(&call(7, land(&base, &head)));
+        assert!(!lander.faults().contains_key("late_land_after_landing"));
+        lander.issued_at.insert((8, 8), 0);
+        lander.execute(&call(8, land(&base, &head)));
+        assert_eq!(lander.faults().get("late_land_after_landing"), Some(&1));
+    }
+
+    #[test]
+    fn the_delay_counters_and_the_repeat_delay_match_the_plans() {
+        let mut lander = Lander::new().with_faults(9);
+        let plans: Vec<Plan> = (0..600)
+            .map(|n| lander.plan(&call(n, prepare(&format!("f{n}"))), n * 20_000))
+            .collect();
+        let faults = lander.faults();
+        let counted = |name: &str| faults.get(name).copied().unwrap_or(0) as usize;
+        let delayed = plans.iter().filter(|plan| plan.run_after_ms > 0).count();
+        let reply_delayed = plans.iter().filter(|plan| plan.reply_after_ms > 0).count();
+        let repeated = plans
+            .iter()
+            .filter(|plan| plan.repeat_after_ms.is_some())
+            .count();
+        assert!(delayed > 0 && reply_delayed > 0 && repeated > 0);
+        assert_eq!(counted("delayed"), delayed);
+        assert_eq!(counted("reply_delayed"), reply_delayed);
+        assert_eq!(counted("duplicated"), repeated);
+        for again in plans.iter().filter_map(|plan| plan.repeat_after_ms) {
+            assert!((1..=30_000).contains(&again), "{again}");
+        }
+    }
+
+    #[test]
+    fn a_poisoned_commit_is_listed_by_name() {
+        let mut lander = Lander::new();
+        assert!(lander.poisoned().is_empty());
+        lander.poison("f2", true);
+        lander.poison("f1", false);
+        assert_eq!(lander.poisoned(), ["f1", "f2"]);
+    }
+
+    #[test]
+    fn the_tests_of_a_flaky_head_alternate_between_passing_and_failing() {
+        let mut flaky = 0;
+        for seed in 0..400 {
+            let mut lander = Lander::new().with_faults(seed);
+            let (base, head) = prepared_head(&mut lander, "f1");
+            let test = |lander: &mut Lander, n| {
+                let request = Request::Test {
+                    base: CommitId(base.clone()),
+                    head: CommitId(head.clone()),
+                };
+                lander.execute(&call(n, request)) == CallAnswer::Tested
+            };
+            let outcomes: Vec<bool> = (0..6).map(|n| test(&mut lander, n)).collect();
+            let is_flaky = lander
+                .chaos
+                .as_ref()
+                .is_some_and(|chaos| chaos.flaky.contains_key(&head));
+            if !is_flaky {
+                assert!(
+                    outcomes.iter().all(|passed| *passed),
+                    "seed {seed}: {outcomes:?}"
+                );
+                continue;
+            }
+            flaky += 1;
+            assert!(
+                outcomes.windows(2).all(|pair| pair[0] != pair[1]),
+                "seed {seed}: {outcomes:?}"
+            );
+            assert_eq!(lander.faults().get("flipped_on_rerun"), Some(&6));
+        }
+        assert!(flaky > 0, "no seed made a head flaky");
+    }
 }
