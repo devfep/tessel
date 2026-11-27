@@ -651,7 +651,11 @@ mod tests {
             .conn
             .pragma_update(None, "max_page_count", pages)
             .unwrap();
-        let entries = vec![("core".to_owned(), "x".repeat(200_000))];
+        // The small entry fits and the big one does not: a failed commit must undo the first too.
+        let entries = vec![
+            ("ev:small".to_owned(), "{}".to_owned()),
+            ("core".to_owned(), "x".repeat(200_000)),
+        ];
         for attempt in 1..=3 {
             let error = store.commit(&entries).unwrap_err();
             let code = code_of(&error);
@@ -660,14 +664,16 @@ mod tests {
                 Some(rusqlite::ErrorCode::DiskFull),
                 "attempt {attempt}: {error}"
             );
-            assert!(!stored(&store, "core"), "a failed commit left a row");
+            for key in ["ev:small", "core"] {
+                assert!(!stored(&store, key), "attempt {attempt} left {key}");
+            }
         }
         store
             .conn
             .pragma_update(None, "max_page_count", 1_000_000)
             .unwrap();
         store.commit(&entries).unwrap();
-        assert!(stored(&store, "core"));
+        assert!(stored(&store, "core") && stored(&store, "ev:small"));
     }
 
     #[test]
@@ -675,6 +681,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.sqlite");
         let mut store = Store::open(&path).unwrap();
+        // The wait inside each attempt is the 5 s `docs/configuration.md` promises, pinned as a
+        // number so that a change to the constant is a change to this test and the docs.
+        let timeout: i64 = store
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5_000);
+        assert_eq!(u64::try_from(timeout).unwrap(), BUSY_TIMEOUT_MS);
         let wait = std::time::Duration::from_millis(150);
         store.conn.busy_timeout(wait).unwrap();
         let other = Connection::open(&path).unwrap();
