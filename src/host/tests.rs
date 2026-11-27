@@ -630,7 +630,7 @@ fn host_a_failed_commit_is_retried_with_the_batch_and_sent_only_once_stored() {
 fn host_each_retry_of_a_commit_logs_which_attempt_it_is() {
     let mut kit = kit();
     let sock = welcomed(&mut kit, "a1");
-    kit.fail_commits(2);
+    kit.fail_commits(super::batch::MAX_COMMIT_ATTEMPTS - 1);
     kit.send(sock, &claim(1, "x.rs", "s"));
     kit.settle();
     let retries: Vec<&String> = kit
@@ -639,14 +639,12 @@ fn host_each_retry_of_a_commit_logs_which_attempt_it_is() {
         .filter(|line| line.contains("retrying"))
         .collect();
     assert_eq!(retries.len(), 2, "{retries:?}");
-    assert!(
-        retries[0].ends_with("retrying (attempt 2 of 3)"),
-        "{retries:?}"
-    );
-    assert!(
-        retries[1].ends_with("retrying (attempt 3 of 3)"),
-        "{retries:?}"
-    );
+    assert_eq!(super::batch::MAX_COMMIT_ATTEMPTS, 3);
+    let last = super::batch::MAX_COMMIT_ATTEMPTS;
+    for (retry, attempt) in retries.iter().zip(2..) {
+        let wanted = format!("retrying (attempt {attempt} of {last})");
+        assert!(retry.ends_with(&wanted), "{retries:?}");
+    }
 }
 
 #[test]

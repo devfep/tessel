@@ -2111,3 +2111,133 @@ fn a_claim_without_its_submission_or_its_work_is_not_resolved_or_reconciled() {
         );
     }
 }
+
+// ---- The rule the doubt code rests on, checked after every step ----
+
+/// A fenced claim (in doubt with a doubted pair) is the one whose merge is in flight, and that
+/// flight was told of the doubt (`doubt_since_ms`); a pair never outlives `in_doubt`.
+fn assert_fenced_claim_is_told(c: &Coordinator, claim: ClaimId, context: &str) {
+    let Some(work) = c
+        .state
+        .claims
+        .get(&claim.0)
+        .and_then(|held| held.work.as_ref())
+    else {
+        return;
+    };
+    assert!(
+        work.in_doubt || work.doubted_land.is_none(),
+        "{context}: a pair without a doubt"
+    );
+    if !super::doubt::is_fenced(work) {
+        return;
+    }
+    let flight = c.state.merge_in_flight.as_ref();
+    let told =
+        flight.is_some_and(|flight| flight.claim == claim && flight.doubt_since_ms.is_some());
+    assert!(told, "{context}: fenced, but the flight is {flight:?}");
+}
+
+/// A small deterministic stream, so a failing run names its seed.
+struct Dice(u64);
+
+impl Dice {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % n
+    }
+}
+
+fn random_outcome(dice: &mut Dice, stage: &MergeStage) -> MergeOutcome {
+    if dice.below(2) == 0 {
+        match stage {
+            MergeStage::Prepare | MergeStage::Unstaged => return prepared_other_head_or_base(dice),
+            MergeStage::Test { .. } => return MergeOutcome::Tested {},
+            MergeStage::Land { .. } | MergeStage::Reconcile { .. } => {
+                return MergeOutcome::ServiceUnavailable;
+            }
+        }
+    }
+    match dice.below(9) {
+        0 => prepared(),
+        1 => prepared_other_head(),
+        2 => prepared_on_moved_main(),
+        3 => MergeOutcome::Tested {},
+        4 | 5 => MergeOutcome::ServiceUnavailable,
+        6 => MergeOutcome::CandidateMissing {},
+        7 => MergeOutcome::MainMoved {},
+        _ => MergeOutcome::Timeout {},
+    }
+}
+
+fn prepared_other_head_or_base(dice: &mut Dice) -> MergeOutcome {
+    match dice.below(3) {
+        0 => prepared(),
+        1 => prepared_other_head(),
+        _ => prepared_on_moved_main(),
+    }
+}
+
+fn random_reconciliation(dice: &mut Dice) -> Reconciliation {
+    match dice.below(5) {
+        0 => Reconciliation::Landed,
+        1 => Reconciliation::NotLanded {
+            main: Some(commit(OLD)),
+        },
+        2 => Reconciliation::NotLanded {
+            main: Some(commit(MOVED)),
+        },
+        3 => Reconciliation::NotLanded { main: None },
+        _ => Reconciliation::Unknown,
+    }
+}
+
+#[test]
+fn a_fenced_claim_is_always_the_flight_that_was_told_however_the_doubt_goes() {
+    let mut doubted_steps = 0;
+    for seed in 0..300 {
+        let mut dice = Dice(seed);
+        let (mut c, claim, _) = submitted();
+        let mut now = NOW + 1;
+        for step in 0..40 {
+            now += dice.below(30_000);
+            let context = format!("seed {seed} step {step}");
+            let flight = c.state.merge_in_flight.as_ref().map(|f| f.dispatch);
+            match (dice.below(8), flight) {
+                (0, _) => {
+                    let stored = serde_json::to_string(&c).unwrap();
+                    c = serde_json::from_str(&stored).unwrap();
+                    c.recover_merge(now);
+                }
+                (1, _) => {
+                    let _ = c.resolve_doubt(claim, dice.below(2) == 0, now);
+                }
+                (2, Some(dispatch)) => {
+                    let found = random_reconciliation(&mut dice);
+                    c.reconcile_outcome(dispatch, &found, now);
+                }
+                (_, Some(dispatch)) => {
+                    let stage = c.state.merge_in_flight.as_ref().map(|f| f.stage.clone());
+                    let outcome = random_outcome(&mut dice, &stage.unwrap_or(MergeStage::Prepare));
+                    c.merge_outcome(dispatch, &outcome, now);
+                }
+                (_, None) => {}
+            }
+            c.begin_merge(now);
+            assert_fenced_claim_is_told(&c, claim, &context);
+            let work = c
+                .state
+                .claims
+                .get(&claim.0)
+                .and_then(|held| held.work.as_ref());
+            doubted_steps += usize::from(work.is_some_and(super::doubt::is_fenced));
+        }
+    }
+    assert!(
+        doubted_steps > 200,
+        "only {doubted_steps} steps were in doubt"
+    );
+}

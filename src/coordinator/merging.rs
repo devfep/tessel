@@ -211,7 +211,7 @@ impl Coordinator {
                 return None;
             }
             if let Some(dispatch) = self.dispatch_of(&flight) {
-                self.release_doubt_wait(&flight);
+                self.release_wait(&flight);
                 return Some(dispatch);
             }
             self.state.merge_in_flight = None;
@@ -241,13 +241,13 @@ impl Coordinator {
         Some(dispatch)
     }
 
-    /// The `Prepare` of a submission in doubt is going out: its wait is over. The marker the host
-    /// stores before the call says so, which tells a restart that the call may have run.
+    /// The call of `flight` is going out: whatever wait its claim still holds is over. The marker
+    /// the host stores before the call says so, which tells a restart that the call may have run.
     ///
-    /// Only the `Prepare` of a submission in doubt can still hold a wait that has not run out:
-    /// any other flight is offered once its backoff is over, so a wait it holds is already past
-    /// and clearing it changes no decision (every reader compares it with the clock).
-    fn release_doubt_wait(&mut self, flight: &InFlight) {
+    /// Only the `Prepare` of a submission in doubt can hold a wait that has not run out: any other
+    /// flight is offered once its backoff is over, so a wait it holds is already past and clearing
+    /// it changes no decision (every reader compares it with the clock).
+    fn release_wait(&mut self, flight: &InFlight) {
         let work = self
             .state
             .claims
@@ -434,6 +434,18 @@ impl Coordinator {
             flight.stage.may_have_landed(),
         );
         let fenced = held.work.as_ref().is_some_and(is_fenced);
+        let doubted = held
+            .work
+            .as_ref()
+            .filter(|work| is_fenced(work))
+            .and_then(|work| work.doubted_land.clone());
+        let refused_prepare = matches!(
+            (&flight.stage, outcome.verdict()),
+            (MergeStage::Prepare, Verdict::Rejected { .. })
+        );
+        if let (true, Some(pair)) = (refused_prepare, doubted) {
+            return self.reconcile_refused_prepare(flight, held, pair, now_ms);
+        }
         match (&flight.stage, outcome.verdict()) {
             (MergeStage::Prepare, Verdict::Prepared { base, head }) => {
                 self.prepared(flight, held, (base, head))
@@ -455,9 +467,6 @@ impl Coordinator {
             }
             (MergeStage::Land { .. } | MergeStage::Reconcile { .. }, verdict) => {
                 self.land_stage_outcome(flight, held, verdict, now_ms)
-            }
-            (MergeStage::Prepare, Verdict::Rejected { .. }) if fenced => {
-                self.reconcile_refused_prepare(flight, held, now_ms)
             }
             (MergeStage::Test { .. }, Verdict::Rejected { .. }) if fenced => {
                 self.wait_in_doubt(flight, held, now_ms)

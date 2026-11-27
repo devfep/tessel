@@ -146,6 +146,10 @@ impl Coordinator {
         held: ActiveClaim,
         now_ms: u64,
     ) -> Vec<Effect> {
+        debug_assert!(
+            flight.doubt_since_ms.is_some(),
+            "enter_doubt set it: a fenced claim's flight is always told"
+        );
         let Some(mut work) = held.work.clone() else {
             return Vec::new();
         };
@@ -187,19 +191,16 @@ impl Coordinator {
     /// ones that persist (a fork branch gone, a conflict after main moved outside the queue) say
     /// nothing of whether main is still where the `Land` leased it, so a `Reconcile` asks, paced
     /// by the doubts' backoff: main at the base sends the `Land` again, main elsewhere ends the
-    /// doubt so that the next `Prepare` rejects, and the head on main lands the work.
+    /// doubt so that the next `Prepare` rejects, and the head on main lands the work. The caller
+    /// has checked that the claim is fenced and passes its doubted `pair`.
     pub(super) fn reconcile_refused_prepare(
         &mut self,
         flight: InFlight,
         held: ActiveClaim,
+        pair: (CommitId, CommitId),
         now_ms: u64,
     ) -> Vec<Effect> {
-        let pair = held
-            .work
-            .as_ref()
-            .and_then(|work| work.doubted_land.clone());
-        pair.map(|pair| self.reconcile_before_ending(flight, held, pair, (Pace::Backoff, now_ms)))
-            .unwrap_or_default()
+        self.reconcile_before_ending(flight, held, pair, (Pace::Backoff, now_ms))
     }
 
     /// Tell the submitter their landing is in doubt, the first time only.
