@@ -122,9 +122,12 @@ fn v1() -> u16 {
     1
 }
 
+use serde::{Deserialize, Serialize};
+
 /// What every loser of a race is told, as `SubmitRejected::reason`. Fixed: nothing about the
 /// winning work is quoted. The wire carries no other mark of a race loser, so a client that must
-/// tell a race rejection from an ordinary one compares against [`RACE_REJECTIONS`].
+/// tell a race rejection from an ordinary one compares against [`RACE_REJECTIONS`]. Changing one of
+/// these texts changes what older CLIs match on the wire, so it needs a `PROTOCOL_VERSION` bump.
 pub const LOST_RACE: &str = "lost the race";
 
 /// What an entrant is told when a `TestsPass` race had no winner and no trial judged its entry:
@@ -138,8 +141,6 @@ pub const NOT_PICKED: &str = "the race was not picked in time";
 
 /// The reasons the core gives a race entry it rejects.
 pub const RACE_REJECTIONS: [&str; 3] = [LOST_RACE, TESTS_GAVE_NO_RESULT, NOT_PICKED];
-
-use serde::{Deserialize, Serialize};
 
 // ---------- Identity ----------
 
