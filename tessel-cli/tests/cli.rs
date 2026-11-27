@@ -3433,7 +3433,10 @@ async fn a_stop_whose_log_read_is_closed_early_logs_the_close() -> Result<()> {
     fake.cut_replay(Some(1));
     fake.cut_replay_close(Some((1013, "replay buffer full")));
     a1.tessel(&["stop"])?;
-    let shown = r#"stop: the event log was cut short (closed by the server with code 1013, reason "replay buffer full"), so releases are unconfirmed"#;
+    let shown = concat!(
+        "stop: the event log was cut short (closed by the server with code 1013, ",
+        r#"reason "replay buffer full"), so releases are unconfirmed"#
+    );
     let log = daemon_log(&a1)?;
     assert!(log.contains(shown), "{log}");
     Ok(())
