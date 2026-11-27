@@ -7,20 +7,37 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 08:20 UTC. Main and the coordinator's head at `a38b570`. MUTANTS-DOUBT-PACING
-landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198, rebased; the submission
-held a merge of main, so the daemon copied no notes and the orchestrator copied all six by subject
-and author), approved on a 3-0 vote after four fix passes (VOTE-1 and VOTE-2 Yes on `72fe146`, fix
-pass 2; VOTE-3 Yes on `ccdc60a`; passes 3 and 4 changed only tests and doc comments;
-`~/tessel-orch-notes/2026-11-27/vote-mutants-doubt-pacing/`): the removals rest on a rule (a fenced
-claim's merge in flight is that claim's, with `doubt_since_ms` set) now checked by a `debug_assert!`
-and a seeded stage walk that answers refusals and landings, starts some seeds in doubt and answers
-only dispatches `begin_merge` offered; every break the voters planted fails a test; `release_wait`
-and `reconcile_before_ending` say they assume only an offered dispatch is answered. Its push run on
-main (CI 45964389648) is the first live mutant check of a landing: every shard diffed from
-`bc14609`, 16 mutants, 10 caught, 6 unviable, 0 missed. With it and SIM-MUTANTS-2 every one of the
-Nightly's 59 new names is killed, removed or excluded; the next Nightly is the proof. #132 (the
-STATE record below) merged at 08:03 UTC as `bc14609`.
+**As of:** 2026-11-27 09:30 UTC. Main and the coordinator's head at `623e919`. RACE-TEXTS-SHARED
+landed through the server at 08:53 UTC as `32cb515`..`623e919` (claim 195, rebased; the daemon
+copied no notes, the submission holding a merge of main, so the orchestrator copied all seven by
+subject and author), on a re-vote: VOTE-2 and VOTE-3 had voted "No" on `cb9f8e0` with one must-fix
+(no test that the daemon writes `race_entry_ended`), fix pass 1 added a real-core race test that
+runs the stop hook for the loser, keyed the card on the same mark, read older inbox lines by their
+text (`Option<bool>`), and VOTE-1, VOTE-2 and VOTE-3 re-checked `cd0e67a`: "Yes"
+(`~/tessel-orch-notes/2026-11-27/vote-race-texts-shared/`); the three race texts are `pub const`s in
+`src/protocol.rs`, byte-identical on the wire (VOTE-1). Main's CI (45969257494) and the Adapter
+suite (45969257349) passed on `623e919`; its push run diffed from `5be98dd` and found no mutants to
+test, because the change's code is in tessel-cli, which the per-change mutants do not cover yet
+(MUTANTS-SERVER-CLI-IN-DIFF, #134), and its `src/protocol.rs` change is constants. LOCK-OWNER is
+done (`~/tessel-orch-notes/lib/cargo-lock.sh`: the lock's owner file records the holder's pid, a
+waiter removes a lock whose holder is gone, an exit trap releases it; tested with a holder killed by
+SIGKILL); all 16 gate scripts of 26 and 27 November and the landing template use it, and both lanes
+were told to use it by hand. Dispatched at about 09:05 UTC: SIM-RACE-TEXT-LITERAL with
+SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF (lane A).
+**Earlier (27 November 08:20 UTC):** Main and the coordinator's head at `a38b570`.
+MUTANTS-DOUBT-PACING landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198,
+rebased; the submission held a merge of main, so the daemon copied no notes and the orchestrator
+copied all six by subject and author), approved on a 3-0 vote after four fix passes (VOTE-1 and
+VOTE-2 Yes on `72fe146`, fix pass 2; VOTE-3 Yes on `ccdc60a`; passes 3 and 4 changed only tests and
+doc comments; `~/tessel-orch-notes/2026-11-27/vote-mutants-doubt-pacing/`): the removals rest on a
+rule (a fenced claim's merge in flight is that claim's, with `doubt_since_ms` set) now checked by a
+`debug_assert!` and a seeded stage walk that answers refusals and landings, starts some seeds in
+doubt and answers only dispatches `begin_merge` offered; every break the voters planted fails a
+test; `release_wait` and `reconcile_before_ending` say they assume only an offered dispatch is
+answered. Its push run on main (CI 45964389648) is the first live mutant check of a landing: every
+shard diffed from `bc14609`, 16 mutants, 10 caught, 6 unviable, 0 missed. With it and SIM-MUTANTS-2
+every one of the Nightly's 59 new names is killed, removed or excluded; the next Nightly is the
+proof. #132 (the STATE record below) merged at 08:03 UTC as `bc14609`.
 **Earlier (27 November 07:45 UTC):** Main at `7fc1bb2` (#131); the coordinator's head is `d9da509`
 (a pull-request merge does not move it). Since the record below, through the server, each after its
 review or vote and followed by green CI: REGRESSION-SEED-69962521-STALE as `3489af8` (claim 159;
@@ -340,11 +357,12 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- RACE-TEXTS-SHARED (lane A, `8b26573`..`cb9f8e0`; claim 195): vote on `cb9f8e0` VOTE-1 "Yes
-  with should-fixes", VOTE-2 and VOTE-3 "No" with one must-fix (nothing tests that the daemon
-  writes `race_entry_ended`: a daemon writing `false` passes every test); fix pass 1 runs
-  (`~/tessel-orch-notes/2026-11-27/lane-a/race-texts-shared/FIX-1.md`), then the same voters
-  re-check. Lane B: idle.
+- SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER (lane B, one claim, branch
+  task-sim-fenced-rule-checker from `623e919`; Opus review follows;
+  `~/tessel-orch-notes/2026-11-27/lane-b/sim-fenced-rule-checker/`).
+- MUTANTS-SERVER-CLI-IN-DIFF (lane A, claim 201, `bbb99da` and a commit folding the core job's
+  diff step onto the same script; by pull request after an Opus review;
+  `~/tessel-orch-notes/2026-11-27/lane-a/mutants-server-cli-in-diff/`).
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -414,9 +432,9 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** RACE-TEXTS-SHARED lands on its re-vote, then SIM-RACE-TEXT-LITERAL; the next Nightly shows
-whether the mutants baseline passes; then HOST-SQLITE-RETRY-BACKOFF, LOCK-OWNER,
-SIM-FENCED-RULE-CHECKER, MERGE-OUTCOME-UNOFFERED (merge path, a vote), MUTANTS-SERVER-CLI-IN-DIFF
+**Next:** SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF
+(lane A), running; the next Nightly shows whether the mutants baseline passes; then
+HOST-SQLITE-RETRY-BACKOFF, MERGE-OUTCOME-UNOFFERED (merge path, a vote), MUTANTS-SERVER-CLI-IN-DIFF
 and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md steps of
 SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH (it flips
 R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a world-writable
@@ -1791,20 +1809,22 @@ Lane B:
 - [ ] **SIM-RACE-TEXT-LITERAL** — S, lane B (`src/sim`); from RACE-TEXTS-SHARED's votes.
   `src/sim/driver/merge_path.rs` (~831) repeats the no-result race text as a literal; use the
   shared constant from `src/protocol.rs` once RACE-TEXTS-SHARED lands.
-- [ ] **LOCK-OWNER** — S, orchestrator (the gate scripts in `~/tessel-orch-notes/`, not the
-  repository); found 27 November. The machine-wide cargo lock is a bare `mkdir`, so a killed gate or
-  voter run leaves it held with no owner (at least twice on 27 November, about 16 and 26 minutes, by
-  the agents' reports), and others cannot tell a live holder from a dead one. Write the holder's pid
-  and command into the lock, and have waiters remove a lock whose pid is gone. Done: the briefs'
-  lock snippet and every gate script use it.
-- [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
-  the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
-  `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
-  now catch a drift, but the copies stay. Make them `pub const`s in `src/protocol.rs` and use them
-  in the CLI (additive, no wire change); a cross edit into lane A's `tessel-cli/src/render.rs`,
-  `tessel-cli/src/daemon.rs`, `tessel-cli/src/inbox_hook.rs` and `tessel-cli/tests/cli.rs`, named
-  here. Also from that review: drop the no-op `self.fresh.insert(claim)`
-  (`tessel-cli/src/daemon.rs:1722`); make
+- [x] **LOCK-OWNER** (done 27 November in `~/tessel-orch-notes/lib/cargo-lock.sh`, outside the
+  repository; the gate scripts and the landing template use it) — S, orchestrator (the gate scripts
+  in `~/tessel-orch-notes/`, not the repository); found 27 November. The machine-wide cargo lock is
+  a bare `mkdir`, so a killed gate or voter run leaves it held with no owner (at least twice on 27
+  November, about 16 and 26 minutes, by the agents' reports), and others cannot tell a live holder
+  from a dead one. Write the holder's pid and command into the lock, and have waiters remove a lock
+  whose pid is gone. Done: the briefs' lock snippet and every gate script use it.
+- [x] **RACE-TEXTS-SHARED** (`32cb515`..`623e919`, landed by the server 27 November; re-vote 3-0 Yes
+  on `cd0e67a` after one fix pass; the simulator's copy is SIM-RACE-TEXT-LITERAL) — S, lane B (the
+  core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies the core's three fixed race texts
+  (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in `src/coordinator/racing.rs`) into
+  `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests now catch a drift, but the copies
+  stay. Make them `pub const`s in `src/protocol.rs` and use them in the CLI (additive, no wire
+  change); a cross edit into lane A's `tessel-cli/src/render.rs`, `tessel-cli/src/daemon.rs`,
+  `tessel-cli/src/inbox_hook.rs` and `tessel-cli/tests/cli.rs`, named here. Also from that review:
+  drop the no-op `self.fresh.insert(claim)` (`tessel-cli/src/daemon.rs:1722`); make
   `an_entry_no_trial_judged_is_told_the_tests_gave_no_result` (`tessel-cli/tests/cli.rs:3300`) wait
   on the notice, not a fixed number of reads; have the stop hook use the race mark as the daemon
   does. Done: the CLI uses the core's constants, and a test for each change. (Telling a timed-out
