@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 09:30 UTC. Main and the coordinator's head at `623e919`. RACE-TEXTS-SHARED
+**As of:** 2026-11-27 09:00 UTC. Main and the coordinator's head at `623e919`. RACE-TEXTS-SHARED
 landed through the server at 08:53 UTC as `32cb515`..`623e919` (claim 195, rebased; the daemon
 copied no notes, the submission holding a merge of main, so the orchestrator copied all seven by
 subject and author), on a re-vote: VOTE-2 and VOTE-3 had voted "No" on `cb9f8e0` with one must-fix
@@ -18,12 +18,20 @@ text (`Option<bool>`), and VOTE-1, VOTE-2 and VOTE-3 re-checked `cd0e67a`: "Yes"
 `src/protocol.rs`, byte-identical on the wire (VOTE-1). Main's CI (45969257494) and the Adapter
 suite (45969257349) passed on `623e919`; its push run diffed from `5be98dd` and found no mutants to
 test, because the change's code is in tessel-cli, which the per-change mutants do not cover yet
-(MUTANTS-SERVER-CLI-IN-DIFF, #134), and its `src/protocol.rs` change is constants. LOCK-OWNER is
-done (`~/tessel-orch-notes/lib/cargo-lock.sh`: the lock's owner file records the holder's pid, a
-waiter removes a lock whose holder is gone, an exit trap releases it; tested with a holder killed by
-SIGKILL); all 16 gate scripts of 26 and 27 November and the landing template use it, and both lanes
-were told to use it by hand. Dispatched at about 09:05 UTC: SIM-RACE-TEXT-LITERAL with
-SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF (lane A).
+(MUTANTS-SERVER-CLI-IN-DIFF, #134), and its core change moves three constants from
+`src/coordinator/racing.rs` to `src/protocol.rs`. LOCK-OWNER is done
+(`~/tessel-orch-notes/lib/cargo-lock.sh`: the lock's owner file records the holder's pid, a waiter
+removes a lock whose holder is gone, an exit trap releases it; tested with a holder killed by
+SIGKILL); all 16 gate scripts of 26 and 27 November, the landing template and the active brief use
+it, a brief's load paragraph is `~/tessel-orch-notes/lib/BRIEF-LOAD.md`, and both lanes were told.
+The STATE read found a race in removing a dead holder's lock (two waiters could interleave and let
+two runs hold it); waiters now remove it one at a time under a short reaper lock, and only if its
+owner file still names the dead pid. A test of 20 rounds of six waiters on a dead lock saw no
+overlap; whether that test can see one (against the old removal) is not shown: the check was refused
+by Claude Code's removal safety check. Dispatched at about 08:55 UTC: SIM-RACE-TEXT-LITERAL with
+SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF (lane A), which merged as #134
+(`64b51b0`; Opus review Yes; 15 checks green on `20b66d5`, its new sharded job skipped as the pull
+request touched neither crate).
 **Earlier (27 November 08:20 UTC):** Main and the coordinator's head at `a38b570`.
 MUTANTS-DOUBT-PACING landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198,
 rebased; the submission held a merge of main, so the daemon copied no notes and the orchestrator
@@ -360,9 +368,7 @@ briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2
 - SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER (lane B, one claim, branch
   task-sim-fenced-rule-checker from `623e919`; Opus review follows;
   `~/tessel-orch-notes/2026-11-27/lane-b/sim-fenced-rule-checker/`).
-- MUTANTS-SERVER-CLI-IN-DIFF (lane A, claim 201, `bbb99da` and a commit folding the core job's
-  diff step onto the same script; by pull request after an Opus review;
-  `~/tessel-orch-notes/2026-11-27/lane-a/mutants-server-cli-in-diff/`).
+- Lane A: idle.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -432,13 +438,12 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF
-(lane A), running; the next Nightly shows whether the mutants baseline passes; then
-HOST-SQLITE-RETRY-BACKOFF, MERGE-OUTCOME-UNOFFERED (merge path, a vote), MUTANTS-SERVER-CLI-IN-DIFF
-and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md steps of
-SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH (it flips
-R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a world-writable
-socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER (lane B), running; the next Nightly
+shows whether the mutants baseline passes; then HOST-SQLITE-RETRY-BACKOFF, MERGE-OUTCOME-UNOFFERED
+(merge path, a vote) and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md
+steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH
+(it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a
+world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1782,12 +1787,13 @@ Lane B:
   forks the runner under a parent `sudo` (every stub now `exec`s, which hides parent and child), and
   move the Own users job back to `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green
   on ubuntu-26.04.
-- [ ] **MUTANTS-SERVER-CLI-IN-DIFF** — S, lane A (`.github/workflows/`, by pull request); from
-  LANDING-MUTANTS-IN-DIFF. The per-change mutants mutate only tessel-coordinator and tessel-lander,
-  so tessel-server and tessel-cli changes are never mutated (PR #130's VOTE-1). Their tests take
-  about 75 s and 113 s per mutant, too slow for the current four 30-minute shards: give them shards
-  of their own, or another bound. Done: a change to either crate is mutated on its pull request or
-  push.
+- [x] **MUTANTS-SERVER-CLI-IN-DIFF** (#134, merged 27 November as `64b51b0`; Opus review Yes; its
+  sharded job's first live run is the next change to tessel-server or tessel-cli) — S, lane A
+  (`.github/workflows/`, by pull request); from LANDING-MUTANTS-IN-DIFF. The per-change mutants
+  mutate only tessel-coordinator and tessel-lander, so tessel-server and tessel-cli changes are
+  never mutated (PR #130's VOTE-1). Their tests take about 75 s and 113 s per mutant, too slow for
+  the current four 30-minute shards: give them shards of their own, or another bound. Done: a change
+  to either crate is mutated on its pull request or push.
 - [ ] **SIM-FENCED-RULE-CHECKER** — S, lane B (`src/sim`); from MUTANTS-DOUBT-PACING's VOTE-2. The
   removals there rest on a rule (a fenced claim's merge in flight is that claim's, with
   `doubt_since_ms` set) that a `debug_assert!` and a stage walk now check; add it to the
