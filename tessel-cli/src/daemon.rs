@@ -22,6 +22,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{HeaderValue, AUTHORIZATION};
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::config::Config;
@@ -121,6 +122,9 @@ pub(crate) struct LogRead {
     pub(crate) unknown: Vec<UnknownEnvelope>,
     /// The highest `seq` read, skipped events included.
     pub(crate) last_seq: Option<u64>,
+    /// How the connection ended when it ended before the end marker: the server's close code and
+    /// quoted reason, or that there was no close frame. The reason is the server's text.
+    pub(crate) ended: Option<String>,
 }
 
 /// How much of an unknown frame's kind or type is kept for the log; it is the coordinator's text.
@@ -146,6 +150,22 @@ impl std::fmt::Display for UnknownEnvelope {
             (None, None) => write!(f, "unknown message"),
         }
     }
+}
+
+/// A close reason is at most 123 bytes on the wire; this much of it is kept for the log.
+const CLOSE_REASON_LOG_CHARS: usize = 123;
+
+/// How a read socket that ended before the end marker ended, for the log. The reason is text the
+/// server sends: it is cut and quoted, so it stays one line and cannot pass for a log line.
+fn describe_end(frame: Option<&CloseFrame>) -> String {
+    let Some(frame) = frame else {
+        return "closed by the server without a close frame".to_string();
+    };
+    let reason: String = frame.reason.chars().take(CLOSE_REASON_LOG_CHARS).collect();
+    format!(
+        "closed by the server with code {}, reason {reason:?}",
+        u16::from(frame.code)
+    )
 }
 
 fn bounded(text: &str) -> String {
@@ -1263,6 +1283,7 @@ impl Daemon {
             complete,
             unknown,
             last_seq,
+            ended,
         } = match log {
             Ok(log) => log,
             Err(why) => {
@@ -1289,6 +1310,9 @@ impl Daemon {
         self.refresh_skipped();
         for envelope in &unknown {
             self.log(&format!("skipped {envelope} in the event log"));
+        }
+        if let Some(ended) = &ended {
+            self.log(&format!("event log read ended early: {ended}"));
         }
         let live = reconcile::live_claims(&AgentId(self.config.agent.clone()), &events);
         self.advance_base_from_log(&events).await;
@@ -2423,8 +2447,11 @@ impl Daemon {
                 &AgentId(self.config.agent.clone()),
                 &events,
             )),
-            Ok(LogRead { .. }) => {
-                self.log("stop: the event log was cut short, so releases are unconfirmed");
+            Ok(LogRead { ended, .. }) => {
+                let ended = ended.map_or_else(String::new, |ended| format!(" ({ended})"));
+                self.log(&format!(
+                    "stop: the event log was cut short{ended}, so releases are unconfirmed"
+                ));
                 None
             }
             Err(why) => {
@@ -2597,6 +2624,7 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
     let mut seqs = Vec::new();
     let mut welcomed = false;
     let mut marker = false;
+    let mut ended = None;
     let deadline = Instant::now() + SNAPSHOT_LIMIT;
     while !marker {
         let Some(left) = deadline.checked_duration_since(Instant::now()) else {
@@ -2604,7 +2632,19 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
         };
         match tokio::time::timeout(left, socket.next()).await {
             // A closed or failed socket mid-read leaves a truncated log, not an unreadable one.
-            Err(_) | Ok(None | Some(Err(_))) => break,
+            Err(_) => break,
+            Ok(None) => {
+                ended = Some(describe_end(None));
+                break;
+            }
+            Ok(Some(Err(error))) => {
+                ended = Some(format!("failed: {}", bounded(&error.to_string())));
+                break;
+            }
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                ended = Some(describe_end(frame.as_ref()));
+                break;
+            }
             Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<ServerMsg>(&text) {
                 Ok(ServerMsg::Event { event }) if welcomed => {
                     // The first event after the Welcome is the marker or the read is not whole.
@@ -2640,6 +2680,7 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
         events,
         unknown,
         last_seq: seqs.iter().copied().max(),
+        ended: if marker { None } else { ended },
     })
 }
 
@@ -4014,6 +4055,7 @@ mod tests {
                 complete: true,
                 unknown: Vec::new(),
                 last_seq: Some(0),
+                ended: None,
             }))
             .await;
         assert_eq!(held_ids(&daemon), vec![1, 2], "left for the reply");
