@@ -30,10 +30,15 @@ pub enum Variant {
     /// null), so a claim whose landing is in doubt has a merge in flight nobody was told about
     /// (breaks the fenced-claim rule, `Checker::FencedRule`).
     UntoldDoubt,
+    /// The adapter loses `doubt_since_ms` of a merge in flight that is at `Land` (it writes null),
+    /// as a core would that cleared it when the answer to a doubted `Prepare` sent the doubted
+    /// pair on to `Land`: the claim is still fenced, the merge is in flight, and nobody was told
+    /// (breaks the fenced-claim rule, `Checker::FencedRule`).
+    DoubtClearedAtLand,
 }
 
 impl Variant {
-    pub const PLANTED: [Variant; 8] = [
+    pub const PLANTED: [Variant; 9] = [
         Variant::WriteBehind,
         Variant::StaleLoad,
         Variant::DriftingCodec,
@@ -42,5 +47,6 @@ impl Variant {
         Variant::LosesScopesOnLoad,
         Variant::PhantomHeartbeat,
         Variant::UntoldDoubt,
+        Variant::DoubtClearedAtLand,
     ];
 }

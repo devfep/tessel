@@ -1735,3 +1735,42 @@ fn an_untold_doubt_is_caught_by_the_fenced_rule_and_by_no_other_checker() {
     }
     assert!(caught > 0, "no seed caught the variant");
 }
+
+#[test]
+fn the_fenced_rule_alone_sees_a_doubt_forgotten_on_the_way_to_land() {
+    assert!(first_caught(Variant::DoubtClearedAtLand, Checker::FencedRule).is_some());
+}
+
+#[test]
+fn a_doubt_cleared_at_land_is_caught_by_the_fenced_rule_and_by_no_other_checker() {
+    let mut caught = 0;
+    for seed in 0..SEARCH_SEEDS {
+        let run = sim::run_seed(seed, Variant::DoubtClearedAtLand, &Checker::ALL);
+        if run.violations.is_empty() {
+            continue;
+        }
+        caught += 1;
+        let only_fenced = run
+            .violations
+            .iter()
+            .all(|v| v.checker == Checker::FencedRule);
+        assert!(only_fenced, "seed {seed}: {:?}", run.violations);
+    }
+    assert!(
+        caught >= 2,
+        "only {caught} default seeds caught the variant"
+    );
+}
+
+#[test]
+fn the_correct_core_is_silent_on_every_doubt_mode_seed_of_a_300_seed_sweep() {
+    // Every fourth seed, from 3, is in doubt mode (`sim::lander::doubt_mode`).
+    for seed in (0..300).filter(|seed| seed % 4 == 3) {
+        let run = sim::run_seed(seed, Variant::Correct, &Checker::ALL);
+        assert!(
+            run.violations.is_empty(),
+            "seed {seed}: {:?}",
+            run.violations
+        );
+    }
+}
