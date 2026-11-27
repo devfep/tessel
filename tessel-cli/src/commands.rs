@@ -417,6 +417,9 @@ async fn ask_for_claim(
     let Reply::Claim { outcome } = call_daemon(&worktree, &request).await? else {
         bail!("the daemon answered with something unexpected");
     };
+    if let Some(claim) = into {
+        check_amended(&outcome, ClaimId(claim))?;
+    }
     let code = match outcome {
         ClaimOutcome::Granted { .. } | ClaimOutcome::Covered => 0,
         ClaimOutcome::Denied { .. } => EXIT_DENIED,
@@ -442,6 +445,24 @@ async fn ask_for_claim(
         code,
         warnings: warnings.concat(),
     })
+}
+
+/// A daemon started before `--into` existed ignores it and makes a plain claim. Say so instead of
+/// reporting a grant the agent did not ask for.
+fn check_amended(outcome: &ClaimOutcome, into: ClaimId) -> anyhow::Result<()> {
+    match outcome {
+        ClaimOutcome::Granted { claim, amended, .. } if claim.claim == into && *amended => Ok(()),
+        ClaimOutcome::Granted { .. } => bail!(
+            "the daemon made a new claim, not an amend of claim {}: it was started by an older \
+             tessel and ignores --into. Release or submit your open claims, run `tessel stop` \
+             (it releases open claims) and `tessel start` again, then repeat the command",
+            into.0
+        ),
+        ClaimOutcome::Covered
+        | ClaimOutcome::Denied { .. }
+        | ClaimOutcome::Queued { .. }
+        | ClaimOutcome::Refused { .. } => Ok(()),
+    }
 }
 
 pub async fn claim(cwd: &Path, args: &[String], options: ClaimOptions) -> anyhow::Result<Report> {
@@ -795,6 +816,37 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     use super::*;
+
+    fn granted(claim: u64, amended: bool) -> ClaimOutcome {
+        let held: crate::state::HeldClaim = serde_json::from_value(serde_json::json!({
+            "claim": claim, "fence": 1, "expires_at_ms": 0, "race": null, "scopes": []
+        }))
+        .unwrap();
+        ClaimOutcome::Granted {
+            claim: held,
+            at_risk: Vec::new(),
+            amended,
+        }
+    }
+
+    #[test]
+    fn into_is_checked_against_the_amend_the_daemon_answered_with() {
+        assert!(check_amended(&granted(4, true), ClaimId(4)).is_ok());
+        assert!(check_amended(&ClaimOutcome::Covered, ClaimId(4)).is_ok());
+        let refused = ClaimOutcome::Refused {
+            code: None,
+            message: "no".to_string(),
+        };
+        assert!(check_amended(&refused, ClaimId(4)).is_ok());
+        // A daemon from before --into makes a new claim, and says nothing about it.
+        for outcome in [granted(9, false), granted(4, false), granted(9, true)] {
+            let error = check_amended(&outcome, ClaimId(4)).unwrap_err().to_string();
+            assert!(
+                error.contains("older tessel") && error.contains("claim 4"),
+                "{error}"
+            );
+        }
+    }
 
     fn worktree_with_log(log: &str) -> (tempfile::TempDir, Worktree) {
         let dir = tempfile::tempdir().unwrap();

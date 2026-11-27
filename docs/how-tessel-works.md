@@ -232,7 +232,7 @@ coordinator's log read, in order: `claim_granted` (a1), `claim_denied` (a2), `wa
 
 | Term | What it is |
 |---|---|
-| **Claim** | A reservation of one or more scopes in a mode, held by one agent, with an intent. All of its scopes are granted or none. By default the CLI keeps one open claim; a later `tessel claim` adds to it (`--new` makes a separate one). |
+| **Claim** | A reservation of one or more scopes in a mode, held by one agent, with an intent. All of its scopes are granted or none. By default the CLI keeps one open claim; a later `tessel claim` adds to it (`--new` makes a separate one, `--into <claim>` adds to the one you name). |
 | **Scope** | What a claim covers: a directory (`src/`), a file (`src/pricing.ts`) or a symbol (`src/pricing.ts::applyDiscount`). Scopes form a tree, and a claim covers everything beneath its scope. |
 | **Intention lock** | Claiming a node also puts a weaker mark on each of its parents. Two marks never conflict, so `a2` can claim `src/pricing.ts::taxFor` while `a1` holds `applyDiscount`. A real claim on the whole file conflicts with the mark when their modes conflict, so `a2` cannot claim `src/pricing.ts` in `edit-body` meanwhile. |
 | **Mode** | What the claim lets you do: `depend` (rely on the signatures in scope), `edit-body` (change bodies only), `edit-signature` (change signatures, rename or delete), `create` (add new symbols). |

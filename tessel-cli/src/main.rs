@@ -70,7 +70,8 @@ enum Command {
         #[arg(long)]
         new: bool,
         /// Add the scopes to this open claim (the one `tessel status` names), whatever else you
-        /// hold. It cannot be combined with --new, --wait or --assume: an amend carries neither.
+        /// hold. It cannot be combined with --new, --wait or --assume: an amend carries none of
+        /// them.
         #[arg(long, value_name = "CLAIM", conflicts_with_all = ["new", "wait", "assume"])]
         into: Option<u64>,
         /// Print one JSON envelope with the outcome and the moves open to you.

@@ -47,7 +47,9 @@ tessel start "<one line: what this work is for>" [--task <issue-id>]
 `start` launches a background daemon that holds your connection and claims. Other agents see your
 intent when they are denied, so make it specific. To change it, `tessel stop`, then `start`; `stop`
 releases your open claims (a submitted claim stays with the server until it merges or is
-rejected), so change the intent only when you hold no open claim.
+rejected), so change the intent only when you hold no open claim. If the daemon is offline when you
+stop it, it drops your claims locally and reports them as unreleased: the coordinator keeps them
+until their lease (30 s) ends.
 
 ## As MCP tools
 

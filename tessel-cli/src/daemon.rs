@@ -2079,6 +2079,12 @@ impl Daemon {
                 new,
                 into,
             } => {
+                if into.is_some() && (new || wait || !assumptions.is_empty()) {
+                    let message = "--into cannot be combined with --new, --wait or --assume: an \
+                                   amend carries none of them";
+                    let _ = reply.send(refused(None, message));
+                    return;
+                }
                 if !new && self.claim_in_flight() {
                     let request = Request::Claim {
                         scopes,
@@ -2146,29 +2152,32 @@ impl Daemon {
         reply: oneshot::Sender<Reply>,
     ) {
         let found = self.state.claims.iter().find(|held| held.claim == claim);
-        let why = match found {
-            None => Some(format!(
+        let fence = match found {
+            None => Err(format!(
                 "claim {} is not one of your open claims (it may be released, merged, lapsed or \
                  another agent's); run `tessel status` to see the claims you hold",
                 claim.0
             )),
-            Some(held) if held.submitted => Some(format!(
+            Some(held) if held.submitted => Err(format!(
                 "claim {} is submitted and cannot take more scopes; run `tessel status`, wait \
                  for it to merge or be rejected, or claim the scopes on their own with \
                  `tessel claim --new`",
                 claim.0
             )),
-            Some(held) if held.race.is_some() => Some(format!(
+            Some(held) if held.race.is_some() => Err(format!(
                 "claim {} is a race entry; its scopes are the race's and cannot be extended, \
                  so claim these on their own with `tessel claim --new`",
                 claim.0
             )),
-            Some(_) => None,
+            Some(held) => Ok(held.fence),
         };
-        if let Some(message) = why {
-            let _ = reply.send(refused(None, &message));
-            return;
-        }
+        let fence = match fence {
+            Ok(fence) => fence,
+            Err(message) => {
+                let _ = reply.send(refused(None, &message));
+                return;
+            }
+        };
         if !self.is_online() {
             let why = self
                 .state
@@ -2179,9 +2188,6 @@ impl Daemon {
             let _ = reply.send(refused(None, &message));
             return;
         }
-        let Some(fence) = found.map(|held| held.fence) else {
-            return;
-        };
         self.start_amend(claim, fence, scopes, reply);
     }
 
