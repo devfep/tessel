@@ -3407,3 +3407,34 @@ async fn a_replay_the_server_closes_early_is_logged_with_its_code_and_quoted_rea
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_frame_without_a_code_is_logged_as_one() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start_settled("coded close").await?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    fake.cut_replay(Some(1));
+    fake.cut_replay_close(None);
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    let shown = "closed by the server with a close frame without a code";
+    eventually(SHORT, || Ok(daemon_log(&a1)?.contains(shown).then_some(())))
+        .await
+        .context("no log line says the close frame had no code")?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_whose_log_read_is_closed_early_logs_the_close() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start_settled("stop with a closed read").await?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    fake.cut_replay(Some(1));
+    fake.cut_replay_close(Some((1013, "replay buffer full")));
+    a1.tessel(&["stop"])?;
+    let shown = r#"stop: the event log was cut short (closed by the server with code 1013, reason "replay buffer full"), so releases are unconfirmed"#;
+    let log = daemon_log(&a1)?;
+    assert!(log.contains(shown), "{log}");
+    Ok(())
+}
