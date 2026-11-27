@@ -708,7 +708,8 @@ impl Sim {
                     | Variant::LostWake
                     | Variant::SkipsReplayEvent
                     | Variant::LosesScopesOnLoad
-                    | Variant::PhantomHeartbeat => self.store.apply(batch),
+                    | Variant::PhantomHeartbeat
+                    | Variant::UntoldDoubt => self.store.apply(batch),
                 };
                 if !stored {
                     let fault = format!("batch {} was acknowledged with nothing staged", batch.0);
@@ -828,7 +829,8 @@ impl Sim {
                     | Variant::LostWake
                     | Variant::SkipsReplayEvent
                     | Variant::LosesScopesOnLoad
-                    | Variant::PhantomHeartbeat => self.store.state(),
+                    | Variant::PhantomHeartbeat
+                    | Variant::UntoldDoubt => self.store.state(),
                 };
                 let mut stored = stored.map(str::to_string);
                 if self.variant == Variant::LosesScopesOnLoad {
@@ -903,6 +905,13 @@ impl Sim {
             for (key, json) in &mut entries {
                 if key == STATE_KEY {
                     *json = with_drift(json);
+                }
+            }
+        }
+        if self.variant == Variant::UntoldDoubt {
+            for (key, json) in &mut entries {
+                if key == STATE_KEY {
+                    *json = without_doubt_since(json);
                 }
             }
         }
@@ -1046,6 +1055,21 @@ fn with_drift(json: &str) -> String {
     };
     if let Some(object) = value.as_object_mut() {
         object.insert("writer_note".to_string(), serde_json::Value::from(1));
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
+}
+
+/// `json` with the merge in flight stripped of `doubt_since_ms`, as an adapter that drops the field
+/// on write leaves it.
+fn without_doubt_since(json: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return json.to_string();
+    };
+    let flight = value
+        .get_mut("merge_in_flight")
+        .and_then(|flight| flight.as_object_mut());
+    if let Some(flight) = flight {
+        flight.remove("doubt_since_ms");
     }
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
 }

@@ -26,10 +26,14 @@ pub enum Variant {
     /// The adapter sends a heartbeat of its own after every frame, so an agent that never
     /// heartbeats keeps its lease (breaks I10).
     PhantomHeartbeat,
+    /// The adapter drops `doubt_since_ms` from the merge in flight on its way to the store, so a
+    /// claim whose landing is in doubt has a merge in flight nobody was told about (breaks the
+    /// fenced-claim rule, `Checker::FencedRule`).
+    UntoldDoubt,
 }
 
 impl Variant {
-    pub const PLANTED: [Variant; 7] = [
+    pub const PLANTED: [Variant; 8] = [
         Variant::WriteBehind,
         Variant::StaleLoad,
         Variant::DriftingCodec,
@@ -37,5 +41,6 @@ impl Variant {
         Variant::SkipsReplayEvent,
         Variant::LosesScopesOnLoad,
         Variant::PhantomHeartbeat,
+        Variant::UntoldDoubt,
     ];
 }

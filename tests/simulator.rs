@@ -1712,3 +1712,8 @@ fn eight_fixed_seeds_make_claims_that_rely_on_files_they_do_not_own() {
     }
     assert!(relied_on > 0, "no claim relied on a file it did not own");
 }
+
+#[test]
+fn the_fenced_rule_alone_sees_a_merge_in_doubt_nobody_was_told_of() {
+    assert!(first_caught(Variant::UntoldDoubt, Checker::FencedRule).is_some());
+}

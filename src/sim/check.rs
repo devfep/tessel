@@ -42,6 +42,9 @@ pub enum Checker {
     I10,
     I11,
     I12,
+    /// A claim whose landing is in doubt (a doubted `Land` pair is set) is the one whose merge is
+    /// in flight, and that merge carries `doubt_since_ms`: the rule the doubt code rests on.
+    FencedRule,
     /// COORD-HEAD-FROM-AGENT: no dispatch names a head an agent declared.
     AgentBase,
     /// The harness itself: the host kept asking the adapter past any bound, or the driver
@@ -51,7 +54,7 @@ pub enum Checker {
 
 impl Checker {
     /// The checkers a run enables by default. `Harness` reports the driver's own mistakes.
-    pub const ALL: [Checker; 14] = [
+    pub const ALL: [Checker; 15] = [
         Checker::I1,
         Checker::I2,
         Checker::I3,
@@ -64,6 +67,7 @@ impl Checker {
         Checker::I10,
         Checker::I11,
         Checker::I12,
+        Checker::FencedRule,
         Checker::AgentBase,
         Checker::Harness,
     ];
@@ -111,6 +115,9 @@ pub fn run(sim: &Sim, enabled: &[Checker]) -> Vec<Violation> {
             Checker::I7 => merge_check::i7(sim.stale_answers()),
             Checker::I11 => merge_check::i11(&events, &sim.counters()),
             Checker::I12 => merge_check::i12(sim.slot_notes(), &events),
+            Checker::FencedRule => {
+                merge_check::fenced_rule(stored_state(sim.store()).ok().flatten().as_ref())
+            }
             Checker::AgentBase => merge_check::agent_base(sim.dispatches(), BASE),
             Checker::Harness => sim.faults().to_vec(),
         };

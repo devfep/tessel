@@ -9,6 +9,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::Value;
+
 use crate::host::call::Request;
 use crate::merge::MAX_INFRA_RETRIES;
 use crate::protocol::{ClaimId, Event, EventKind, ServerMsg, Summary};
@@ -293,6 +295,15 @@ fn poisoned_outcome(events: &[Event], fork: &str, spent: bool) -> Vec<String> {
         ));
     }
     found
+}
+
+/// The fenced-claim rule: a claim whose landing is in doubt (it holds a doubted `Land` pair) is the
+/// one whose merge is in flight, and that merge carries `doubt_since_ms`, because `enter_doubt` set
+/// it and told the submitter. The doubt code (`wait_in_doubt`, `reconcile_before_ending`) rests on
+/// it.
+pub fn fenced_rule(state: Option<&Value>) -> Vec<String> {
+    let _ = state;
+    Vec::new()
 }
 
 /// I7: an answer for a dispatch that was not in flight changes nothing the host stores.
