@@ -270,7 +270,21 @@ pub fn spawn(
     };
     RunningRepo {
         handle,
-        task: tokio::spawn(task.run()),
+        task: tokio::spawn(supervised(task)),
+    }
+}
+
+/// Run `task` and say so when it panics: the repository then stops serving (a new socket is
+/// refused with 503) and, without this line, only the default panic hook on stderr would show it.
+async fn supervised(task: RepoTask) {
+    let id = task.id.clone();
+    if let Err(error) = tokio::spawn(task.run()).await {
+        if error.is_panic() {
+            tracing::error!(
+                repo = %id,
+                "the repository task panicked; this repository stops serving until a restart"
+            );
+        }
     }
 }
 
