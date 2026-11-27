@@ -1621,16 +1621,21 @@ fn a_lease_expiry_is_not_an_agent_release() {
 
 // ---- The traffic: every kind of request and fault must be generated ----
 
-/// A sim driven by `seed`'s traffic for the sweep's number of steps, whatever `TESSEL_SIM_SEEDS` says.
-fn driven(seed: u64) -> Sim {
-    let config = HostConfig {
+/// The host configuration the traffic runs against: a reviewer, and `lib/` held for review.
+fn traffic_config() -> HostConfig {
+    HostConfig {
         repo: "sim".to_string(),
         run: Some("sim".to_string()),
         reviewers: Some(sim::traffic::REVIEWER.to_string()),
         sensitive: Some("lib/".to_string()),
         ..HostConfig::default()
-    };
-    let mut sim = Sim::new(config, Variant::Correct);
+    }
+}
+
+/// A sim driven by `seed`'s traffic for the sweep's number of steps, whatever `TESSEL_SIM_SEEDS`
+/// says.
+fn driven(seed: u64) -> Sim {
+    let mut sim = Sim::new(traffic_config(), Variant::Correct);
     let mut traffic = sim::traffic::Traffic::new(seed);
     for _ in 0..sim::STEPS {
         assert!(
@@ -1766,14 +1771,7 @@ fn a_doubt_cleared_at_land_is_caught_by_the_fenced_rule_and_by_no_other_checker(
 /// carries `doubt_since_ms`) at the end of a step of `seed`: the answer to such a `Prepare` is what
 /// `prepared()` sends on to `Land`.
 fn waited_in_doubt_at_prepare(seed: u64) -> bool {
-    let config = HostConfig {
-        repo: "sim".to_string(),
-        run: Some("sim".to_string()),
-        reviewers: Some(sim::traffic::REVIEWER.to_string()),
-        sensitive: Some("lib/".to_string()),
-        ..HostConfig::default()
-    };
-    let mut sim = Sim::new(config, Variant::Correct);
+    let mut sim = Sim::new(traffic_config(), Variant::Correct);
     sim.inject_merge_faults(seed);
     let mut traffic = sim::traffic::Traffic::new(seed);
     for _ in 0..sim::STEPS {

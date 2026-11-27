@@ -20,7 +20,7 @@ use crate::sim::rng::Rng;
 pub const MAIN0: &str = "1111111111111111111111111111111111111111";
 
 /// Out of every this-many seeds, all but those that leave remainder 0 (`doubt_mode`) run in doubt
-/// mode. The first `Land` of each head is refused as rate limited, so it is left in doubt and read
+/// mode. The first `Land` of the run is refused as rate limited, so it is left in doubt and read
 /// as not landed; the `Land` sent again then loses its candidate, so the core waits in doubt and
 /// prepares the doubted pair again, and `prepared()` sends it on to `Land` with its doubt still
 /// held. Without this a run has two or three `Land`s and that path, which a core that forgot the
@@ -29,7 +29,8 @@ pub const MAIN0: &str = "1111111111111111111111111111111111111111";
 /// stay as they were.
 const DOUBT_MODE_EVERY: u64 = 3;
 
-/// How long at least a `Land` waits to run in doubt mode.
+/// How long at least a `Land` of the doubted head waits to run, so that it is still out when the
+/// step ends and a checker reads the merge at `Land`.
 const DOUBT_MODE_LAND_DELAY_MS: u64 = 1_000;
 
 /// Whether `seed` runs in doubt mode: the lander walks the doubted `Land` through a re-sent `Land`
@@ -114,8 +115,8 @@ struct Chaos {
     rng: Rng,
     /// The seed is in doubt mode (`DOUBT_MODE_EVERY`).
     doubt_mode: bool,
-    /// The heads whose first `Land` was refused as rate limited; the `Land` of a head not in it is
-    /// refused (doubt mode only).
+    /// The head whose `Land` was refused as rate limited: the first `Land` of the run, in doubt
+    /// mode only. No other head is refused.
     refused_heads: BTreeSet<String>,
     /// The heads whose next `Land` loses its candidate, so that it is answered `CandidateMissing`.
     lose_candidate_of: BTreeSet<String>,
@@ -369,7 +370,15 @@ impl Lander {
             return Plan::PROMPT;
         };
         let (mut run_after_ms, reply_after_ms) = timings(&mut chaos.rng, fate);
-        if chaos.doubt_mode && is_land(&call.request) && fate != Fate::RateLimited {
+        let doubted = match &call.request {
+            Request::Land { head, .. } => chaos.refused_heads.contains(&head.0),
+            Request::Prepare { .. }
+            | Request::Test { .. }
+            | Request::Trial { .. }
+            | Request::ReadHead { .. }
+            | Request::Reconcile { .. } => false,
+        };
+        if doubted && fate != Fate::RateLimited {
             // The `Land` is still out when the step ends, so a checker sees the merge at `Land`.
             run_after_ms = run_after_ms.max(DOUBT_MODE_LAND_DELAY_MS);
         }
@@ -447,7 +456,7 @@ impl Lander {
         let roll = chaos.rng.below(100);
         let land = is_land(request);
         if let (true, Request::Land { head, .. }) = (chaos.doubt_mode, request) {
-            if chaos.refused_heads.insert(head.0.clone()) {
+            if chaos.refused_heads.is_empty() && chaos.refused_heads.insert(head.0.clone()) {
                 chaos.limited_until_ms = now_ms + RATE_LIMIT_MS;
                 chaos.lose_candidate_of.insert(head.0.clone());
                 return chaos.counted("rate_limited", Fate::RateLimited);
