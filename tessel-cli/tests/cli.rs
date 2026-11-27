@@ -3702,3 +3702,27 @@ async fn a_queued_claim_whose_grant_fails_while_the_log_read_is_cut_says_the_out
     fake.cut_replay(None);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_claim_that_named_a_scope_twice_is_still_reported_granted() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("hold it")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("need it")?;
+    let queued = a2.tessel(&["claim", "--wait", "src/a.rs", "src/a.rs"])?;
+    assert_eq!(queued.code, 4, "{}", queued.all());
+    let before = hellos(&fake, "a2");
+    fake.fail_next_grant("a2");
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    back_online(&fake, &a2, before).await?;
+    eventually(SHORT, || Ok((a2.held_claims()? == 1).then_some(()))).await?;
+    let inbox = eventually(SHORT, || {
+        let inbox = a2.tessel(&["inbox", "--all"])?.stdout;
+        Ok(inbox.contains("--wait claim queued").then_some(inbox))
+    })
+    .await?;
+    assert!(inbox.contains("was granted"), "{inbox}");
+    assert!(!inbox.contains("withdrawn"), "{inbox}");
+    assert!(!inbox.contains("no request here explains"), "{inbox}");
+    Ok(())
+}
