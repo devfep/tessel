@@ -126,6 +126,8 @@ struct Inner {
     tokens: HashMap<String, String>,
     accepting: AtomicBool,
     cut_replay: AtomicUsize,
+    /// The close frame a cut replay ends with; none sends a close without a code.
+    cut_close: Mutex<Option<(u16, String)>>,
     skip_seq: AtomicU64,
     raw_in_replay: Mutex<Option<(u64, String)>>,
     stall_live: AtomicBool,
@@ -725,6 +727,7 @@ impl Fake {
                 .collect(),
             accepting: AtomicBool::new(true),
             cut_replay: AtomicUsize::new(NO_CUT),
+            cut_close: Mutex::new(None),
             skip_seq: AtomicU64::new(u64::MAX),
             raw_in_replay: Mutex::new(None),
             stall_live: AtomicBool::new(false),
@@ -1031,6 +1034,12 @@ impl Fake {
             .store(keep.unwrap_or(NO_CUT), Ordering::SeqCst);
     }
 
+    /// Makes a cut replay end with this close frame, as the server's `1013 replay buffer full`
+    /// and `1011 replay read failed` do. `None` goes back to a close without a code.
+    pub fn cut_replay_close(&self, close: Option<(u16, &str)>) {
+        *lock(&self.inner.cut_close) = close.map(|(code, reason)| (code, reason.to_string()));
+    }
+
     /// Loses the next message of this kind from `agent`.
     pub fn lose_next(&self, agent: &str, what: Lose) {
         lock(&self.inner.lose).push((agent.to_string(), what));
@@ -1275,7 +1284,8 @@ async fn serve(
                 Some(Ok(Message::Text(text))) => {
                     inner.wait_if_log_read(&text).await;
                     if inner.handle_text(id, &text) {
-                        flush_queued(&mut socket, &mut rx, deaf).await;
+                        let close = lock(&inner.cut_close).clone();
+                        flush_queued(&mut socket, &mut rx, deaf, close).await;
                         break;
                     }
                 }
@@ -1296,13 +1306,18 @@ async fn flush_queued(
     socket: &mut WebSocketStream<TcpStream>,
     rx: &mut mpsc::UnboundedReceiver<Wire>,
     deaf: bool,
+    close: Option<(u16, String)>,
 ) {
     while let Ok(wire) = rx.try_recv() {
         if !matches!(write_wire(socket, wire, deaf).await, Ok(true)) {
             return;
         }
     }
-    let _ = socket.close(None).await;
+    let frame = close.map(|(code, reason)| CloseFrame {
+        code: CloseCode::from(code),
+        reason: reason.into(),
+    });
+    let _ = socket.close(frame).await;
     // The reader sends its `Hello` right behind its `Watch`. Closing with that frame unread makes
     // the OS reset the connection, and a reset throws away the events the reader has not read yet,
     // so the close handshake is finished before the socket is dropped. A passing run returns as

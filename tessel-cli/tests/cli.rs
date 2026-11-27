@@ -3372,3 +3372,38 @@ async fn race_pick_sends_pick_winner_and_the_entrant_hears_the_choice() -> Resul
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replay_the_server_closes_early_is_logged_with_its_code_and_quoted_reason() -> Result<()>
+{
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start_settled("closed replay").await?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    for (code, reason, shown) in [
+        (
+            1013,
+            "replay buffer full",
+            r#"code 1013, reason "replay buffer full""#,
+        ),
+        (
+            1011,
+            "replay read failed\nforged line",
+            r#"code 1011, reason "replay read failed\nforged line""#,
+        ),
+    ] {
+        fake.cut_replay(Some(1));
+        fake.cut_replay_close(Some((code, reason)));
+        let before = hellos(&fake, "a1");
+        fake.drop_connections();
+        back_online(&fake, &a1, before).await?;
+        eventually(SHORT, || Ok(daemon_log(&a1)?.contains(shown).then_some(())))
+            .await
+            .with_context(|| format!("no log line names {shown}"))?;
+        let log = daemon_log(&a1)?;
+        assert!(
+            log.lines().all(|line| !line.starts_with("forged line")),
+            "the reason was logged as a line of its own: {log}"
+        );
+    }
+    Ok(())
+}
