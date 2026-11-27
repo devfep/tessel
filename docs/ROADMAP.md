@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 23:00 UTC. Main and the coordinator's head at `df625c2`. Four landings through
+**As of:** 2026-11-27 22:50 UTC. Main and the coordinator's head at `df625c2`. Four landings through
 the server since 17:50. P1-ADAPTER-SUITE's rest at 21:14 UTC as `251a4c2`..`ec3ceb0` (claim 218,
 rebased onto `0f3d483`; the daemon copied all nine notes), on an Opus review (REVIEW-1 "No", five
 must-fixes; re-check 1 "No", two; re-check 2 "Yes" on `016b067`;
@@ -18,11 +18,11 @@ event and state rows and a store that rejects writes (a SQLite trigger) close 10
 repository and serve again once repaired, and a panicked repository task is logged with its
 repository and cause (`supervised` in `tessel-server/src/repo.rs`, the only code change, red test
 first). LANDER-VERSION-CHECK at 21:58 UTC as `088634a`..`a1202bc` (claim 226, a fast-forward), on a
-merge-path vote, 3-0 "Yes with should-fixes" on `0d6540b`, should-fixes done, re-check "Yes", "Yes",
-"Yes with should-fixes" (one test, added in `a1202bc`)
-(`~/tessel-orch-notes/2026-11-27/vote-lander-version-check/`): a failed `git --version` is
-`CommandError::VersionFailed` with its exit code (or "killed by a signal"), stdout and stderr, each
-cut to 1,200 characters; an exit 0 that prints no version is refused with its stderr. The 17:33
+merge-path vote, 3-0 "Yes with should-fixes" on `0d6540b`, should-fixes done but the signal number
+(LANDER-SIGNAL-NUMBER), re-check "Yes", "Yes", "Yes with should-fixes" (one test, added in
+`a1202bc`) (`~/tessel-orch-notes/2026-11-27/vote-lander-version-check/`): a failed `git --version`
+is `CommandError::VersionFailed` with its exit code (or "killed by a signal"), stdout and stderr,
+each cut to 1,200 characters; an exit 0 that prints no version is refused with its stderr. The 17:33
 cause is still unknown: the server's `PATH` finds Homebrew's git 2.56.0, not the `xcrun` shim (lane
 B's read); a signal's number is not kept (LANDER-SIGNAL-NUMBER). DAEMON-CUT-READ-REQUEST-TEXT at
 22:38 UTC as `f7421b1`..`eeb3472` (claim 227, a fast-forward), on an Opus review (REVIEW-1 "No", one
@@ -39,18 +39,18 @@ an in-order test: a commit asked before the last read and missing from its page,
 no in-order sequence could tell `<` from `>`, and the orchestrator's decision built on it, were
 wrong (all three re-checks); B is equivalent only on `tessel-server`'s one-job-at-a-time store
 (REPLAY-ORDER-CONTRACT). The `resend_land` mutant is baselined, its line kept. Main's CI and Adapter
-suite passed on `ec3ceb0`, `a1202bc` and `eeb3472`; they run on `df625c2`. CLAIM-SCATTER's `tessel
-claim --into` is not deployed: the running daemons are the 26 November `~/tessel-dogfood/bin` build,
-and the `tessel` first on `PATH` is `~/.cargo/bin`'s 13 October build (TESSEL-ON-PATH), so `tessel
-submit --claim` covers one claim and a claim with several modes can only grow while it is the
-agent's only open one: each lane runs one claimed task at a time, and lane A released and re-claimed
-scopes three times to submit. SIM-DOUBT-PREPARED-TRAFFIC's re-check 2 found that the forced
-first-`Land` refusal also opened a 15 s global rate-limit window; fix pass 3 drops it.
-SIM-DOUBT-LIVENESS's design was reviewed before code (DESIGN-REVIEW-1: its redispatch and
-answer-count bounds would flag the correct core); the adopted rule mirrors I7: every answer the core
-takes for a doubted claim's offered flight must change the stored state, so the bound is one taken
-answer (`~/tessel-orch-notes/2026-11-27/lane-b/sim-doubt-liveness/DESIGN-2.md`). PR #138 (the 17:50
-record) merged as `0f3d483`.
+suite passed on `ec3ceb0`, `a1202bc`, `eeb3472` and `df625c2`. CLAIM-SCATTER's `tessel claim --into`
+is not deployed: the running daemons are the 26 November `~/tessel-dogfood/bin` build, and the
+`tessel` first on `PATH` is `~/.cargo/bin`'s 14 October build (TESSEL-ON-PATH), so `tessel submit
+--claim` covers one claim and a claim with several modes can only grow while it is the agent's only
+open one: each lane runs one claimed task at a time, and lane A released and re-claimed scopes twice
+to submit. SIM-DOUBT-PREPARED-TRAFFIC's re-check 2 found that the forced first-`Land` refusal also
+opened a 15 s global rate-limit window; fix pass 3 drops it. SIM-DOUBT-LIVENESS's design was
+reviewed before code (DESIGN-REVIEW-1: its redispatch and answer-count bounds would flag the correct
+core); the adopted rule mirrors I7: every answer the core takes for a doubted claim's offered flight
+must change the stored state, so the bound is one taken answer
+(`~/tessel-orch-notes/2026-11-27/lane-b/sim-doubt-liveness/DESIGN-2.md`). PR #138 (the 17:50 record)
+merged as `0f3d483`.
 **Earlier (27 November 17:50 UTC):** Main and the coordinator's head at `228f5d1`.
 COORD-UNDELIVERED-GRANT landed through the server at 17:44 UTC as `121461c`..`228f5d1` (claim 212,
 rebased onto `4b1032f`), on an Opus review (REVIEW-1 "No", five must-fixes; re-check 1 "No", one
@@ -2046,7 +2046,7 @@ Lane B:
   why the helper stays. Done: no host test relies on an order the contract excludes, or each that
   does says so.
 - [ ] **TESSEL-ON-PATH** — S, orchestrator (the Mac, not the repository); found 27 November. The
-  `tessel` first on `PATH` is `~/.cargo/bin/tessel`, built 13 October; the daemons run
+  `tessel` first on `PATH` is `~/.cargo/bin/tessel`, built 14 October; the daemons run
   `~/tessel-dogfood/bin/tessel` (26 November). Neither has CLAIM-SCATTER's `--into`. Point the lanes
   and the hooks at one current binary (remove or replace the stale one), and deploy CLAIM-SCATTER
   with the dogfood upgrade. Done: `which tessel` is the deployed build, and `tessel claim --into`
