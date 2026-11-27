@@ -7,8 +7,22 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 07:45 UTC. Main at `7fc1bb2` (#131); the coordinator's head is `d9da509` (a
-pull-request merge does not move it). Since the record below, through the server, each after its
+**As of:** 2026-11-27 08:20 UTC. Main and the coordinator's head at `a38b570`. MUTANTS-DOUBT-PACING
+landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198, rebased; the submission
+held a merge of main, so the daemon copied no notes and the orchestrator copied all six by subject
+and author), approved on a 3-0 vote after four fix passes (VOTE-1 and VOTE-2 Yes on `72fe146`, fix
+pass 2; VOTE-3 Yes on `ccdc60a`; passes 3 and 4 changed only tests and doc comments;
+`~/tessel-orch-notes/2026-11-27/vote-mutants-doubt-pacing/`): the removals rest on a rule (a fenced
+claim's merge in flight is that claim's, with `doubt_since_ms` set) now checked by a `debug_assert!`
+and a seeded stage walk that answers refusals and landings, starts some seeds in doubt and answers
+only dispatches `begin_merge` offered; every break the voters planted fails a test; `release_wait`
+and `reconcile_before_ending` say they assume only an offered dispatch is answered. Its push run on
+main (CI 45964389648) is the first live mutant check of a landing: every shard diffed from
+`bc14609`, 16 mutants, 10 caught, 6 unviable, 0 missed. With it and SIM-MUTANTS-2 every one of the
+Nightly's 59 new names is killed, removed or excluded; the next Nightly is the proof. #132 (the
+STATE record below) merged at 08:03 UTC as `bc14609`.
+**Earlier (27 November 07:45 UTC):** Main at `7fc1bb2` (#131); the coordinator's head is `d9da509`
+(a pull-request merge does not move it). Since the record below, through the server, each after its
 review or vote and followed by green CI: REGRESSION-SEED-69962521-STALE as `3489af8` (claim 159;
 seed 5000397 replaces 69962521, which no longer caught the late-`Land` bug; an Opus review found it
 also breaks I6 under a one-line `is_fenced` = false mutant of main); SIM-HEAD-UNREADABLE as
@@ -326,11 +340,11 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- MUTANTS-DOUBT-PACING (lane B, `d9a05dc`..`c8419a3` on `574457a` with a merge of `d9da509`;
-  claims 193 and 194): votes 1 and 2 "Yes" on `72fe146`; vote 3's re-check of `c8419a3` (two
-  stage tests a third fix pass added) runs (`vote-mutants-doubt-pacing/`).
-- RACE-TEXTS-SHARED (lane A, `8b26573`..`cb9f8e0`; claim 195): a 3-voter vote runs
-  (`vote-race-texts-shared/`); the gate is green on `cb9f8e0` (2536 passed).
+- RACE-TEXTS-SHARED (lane A, `8b26573`..`cb9f8e0`; claim 195): vote on `cb9f8e0` VOTE-1 "Yes
+  with should-fixes", VOTE-2 and VOTE-3 "No" with one must-fix (nothing tests that the daemon
+  writes `race_entry_ended`: a daemon writing `false` passes every test); fix pass 1 runs
+  (`~/tessel-orch-notes/2026-11-27/lane-a/race-texts-shared/FIX-1.md`), then the same voters
+  re-check. Lane B: idle.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -400,14 +414,13 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** MUTANTS-DOUBT-PACING and RACE-TEXTS-SHARED land on their votes (the first should turn the
-Nightly green: it holds the last 9 of its 59 names, and its push run is the first live check of
-mutants on a landing); then HOST-SQLITE-RETRY-BACKOFF, SIM-FENCED-RULE-CHECKER,
-MUTANTS-SERVER-CLI-IN-DIFF and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the
-dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
-P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on
-a world-writable socket; he closes it before the accounts move.
-LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** RACE-TEXTS-SHARED lands on its re-vote, then SIM-RACE-TEXT-LITERAL; the next Nightly shows
+whether the mutants baseline passes; then HOST-SQLITE-RETRY-BACKOFF, LOCK-OWNER,
+SIM-FENCED-RULE-CHECKER, MERGE-OUTCOME-UNOFFERED (merge path, a vote), MUTANTS-SERVER-CLI-IN-DIFF
+and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md steps of
+SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH (it flips
+R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a world-writable
+socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1707,16 +1720,19 @@ Lane B:
   `docs/configuration.md` (~428) lists a `sudo` alive after the grace as a cause of a closed gate
   and says the gate stays shut until a restart; `docs/dogfood.md` gets the operator's steps for a
   closed gate (VOTE-3). Done: a test for each code change, and the docs.
-- [ ] **MUTANTS-DOUBT-PACING** — S, lane A, merge path (`src/coordinator/`: voted); from the Nightly
-  of 1 November and the triage (`~/tessel-orch-notes/2026-11-26/nightly-mutants/TRIAGE.md`). Kill
-  `Coordinator::prepared`'s `doubts` reset (a doubt a `Prepared` on another base ends restarts at
-  `infra_backoff_ms(1)`) and `wait_in_doubt`'s `doubts` (the backoff tests in `stages.rs` assert the
-  exact wait, not only the cap); remove, without changing behaviour, the four equivalent constructs
-  (`release_doubt_wait`'s guard, the `work` update in `retry_after_infrastructure`, the
-  `retry_at_ms` and `work` clears in `reconcile_before_ending`, `wait_in_doubt`'s `first`/`since`
-  handling) and the unreachable `wait_in_doubt` branch of `reconcile_refused_prepare`; a host test
-  of the "retrying (attempt N of 3)" line (`Pending::attempts`). Done: the 9 core and host names are
-  no longer missed and the baseline does not grow.
+- [x] **MUTANTS-DOUBT-PACING** (`7d08141`..`a38b570`, landed by the server 27 November; vote 3-0 Yes
+  after four fix passes (VOTE-1 and VOTE-2 last re-checked `72fe146`, VOTE-3 `ccdc60a`); the
+  simulator checker of its rule is SIM-FENCED-RULE-CHECKER) — S, lane A, merge path
+  (`src/coordinator/`: voted); from the Nightly of 1 November and the triage
+  (`~/tessel-orch-notes/2026-11-26/nightly-mutants/TRIAGE.md`). Kill `Coordinator::prepared`'s
+  `doubts` reset (a doubt a `Prepared` on another base ends restarts at `infra_backoff_ms(1)`) and
+  `wait_in_doubt`'s `doubts` (the backoff tests in `stages.rs` assert the exact wait, not only the
+  cap); remove, without changing behaviour, the four equivalent constructs (`release_doubt_wait`'s
+  guard, the `work` update in `retry_after_infrastructure`, the `retry_at_ms` and `work` clears in
+  `reconcile_before_ending`, `wait_in_doubt`'s `first`/`since` handling) and the unreachable
+  `wait_in_doubt` branch of `reconcile_refused_prepare`; a host test of the "retrying (attempt N of
+  3)" line (`Pending::attempts`). Done: the 9 core and host names are no longer missed and the
+  baseline does not grow.
 - [x] **SIM-MUTANTS-2** (`6ea5508`..`d9da509`, landed by the server 27 November; Opus review With
   changes, its must-fix made in `ffa7e9c` (landed as `d9da509`), re-check Yes; the Done's Nightly
   pass is not yet seen: it also needs MUTANTS-DOUBT-PACING's 9 names) — M, lane B (`src/sim`), after
@@ -1766,6 +1782,21 @@ Lane B:
   with a test. Also make the skill's "To change it, `tessel stop`, then `start`" (SKILL.md:48) say
   that this releases the claims. Submit covering several claims changes `Submit`, which names one
   claim: additive under rule 1, or ask Felix.
+- [ ] **MERGE-OUTCOME-UNOFFERED** — S, lane B, merge path (`src/coordinator/`); from
+  MUTANTS-DOUBT-PACING's VOTE-3. The doubt-pacing code assumes only a dispatch `begin_merge`
+  offered is answered (`release_wait`, `reconcile_before_ending` say so); an answer to a flight
+  that still waits would take a waiting `Prepare` early or clear an unexpired wait. No host or
+  simulator sends one. Make `merge_outcome` ignore (and log) an answer to a flight that was not
+  offered, with a test. Done: the assumption is a rule the core enforces.
+- [ ] **SIM-RACE-TEXT-LITERAL** — S, lane B (`src/sim`); from RACE-TEXTS-SHARED's votes.
+  `src/sim/driver/merge_path.rs` (~831) repeats the no-result race text as a literal; use the
+  shared constant from `src/protocol.rs` once RACE-TEXTS-SHARED lands.
+- [ ] **LOCK-OWNER** — S, orchestrator (the gate scripts in `~/tessel-orch-notes/`, not the
+  repository); found 27 November. The machine-wide cargo lock is a bare `mkdir`, so a killed gate or
+  voter run leaves it held with no owner (at least twice on 27 November, about 16 and 26 minutes, by
+  the agents' reports), and others cannot tell a live holder from a dead one. Write the holder's pid
+  and command into the lock, and have waiters remove a lock whose pid is gone. Done: the briefs'
+  lock snippet and every gate script use it.
 - [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
   the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
   `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
