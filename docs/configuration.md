@@ -590,8 +590,8 @@ None of these is configurable.
 
 | Limit | Value | Code |
 |---|---|---|
-| Claim lease | 30 s, renewed by each heartbeat | `src/shell.rs:16`, `src/coordinator.rs:857` |
-| Heartbeat interval | lease / 3 (10 s) | `tessel-cli/src/daemon.rs:806` |
+| Claim lease | 30 s, renewed by each heartbeat | `src/shell.rs:16`, `src/coordinator.rs:1025` |
+| Heartbeat interval | lease / 3 (10 s) | `tessel-cli/src/daemon.rs:1065` |
 | Agent id and repo name | 1 to 128 bytes | `src/shell.rs:20` |
 | WebSocket text frame | 64 KiB | `src/shell.rs:23` |
 | Scopes in one Claim, Amend or Submit | 256 | `src/coordinator.rs:1631` |
@@ -603,6 +603,20 @@ None of these is configurable.
 | Merges in flight per repo | 1, in submission order | `src/coordinator/merging.rs:3` |
 | Protocol version | 1 | `src/protocol.rs:72` |
 | The conflict table | as above, not extensible | `src/protocol.rs:215-232` |
+
+### A stalled coordinator lapses open claims
+
+The lease measures the coordinator's time, not the agent's silence. `expire`
+(`src/coordinator.rs:627`) removes every unsubmitted claim whose lease has run out, and
+`heartbeat` (`src/coordinator.rs:1025`) renews all of an agent's unsubmitted claims and cannot
+bring back one that `expire` already removed.
+So a coordinator that does not read heartbeats for longer than the 30 s lease (`src/shell.rs:16`)
+lapses the open claims of every agent, even while each daemon is online and sending a heartbeat
+every 10 s: a busy host, or one that sleeps while the server runs. Submitted claims never expire.
+In that case the agent sees `lease_expired` in `tessel inbox`, and the `pre-commit` and `pre-push`
+hooks refuse a change the claim no longer covers, printing the `tessel claim` command to run.
+Run that command (the scopes are free again unless another agent took them), then retry. A daemon
+that is offline also drops an open claim locally once its lease is over.
 
 ## What is pluggable
 

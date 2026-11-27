@@ -284,7 +284,10 @@ change that keeps the stated behaviour. `assumption_challenged` means another ag
 something you rely on: re-read that code and adjust before you finish.
 
 Other inbox kinds marked `!`: `denied`, `submit_rejected`, `uncovered`, `review_required`,
-`base_moved` (main moved; re-read affected files), `lease_expired` (claim again before editing),
+`base_moved` (main moved; re-read affected files),
+`lease_expired` (claim again before editing: a claim lapses when the coordinator stalls for longer
+than the 30 s lease, a busy or sleeping host, even while your daemon is online; the git hooks then
+refuse the change and print the `tessel claim` to run),
 `wait_withdrawn` (queue again), `error`. `reconciled` means the daemon repaired its claims after a
 reconnect; check `tessel status` (`--json` for machine-readable state).
 
