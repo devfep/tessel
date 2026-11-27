@@ -44,7 +44,10 @@ env:
 jobs:
   accounts:
     name: Runner accounts, Linux
-    runs-on: ubuntu-latest
+    # Pinned: on ubuntu-26.04 (ubuntu-latest since November 2026) the account's processes survive
+    # `kill -KILL -1` after a cancelled run, on code that passed on 24.04. SUDO-RS-RUNNER in
+    # docs/ROADMAP.md makes SudoRunner work there and moves this job.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
