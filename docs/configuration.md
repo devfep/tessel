@@ -593,12 +593,12 @@ None of these is configurable, except the claim lease (`lease_ms` of a
 | Limit | Value | Code |
 |---|---|---|
 | Claim lease | 30 s (`lease_ms`: 1000 to 600000), renewed by each heartbeat | `src/shell.rs:16`, `src/coordinator.rs:1025`, `tessel-server/src/config.rs:153` |
-| Heartbeat interval | lease / 3 (10 s at the default lease), from the lease in `Welcome` | `tessel-cli/src/daemon.rs:1065` |
+| Heartbeat interval | lease / 3 (10 s at the default lease), from the lease in `Welcome` | `tessel-cli/src/daemon.rs:1078` |
 | Agent id and repo name | 1 to 128 bytes | `src/shell.rs:20` |
 | WebSocket text frame | 64 KiB | `src/shell.rs:23` |
 | Scopes in one Claim, Amend or Submit | 256 | `src/coordinator.rs:1808` |
 | Stored state per repo | A client call that would grow the state past 1 MiB, or log one event over 1 MiB, is refused; nothing is stored above 2 MiB minus 64 KiB | `src/shell.rs:27,31`, `STATE_LIMIT_MESSAGE` |
-| Commit attempts for one batch | 3 (`MAX_COMMIT_ATTEMPTS` in `src/host/batch.rs`), one after the other with no pause; the store waits up to 5 s for a lock inside each (`BUSY_TIMEOUT_MS` in `tessel-server/src/store.rs`). Then the core is dropped and the socket whose message the batch stored closes with 1011; other sockets stay open. A batch of a failed wake closes no socket of its own and the wake is set again after 2 s (`RETRY_MS` in `src/host/wake.rs`) | `src/host/mod.rs` (`commit_failed`, `close_for_error`) |
+| Commit attempts for one batch | 3 (`MAX_COMMIT_ATTEMPTS` in `src/host/batch.rs`), one after the other with no pause; the store waits up to 5 s for a lock inside each (`BUSY_TIMEOUT_MS` in `tessel-server/src/store.rs`). Then the core is dropped and the socket whose message the batch stored closes with 1011; other sockets stay open. A batch of a failed wake closes no socket of its own and the wake is set again after 2 s (`RETRY_MS` in `src/host/wake.rs`) | `src/host/mod.rs` (`commit_failed`), `src/host/sockets.rs` (`close_for_error`), `src/host/wake.rs` (`wake_failed`) |
 | Review note | 1024 bytes | `src/coordinator.rs:1805` |
 | Symbols of one file before the hook and `submit` claim the file instead | 4 | `tessel-cli/src/plan.rs:14` |
 | Merge call (one landing) | 13 min | `src/merge.rs:37`, `src/host/calls.rs:50` |
@@ -617,7 +617,7 @@ renews all of an agent's unsubmitted claims that are still live; the test
 `heartbeat_cannot_resurrect_an_expired_claim` pins that. Submitted claims never expire.
 
 Three cases lapse open claims with every daemon online and heartbeating (the daemon sends one every
-third of the lease, `tessel-cli/src/daemon.rs:1065`):
+third of the lease, `tessel-cli/src/daemon.rs:1078`):
 
 - A coordinator that does not read heartbeats for longer than the lease (30 s by default,
   `src/shell.rs:16`): a busy host. A stall longer than the lease always lapses open claims; one
@@ -630,9 +630,10 @@ third of the lease, `tessel-cli/src/daemon.rs:1065`):
   sleep after the last one, and `expire` runs before it is routed. A sleep of the lease less one
   heartbeat interval or more (20 s at the default) lapses open claims, wherever it fell between
   beats.
-- A store outage of any class (a full disk, an I/O error, a locked or unusable database) longer
-  than the lease less one heartbeat interval (20 s at the defaults): the renewals were never
-  stored, so when the store is back every open claim has lapsed. No retry policy changes that.
+- A store outage of any class (a full disk, an I/O error, a locked or unusable database):
+  renewals made during it are never stored. One longer than the lease (30 s at the defaults)
+  lapses every open claim; one longer than the lease less one heartbeat interval (20 s at the
+  defaults) can, depending on where it fell between beats.
 
 The agent sees `lease_expired` in `tessel inbox`, and the `pre-commit` and `pre-push` hooks refuse
 a change the claim no longer covers, printing the `tessel claim` command to run. Run that command

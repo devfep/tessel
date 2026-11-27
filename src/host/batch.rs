@@ -24,8 +24,10 @@ use crate::shell::{Outbound, Session};
 /// pin the first two):
 /// - Busy: the store sets `busy_timeout`, so the busy handler sleeps inside the commit for up to
 ///   that long before it returns `SQLITE_BUSY` (`sqlite3_busy_timeout`). It covers `SQLITE_BUSY`,
-///   not `SQLITE_LOCKED`, and only because the commit's first statement is a write: a read first
-///   would get `SQLITE_BUSY_SNAPSHOT`, which has no busy handler (the lock test pins the wait).
+///   not `SQLITE_LOCKED`, and only because the commit's first statement is a write: a transaction
+///   that read first gets `SQLITE_BUSY` at once on its first write, without the busy handler
+///   (`SQLITE_BUSY_SNAPSHOT` if another writer committed after its read); the lock test pins the
+///   wait.
 ///   Each attempt therefore already waits; a retry right after one is the pause, repeated.
 /// - Disk full (`SQLITE_FULL`) and I/O errors (`SQLITE_IOERR`): SQLite may undo only the failing
 ///   statement (`sqlite3VdbeHalt`); for the store's single-row upserts it rolled the whole
