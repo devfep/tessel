@@ -2151,9 +2151,15 @@ impl Dice {
     }
 }
 
-fn random_outcome(dice: &mut Dice, stage: &MergeStage) -> MergeOutcome {
+fn random_outcome(dice: &mut Dice, stage: &MergeStage, fenced: bool) -> MergeOutcome {
     if dice.below(2) == 0 {
         match stage {
+            MergeStage::Prepare | MergeStage::Unstaged if fenced && dice.below(2) == 0 => {
+                return MergeOutcome::Conflict {
+                    files: Vec::new(),
+                    total: None,
+                };
+            }
             MergeStage::Prepare | MergeStage::Unstaged => return prepared_other_head_or_base(dice),
             MergeStage::Test { .. } => return MergeOutcome::Tested {},
             MergeStage::Land { .. } | MergeStage::Reconcile { .. } => {
@@ -2161,7 +2167,7 @@ fn random_outcome(dice: &mut Dice, stage: &MergeStage) -> MergeOutcome {
             }
         }
     }
-    match dice.below(9) {
+    match dice.below(14) {
         0 => prepared(),
         1 => prepared_other_head(),
         2 => prepared_on_moved_main(),
@@ -2169,6 +2175,16 @@ fn random_outcome(dice: &mut Dice, stage: &MergeStage) -> MergeOutcome {
         4 | 5 => MergeOutcome::ServiceUnavailable,
         6 => MergeOutcome::CandidateMissing {},
         7 => MergeOutcome::MainMoved {},
+        8 => MergeOutcome::Conflict {
+            files: Vec::new(),
+            total: None,
+        },
+        9 => failed_tests(),
+        10 => merged(),
+        11 => MergeOutcome::AlreadyMerged { base: commit(OLD) },
+        12 => MergeOutcome::Refused {
+            kind: RuleKind::ProtectedRef,
+        },
         _ => MergeOutcome::Timeout {},
     }
 }
@@ -2198,10 +2214,18 @@ fn random_reconciliation(dice: &mut Dice) -> Reconciliation {
 #[test]
 fn a_fenced_claim_is_always_the_flight_that_was_told_however_the_doubt_goes() {
     let mut doubted_steps = 0;
+    let (mut refused_prepare, mut refused_later, mut landed) = (0, 0, 0);
+    let (mut answered_prepare, mut answered_test) = (0, 0);
     for seed in 0..300 {
         let mut dice = Dice(seed);
-        let (mut c, claim, _) = submitted();
-        let mut now = NOW + 1;
+        let (mut c, claim) = if seed % 2 == 1 {
+            let (c, claim, _, _) = doubted_prepare();
+            (c, claim)
+        } else {
+            let (c, claim, _) = submitted();
+            (c, claim)
+        };
+        let mut now = NOW + 20_000;
         for step in 0..40 {
             now += dice.below(30_000);
             let context = format!("seed {seed} step {step}");
@@ -2221,7 +2245,30 @@ fn a_fenced_claim_is_always_the_flight_that_was_told_however_the_doubt_goes() {
                 }
                 (_, Some(dispatch)) => {
                     let stage = c.state.merge_in_flight.as_ref().map(|f| f.stage.clone());
-                    let outcome = random_outcome(&mut dice, &stage.unwrap_or(MergeStage::Prepare));
+                    let stage = stage.unwrap_or(MergeStage::Prepare);
+                    let work = c
+                        .state
+                        .claims
+                        .get(&claim.0)
+                        .and_then(|held| held.work.as_ref());
+                    let fenced = work.is_some_and(super::doubt::is_fenced);
+                    let outcome = random_outcome(&mut dice, &stage, fenced);
+                    if fenced {
+                        let refusal = matches!(
+                            outcome,
+                            MergeOutcome::Conflict { .. } | MergeOutcome::TestsFailed { .. }
+                        );
+                        let lands = matches!(
+                            outcome,
+                            MergeOutcome::Merged { .. } | MergeOutcome::AlreadyMerged { .. }
+                        );
+                        let at_prepare = stage == MergeStage::Prepare;
+                        answered_prepare += usize::from(at_prepare);
+                        answered_test += usize::from(matches!(stage, MergeStage::Test { .. }));
+                        refused_prepare += usize::from(refusal && at_prepare);
+                        refused_later += usize::from(refusal && !at_prepare);
+                        landed += usize::from(lands);
+                    }
                     c.merge_outcome(dispatch, &outcome, now);
                 }
                 (_, None) => {}
@@ -2240,4 +2287,12 @@ fn a_fenced_claim_is_always_the_flight_that_was_told_however_the_doubt_goes() {
         doubted_steps > 200,
         "only {doubted_steps} steps were in doubt"
     );
+    assert!(
+        answered_prepare > 40,
+        "{answered_prepare} fenced Prepare answers"
+    );
+    assert!(answered_test > 10, "{answered_test} fenced Test answers");
+    assert!(refused_prepare > 0, "no fenced Prepare was refused");
+    assert!(refused_later > 0, "no fenced Test or Land was refused");
+    assert!(landed > 0, "no fenced claim was answered as landed");
 }
