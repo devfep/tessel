@@ -1717,3 +1717,21 @@ fn eight_fixed_seeds_make_claims_that_rely_on_files_they_do_not_own() {
 fn the_fenced_rule_alone_sees_a_merge_in_doubt_nobody_was_told_of() {
     assert!(first_caught(Variant::UntoldDoubt, Checker::FencedRule).is_some());
 }
+
+#[test]
+fn an_untold_doubt_is_caught_by_the_fenced_rule_and_by_no_other_checker() {
+    let mut caught = 0;
+    for seed in 0..SEARCH_SEEDS {
+        let run = sim::run_seed(seed, Variant::UntoldDoubt, &Checker::ALL);
+        if run.violations.is_empty() {
+            continue;
+        }
+        caught += 1;
+        let only_fenced = run
+            .violations
+            .iter()
+            .all(|v| v.checker == Checker::FencedRule);
+        assert!(only_fenced, "seed {seed}: {:?}", run.violations);
+    }
+    assert!(caught > 0, "no seed caught the variant");
+}
