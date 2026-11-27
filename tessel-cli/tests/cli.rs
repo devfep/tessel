@@ -3742,3 +3742,98 @@ async fn a_queued_claim_that_named_a_scope_twice_is_still_reported_granted() -> 
     assert!(!inbox.contains("no request here explains"), "{inbox}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_claim_reply_with_an_unreadable_log_is_held_by_the_coordinator_and_adopted_later(
+) -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start_settled("unreadable").await?;
+    fake.replace_in_replay(0, "this is not json");
+    fake.lose_next("a1", Lose::ClaimReply);
+    let refused = a1.tessel(&["claim", "src/a.rs"])?;
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    assert!(
+        refused
+            .stdout
+            .contains("may hold that claim for this agent"),
+        "{}",
+        refused.stdout
+    );
+    assert!(
+        refused
+            .stdout
+            .contains("`tessel status` cannot show it yet"),
+        "{}",
+        refused.stdout
+    );
+    assert!(
+        !refused.stdout.contains("run `tessel status`") && !refused.stdout.contains("run it again"),
+        "{}",
+        refused.stdout
+    );
+    assert_eq!(a1.held_claims()?, 0);
+    a2.start("collide")?;
+    assert_eq!(
+        a2.tessel(&["claim", "src/a.rs"])?.code,
+        3,
+        "the coordinator holds it"
+    );
+    fake.replace_in_replay(u64::MAX, "x");
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || Ok((a1.held_claims()? == 1).then_some(()))).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_amend_reply_says_status_lacks_the_scopes_until_the_log_is_read_to_its_end(
+) -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start_settled("lost amend, cut read").await?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    fake.cut_replay(Some(fake.events().len()));
+    let before = hellos(&fake, "a1");
+    fake.lose_next("a1", Lose::ClaimReply);
+    let lost = a1.tessel(&["claim", "src/b.rs"])?;
+    assert_eq!(lost.code, 1, "{}", lost.all());
+    assert!(
+        lost.stdout.contains("may have been added"),
+        "{}",
+        lost.stdout
+    );
+    assert!(
+        lost.stdout
+            .contains("read the coordinator's log to its end"),
+        "{}",
+        lost.stdout
+    );
+    assert!(
+        !lost.stdout.contains("claim again"),
+        "claiming again is refused as stale: {}",
+        lost.stdout
+    );
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || {
+        Ok(a1
+            .tessel(&["inbox", "--all"])?
+            .stdout
+            .contains("not read to its end")
+            .then_some(()))
+    })
+    .await?;
+    assert_eq!(
+        scope_paths(&a1)?,
+        ["src/a.rs"],
+        "a cut read repairs nothing"
+    );
+    fake.cut_replay(None);
+    let before = hellos(&fake, "a1");
+    fake.drop_connections();
+    back_online(&fake, &a1, before).await?;
+    eventually(SHORT, || {
+        Ok((scope_paths(&a1)? == ["src/a.rs", "src/b.rs"]).then_some(()))
+    })
+    .await?;
+    Ok(())
+}
