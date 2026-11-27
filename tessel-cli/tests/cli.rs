@@ -3482,3 +3482,104 @@ async fn the_stop_hook_of_a_real_race_loser_says_its_claim_ended_before_any_inbo
     assert!(!shown.contains("claim is active again"), "{shown}");
     Ok(())
 }
+
+fn claim_of(agent: &Agent, id: u64) -> Result<Value> {
+    let status = agent.status()?;
+    let claims = status["state"]["claims"]
+        .as_array()
+        .context("no claims array")?;
+    claims
+        .iter()
+        .find(|claim| claim["claim"].as_u64() == Some(id))
+        .cloned()
+        .with_context(|| format!("claim {id} is not held"))
+}
+
+fn sent_claims_and_amends(fake: &Fake, agent: &str) -> usize {
+    fake.received(agent)
+        .iter()
+        .filter(|msg| matches!(msg, ClientMsg::Claim { .. } | ClientMsg::Amend { .. }))
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_into_adds_the_scopes_to_the_named_claim_when_several_are_open() -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start("two files")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
+    std::fs::write(a1.root().join("src/c.rs"), "pub fn c() {}\n")?;
+    let ids = claim_ids(&a1)?;
+    assert_eq!(ids.len(), 2);
+    let (first, second) = (ids[0], ids[1]);
+    let fence_before = claim_of(&a1, first)?["fence"].as_u64().context("fence")?;
+    let other_before = claim_of(&a1, second)?;
+
+    let done = a1.tessel(&["claim", "--into", &first.to_string(), "src/c.rs"])?;
+    assert_eq!(done.code, 0, "{}", done.all());
+    assert_eq!(claim_ids(&a1)?, ids, "no third claim");
+    let grown = claim_of(&a1, first)?;
+    assert!(grown["scopes"].to_string().contains("src/c.rs"), "{grown}");
+    assert!(grown["fence"].as_u64().context("fence")? > fence_before);
+    assert_eq!(
+        claim_of(&a1, second)?,
+        other_before,
+        "the other claim is untouched"
+    );
+    let amends = fake
+        .received("a1")
+        .into_iter()
+        .filter(|msg| matches!(msg, ClientMsg::Amend { claim, .. } if claim.0 == first))
+        .count();
+    assert_eq!(amends, 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_into_a_claim_that_cannot_take_scopes_is_refused_and_sends_nothing() -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("two files")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    assert_eq!(a1.tessel(&["claim", "--new", "src/b.rs"])?.code, 0);
+    std::fs::write(a1.root().join("src/c.rs"), "pub fn c() {}\n")?;
+    a2.start("another agent")?;
+    assert_eq!(a2.tessel(&["claim", "src/d.rs"])?.code, 0);
+    let theirs = claim_ids(&a2)?[0];
+    let ids = claim_ids(&a1)?;
+    let root = a1.root();
+    std::fs::write(root.join("src/a.rs"), "pub fn a() { 1; }\n")?;
+    git(&root, &["add", "src/a.rs"])?;
+    git(&root, &["commit", "-q", "-m", "change a"])?;
+    let submit = ["submit", "--claim", &ids[0].to_string(), "--evidence", "ok"];
+    assert_eq!(a1.tessel(&submit)?.code, 0);
+
+    let sent = sent_claims_and_amends(&fake, "a1");
+    let cases = [
+        (999, "claim 999 is not one of your open claims"),
+        (
+            theirs,
+            &format!("claim {theirs} is not one of your open claims"),
+        ),
+        (ids[0], &format!("claim {} is submitted", ids[0])),
+    ];
+    for (target, message) in cases {
+        let refused = a1.tessel(&["claim", "--into", &target.to_string(), "src/c.rs"])?;
+        assert_eq!(refused.code, 1, "{target}: {}", refused.all());
+        assert!(
+            refused.all().contains(message),
+            "{target}: {}",
+            refused.all()
+        );
+        assert!(
+            refused.all().contains("tessel status"),
+            "{target}: {}",
+            refused.all()
+        );
+        assert_eq!(
+            sent_claims_and_amends(&fake, "a1"),
+            sent,
+            "{target}: a message went out"
+        );
+    }
+    Ok(())
+}
