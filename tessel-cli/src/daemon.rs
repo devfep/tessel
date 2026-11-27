@@ -1325,7 +1325,7 @@ impl Daemon {
                     answer(pending.replies, &refused(None, message));
                 }
                 self.lost_releases = lost_releases;
-                self.settle_lost_waits(lost_waits, false);
+                self.settle_lost_waits(lost_waits.len(), &HashSet::new(), false);
                 return;
             }
         };
@@ -1359,14 +1359,20 @@ impl Daemon {
             claims: &self.state.claims,
             fresh: &self.fresh,
             lost_requests: &scopes,
+            lost_waits: &lost_waits,
             in_flight: &in_flight,
             lost_releases: &lost_releases,
             complete,
         };
         let plan = reconcile::plan(&local, &live, &events);
+        let granted: HashSet<usize> = plan
+            .granted_waits
+            .iter()
+            .map(|(index, _, _)| *index)
+            .collect();
         if complete {
             self.apply_plan(plan, lost, &in_flight_keys);
-            self.settle_lost_waits(lost_waits, true);
+            self.settle_lost_waits(lost_waits.len(), &granted, true);
             return;
         }
         self.notify(
@@ -1382,39 +1388,31 @@ impl Daemon {
             answer(pending.replies, &refused(None, message));
         }
         self.apply_plan(plan, Vec::new(), &in_flight_keys);
-        self.settle_lost_waits(lost_waits, false);
+        self.settle_lost_waits(lost_waits.len(), &granted, false);
     }
 
     /// Tells the user what became of each `--wait` claim that was queued when the socket dropped:
     /// the grant may have been stored before its send failed. A claim held with exactly those
     /// scopes was granted (the plan adopted it); with the log read to its end, no such claim means
     /// the coordinator withdrew the wait; otherwise the outcome is not known.
-    fn settle_lost_waits(&mut self, waits: Vec<Vec<ScopeClaim>>, complete: bool) {
-        for scopes in waits {
-            let held = self.state.claims.iter().find(|held| held.scopes == scopes);
-            let (kind, note) = match (held, complete) {
-                (Some(held), _) => (
-                    NoticeKind::Reconciled,
-                    format!(
-                        "the --wait claim queued before the connection dropped was granted \
-                         (claim {}); it is held",
-                        held.claim.0
-                    ),
-                ),
-                (None, true) => (
+    fn settle_lost_waits(&mut self, waits: usize, granted: &HashSet<usize>, complete: bool) {
+        for index in (0..waits).filter(|index| !granted.contains(index)) {
+            let (kind, note) = if complete {
+                (
                     NoticeKind::WaitWithdrawn,
                     "the --wait claim queued before the connection dropped was withdrawn; \
-                     queue it again"
-                        .to_string(),
-                ),
-                (None, false) => (
-                    NoticeKind::WaitWithdrawn,
-                    "the --wait claim queued before the connection dropped may have been \
-                     granted; run `tessel status` to see whether it is held"
-                        .to_string(),
-                ),
+                     queue it again",
+                )
+            } else {
+                (
+                    NoticeKind::Error,
+                    "the connection dropped while a --wait claim was queued, and the \
+                     coordinator's log could not be read to its end; the coordinator may hold \
+                     that claim for this agent until its lease lapses or a later complete read \
+                     adopts it, and `tessel status` cannot show it yet",
+                )
             };
-            self.notify(kind, &note, None);
+            self.notify(kind, note, None);
         }
     }
 
@@ -1493,6 +1491,7 @@ impl Daemon {
             set_awaiting_review,
             answer_lost,
             await_reply,
+            granted_waits,
             release_again,
             adopt,
         } = plan;
@@ -1531,6 +1530,15 @@ impl Daemon {
                 };
                 answer(pending.replies, &Reply::Claim { outcome });
             }
+        }
+        for (_, claim, server) in granted_waits {
+            let held = self.adopt(claim, server);
+            let note = format!(
+                "the --wait claim queued before the connection dropped was granted (claim {}); \
+                 it is held",
+                held.claim.0
+            );
+            self.notify(NoticeKind::Reconciled, &note, None);
         }
         for (index, claim, server) in await_reply {
             self.log(&format!(

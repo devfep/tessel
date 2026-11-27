@@ -227,6 +227,9 @@ pub struct Local<'a> {
     pub fresh: &'a HashSet<ClaimId>,
     /// Scopes of claim requests whose answer was lost with the socket.
     pub lost_requests: &'a [Vec<ScopeClaim>],
+    /// Scopes of `--wait` claims that were queued when the socket dropped: the grant may have
+    /// been stored before its send failed.
+    pub lost_waits: &'a [Vec<ScopeClaim>],
     /// Scopes of claim requests sent on this connection and not yet answered: their `Granted`
     /// is on the way.
     pub in_flight: &'a [Vec<ScopeClaim>],
@@ -261,6 +264,9 @@ pub struct Plan {
     /// Live claims that match a request still on the way. They are neither adopted nor reported:
     /// the reply, when it arrives, carries the fence, race and assumptions the log cannot.
     pub await_reply: Vec<(usize, ClaimId, ServerClaim)>,
+    /// Live claims that a `--wait` claim queued when the socket dropped was granted: index into
+    /// `lost_waits`. They are tracked as explained, not as unexplained.
+    pub granted_waits: Vec<(usize, ClaimId, ServerClaim)>,
     /// Live claims this daemon tried to release before the socket dropped.
     pub release_again: Vec<(ClaimId, Fence)>,
     /// Live claims no local request explains. They are kept, because heartbeats keep them
@@ -309,6 +315,7 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
     let known: HashSet<ClaimId> = local.claims.iter().map(|held| held.claim).collect();
     let mut answered = HashSet::new();
     let mut awaited = HashSet::new();
+    let mut waited = HashSet::new();
     for (&id, server) in live
         .iter()
         .rev()
@@ -329,6 +336,15 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
         if let Some((index, _)) = lost {
             answered.insert(index);
             plan.answer_lost.push((index, claim, server.clone()));
+            continue;
+        }
+        let wait =
+            local.lost_waits.iter().enumerate().find(|(index, scopes)| {
+                !waited.contains(index) && same_scopes(scopes, &server.scopes)
+            });
+        if let Some((index, _)) = wait {
+            waited.insert(index);
+            plan.granted_waits.push((index, claim, server.clone()));
             continue;
         }
         let coming = local.in_flight.iter().enumerate().find(|(index, scopes)| {
@@ -498,6 +514,7 @@ mod tests {
             claims: &claims,
             fresh: &fresh,
             lost_requests: &[],
+            lost_waits: &[],
             in_flight: &[],
             lost_releases: &none,
             complete: true,
@@ -741,6 +758,7 @@ mod tests {
             claims: &local,
             fresh: &fresh,
             lost_requests: &[],
+            lost_waits: &[],
             in_flight: &[],
             lost_releases: &none,
             complete: true,
@@ -783,6 +801,7 @@ mod tests {
             claims: local,
             fresh: &fresh,
             lost_requests,
+            lost_waits: &[],
             in_flight: &[],
             lost_releases: &releases,
             complete: true,
@@ -803,6 +822,7 @@ mod tests {
             claims: local,
             fresh: &fresh,
             lost_requests: lost,
+            lost_waits: &[],
             in_flight: &[],
             lost_releases: &releases,
             complete: false,
@@ -910,6 +930,7 @@ mod tests {
             claims: &[],
             fresh: &none,
             lost_requests: &[],
+            lost_waits: &[],
             in_flight,
             lost_releases: &none,
             complete,
@@ -1025,10 +1046,60 @@ mod tests {
             claims: &local,
             fresh: &fresh,
             lost_requests: &[],
+            lost_waits: &[],
             in_flight: &[],
             lost_releases: &none,
             complete: true,
         };
         assert_eq!(super::plan(&local, &live, &ended).forget, []);
+    }
+
+    fn plan_with_waits(events: &[Event], waits: &[Vec<Sc>], in_flight: &[Vec<Sc>]) -> Plan {
+        let live = live_claims(&AgentId("a1".into()), events);
+        let (fresh, releases) = (HashSet::new(), HashSet::new());
+        let local = Local {
+            claims: &[],
+            fresh: &fresh,
+            lost_requests: &[],
+            lost_waits: waits,
+            in_flight,
+            lost_releases: &releases,
+            complete: true,
+        };
+        plan(&local, &live, events)
+    }
+
+    #[test]
+    fn a_grant_to_a_wait_queued_when_the_socket_dropped_is_explained_not_adopted() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let twice: Vec<Sc> = scopes("a.rs").into_iter().chain(scopes("a.rs")).collect();
+        let plan = plan_with_waits(&events, &[twice], &[]);
+        assert_eq!(plan.granted_waits.len(), 1);
+        assert_eq!(plan.granted_waits[0].1, ClaimId(7));
+        assert!(
+            plan.adopt.is_empty(),
+            "a repeated scope still names the wait"
+        );
+    }
+
+    #[test]
+    fn a_lost_wait_explains_a_grant_ahead_of_a_request_on_the_way_and_only_once() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let on_the_way = [scopes("a.rs")];
+        let plan = plan_with_waits(&events, &[scopes("a.rs"), scopes("a.rs")], &on_the_way);
+        assert_eq!(plan.granted_waits.len(), 1, "one claim answers one wait");
+        assert!(plan.await_reply.is_empty() && plan.adopt.is_empty());
+    }
+
+    #[test]
+    fn a_lost_wait_that_matches_no_live_claim_leaves_the_plan_empty() {
+        let events = vec![granted(0, "a1", 7, 9, "b.rs")];
+        let plan = plan_with_waits(&events, &[scopes("a.rs")], &[]);
+        assert!(plan.granted_waits.is_empty());
+        assert_eq!(
+            plan.adopt.len(),
+            1,
+            "an unrelated claim is still unexplained"
+        );
     }
 }

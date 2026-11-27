@@ -396,11 +396,14 @@ async fn a_queued_wait_is_recorded_as_withdrawn_when_the_socket_drops() -> Resul
     back_online(&fake, &a1, before1).await?;
     back_online(&fake, &a2, before2).await?;
 
-    let inbox = a2.tessel(&["inbox", "--all"])?;
+    let inbox = eventually(SHORT, || {
+        let inbox = a2.tessel(&["inbox", "--all"])?.stdout;
+        Ok(inbox.contains("[wait_withdrawn]").then_some(inbox))
+    })
+    .await?;
     assert!(
-        inbox.stdout.contains("[wait_withdrawn]"),
-        "{}",
-        inbox.stdout
+        inbox.contains("was withdrawn; queue it again"),
+        "the notice does not say the wait was withdrawn: {inbox}"
     );
     assert!(a2.status()?["state"]["queued"].is_null());
     assert_eq!(a1.tessel(&["release"])?.code, 0);
@@ -3649,6 +3652,11 @@ async fn a_queued_claim_whose_grant_fails_to_send_is_held_and_the_notice_says_so
     );
     let inbox = a2.tessel(&["inbox", "--all"])?;
     assert!(
+        !inbox.stdout.contains("no request here explains"),
+        "the queued claim is reported as unexplained: {}",
+        inbox.stdout
+    );
+    assert!(
         !inbox.stdout.contains("claim again"),
         "the notice sends the agent to claim what it holds: {}",
         inbox.stdout
@@ -3661,5 +3669,36 @@ async fn a_queued_claim_whose_grant_fails_to_send_is_held_and_the_notice_says_so
         inbox.stdout
     );
     assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 3, "a2 holds it");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_claim_whose_grant_fails_while_the_log_read_is_cut_says_the_outcome_is_unknown(
+) -> Result<()> {
+    let (fake, a1, a2) = world(30_000).await?;
+    a1.start("hold it")?;
+    assert_eq!(a1.tessel(&["claim", "src/a.rs"])?.code, 0);
+    a2.start("need it")?;
+    assert_eq!(a2.tessel(&["claim", "--wait", "src/a.rs"])?.code, 4);
+    let before = hellos(&fake, "a2");
+    fake.cut_replay(Some(1));
+    fake.fail_next_grant("a2");
+    assert_eq!(a1.tessel(&["release"])?.code, 0);
+    back_online(&fake, &a2, before).await?;
+    let inbox = eventually(SHORT, || {
+        let inbox = a2.tessel(&["inbox", "--all"])?.stdout;
+        Ok(inbox
+            .contains("could not be read to its end")
+            .then_some(inbox))
+    })
+    .await?;
+    assert!(inbox.contains("may hold that claim"), "{inbox}");
+    assert!(
+        !inbox.contains("withdrawn"),
+        "the wait was not shown withdrawn: {inbox}"
+    );
+    assert!(!inbox.contains("[wait_withdrawn]"), "{inbox}");
+    assert_eq!(a2.held_claims()?, 0, "a cut read adopts nothing");
+    fake.cut_replay(None);
     Ok(())
 }
