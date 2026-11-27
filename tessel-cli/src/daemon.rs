@@ -122,8 +122,10 @@ pub(crate) struct LogRead {
     pub(crate) unknown: Vec<UnknownEnvelope>,
     /// The highest `seq` read, skipped events included.
     pub(crate) last_seq: Option<u64>,
-    /// How the connection ended when it ended before the end marker: the server's close code and
-    /// quoted reason, or that there was no close frame. The reason is the server's text.
+    /// Why the read stopped before the end marker: the server's close frame (its code and quoted
+    /// reason, or that it had no code), the connection failing (a reset without a close frame
+    /// arrives as a failure), or no end marker within the time allowed. A close reason is the
+    /// server's text.
     pub(crate) ended: Option<String>,
 }
 
@@ -152,20 +154,30 @@ impl std::fmt::Display for UnknownEnvelope {
     }
 }
 
-/// A close reason is at most 123 bytes on the wire; this much of it is kept for the log.
+/// A close reason is at most 123 bytes on the wire, so this cut should never fire; it keeps a
+/// reason that is somehow longer from filling the log.
 const CLOSE_REASON_LOG_CHARS: usize = 123;
+
+/// How much of a connection failure's text is kept for the log.
+const FAILURE_LOG_CHARS: usize = 200;
 
 /// How a read socket that ended before the end marker ended, for the log. The reason is text the
 /// server sends: it is cut and quoted, so it stays one line and cannot pass for a log line.
 fn describe_end(frame: Option<&CloseFrame>) -> String {
     let Some(frame) = frame else {
-        return "closed by the server without a close frame".to_string();
+        return "closed by the server with a close frame without a code".to_string();
     };
     let reason: String = frame.reason.chars().take(CLOSE_REASON_LOG_CHARS).collect();
     format!(
         "closed by the server with code {}, reason {reason:?}",
         u16::from(frame.code)
     )
+}
+
+/// How a read socket that failed ended, for the log: the websocket library's text, cut and quoted.
+fn describe_failure(error: &WsError) -> String {
+    let text: String = error.to_string().chars().take(FAILURE_LOG_CHARS).collect();
+    format!("read failed: {text:?}")
 }
 
 fn bounded(text: &str) -> String {
@@ -2627,18 +2639,23 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
     let mut ended = None;
     let deadline = Instant::now() + SNAPSHOT_LIMIT;
     while !marker {
+        let timed_out = || format!("no end marker within {SNAPSHOT_LIMIT:?}");
         let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            ended = Some(timed_out());
             break;
         };
         match tokio::time::timeout(left, socket.next()).await {
             // A closed or failed socket mid-read leaves a truncated log, not an unreadable one.
-            Err(_) => break,
+            Err(_) => {
+                ended = Some(timed_out());
+                break;
+            }
             Ok(None) => {
-                ended = Some(describe_end(None));
+                ended = Some("the connection ended without a close frame".to_string());
                 break;
             }
             Ok(Some(Err(error))) => {
-                ended = Some(format!("failed: {}", bounded(&error.to_string())));
+                ended = Some(describe_failure(&error));
                 break;
             }
             Ok(Some(Ok(Message::Close(frame)))) => {
@@ -2680,7 +2697,7 @@ pub(crate) async fn read_log(config: &Config, base: String) -> Result<LogRead, S
         events,
         unknown,
         last_seq: seqs.iter().copied().max(),
-        ended: if marker { None } else { ended },
+        ended,
     })
 }
 
@@ -2919,11 +2936,23 @@ async fn dispatch(request: Request, cmd_tx: &mpsc::Sender<Command>) -> Reply {
 mod tests {
     use super::*;
     use tessel_coordinator::protocol::Fence;
+    use tokio_tungstenite::tungstenite::error::ProtocolError;
 
     fn envelope(kind: &str) -> String {
         format!(
             r#"{{"type":"event","event":{{"seq":7,"at_ms":1,"run":"r","event":"{kind}","x":1}}}}"#
         )
+    }
+
+    #[test]
+    fn a_reset_without_a_close_frame_is_logged_whole_and_quoted() {
+        let reset = WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+        let line = describe_failure(&reset);
+        assert!(
+            line.ends_with("Connection reset without closing handshake\""),
+            "{line}"
+        );
+        assert!(line.starts_with("read failed: \""), "{line}");
     }
 
     #[test]
