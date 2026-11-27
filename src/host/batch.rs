@@ -22,15 +22,20 @@ use crate::shell::{Outbound, Session};
 ///
 /// Why no backoff, for each way a real SQLite store fails (`tessel-server/src/store.rs`; its tests
 /// pin the first two):
-/// - Busy or locked: the store sets `busy_timeout`, so the busy handler sleeps inside the commit
-///   for up to that long before it returns `SQLITE_BUSY` (`sqlite3_busy_timeout`). Each attempt
-///   therefore already waits; a retry right after one is the pause, repeated.
-/// - Disk full (`SQLITE_FULL`) and I/O errors (`SQLITE_IOERR`): SQLite rolls the transaction back
-///   (`sqlite3VdbeHalt`), so a failed attempt stores nothing and the retry is harmless. It cannot
-///   succeed before space is freed or the device recovers, so a pause of seconds would not change
-///   the outcome, and the input gate is closed meanwhile, which stalls every client. The cut-off
-///   after the last attempt is the right answer: the core is dropped and the next message loads
-///   it from what is stored, so a store that recovers is served again.
+/// - Busy: the store sets `busy_timeout`, so the busy handler sleeps inside the commit for up to
+///   that long before it returns `SQLITE_BUSY` (`sqlite3_busy_timeout`). It covers `SQLITE_BUSY`,
+///   not `SQLITE_LOCKED`, and only because the commit's first statement is a write: a read first
+///   would get `SQLITE_BUSY_SNAPSHOT`, which has no busy handler (the lock test pins the wait).
+///   Each attempt therefore already waits; a retry right after one is the pause, repeated.
+/// - Disk full (`SQLITE_FULL`) and I/O errors (`SQLITE_IOERR`): SQLite may undo only the failing
+///   statement (`sqlite3VdbeHalt`); for the store's single-row upserts it rolled the whole
+///   transaction back, and the transaction's rollback on drop covers the rest either way, so a
+///   failed attempt stores nothing (the full-database test pins it with two entries) and the
+///   retry is harmless. It cannot succeed before space is freed or the device recovers, so a
+///   pause of seconds would not change the outcome, and the input gate is closed meanwhile,
+///   which stalls every client. The cut-off after the last attempt is the right answer: the core
+///   is dropped and the next message loads it from what is stored, so a store that recovers is
+///   served again.
 /// - A corrupt or unusable database: no retry helps; the cut-off tells the operator at once.
 ///
 /// A backoff would be a wake with the clock as input, kept deterministic in the simulator, for no
