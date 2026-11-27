@@ -7,7 +7,51 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 17:50 UTC. Main and the coordinator's head at `228f5d1`.
+**As of:** 2026-11-27 23:00 UTC. Main and the coordinator's head at `df625c2`. Four landings through
+the server since 17:50. P1-ADAPTER-SUITE's rest at 21:14 UTC as `251a4c2`..`ec3ceb0` (claim 218,
+rebased onto `0f3d483`; the daemon copied all nine notes), on an Opus review (REVIEW-1 "No", five
+must-fixes; re-check 1 "No", two; re-check 2 "Yes" on `016b067`;
+`~/tessel-orch-notes/2026-11-27/lane-b/adapter-suite-rest/`): a wire nobody reads is dropped without
+stalling the repository (a `repo.rs` test where a blocking send or close fails at the drop and a
+stall after the drop at the next socket's Welcome), a watcher that never reads over TCP, unreadable
+event and state rows and a store that rejects writes (a SQLite trigger) close 1011, log the
+repository and serve again once repaired, and a panicked repository task is logged with its
+repository and cause (`supervised` in `tessel-server/src/repo.rs`, the only code change, red test
+first). LANDER-VERSION-CHECK at 21:58 UTC as `088634a`..`a1202bc` (claim 226, a fast-forward), on a
+merge-path vote, 3-0 "Yes with should-fixes" on `0d6540b`, should-fixes done, re-check "Yes", "Yes",
+"Yes with should-fixes" (one test, added in `a1202bc`)
+(`~/tessel-orch-notes/2026-11-27/vote-lander-version-check/`): a failed `git --version` is
+`CommandError::VersionFailed` with its exit code (or "killed by a signal"), stdout and stderr, each
+cut to 1,200 characters; an exit 0 that prints no version is refused with its stderr. The 17:33
+cause is still unknown: the server's `PATH` finds Homebrew's git 2.56.0, not the `xcrun` shim (lane
+B's read); a signal's number is not kept (LANDER-SIGNAL-NUMBER). DAEMON-CUT-READ-REQUEST-TEXT at
+22:38 UTC as `f7421b1`..`eeb3472` (claim 227, a fast-forward), on an Opus review (REVIEW-1 "No", one
+must-fix and a wrong notice found; re-check 1 "No", two; re-check 2 "Yes";
+`~/tessel-orch-notes/2026-11-27/lane-b/daemon-cut-read-request-text/`): after a cut or unreadable
+log read, the lost-claim, lost-amend and lost-submit notices no longer send the caller to `tessel
+status` for an answer it cannot show; the fake gains `Lose::Submit`. NIGHTLY-MISSED-1127 at 22:48
+UTC as `71b2571`..`df625c2` (claim 224, rebased onto `eeb3472`; the daemon copied both notes), on a
+merge-path vote after two fix passes (1 "No" and 2 "Yes with should-fixes" on `d857f4d`; re-check 1,
+2 "No" and 1 "Yes with should-fixes"; re-check 2, 3-0 "Yes" on `112ac54`;
+`~/tessel-orch-notes/2026-11-27/vote-nightly-missed-1127/`). The `replay.rs:187` mutant is killed by
+an in-order test: a commit asked before the last read and missing from its page, which
+`Output::Commit` allows, is sent only by the replay's buffer, so `<` loses it. Lane A's proof that
+no in-order sequence could tell `<` from `>`, and the orchestrator's decision built on it, were
+wrong (all three re-checks); B is equivalent only on `tessel-server`'s one-job-at-a-time store
+(REPLAY-ORDER-CONTRACT). The `resend_land` mutant is baselined, its line kept. Main's CI and Adapter
+suite passed on `ec3ceb0`, `a1202bc` and `eeb3472`; they run on `df625c2`. CLAIM-SCATTER's `tessel
+claim --into` is not deployed: the running daemons are the 26 November `~/tessel-dogfood/bin` build,
+and the `tessel` first on `PATH` is `~/.cargo/bin`'s 13 October build (TESSEL-ON-PATH), so `tessel
+submit --claim` covers one claim and a claim with several modes can only grow while it is the
+agent's only open one: each lane runs one claimed task at a time, and lane A released and re-claimed
+scopes three times to submit. SIM-DOUBT-PREPARED-TRAFFIC's re-check 2 found that the forced
+first-`Land` refusal also opened a 15 s global rate-limit window; fix pass 3 drops it.
+SIM-DOUBT-LIVENESS's design was reviewed before code (DESIGN-REVIEW-1: its redispatch and
+answer-count bounds would flag the correct core); the adopted rule mirrors I7: every answer the core
+takes for a doubted claim's offered flight must change the stored state, so the bound is one taken
+answer (`~/tessel-orch-notes/2026-11-27/lane-b/sim-doubt-liveness/DESIGN-2.md`). PR #138 (the 17:50
+record) merged as `0f3d483`.
+**Earlier (27 November 17:50 UTC):** Main and the coordinator's head at `228f5d1`.
 COORD-UNDELIVERED-GRANT landed through the server at 17:44 UTC as `121461c`..`228f5d1` (claim 212,
 rebased onto `4b1032f`), on an Opus review (REVIEW-1 "No", five must-fixes; re-check 1 "No", one
 test-only must-fix; re-check 2 "Yes" on `7ce3c76`;
@@ -473,16 +517,14 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- NIGHTLY-MISSED-1127 (lane A, claim 213, branch task-nightly-missed-1127 from `98d1a51`; fix pass 1
-  after the vote; `~/tessel-orch-notes/2026-11-27/nightly-missed-1127/`).
-- SIM-DOUBT-PREPARED-TRAFFIC (lane A, branch task-sim-doubt-prepared-traffic at `0875abb`; Opus
-  review "No"; fix pass 1 begun, paused as a local WIP commit until NIGHTLY-MISSED-1127's;
+- SIM-DOUBT-PREPARED-TRAFFIC (lane A, branch task-sim-doubt-prepared-traffic at `bfdf49b`; Opus
+  re-check 2 "No" to accepting its coverage loss; fix pass 3 (drop the forced refusal's rate-limit
+  window) running under a new claim;
   `~/tessel-orch-notes/2026-11-27/lane-a/sim-doubt-prepared-traffic/`).
-- P1-ADAPTER-SUITE's rest (lane B, dispatched 17:45 UTC, branch task-adapter-suite-rest from
-  `228f5d1`; design approved: a watcher that never reads, corrupt store rows, and a panicking repo
-  task, whose only code change is a wrapper in `tessel-server/src/repo.rs` that logs the panic with
-  the repository; no `src/host` or core change;
-  `~/tessel-orch-notes/2026-11-27/lane-b/adapter-suite-rest/`).
+- NIGHTLY-MUTANT-TIMEOUTS (lane B, dispatched 22:50 UTC, branch task-nightly-mutant-timeouts from
+  `df625c2`; test-only bounds for two timed-out mutants, the third explained;
+  `~/tessel-orch-notes/2026-11-27/lane-b/nightly-mutant-timeouts/`). SIM-DOUBT-LIVENESS (lane B)
+  follows SIM-DOUBT-PREPARED-TRAFFIC's landing, on DESIGN-2.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -553,14 +595,13 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** NIGHTLY-MISSED-1127's fix pass and re-vote (lane A), then SIM-DOUBT-PREPARED-TRAFFIC's fix
-pass (lane A); P1-ADAPTER-SUITE's rest (lane B); then SIM-DOUBT-LIVENESS (after
-SIM-DOUBT-PREPARED-TRAFFIC: both change `src/sim/variant.rs`); LANDER-VERSION-CHECK;
-DAEMON-CUT-READ-REQUEST-TEXT; NIGHTLY-MUTANT-TIMEOUTS; CLAIM-LEASE-LAPSE's code on Felix's decision;
-the dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
-P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on
-a world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for
-M6.
+**Next:** SIM-DOUBT-PREPARED-TRAFFIC's fix pass 3 (lane A); NIGHTLY-MUTANT-TIMEOUTS (lane B); then
+SIM-DOUBT-LIVENESS (lane B, after SIM-DOUBT-PREPARED-TRAFFIC: both change `src/sim/variant.rs`); the
+28 November Nightly shows whether NIGHTLY-MISSED-1127 is done; LANDER-SIGNAL-NUMBER;
+REPLAY-ORDER-CONTRACT; TESSEL-ON-PATH; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md
+steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH
+(it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a
+world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1447,11 +1488,14 @@ Lane A:
   server's test support. The workspace test takes about 305 s on this Mac against the runner's
   720 s. Its first landing failed in the runner (a keep-alive test lapsed under load); the
   keep-alive tests are now driven by the clock. Opus "Yes" after two fix passes.
-- [ ] **P1-ADAPTER-SUITE** — M. First part done (`9a2a044`, landed by the server; workflow #122,
-  merged): an `#[ignore]` kill -9 loop run by the "Adapter suite" job, checking every client
-  transcript against I1, I5 and I9 after each reload (1 min 11 s on its first GitHub run), and the
-  CLI of `e9df98c` landing through the current server. The rest after P1-HOST-HARDENING: a slow
-  watcher, a panicking repo task, injected store errors.
+- [x] **P1-ADAPTER-SUITE** (first part `9a2a044`; the rest `251a4c2`..`ec3ceb0`, landed by the
+  server 27 November; Opus "Yes" after two fix passes) — M. First part: an `#[ignore]` kill -9 loop
+  run by the "Adapter suite" job, checking every client transcript against I1, I5 and I9 after each
+  reload (1 min 11 s on its first GitHub run), and the CLI of `e9df98c` landing through the current
+  server. The rest: a slow watcher (a wire nobody reads is dropped and the repository serves the
+  next socket), a panicking repo task (logged with its repository and cause, refused, served again
+  after a restart), injected store errors (unreadable event and state rows, a store that rejects
+  writes: 1011, logged, served again once repaired).
 - [x] **P1-HOST-HARDENING** (`97fb0d9`..`042b87a`, landed by the server 30 October, run by lane B;
   held as merge path, approved on a 3-0 re-vote after a 3-0 "No") — M, after P1-CORE-RECONCILE.
   P1-PERSIST-RETRY (C8, flips R30), exact replay without stalling (C3, flips R36),
@@ -1956,36 +2000,57 @@ Lane B:
   one that drops every `Reconcile` answer; unit tests catch both. Add a checker that flags a claim
   in doubt redispatched without progress past a bound, with a planted variant that fails it and the
   correct core silent on a 300-seed sweep. Done: the planted variant fails a default run.
-- [ ] **NIGHTLY-MISSED-1127** — S, lane A; from the Nightly 45995920783 on `941db87` (27 November),
-  whose full-mutants job found 2 missed mutants beyond the baseline. `src/host/replay.rs` (~187) `>`
-  to `<` in `Host::buffer_for_replays`: no test failed under it (the buffer-bound test reaches it
-  after a page was sent; VOTE-2); a test of an in-order case that tells `<` apart, if one exists
-  (lane B's candidate, a failed commit attempt that stored its rows, which no current adapter
-  produces; VOTE-3: `<` loses events, it does not duplicate them, since the retain after each page
-  drops the rest), and one sentence on `Output::Commit` saying a failed attempt may have stored its
-  rows. `src/coordinator/merging/doubt.rs` `resend_land`'s `retry_at_ms: None`: equivalent (a
-  past-due wait can reach it; every reader compares with the clock, and every path to a `Prepare`
-  rewrites or clears the wait), so the mutant is baselined with the line kept. Done: the next
-  Nightly reports neither beyond the baseline.
-- [ ] **LANDER-VERSION-CHECK** — S; from COORD-UNDELIVERED-GRANT's first landing (27 November 17:33
-  UTC). The runner's `cargo test` failed in `tessel-server/tests/landing.rs`
-  `a_rebase_over_another_landing_keeps_what_a_note_follows_a_commit_by`: `Landing::new` returned
-  `UnsupportedGit { found: "" }`. `Git::check_version` (`tessel-lander/src/git.rs` ~201) reads only
-  stdout and drops `git --version`'s exit code and stderr, so the cause is lost; git is found on the
-  process's `PATH` (~147). Make the error carry the exit code and stderr, with a test; then name the
-  cause if it recurs (a guess, not shown: macOS's `/usr/bin/git` shim under load). Done: a failed
-  version check says why.
-- [ ] **DAEMON-CUT-READ-REQUEST-TEXT** — S, lane B; from COORD-UNDELIVERED-GRANT's REVIEW-1. After a
-  cut log read, the daemon tells a caller whose claim reply was lost to "run `tessel status`, then
-  run it again" (`tessel-cli/src/daemon.rs` ~1386 on `228f5d1`), but status shows only the claims
-  the daemon tracks, so a claim the coordinator holds is not there. Say what is true, as
-  COORD-UNDELIVERED-GRANT does for a lost wait, with a test. Done: no notice points at a command
-  that cannot show the answer.
+- [ ] **NIGHTLY-MISSED-1127** (`71b2571`..`df625c2`, landed by the server 27 November; merge-path
+  vote 3-0 "Yes" after two fix passes; done when the next Nightly reports neither mutant beyond the
+  baseline) — S, lane A; from the Nightly 45995920783 on `941db87`, whose full-mutants job found 2
+  missed mutants beyond the baseline. `src/host/replay.rs` (~187) `>` to `<` in
+  `Host::buffer_for_replays`: killed by an in-order test (a commit asked before the last read and
+  missing from its page, which `Output::Commit` allows, is sent only by the buffer).
+  `src/coordinator/merging/doubt.rs` `resend_land`'s `retry_at_ms: None`: equivalent (a past-due
+  wait can reach it; every reader compares with the clock, and every path to a `Prepare` rewrites or
+  clears the wait), so it is baselined with the line kept. Done: the next Nightly reports neither
+  beyond the baseline.
+- [x] **LANDER-VERSION-CHECK** (`088634a`..`a1202bc`, landed by the server 27 November; merge-path
+  vote 3-0) — S; from COORD-UNDELIVERED-GRANT's first landing (27 November 17:33 UTC): the runner's
+  `cargo test` failed in `tessel-server/tests/landing.rs`
+  `a_rebase_over_another_landing_keeps_what_a_note_follows_a_commit_by` with `UnsupportedGit {
+  found: "" }`, and `Git::check_version` dropped `git --version`'s exit code and stderr. Done: a
+  failed version check is `VersionFailed` with its exit code (or "killed by a signal"), stdout and
+  stderr, cut to 1,200 characters; an exit 0 that prints nothing is refused with its stderr. If it
+  recurs, the message shows in the runner's test output (the test's `expect("a lander")`) or as the
+  server's start error: name the cause then. The 17:33 cause is not known; the signal number is
+  LANDER-SIGNAL-NUMBER.
+- [x] **DAEMON-CUT-READ-REQUEST-TEXT** (`f7421b1`..`eeb3472`, landed by the server 27 November; Opus
+  "Yes" after two fix passes) — S, lane B; from COORD-UNDELIVERED-GRANT's REVIEW-1. After a cut or
+  unreadable log read the daemon told a caller to run `tessel status`, which shows only the claims
+  the daemon tracks. Done: the lost-claim, lost-amend and lost-submit notices say what is true (the
+  coordinator may hold the claim; heartbeats keep it until a complete read adopts it; a repeated
+  claim is refused as stale only if the lost amend was applied), each with a test; the fake gains
+  `Lose::Submit`.
 - [ ] **NIGHTLY-MUTANT-TIMEOUTS** — S; from the Nightly 45995920783. Three mutants time out (the
   workflow warns, it does not fail): `src/shell.rs:32`, `src/host/mod.rs:471` and
   `src/host/testkit.rs:201`, the last in test support; each costs about 3 minutes of its shard.
   Confirm each is a hang a test detects, and exclude or speed up the testkit one. Done: each timeout
   explained in the workflow or gone.
+- [ ] **LANDER-SIGNAL-NUMBER** — S; from LANDER-VERSION-CHECK's vote (VOTE-1, VOTE-3). A git killed
+  by a signal is reported as "killed by a signal" without its number, because `GitOutput`
+  (`tessel-lander/src/run.rs`) keeps only `status.code()`; the number tells an outside kill
+  (SIGKILL) from a crash (SIGSEGV, SIGABRT). Keep it (`ExitStatusExt::signal()`) and show it, with a
+  test. Done: a git killed by a signal is reported with the signal's number.
+- [ ] **REPLAY-ORDER-CONTRACT** — S; from NIGHTLY-MISSED-1127's votes. The host's contract
+  (`src/host/mod.rs`, `ReplayPage` and `Output::Commit`) says storage answers come in the order
+  asked and lets a commit asked before a read be missing from its page; `tessel-server` runs one
+  storage job at a time, so it always includes it. The testkit's `deliver_next_but_pages`
+  (`src/host/testkit.rs` ~200) lets a later commit's answer overtake an earlier page, an order no
+  contract allows, and older replay tests use it. Rewrite those tests in the contract's order or say
+  why the helper stays. Done: no host test relies on an order the contract excludes, or each that
+  does says so.
+- [ ] **TESSEL-ON-PATH** — S, orchestrator (the Mac, not the repository); found 27 November. The
+  `tessel` first on `PATH` is `~/.cargo/bin/tessel`, built 13 October; the daemons run
+  `~/tessel-dogfood/bin/tessel` (26 November). Neither has CLAIM-SCATTER's `--into`. Point the lanes
+  and the hooks at one current binary (remove or replace the stale one), and deploy CLAIM-SCATTER
+  with the dogfood upgrade. Done: `which tessel` is the deployed build, and `tessel claim --into`
+  works.
 - [x] **LOCK-OWNER** (done 27 November in `~/tessel-orch-notes/lib/cargo-lock.sh`, outside the
   repository; the gate scripts and the landing template use it) — S, orchestrator (the gate scripts
   in `~/tessel-orch-notes/`, not the repository); found 27 November. The machine-wide cargo lock is
