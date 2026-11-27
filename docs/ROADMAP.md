@@ -7,25 +7,61 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 02:10 UTC. Main at `9e1bb97`. Felix resumed the build on 26 November after a
-pause from 1 November (his word). The Mac had rebooted about 13 November, so the dogfood server was
-down; the agent tokens had lapsed (about 7 November) and the GitHub token "tessel-dogfood-lander"
-expired on 23 November. Felix asked the orchestrator to unblock itself in Claude in Chrome: after
-his passkey, the orchestrator regenerated the GitHub token with the same scopes, valid 30 days (to
-26 December 2026), and saved it to `<server dir>/github-token` from the clipboard without reading it
-(the new token reads all four repositories); `setup.sh` minted new agent tokens (valid to about 3
-December; the server configuration unchanged, `jobs = 2`); the server was started at 22:24 UTC with
-the same build (the `bin/` copies `setup.sh` rewrote have the same sha256 as those they replaced).
-Felix asked whether dogfooding was only for the contest; shown section 8 and decision 6 of `PLAN.md`
-(17 and 20 October, after the contest), he chose to keep it. Then, through the server, both approved
-by the orchestrator on a 3-0 vote: HOST-HARDENING-FOLLOWUPS at 00:40 UTC on 27 November as
-`c88aa40`..`2640eff` (claim 158, fast-forward; CI 45918121207 and the Adapter suite 45918121325, its
-kill -9 loop included, passed on `2640eff`) and SUDO-GATE-FOLLOWUPS at 01:17 UTC as
-`930748f`..`9e1bb97` (claim 157, rebased; notes copied by the daemon). On `9e1bb97` main CI
-(45921694282) and the Adapter suite (45921694273) passed; Own users (45921694300) failed: all 7
-real-sudo tests (the first left processes in `_tessel-runner` that survived `kill -KILL -1`, the
-rest met them as survivors at `SudoRunner::new`) and the script's `sudo -l -U` check. The cause is
-the runner image, not the landing: `ubuntu-latest` moved from ubuntu-24.04 to ubuntu-26.04
+**As of:** 2026-11-27 07:45 UTC. Main at `7fc1bb2` (#131); the coordinator's head is `d9da509` (a
+pull-request merge does not move it). Since the record below, through the server, each after its
+review or vote and followed by green CI: REGRESSION-SEED-69962521-STALE as `3489af8` (claim 159;
+seed 5000397 replaces 69962521, which no longer caught the late-`Land` bug; an Opus review found it
+also breaks I6 under a one-line `is_fenced` = false mutant of main); SIM-HEAD-UNREADABLE as
+`574457a` (claim 163; review Yes, 25 seed transcripts identical); CLIENT-1013-CAUSE as
+`81b48fb`..`15e6cbc` (claim 171; review Yes; after the fix pass for its should-fixes, the re-check
+asked for one edit, a 152-character test line, made in `15e6cbc` and not re-checked; the daemon logs
+the code and quoted reason of a close that ends a log read early); the CLAIM-LEASE-LAPSE docs as
+`bef0465`..`b1a61bb` (claim 187; review Yes after two passes); SIM-MUTANTS-2 as `6ea5508`..`d9da509`
+(claim 192; review With changes, its one must-fix (the exclusion's false reason) made in `ffa7e9c`
+(landed as `d9da509`), re-check Yes: of the 50 simulator names, 41 killed, 2 no longer generated, 6
+removed with their code, 1 excluded). By pull request, merged by the orchestrator under the standing
+order: #130, SUDO-RS-RUNNER, as `0ed8cb8` (vote 3-0 for, after two fix passes: VOTE-1 Yes on
+`4fb78ca`, VOTE-2 Yes on `a56d0ab`, VOTE-3 Yes with should-fixes on `a56d0ab`, PR text only;
+ubuntu-26.04 ships sudo-rs 0.2.13, through which `kill -KILL -1` fails to parse; the runner and the
+sudoers rule now use `kill -KILL -- -1`; a `sudo-rs:` prefix check that matched nothing real was
+removed; kill's and sudo's messages are shown quoted; Own users runs on ubuntu-24.04 and
+ubuntu-26.04, 8 of 8 real-sudo tests green on both); #131, LANDING-MUTANTS-IN-DIFF, as `7fc1bb2`
+(review Yes after one edit: the per-change mutants also run on pushes to main, which server landings
+make, and push runs are keyed by commit so a newer push no longer cancels an earlier one's run; its
+first push run resolved `before` to `d9da509` and diffed it, a workflow-only change with no Rust to
+mutate, so mutants on a Rust push are not yet seen live). CLAIM-LEASE-LAPSE: the CLI is right; a
+coordinator stall longer than the lease (30 s at the default; one over 20 s can, depending on where
+it falls between beats) or a sleep of the lease less one heartbeat or more (20 s) lapses a connected
+agent's open claims, because every client message runs `expire` before it is routed
+(`src/coordinator.rs:609-614`) and the next heartbeat is stamped after the sleep; the docs say so.
+An adversarial read rejected expiring on silence after a clock jump (a jump cannot be told from an
+idle host) and proposed pausing leases while the machine is suspended, which changes I10: Felix's
+decision (`~/tessel-orch-notes/2026-11-27/lane-a/claim-lease-lapse/PROPOSAL-SUSPEND.md`). Learned:
+`tessel claim` adds to the agent's open claim only when it holds exactly one, so a lane with two
+tasks scatters its scopes over many claims, and `tessel submit` covers only the claim it names
+(`src/coordinator.rs:1425`): the orchestrator consolidated by releasing and re-claiming
+(CLAIM-SCATTER, below); `tessel stop` releases the agent's claims; the pre-push hook measures
+against the daemon's last view of the coordinator's head, stale until its next `Welcome`, `Merged`
+or `BaseMoved` (`tessel-cli/src/state.rs:92`).
+**Earlier (27 November 02:10 UTC):** Main at `9e1bb97`. Felix resumed the build on 26 November after
+a pause from 1 November (his word). The Mac had rebooted about 13 November, so the dogfood server
+was down; the agent tokens had lapsed (about 7 November) and the GitHub token
+"tessel-dogfood-lander" expired on 23 November. Felix asked the orchestrator to unblock itself in
+Claude in Chrome: after his passkey, the orchestrator regenerated the GitHub token with the same
+scopes, valid 30 days (to 26 December 2026), and saved it to `<server dir>/github-token` from the
+clipboard without reading it (the new token reads all four repositories); `setup.sh` minted new
+agent tokens (valid to about 3 December; the server configuration unchanged, `jobs = 2`); the server
+was started at 22:24 UTC with the same build (the `bin/` copies `setup.sh` rewrote have the same
+sha256 as those they replaced). Felix asked whether dogfooding was only for the contest; shown
+section 8 and decision 6 of `PLAN.md` (17 and 20 October, after the contest), he chose to keep it.
+Then, through the server, both approved by the orchestrator on a 3-0 vote: HOST-HARDENING-FOLLOWUPS
+at 00:40 UTC on 27 November as `c88aa40`..`2640eff` (claim 158, fast-forward; CI 45918121207 and the
+Adapter suite 45918121325, its kill -9 loop included, passed on `2640eff`) and SUDO-GATE-FOLLOWUPS
+at 01:17 UTC as `930748f`..`9e1bb97` (claim 157, rebased; notes copied by the daemon). On `9e1bb97`
+main CI (45921694282) and the Adapter suite (45921694273) passed; Own users (45921694300) failed:
+all 7 real-sudo tests (the first left processes in `_tessel-runner` that survived `kill -KILL -1`,
+the rest met them as survivors at `SudoRunner::new`) and the script's `sudo -l -U` check. The cause
+is the runner image, not the landing: `ubuntu-latest` moved from ubuntu-24.04 to ubuntu-26.04
 (41243983653's first attempt on 31 October ran 24.04, its rerun on 27 November 26.04), and the rerun
 of that green run on `80dba09`, before SUDO-GATE-FOLLOWUPS, fails the same way. Ubuntu 26.04 likely
 ships `sudo-rs` as `sudo` (not confirmed from the log). This pull request pins the job to
@@ -290,10 +326,11 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- Lane B: REGRESSION-SEED-69962521-STALE, dispatched 27 November 01:00 UTC from `2640eff` in
-  its HOST-HARDENING-FOLLOWUPS worktree (brief
-  `~/tessel-orch-notes/2026-11-27/lane-b/regression-seed-stale/`; Opus review follows). Lane A:
-  idle.
+- MUTANTS-DOUBT-PACING (lane B, `d9a05dc`..`c8419a3` on `574457a` with a merge of `d9da509`;
+  claims 193 and 194): votes 1 and 2 "Yes" on `72fe146`; vote 3's re-check of `c8419a3` (two
+  stage tests a third fix pass added) runs (`vote-mutants-doubt-pacing/`).
+- RACE-TEXTS-SHARED (lane A, `8b26573`..`cb9f8e0`; claim 195): a 3-voter vote runs
+  (`vote-race-texts-shared/`); the gate is green on `cb9f8e0` (2536 passed).
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -342,33 +379,34 @@ required checks, the repository admin role as bypass; always). Proven first on
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
 **Waiting on Felix** (the tokens were renewed, the build cap lowered and ruleset step 3 made, STATE
-above): a second reviewer, to decide claim 153, which now also blocks lanes (the coordinator denied
-SUDO-GATE-FOLLOWUPS' `docs/dogfood.md` claim, by lane A's report); RUNNER-OWN-UID's sudo steps;
-whether the simulator gets a check that the merge path drains (a run that never finishes its work
-fails; most of the 50 simulator mutants survive for want of one; scope, rule 10); whether to define
-GA (no phase is called that; the nearest is Phase 3's end) as a proposed PLAN change; deleting
-branch `state-1101-2`; whether CLAUDE.md rule 1 should also name a never-logged live notice an older
-daemon can skip and stay correct as additive (invariant 13 since `f1ea1f6`); the plan's rule (d)
-(`docs/proposals/phase-1.md`), which says a build bumps `state_version` "only if the old binary can
-still read the new state", a case the store's `refuse_unknown` rules out (#125 follows the code); a
-GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the
-dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the
-sandbox trunk now that lanes push branches; the suggested patch to his push hook that exempts only a
-URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`). The second reviewer
-goes in the server's `reviewers` (only `orchestrator` now).
+above): whether leases pause while the machine is suspended (CLAIM-LEASE-LAPSE, PROPOSAL-SUSPEND.md
+above; it changes I10); a second reviewer, to decide claim 153, which now also blocks lanes (the
+coordinator denied SUDO-GATE-FOLLOWUPS' `docs/dogfood.md` claim, by lane A's report);
+RUNNER-OWN-UID's sudo steps; whether the simulator gets a check that the merge path drains (a run
+that never finishes its work fails; most of the 50 simulator mutants survive for want of one; scope,
+rule 10); whether to define GA (no phase is called that; the nearest is Phase 3's end) as a proposed
+PLAN change; deleting branch `state-1101-2`; whether CLAUDE.md rule 1 should also name a
+never-logged live notice an older daemon can skip and stay correct as additive (invariant 13 since
+`f1ea1f6`); the plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps
+`state_version` "only if the old binary can still read the new state", a case the store's
+`refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
+`tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
+P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
+lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
+itself (`~/tessel-dogfood/push-hook-resolved-url.patch`). The second reviewer goes in the server's
+`reviewers` (only `orchestrator` now).
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** SUDO-RS-RUNNER (lane A), with this pull request's pin meant to keep main green meanwhile
-(once a run on it is green); REGRESSION-SEED-69962521-STALE (lane B, running), then
-SIM-HEAD-UNREADABLE (lane B); MUTANTS-DOUBT-PACING (lane A, merge path) and SIM-MUTANTS-2, which
-turn the Nightly green; the dogfood.md steps of SUDO-GATE-FOLLOWUPS once claim 153 is decided; then
-RESOLVE-RUNBOOK-NITS (also `docs/dogfood.md`), RACE-TEXTS-SHARED, CLAIM-LEASE-LAPSE,
-CLIENT-1013-CAUSE, LANDING-MUTANTS-IN-DIFF and HOST-SQLITE-RETRY-BACKOFF; then P1-ONE-BATCH (it
-flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a world-writable
-socket; he closes it before the accounts move.
+**Next:** MUTANTS-DOUBT-PACING and RACE-TEXTS-SHARED land on their votes (the first should turn the
+Nightly green: it holds the last 9 of its 59 names, and its push run is the first live check of
+mutants on a landing); then HOST-SQLITE-RETRY-BACKOFF, SIM-FENCED-RULE-CHECKER,
+MUTANTS-SERVER-CLI-IN-DIFF and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the
+dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
+P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on
+a world-writable socket; he closes it before the accounts move.
 LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
@@ -1606,35 +1644,38 @@ Lane B:
   and `tessel-runner/tests/runner/running.rs` `the_command_reads_a_closed_stdin` (a 3 s bound; it
   failed a landing's test run). Both pass in about 1 s at low load. Make the bounds about progress
   (an event or a deadline the test controls), not wall-clock under an unknown load.
-- [ ] **REGRESSION-SEED-69962521-STALE** — S, lane B, after SIM-R30-MODEL (it edits the same
-  files); `tests/simulator-regressions.txt`, `src/sim`; from SIM-R30-MODEL's REVIEW-1 (should-fix
-  2, `~/tessel-orch-notes/2026-10-31/lane-b/sim-r30-model/`). Seed 69962521 passes on `6dccb3e`,
-  where the late-`Land` bug it was recorded for (CORE-LATE-LAND) was still present, so it no
-  longer catches that bug. With the bug restored (`src/coordinator/` as of `6dccb3e`, keeping
-  main's `src/sim/merge_check.rs`, since `6dccb3e`'s checker has the seed-2796343632 false
-  positive; or a mutant that ends the doubt on `CandidateMissing`), sweep for a seed that breaks
-  I6, replace 69962521 with it and record the finding. Done: the new seed fails with the bug
-  restored and passes on main.
-- [ ] **SIM-HEAD-UNREADABLE** — S, lane B, after REGRESSION-SEED-69962521-STALE (both edit
-  `src/sim`); from HEAD-ADOPTED-FOLLOWUPS' vote (VOTE-1 should-fix 2), deferred by SIM-R30-MODEL
-  until HEAD-ADOPTED-FOLLOWUPS landed (it has). The simulator never sets
-  `HostConfig::trunk_head_unreadable`, so a port that reads no heads has no simulator coverage: add
-  traffic or a scripted run with it set, checked by the I-invariants, without changing the seeded
-  runs of the recorded regression seeds. Done: a simulator test with the flag set, failing when
-  the core's unreadable-port release is removed.
-- [ ] **CLIENT-1013-CAUSE** — S, lane A (the CLI); from P1-HOST-HARDENING's votes (first vote
-  VOTE-3 S1, re-vote VOTE-3 S4), moved out of SIM-R30-MODEL on 31 October because the code is
-  outside `src/sim`: the daemon logs the cause of a 1013 close in `read_log`
-  (`tessel-cli/src/daemon.rs` ~2576; the swarm's `tessel-swarm/src/conn.rs` ~240-245 already
-  reports "code N: reason"). Done: `daemon.log` names a 1013 close and its reason, with a test
-  that fails without it.
-- [ ] **CLAIM-LEASE-LAPSE** — S, lane B, from 30-31 October: lane A's claim 137 lapsed
-  (`lease_expired` in its inbox) while its daemon was running and online and its agent idle, and the
-  pre-push hook then refused the push; lane A's next agent found claim 138 gone too and took 139
-  (its report). Claim 125, by contrast, kept its lease for hours while its agent was stopped
-  (submitted and held for review then). Find out whether the daemon stops renewing an idle claim,
-  whether the lease is meant to end then (the skill and `docs/configuration.md` say what), and fix
-  the code or the docs; a test either way.
+- [x] **REGRESSION-SEED-69962521-STALE** (`3489af8`, landed by the server 27 November; Opus review
+  Yes) — S, lane B, after SIM-R30-MODEL (it edits the same files);
+  `tests/simulator-regressions.txt`, `src/sim`; from SIM-R30-MODEL's REVIEW-1 (should-fix 2,
+  `~/tessel-orch-notes/2026-10-31/lane-b/sim-r30-model/`). Seed 69962521 passes on `6dccb3e`, where
+  the late-`Land` bug it was recorded for (CORE-LATE-LAND) was still present, so it no longer
+  catches that bug. With the bug restored (`src/coordinator/` as of `6dccb3e`, keeping main's
+  `src/sim/merge_check.rs`, since `6dccb3e`'s checker has the seed-2796343632 false positive; or a
+  mutant that ends the doubt on `CandidateMissing`), sweep for a seed that breaks I6, replace
+  69962521 with it and record the finding. Done: the new seed fails with the bug restored and passes
+  on main.
+- [x] **SIM-HEAD-UNREADABLE** (`574457a`, landed by the server 27 November; Opus review Yes) — S,
+  lane B, after REGRESSION-SEED-69962521-STALE (both edit `src/sim`); from HEAD-ADOPTED-FOLLOWUPS'
+  vote (VOTE-1 should-fix 2), deferred by SIM-R30-MODEL until HEAD-ADOPTED-FOLLOWUPS landed (it
+  has). The simulator never sets `HostConfig::trunk_head_unreadable`, so a port that reads no heads
+  has no simulator coverage: add traffic or a scripted run with it set, checked by the I-invariants,
+  without changing the seeded runs of the recorded regression seeds. Done: a simulator test with the
+  flag set, failing when the core's unreadable-port release is removed.
+- [x] **CLIENT-1013-CAUSE** (`81b48fb`..`15e6cbc`, landed by the server 27 November; Opus review
+  Yes) — S, lane A (the CLI); from P1-HOST-HARDENING's votes (first vote VOTE-3 S1, re-vote VOTE-3
+  S4), moved out of SIM-R30-MODEL on 31 October because the code is outside `src/sim`: the daemon
+  logs the cause of a 1013 close in `read_log` (`tessel-cli/src/daemon.rs` ~2576; the swarm's
+  `tessel-swarm/src/conn.rs` ~240-245 already reports "code N: reason"). Done: `daemon.log` names a
+  1013 close and its reason, with a test that fails without it.
+- [ ] **CLAIM-LEASE-LAPSE** (docs `bef0465`..`b1a61bb`, landed 27 November; the mechanism is found,
+  claim 137's own lapse is not proven; the code fix waits for Felix's decision on pausing leases
+  while suspended) — S, lane B, from 30-31 October: lane A's claim 137 lapsed (`lease_expired` in
+  its inbox) while its daemon was running and online and its agent idle, and the pre-push hook then
+  refused the push; lane A's next agent found claim 138 gone too and took 139 (its report). Claim
+  125, by contrast, kept its lease for hours while its agent was stopped (submitted and held for
+  review then). Find out whether the daemon stops renewing an idle claim, whether the lease is meant
+  to end then (the skill and `docs/configuration.md` say what), and fix the code or the docs; a test
+  either way.
 - [x] **SUDO-STOP-RUN-RACE** (`b5a520d`..`80dba09`, landed by the server 31 October; Opus review
   "With changes", then "Yes"; a vote, 3-0 "Yes with should-fixes", which are SUDO-GATE-FOLLOWUPS) —
   S, lane B; from RUNNER-TIMING-FLAKES' REVIEW-1 ("For the orchestrator"), resting on it and the
@@ -1646,9 +1687,8 @@ Lane B:
   running kill rounds while waiting within `EXIT_GRACE`; Done: a test with the slow-start stub that
   the gate is free afterwards.
 - [ ] **SUDO-GATE-FOLLOWUPS** (code `930748f`..`9e1bb97`, landed by the server 27 November; vote 3-0
-  "Yes" after one fix pass; left: the `docs/dogfood.md` steps, blocked by claim 153, and a green Own
-  users on main (the real-account case has run but not yet passed on any image since the landing:
-  45921694300 failed on ubuntu-26.04, see SUDO-RS-RUNNER); tick after both. Also left from the vote,
+  "Yes" after one fix pass; left: the `docs/dogfood.md` steps, blocked by claim 153 (Own users
+  passed on both images on #130's merge, 45938317308); tick after them. Also left from the vote,
   small: a test driving a read error through `output_bounded`; the real-account comment names the
   wrong stub test; a reap after a failed wait may signal a reused pid if anything ever reaps
   children it did not start) — S, lane B, merge path (`tessel-server/src/landing/`: voted); from
@@ -1657,15 +1697,13 @@ Lane B:
   `tessel-server/src/landing/sudo.rs`: a `try_wait` error makes `wait_bounded` return at once, so
   `stop_run` runs `kill_all` (a `sudo` and a `ps`) back to back for `EXIT_GRACE` and then logs the
   grace-close line, which is wrong for it (the `run_locked` error path, ~298); close the gate and
-  log
-  the error at once on that error, with a test (VOTE-1). `kill_once` and `survivors` call
-  `Command::output()`
-  with no timeout, though the module doc says every wait is bounded: bound them or say so
-  (VOTE-3). The four lines that close the gate are worded differently and none names the account:
-  one wording, naming the account and "until a restart" (VOTE-3). A test for the grace-close log
-  (a shared `OnceLock` subscriber in `tessel-server/tests/sudo_runner.rs`; VOTE-2). A
-  `sudo_runner_real.rs` case: a cancel on the first poll after the spawn, which real `sudo` usually
-  meets before it switches; the gate frees and the account is empty (VOTE-1, VOTE-2). Docs:
+  log the error at once on that error, with a test (VOTE-1). `kill_once` and `survivors` call
+  `Command::output()` with no timeout, though the module doc says every wait is bounded: bound them
+  or say so (VOTE-3). The four lines that close the gate are worded differently and none names the
+  account: one wording, naming the account and "until a restart" (VOTE-3). A test for the
+  grace-close log (a shared `OnceLock` subscriber in `tessel-server/tests/sudo_runner.rs`; VOTE-2).
+  A `sudo_runner_real.rs` case: a cancel on the first poll after the spawn, which real `sudo`
+  usually meets before it switches; the gate frees and the account is empty (VOTE-1, VOTE-2). Docs:
   `docs/configuration.md` (~428) lists a `sudo` alive after the grace as a cause of a closed gate
   and says the gate stays shut until a restart; `docs/dogfood.md` gets the operator's steps for a
   closed gate (VOTE-3). Done: a test for each code change, and the docs.
@@ -1679,31 +1717,55 @@ Lane B:
   handling) and the unreachable `wait_in_doubt` branch of `reconcile_refused_prepare`; a host test
   of the "retrying (attempt N of 3)" line (`Pending::attempts`). Done: the 9 core and host names are
   no longer missed and the baseline does not grow.
-- [ ] **SIM-MUTANTS-2** — M, lane B (`src/sim`), after SIM-HEAD-UNREADABLE; from the same triage.
-  Tests for the 42 simulator mutants that are real gaps: `Lander` unit tests (`test`'s flaky
-  flip, `fate_of`'s rate window, `reconcile`'s run of `Unknown`s, `plan`'s counters), a
-  `stored_difference` unit test, scripted I12, I6 and `expire_call` cases, the harness arms'
-  assertions, a golden `candidate_head`; delete `Sim::epoch` (no callers) and `fate_of`'s redundant
-  guard; exclude in `.cargo/mutants.toml` only the 8 names whose criterion SIM-MUTANTS set holds
-  (the fault dice and `note_late_land`), each with its reason. Claims `--mode edit-signature` on
-  `src/sim/driver.rs` (`Sim::epoch` goes), so the submission is held for review. Done: the
-  Nightly's full mutants job passes its baseline.
-- [ ] **LANDING-MUTANTS-IN-DIFF** — S, lane B (`.github/workflows/`); from the triage. The
-  per-change mutants job runs only on pull requests (`ci.yml:205`), so server landings get no
-  mutant check before the Nightly: run it on a push to main too (or in the landing check). Done: a
-  push to main runs the `--in-diff` mutants of the pushed range.
+- [x] **SIM-MUTANTS-2** (`6ea5508`..`d9da509`, landed by the server 27 November; Opus review With
+  changes, its must-fix made in `ffa7e9c` (landed as `d9da509`), re-check Yes; the Done's Nightly
+  pass is not yet seen: it also needs MUTANTS-DOUBT-PACING's 9 names) — M, lane B (`src/sim`), after
+  SIM-HEAD-UNREADABLE; from the same triage. Tests for the 42 simulator mutants that are real gaps:
+  `Lander` unit tests (`test`'s flaky flip, `fate_of`'s rate window, `reconcile`'s run of
+  `Unknown`s, `plan`'s counters), a `stored_difference` unit test, scripted I12, I6 and
+  `expire_call` cases, the harness arms' assertions, a golden `candidate_head`; delete `Sim::epoch`
+  (no callers) and `fate_of`'s redundant guard; exclude in `.cargo/mutants.toml` only the 8 names
+  whose criterion SIM-MUTANTS set holds (the fault dice and `note_late_land`), each with its reason.
+  Claims `--mode edit-signature` on `src/sim/driver.rs` (`Sim::epoch` goes), so the submission is
+  held for review. Done: the Nightly's full mutants job passes its baseline.
+- [x] **LANDING-MUTANTS-IN-DIFF** (#131, merged 27 November as `7fc1bb2`; Opus review Yes;
+  tessel-server and tessel-cli not added: MUTANTS-SERVER-CLI-IN-DIFF) — S, lane B
+  (`.github/workflows/`); from the triage. The per-change mutants job runs only on pull requests
+  (`ci.yml:205`), so server landings get no mutant check before the Nightly: run it on a push to
+  main too (or in the landing check). Done: a push to main runs the `--in-diff` mutants of the
+  pushed range.
 - [ ] **HOST-SQLITE-RETRY-BACKOFF** — S, lane B; from HOST-HARDENING-FOLLOWUPS (its row's item,
   dropped by the brief, unassessed). The persist retry repeats at once; decide, with a test,
   whether real SQLite failures (busy, disk full, I/O) need a backoff.
-- [ ] **SUDO-RS-RUNNER** — M, lane A, merge path if `tessel-server/src/landing/` changes; from Own
-  users 45921694300 and the rerun of 41243983653 (27 November). On ubuntu-26.04 the account's
-  processes survive `kill -KILL -1` after a cancelled run and the script's `sudo -l -U` check fails,
-  on code that passed there on 24.04 (`80dba09`, 31 October); anyone running the accounts on Ubuntu
-  26.04 likely meets the same. Find which `sudo` the image ships and why (a diagnostic run that
-  dumps `ps -o pid,ppid,stat,comm -U _tessel-runner` and `sudo -V`), make `SudoRunner` and
-  `scripts/ci/own-users-linux.sh` work with it, add a stub that forks the runner under a parent
-  `sudo` (every stub now `exec`s, which hides parent and child), and move the Own users job back to
-  `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green on ubuntu-26.04.
+- [x] **SUDO-RS-RUNNER** (#130, merged 27 November as `0ed8cb8`; vote 3-0 for, after two fix passes;
+  VOTE-3's last vote Yes with should-fixes, PR text only) — M, lane A, merge path if
+  `tessel-server/src/landing/` changes; from Own users 45921694300 and the rerun of 41243983653 (27
+  November). On ubuntu-26.04 the account's processes survive `kill -KILL -1` after a cancelled run
+  and the script's `sudo -l -U` check fails, on code that passed there on 24.04 (`80dba09`, 31
+  October); anyone running the accounts on Ubuntu 26.04 likely meets the same. Find which `sudo` the
+  image ships and why (a diagnostic run that dumps `ps -o pid,ppid,stat,comm -U _tessel-runner` and
+  `sudo -V`), make `SudoRunner` and `scripts/ci/own-users-linux.sh` work with it, add a stub that
+  forks the runner under a parent `sudo` (every stub now `exec`s, which hides parent and child), and
+  move the Own users job back to `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green
+  on ubuntu-26.04.
+- [ ] **MUTANTS-SERVER-CLI-IN-DIFF** — S, lane A (`.github/workflows/`, by pull request); from
+  LANDING-MUTANTS-IN-DIFF. The per-change mutants mutate only tessel-coordinator and tessel-lander,
+  so tessel-server and tessel-cli changes are never mutated (PR #130's VOTE-1). Their tests take
+  about 75 s and 113 s per mutant, too slow for the current four 30-minute shards: give them shards
+  of their own, or another bound. Done: a change to either crate is mutated on its pull request or
+  push.
+- [ ] **SIM-FENCED-RULE-CHECKER** — S, lane B (`src/sim`); from MUTANTS-DOUBT-PACING's VOTE-2. The
+  removals there rest on a rule (a fenced claim's merge in flight is that claim's, with
+  `doubt_since_ms` set) that a `debug_assert!` and a stage walk now check; add it to the
+  simulator's checkers. Done: a variant that breaks the rule fails the checker.
+- [ ] **CLAIM-SCATTER** — S, lane A (the CLI); found 27 November. `tessel claim` adds scopes to the
+  agent's open claim only when it holds exactly one; a lane holding two tasks' claims gets a new
+  claim per `tessel claim`, and `tessel submit --claim` covers only the claim it names
+  (`src/coordinator.rs:1425`), so the orchestrator had to release and re-claim to submit. Let a
+  claim be extended by number (`tessel claim --into <claim>`) or submit cover several claims; decide
+  with a test. Also make the skill's "To change it, `tessel stop`, then `start`" (SKILL.md:48) say
+  that this releases the claims. Submit covering several claims changes `Submit`, which names one
+  claim: additive under rule 1, or ask Felix.
 - [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
   the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
   `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
