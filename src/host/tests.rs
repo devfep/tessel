@@ -3574,6 +3574,67 @@ fn host_an_event_the_replay_read_and_the_buffer_both_hold_is_sent_once() {
     );
 }
 
+/// The outputs of a step without its replay reads, so the test answers the pages by hand.
+fn without_reads(outputs: Vec<Output>) -> Vec<Output> {
+    outputs
+        .into_iter()
+        .filter(|output| !matches!(output, Output::ReadEvents { .. }))
+        .collect()
+}
+
+/// The contract's own case (`Output::Commit` in `src/host/mod.rs`): a commit asked before the last
+/// page's read is answered before that page and was stored while the read ran, so the page may
+/// lack it, and the replay's buffer is the only thing that can send it. Every answer comes in the
+/// order it was asked. The commit's event (seq 151) is newer than the last page sent, so
+/// `buffer_for_replays` must release it once after the pages.
+#[test]
+fn host_a_commit_asked_before_the_last_read_and_missing_from_its_page_is_sent_once_after_it() {
+    let mut kit = kit();
+    seed_log(&mut kit, 150);
+    let a1 = kit.open("a1");
+    kit.send(a1, &hello("a1"));
+    kit.settle();
+    let watcher = kit.open("w");
+    let other = kit.open("a2");
+    let now_ms = kit.now_ms();
+    let watch = serde_json::to_string(&ClientMsg::Watch { from_seq: 0 }).unwrap();
+    let outputs = kit.host.step(Input::Frame {
+        now_ms,
+        sock: watcher,
+        text: watch,
+    });
+    kit.execute(without_reads(outputs));
+    let mark = kit.history().len();
+    kit.send(other, &hello("a2"));
+    assert_eq!(labels_since(&kit, mark).first().copied(), Some("Commit"));
+    let first: Vec<Event> = (0..100).map(old_event).collect();
+    let page = Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: first,
+        done: false,
+    };
+    let outputs = kit.host.step(page);
+    kit.execute(without_reads(outputs));
+    assert!(
+        kit.deliver_next(),
+        "the commit asked before the last read is answered first"
+    );
+    let last: Vec<Event> = (100..151).map(old_event).collect();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: last,
+        done: false,
+    });
+    kit.settle();
+    assert_eq!(
+        replayed_seqs(&kit, watcher),
+        (0..=151).collect::<Vec<_>>(),
+        "no event twice, none missed"
+    );
+}
+
 #[test]
 fn host_replays_that_run_together_each_get_the_whole_log_once() {
     let mut kit = kit();
