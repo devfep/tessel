@@ -202,7 +202,6 @@ jobs:
 
   mutants:
     name: Slow lane, mutants shard ${{ matrix.shard }}
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -217,10 +216,26 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283  # v2.87.29
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.148
-      - name: Diff against the base branch
+      # A pull request is diffed against its base. A push to main (a server landing, or a merge)
+      # is diffed over the range it added, `before` to the new head. A push with no usable
+      # `before` (a new ref, whose `before` is all zeros, or a forced push that dropped it) has no
+      # range: the step says so and leaves the diff empty, so nothing is mutated, never the tree.
+      - name: Diff the change
         env:
+          EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
-        run: git diff "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/pr.diff"
+          BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            git diff "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/pr.diff"
+          elif [ "$BEFORE" = "0000000000000000000000000000000000000000" ] ||
+            ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "::warning::No usable base for this push (before is $BEFORE): no mutants run."
+            : > "$RUNNER_TEMP/pr.diff"
+          else
+            git diff "$BEFORE" "$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
+          fi
       - name: Mutants on changed lines
         env:
           SHARD: ${{ matrix.shard }}
@@ -253,7 +268,7 @@ jobs:
 
   mutants-gate:
     name: Slow lane, mutants on changed lines
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    if: ${{ always() }}
     needs: mutants
     runs-on: ubuntu-latest
     timeout-minutes: 5
