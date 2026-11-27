@@ -3511,9 +3511,10 @@ async fn claim_into_adds_the_scopes_to_the_named_claim_when_several_are_open() -
     std::fs::write(a1.root().join("src/c.rs"), "pub fn c() {}\n")?;
     let ids = claim_ids(&a1)?;
     assert_eq!(ids.len(), 2);
-    let (first, second) = (ids[0], ids[1]);
+    // The second claim is named, so a mutant that amends the first open claim is caught.
+    let (other, first) = (ids[0], ids[1]);
     let fence_before = claim_of(&a1, first)?["fence"].as_u64().context("fence")?;
-    let other_before = claim_of(&a1, second)?;
+    let other_before = claim_of(&a1, other)?;
 
     let done = a1.tessel(&["claim", "--into", &first.to_string(), "src/c.rs"])?;
     assert_eq!(done.code, 0, "{}", done.all());
@@ -3522,7 +3523,7 @@ async fn claim_into_adds_the_scopes_to_the_named_claim_when_several_are_open() -
     assert!(grown["scopes"].to_string().contains("src/c.rs"), "{grown}");
     assert!(grown["fence"].as_u64().context("fence")? > fence_before);
     assert_eq!(
-        claim_of(&a1, second)?,
+        claim_of(&a1, other)?,
         other_before,
         "the other claim is untouched"
     );
@@ -3605,5 +3606,26 @@ async fn claim_into_cannot_be_combined_with_flags_an_amend_cannot_carry() -> Res
         );
     }
     assert_eq!(sent_claims_and_amends(&fake, "a1"), sent);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_into_a_race_entry_is_refused_and_sends_nothing() -> Result<()> {
+    let (fake, _a1, a2, r1) = race_world().await?;
+    let race = open_race(&r1, "1", "human_pick")?;
+    a2.start("race for b")?;
+    assert_eq!(a2.tessel(&["race", "join", &race.to_string()])?.code, 0);
+    let entry = claim_ids(&a2)?[0];
+    std::fs::write(a2.root().join("src/c.rs"), "pub fn c() {}\n")?;
+    let sent = sent_claims_and_amends(&fake, "a2");
+    let refused = a2.tessel(&["claim", "--into", &entry.to_string(), "src/c.rs"])?;
+    assert_eq!(refused.code, 1, "{}", refused.all());
+    let message = format!("claim {entry} is a race entry");
+    assert!(refused.all().contains(&message), "{}", refused.all());
+    assert_eq!(
+        sent_claims_and_amends(&fake, "a2"),
+        sent,
+        "a message went out"
+    );
     Ok(())
 }

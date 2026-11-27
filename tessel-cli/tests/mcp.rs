@@ -350,3 +350,46 @@ async fn a_refused_review_and_a_claim_without_a_daemon_are_error_results() -> Re
     }
     session.finish()
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_into_with_a_flag_an_amend_cannot_carry_is_refused_and_sends_nothing() -> Result<()> {
+    let (fake, a1, _a2) = world().await?;
+    let mut session = Session::open(&a1)?;
+    session.call("tessel_start", json!({ "summary": "via mcp" }))?;
+    let first = session.call("tessel_claim", json!({ "scopes": ["src/a.rs"] }))?;
+    assert!(!is_error(&first), "{first}");
+    let id = a1.status()?["state"]["claims"][0]["claim"]
+        .as_u64()
+        .context("claim id")?;
+    let sent = |fake: &Fake| {
+        fake.received("a1")
+            .iter()
+            .filter(|msg| {
+                matches!(
+                    msg,
+                    tessel_coordinator::protocol::ClientMsg::Claim { .. }
+                        | tessel_coordinator::protocol::ClientMsg::Amend { .. }
+                )
+            })
+            .count()
+    };
+    let before = sent(&fake);
+    for (flag, value) in [
+        ("assume", json!(["x"])),
+        ("wait", json!(true)),
+        ("new", json!(true)),
+    ] {
+        let mut args = json!({ "scopes": ["src/b.rs"], "into": id });
+        args[flag] = value;
+        let refused = session.call("tessel_claim", args)?;
+        assert!(is_error(&refused), "{flag}: {refused}");
+        let text = text_of(&refused);
+        assert!(
+            text.contains("into") && text.contains(flag),
+            "{flag}: {text}"
+        );
+    }
+    assert_eq!(sent(&fake), before, "a message went out");
+    assert_eq!(a1.held_claims()?, 1);
+    session.finish()
+}
