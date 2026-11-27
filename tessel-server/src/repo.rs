@@ -912,19 +912,6 @@ mod tests {
             .handle
             .frame(watcher, serde_json::to_string(&watch).unwrap())
             .await;
-        let (agent, mut wire) = running
-            .handle
-            .open(AgentId("a1".to_string()))
-            .await
-            .unwrap();
-        running.handle.frame(agent, hello_text()).await;
-        let sent = tokio::time::timeout(Duration::from_secs(30), wire.recv())
-            .await
-            .expect("the repo stopped serving while a watcher's wire was full");
-        assert!(
-            matches!(&sent, Some(Wire::Text(text)) if text.contains("welcome")),
-            "{sent:?}"
-        );
         // Nothing has read the watcher's wire: the channel closes because its sender was dropped.
         let dropped = async {
             while !unread.is_closed() {
@@ -933,6 +920,21 @@ mod tests {
         };
         let dropped = tokio::time::timeout(Duration::from_secs(30), dropped).await;
         assert!(dropped.is_ok(), "the unread wire was never dropped");
+        // Only now does the second socket say hello: the queue filled and the socket was dropped,
+        // and the repo, a blocked send or close aside, serves it.
+        let (agent, mut wire) = running
+            .handle
+            .open(AgentId("a1".to_string()))
+            .await
+            .unwrap();
+        running.handle.frame(agent, hello_text()).await;
+        let sent = tokio::time::timeout(Duration::from_secs(30), wire.recv())
+            .await
+            .expect("the repo stopped serving after a watcher's wire was full");
+        assert!(
+            matches!(&sent, Some(Wire::Text(text)) if text.contains("welcome")),
+            "{sent:?}"
+        );
         let mut queued = 0_usize;
         while unread.recv().await.is_some() {
             queued += 1;

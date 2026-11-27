@@ -534,6 +534,14 @@ async fn a_store_that_rejects_writes_fails_the_commit_three_times_and_serves_aga
         failed.count() >= 3,
         "every attempt is logged with the repo: {lines:?}"
     );
+    // One batch: the host retries it up to MAX_COMMIT_ATTEMPTS (3) times in all, and says which.
+    for attempt in [2, 3] {
+        let wanted = format!("retrying (attempt {attempt} of 3)");
+        assert!(
+            lines.iter().any(|line| line.contains(&wanted)),
+            "the batch is tried three times in all, not more or fewer: {lines:?}"
+        );
+    }
     assert!(
         lines.iter().any(|line| line.contains("injected full")),
         "and says why: {lines:?}"
