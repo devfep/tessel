@@ -17,28 +17,28 @@ also breaks I6 under a one-line `is_fenced` = false mutant of main); SIM-HEAD-UN
 asked for one edit, a 152-character test line, made in `15e6cbc` and not re-checked; the daemon logs
 the code and quoted reason of a close that ends a log read early); the CLAIM-LEASE-LAPSE docs as
 `bef0465`..`b1a61bb` (claim 187; review Yes after two passes); SIM-MUTANTS-2 as `6ea5508`..`d9da509`
-(claim 192; review With changes, its one must-fix (the exclusion's false reason) made in `ffa7e9c`,
-re-check Yes: of the 50 simulator names, 41 killed, 2 no longer generated, 6 removed with their
-code, 1 excluded). By pull request, merged by the orchestrator under the standing order: #130,
-SUDO-RS-RUNNER, as `0ed8cb8` (vote 3-0 for, after two fix passes: VOTE-1 Yes on `4fb78ca`, VOTE-2
-Yes on `a56d0ab`, VOTE-3 Yes with should-fixes on `a56d0ab`, PR text only; ubuntu-26.04 ships
-sudo-rs 0.2.13, through which `kill -KILL -1` fails to parse; the runner and the sudoers rule now
-use `kill -KILL -- -1`; a `sudo-rs:` prefix check that matched nothing real was removed; kill's and
-sudo's messages are shown quoted; Own users runs on ubuntu-24.04 and ubuntu-26.04, 8 of 8 real-sudo
-tests green on both); #131, LANDING-MUTANTS-IN-DIFF, as `7fc1bb2` (review Yes after one edit: the
-per-change mutants also run on pushes to main, which server landings make, and push runs are keyed
-by commit so a newer push no longer cancels an earlier one's run; its first push run resolved
-`before` to `d9da509` and diffed it, a workflow-only change with no Rust to mutate, so mutants on a
-Rust push are not yet seen live). CLAIM-LEASE-LAPSE: the CLI is right; a coordinator stall longer
-than the lease (30 s at the default; one over 20 s can, depending on where it falls between beats)
-or a sleep of the lease less one heartbeat or more (20 s) lapses a connected agent's open claims,
-because every client message runs `expire` before it is routed (`src/coordinator.rs:609-614`) and
-the next heartbeat is stamped after the sleep; the docs say so. An adversarial read rejected
-expiring on silence after a clock jump (a jump cannot be told from an idle host) and proposed
-pausing leases while the machine is suspended, which changes I10: Felix's decision
-(`~/tessel-orch-notes/2026-11-27/lane-a/claim-lease-lapse/PROPOSAL-SUSPEND.md`). Learned: `tessel
-claim` adds to the agent's open claim only when it holds exactly one, so a lane with two tasks
-scatters its scopes over many claims, and `tessel submit` covers only the claim it names
+(claim 192; review With changes, its one must-fix (the exclusion's false reason) made in `ffa7e9c`
+(landed as `d9da509`), re-check Yes: of the 50 simulator names, 41 killed, 2 no longer generated, 6
+removed with their code, 1 excluded). By pull request, merged by the orchestrator under the standing
+order: #130, SUDO-RS-RUNNER, as `0ed8cb8` (vote 3-0 for, after two fix passes: VOTE-1 Yes on
+`4fb78ca`, VOTE-2 Yes on `a56d0ab`, VOTE-3 Yes with should-fixes on `a56d0ab`, PR text only;
+ubuntu-26.04 ships sudo-rs 0.2.13, through which `kill -KILL -1` fails to parse; the runner and the
+sudoers rule now use `kill -KILL -- -1`; a `sudo-rs:` prefix check that matched nothing real was
+removed; kill's and sudo's messages are shown quoted; Own users runs on ubuntu-24.04 and
+ubuntu-26.04, 8 of 8 real-sudo tests green on both); #131, LANDING-MUTANTS-IN-DIFF, as `7fc1bb2`
+(review Yes after one edit: the per-change mutants also run on pushes to main, which server landings
+make, and push runs are keyed by commit so a newer push no longer cancels an earlier one's run; its
+first push run resolved `before` to `d9da509` and diffed it, a workflow-only change with no Rust to
+mutate, so mutants on a Rust push are not yet seen live). CLAIM-LEASE-LAPSE: the CLI is right; a
+coordinator stall longer than the lease (30 s at the default; one over 20 s can, depending on where
+it falls between beats) or a sleep of the lease less one heartbeat or more (20 s) lapses a connected
+agent's open claims, because every client message runs `expire` before it is routed
+(`src/coordinator.rs:609-614`) and the next heartbeat is stamped after the sleep; the docs say so.
+An adversarial read rejected expiring on silence after a clock jump (a jump cannot be told from an
+idle host) and proposed pausing leases while the machine is suspended, which changes I10: Felix's
+decision (`~/tessel-orch-notes/2026-11-27/lane-a/claim-lease-lapse/PROPOSAL-SUSPEND.md`). Learned:
+`tessel claim` adds to the agent's open claim only when it holds exactly one, so a lane with two
+tasks scatters its scopes over many claims, and `tessel submit` covers only the claim it names
 (`src/coordinator.rs:1425`): the orchestrator consolidated by releasing and re-claiming
 (CLAIM-SCATTER, below); `tessel stop` releases the agent's claims; the pre-push hook measures
 against the daemon's last view of the coordinator's head, stale until its next `Welcome`, `Merged`
@@ -1718,16 +1718,16 @@ Lane B:
   of the "retrying (attempt N of 3)" line (`Pending::attempts`). Done: the 9 core and host names are
   no longer missed and the baseline does not grow.
 - [x] **SIM-MUTANTS-2** (`6ea5508`..`d9da509`, landed by the server 27 November; Opus review With
-  changes, its must-fix made in `ffa7e9c`, re-check Yes; the Done's Nightly pass is not yet seen: it
-  also needs MUTANTS-DOUBT-PACING's 9 names) — M, lane B (`src/sim`), after SIM-HEAD-UNREADABLE;
-  from the same triage. Tests for the 42 simulator mutants that are real gaps: `Lander` unit tests
-  (`test`'s flaky flip, `fate_of`'s rate window, `reconcile`'s run of `Unknown`s, `plan`'s
-  counters), a `stored_difference` unit test, scripted I12, I6 and `expire_call` cases, the harness
-  arms' assertions, a golden `candidate_head`; delete `Sim::epoch` (no callers) and `fate_of`'s
-  redundant guard; exclude in `.cargo/mutants.toml` only the 8 names whose criterion SIM-MUTANTS set
-  holds (the fault dice and `note_late_land`), each with its reason. Claims `--mode edit-signature`
-  on `src/sim/driver.rs` (`Sim::epoch` goes), so the submission is held for review. Done: the
-  Nightly's full mutants job passes its baseline.
+  changes, its must-fix made in `ffa7e9c` (landed as `d9da509`), re-check Yes; the Done's Nightly
+  pass is not yet seen: it also needs MUTANTS-DOUBT-PACING's 9 names) — M, lane B (`src/sim`), after
+  SIM-HEAD-UNREADABLE; from the same triage. Tests for the 42 simulator mutants that are real gaps:
+  `Lander` unit tests (`test`'s flaky flip, `fate_of`'s rate window, `reconcile`'s run of
+  `Unknown`s, `plan`'s counters), a `stored_difference` unit test, scripted I12, I6 and
+  `expire_call` cases, the harness arms' assertions, a golden `candidate_head`; delete `Sim::epoch`
+  (no callers) and `fate_of`'s redundant guard; exclude in `.cargo/mutants.toml` only the 8 names
+  whose criterion SIM-MUTANTS set holds (the fault dice and `note_late_land`), each with its reason.
+  Claims `--mode edit-signature` on `src/sim/driver.rs` (`Sim::epoch` goes), so the submission is
+  held for review. Done: the Nightly's full mutants job passes its baseline.
 - [x] **LANDING-MUTANTS-IN-DIFF** (#131, merged 27 November as `7fc1bb2`; Opus review Yes;
   tessel-server and tessel-cli not added: MUTANTS-SERVER-CLI-IN-DIFF) — S, lane B
   (`.github/workflows/`); from the triage. The per-change mutants job runs only on pull requests
