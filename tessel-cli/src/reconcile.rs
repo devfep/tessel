@@ -1095,7 +1095,7 @@ mod tests {
     fn a_lost_wait_that_matches_no_live_claim_leaves_the_plan_empty() {
         let events = vec![granted(0, "a1", 7, 9, "b.rs")];
         let plan = plan_with_waits(&events, &[scopes("a.rs")], &[]);
-        assert!(plan.granted_waits.is_empty());
+        assert_eq!(plan.granted_waits.len(), 0, "no claim explains the wait");
         assert_eq!(
             plan.adopt.len(),
             1,

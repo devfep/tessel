@@ -1396,7 +1396,8 @@ impl Daemon {
     /// scopes was granted (the plan adopted it); with the log read to its end, no such claim means
     /// the coordinator withdrew the wait; otherwise the outcome is not known.
     fn settle_lost_waits(&mut self, waits: usize, granted: &HashSet<usize>, complete: bool) {
-        for index in (0..waits).filter(|index| !granted.contains(index)) {
+        let unmatched = (0..waits).filter(|index| !granted.contains(index)).count();
+        for _ in 0..unmatched {
             let (kind, note) = if complete {
                 (
                     NoticeKind::WaitWithdrawn,
@@ -1535,8 +1536,8 @@ impl Daemon {
             let held = self.adopt(claim, server);
             let note = format!(
                 "the --wait claim queued before the connection dropped was granted (claim {}); \
-                 it is held",
-                held.claim.0
+                 it is now tracked, and `tessel release {}` drops it",
+                held.claim.0, held.claim.0
             );
             self.notify(NoticeKind::Reconciled, &note, None);
         }
