@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tessel_coordinator::protocol::{ClaimId, ServerMsg};
 
-use crate::render::{is_race_rejection, needs_attention, notice_text};
+use crate::render::{is_race_end, needs_attention, notice_text};
 use crate::rpc::{self, Reply, Request};
 use crate::state::{self, Connection, Notice, NoticeKind, State};
 use crate::worktree::Worktree;
@@ -382,9 +382,7 @@ fn only_race_entries_rejected(worktree: &Worktree) -> Result<bool, String> {
     if rejections.peek().is_none() {
         return Ok(false);
     }
-    Ok(rejections.all(|notice| {
-        notice.race_entry_ended && notice.server.as_ref().is_some_and(is_race_rejection)
-    }))
+    Ok(rejections.all(|notice| is_race_end(notice)))
 }
 
 fn still_pending(submitted: &[ClaimId], wait: Duration) -> String {

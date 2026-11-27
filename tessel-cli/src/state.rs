@@ -205,11 +205,12 @@ pub struct Notice {
     pub kind: NoticeKind,
     pub note: String,
     pub server: Option<ServerMsg>,
-    /// The daemon found the race mark on the claim this rejection names, and dropped the claim: a
-    /// race entry that ended. Without it a race text on a claim that is still held is an ordinary
-    /// refusal, whatever it says.
-    #[serde(default)]
-    pub race_entry_ended: bool,
+    /// What the daemon decided about a rejection: `Some(true)` when it found the race mark on the
+    /// claim and dropped it (a race entry that ended), `Some(false)` when the claim is held and
+    /// active again, whatever the text says. `None` for a line written before the daemon recorded
+    /// this: the text decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub race_entry_ended: Option<bool>,
 }
 
 pub fn append_notice(
@@ -334,7 +335,7 @@ fn parse_line(index: usize, line: &str) -> Notice {
         kind: NoticeKind::Error,
         note: format!("inbox line {} is unreadable: {e}", index + 1),
         server: None,
-        race_entry_ended: false,
+        race_entry_ended: None,
     })
 }
 

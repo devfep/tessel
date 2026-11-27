@@ -611,7 +611,7 @@ impl Daemon {
     }
 
     fn notify(&self, kind: NoticeKind, note: &str, server: Option<ServerMsg>) {
-        self.notify_ended(kind, note, server, false);
+        self.notify_ended(kind, note, server, None);
     }
 
     /// `notify`, saying whether the notice reports a race entry that ended (see
@@ -621,7 +621,7 @@ impl Daemon {
         kind: NoticeKind,
         note: &str,
         server: Option<ServerMsg>,
-        race_entry_ended: bool,
+        race_entry_ended: Option<bool>,
     ) {
         let notice = Notice {
             at_ms: now_ms(),
@@ -1784,7 +1784,7 @@ impl Daemon {
                 claim.0
             )
         };
-        self.notify_ended(NoticeKind::SubmitRejected, &note, Some(msg), ended);
+        self.notify_ended(NoticeKind::SubmitRejected, &note, Some(msg), Some(ended));
     }
 
     /// The coordinator cannot say whether the landing of `claim` took effect (`since_ms` set), or

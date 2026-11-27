@@ -515,6 +515,13 @@ pub fn is_race_rejection(msg: &ServerMsg) -> bool {
     ends_race_entry(reason, reviewer.as_ref(), note.as_deref())
 }
 
+/// True for an inbox notice that reports a race entry that ended: the core's fixed text, and the
+/// daemon's mark unless it says the claim is still held. A notice written before the mark existed
+/// has none, and its text decides.
+pub fn is_race_end(notice: &Notice) -> bool {
+    notice.race_entry_ended != Some(false) && notice.server.as_ref().is_some_and(is_race_rejection)
+}
+
 fn ends_race_entry(reason: &str, reviewer: Option<&AgentId>, note: Option<&str>) -> bool {
     reviewer.is_none() && note.is_none() && RACE_REJECTIONS.contains(&reason)
 }
@@ -525,8 +532,10 @@ fn rejected_text(
     reason: &str,
     reviewer: Option<&AgentId>,
     note: Option<&str>,
+    race_entry_ended: Option<bool>,
 ) -> String {
-    let mut out = if ends_race_entry(reason, reviewer, note) {
+    let ended = race_entry_ended != Some(false) && ends_race_entry(reason, reviewer, note);
+    let mut out = if ended {
         format!(
             "  claim {}, your race entry, ended: the claim is gone and your fork is untouched. To \
              ship the work, claim the race's scopes once they are free (a winner holds them until \
@@ -633,6 +642,7 @@ pub fn notice_text(notice: &Notice) -> String {
             reason,
             reviewer.as_ref(),
             note.as_deref(),
+            notice.race_entry_ended,
         )),
         ServerMsg::Uncovered { claim, scopes, .. } => {
             out.push_str(&uncovered_text(*claim, scopes, false));
@@ -952,7 +962,7 @@ mod tests {
             at_ms: 7,
             kind: NoticeKind::SubmitRejected,
             note: "rejected".to_string(),
-            race_entry_ended: false,
+            race_entry_ended: None,
             server: Some(ServerMsg::SubmitRejected {
                 claim: ClaimId(3),
                 reason: "rejected in review".to_string(),
