@@ -2165,7 +2165,9 @@ async fn a_log_with_a_missing_seq_is_not_trusted() -> Result<()> {
     let refused = a1.tessel(&["claim", "src/a.rs"])?;
     assert_eq!(refused.code, 1, "{}", refused.all());
     assert!(
-        refused.stdout.contains("run it again"),
+        refused
+            .stdout
+            .contains("may hold that claim for this agent"),
         "{}",
         refused.stdout
     );
