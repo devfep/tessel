@@ -7,8 +7,31 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 09:12 UTC. Main at `64b51b0` (#134); the coordinator's head at `623e919` (a
-pull-request merge does not move it). RACE-TEXTS-SHARED landed through the server at 08:53 UTC as
+**As of:** 2026-11-27 10:20 UTC. Main and the coordinator's head at `27b8c74`. SIM-RACE-TEXT-LITERAL
+and SIM-FENCED-RULE-CHECKER landed through the server at 10:12 UTC as `09d1f47`..`27b8c74` (claim
+200, rebased onto `69de245`; the daemon copied all five notes), held for review because they change
+`Checker` and `Variant`, and approved by the orchestrator on an Opus review ("With changes", one
+must-fix; re-check "Yes" on `3f564a5` after one fix pass)
+(`~/tessel-orch-notes/2026-11-27/lane-b/sim-fenced-rule-checker/REVIEW-1.md`): the first variant
+removed `doubt_since_ms`, so I5 fired first on every seed tried (0..19); it now writes null, and a
+test runs every checker and requires each violation to be FencedRule's (red on the old variant). The
+checker reads the stored state; with the `debug_assert!` removed, a core whose `enter_doubt` leaves
+`doubt_since_ms` unset is caught on 155 of 300 seeds, by FencedRule alone; the correct core is
+silent on seeds 0..999 with FencedRule and on a 300-seed sweep with every checker; 22 seeds'
+transcripts are byte-identical. A core whose `prepared()` clears `doubt_since_ms` is caught on only
+3 of 300 seeds (SIM-DOUBT-PREPARED-TRAFFIC). FencedRule, like AgentBase, has no row in the invariant
+table of `docs/proposals/phase-1.md`. Main's CI (45980202170) and the Adapter suite (45980202361)
+passed on `27b8c74`; its push run tested 18 mutants: 17 caught, 1 unviable, 0 missed.
+HOST-SQLITE-RETRY-BACKOFF went to lane A (the row's lane B was busy), which decided on no code
+change, with evidence per SQLite failure class (`e8c3845`, `03aed3c`, claim 203); the merge-path
+vote was three "Yes with should-fixes"
+(`~/tessel-orch-notes/2026-11-27/vote-host-sqlite-retry-backoff/`): two mutations survive its new
+tests (a busy timeout of 0; a commit outside a transaction, which an older test catches), and its
+`docs/configuration.md` row is wrong about which sockets close; fix pass 1 is running.
+MERGE-OUTCOME-UNOFFERED went to lane B at about 10:15 UTC. PR #135 (the 09:12 record) merged as
+`69de245`, and its CI passed.
+**Earlier (27 November 09:12 UTC):** Main at `64b51b0` (#134); the coordinator's head at `623e919`
+(a pull-request merge does not move it). RACE-TEXTS-SHARED landed through the server at 08:53 UTC as
 `32cb515`..`623e919` (claim 195, rebased; the daemon copied no notes, the submission holding a merge
 of main, so the orchestrator copied all seven by subject and author), on a re-vote: VOTE-2 and
 VOTE-3 had voted "No" on `cb9f8e0` with one must-fix (no test that the daemon writes
@@ -371,10 +394,12 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER (lane B, one claim, branch
-  task-sim-fenced-rule-checker from `623e919`; Opus review follows;
-  `~/tessel-orch-notes/2026-11-27/lane-b/sim-fenced-rule-checker/`).
-- Lane A: idle.
+- HOST-SQLITE-RETRY-BACKOFF (lane A, `e8c3845`..`03aed3c`, claim 203): vote 3-0 "Yes with
+  should-fixes" on `03aed3c`; fix pass 1 runs
+  (`~/tessel-orch-notes/2026-11-27/lane-a/host-sqlite-retry-backoff/FIX-1.md`), then the same voters
+  re-check.
+- MERGE-OUTCOME-UNOFFERED (lane B, dispatched about 10:15 UTC; merge path, a vote follows;
+  `~/tessel-orch-notes/2026-11-27/lane-b/merge-outcome-unoffered/`).
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -444,12 +469,13 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER (lane B), running; the next Nightly
-shows whether the mutants baseline passes; then HOST-SQLITE-RETRY-BACKOFF, MERGE-OUTCOME-UNOFFERED
-(merge path, a vote) and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md
-steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH
-(it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a
-world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** HOST-SQLITE-RETRY-BACKOFF (lane A, fix pass 1) and MERGE-OUTCOME-UNOFFERED (lane B, merge
+path, a vote), running; the next Nightly shows whether the mutants baseline passes; then
+SIM-DOUBT-PREPARED-TRAFFIC and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the
+dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
+P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on
+a world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for
+M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1801,10 +1827,11 @@ Lane B:
   about 75 s and 113 s per mutant, too slow for the current four 30-minute shards: give them shards
   of their own, or another bound. Done: a change to either crate is mutated on its pull request or
   push.
-- [ ] **SIM-FENCED-RULE-CHECKER** — S, lane B (`src/sim`); from MUTANTS-DOUBT-PACING's VOTE-2. The
-  removals there rest on a rule (a fenced claim's merge in flight is that claim's, with
-  `doubt_since_ms` set) that a `debug_assert!` and a stage walk now check; add it to the
-  simulator's checkers. Done: a variant that breaks the rule fails the checker.
+- [x] **SIM-FENCED-RULE-CHECKER** (`7c16e8b`..`27b8c74`, landed by the server 27 November; Opus
+  review With changes, re-check Yes on `3f564a5` after one fix pass) — S, lane B (`src/sim`); from
+  MUTANTS-DOUBT-PACING's VOTE-2. The removals there rest on a rule (a fenced claim's merge in flight
+  is that claim's, with `doubt_since_ms` set) that a `debug_assert!` and a stage walk now check; add
+  it to the simulator's checkers. Done: a variant that breaks the rule fails the checker.
 - [ ] **CLAIM-SCATTER** — S, lane A (the CLI); found 27 November. `tessel claim` adds scopes to the
   agent's open claim only when it holds exactly one; a lane holding two tasks' claims gets a new
   claim per `tessel claim`, and `tessel submit --claim` covers only the claim it names
@@ -1819,9 +1846,16 @@ Lane B:
   that still waits would take a waiting `Prepare` early or clear an unexpired wait. No host or
   simulator sends one. Make `merge_outcome` ignore (and log) an answer to a flight that was not
   offered, with a test. Done: the assumption is a rule the core enforces.
-- [ ] **SIM-RACE-TEXT-LITERAL** — S, lane B (`src/sim`); from RACE-TEXTS-SHARED's votes.
-  `src/sim/driver/merge_path.rs` (~831) repeats the no-result race text as a literal; use the
-  shared constant from `src/protocol.rs` once RACE-TEXTS-SHARED lands.
+- [x] **SIM-RACE-TEXT-LITERAL** (`09d1f47`, landed by the server 27 November with
+  SIM-FENCED-RULE-CHECKER) — S, lane B (`src/sim`); from RACE-TEXTS-SHARED's votes.
+  `src/sim/driver/merge_path.rs` (~831) repeats the no-result race text as a literal; use the shared
+  constant from `src/protocol.rs` once RACE-TEXTS-SHARED lands.
+- [ ] **SIM-DOUBT-PREPARED-TRAFFIC** — S, lane B (`src/sim`); from SIM-FENCED-RULE-CHECKER's
+  REVIEW-1. A core whose `prepared()` clears `doubt_since_ms` when it answers the doubted pair and
+  goes to `Land` is caught on only 3 of 300 seeds, because the simulator's traffic rarely takes that
+  path. Make it common enough that the default seeds catch that break (a fault or a traffic mode),
+  saying which pinned transcripts change, or say why it cannot. Done: the planted break fails a
+  default run.
 - [x] **LOCK-OWNER** (done 27 November in `~/tessel-orch-notes/lib/cargo-lock.sh`, outside the
   repository; the gate scripts and the landing template use it) — S, orchestrator (the gate scripts
   in `~/tessel-orch-notes/`, not the repository); found 27 November. The machine-wide cargo lock is
