@@ -598,6 +598,7 @@ None of these is configurable, except the claim lease (`lease_ms` of a
 | WebSocket text frame | 64 KiB | `src/shell.rs:23` |
 | Scopes in one Claim, Amend or Submit | 256 | `src/coordinator.rs:1808` |
 | Stored state per repo | A client call that would grow the state past 1 MiB, or log one event over 1 MiB, is refused; nothing is stored above 2 MiB minus 64 KiB | `src/shell.rs:27,31`, `STATE_LIMIT_MESSAGE` |
+| Commit attempts for one batch | 3, one after the other with no pause; the store waits up to 5 s for a lock inside each; then the core is dropped and the sockets close 1011 | `src/host/batch.rs:22`, `tessel-server/src/store.rs:50` |
 | Review note | 1024 bytes | `src/coordinator.rs:1805` |
 | Symbols of one file before the hook and `submit` claim the file instead | 4 | `tessel-cli/src/plan.rs:14` |
 | Merge call (one landing) | 13 min | `src/merge.rs:37`, `src/host/calls.rs:50` |

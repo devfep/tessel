@@ -613,4 +613,87 @@ mod tests {
         assert_eq!(mode, "wal");
         assert_eq!(synchronous, 2, "FULL is 2");
     }
+
+    fn code_of(error: &StoreError) -> Option<rusqlite::ErrorCode> {
+        match error {
+            StoreError::Sql {
+                source: rusqlite::Error::SqliteFailure(failure, _),
+                ..
+            } => Some(failure.code),
+            _ => None,
+        }
+    }
+
+    fn stored(store: &Store, key: &str) -> bool {
+        store
+            .conn
+            .query_row("SELECT count(*) FROM kv WHERE key = ?1", [key], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+            == 1
+    }
+
+    // The host retries a failed commit at once, three attempts in all (`MAX_COMMIT_ATTEMPTS`).
+    // These two tests pin what that retry meets for the two classes where a pause could matter.
+
+    #[test]
+    fn a_commit_to_a_full_database_stores_nothing_fails_alike_at_once_and_works_once_there_is_room()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("s.sqlite")).unwrap();
+        let pages: i64 = store
+            .conn
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .unwrap();
+        store
+            .conn
+            .pragma_update(None, "max_page_count", pages)
+            .unwrap();
+        let entries = vec![("core".to_owned(), "x".repeat(200_000))];
+        for attempt in 1..=3 {
+            let error = store.commit(&entries).unwrap_err();
+            let code = code_of(&error);
+            assert_eq!(
+                code,
+                Some(rusqlite::ErrorCode::DiskFull),
+                "attempt {attempt}: {error}"
+            );
+            assert!(!stored(&store, "core"), "a failed commit left a row");
+        }
+        store
+            .conn
+            .pragma_update(None, "max_page_count", 1_000_000)
+            .unwrap();
+        store.commit(&entries).unwrap();
+        assert!(stored(&store, "core"));
+    }
+
+    #[test]
+    fn a_commit_blocked_by_a_lock_waits_inside_the_call_before_it_fails_and_works_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sqlite");
+        let mut store = Store::open(&path).unwrap();
+        let wait = std::time::Duration::from_millis(150);
+        store.conn.busy_timeout(wait).unwrap();
+        let other = Connection::open(&path).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let entries = vec![("core".to_owned(), "{}".to_owned())];
+        let started = std::time::Instant::now();
+        let error = store.commit(&entries).unwrap_err();
+        assert_eq!(
+            code_of(&error),
+            Some(rusqlite::ErrorCode::DatabaseBusy),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() >= wait,
+            "the busy wait is inside the call: {:?}",
+            started.elapsed()
+        );
+        assert!(!stored(&store, "core"));
+        other.execute_batch("ROLLBACK").unwrap();
+        store.commit(&entries).unwrap();
+        assert!(stored(&store, "core"));
+    }
 }
