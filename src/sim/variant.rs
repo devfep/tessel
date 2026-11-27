@@ -26,9 +26,9 @@ pub enum Variant {
     /// The adapter sends a heartbeat of its own after every frame, so an agent that never
     /// heartbeats keeps its lease (breaks I10).
     PhantomHeartbeat,
-    /// The adapter drops `doubt_since_ms` from the merge in flight on its way to the store, so a
-    /// claim whose landing is in doubt has a merge in flight nobody was told about (breaks the
-    /// fenced-claim rule, `Checker::FencedRule`).
+    /// The adapter loses `doubt_since_ms` of the merge in flight on its way to the store (it writes
+    /// null), so a claim whose landing is in doubt has a merge in flight nobody was told about
+    /// (breaks the fenced-claim rule, `Checker::FencedRule`).
     UntoldDoubt,
 }
 

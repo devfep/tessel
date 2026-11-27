@@ -1,6 +1,6 @@
 //! Checkers for the merge path: I3, I6, I7, I11 and I12 of `docs/proposals/phase-1.md`
-//! ("Invariants and the simulator checks that prove them"), and COORD-HEAD-FROM-AGENT's check that
-//! no dispatch uses a head an agent declared.
+//! ("Invariants and the simulator checks that prove them"), COORD-HEAD-FROM-AGENT's check that no
+//! dispatch uses a head an agent declared, and the fenced-claim rule (`fenced_rule`).
 //!
 //! Their evidence and advisory clauses wait for the rows that add evidence records and advisory
 //! mode (M6): I3 does not count evidence records per landed commit, I11 does not compare a
@@ -329,12 +329,15 @@ pub fn fenced_rule(state: Option<&Value>) -> Vec<String> {
             found.push(format!(
                 "claim {id} holds a doubted Land but is not in doubt"
             ));
+            continue;
         }
         if owner != id.parse::<u64>().ok() {
             found.push(format!(
                 "claim {id} is in doubt of a Land, but the merge in flight is {owner:?}"
             ));
-        } else if !told {
+            continue;
+        }
+        if !told {
             found.push(format!(
                 "claim {id} is in doubt of a Land, but its merge in flight was never told"
             ));
@@ -1035,5 +1038,7 @@ mod tests {
         let found = fenced_rule(Some(&fenced_state(false, told)));
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("not in doubt"), "{found:?}");
+        let found = fenced_rule(Some(&fenced_state(false, serde_json::Value::Null)));
+        assert_eq!(found.len(), 1, "one message for a claim: {found:?}");
     }
 }

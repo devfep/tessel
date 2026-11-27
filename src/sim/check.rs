@@ -8,7 +8,8 @@
 //! granted claims conflict. I9: no fence, claim id or seq is seen twice, and a retired fence is
 //! refused. I10: nothing is dispatched for a submission held for review, nothing uncovered is
 //! merged, and no lease is extended without a heartbeat. The checkers that read the merge path
-//! (I3, I6, I7, I11, I12 and COORD-HEAD-FROM-AGENT's) are in `merge_check`; `run` calls them.
+//! (I3, I6, I7, I11, I12, COORD-HEAD-FROM-AGENT's and the fenced-claim rule) are in `merge_check`;
+//! `run` calls them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;

@@ -1059,8 +1059,8 @@ fn with_drift(json: &str) -> String {
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
 }
 
-/// `json` with the merge in flight stripped of `doubt_since_ms`, as an adapter that drops the field
-/// on write leaves it.
+/// `json` with the merge in flight's `doubt_since_ms` lost, written as null, as an adapter that
+/// loses the value on write leaves it. The key stays, so the state still round-trips (I5).
 fn without_doubt_since(json: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
         return json.to_string();
@@ -1069,7 +1069,7 @@ fn without_doubt_since(json: &str) -> String {
         .get_mut("merge_in_flight")
         .and_then(|flight| flight.as_object_mut());
     if let Some(flight) = flight {
-        flight.remove("doubt_since_ms");
+        flight.insert("doubt_since_ms".to_string(), serde_json::Value::Null);
     }
     serde_json::to_string(&value).unwrap_or_else(|_| json.to_string())
 }
