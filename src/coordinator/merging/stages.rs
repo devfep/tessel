@@ -2296,3 +2296,45 @@ fn a_fenced_claim_is_always_the_flight_that_was_told_however_the_doubt_goes() {
     assert!(refused_later > 0, "no fenced Test or Land was refused");
     assert!(landed > 0, "no fenced claim was answered as landed");
 }
+
+/// The merge in flight is waiting out the doubts' backoff, and the submitter is still told.
+fn waits_in_doubt_until_due(c: &mut Coordinator, claim: ClaimId, what: &str) {
+    assert!(
+        c.merge_in_doubt().is_some(),
+        "{what}: the doubt was forgotten"
+    );
+    let due = retry_at(c, claim);
+    assert_eq!(c.begin_merge(due - 1), None, "{what}: it waits the backoff");
+    let prepare = c.begin_merge(due).expect("the Prepare is due");
+    assert_eq!(prepare.stage, MergeStage::Prepare, "{what}");
+    assert!(
+        c.merge_in_doubt().is_some(),
+        "{what}: the Prepare is untold"
+    );
+}
+
+#[test]
+fn a_refused_test_in_a_fenced_doubt_waits_the_backoff_and_stays_told() {
+    let refused = MergeOutcome::Refused {
+        kind: RuleKind::RequiredCheck,
+    };
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    let test = next_after(&mut c, &prepare, &prepared_other_head());
+    assert!(matches!(test.stage, MergeStage::Test { .. }));
+    let effects = c.merge_outcome(test.id, &refused, NOW + 20_000);
+    assert!(!rejected(&effects));
+    waits_in_doubt_until_due(&mut c, claim, "refused Test");
+}
+
+#[test]
+fn a_refused_land_in_a_fenced_doubt_waits_the_backoff_and_stays_told() {
+    let refused = MergeOutcome::Refused {
+        kind: RuleKind::RequiredCheck,
+    };
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    let land = next_after(&mut c, &prepare, &prepared());
+    assert!(matches!(land.stage, MergeStage::Land { .. }));
+    let effects = c.merge_outcome(land.id, &refused, NOW + 20_000);
+    assert!(!rejected(&effects));
+    waits_in_doubt_until_due(&mut c, claim, "refused Land");
+}
