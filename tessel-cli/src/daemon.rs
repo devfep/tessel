@@ -1392,9 +1392,10 @@ impl Daemon {
     }
 
     /// Tells the user what became of each `--wait` claim that was queued when the socket dropped:
-    /// the grant may have been stored before its send failed. A claim held with exactly those
-    /// scopes was granted (the plan adopted it); with the log read to its end, no such claim means
-    /// the coordinator withdrew the wait; otherwise the outcome is not known.
+    /// the grant may have been stored before its send failed. The plan matched the waits a live
+    /// claim explains (`granted`, by index) and adopted those claims; this reports the others: with
+    /// the log read to its end the coordinator withdrew the wait, otherwise the outcome is not
+    /// known.
     fn settle_lost_waits(&mut self, waits: usize, granted: &HashSet<usize>, complete: bool) {
         let unmatched = (0..waits).filter(|index| !granted.contains(index)).count();
         for _ in 0..unmatched {
@@ -1409,8 +1410,8 @@ impl Daemon {
                     NoticeKind::Error,
                     "the connection dropped while a --wait claim was queued, and the \
                      coordinator's log could not be read to its end; the coordinator may hold \
-                     that claim for this agent until its lease lapses or a later complete read \
-                     adopts it, and `tessel status` cannot show it yet",
+                     that claim for this agent, and heartbeats keep it until the next complete \
+                     log read adopts it; `tessel status` cannot show it yet",
                 )
             };
             self.notify(kind, note, None);

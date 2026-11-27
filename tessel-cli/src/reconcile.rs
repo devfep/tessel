@@ -326,6 +326,15 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
             plan.release_again.push((claim, server.fence));
             continue;
         }
+        let wait =
+            local.lost_waits.iter().enumerate().find(|(index, scopes)| {
+                !waited.contains(index) && same_scopes(scopes, &server.scopes)
+            });
+        if let Some((index, _)) = wait {
+            waited.insert(index);
+            plan.granted_waits.push((index, claim, server.clone()));
+            continue;
+        }
         let lost = local
             .lost_requests
             .iter()
@@ -336,15 +345,6 @@ pub fn plan(local: &Local<'_>, live: &BTreeMap<u64, ServerClaim>, events: &[Even
         if let Some((index, _)) = lost {
             answered.insert(index);
             plan.answer_lost.push((index, claim, server.clone()));
-            continue;
-        }
-        let wait =
-            local.lost_waits.iter().enumerate().find(|(index, scopes)| {
-                !waited.contains(index) && same_scopes(scopes, &server.scopes)
-            });
-        if let Some((index, _)) = wait {
-            waited.insert(index);
-            plan.granted_waits.push((index, claim, server.clone()));
             continue;
         }
         let coming = local.in_flight.iter().enumerate().find(|(index, scopes)| {
@@ -1100,6 +1100,40 @@ mod tests {
             plan.adopt.len(),
             1,
             "an unrelated claim is still unexplained"
+        );
+    }
+
+    #[test]
+    fn one_lost_wait_explains_one_of_two_live_claims_and_the_other_is_adopted() {
+        let events = vec![
+            granted(0, "a1", 7, 9, "a.rs"),
+            granted(1, "a1", 8, 10, "a.rs"),
+        ];
+        let plan = plan_with_waits(&events, &[scopes("a.rs")], &[]);
+        assert_eq!(plan.granted_waits.len(), 1, "one wait, one grant");
+        assert_eq!(plan.adopt.len(), 1, "the other claim is unexplained");
+    }
+
+    #[test]
+    fn a_lost_wait_is_matched_before_a_lost_request_on_the_same_scopes() {
+        let events = vec![granted(0, "a1", 7, 9, "a.rs")];
+        let (fresh, releases) = (HashSet::new(), HashSet::new());
+        let live = live_claims(&AgentId("a1".into()), &events);
+        let local = Local {
+            claims: &[],
+            fresh: &fresh,
+            lost_requests: &[scopes("a.rs")],
+            lost_waits: &[scopes("a.rs")],
+            in_flight: &[],
+            lost_releases: &releases,
+            complete: true,
+        };
+        let plan = plan(&local, &live, &events);
+        assert_eq!(plan.granted_waits.len(), 1, "the wait owns the grant");
+        assert_eq!(
+            plan.answer_lost.len(),
+            0,
+            "a refused request does not take it"
         );
     }
 }
