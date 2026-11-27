@@ -153,7 +153,8 @@ above holds for a `Land` that was never in doubt. For a submission whose `Land` 
 two premises fail: `Stop` is check-then-act (a push already started outlives it), and the C7
 backstop comes too late, since the core's own re-`Prepare` re-creates the same ref before a copy of
 the first `Land` that has not run yet, and a bound that rejects work then loses to that copy
-landing it (simulator seed 69962521). The only fence a late copy cannot get round is its lease:
+landing it (found by simulator seed 69962521; the regression seed is now 5000397). The only fence
+a late copy cannot get round is its lease:
 it changes main only while main is still at its `base`. So each doubt carries the lease of its own
 latest `Land`: `Submission::doubted_land` holds that `Land`'s `(base, head)`, written at every
 doubt, while `unanswered_from` stays the baseline a landing is verified from (the first doubt's).
