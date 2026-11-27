@@ -114,8 +114,14 @@ echo "-- the sudoers rule"
 check "visudo accepts the rule" visudo -cf "$scratch/sudoers"
 install -o root -g root -m 0440 "$scratch/sudoers" /etc/sudoers.d/tessel
 listing=$(sudo -l -U "$server" | awk '/may run the following commands/ { on = 1; next } on && NF { sub(/^[ \t]+/, ""); sub(/\\$/, ""); print }' | tr '\n\t' '  ' | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')
-want="($runner) NOPASSWD: /opt/tessel/bin/tessel-runner --config $config, /bin/kill -KILL -1"
-if [ "$listing" = "$want" ]; then ok "sudo -l -U lists exactly the two commands"; else bad "sudo -l -U lists: $listing"; fi
+want="($runner) NOPASSWD: /opt/tessel/bin/tessel-runner --config $config, /bin/kill -KILL -- -1"
+# sudo-rs (Ubuntu 26.04) lists a command by its canonical path, and /bin is /usr/bin there.
+want_canonical=${want//, \/bin\/kill/, \/usr\/bin\/kill}
+if [ "$listing" = "$want" ] || [ "$listing" = "$want_canonical" ]; then
+	ok "sudo -l -U lists exactly the two commands"
+else
+	bad "sudo -l -U lists: $listing"
+fi
 
 echo "-- the runner cannot reach what it must not"
 for path in /var/tessel/github-token /var/tessel/keys /var/tessel/stores /var/tessel/lander \

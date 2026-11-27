@@ -74,7 +74,7 @@ pub struct SudoRunnerConfig {
     /// entries; the runner reads them.
     #[serde(default = "default_handoff_dir")]
     pub handoff_dir: PathBuf,
-    /// The program run as the account with `-KILL -1`.
+    /// The program run as the account with `-KILL -- -1`.
     #[serde(default = "default_kill")]
     pub kill: PathBuf,
     #[serde(default = "default_ps")]

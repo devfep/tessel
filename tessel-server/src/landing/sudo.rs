@@ -2,8 +2,9 @@
 //!
 //! The server never runs repo code itself. It starts the `tessel-runner` binary as the runner's own
 //! account through a sudoers rule that allows exactly two commands: that binary with one fixed
-//! configuration path, and `kill -KILL -1`. The request is JSON on the runner's standard input and
-//! the result one JSON line on its standard output, as for the in-process runner.
+//! configuration path, and `kill -KILL -- -1` (the `--` because procps 4 on Ubuntu 26.04 does not
+//! parse `-KILL -1`). The request is JSON on the runner's standard input and the result one JSON
+//! line on its standard output, as for the in-process runner.
 //!
 //! `kill -1` takes every process of the account, so one run may be live at a time: a gate covers
 //! the run, the kill and the poll, across every repository of the server, which share one
@@ -74,7 +75,7 @@ pub struct SudoRunnerSettings {
     pub runner: PathBuf,
     /// The configuration path the sudoers rule allows as the runner's only argument.
     pub runner_config: PathBuf,
-    /// `/bin/kill`, run as the account with `-KILL -1`.
+    /// `/bin/kill`, run as the account with `-KILL -- -1`.
     pub kill: PathBuf,
     /// `ps`, run as the server with `-U <account> -o pid=`.
     pub ps: PathBuf,
@@ -97,7 +98,7 @@ pub enum SudoError {
         "sudo refused the kill ({0}); /etc/sudoers.d/tessel must allow it, without a password"
     )]
     SudoRefused(String),
-    #[error("processes of {user} are left {secs} s after kill -KILL -1: {pids}")]
+    #[error("processes of {user} are left {secs} s after kill -KILL -- -1: {pids}")]
     Survivors {
         user: String,
         secs: u64,
@@ -161,11 +162,13 @@ impl SudoRunner {
 
     fn kill_once(&self) -> Result<(), SudoError> {
         let mut command = self.sudo();
-        command.arg(&self.settings.kill).args(["-KILL", "-1"]);
+        command.arg(&self.settings.kill).args(["-KILL", "--", "-1"]);
         let output = self.output_bounded(command, "sudo")?;
-        // `kill -1` with nothing to kill exits non-zero, which is fine; a `sudo:` line is not.
+        // `kill -1` with nothing to kill exits non-zero, which is fine; a `sudo:` line, or a
+        // `sudo-rs:` one (Ubuntu 26.04), is not.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if let Some(line) = stderr.lines().find(|line| line.starts_with("sudo:")) {
+        let refused = |line: &&str| line.starts_with("sudo:") || line.starts_with("sudo-rs:");
+        if let Some(line) = stderr.lines().find(refused) {
             return Err(SudoError::SudoRefused(line.chars().take(200).collect()));
         }
         Ok(())
