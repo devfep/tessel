@@ -201,6 +201,7 @@ affect the server. `[identity]` `keys` is read only at start.
 | `listen` | socket address | required | Where the server listens, `127.0.0.1:7878` for example. |
 | `store_dir` | path | required | The directory of stores, one SQLite file per repository, and the lock that keeps a second server out. |
 | `[[repository]]` `tenant`, `name`, `run` | names | at least one | A repository this server serves, and the run its evidence log is named for. `tenant` and `name` are lowercase letters, digits and interior hyphens, at most 63 characters. |
+| `[[repository]]` `lease_ms` | milliseconds, 1000 to 600000 | 30000 | How long a claim lives without a heartbeat. The daemon reads it from `Welcome` and heartbeats every third of it; a stall of the coordinator longer than the lease lapses open claims ([A stalled coordinator](#a-stalled-coordinator-lapses-open-claims)). `tessel-server/src/config.rs:153`, `src/host/mod.rs:208`. |
 | `[[repository]]` `reviewers` | array of agent names | `[]` | The agents that may approve or reject a held submission, which is what `tessel review` does. Empty: nobody may, and a held submission stays held. Each entry is a lowercase agent name (`a-z 0-9 . _ -`, first a letter or digit); a bad entry, an uppercase one included, makes the file invalid and the error names the file, the repository and the key. Read as `REVIEWERS` above. |
 | `[[repository]]` `sensitive` | array of path prefixes | `[]` | A submission that touches a path starting with an entry is held for review. No globs; end a directory with `/`. A bad entry (empty, a leading `/`, a `..` segment, a `*`, a comma, a space at either end) makes the file invalid, naming the file, the repository and the key. Read as `SENSITIVE` above. |
 | `[[repository]]` `remote` | path or URL | none | The git remote main lives on. A repository with a `remote` is landed by the server ([Landing](#landing)); one without has no lander and every merge is refused. A path needs no credential. An `https://` URL on a host that needs one works with `[lander]` `token_file`; without it the server logs once at start that landings on the repository push without a credential, and git's push is refused by a host that requires one. Plain `http://` is accepted here and refused by git (the lander allows only `https`, `ssh` and `file`). |
@@ -586,12 +587,13 @@ the coordinator enforces the limits, `src/coordinator/racing.rs`).
 
 ## Fixed limits
 
-None of these is configurable.
+None of these is configurable, except the claim lease (`lease_ms` of a
+[`[[repository]]`](#server-tessel-server)); the table shows the default.
 
 | Limit | Value | Code |
 |---|---|---|
-| Claim lease | 30 s, renewed by each heartbeat | `src/shell.rs:16`, `src/coordinator.rs:1025` |
-| Heartbeat interval | lease / 3 (10 s) | `tessel-cli/src/daemon.rs:1065` |
+| Claim lease | 30 s (`lease_ms`: 1000 to 600000), renewed by each heartbeat | `src/shell.rs:16`, `src/coordinator.rs:1025`, `tessel-server/src/config.rs:153` |
+| Heartbeat interval | lease / 3 (10 s at the default lease), from the lease in `Welcome` | `tessel-cli/src/daemon.rs:1065` |
 | Agent id and repo name | 1 to 128 bytes | `src/shell.rs:20` |
 | WebSocket text frame | 64 KiB | `src/shell.rs:23` |
 | Scopes in one Claim, Amend or Submit | 256 | `src/coordinator.rs:1631` |
@@ -606,17 +608,28 @@ None of these is configurable.
 
 ### A stalled coordinator lapses open claims
 
-The lease measures the coordinator's time, not the agent's silence. `expire`
-(`src/coordinator.rs:627`) removes every unsubmitted claim whose lease has run out, and
-`heartbeat` (`src/coordinator.rs:1025`) renews all of an agent's unsubmitted claims and cannot
-bring back one that `expire` already removed.
-So a coordinator that does not read heartbeats for longer than the 30 s lease (`src/shell.rs:16`)
-lapses the open claims of every agent, even while each daemon is online and sending a heartbeat
-every 10 s: a busy host, or one that sleeps while the server runs. Submitted claims never expire.
-In that case the agent sees `lease_expired` in `tessel inbox`, and the `pre-commit` and `pre-push`
-hooks refuse a change the claim no longer covers, printing the `tessel claim` command to run.
-Run that command (the scopes are free again unless another agent took them), then retry. A daemon
-that is offline also drops an open claim locally once its lease is over.
+The lease measures the coordinator's time, not the agent's silence. Every client message runs
+`expire` before it is routed (`handle`, `src/coordinator.rs:609-614`), and `expire`
+(`src/coordinator.rs:627`) removes every unsubmitted claim whose lease has run out, so a heartbeat
+cannot renew a claim that is already past its lease: `heartbeat` (`src/coordinator.rs:1025`) renews
+all of an agent's unsubmitted claims, and the test `heartbeat_cannot_resurrect_an_expired_claim`
+fixes that. Submitted claims never expire.
+
+Two cases lapse open claims with every daemon online and heartbeating (the daemon sends one every
+third of the lease, `tessel-cli/src/daemon.rs:1065`):
+
+- A coordinator that does not read heartbeats for longer than the lease (30 s by default,
+  `src/shell.rs:16`): a busy host. Several daemons logged heartbeats answered 10 to 20 s late at
+  once (`slow pong` in `daemon.log`).
+- A machine that sleeps while the server and the daemon run on it. Both sleep, so no heartbeat is
+  queued. The first message after waking is a heartbeat, and `expire` runs before it is routed. A
+  sleep longer than the lease always lapses open claims; one longer than about the lease less one
+  heartbeat interval (20 s at the default) can, depending on where the sleep fell between beats.
+
+The agent sees `lease_expired` in `tessel inbox`, and the `pre-commit` and `pre-push` hooks refuse
+a change the claim no longer covers, printing the `tessel claim` command to run. Run that command
+(the scopes are free again unless another agent took them), then retry. A daemon that is offline
+also drops an open claim locally once its lease is over.
 
 ## What is pluggable
 
