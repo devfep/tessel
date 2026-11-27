@@ -2218,18 +2218,19 @@ fn a_fenced_claim_is_always_the_flight_that_was_told_however_the_doubt_goes() {
     let (mut answered_prepare, mut answered_test) = (0, 0);
     for seed in 0..300 {
         let mut dice = Dice(seed);
-        let (mut c, claim) = if seed % 2 == 1 {
-            let (c, claim, _, _) = doubted_prepare();
-            (c, claim)
+        let (mut c, claim, mut offered) = if seed % 2 == 1 {
+            let (c, claim, _, prepare) = doubted_prepare();
+            (c, claim, Some(prepare.id))
         } else {
-            let (c, claim, _) = submitted();
-            (c, claim)
+            let (c, claim, prepare) = submitted();
+            (c, claim, Some(prepare.id))
         };
         let mut now = NOW + 20_000;
         for step in 0..40 {
             now += dice.below(30_000);
             let context = format!("seed {seed} step {step}");
-            let flight = c.state.merge_in_flight.as_ref().map(|f| f.dispatch);
+            let in_flight = c.state.merge_in_flight.as_ref().map(|f| f.dispatch);
+            let flight = in_flight.filter(|dispatch| offered == Some(*dispatch));
             match (dice.below(8), flight) {
                 (0, _) => {
                     let stored = serde_json::to_string(&c).unwrap();
@@ -2273,7 +2274,7 @@ fn a_fenced_claim_is_always_the_flight_that_was_told_however_the_doubt_goes() {
                 }
                 (_, None) => {}
             }
-            c.begin_merge(now);
+            offered = c.begin_merge(now).map(|dispatch| dispatch.id);
             assert_fenced_claim_is_told(&c, claim, &context);
             let work = c
                 .state

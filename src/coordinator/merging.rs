@@ -247,6 +247,10 @@ impl Coordinator {
     /// Only the `Prepare` of a submission in doubt can hold a wait that has not run out: any other
     /// flight is offered once its backoff is over, so a wait it holds is already past and clearing
     /// it changes no decision (every reader compares it with the clock).
+    ///
+    /// This assumes only an offered dispatch is answered, as the host and the simulator do: an
+    /// answer to the `Prepare` of a wait that `begin_merge` has not offered yet would be taken
+    /// before its backoff, with the wait still set.
     fn release_wait(&mut self, flight: &InFlight) {
         let work = self
             .state
