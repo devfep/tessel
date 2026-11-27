@@ -2,9 +2,9 @@
 //!
 //! The server never runs repo code itself. It starts the `tessel-runner` binary as the runner's own
 //! account through a sudoers rule that allows exactly two commands: that binary with one fixed
-//! configuration path, and `kill -KILL -- -1` (the `--` because procps 4 on Ubuntu 26.04 does not
-//! parse `-KILL -1`). The request is JSON on the runner's standard input and the result one JSON
-//! line on its standard output, as for the in-process runner.
+//! configuration path, and `kill -KILL -- -1` (on ubuntu-26.04, `kill -KILL -1` run through the
+//! rule fails to parse and `kill -KILL -- -1` works). The request is JSON on the runner's standard
+//! input and the result one JSON line on its standard output, as for the in-process runner.
 //!
 //! `kill -1` takes every process of the account, so one run may be live at a time: a gate covers
 //! the run, the kill and the poll, across every repository of the server, which share one
@@ -95,14 +95,23 @@ pub enum SudoError {
         source: io::Error,
     },
     #[error(
-        "sudo refused the kill ({0}); /etc/sudoers.d/tessel must allow it, without a password"
+        "sudo refused the kill ({said}); /etc/sudoers.d/tessel must allow exactly `{command}` for \
+         {user}, without a password (scripts/dogfood/install.sh writes it)"
     )]
-    SudoRefused(String),
-    #[error("processes of {user} are left {secs} s after kill -KILL -- -1: {pids}")]
+    SudoRefused {
+        said: String,
+        command: String,
+        user: String,
+    },
+    #[error(
+        "processes of {user} are left {secs} s after kill -KILL -- -1: {pids}; the kill said: \
+         {kill_said}"
+    )]
     Survivors {
         user: String,
         secs: u64,
         pids: String,
+        kill_said: String,
     },
 }
 
@@ -138,7 +147,7 @@ impl SudoRunner {
     fn kill_all(&self) -> Result<(), SudoError> {
         let deadline = Instant::now() + self.settings.settle;
         loop {
-            self.kill_once()?;
+            let kill_said = self.kill_once()?;
             let round_end = (Instant::now() + KILL_ROUND).min(deadline);
             loop {
                 let left = self.survivors()?;
@@ -151,6 +160,7 @@ impl SudoRunner {
                             user: self.settings.user.clone(),
                             secs: self.settings.settle.as_secs(),
                             pids: left.join(" "),
+                            kill_said,
                         });
                     }
                     break;
@@ -160,18 +170,27 @@ impl SudoRunner {
         }
     }
 
-    fn kill_once(&self) -> Result<(), SudoError> {
+    /// Kills the account once. What the kill said on its standard error is returned (bounded, on
+    /// one line, "nothing" if empty): its exit is not an error by itself, because a kill with
+    /// nothing to kill exits non-zero too.
+    fn kill_once(&self) -> Result<String, SudoError> {
         let mut command = self.sudo();
         command.arg(&self.settings.kill).args(["-KILL", "--", "-1"]);
         let output = self.output_bounded(command, "sudo")?;
-        // `kill -1` with nothing to kill exits non-zero, which is fine; a `sudo:` line, or a
-        // `sudo-rs:` one (Ubuntu 26.04), is not.
+        // A `sudo:` line is a refusal; sudo-rs prints the same prefix.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let refused = |line: &&str| line.starts_with("sudo:") || line.starts_with("sudo-rs:");
-        if let Some(line) = stderr.lines().find(refused) {
-            return Err(SudoError::SudoRefused(line.chars().take(200).collect()));
+        if let Some(line) = stderr.lines().find(|line| line.starts_with("sudo:")) {
+            return Err(SudoError::SudoRefused {
+                said: line.chars().take(200).collect(),
+                command: format!("{} -KILL -- -1", self.settings.kill.display()),
+                user: self.settings.user.clone(),
+            });
         }
-        Ok(())
+        let said = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+        if said.is_empty() {
+            return Ok("nothing".to_owned());
+        }
+        Ok(said.chars().take(200).collect())
     }
 
     /// Runs `command` to its end and collects its output, but waits at most `settle` for it. A

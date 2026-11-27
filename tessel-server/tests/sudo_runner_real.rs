@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tessel_runner::{RequestTest, RunRequest, RunnerError, MAX_REQUEST_BYTES, MAX_TAIL_BYTES};
-use tessel_server::landing::{SudoRunner, SudoRunnerSettings, TestRunner};
+use tessel_server::landing::{SudoError, SudoRunner, SudoRunnerSettings, TestRunner};
 
 const HANDOFF: &str = "/var/tessel/handoff";
 
@@ -246,4 +246,23 @@ fn a_call_given_up_on_the_first_poll_after_the_spawn_frees_the_gate_and_empties_
         runner.run(&tree("real-after-first-poll", "plain")).is_ok(),
         "the gate is free again"
     );
+}
+
+#[test]
+#[ignore = "needs the accounts of scripts/ci/own-users-linux.sh; run as _tessel"]
+fn a_kill_the_rule_does_not_allow_is_refused_by_the_real_sudo() {
+    // `/bin/true`, not `/usr/bin/kill`, which sudo-rs canonicalises to the allowed path.
+    let error = SudoRunner::new(SudoRunnerSettings {
+        user: "_tessel-runner".to_owned(),
+        sudo: PathBuf::from("/usr/bin/sudo"),
+        runner: PathBuf::from("/opt/tessel/bin/tessel-runner"),
+        runner_config: PathBuf::from("/var/tessel-runner/tessel-runner.toml"),
+        kill: PathBuf::from("/bin/true"),
+        ps: PathBuf::from("/bin/ps"),
+        handoff_dir: PathBuf::from(HANDOFF),
+        settle: Duration::from_secs(10),
+    })
+    .err()
+    .expect("sudo refuses a command the rule does not name");
+    assert!(matches!(error, SudoError::SudoRefused { .. }), "{error}");
 }

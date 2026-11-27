@@ -53,7 +53,6 @@ impl Rig {
         rig.script(
             "sudo",
             r#"if [ -f STATE/refuse ]; then echo "sudo: a password is required" >&2; exit 1; fi
-if [ -f STATE/refuse_rs ]; then echo "sudo-rs: I'm sorry, you may not run that" >&2; exit 1; fi
 [ "$1" = -n ] && [ "$2" = -u ] && [ "$4" = -- ] || { echo "sudo: unexpected arguments: $*" >&2; exit 1; }
 echo "$3 $5 $6 $7" >> STATE/sudo.log
 shift 4
@@ -391,14 +390,6 @@ fn a_kill_that_fails_to_run_shows_its_own_message_next_to_the_survivors() {
         text.contains("failed to parse argument"),
         "the kill said nothing: {text}"
     );
-}
-
-#[test]
-fn a_sudo_rs_that_refuses_stops_the_server_from_starting() {
-    let rig = Rig::new();
-    rig.touch("refuse_rs");
-    let error = SudoRunner::new(rig.settings()).err().expect("an error");
-    assert!(error.to_string().contains("sudo-rs"), "{error}");
 }
 
 #[test]
