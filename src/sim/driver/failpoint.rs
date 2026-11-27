@@ -225,6 +225,13 @@ mod tests {
     }
 
     #[test]
+    fn a_crash_once_a_commit_is_recorded_counts_as_a_crash_after_a_commit() {
+        let sim = crash_and_land_plainly(at(Step::Prepare, Moment::Recorded));
+        assert_eq!(sim.crashes(), 1);
+        assert_eq!(sim.crashes_after_apply(), 1);
+    }
+
+    #[test]
     fn window_head_journaled_a_restart_before_test_goes_out_lands_once() {
         recovers_by(at(Step::Prepare, Moment::Recorded), [1, 1, 1, 0]);
         recovers_by(at(Step::Test, Moment::Persisted), [1, 1, 1, 0]);

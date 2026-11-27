@@ -14,6 +14,8 @@
 #   `claim`, `jump`, `watch` and `step`, and the clock-advance arm of `act`. They change which
 #   traffic a seed runs, not whether a kind of request or fault occurs: tests/simulator.rs pins
 #   every kind of request and both kinds of crash.
+# - lander.rs: the `+` in `plan`'s repeat delay (`1 + below(30_000)`), a fault die: `1 * below(..)`
+#   differs only when the die rolls 0 (one in 30,000), which no seed is chosen to reach.
 # - mod.rs: `cut_off_replays`' `&&` and `==`, and `failure_report`'s count line, which only
 #   describe a run.
 # The patterns match the names `cargo mutants --list` prints: re-check with it after any edit.
@@ -31,6 +33,7 @@ exclude_re = [
     'src/sim/traffic\.rs:.*replace \+ with \* in Traffic::(jump|watch)$',
     'src/sim/traffic\.rs:.*replace && with \|\| in Traffic::(claim|jump)$',
     'src/sim/traffic\.rs:.*replace &= with \|= in Traffic::step$',
+    'src/sim/lander\.rs:.*replace \+ with \* in Lander::plan$',
     'src/sim/mod\.rs:.*replace (&& with \|\||== with !=) in cut_off_replays$',
     'src/sim/mod\.rs:.*replace > with >= in failure_report$',
 ]
