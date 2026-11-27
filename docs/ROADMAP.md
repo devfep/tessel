@@ -7,13 +7,14 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 09:12 UTC. Main and the coordinator's head at `623e919`. RACE-TEXTS-SHARED
-landed through the server at 08:53 UTC as `32cb515`..`623e919` (claim 195, rebased; the daemon
-copied no notes, the submission holding a merge of main, so the orchestrator copied all seven by
-subject and author), on a re-vote: VOTE-2 and VOTE-3 had voted "No" on `cb9f8e0` with one must-fix
-(no test that the daemon writes `race_entry_ended`), fix pass 1 added a real-core race test that
-runs the stop hook for the loser, keyed the card on the same mark, read older inbox lines by their
-text (`Option<bool>`), and VOTE-1, VOTE-2 and VOTE-3 re-checked `cd0e67a`: "Yes"
+**As of:** 2026-11-27 09:12 UTC. Main at `64b51b0` (#134); the coordinator's head at `623e919` (a
+pull-request merge does not move it). RACE-TEXTS-SHARED landed through the server at 08:53 UTC as
+`32cb515`..`623e919` (claim 195, rebased; the daemon copied no notes, the submission holding a merge
+of main, so the orchestrator copied all seven by subject and author), on a re-vote: VOTE-2 and
+VOTE-3 had voted "No" on `cb9f8e0` with one must-fix (no test that the daemon writes
+`race_entry_ended`), fix pass 1 added a real-core race test that runs the stop hook for the loser,
+keyed the card on the same mark, read older inbox lines by their text (`Option<bool>`), and VOTE-1,
+VOTE-2 and VOTE-3 re-checked `cd0e67a`: "Yes"
 (`~/tessel-orch-notes/2026-11-27/vote-race-texts-shared/`); the three race texts are `pub const`s in
 `src/protocol.rs`, byte-identical on the wire (VOTE-1). Main's CI (45969257494) and the Adapter
 suite (45969257349) passed on `623e919`; its push run diffed from `5be98dd` and found no mutants to
@@ -32,11 +33,11 @@ by Claude Code's removal safety check. The re-read then found the helper held no
 agents' tool shell (an EXIT trap set in a function runs when the function returns there), so a
 one-line cargo run made in that shell held none (lane B's seed runs went through a bash script and
 held it); it now sets POSIX_TRAPS under zsh, and a pid the system reused reads as dead (the owner
-file records the holder's start time); tested under zsh and bash. Dispatched at about 08:55 UTC:
-SIM-RACE-TEXT-LITERAL with SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF (lane A),
-which merged as #134 (`64b51b0`; Opus review Yes on `b65db81`, its two optional edits made in
-`20b66d5`; 15 checks green on `20b66d5`, its new sharded job skipped as the pull request touched
-neither crate).
+file records the holder's start time, read with `LC_ALL=C` so a waiter in another locale reads it
+the same); tested under zsh and bash. Dispatched at about 08:55 UTC: SIM-RACE-TEXT-LITERAL with
+SIM-FENCED-RULE-CHECKER (lane B) and MUTANTS-SERVER-CLI-IN-DIFF (lane A), which merged as #134
+(`64b51b0`; Opus review Yes on `b65db81`, its two optional edits made in `20b66d5`; 15 checks green
+on `20b66d5`, its new sharded job skipped as the pull request touched neither crate).
 **Earlier (27 November 08:20 UTC):** Main and the coordinator's head at `a38b570`.
 MUTANTS-DOUBT-PACING landed through the server at 08:16 UTC as `7d08141`..`a38b570` (claim 198,
 rebased; the submission held a merge of main, so the daemon copied no notes and the orchestrator
