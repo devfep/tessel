@@ -20,7 +20,8 @@ use serde_json::Value;
 use support::{eventually, eventually_every, git, Agent, Fake, Lose};
 use tessel_coordinator::protocol::{
     AgentId, ClaimId, ClientMsg, CommitId, Criterion, ErrorCode, EventKind, Fence, Intent, Mode,
-    OnConflict, ReleaseReason, RequestId, Scope, ScopeClaim, ServerMsg,
+    OnConflict, ReleaseReason, RequestId, Scope, ScopeClaim, ServerMsg, LOST_RACE, NOT_PICKED,
+    TESTS_GAVE_NO_RESULT,
 };
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -3224,7 +3225,7 @@ async fn a_race_result_names_the_winner_the_ranking_and_each_entrants_place() ->
         "{won}"
     );
     assert!(won.contains(&ranking), "{won}");
-    let lost = inbox_with(&a2, "lost the race").await?;
+    let lost = inbox_with(&a2, LOST_RACE).await?;
     assert!(lost.contains("[submit_rejected]"), "{lost}");
     assert!(
         lost.contains(&format!(
@@ -3287,7 +3288,7 @@ async fn an_entry_of_a_race_nobody_picked_is_told_its_claim_ended() -> Result<()
     eventually(SHORT, || Ok(fake.verify_next(true).then_some(()))).await?;
     fake.advance_clock(3 * 60 * 60 * 1000);
     fake.settle_expiry().await;
-    let told = inbox_with(&a2, "the race was not picked in time").await?;
+    let told = inbox_with(&a2, NOT_PICKED).await?;
     assert!(
         told.contains(&format!("claim {entry}, your race entry, ended")),
         "{told}"
@@ -3304,23 +3305,27 @@ async fn an_entry_no_trial_judged_is_told_the_tests_gave_no_result() -> Result<(
     assert_eq!(a2.tessel(&["race", "join", &race.to_string()])?.code, 0);
     let entry = submit_entry(&a2, "only")?;
     // The host retries a trial that gave no result with a backoff, until the retries are spent.
-    let mut told = String::new();
+    // Each turn waits for the next trial call or for the notice, whichever comes first, so a
+    // notice that lands late still ends the loop.
     for _ in 0..8 {
-        eventually(SHORT, || {
-            Ok(fake.verify_next_without_result().then_some(()))
+        let another_trial = eventually(SHORT, || {
+            if a2
+                .tessel(&["inbox", "--all"])?
+                .stdout
+                .contains(TESTS_GAVE_NO_RESULT)
+            {
+                return Ok(Some(false));
+            }
+            Ok(fake.verify_next_without_result().then_some(true))
         })
         .await?;
-        fake.advance_clock(5 * 60 * 1000);
-        fake.settle_expiry().await;
-        told = a2.tessel(&["inbox", "--all"])?.stdout;
-        if told.contains("the tests gave no result, so no trial judged this entry") {
+        if !another_trial {
             break;
         }
+        fake.advance_clock(5 * 60 * 1000);
+        fake.settle_expiry().await;
     }
-    assert!(
-        told.contains("the tests gave no result, so no trial judged this entry"),
-        "{told}"
-    );
+    let told = inbox_with(&a2, TESTS_GAVE_NO_RESULT).await?;
     assert!(
         told.contains(&format!("claim {entry}, your race entry, ended")),
         "{told}"

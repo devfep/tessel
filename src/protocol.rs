@@ -122,6 +122,23 @@ fn v1() -> u16 {
     1
 }
 
+/// What every loser of a race is told, as `SubmitRejected::reason`. Fixed: nothing about the
+/// winning work is quoted. The wire carries no other mark of a race loser, so a client that must
+/// tell a race rejection from an ordinary one compares against [`RACE_REJECTIONS`].
+pub const LOST_RACE: &str = "lost the race";
+
+/// What an entrant is told when a `TestsPass` race had no winner and no trial judged its entry:
+/// its `tests_passed` is `None`, whether the trial hit a conflict, timed out or was refused, or no
+/// head was known. Not that it lost, because nothing beat it. The release is still logged as
+/// `LostRace`. Fixed, like [`LOST_RACE`].
+pub const TESTS_GAVE_NO_RESULT: &str = "the tests gave no result, so no trial judged this entry";
+
+/// What every entry is told when a `HumanPick` race ran out of time. Fixed, like [`LOST_RACE`].
+pub const NOT_PICKED: &str = "the race was not picked in time";
+
+/// The reasons the core gives a race entry it rejects.
+pub const RACE_REJECTIONS: [&str; 3] = [LOST_RACE, TESTS_GAVE_NO_RESULT, NOT_PICKED];
+
 use serde::{Deserialize, Serialize};
 
 // ---------- Identity ----------
@@ -1795,6 +1812,26 @@ mod tests {
         assert!(![0, 1, 5, u16::MAX].into_iter().any(|v| range.contains(v)));
         assert!(ProtocolRange::current().contains(PROTOCOL_VERSION));
         assert!(!ProtocolRange::current().contains(PROTOCOL_VERSION + 1));
+    }
+}
+
+#[cfg(test)]
+mod race_text_tests {
+    use super::*;
+
+    /// The three texts are on the wire as `SubmitRejected::reason`: they stay byte-identical.
+    #[test]
+    fn the_race_rejection_texts_are_the_wire_strings() {
+        assert_eq!(LOST_RACE, "lost the race");
+        assert_eq!(
+            TESTS_GAVE_NO_RESULT,
+            "the tests gave no result, so no trial judged this entry"
+        );
+        assert_eq!(NOT_PICKED, "the race was not picked in time");
+        assert_eq!(
+            RACE_REJECTIONS,
+            [LOST_RACE, TESTS_GAVE_NO_RESULT, NOT_PICKED]
+        );
     }
 }
 

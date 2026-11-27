@@ -19,7 +19,8 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use support::{eventually, git, Agent, Done, Fake};
 use tessel_coordinator::protocol::{
-    AgentId, ClaimId, ClientMsg, CommitId, RequestId, ReviewReason, Scope, ServerMsg,
+    AgentId, ClaimId, ClientMsg, CommitId, RequestId, ReviewReason, Scope, ServerMsg, LOST_RACE,
+    NOT_PICKED,
 };
 
 const TOK1: &str = "tok-a1-S3CRETvalue";
@@ -493,46 +494,6 @@ async fn stop_blocks_with_the_quoted_reason_when_the_submission_is_rejected() ->
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_tells_a_race_loser_its_claim_ended_and_how_to_ship_the_work() -> Result<()> {
-    let (fake, a1) = world().await?;
-    let claim = submitted_claim(&a1)?;
-    let (done, _took) = stop_with_push(&a1, 20_000, || {
-        fake.push(
-            "a1",
-            ServerMsg::SubmitRejected {
-                claim: ClaimId(claim),
-                reason: "lost the race".into(),
-                reviewer: None,
-                note: None,
-            },
-        );
-    })?;
-    let shown = blocked_reason(&done)?;
-    assert!(
-        shown.contains("race entry was rejected and its claim ended"),
-        "{shown}"
-    );
-    assert!(shown.contains("your fork is untouched"), "{shown}");
-    assert!(
-        shown.contains("claim the race's scopes once they are free"),
-        "{shown}"
-    );
-    assert!(shown.contains("reopen the race"), "{shown}");
-    assert!(
-        shown.contains("deciding whether and how to ship the work"),
-        "{shown}"
-    );
-    // The fake's claim is no race entry, so the daemon's own note keeps the ordinary text; the
-    // hook's lead line is what is pinned here.
-    let lead = shown.lines().next().unwrap_or_default();
-    assert!(
-        !lead.contains("active again") && !lead.contains("submit again"),
-        "{shown}"
-    );
-    Ok(())
-}
-
 /// Pushes `rejections` (claim, reason) to the agent and waits until its daemon filed the first.
 async fn push_rejections(fake: &Fake, a1: &Agent, rejections: &[(u64, &str)]) -> Result<()> {
     for (claim, reason) in rejections {
@@ -559,22 +520,10 @@ async fn push_rejections(fake: &Fake, a1: &Agent, rejections: &[(u64, &str)]) ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_tells_an_unread_race_rejection_the_same_when_nothing_is_submitted() -> Result<()> {
-    let (fake, a1) = world().await?;
-    let claim = submitted_claim(&a1)?;
-    push_rejections(&fake, &a1, &[(claim, "the race was not picked in time")]).await?;
-    let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
-    assert!(shown.contains("its claim ended"), "{shown}");
-    let lead = shown.lines().next().unwrap_or_default();
-    assert!(!lead.contains("active again"), "{shown}");
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_keeps_the_ordinary_text_when_a_rejection_is_mixed_with_a_race_one() -> Result<()> {
     let (fake, a1) = world().await?;
     let claim = submitted_claim(&a1)?;
-    let mixed = [(claim, "lost the race"), (claim + 50, "merge conflict")];
+    let mixed = [(claim, LOST_RACE), (claim + 50, "merge conflict")];
     push_rejections(&fake, &a1, &mixed).await?;
     let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
     assert!(shown.contains("`tessel submit` again"), "{shown}");
@@ -590,7 +539,7 @@ async fn stop_keeps_the_ordinary_text_when_a_race_rejection_comes_with_an_uncove
 ) -> Result<()> {
     let (fake, a1) = world().await?;
     let claim = submitted_claim(&a1)?;
-    push_rejections(&fake, &a1, &[(claim, "lost the race")]).await?;
+    push_rejections(&fake, &a1, &[(claim, LOST_RACE)]).await?;
     fake.push(
         "a1",
         ServerMsg::Uncovered {
@@ -882,11 +831,58 @@ async fn stop_keeps_the_ordinary_text_for_a_race_text_on_a_claim_that_is_no_race
 ) -> Result<()> {
     let (fake, a1) = world().await?;
     let claim = submitted_claim(&a1)?;
-    push_rejections(&fake, &a1, &[(claim, "lost the race")]).await?;
+    push_rejections(&fake, &a1, &[(claim, LOST_RACE)]).await?;
     let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
     // The claim is still held and active again: the daemon found no race mark on it, so the hook
     // must not say its claim ended.
     assert!(shown.contains("`tessel submit` again"), "{shown}");
     assert!(!shown.contains("its claim ended"), "{shown}");
+    Ok(())
+}
+
+/// Appends a notice the daemon would have written for a race entry that ended: the core's text
+/// and the daemon's own mark.
+fn append_ended_entry(agent: &Agent, claim: u64, reason: &str, ended: bool) -> Result<()> {
+    use std::io::Write;
+    let msg = ServerMsg::SubmitRejected {
+        claim: ClaimId(claim),
+        reason: reason.into(),
+        reviewer: None,
+        note: None,
+    };
+    let mut line: Value = serde_json::from_str(&server_line("submit_rejected", &msg)?)?;
+    line["race_entry_ended"] = json!(ended);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(agent.root().join(".tessel/inbox.jsonl"))?;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_tells_a_race_loser_its_claim_ended_and_how_to_ship_the_work() -> Result<()> {
+    for reason in [LOST_RACE, NOT_PICKED] {
+        let (_fake, a1) = world().await?;
+        a1.start("race loser")?;
+        append_ended_entry(&a1, 9, reason, true)?;
+        let shown = blocked_reason(&run_stop(&a1, 600, &stop_event(false))?)?;
+        assert!(
+            shown.contains("race entry was rejected and its claim ended"),
+            "{shown}"
+        );
+        assert!(shown.contains("your fork is untouched"), "{shown}");
+        assert!(
+            shown.contains("claim the race's scopes once they are free"),
+            "{shown}"
+        );
+        assert!(shown.contains("reopen the race"), "{shown}");
+        assert!(
+            shown.contains("deciding whether and how to ship the work"),
+            "{shown}"
+        );
+        let lead = shown.lines().next().unwrap_or_default();
+        assert!(!lead.contains("active again"), "{shown}");
+    }
     Ok(())
 }

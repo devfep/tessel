@@ -205,6 +205,11 @@ pub struct Notice {
     pub kind: NoticeKind,
     pub note: String,
     pub server: Option<ServerMsg>,
+    /// The daemon found the race mark on the claim this rejection names, and dropped the claim: a
+    /// race entry that ended. Without it a race text on a claim that is still held is an ordinary
+    /// refusal, whatever it says.
+    #[serde(default)]
+    pub race_entry_ended: bool,
 }
 
 pub fn append_notice(
@@ -329,6 +334,7 @@ fn parse_line(index: usize, line: &str) -> Notice {
         kind: NoticeKind::Error,
         note: format!("inbox line {} is unreadable: {e}", index + 1),
         server: None,
+        race_entry_ended: false,
     })
 }
 

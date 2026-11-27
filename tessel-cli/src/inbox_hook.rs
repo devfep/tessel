@@ -371,6 +371,8 @@ fn is_rejection(notice: &Notice) -> bool {
 }
 
 /// True when every unread rejection or uncovered notice is a race entry ending: no claim is left.
+/// The daemon decided that, from the race mark on the claim and the core's fixed text, and says so
+/// in the notice (`race_entry_ended`); the text alone does not make a held claim a dead entry.
 fn only_race_entries_rejected(worktree: &Worktree) -> Result<bool, String> {
     let unread = state::unread_notices(worktree).map_err(|e| e.to_string())?;
     let mut rejections = unread
@@ -380,7 +382,9 @@ fn only_race_entries_rejected(worktree: &Worktree) -> Result<bool, String> {
     if rejections.peek().is_none() {
         return Ok(false);
     }
-    Ok(rejections.all(|notice| notice.server.as_ref().is_some_and(is_race_rejection)))
+    Ok(rejections.all(|notice| {
+        notice.race_entry_ended && notice.server.as_ref().is_some_and(is_race_rejection)
+    }))
 }
 
 fn still_pending(submitted: &[ClaimId], wait: Duration) -> String {

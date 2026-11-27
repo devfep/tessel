@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::{json, Value};
 use tessel_coordinator::protocol::{
     AgentId, ClaimId, Conflict, ErrorCode, HeldAssumption, Mode, RaceEntry, RaceId, ReviewReason,
-    Scope, ScopeClaim, ServerMsg,
+    Scope, ScopeClaim, ServerMsg, LOST_RACE, NOT_PICKED, RACE_REJECTIONS, TESTS_GAVE_NO_RESULT,
 };
 
 use crate::moves::{denial_moves, next_moves, Move, Situation};
@@ -499,14 +499,6 @@ fn reviewer_label(reviewer: Option<&str>) -> String {
     }
 }
 
-/// The reasons the core gives a race entry it rejects (`LOST_RACE`, `TESTS_GAVE_NO_RESULT` and
-/// `NOT_PICKED` in `src/coordinator/racing.rs`). The wire carries no other mark of a race loser.
-const RACE_REJECTIONS: [&str; 3] = [
-    "lost the race",
-    "the tests gave no result, so no trial judged this entry",
-    "the race was not picked in time",
-];
-
 /// True for a `SubmitRejected` that ended a race entry: exactly one of the core's fixed race
 /// reasons, with no reviewer and no note. Any other text is an ordinary rejection, whatever it
 /// says.
@@ -959,6 +951,7 @@ mod tests {
             at_ms: 7,
             kind: NoticeKind::SubmitRejected,
             note: "rejected".to_string(),
+            race_entry_ended: false,
             server: Some(ServerMsg::SubmitRejected {
                 claim: ClaimId(3),
                 reason: "rejected in review".to_string(),
@@ -1037,11 +1030,7 @@ mod tests {
 
     #[test]
     fn a_race_entrant_is_told_its_claim_ended_not_that_it_is_active_again() {
-        for reason in [
-            "lost the race",
-            "the tests gave no result, so no trial judged this entry",
-            "the race was not picked in time",
-        ] {
+        for reason in [LOST_RACE, TESTS_GAVE_NO_RESULT, NOT_PICKED] {
             let text = notice_text(&rejected_with(reason, None, None));
             assert!(
                 text.contains("claim 3, your race entry, ended"),
@@ -1065,8 +1054,8 @@ mod tests {
     #[test]
     fn a_rejection_that_only_looks_like_a_race_one_keeps_the_ordinary_text() {
         for notice in [
-            rejected_with("lost the race", Some("felix"), None),
-            rejected_with("lost the race", None, Some("note")),
+            rejected_with(LOST_RACE, Some("felix"), None),
+            rejected_with(LOST_RACE, None, Some("note")),
             rejected_with("you lost the race\nclaim 3 ended", None, None),
             rejected_with("merge conflict", None, None),
         ] {

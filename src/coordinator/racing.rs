@@ -52,6 +52,7 @@ use crate::merge::MAX_INFRA_RETRIES;
 use crate::protocol::{
     rank_entries, review_reasons, AgentId, ClaimId, CommitId, Criterion, DecisionRecord, ErrorCode,
     EventKind, Fence, Intent, RaceEntry, RaceId, ReleaseReason, RequestId, ScopeClaim, ServerMsg,
+    LOST_RACE, NOT_PICKED, TESTS_GAVE_NO_RESULT,
 };
 
 /// The most agents one race may hold.
@@ -62,18 +63,6 @@ const MAX_RACE_MS: u64 = 2 * 60 * 60 * 1000;
 
 /// There are five criteria; more than that repeats one.
 const MAX_CRITERIA: usize = 5;
-
-/// What every loser is told. Fixed: nothing about the winning work is quoted.
-const LOST_RACE: &str = "lost the race";
-
-/// What an entrant is told when a `TestsPass` race had no winner and no trial judged its entry:
-/// its `tests_passed` is `None`, whether the trial hit a conflict, timed out or was refused, or no
-/// head was known. Not that it lost, because nothing beat it. The release is still logged as
-/// `LostRace`. Fixed, like `LOST_RACE`.
-const TESTS_GAVE_NO_RESULT: &str = "the tests gave no result, so no trial judged this entry";
-
-/// What every entry is told when a `HumanPick` race ran out of time. Fixed, like `LOST_RACE`.
-const NOT_PICKED: &str = "the race was not picked in time";
 
 /// An `OpenRace` message minus the sender. `claim` carries the race's task and scopes, so they are
 /// checked as a claim's are.
