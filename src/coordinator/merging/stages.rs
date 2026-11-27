@@ -2339,3 +2339,74 @@ fn a_refused_land_in_a_fenced_doubt_waits_the_backoff_and_stays_told() {
     assert!(!rejected(&effects));
     waits_in_doubt_until_due(&mut c, claim, "refused Land");
 }
+
+// ---- Only an offered dispatch is answered ----
+
+/// The stored state as the core would write it, without the time it has seen.
+fn state_without_clock(c: &Coordinator) -> serde_json::Value {
+    let mut state = serde_json::to_value(c).unwrap();
+    if let Some(object) = state.as_object_mut() {
+        object.remove("clock_ms");
+    }
+    state
+}
+
+#[test]
+fn an_answer_to_the_waiting_prepare_of_a_doubt_changes_nothing_until_it_is_offered() {
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    c.merge_outcome(prepare.id, &MergeOutcome::Timeout {}, NOW + 20_000);
+    let waiting = c
+        .state
+        .merge_in_flight
+        .as_ref()
+        .expect("a Prepare waits")
+        .dispatch;
+    let due = retry_at(&c, claim);
+    let before = state_without_clock(&c);
+    for outcome in [prepared(), prepared_other_head(), MergeOutcome::Tested {}] {
+        let effects = c.merge_outcome(waiting, &outcome, due - 1);
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(
+            state_without_clock(&c),
+            before,
+            "{outcome:?} was taken early"
+        );
+    }
+    assert_eq!(retry_at(&c, claim), due, "the wait is still set");
+    let offered = c.begin_merge(due).expect("the Prepare is due");
+    assert_eq!(offered.id, waiting);
+    c.merge_outcome(offered.id, &prepared_other_head(), due + 1);
+    assert_ne!(
+        state_without_clock(&c),
+        before,
+        "an offered Prepare is answered"
+    );
+}
+
+#[test]
+fn an_answer_to_the_reconcile_that_waits_changes_nothing_until_it_is_offered() {
+    let (mut c, claim, _) = in_doubt_after_unknown();
+    let due = retry_at(&c, claim);
+    let before = state_without_clock(&c);
+    let landed = Reconciliation::Landed;
+    let dispatch = c
+        .state
+        .merge_in_flight
+        .as_ref()
+        .expect("a Reconcile waits")
+        .dispatch;
+    let effects = c.reconcile_outcome(dispatch, &landed, due - 1);
+    assert!(effects.is_empty(), "{effects:?}");
+    assert_eq!(
+        state_without_clock(&c),
+        before,
+        "an unoffered Reconcile was answered"
+    );
+    let offered = c.begin_merge(due).expect("the Reconcile is due");
+    c.reconcile_outcome(offered.id, &landed, due + 1);
+    assert_ne!(
+        state_without_clock(&c),
+        before,
+        "an offered Reconcile is answered"
+    );
+}
