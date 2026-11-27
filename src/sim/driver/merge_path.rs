@@ -694,12 +694,26 @@ pub(super) mod tests {
 
     /// `race_on_an_adopted_head`, with `arm` run just before the entrant submits.
     pub(in crate::sim::driver) fn race_run(refused: u32, arm: impl FnOnce(&mut Sim)) -> Sim {
-        let config = HostConfig {
+        let mut sim = race_submitted(race_config(), refused, arm);
+        for _ in 0..12 {
+            sim.advance(100_000);
+            assert!(sim.quiet());
+        }
+        sim
+    }
+
+    fn race_config() -> HostConfig {
+        HostConfig {
             repo: "sim".to_string(),
             run: Some("sim".to_string()),
             reviewers: Some("reviewer".to_string()),
             ..HostConfig::default()
-        };
+        }
+    }
+
+    /// A reviewer opens a `TestsPass` race on the head a `Hello` adopted, and one agent enters
+    /// and submits; nothing has run past the submission.
+    fn race_submitted(config: HostConfig, refused: u32, arm: impl FnOnce(&mut Sim)) -> Sim {
         let mut sim = Sim::new(config, Variant::Correct);
         sim.refuse_head_reads(refused);
         let reviewer = sim.connect("reviewer");
@@ -732,11 +746,63 @@ pub(super) mod tests {
         let work = submit(3, claim, fence, "src/a.rs");
         arm(&mut sim);
         sim.send(agent, &work, RequestKind::Submit, Some(claim));
-        for _ in 0..12 {
-            sim.advance(100_000);
+        sim
+    }
+
+    fn race_decided(sim: &Sim) -> bool {
+        let (events, _) = sim.store().events();
+        let decided = events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::RaceDecided { winner: None, .. }));
+        decided
+    }
+
+    fn no_head_read_or_trial(sim: &Sim) {
+        for dispatch in sim.dispatches() {
+            assert!(
+                !matches!(
+                    dispatch.request,
+                    Request::ReadHead { .. } | Request::Trial { .. }
+                ),
+                "a head read or trial was dispatched: {:?}",
+                dispatch.request
+            );
+        }
+    }
+
+    #[test]
+    fn a_race_on_a_port_that_reads_no_heads_is_decided_with_no_head_read_or_trial() {
+        let config = HostConfig {
+            trunk_head_unreadable: true,
+            ..race_config()
+        };
+        let mut sim = race_submitted(config, 0, |_| {});
+        assert!(sim.quiet());
+        assert!(race_decided(&sim), "the race waits for a head nobody reads");
+        no_head_read_or_trial(&sim);
+        let found = check::run(&sim, &Checker::ALL);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_race_waiting_for_a_head_is_released_when_the_port_stops_reading_heads() {
+        let mut sim = race_submitted(race_config(), 1, |_| {});
+        assert!(sim.quiet());
+        assert!(!race_decided(&sim), "the race waits for the head read");
+        let before = sim.dispatches().len();
+        sim.stop_reading_heads();
+        for _ in 0..3 {
+            sim.advance(1_000);
             assert!(sim.quiet());
         }
-        sim
+        assert!(race_decided(&sim), "the stored race is never released");
+        let dispatched = sim.dispatches().len();
+        assert_eq!(
+            dispatched, before,
+            "no call goes out once the port reads no heads"
+        );
+        let found = check::run(&sim, &Checker::ALL);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

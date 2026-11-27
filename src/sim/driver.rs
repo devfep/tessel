@@ -279,6 +279,14 @@ impl Sim {
         self.lander.refuse_head_reads(count);
     }
 
+    /// The deployment stops reading main's head and the process restarts under that setting, so
+    /// a stored core meets a port that reads no heads (`HostConfig::trunk_head_unreadable`).
+    #[cfg(test)]
+    pub(crate) fn stop_reading_heads(&mut self) {
+        self.config.trunk_head_unreadable = true;
+        self.crash_now();
+    }
+
     /// Cut off every call for the fork commit `fork` at its `Prepare`, or at its `Test`.
     #[cfg(test)]
     pub(crate) fn poison_fork(&mut self, fork: &str, at_test: bool) {
