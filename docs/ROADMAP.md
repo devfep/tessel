@@ -7,11 +7,48 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 10:20 UTC. Main and the coordinator's head at `27b8c74`. SIM-RACE-TEXT-LITERAL
-and SIM-FENCED-RULE-CHECKER landed through the server at 10:12 UTC as `09d1f47`..`27b8c74` (claim
-200, rebased onto `69de245`; the daemon copied all five notes), held for review because they change
-`Checker` and `Variant`, and approved by the orchestrator on an Opus review ("With changes", one
-must-fix; re-check "Yes" on `3f564a5` after one fix pass)
+**As of:** 2026-11-27 12:40 UTC. Main and the coordinator's head at `98d1a51`. Three landings
+through the server since 10:20. HOST-SQLITE-RETRY-BACKOFF at 10:58 UTC as `3507e72`..`941db87`
+(claim 203, rebased onto `ff6e7af`; the orchestrator copied the five notes at 10:59:07 UTC, nine
+seconds before the daemon's retry found them noted), on a 3-0 vote after two fix passes (all three
+"Yes with should-fixes" on `03aed3c`, docs edits on re-check 1, "Yes" on `57401fa`;
+`~/tessel-orch-notes/2026-11-27/vote-host-sqlite-retry-backoff/`): no code change;
+`src/host/batch.rs` says per SQLite failure class why the commit retry has no pause; new tests pin
+the store's busy timeout (the literal 5,000 ms) and that a failed two-entry batch stores nothing;
+deleting the store's own `busy_timeout` call survives them, as rusqlite's default is also 5 s;
+`docs/configuration.md` says a store outage longer than the lease lapses every open claim and one
+longer than 20 s can. Main's CI (45986538190) and the Adapter suite (45986538274) passed on
+`941db87`; its push run found no mutants (the change is doc comments and tests). CLAIM-SCATTER at
+12:14 UTC as `188afb9`..`5eff16e` (claim 206; its base was the coordinator's head, so the commits
+landed unchanged, with their notes), on an Opus review ("With changes", two must-fixes; re-check
+"Yes" on `6ed67e9` with one SKILL.md edit, made in `5eff16e`;
+`~/tessel-orch-notes/2026-11-27/lane-a/claim-scatter/`): `tessel claim --into <claim>` amends a
+named claim through the existing `Amend`, in the CLI only; the daemon refuses it with `--new`,
+`--wait` or `--assume` for every caller, MCP included; a plain grant in answer to `--into` (an older
+daemon) fails with a request to restart it; the skill says `stop` releases open claims. Main's CI
+(45996939998) and the Adapter suite (45996940253) passed on `5eff16e`; its push run was the first in
+which #134's server and CLI job tested mutants: 20, 19 caught, 1 unviable. MERGE-OUTCOME-UNOFFERED
+at 12:31 UTC as `919f229`..`98d1a51` (claim 204, rebased onto `5eff16e`, the lander leaving out lane
+B's merge of main; the daemon retries a note copy on the coordinator's next merge, base move or
+snapshot, at its start and on each CLI command, and none came, so the orchestrator copied the five
+notes), on a 3-0 vote after two fix passes (all three "Yes with should-fixes" on `134120d`, which
+covered only the `Prepare`; "Yes" on `2df77f2`;
+`~/tessel-orch-notes/2026-11-27/vote-merge-outcome-unoffered/`): `merge_outcome` ignores an answer
+to a `Prepare` inside its backoff and `reconcile_outcome` one to a `Reconcile` inside its backoff;
+`resolve_doubt` enters by a private `apply_reconciliation`, so the operator's answer still applies
+at once; no stored field (the lane first thought one was needed; VOTE-1 and VOTE-2 prototyped the
+guard without one). The row's "(and log)" is not met: nothing is logged, as on the stale-dispatch
+path, and a core log would need a new `EventKind`. VOTE-1 found an older test answering inside the
+new backoff, which hid a check from it; it now answers past it. VOTE-2 found the simulator has no
+liveness check for a doubt (SIM-DOUBT-LIVENESS). Main's CI (45999398849) and the Adapter suite
+(45999398797) passed on `98d1a51`; its push run tested 10 mutants: 6 caught, 4 unviable. The Nightly
+(45995920783) runs on `941db87` since 12:06 UTC. SIM-DOUBT-PREPARED-TRAFFIC went to lane A at about
+12:15 UTC (the row's lane B was busy). PR #136 (the 10:20 record) merged as `ff6e7af`.
+**Earlier (27 November 10:20 UTC):** Main and the coordinator's head at `27b8c74`.
+SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER landed through the server at 10:12 UTC as
+`09d1f47`..`27b8c74` (claim 200, rebased onto `69de245`; the daemon copied all five notes), held for
+review because they change `Checker` and `Variant`, and approved by the orchestrator on an Opus
+review ("With changes", one must-fix; re-check "Yes" on `3f564a5` after one fix pass)
 (`~/tessel-orch-notes/2026-11-27/lane-b/sim-fenced-rule-checker/REVIEW-1.md`): the first variant
 removed `doubt_since_ms`, so I5 fired first on every seed tried (0..19); it now writes null, and a
 test runs every checker and requires each violation to be FencedRule's (red on the old variant). The
@@ -394,12 +431,10 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- HOST-SQLITE-RETRY-BACKOFF (lane A, `e8c3845`..`03aed3c`, claim 203): vote 3-0 "Yes with
-  should-fixes" on `03aed3c`; fix pass 1 runs
-  (`~/tessel-orch-notes/2026-11-27/lane-a/host-sqlite-retry-backoff/FIX-1.md`), then the same voters
-  re-check.
-- MERGE-OUTCOME-UNOFFERED (lane B, dispatched about 10:15 UTC; merge path, a vote follows;
-  `~/tessel-orch-notes/2026-11-27/lane-b/merge-outcome-unoffered/`).
+- SIM-DOUBT-PREPARED-TRAFFIC (lane A, dispatched about 12:15 UTC, branch
+  task-sim-doubt-prepared-traffic from `5eff16e`;
+  `~/tessel-orch-notes/2026-11-27/lane-a/sim-doubt-prepared-traffic/`).
+- Lane B: idle; its next task follows this record.
 - P1-CORE-RECONCILE's history, for the record: Opus REVIEW-1 "With changes" (a new top-level
   `ServerMsg::MergeDoubt` with no version bump, against invariant 13); Felix put that to a vote,
   three Opus voters all chose to keep it with changes, and the orchestrator merged their
@@ -469,9 +504,8 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** HOST-SQLITE-RETRY-BACKOFF (lane A, fix pass 1) and MERGE-OUTCOME-UNOFFERED (lane B, merge
-path, a vote), running; the next Nightly shows whether the mutants baseline passes; then
-SIM-DOUBT-PREPARED-TRAFFIC and CLAIM-SCATTER; CLAIM-LEASE-LAPSE's code on Felix's decision; the
+**Next:** SIM-DOUBT-PREPARED-TRAFFIC (lane A), running; the Nightly on `941db87` shows whether the
+mutants baseline passes; then SIM-DOUBT-LIVENESS; CLAIM-LEASE-LAPSE's code on Felix's decision; the
 dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then
 P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on
 a world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for
@@ -1805,9 +1839,11 @@ Lane B:
   (`ci.yml:205`), so server landings get no mutant check before the Nightly: run it on a push to
   main too (or in the landing check). Done: a push to main runs the `--in-diff` mutants of the
   pushed range.
-- [ ] **HOST-SQLITE-RETRY-BACKOFF** — S, lane B; from HOST-HARDENING-FOLLOWUPS (its row's item,
-  dropped by the brief, unassessed). The persist retry repeats at once; decide, with a test,
-  whether real SQLite failures (busy, disk full, I/O) need a backoff.
+- [x] **HOST-SQLITE-RETRY-BACKOFF** (`3507e72`..`941db87`, landed by the server 27 November; vote
+  3-0 Yes on `57401fa` after two fix passes; no code change, the docs say why) — S, lane B; from
+  HOST-HARDENING-FOLLOWUPS (its row's item, dropped by the brief, unassessed). The persist retry
+  repeats at once; decide, with a test, whether real SQLite failures (busy, disk full, I/O) need a
+  backoff.
 - [x] **SUDO-RS-RUNNER** (#130, merged 27 November as `0ed8cb8`; vote 3-0 for, after two fix passes;
   VOTE-3's last vote Yes with should-fixes, PR text only) — M, lane A, merge path if
   `tessel-server/src/landing/` changes; from Own users 45921694300 and the rerun of 41243983653 (27
@@ -1832,20 +1868,23 @@ Lane B:
   MUTANTS-DOUBT-PACING's VOTE-2. The removals there rest on a rule (a fenced claim's merge in flight
   is that claim's, with `doubt_since_ms` set) that a `debug_assert!` and a stage walk now check; add
   it to the simulator's checkers. Done: a variant that breaks the rule fails the checker.
-- [ ] **CLAIM-SCATTER** — S, lane A (the CLI); found 27 November. `tessel claim` adds scopes to the
-  agent's open claim only when it holds exactly one; a lane holding two tasks' claims gets a new
-  claim per `tessel claim`, and `tessel submit --claim` covers only the claim it names
-  (`src/coordinator.rs:1425`), so the orchestrator had to release and re-claim to submit. Let a
-  claim be extended by number (`tessel claim --into <claim>`) or submit cover several claims; decide
-  with a test. Also make the skill's "To change it, `tessel stop`, then `start`" (SKILL.md:48) say
-  that this releases the claims. Submit covering several claims changes `Submit`, which names one
-  claim: additive under rule 1, or ask Felix.
-- [ ] **MERGE-OUTCOME-UNOFFERED** — S, lane B, merge path (`src/coordinator/`); from
-  MUTANTS-DOUBT-PACING's VOTE-3. The doubt-pacing code assumes only a dispatch `begin_merge`
-  offered is answered (`release_wait`, `reconcile_before_ending` say so); an answer to a flight
-  that still waits would take a waiting `Prepare` early or clear an unexpired wait. No host or
-  simulator sends one. Make `merge_outcome` ignore (and log) an answer to a flight that was not
-  offered, with a test. Done: the assumption is a rule the core enforces.
+- [x] **CLAIM-SCATTER** (`188afb9`..`5eff16e`, landed by the server 27 November; Opus review With
+  changes, re-check Yes; `tessel claim --into`, the CLI only) — S, lane A (the CLI); found 27
+  November. `tessel claim` adds scopes to the agent's open claim only when it holds exactly one; a
+  lane holding two tasks' claims gets a new claim per `tessel claim`, and `tessel submit --claim`
+  covers only the claim it names (`src/coordinator.rs:1425`), so the orchestrator had to release and
+  re-claim to submit. Let a claim be extended by number (`tessel claim --into <claim>`) or submit
+  cover several claims; decide with a test. Also make the skill's "To change it, `tessel stop`, then
+  `start`" (SKILL.md:48) say that this releases the claims. Submit covering several claims changes
+  `Submit`, which names one claim: additive under rule 1, or ask Felix.
+- [x] **MERGE-OUTCOME-UNOFFERED** (`919f229`..`98d1a51`, landed by the server 27 November; vote 3-0
+  Yes on `2df77f2` after two fix passes; both stages; nothing logged, unlike the row's text) — S,
+  lane B, merge path (`src/coordinator/`); from MUTANTS-DOUBT-PACING's VOTE-3. The doubt-pacing code
+  assumes only a dispatch `begin_merge` offered is answered (`release_wait`,
+  `reconcile_before_ending` say so); an answer to a flight that still waits would take a waiting
+  `Prepare` early or clear an unexpired wait. No host or simulator sends one. Make `merge_outcome`
+  ignore (and log) an answer to a flight that was not offered, with a test. Done: the assumption is
+  a rule the core enforces.
 - [x] **SIM-RACE-TEXT-LITERAL** (`09d1f47`, landed by the server 27 November with
   SIM-FENCED-RULE-CHECKER) — S, lane B (`src/sim`); from RACE-TEXTS-SHARED's votes.
   `src/sim/driver/merge_path.rs` (~831) repeats the no-result race text as a literal; use the shared
@@ -1856,6 +1895,12 @@ Lane B:
   path. Make it common enough that the default seeds catch that break (a fault or a traffic mode),
   saying which pinned transcripts change, or say why it cannot. Done: the planted break fails a
   default run.
+- [ ] **SIM-DOUBT-LIVENESS** — S, lane B (`src/sim`); from MERGE-OUTCOME-UNOFFERED's VOTE-2. The
+  simulator has no liveness check for a merge in doubt: a core that drops every answer to a doubted
+  `Prepare` (each redispatched and dropped again) survives 300 seeds with every checker, and so does
+  one that drops every `Reconcile` answer; unit tests catch both. Add a checker that flags a claim
+  in doubt redispatched without progress past a bound, with a planted variant that fails it and the
+  correct core silent on a 300-seed sweep. Done: the planted variant fails a default run.
 - [x] **LOCK-OWNER** (done 27 November in `~/tessel-orch-notes/lib/cargo-lock.sh`, outside the
   repository; the gate scripts and the landing template use it) — S, orchestrator (the gate scripts
   in `~/tessel-orch-notes/`, not the repository); found 27 November. The machine-wide cargo lock is
