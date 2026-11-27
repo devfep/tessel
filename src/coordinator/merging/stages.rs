@@ -2104,7 +2104,7 @@ fn a_claim_without_its_submission_or_its_work_is_not_resolved_or_reconciled() {
         assert!(c.resolve_doubt(claim, true, NOW + 50).is_err());
         assert_eq!(before, serde_json::to_string(&c).unwrap());
         let dispatch = c.merge_flight_id(claim);
-        let effects = c.reconcile_outcome(dispatch, &Reconciliation::Landed, NOW + 10_000);
+        let effects = c.reconcile_outcome(dispatch, &Reconciliation::Landed, NOW + 20_000);
         assert!(
             effects.is_empty(),
             "submitted gone {submitted_gone}: {effects:?}"

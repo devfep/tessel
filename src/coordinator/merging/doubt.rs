@@ -174,8 +174,8 @@ impl Coordinator {
     /// out on its word. A `Reconcile` under a new dispatch id asks whether the head is on main;
     /// its answer lands the work, sends the `Land` again or ends the doubt as any `Reconcile`
     /// does. Nothing is counted. `pace` says whether it goes out at once or after the backoff.
-    /// Only an offered dispatch is answered, and the core enforces it (see `release_wait`): the
-    /// flight answered here (a `Prepare` or a `Test`) was offered, so the wait its claim held is
+    /// No answer is taken inside a backoff (see `release_wait`): the flight answered here (a
+    /// `Prepare` or a `Test`) was offered or is past its due time, so the wait its claim held is
     /// already cleared or past, and `AtOnce` need not clear it. The `Reconcile` made here waits out
     /// its backoff when paced, and `reconcile_outcome` ignores an answer to it until it is offered.
     pub(super) fn reconcile_before_ending(
@@ -250,7 +250,8 @@ impl Coordinator {
 
     /// The answer to the `Reconcile` of the merge in flight under `dispatch`. Only that dispatch
     /// can be answered; any other answer is stale and changes nothing. So is one to a `Reconcile`
-    /// that still waits out its backoff: `begin_merge` has not offered it, so no call is out.
+    /// that still waits out its backoff: `begin_merge` has not offered it since its wait began,
+    /// so no call is out.
     pub fn reconcile_outcome(
         &mut self,
         dispatch: u64,

@@ -248,7 +248,7 @@ impl Coordinator {
     /// flight is offered once its backoff is over, so a wait it holds is already past and clearing
     /// it changes no decision (every reader compares it with the clock).
     ///
-    /// The core enforces that only an offered dispatch is answered: `merge_outcome` ignores an
+    /// The core ignores an answer to a flight inside its backoff: `merge_outcome` ignores an
     /// answer to the `Prepare` that waits, and `reconcile_outcome` one to the `Reconcile` that
     /// waits (`waiting_stage`), so none takes a flight early, wait still set. The operator's
     /// `resolve_doubt` is not an answer to a call: it applies at once. A late answer to a `Land`
@@ -266,9 +266,10 @@ impl Coordinator {
     }
 
     /// The stage of the merge in flight if it is `dispatch` and still inside its backoff, so
-    /// `begin_merge` has not offered it and no call is out for it (an unoffered flight past its due
-    /// time is not told apart: it is answered). The `Prepare` is the one `wait_in_doubt` made; the
-    /// `Reconcile` is the one `enter_doubt` or `reconcile_before_ending` left.
+    /// `begin_merge` has not offered it since its wait began and no call is out for it (an
+    /// unoffered flight past its due time is not told apart: it is answered). The `Prepare` is the
+    /// one `wait_in_doubt` made; the `Reconcile` is the one `enter_doubt` or
+    /// `reconcile_before_ending` left.
     fn waiting_stage(&self, dispatch: u64, now_ms: u64) -> Option<&MergeStage> {
         let flight = self.state.merge_in_flight.as_ref();
         let flight = flight.filter(|flight| flight.dispatch == dispatch);
