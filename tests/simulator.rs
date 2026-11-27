@@ -1693,3 +1693,20 @@ fn a_watcher_cut_off_before_it_got_an_event_is_not_a_cut_off_replay() {
         .collect();
     assert!(cuts.contains(&0), "every seed cut a replay off: {cuts:?}");
 }
+
+#[test]
+fn eight_fixed_seeds_make_claims_that_rely_on_files_they_do_not_own() {
+    let mut relied_on = 0;
+    for seed in 0..8 {
+        let sim = driven(seed);
+        let (events, _) = sim.store().events();
+        relied_on += events
+            .iter()
+            .filter(|event| match &event.kind {
+                EventKind::ClaimGranted { intent, .. } => !intent.assumptions.is_empty(),
+                _ => false,
+            })
+            .count();
+    }
+    assert!(relied_on > 0, "no claim relied on a file it did not own");
+}

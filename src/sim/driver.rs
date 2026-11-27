@@ -1181,4 +1181,20 @@ mod tests {
         let again = prepare(&mut sim, 2, "f1");
         assert_eq!(first, again);
     }
+
+    #[test]
+    fn failed_commit_attempts_are_counted_per_batch_and_the_third_strikes() {
+        let mut sim = sim();
+        sim.count_failed_attempt(BatchId(1));
+        sim.count_failed_attempt(BatchId(2));
+        assert_eq!(
+            sim.failing_batch,
+            Some((BatchId(2), 1)),
+            "another batch starts again"
+        );
+        sim.count_failed_attempt(BatchId(2));
+        assert_eq!(sim.failing_batch, Some((BatchId(2), 2)));
+        sim.count_failed_attempt(BatchId(2));
+        assert_eq!(sim.failing_batch, None, "the last attempt is spent");
+    }
 }

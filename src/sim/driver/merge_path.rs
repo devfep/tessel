@@ -895,4 +895,154 @@ pub(super) mod tests {
         let found = check::run(&sim, &Checker::ALL);
         assert!(found.is_empty(), "{found:?}");
     }
+
+    #[test]
+    fn without_clock_drops_only_the_time_the_host_has_seen() {
+        let state = serde_json::json!({"a": 1, "clock_ms": 5});
+        assert_eq!(super::without_clock(&state), serde_json::json!({"a": 1}));
+        let bare = serde_json::json!(7);
+        assert_eq!(super::without_clock(&bare), bare);
+    }
+
+    #[test]
+    fn a_staged_entry_differs_from_the_state_before_it_by_more_than_the_clock() {
+        use crate::shell::{EVENT_PREFIX, STATE_KEY};
+        let before = super::without_clock(&serde_json::json!({"a": 1, "clock_ms": 5}));
+        let after = |state: serde_json::Value| state.to_string();
+        let moved = super::stored_difference(
+            STATE_KEY,
+            &after(serde_json::json!({"a": 1, "clock_ms": 9})),
+            &before,
+        );
+        assert_eq!(moved, None, "only the clock moved");
+        let changed = super::stored_difference(
+            STATE_KEY,
+            &after(serde_json::json!({"a": 2, "clock_ms": 5})),
+            &before,
+        );
+        assert_eq!(changed.as_deref(), Some("changed the stored state"));
+        assert_eq!(
+            super::stored_difference(STATE_KEY, "not json", &before),
+            None
+        );
+        let event_key = format!("{EVENT_PREFIX}7");
+        let wrote = super::stored_difference(&event_key, "{}", &before);
+        assert_eq!(wrote, Some(format!("wrote the event {event_key}")));
+        let other = super::stored_difference("other", "{}", &before);
+        assert_eq!(other.as_deref(), Some("wrote other"));
+    }
+
+    /// A sim whose stored core state is `state`, at the time `now_ms` it starts at.
+    fn sim_storing(state: Option<serde_json::Value>) -> Sim {
+        let mut sim = Sim::new(HostConfig::default(), Variant::Correct);
+        if let Some(state) = state {
+            let batch = crate::host::BatchId(1);
+            let entries = vec![(crate::shell::STATE_KEY.to_string(), state.to_string())];
+            sim.store.stage(batch, entries);
+            assert!(sim.store.apply(batch));
+        }
+        sim
+    }
+
+    #[test]
+    fn a_verification_is_ready_when_one_is_queued_out_of_backoff_and_none_is_running() {
+        use serde_json::json;
+        let now = Sim::new(HostConfig::default(), Variant::Correct).now_ms();
+        let queued = |retry: serde_json::Value| json!({"verifications": [{"retry_at_ms": retry}]});
+        assert!(!sim_storing(None).verification_ready(), "nothing is stored");
+        assert!(
+            sim_storing(Some(queued(json!(null)))).verification_ready(),
+            "no backoff"
+        );
+        assert!(
+            sim_storing(Some(queued(json!(now)))).verification_ready(),
+            "due now"
+        );
+        assert!(sim_storing(Some(queued(json!(now - 1)))).verification_ready());
+        assert!(
+            !sim_storing(Some(queued(json!(now + 1)))).verification_ready(),
+            "in backoff"
+        );
+        let running = json!({
+            "verification_in_flight": {"dispatch": 3},
+            "verifications": [{"retry_at_ms": null}],
+        });
+        assert!(
+            !sim_storing(Some(running)).verification_ready(),
+            "one is running"
+        );
+        let idle = json!({"verification_in_flight": null, "verifications": [{}]});
+        assert!(sim_storing(Some(idle)).verification_ready());
+        assert!(!sim_storing(Some(json!({"verifications": []}))).verification_ready());
+        assert!(
+            !sim_storing(Some(json!({}))).verification_ready(),
+            "no queue"
+        );
+    }
+
+    #[test]
+    fn the_deadline_of_a_call_the_lander_has_not_reached_answers_unknown_for_it() {
+        let mut sim = submitted_commit(|sim| sim.late_runs(10_000_000));
+        assert!(sim.quiet());
+        for _ in 0..12 {
+            sim.advance(100_000);
+            assert!(sim.quiet());
+        }
+        let cut_off = sim.lander().cutoffs().get(&fork()).copied().unwrap_or(0);
+        assert!(
+            cut_off >= 1,
+            "the adapter's deadline never answered: {cut_off}"
+        );
+    }
+
+    #[test]
+    fn the_deadline_of_an_answered_call_is_not_a_reason_to_move_the_clock() {
+        let mut sim = submitted_commit(|_| {});
+        for _ in 0..3 {
+            sim.advance(10);
+            assert!(sim.quiet());
+        }
+        assert!(merged(&sim), "the script merged nothing");
+        assert!(sim.open_calls.is_empty(), "every call was answered");
+        assert!(
+            !sim.timeline.is_empty(),
+            "the answered calls left their deadlines"
+        );
+        assert_eq!(sim.next_due_ms(), None);
+    }
+
+    #[test]
+    fn a_run_counts_its_trials_and_its_merged_claims() {
+        use crate::host::call::Request;
+        use crate::protocol::{AgentId, CommitId};
+        let trial = Request::Trial {
+            agent: AgentId("a".to_string()),
+            commit: None,
+            before: CommitId("b".to_string()),
+            main: CommitId("m".to_string()),
+        };
+        assert!(crate::sim::is_trial(&trial));
+        let read = Request::ReadHead {
+            submitted: Vec::new(),
+        };
+        assert!(!crate::sim::is_trial(&read));
+        let fresh = Sim::new(HostConfig::default(), Variant::Correct);
+        assert_eq!(crate::sim::merged_events(&fresh), 0);
+        let sim = merged_with_repeated_replies();
+        assert_eq!(crate::sim::merged_events(&sim), 1);
+    }
+
+    #[test]
+    fn the_merge_path_notes_each_dispatch_it_makes() {
+        let mut sim = submitted_commit(|_| {});
+        for _ in 0..3 {
+            sim.advance(10);
+            assert!(sim.quiet());
+        }
+        let notes = sim.slot_notes();
+        assert_eq!(notes.len(), sim.dispatches().len());
+        assert!(!notes.is_empty());
+        assert_eq!(notes[0].call, super::SlotCall::MergeStart);
+        assert!(notes.iter().all(|note| !note.verification_ready));
+    }
 }

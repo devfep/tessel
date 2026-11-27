@@ -914,4 +914,29 @@ mod tests {
         };
         assert_eq!(named(test).len(), 1);
     }
+
+    #[test]
+    fn a_claim_that_merged_a_poisoned_commit_is_flagged_while_another_claim_submits() {
+        let events = log(vec![
+            submitted(1, "bad"),
+            submitted(2, "good"),
+            merged(1, "h"),
+        ]);
+        let found = poisoned_outcome(&events, "bad", false);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].starts_with("claim 1 merged"), "{found:?}");
+    }
+
+    #[test]
+    fn a_claim_that_went_on_to_other_work_is_no_longer_held_to_its_poisoned_commit() {
+        let events = log(vec![
+            submitted(1, "bad"),
+            submitted(1, "good"),
+            merged(1, "h"),
+        ]);
+        assert_eq!(
+            poisoned_outcome(&events, "bad", false),
+            Vec::<String>::new()
+        );
+    }
 }
