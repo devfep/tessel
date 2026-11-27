@@ -3813,6 +3813,12 @@ async fn a_lost_amend_reply_says_status_lacks_the_scopes_until_the_log_is_read_t
         "claiming again is refused as stale: {}",
         lost.stdout
     );
+    assert!(
+        lost.stdout
+            .contains("refused as stale if the first amend was applied"),
+        "the notice states as fact what holds only if the amend arrived: {}",
+        lost.stdout
+    );
     back_online(&fake, &a1, before).await?;
     eventually(SHORT, || {
         Ok(a1
@@ -3835,5 +3841,31 @@ async fn a_lost_amend_reply_says_status_lacks_the_scopes_until_the_log_is_read_t
         Ok((scope_paths(&a1)? == ["src/a.rs", "src/b.rs"]).then_some(()))
     })
     .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_submit_reply_says_status_lacks_the_submission_until_the_log_is_read_to_its_end(
+) -> Result<()> {
+    let (fake, a1, _a2) = world(30_000).await?;
+    a1.start_settled("lost submit, cut read").await?;
+    assert_eq!(a1.tessel(&["claim", "src/b.rs"])?.code, 0);
+    let root = a1.root();
+    std::fs::write(
+        root.join("src/b.rs"),
+        "pub fn b() {\n    let _ = \"x\";\n}\n",
+    )?;
+    git(&root, &["commit", "-q", "-am", "x"])?;
+    fake.cut_replay(Some(fake.events().len()));
+    fake.lose_next("a1", Lose::Submit);
+    let lost = a1.tessel(&["submit", "--evidence", "tests passed"])?;
+    assert_ne!(lost.code, 0, "{}", lost.all());
+    let text = lost.all();
+    assert!(text.contains("submission may still have arrived"), "{text}");
+    assert!(
+        text.contains("read the coordinator's log to its end"),
+        "{text}"
+    );
+    assert!(!text.contains("a claim shown as submitted"), "{text}");
     Ok(())
 }

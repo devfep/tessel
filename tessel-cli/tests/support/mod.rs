@@ -158,6 +158,8 @@ pub enum Lose {
     Release,
     /// The coordinator never sees the review; the socket closes.
     Review,
+    /// The coordinator handles the submission, but the reply is lost and the socket closes.
+    Submit,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -471,7 +473,7 @@ impl Inner {
             .and_then(|agent| self.take_loss(agent, &msg));
         let replies = match lost {
             Some(Lose::Release | Lose::Review) => return true,
-            Some(Lose::ClaimReply) => Replies::Lose,
+            Some(Lose::ClaimReply | Lose::Submit) => Replies::Lose,
             None if self.takes_held_reply(&msg) => Replies::Park,
             None => Replies::Deliver,
         };
@@ -529,6 +531,8 @@ impl Inner {
             Lose::Release
         } else if let ClientMsg::Review { .. } = msg {
             Lose::Review
+        } else if let ClientMsg::Submit { .. } = msg {
+            Lose::Submit
         } else {
             return None;
         };
