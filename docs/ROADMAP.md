@@ -15,32 +15,32 @@ his passkey, the orchestrator regenerated the GitHub token with the same scopes,
 26 December 2026), and saved it to `<server dir>/github-token` from the clipboard without reading it
 (the new token reads all four repositories); `setup.sh` minted new agent tokens (valid to about 3
 December; the server configuration unchanged, `jobs = 2`); the server was started at 22:24 UTC with
-the same build (the `bin/` copies `setup.sh` rewrote have the same sha256). Felix asked whether
-dogfooding was only for the contest; shown section 8 and decision 6 of `PLAN.md` (17 and 20 October,
-after the contest), he chose to keep it. Then, through the server, both approved by the orchestrator
-on a 3-0 vote: HOST-HARDENING-FOLLOWUPS at 00:40 UTC on 27 November as `c88aa40`..`2640eff` (claim
-158, fast-forward; CI 45918121207 and the Adapter suite 45918121325, its kill -9 loop included,
-passed on `2640eff`) and SUDO-GATE-FOLLOWUPS at 01:17 UTC as `930748f`..`9e1bb97` (claim 157,
-rebased; notes copied by the daemon). On `9e1bb97` main CI (45921694282) and the Adapter suite
-(45921694273) passed; Own users (45921694300) failed: all 7 real-sudo tests (the first left
-processes in `_tessel-runner` that survived `kill -KILL -1`, the rest met them as survivors at
-`SudoRunner::new`) and the script's `sudo -l -U` check. The cause is the runner image, not the
-landing: `ubuntu-latest` moved from ubuntu-24.04 to ubuntu-26.04 (41243983653's first attempt on 31
-October ran 24.04, its rerun on 27 November 26.04), and the rerun of that green run on `80dba09`,
-before SUDO-GATE-FOLLOWUPS, fails the same way. Ubuntu 26.04 likely ships `sudo-rs` as `sudo` (not
-confirmed from the log). This pull request pins the job to ubuntu-24.04 (`5efea60`); the pin counts
-only once a run on it is green; SUDO-RS-RUNNER makes `SudoRunner` work on 26.04.
-HOST-HARDENING-FOLLOWUPS' first vote (on `6c5240a`) found a regression its own change made: the
-overflow withdrawal, deferred, ran after the batch's next job, which could grant the lock to the
-waiter just closed with 1013; fix pass 1 runs a next job at once only if it is a wake step or
-nothing is deferred, and also closes a replay whose read failed with 1011 (an empty `done` page;
-tessel-server sends one only on a failed read or a closed socket), so a failed read is no longer
-sent as a complete replay (R36 still promises none missed only while every read succeeds); a wake
-step still runs before the deferred withdrawals and could grant to the closed waiter (R42 says so;
-no shipped client reaches it); fix passes 2 and 3 kept a Watch on an already-closed socket from
-being logged as a failed read and pinned a guard; each voter's last vote was "Yes" (voters 1 and 2
-on `2640eff`, voter 3 on fix pass 1, `5a05ee3`; fix passes 2 and 3 closed voter 1's and voter 2's
-re-check items) (`~/tessel-orch-notes/2026-11-26/vote-host-hardening-followups/`).
+the same build (the `bin/` copies `setup.sh` rewrote have the same sha256 as those they replaced).
+Felix asked whether dogfooding was only for the contest; shown section 8 and decision 6 of `PLAN.md`
+(17 and 20 October, after the contest), he chose to keep it. Then, through the server, both approved
+by the orchestrator on a 3-0 vote: HOST-HARDENING-FOLLOWUPS at 00:40 UTC on 27 November as
+`c88aa40`..`2640eff` (claim 158, fast-forward; CI 45918121207 and the Adapter suite 45918121325, its
+kill -9 loop included, passed on `2640eff`) and SUDO-GATE-FOLLOWUPS at 01:17 UTC as
+`930748f`..`9e1bb97` (claim 157, rebased; notes copied by the daemon). On `9e1bb97` main CI
+(45921694282) and the Adapter suite (45921694273) passed; Own users (45921694300) failed: all 7
+real-sudo tests (the first left processes in `_tessel-runner` that survived `kill -KILL -1`, the
+rest met them as survivors at `SudoRunner::new`) and the script's `sudo -l -U` check. The cause is
+the runner image, not the landing: `ubuntu-latest` moved from ubuntu-24.04 to ubuntu-26.04
+(41243983653's first attempt on 31 October ran 24.04, its rerun on 27 November 26.04), and the rerun
+of that green run on `80dba09`, before SUDO-GATE-FOLLOWUPS, fails the same way. Ubuntu 26.04 likely
+ships `sudo-rs` as `sudo` (not confirmed from the log). This pull request pins the job to
+ubuntu-24.04 (`5efea60`); the pin counts only once a run on it is green; SUDO-RS-RUNNER makes
+`SudoRunner` work on 26.04. HOST-HARDENING-FOLLOWUPS' first vote (on `6c5240a`) found a regression
+its own change made: the overflow withdrawal, deferred, ran after the batch's next job, which could
+grant the lock to the waiter just closed with 1013; fix pass 1 runs a next job at once only if it is
+a wake step or nothing is deferred, and also closes a replay whose read failed with 1011 (an empty
+`done` page; tessel-server sends one only on a failed read or a closed socket), so a failed read is
+no longer sent as a complete replay (R36 still promises none missed only while every read succeeds);
+a wake step still runs before the deferred withdrawals and could grant to the closed waiter (R42
+says so; no shipped client reaches it); fix passes 2 and 3 kept a Watch on an already-closed socket
+from being logged as a failed read and pinned a guard; each voter's last vote was "Yes" (voters 1
+and 2 on `2640eff`, voter 3 on fix pass 1, `5a05ee3`; fix passes 2 and 3 closed voter 1's and voter
+2's re-check items) (`~/tessel-orch-notes/2026-11-26/vote-host-hardening-followups/`).
 SUDO-GATE-FOLLOWUPS' vote (`vote-sudo-gate-followups/`): all "Yes with should-fixes"; fix pass 1
 gave a command whose output stays open after its exit a true message, stopped `read_capped`
 swallowing read errors, made each log assertion name its own event, gave the hang test a 600 s stub
@@ -342,12 +342,12 @@ required checks, the repository admin role as bypass; always). Proven first on
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
 **Waiting on Felix** (the tokens were renewed, the build cap lowered and ruleset step 3 made, STATE
-above): a second reviewer, to decide claim 153, which now also blocks lanes (SUDO-GATE-FOLLOWUPS'
-`docs/dogfood.md` claim was denied); RUNNER-OWN-UID's sudo steps; whether the simulator gets a
-check that the merge path drains (a run that never finishes its work fails; most of the 50
-simulator mutants survive for want of one; scope, rule 10); whether to define GA (no phase is
-called that; the nearest is Phase 3's end) as a proposed PLAN change; deleting branch
-`state-1101-2`; whether CLAUDE.md rule 1 should also name a never-logged live notice an older
+above): a second reviewer, to decide claim 153, which now also blocks lanes (the coordinator denied
+SUDO-GATE-FOLLOWUPS' `docs/dogfood.md` claim, by lane A's report); RUNNER-OWN-UID's sudo steps;
+whether the simulator gets a check that the merge path drains (a run that never finishes its work
+fails; most of the 50 simulator mutants survive for want of one; scope, rule 10); whether to define
+GA (no phase is called that; the nearest is Phase 3's end) as a proposed PLAN change; deleting
+branch `state-1101-2`; whether CLAUDE.md rule 1 should also name a never-logged live notice an older
 daemon can skip and stay correct as additive (invariant 13 since `f1ea1f6`); the plan's rule (d)
 (`docs/proposals/phase-1.md`), which says a build bumps `state_version` "only if the old binary can
 still read the new state", a case the store's `refuse_unknown` rules out (#125 follows the code); a
@@ -361,14 +361,14 @@ commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** SUDO-RS-RUNNER (lane A), with this pull request's pin making main green meanwhile;
-REGRESSION-SEED-69962521-STALE (lane B, running), then SIM-HEAD-UNREADABLE (lane B);
-MUTANTS-DOUBT-PACING (lane A, merge path) and SIM-MUTANTS-2, which turn the Nightly green; the
-dogfood.md steps of SUDO-GATE-FOLLOWUPS once claim 153 is decided; then RESOLVE-RUNBOOK-NITS
-(also `docs/dogfood.md`), RACE-TEXTS-SHARED, CLAIM-LEASE-LAPSE, CLIENT-1013-CAUSE,
-LANDING-MUTANTS-IN-DIFF and HOST-SQLITE-RETRY-BACKOFF; then P1-ONE-BATCH (it flips R20, an M5
-done check). Felix's Homebrew postgres trusts local connections on a world-writable socket; he
-closes it before the accounts move.
+**Next:** SUDO-RS-RUNNER (lane A), with this pull request's pin meant to keep main green meanwhile
+(once a run on it is green); REGRESSION-SEED-69962521-STALE (lane B, running), then
+SIM-HEAD-UNREADABLE (lane B); MUTANTS-DOUBT-PACING (lane A, merge path) and SIM-MUTANTS-2, which
+turn the Nightly green; the dogfood.md steps of SUDO-GATE-FOLLOWUPS once claim 153 is decided; then
+RESOLVE-RUNBOOK-NITS (also `docs/dogfood.md`), RACE-TEXTS-SHARED, CLAIM-LEASE-LAPSE,
+CLIENT-1013-CAUSE, LANDING-MUTANTS-IN-DIFF and HOST-SQLITE-RETRY-BACKOFF; then P1-ONE-BATCH (it
+flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a world-writable
+socket; he closes it before the accounts move.
 LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
@@ -1695,15 +1695,15 @@ Lane B:
 - [ ] **HOST-SQLITE-RETRY-BACKOFF** — S, lane B; from HOST-HARDENING-FOLLOWUPS (its row's item,
   dropped by the brief, unassessed). The persist retry repeats at once; decide, with a test,
   whether real SQLite failures (busy, disk full, I/O) need a backoff.
-- [ ] **SUDO-RS-RUNNER** — M, lane A, merge path if `tessel-server/src/landing/` changes; from
-  Own users 45921694300 and the rerun of 41243983653 (27 November). On ubuntu-26.04 the
-  account's processes survive `kill -KILL -1` after a cancelled run and the script's `sudo -l -U`
-  check fails, on code that passed on 24.04; anyone running the accounts on Ubuntu 26.04 meets
-  the same. Find which `sudo` the image ships and why (a diagnostic run that dumps `ps -o
-  pid,ppid,stat,comm -U _tessel-runner` and `sudo -V`), make `SudoRunner` and
+- [ ] **SUDO-RS-RUNNER** — M, lane A, merge path if `tessel-server/src/landing/` changes; from Own
+  users 45921694300 and the rerun of 41243983653 (27 November). On ubuntu-26.04 the account's
+  processes survive `kill -KILL -1` after a cancelled run and the script's `sudo -l -U` check fails,
+  on code that passed there on 24.04 (`80dba09`, 31 October); anyone running the accounts on Ubuntu
+  26.04 likely meets the same. Find which `sudo` the image ships and why (a diagnostic run that
+  dumps `ps -o pid,ppid,stat,comm -U _tessel-runner` and `sudo -V`), make `SudoRunner` and
   `scripts/ci/own-users-linux.sh` work with it, add a stub that forks the runner under a parent
-  `sudo` (every stub now `exec`s, which hides parent and child), and move the Own users job back
-  to `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green on ubuntu-26.04.
+  `sudo` (every stub now `exec`s, which hides parent and child), and move the Own users job back to
+  `ubuntu-latest` (or add 26.04 beside 24.04). Done: Own users green on ubuntu-26.04.
 - [ ] **RACE-TEXTS-SHARED** — S, lane B (the core); from RACE-LOSER-TEXT's REVIEW-1. The CLI copies
   the core's three fixed race texts (`LOST_RACE`, `TESTS_GAVE_NO_RESULT`, `NOT_PICKED`, private in
   `src/coordinator/racing.rs`) into `tessel-cli/src/render.rs` `RACE_REJECTIONS`; real-core tests
