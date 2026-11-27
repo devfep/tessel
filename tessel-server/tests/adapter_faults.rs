@@ -178,9 +178,8 @@ fn seed_log(dir: &Path, total: u64, pad: usize) -> TestResult {
     let padding = "x".repeat(pad);
     let mut batch = Vec::new();
     for seq in 0..total {
-        let event = format!(
-            r#"{{"seq":{seq},"at_ms":{seq},"run":"r","event":"agent_connected","agent":"{padding}"}}"#
-        );
+        let head = format!(r#"{{"seq":{seq},"at_ms":{seq},"run":"r","event":"agent_connected","#);
+        let event = format!(r#"{head}"agent":"{padding}"}}"#);
         batch.push((shell::event_key(seq), event));
         if batch.len() == 200 {
             store.commit(&std::mem::take(&mut batch))?;
@@ -195,9 +194,10 @@ fn seed_log(dir: &Path, total: u64, pad: usize) -> TestResult {
     Ok(())
 }
 
-/// Events seeded for the slow watcher, and the bytes of each. On the Mac this was measured on, 1,150
-/// events of 4,000 bytes do not fill the writer queue (1,024 messages) beyond the kernel buffers of
-/// a loopback socket nobody reads, and 1,250 do; 3,000 leaves room for larger buffers on Linux.
+/// Events seeded for the slow watcher, and the bytes of each. On the Mac this was measured on,
+/// 1,150 events of 4,000 bytes do not fill the writer queue (1,024 messages) beyond the kernel
+/// buffers of a loopback socket nobody reads, and 1,250 do; 3,000 leaves room for larger Linux
+/// buffers.
 const SLOW_EVENTS: u64 = 3_000;
 const SLOW_PAD: usize = 4_000;
 
@@ -250,16 +250,46 @@ async fn a_watcher_that_never_reads_is_dropped_and_the_repo_goes_on() -> TestRes
     Ok(())
 }
 
-/// The close frame that ends `socket`: its code and reason, after any messages it still held.
-async fn closed_with(socket: &mut Socket) -> Result<(u16, String), Box<dyn std::error::Error>> {
+/// What a socket received up to the close frame that ended it.
+struct Closed {
+    messages: Vec<ServerMsg>,
+    code: u16,
+    reason: String,
+}
+
+impl Closed {
+    fn events(&self) -> usize {
+        let events = self.messages.iter();
+        events
+            .filter(|msg| matches!(msg, ServerMsg::Event { .. }))
+            .count()
+    }
+
+    fn welcomed(&self) -> bool {
+        let messages = self.messages.iter();
+        messages
+            .into_iter()
+            .any(|msg| matches!(msg, ServerMsg::Welcome { .. }))
+    }
+}
+
+/// Every message `socket` gets until its close frame, and the frame. A socket that ends without
+/// a close frame is an error.
+async fn until_close(socket: &mut Socket) -> Result<Closed, Box<dyn std::error::Error>> {
+    let mut messages = Vec::new();
     loop {
         match tokio::time::timeout(LIVE, socket.next()).await? {
             Some(Ok(Message::Close(Some(frame)))) => {
-                return Ok((frame.code.into(), frame.reason.to_string()));
+                return Ok(Closed {
+                    messages,
+                    code: frame.code.into(),
+                    reason: frame.reason.to_string(),
+                });
             }
             None | Some(Err(_) | Ok(Message::Close(None))) => {
                 return Err("the socket ended without a close frame".into());
             }
+            Some(Ok(Message::Text(text))) => messages.push(serde_json::from_str(&text)?),
             Some(Ok(_)) => {}
         }
     }
@@ -292,19 +322,16 @@ async fn an_event_row_that_cannot_be_read_ends_the_replay_with_1011_until_it_is_
     let server = start(dir.path()).await?;
     let mut watcher = connect(server.local_addr(), TOKEN_W).await?;
     send(&mut watcher, &ClientMsg::Watch { from_seq: 0 }).await?;
-    let mut events = 0;
-    let closed = loop {
-        match next(&mut watcher).await? {
-            Some(ServerMsg::Event { .. }) => events += 1,
-            Some(_) => {}
-            None => return Err("the replay ended without a close frame".into()),
-        }
-        if events == 100 {
-            break closed_with(&mut watcher).await?;
-        }
-    };
-    assert_eq!(events, 100, "the page before the bad row was sent");
-    assert_eq!(closed, (1011, "replay read failed".to_string()));
+    let closed = until_close(&mut watcher).await?;
+    assert_eq!(
+        closed.events(),
+        100,
+        "the close follows the first page and nothing else"
+    );
+    assert_eq!(
+        (closed.code, closed.reason.as_str()),
+        (1011, "replay read failed")
+    );
     let lines = support::log_lines_with("acme/demo");
     let said = |what: &str| lines.iter().any(|line| line.contains(what));
     assert!(
@@ -324,8 +351,10 @@ async fn an_event_row_that_cannot_be_read_ends_the_replay_with_1011_until_it_is_
     send(&mut watcher, &ClientMsg::Watch { from_seq: 0 }).await?;
     let mut events = 0;
     while events < 150 {
-        let msg = next(&mut watcher).await?;
-        events += u64::from(matches!(msg, Some(ServerMsg::Event { .. })));
+        let msg = next(&mut watcher)
+            .await?
+            .ok_or("the repaired replay ended early")?;
+        events += u64::from(matches!(msg, ServerMsg::Event { .. }));
     }
     assert_eq!(events, 150, "the repaired log is replayed whole");
     server.stop().await;
@@ -348,8 +377,16 @@ async fn a_state_row_that_does_not_load_closes_the_sender_1011_until_it_is_repai
     let server = start(dir.path()).await?;
     let mut agent = connect(server.local_addr(), TOKEN_A1).await?;
     send(&mut agent, &hello("a1")).await?;
-    let closed = closed_with(&mut agent).await?;
-    assert_eq!(closed.0, 1011, "{closed:?}");
+    let closed = until_close(&mut agent).await?;
+    assert!(
+        !closed.welcomed(),
+        "no welcome before the failure: {:?}",
+        closed.messages
+    );
+    assert_eq!(
+        (closed.code, closed.reason.as_str()),
+        (1011, "coordinator error")
+    );
     let lines = support::log_lines_with("acme/demo");
     assert!(
         lines.iter().any(|line| line.contains("load state failed")),
@@ -444,6 +481,53 @@ async fn a_repository_task_that_panics_is_logged_by_name_and_refuses_new_sockets
     assert!(
         matches!(welcome, Some(ServerMsg::Welcome { .. })),
         "{welcome:?}"
+    );
+    server.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_store_that_rejects_writes_fails_the_commit_three_times_and_serves_again_once_repaired(
+) -> TestResult {
+    support::capture_logs();
+    let dir = tempfile::tempdir()?;
+    seed_log(dir.path(), 3, 8)?;
+    let store = store_of(dir.path())?;
+    store.execute_batch(
+        "CREATE TRIGGER injected BEFORE INSERT ON kv \
+         BEGIN SELECT RAISE(ABORT, 'injected full'); END",
+    )?;
+    let server = start(dir.path()).await?;
+    let mut agent = connect(server.local_addr(), TOKEN_A1).await?;
+    send(&mut agent, &hello("a1")).await?;
+    let closed = until_close(&mut agent).await?;
+    assert!(
+        !closed.welcomed(),
+        "nothing is sent before it is stored: {:?}",
+        closed.messages
+    );
+    assert_eq!(
+        (closed.code, closed.reason.as_str()),
+        (1011, "coordinator error")
+    );
+    let lines = support::log_lines_with("acme/demo");
+    let failed = lines.iter().filter(|line| line.contains("commit failed"));
+    assert!(
+        failed.count() >= 3,
+        "every attempt is logged with the repo: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("injected full")),
+        "and says why: {lines:?}"
+    );
+
+    store.execute_batch("DROP TRIGGER injected")?;
+    let mut again = connect(server.local_addr(), TOKEN_A1).await?;
+    send(&mut again, &hello("a1")).await?;
+    let welcome = next(&mut again).await?;
+    assert!(
+        matches!(welcome, Some(ServerMsg::Welcome { .. })),
+        "a recovered store is served from the next message, without a restart: {welcome:?}"
     );
     server.stop().await;
     Ok(())
