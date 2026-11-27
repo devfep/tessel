@@ -36,6 +36,14 @@ use crate::state::{
 };
 use crate::worktree::{Worktree, WorktreeError};
 
+/// What a caller is told when its claim request lost its reply and the log read that would settle
+/// it failed or was cut: the coordinator may hold the claim, the daemon tracks nothing yet (so
+/// `tessel status` shows nothing), and a complete log read after a reconnect adopts it.
+const LOST_CLAIM_UNKNOWN: &str = "the connection dropped before the coordinator answered, and the \
+    coordinator's log could not be read to its end afterwards; the coordinator may hold that \
+    claim for this agent, and heartbeats keep it until a complete log read adopts it; \
+    `tessel status` cannot show it yet";
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FIRST_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
@@ -1319,10 +1327,8 @@ impl Daemon {
                      were not compared; see daemon.log",
                     None,
                 );
-                let message = "the connection dropped before the coordinator answered, and the \
-                               outcome could not be checked afterwards; run `tessel status`";
                 for pending in lost {
-                    answer(pending.replies, &refused(None, message));
+                    answer(pending.replies, &refused(None, LOST_CLAIM_UNKNOWN));
                 }
                 self.lost_releases = lost_releases;
                 self.settle_lost_waits(lost_waits.len(), &HashSet::new(), false);
@@ -1382,10 +1388,8 @@ impl Daemon {
             None,
         );
         self.lost_releases = lost_releases;
-        let message = "the connection dropped before the coordinator answered, and the outcome \
-                       could not be checked afterwards; run `tessel status`, then run it again";
         for pending in lost {
-            answer(pending.replies, &refused(None, message));
+            answer(pending.replies, &refused(None, LOST_CLAIM_UNKNOWN));
         }
         self.apply_plan(plan, Vec::new(), &in_flight_keys);
         self.settle_lost_waits(lost_waits.len(), &granted, false);

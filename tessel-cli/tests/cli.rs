@@ -2089,12 +2089,16 @@ async fn a_lost_reply_is_refused_when_the_log_read_is_cut_short_and_adopted_on_t
     let refused = a1.tessel(&["claim", "src/a.rs"])?;
     assert_eq!(refused.code, 1, "{}", refused.all());
     assert!(
-        refused.stdout.contains("the coordinator may hold that claim"),
+        refused
+            .stdout
+            .contains("may hold that claim for this agent"),
         "{}",
         refused.stdout
     );
     assert!(
-        refused.stdout.contains("`tessel status` cannot show it yet"),
+        refused
+            .stdout
+            .contains("`tessel status` cannot show it yet"),
         "status cannot show a claim the daemon does not track: {}",
         refused.stdout
     );
