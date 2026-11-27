@@ -382,7 +382,7 @@ fn only_race_entries_rejected(worktree: &Worktree) -> Result<bool, String> {
     if rejections.peek().is_none() {
         return Ok(false);
     }
-    Ok(rejections.all(|notice| is_race_end(notice)))
+    Ok(rejections.all(is_race_end))
 }
 
 fn still_pending(submitted: &[ClaimId], wait: Duration) -> String {
