@@ -627,6 +627,29 @@ fn host_a_failed_commit_is_retried_with_the_batch_and_sent_only_once_stored() {
 }
 
 #[test]
+fn host_each_retry_of_a_commit_logs_which_attempt_it_is() {
+    let mut kit = kit();
+    let sock = welcomed(&mut kit, "a1");
+    kit.fail_commits(2);
+    kit.send(sock, &claim(1, "x.rs", "s"));
+    kit.settle();
+    let retries: Vec<&String> = kit
+        .logs()
+        .iter()
+        .filter(|line| line.contains("retrying"))
+        .collect();
+    assert_eq!(retries.len(), 2, "{retries:?}");
+    assert!(
+        retries[0].ends_with("retrying (attempt 2 of 3)"),
+        "{retries:?}"
+    );
+    assert!(
+        retries[1].ends_with("retrying (attempt 3 of 3)"),
+        "{retries:?}"
+    );
+}
+
+#[test]
 fn host_a_commit_that_fails_every_attempt_drops_the_core_and_sends_nothing() {
     let mut kit = kit();
     let sock = welcomed(&mut kit, "a1");

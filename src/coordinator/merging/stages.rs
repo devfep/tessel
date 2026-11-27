@@ -1345,10 +1345,22 @@ fn a_prepare_of_the_same_base_and_another_head_is_tested_and_keeps_the_doubt() {
     assert!(work(&c, claim).in_doubt);
 }
 
+/// How many times the merge in flight has been left in doubt.
+fn doubts_of(c: &Coordinator) -> u32 {
+    let flight = c.state.merge_in_flight.as_ref();
+    flight.expect("a merge in flight").doubts
+}
+
+/// The wait after the `doubts`th doubt: the capped backoff.
+fn doubt_wait(doubts: u32) -> u64 {
+    infra_backoff_ms(doubts.min(MAX_INFRA_RETRIES))
+}
+
 #[test]
 fn nothing_rejects_the_work_in_doubt_however_often_the_merge_path_fails() {
     let (mut c, claim, _, mut prepare) = doubted_prepare();
     let mut now = NOW + 20_000;
+    let mut doubts = doubts_of(&c);
     for failure in 1..=2 * MAX_INFRA_RETRIES + 2 {
         let outcome = if failure % 2 == 0 {
             MergeOutcome::Timeout {}
@@ -1360,11 +1372,10 @@ fn nothing_rejects_the_work_in_doubt_however_often_the_merge_path_fails() {
         let work = work(&c, claim);
         assert_eq!((work.in_doubt, work.infra_failures), (true, 0), "{failure}");
         let due = retry_at(&c, claim);
+        doubts += 1;
+        assert_eq!(doubts_of(&c), doubts, "{failure}: one more doubt");
         let wait = due - c.state.clock_ms;
-        assert!(
-            wait <= infra_backoff_ms(MAX_INFRA_RETRIES),
-            "{failure}: capped"
-        );
+        assert_eq!(wait, doubt_wait(doubts), "{failure}: the exact wait");
         now = due;
         prepare = c.begin_merge(now).expect("a Prepare is due again");
     }
@@ -1375,6 +1386,7 @@ fn a_restart_at_test_in_doubt_waits_the_doubts_backoff_counts_nothing_and_never_
     let (mut c, claim, _, prepare) = doubted_prepare();
     next_after(&mut c, &prepare, &prepared_other_head());
     let mut now = NOW + 20_000;
+    let mut doubts = doubts_of(&c);
     for restart in 1..=MAX_INFRA_RETRIES + 3 {
         let effects = c.recover_merge(now);
         assert!(!rejected(&effects), "restart {restart}");
@@ -1385,9 +1397,12 @@ fn a_restart_at_test_in_doubt_waits_the_doubts_backoff_counts_nothing_and_never_
         );
         let due = retry_at(&c, claim);
         assert!(due > now, "restart {restart}");
-        assert!(
-            due - c.state.clock_ms <= infra_backoff_ms(MAX_INFRA_RETRIES),
-            "{restart}: capped"
+        doubts += 1;
+        assert_eq!(doubts_of(&c), doubts, "restart {restart}: one more doubt");
+        assert_eq!(
+            due - c.state.clock_ms,
+            doubt_wait(doubts),
+            "restart {restart}: the exact wait"
         );
         assert_eq!(
             work(&c, claim).infra_failures,
@@ -1468,6 +1483,24 @@ fn a_prepare_on_another_base_ends_the_doubt_and_the_bound_applies_again() {
         let prepare = c.begin_merge(now).expect("a Prepare");
         test = next_after(&mut c, &prepare, &elsewhere);
     }
+}
+
+#[test]
+fn a_doubt_a_prepare_on_another_base_ends_starts_again_at_the_first_backoff() {
+    let (mut c, claim, _, prepare) = doubted_prepare();
+    assert!(doubts_of(&c) > 1, "the doubt had been waited out before");
+    let elsewhere = MergeOutcome::Prepared {
+        base: commit(MOVED),
+        head: commit(HEAD),
+    };
+    c.merge_outcome(prepare.id, &elsewhere, NOW + 20_000);
+    assert_eq!(doubts_of(&c), 0, "the doubt is over");
+    let test = c.begin_merge(NOW + 20_000).expect("tested again");
+    let land = next_after(&mut c, &test, &MergeOutcome::Tested {});
+    c.merge_outcome(land.id, &MergeOutcome::ServiceUnavailable, NOW + 30_000);
+    assert_eq!(doubts_of(&c), 1, "a new doubt");
+    let wait = retry_at(&c, claim) - c.state.clock_ms;
+    assert_eq!(wait, infra_backoff_ms(1), "from the first backoff");
 }
 
 #[test]
