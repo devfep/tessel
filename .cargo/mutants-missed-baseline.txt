@@ -1,3 +1,4 @@
 src/coordinator/merging.rs: replace < with <= in Coordinator::next_to_merge
 src/coordinator/merging.rs: replace || with && in Coordinator::merge_outcome
 src/coordinator/merging.rs: replace || with && in Coordinator::recover_merge
+src/coordinator/merging/doubt.rs: delete field retry_at_ms from struct Submission expression in Coordinator::resend_land
