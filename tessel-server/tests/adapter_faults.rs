@@ -234,3 +234,123 @@ async fn a_watcher_that_never_reads_is_dropped_and_the_repo_goes_on() -> TestRes
     server.stop().await;
     Ok(())
 }
+
+/// The close frame that ends `socket`: its code and reason, after any messages it still held.
+async fn closed_with(socket: &mut Socket) -> Result<(u16, String), Box<dyn std::error::Error>> {
+    loop {
+        match tokio::time::timeout(LIVE, socket.next()).await? {
+            Some(Ok(Message::Close(Some(frame)))) => {
+                return Ok((frame.code.into(), frame.reason.to_string()));
+            }
+            Some(Err(_)) | None | Some(Ok(Message::Close(None))) => {
+                return Err("the socket ended without a close frame".into());
+            }
+            Some(Ok(_)) => {}
+        }
+    }
+}
+
+fn store_of(dir: &Path) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
+    let file = RepoId::new("acme", "demo")?.store_file(&dir.join("stores"));
+    Ok(rusqlite::Connection::open(file)?)
+}
+
+fn put_row(dir: &Path, key: &str, json: &str) -> TestResult {
+    let changed = store_of(dir)?.execute("UPDATE kv SET json = ?1 WHERE key = ?2", [json, key])?;
+    assert_eq!(changed, 1, "the row {key} exists");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_event_row_that_cannot_be_read_ends_the_replay_with_1011_until_it_is_repaired(
+) -> TestResult {
+    support::capture_logs();
+    let dir = tempfile::tempdir()?;
+    seed_log(dir.path(), 150, 8)?;
+    let key = shell::event_key(120);
+    let good: String =
+        store_of(dir.path())?.query_row("SELECT json FROM kv WHERE key = ?1", [&key], |row| {
+            row.get(0)
+        })?;
+    put_row(dir.path(), &key, "{this is not json")?;
+
+    let server = start(dir.path()).await?;
+    let mut watcher = connect(server.local_addr(), TOKEN_W).await?;
+    send(&mut watcher, &ClientMsg::Watch { from_seq: 0 }).await?;
+    let mut events = 0;
+    let closed = loop {
+        match next(&mut watcher).await? {
+            Some(ServerMsg::Event { .. }) => events += 1,
+            Some(_) => {}
+            None => return Err("the replay ended without a close frame".into()),
+        }
+        if events == 100 {
+            break closed_with(&mut watcher).await?;
+        }
+    };
+    assert_eq!(events, 100, "the page before the bad row was sent");
+    assert_eq!(closed, (1011, "replay read failed".to_string()));
+    let lines = support::log_lines_with("acme/demo");
+    let said = |what: &str| lines.iter().any(|line| line.contains(what));
+    assert!(
+        said("reading events failed"),
+        "the read failure is logged: {lines:?}"
+    );
+    assert!(said(&key), "and names the row: {lines:?}");
+    assert!(
+        said("replay events failed"),
+        "the host logs it too: {lines:?}"
+    );
+    server.stop().await;
+
+    put_row(dir.path(), &key, &good)?;
+    let server = start(dir.path()).await?;
+    let mut watcher = connect(server.local_addr(), TOKEN_W).await?;
+    send(&mut watcher, &ClientMsg::Watch { from_seq: 0 }).await?;
+    let mut events = 0;
+    while events < 150 {
+        let msg = next(&mut watcher).await?;
+        events += u64::from(matches!(msg, Some(ServerMsg::Event { .. })));
+    }
+    assert_eq!(events, 150, "the repaired log is replayed whole");
+    server.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_state_row_that_does_not_load_closes_the_sender_1011_until_it_is_repaired() -> TestResult
+{
+    support::capture_logs();
+    let dir = tempfile::tempdir()?;
+    seed_log(dir.path(), 3, 8)?;
+    let good: String = store_of(dir.path())?.query_row(
+        "SELECT json FROM kv WHERE key = ?1",
+        [shell::STATE_KEY],
+        |row| row.get(0),
+    )?;
+    put_row(dir.path(), shell::STATE_KEY, r#"{"not":"a core"}"#)?;
+
+    let server = start(dir.path()).await?;
+    let mut agent = connect(server.local_addr(), TOKEN_A1).await?;
+    send(&mut agent, &hello("a1")).await?;
+    let closed = closed_with(&mut agent).await?;
+    assert_eq!(closed.0, 1011, "{closed:?}");
+    let lines = support::log_lines_with("acme/demo");
+    assert!(
+        lines.iter().any(|line| line.contains("load state failed")),
+        "the load failure is logged with the repo: {lines:?}"
+    );
+    server.stop().await;
+
+    put_row(dir.path(), shell::STATE_KEY, &good)?;
+    let server = start(dir.path()).await?;
+    let mut agent = connect(server.local_addr(), TOKEN_A1).await?;
+    send(&mut agent, &hello("a1")).await?;
+    let welcome = next(&mut agent).await?;
+    assert!(
+        matches!(welcome, Some(ServerMsg::Welcome { .. })),
+        "{welcome:?}"
+    );
+    server.stop().await;
+    Ok(())
+}
