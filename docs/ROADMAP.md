@@ -7,11 +7,11 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 12:45 UTC. Main and the coordinator's head at `98d1a51`. Three landings
+**As of:** 2026-11-27 12:40 UTC. Main and the coordinator's head at `98d1a51`. Three landings
 through the server since 10:20. HOST-SQLITE-RETRY-BACKOFF at 10:58 UTC as `3507e72`..`941db87`
-(claim 203, rebased onto `ff6e7af`; the orchestrator copied the five notes about a minute before the
-daemon found them noted), on a 3-0 vote after two fix passes (all three "Yes with should-fixes" on
-`03aed3c`, docs edits on re-check 1, "Yes" on `57401fa`;
+(claim 203, rebased onto `ff6e7af`; the orchestrator copied the five notes at 10:59:07 UTC, nine
+seconds before the daemon's retry found them noted), on a 3-0 vote after two fix passes (all three
+"Yes with should-fixes" on `03aed3c`, docs edits on re-check 1, "Yes" on `57401fa`;
 `~/tessel-orch-notes/2026-11-27/vote-host-sqlite-retry-backoff/`): no code change;
 `src/host/batch.rs` says per SQLite failure class why the commit retry has no pause; new tests pin
 the store's busy timeout (the literal 5,000 ms) and that a failed two-entry batch stores nothing;
@@ -29,9 +29,10 @@ daemon) fails with a request to restart it; the skill says `stop` releases open 
 (45996939998) and the Adapter suite (45996940253) passed on `5eff16e`; its push run was the first in
 which #134's server and CLI job tested mutants: 20, 19 caught, 1 unviable. MERGE-OUTCOME-UNOFFERED
 at 12:31 UTC as `919f229`..`98d1a51` (claim 204, rebased onto `5eff16e`, the lander leaving out lane
-B's merge of main; the daemon retries a note copy only on the coordinator's next merge, base move or
-snapshot, so the orchestrator copied the five notes), on a 3-0 vote after two fix passes (all three
-"Yes with should-fixes" on `134120d`, which covered only the `Prepare`; "Yes" on `2df77f2`;
+B's merge of main; the daemon retries a note copy on the coordinator's next merge, base move or
+snapshot, at its start and on each CLI command, and none came, so the orchestrator copied the five
+notes), on a 3-0 vote after two fix passes (all three "Yes with should-fixes" on `134120d`, which
+covered only the `Prepare`; "Yes" on `2df77f2`;
 `~/tessel-orch-notes/2026-11-27/vote-merge-outcome-unoffered/`): `merge_outcome` ignores an answer
 to a `Prepare` inside its backoff and `reconcile_outcome` one to a `Reconcile` inside its backoff;
 `resolve_doubt` enters by a private `apply_reconciliation`, so the operator's answer still applies
@@ -42,7 +43,7 @@ new backoff, which hid a check from it; it now answers past it. VOTE-2 found the
 liveness check for a doubt (SIM-DOUBT-LIVENESS). Main's CI (45999398849) and the Adapter suite
 (45999398797) passed on `98d1a51`; its push run tested 10 mutants: 6 caught, 4 unviable. The Nightly
 (45995920783) runs on `941db87` since 12:06 UTC. SIM-DOUBT-PREPARED-TRAFFIC went to lane A at about
-12:20 UTC (the row's lane B was busy). PR #136 (the 10:20 record) merged as `ff6e7af`.
+12:15 UTC (the row's lane B was busy). PR #136 (the 10:20 record) merged as `ff6e7af`.
 **Earlier (27 November 10:20 UTC):** Main and the coordinator's head at `27b8c74`.
 SIM-RACE-TEXT-LITERAL and SIM-FENCED-RULE-CHECKER landed through the server at 10:12 UTC as
 `09d1f47`..`27b8c74` (claim 200, rebased onto `69de245`; the daemon copied all five notes), held for
@@ -430,7 +431,7 @@ by 25 October; the coordinator denied lane A `src/merge.rs` and `docs/configurat
 lane B `src/coordinator/verifying.rs` (three times), each while the other lane held it, and the
 denied lane claimed the file after the holder landed or left it to a follow-up. In flight (votes and
 briefs in `~/tessel-orch-notes/2026-10-30/`, `2026-10-31/`, `2026-11-26/` and `2026-11-27/`):
-- SIM-DOUBT-PREPARED-TRAFFIC (lane A, dispatched about 12:20 UTC, branch
+- SIM-DOUBT-PREPARED-TRAFFIC (lane A, dispatched about 12:15 UTC, branch
   task-sim-doubt-prepared-traffic from `5eff16e`;
   `~/tessel-orch-notes/2026-11-27/lane-a/sim-doubt-prepared-traffic/`).
 - Lane B: idle; its next task follows this record.
