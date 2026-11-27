@@ -854,6 +854,86 @@ mod tests {
         running.stop().await;
     }
 
+    /// A store holding `total` small events and the state that knows them, as a server that wrote
+    /// them would have left it, and a repository started over it.
+    fn started_over_a_log(dir: &std::path::Path, total: u64) -> RunningRepo {
+        let file = dir.join("s.sqlite");
+        let mut store = Store::open(&file).unwrap();
+        let mut batch = Vec::new();
+        for seq in 0..total {
+            let event = format!(
+                r#"{{"seq":{seq},"at_ms":{seq},"run":"r","event":"agent_connected","agent":"x"}}"#
+            );
+            batch.push((shell::event_key(seq), event));
+        }
+        let core = shell::load_core(None, Some("test"), None, Vec::new(), Vec::new()).unwrap();
+        let mut state = serde_json::to_value(&core).unwrap();
+        state["next_seq"] = serde_json::json!(total);
+        batch.push((shell::STATE_KEY.to_string(), state.to_string()));
+        store.commit(&batch).unwrap();
+        let config = HostConfig {
+            repo: "acme/demo".to_string(),
+            run: Some("test".to_string()),
+            ..HostConfig::default()
+        };
+        let id = RepoId::new("acme", "demo").unwrap();
+        spawn(
+            id,
+            store,
+            file,
+            config,
+            Arc::new(NoLander),
+            Clock::default(),
+        )
+    }
+
+    /// C4, sends never block: a watcher whose wire nothing ever reads gets its socket dropped when
+    /// its queue is full, and neither that send nor the close it causes waits for the reader. No
+    /// kernel buffer is in the path, so a send or a close that blocked would hang this on any
+    /// platform.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wire_nobody_reads_is_dropped_and_the_repo_serves_the_next_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = started_over_a_log(dir.path(), u64::try_from(WRITER_QUEUE).unwrap() + 300);
+        let (watcher, mut unread) = running
+            .handle
+            .open(AgentId("watcher".to_string()))
+            .await
+            .unwrap();
+        let watch = ClientMsg::Watch { from_seq: 0 };
+        running
+            .handle
+            .frame(watcher, serde_json::to_string(&watch).unwrap())
+            .await;
+        let (agent, mut wire) = running
+            .handle
+            .open(AgentId("a1".to_string()))
+            .await
+            .unwrap();
+        running.handle.frame(agent, hello_text()).await;
+        let sent = tokio::time::timeout(Duration::from_secs(30), wire.recv())
+            .await
+            .expect("the repo stopped serving while a watcher's wire was full");
+        assert!(
+            matches!(&sent, Some(Wire::Text(text)) if text.contains("welcome")),
+            "{sent:?}"
+        );
+        // Nothing has read the watcher's wire: the channel closes because its sender was dropped.
+        let dropped = async {
+            while !unread.is_closed() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        let dropped = tokio::time::timeout(Duration::from_secs(30), dropped).await;
+        assert!(dropped.is_ok(), "the unread wire was never dropped");
+        let mut queued = 0_usize;
+        while unread.recv().await.is_some() {
+            queued += 1;
+        }
+        assert_eq!(queued, WRITER_QUEUE, "its full queue, and nothing past it");
+        running.stop().await;
+    }
+
     #[test]
     fn only_a_landed_answer_moves_main_and_a_prepared_one_does_not() {
         let prepared = CallAnswer::Prepared {
