@@ -3453,7 +3453,10 @@ fn host_only_the_replaying_sockets_frames_wait_for_its_replay() {
             "no SetSession after {delivered} deliveries"
         );
         delivered += 1;
-        assert!(kit.deliver_next_but_pages() || kit.deliver_next());
+        assert!(
+            kit.deliver_next(),
+            "an answer is owed until the hello is parked"
+        );
     }
     kit.settle();
     let received = kit.received(watcher);
@@ -3557,20 +3560,21 @@ fn host_other_sockets_are_served_while_a_replay_pages() {
 #[test]
 fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
     let mut kit = kit();
-    seed_log(&mut kit, 5);
+    seed_log(&mut kit, 250);
     let watcher = kit.open("w");
     let other = kit.open("a2");
     kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
     kit.send(other, &hello("a2"));
-    kit.settle_but_pages();
-    assert!(kit.received(other).iter().any(is_welcome));
-    assert!(
-        replayed_seqs(&kit, watcher).is_empty(),
+    kit.deliver_next();
+    deliver_until_welcome(&mut kit, other);
+    assert_eq!(
+        replayed_seqs(&kit, watcher),
+        (0..2 * shell::REPLAY_PAGE as u64).collect::<Vec<_>>(),
         "the live event waits behind the replay"
     );
 
     kit.settle();
-    assert_eq!(replayed_seqs(&kit, watcher), (0..=5).collect::<Vec<_>>());
+    assert_eq!(replayed_seqs(&kit, watcher), (0..=250).collect::<Vec<_>>());
     assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
 }
 
@@ -3591,6 +3595,18 @@ fn host_an_event_the_replay_read_and_the_buffer_both_hold_is_sent_once() {
         (0..=250).collect::<Vec<_>>(),
         "no event twice, none missed"
     );
+}
+
+/// Deliver answers in the order they were asked until `sock` has its welcome, so the test can look
+/// at the host with a replay still open. Bounded by `SETTLE_LIMIT`.
+fn deliver_until_welcome(kit: &mut Testkit, sock: SocketId) {
+    for _ in 0..SETTLE_LIMIT {
+        if kit.received(sock).iter().any(is_welcome) {
+            return;
+        }
+        assert!(kit.deliver_next(), "no answer is owed and no welcome came");
+    }
+    panic!("no welcome after {SETTLE_LIMIT} answers");
 }
 
 /// The outputs of a step without its replay reads, so the test answers the pages by hand.
@@ -3984,6 +4000,7 @@ fn host_an_event_a_page_already_sent_is_not_counted_against_the_bound() {
 /// (`overflow`), or a send to a2 fails while the expiry commit is out.
 fn expiry_then_release_with_a_replaying_waiter(overflow: bool) -> (Testkit, SocketId) {
     let mut kit = kit();
+    seed_log(&mut kit, 150);
     let a3 = welcomed(&mut kit, "a3");
     kit.send(a3, &claim(3, "y.rs", "s"));
     kit.settle();
@@ -4004,7 +4021,6 @@ fn expiry_then_release_with_a_replaying_waiter(overflow: bool) -> (Testkit, Sock
         let now_ms = kit.now_ms();
         kit.input(Input::SendFailed { now_ms, sock: a2 });
     }
-    kit.settle_but_pages();
     kit.settle();
     (kit, a2)
 }
@@ -4109,15 +4125,44 @@ fn host_live_events_below_the_start_of_a_replay_are_never_buffered() {
     seed_log(&mut kit, 3);
     let watcher = kit.open("w");
     let other = kit.open("a2");
-    kit.send(watcher, &ClientMsg::Watch { from_seq: 10 });
+    let now_ms = kit.now_ms();
+    let watch = serde_json::to_string(&ClientMsg::Watch { from_seq: 10 }).unwrap();
+    let outputs = kit.host.step(Input::Frame {
+        now_ms,
+        sock: watcher,
+        text: watch,
+    });
+    kit.execute(without_reads(outputs));
     kit.send(other, &hello("a2"));
-    kit.settle_but_pages();
+    let first: Vec<Event> = (10..10 + shell::REPLAY_PAGE as u64)
+        .map(old_event)
+        .collect();
+    let page = Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: first,
+        done: false,
+    };
+    let outputs = kit.host.step(page);
+    kit.execute(without_reads(outputs));
+    deliver_until_welcome(&mut kit, other);
     assert!(
         kit.received(other).iter().any(is_welcome),
         "seq 3 is stored"
     );
+    let last: Vec<Event> = (110..113).map(old_event).collect();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: last,
+        done: false,
+    });
     kit.settle();
-    assert!(replayed_seqs(&kit, watcher).is_empty(), "seq 3 is below 10");
+    assert_eq!(
+        replayed_seqs(&kit, watcher),
+        (10..113).collect::<Vec<_>>(),
+        "seq 3 is below 10: not buffered, not sent"
+    );
 }
 
 #[test]
