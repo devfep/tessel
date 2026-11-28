@@ -44,9 +44,9 @@ pub struct StaleAnswer {
     pub changed: Option<String>,
 }
 
-/// What the host did with an answer it took for the offered call of a claim in doubt: the answer
-/// matched the stored merge in flight (its dispatch and its stage) and that flight was not
-/// waiting out a backoff.
+/// What the host did with an answer it took for the offered call of a claim in doubt: the call
+/// was still open (the host drops a repeat of an answer it had), the answer matched the stored
+/// merge in flight (its dispatch and its stage) and that flight was not waiting out a backoff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TakenAnswer {
     pub call: u64,
@@ -316,6 +316,7 @@ impl Sim {
             self.faults.push(fault);
         }
         let open = self.open_calls.remove(&call.0);
+        let taken_call = open.clone();
         if let Some(open) = &open {
             if is_failure(&input) {
                 self.lander.charge(open);
@@ -324,15 +325,18 @@ impl Sim {
         }
         let known = open.or_else(|| self.answered_calls.get(&call.0).cloned());
         let step = known.as_ref().map(|known| Step::of(&known.request));
-        let taken = known
+        self.answer_state = None;
+        let taken = taken_call
             .as_ref()
-            .and_then(|known| self.taken_probe_for(known, answered_at(&input)));
+            .and_then(|open| self.taken_probe_for(open, answered_at(&input)));
         let probe = known.and_then(|known| self.probe_for(&known));
+        let crashes = self.crashes;
         self.input(input);
         if let Some(probe) = probe {
             self.settle(probe);
         }
-        if let Some(taken) = taken {
+        // A crash while the host took the answer can cut it off before its write is asked for.
+        if let Some(taken) = taken.filter(|_| self.crashes == crashes) {
             self.drop_if_planted(&taken);
             self.settle_taken(taken);
         }
@@ -431,16 +435,16 @@ impl Sim {
                 }
             }
         });
+        self.answer_state = self
+            .answer_state
+            .take()
+            .map(|json| with_flight_and_work(&json, taken));
     }
 
     fn settle_taken(&mut self, taken: TakenProbe) {
-        let staged = self.store.staged().and_then(|entries| {
-            entries
-                .iter()
-                .find(|(key, _)| key == STATE_KEY)
-                .and_then(|(_, json)| serde_json::from_str::<Value>(json).ok())
-        });
-        let unchanged = staged.is_none_or(|after| {
+        let asked = self.answer_state.take();
+        let after = asked.and_then(|json| serde_json::from_str::<Value>(&json).ok());
+        let unchanged = after.is_none_or(|after| {
             let work = after.pointer(&format!("/claims/{}/work", taken.claim));
             after.get("merge_in_flight") == Some(&taken.flight) && work == Some(&taken.work)
         });

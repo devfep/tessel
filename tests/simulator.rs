@@ -1782,30 +1782,38 @@ fn the_liveness_checker_alone_sees_a_reconcile_answer_the_core_drops() {
     assert!(caught.is_some(), "no default seed caught the planted core");
 }
 
+/// A dropped answer leaves the stored work due earlier than the wake the host set for the answer
+/// it took, so I4 can speak at the same step: every catch must name the liveness checker, and a
+/// default seed exists where it is the only one.
 #[test]
-fn a_dropped_answer_in_doubt_is_caught_by_the_liveness_checker_and_by_no_other_checker() {
+fn a_dropped_answer_in_doubt_is_always_caught_by_the_liveness_checker_and_alone_on_a_seed() {
     for variant in [
         Variant::DoubtedPrepareAnswerDropped,
         Variant::DoubtedReconcileAnswerDropped,
     ] {
-        let mut caught = 0;
+        let (mut caught, mut alone) = (0, 0);
         for seed in 0..SEARCH_SEEDS {
             let run = sim::run_seed(seed, variant, &Checker::ALL);
             if run.violations.is_empty() {
                 continue;
             }
             caught += 1;
-            let only_liveness = run
+            let named = run
+                .violations
+                .iter()
+                .any(|v| v.checker == Checker::DoubtLiveness);
+            assert!(named, "{variant:?} seed {seed}: {:?}", run.violations);
+            let only = run
                 .violations
                 .iter()
                 .all(|v| v.checker == Checker::DoubtLiveness);
-            assert!(
-                only_liveness,
-                "{variant:?} seed {seed}: {:?}",
-                run.violations
-            );
+            alone += usize::from(only);
         }
         assert!(caught >= 1, "no default seed caught {variant:?}");
+        assert!(
+            alone >= 1,
+            "no default seed caught {variant:?} by the checker alone"
+        );
     }
 }
 

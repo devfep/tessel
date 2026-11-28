@@ -196,6 +196,9 @@ pub struct Sim {
     fork_strikes: BTreeMap<String, u64>,
     stale_answers: Vec<StaleAnswer>,
     taken_answers: Vec<TakenAnswer>,
+    /// The core state the host last asked to store while it took an answer, which a crash or a
+    /// failed write may keep from the store.
+    answer_state: Option<String>,
     slot_notes: Vec<SlotNote>,
     /// The host's counters as the summary route keeps them: fed the log a page at a time.
     tally: SummaryTally,
@@ -248,6 +251,7 @@ impl Sim {
             fork_strikes: BTreeMap::new(),
             stale_answers: Vec::new(),
             taken_answers: Vec::new(),
+            answer_state: None,
             slot_notes: Vec::new(),
             tally: SummaryTally::default(),
         }
@@ -917,6 +921,9 @@ impl Sim {
 
     fn commit(&mut self, batch: BatchId, mut entries: Vec<(String, String)>) {
         let now_ms = self.now_ms();
+        if let Some((_, json)) = entries.iter().find(|(key, _)| key == STATE_KEY) {
+            self.answer_state = Some(json.clone());
+        }
         if self.commit_fault != CommitFault::None {
             if self.commit_fault == CommitFault::NextAttempt {
                 self.commit_fault = CommitFault::None;

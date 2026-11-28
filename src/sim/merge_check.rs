@@ -362,9 +362,23 @@ pub fn i7(stale: &[StaleAnswer]) -> Vec<String> {
 
 /// The liveness of a claim in doubt: an answer the host took for the offered call of its merge
 /// in flight moves the flight or the claim's work.
+///
+/// The bound is one taken answer: the doubt code (`doubt.rs`) changes `doubts`, the dispatch or
+/// the stage, or ends the doubt on every answer it takes, so the correct core is never flagged.
+/// A core that takes an answer and drops it leaves the merge where it was, to be offered the same
+/// call again.
 pub fn doubt_liveness(taken: &[TakenAnswer]) -> Vec<String> {
-    let _ = taken;
-    Vec::new()
+    taken
+        .iter()
+        .filter(|answer| answer.unchanged)
+        .map(|answer| {
+            format!(
+                "the answer to call {} for dispatch {} at the {} of a claim in doubt was taken \
+                 and changed neither the merge in flight nor the claim's work",
+                answer.call, answer.dispatch, answer.stage
+            )
+        })
+        .collect()
 }
 
 /// I11 (without its evidence clause): the counters the host keeps as it goes equal
@@ -827,6 +841,24 @@ mod tests {
         assert_eq!(
             i7(&[quiet, loud]),
             ["the answer to call 3 for dispatch 4, not in flight, changed the stored state"]
+        );
+    }
+
+    // ---- doubt liveness ----
+
+    #[test]
+    fn doubt_liveness_flags_a_taken_answer_that_changed_nothing() {
+        let answer = |unchanged| TakenAnswer {
+            call: 5,
+            dispatch: 6,
+            stage: "reconcile".to_string(),
+            unchanged,
+        };
+        assert!(doubt_liveness(&[answer(false)]).is_empty());
+        assert_eq!(
+            doubt_liveness(&[answer(false), answer(true)]),
+            ["the answer to call 5 for dispatch 6 at the reconcile of a claim in doubt was taken \
+              and changed neither the merge in flight nor the claim's work"]
         );
     }
 
