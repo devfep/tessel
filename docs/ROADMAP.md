@@ -26,9 +26,12 @@ an unchanged range-diff; the daemon copied both notes). The reviewer's first mut
 `CARGO_TARGET_DIR` set and `--jobs 2`, had both jobs build one test binary, so a mutant could be
 tested against the other job's build; it was discarded. Lane A's own run counted four mutants that
 cannot compile as caught (84 caught and 2 unviable, against 80 and 6), which fits the same fault and
-may explain PLAN-1's differing local and CI miss sets; LANE-GATE-MUTANTS now carries the rule. Both
-lanes are idle with no claim; no lane task is in flight. PR #141 (the 05:15 record) merged as
-`41e0f49`.
+may explain PLAN-1's differing local and CI miss sets; LANE-GATE-MUTANTS now carries the rule. The
+orchestrator's STATE commit was first refused as 66 uncovered scopes: its daemon still held
+`4e94d32` as the coordinator's head (it moves only on a welcome, a grant, a merge of its own or a
+`BaseMoved` under its claims), so the commit hook diffed the three landings too; a fresh grant moved
+it to `a6976df`. Both lanes are idle with no claim; no lane task is in flight. PR #141 (the 05:15
+record) merged as `41e0f49`.
 **Earlier (28 November 05:15 UTC):** Main at `652d83d` (PR #140's merge); the coordinator's head at
 `4e94d32`, since a pull request's merge does not move it. Main's CI is red on `eb1770a` and
 `4e94d32`: its "mutants on changed lines" job missed 4 and 13 mutants in the new `src/sim` code
