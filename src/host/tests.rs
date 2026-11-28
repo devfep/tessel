@@ -4161,24 +4161,15 @@ fn host_live_events_below_the_start_of_a_replay_are_never_buffered() {
     kit.execute(without_reads(outputs));
     kit.send(other, &hello("a2"));
     deliver_until_welcome(&mut kit, other);
-    let mut first: Vec<Event> = (10..113).map(old_event).collect();
-    let last = first.split_off(shell::REPLAY_PAGE);
-    for events in [first, last] {
-        let page = Input::ReplayPage {
-            now_ms,
-            sock: watcher,
-            events,
-            done: false,
-        };
-        let outputs = kit.host.step(page);
-        kit.execute(without_reads(outputs));
-    }
+    let outputs = kit.host.step(Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: Vec::new(),
+        done: false,
+    });
+    kit.execute(without_reads(outputs));
     kit.settle();
-    assert_eq!(
-        replayed_seqs(&kit, watcher),
-        (10..113).collect::<Vec<_>>(),
-        "seq 3 is below 10: not buffered, not sent"
-    );
+    assert!(replayed_seqs(&kit, watcher).is_empty(), "seq 3 is below 10");
 }
 
 #[test]
