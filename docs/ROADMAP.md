@@ -2045,14 +2045,14 @@ Lane B:
   `src/sim/driver/merge_path.rs` (~831) repeats the no-result race text as a literal; use the shared
   constant from `src/protocol.rs` once RACE-TEXTS-SHARED lands.
 - [x] **SIM-DOUBT-PREPARED-TRAFFIC** (`e43609b`..`eb1770a`, landed by the server 28 November; Opus
-  "Yes" after three fix passes; refused compare-and-swaps fall from 52 to 37 over 300 seeds, the
-  default seeds hold one, and the Nightly mutants were not run against that loss; CI's changed-line
-  mutants missed 4, MAIN-RED-SIM-MUTANTS) — S, lane A (`src/sim`); from SIM-FENCED-RULE-CHECKER's
-  REVIEW-1. A core whose `prepared()` clears `doubt_since_ms` when it answers the doubted pair and
-  goes to `Land` is caught on only 3 of 300 seeds, because the simulator's traffic rarely takes that
-  path. Make it common enough that the default seeds catch that break (a fault or a traffic mode),
-  saying which pinned transcripts change, or say why it cannot. Done: the planted break fails a
-  default run (seeds 1, 7 and 11; 50 of 300).
+  "Yes with changes" (to the note) after three fix passes; refused compare-and-swaps fall from 52 to
+  37 over 300 seeds, the default seeds hold one, and the Nightly mutants were not run against that
+  loss; CI's changed-line mutants missed 4, MAIN-RED-SIM-MUTANTS) — S, lane A (`src/sim`); from
+  SIM-FENCED-RULE-CHECKER's REVIEW-1. A core whose `prepared()` clears `doubt_since_ms` when it
+  answers the doubted pair and goes to `Land` is caught on only 3 of 300 seeds, because the
+  simulator's traffic rarely takes that path. Make it common enough that the default seeds catch
+  that break (a fault or a traffic mode), saying which pinned transcripts change, or say why it
+  cannot. Done: the planted break fails a default run (seeds 1, 7 and 11; 50 of 300).
 - [x] **SIM-DOUBT-LIVENESS** (`39689ee`..`4e94d32`, landed by the server 28 November; Opus "Yes"
   after one fix pass; the bound is one taken answer: every answer the core takes for a doubted
   claim's offered flight must change the stored state; a catch must name the checker, not fire
@@ -2121,11 +2121,12 @@ Lane B:
   (`eb1770a`: `driver.rs:1125` in `without_doubt_after_prepare`, `lander.rs:381` in `Lander::plan`,
   `lander.rs:40` in `doubt_mode`) and 13 of SIM-DOUBT-LIVENESS (`4e94d32`: `driver/merge_path.rs` in
   `taken_probe_for`, `drop_if_planted`, `answered_at` and `with_flight_and_work`; `store.rs:37` in
-  `Store::restage`), because CI runs the simulator at two seeds and the new tests search 20 seeds or
-  pin them. Lane A's plan (`~/tessel-orch-notes/2026-11-28/main-red-sim-mutants/PLAN-1.md`): unit
-  tests for the pure functions, `taken_probe_for` split into a pure function over the state, no
-  exclusion. Done: CI's job reports no missed mutant on either landing's lines, and main's CI is
-  green.
+  `Store::restage`), because the 2-seed sweep and the 20-seed plant searches assert only that a
+  checker catches a plant, not the decisions inside the new functions (PLAN-1). Lane A's plan
+  (`~/tessel-orch-notes/2026-11-28/main-red-sim-mutants/PLAN-1.md`): unit tests for the pure
+  functions, `taken_probe_for` split into a pure function over the state, no exclusion. Done: CI's
+  changed-lines job reports no missed mutant on the diffs `7f989f8`..`eb1770a` and
+  `eb1770a`..`4e94d32`.
 - [ ] **LANE-GATE-MUTANTS** — S, orchestrator (the briefs and gate scripts in
   `~/tessel-orch-notes/`, not the repository); found 28 November. Main went red on mutants no lane
   gate or review had run: CI runs `cargo mutants --in-diff` (`.github/workflows/ci.yml`,
@@ -2148,10 +2149,10 @@ Lane B:
   `refs/tessel/candidate/*` carrying a workflow change is not known; only the dogfood token can show
   it (Felix or the lander), before the dogfood upgrade. Done: a refused push to `main` rejects the
   claim after one test run, and the upgrade waits for it.
-- [ ] **LANDER-SIGNAL-ALL-SITES** — S; from LANDER-SIGNAL-NUMBER's vote (VOTE-2, VOTE-3). Eight
-  sites still print `exit None` for a git killed by a signal, the refusal an agent sees among them:
-  `tessel-server/src/landing/answer.rs:25` (`git_note`), `git_read.rs:59` and `:94`, `staged.rs:44`,
-  and `tessel-lander/src/candidate.rs:89`, `:116`, `:158` and `:190`; `holds_in` and
+- [ ] **LANDER-SIGNAL-ALL-SITES** — S; from LANDER-SIGNAL-NUMBER's vote (VOTE-1, VOTE-2, VOTE-3).
+  Eight sites still print `exit None` for a git killed by a signal, the refusal an agent sees among
+  them: `tessel-server/src/landing/answer.rs:25` (`git_note`), `git_read.rs:59` and `:94`,
+  `staged.rs:44`, and `tessel-lander/src/candidate.rs:89`, `:116`, `:158` and `:190`; `holds_in` and
   `main_and_ancestors` drop the status; the `run.rs` signal test does not assert `Some(9)`. Show the
   signal there (`GitOutput` carries it), with a test. Done: every merge-path report of a git killed
   by a signal names the signal.

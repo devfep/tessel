@@ -653,10 +653,10 @@ Two doubts that resolving does not fix:
   clone and push of each try), forever, each time with a fresh clone of main. The `server.log` shows
   a repeated `push` warning while the claim stays in doubt. Fix the credential or the ruleset;
   `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`, and
-  `--landed` is for a push that reached main. No command rejects the work. The build deployed on 26
-  November (`455c889`'s strings, before the staged landing) behaves otherwise: it re-runs the whole
-  merge, tests included, about every 10 minutes and rejects the submission after 4 refused pushes. A
-  refusal of a `Land` that was sent again behaves the same way. A refusal at `Prepare` (a fork
+  `--landed` is for a push that reached main. No command rejects the work. A refusal of a `Land`
+  that was sent again behaves the same way. The build deployed on 26 November (`455c889`'s strings,
+  before the staged landing) behaves otherwise: it re-runs the whole merge, tests included, about
+  every 10 minutes and rejects the submission after 4 refused pushes. A refusal at `Prepare` (a fork
   branch deleted or force-pushed while in doubt) says nothing of where main is, so the core asks a
   `Reconcile` after the same backoff. Main still at the base sends the `Land` again, and the claim
   goes round `Prepare`, `Reconcile` and `Land` until you answer `--not-landed` (the next refusal
