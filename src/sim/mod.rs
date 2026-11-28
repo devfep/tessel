@@ -425,6 +425,7 @@ mod tests {
             "pushed_then_lost_reply",
             "unknown",
             "rate_limited",
+            "doubt_refusal",
             "compare_and_swap_refused",
             "pushed_to_main",
             "cut_off_always",

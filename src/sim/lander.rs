@@ -457,9 +457,8 @@ impl Lander {
         let land = is_land(request);
         if let (true, Request::Land { head, .. }) = (chaos.doubt_mode, request) {
             if chaos.refused_heads.is_empty() && chaos.refused_heads.insert(head.0.clone()) {
-                chaos.limited_until_ms = now_ms + RATE_LIMIT_MS;
                 chaos.lose_candidate_of.insert(head.0.clone());
-                return chaos.counted("rate_limited", Fate::RateLimited);
+                return chaos.counted("doubt_refusal", Fate::RateLimited);
             }
         }
         match roll {
@@ -1104,6 +1103,24 @@ mod tests {
         assert!(
             released > 0,
             "the window never ended at its last millisecond"
+        );
+    }
+
+    #[test]
+    fn a_doubt_mode_runs_first_land_is_refused_alone_and_opens_no_window() {
+        let seed = (0..30)
+            .find(|seed| doubt_mode(*seed))
+            .expect("a doubt-mode seed");
+        let mut lander = Lander::new().with_faults(seed);
+        let request = land(MAIN0, "h1");
+        assert_eq!(lander.fate_of(&request, 1_000), Fate::RateLimited);
+        let chaos = lander.chaos.as_ref().expect("chaos");
+        assert_eq!(chaos.limited_until_ms, 0, "the refusal opens no window");
+        assert_eq!(chaos.faults.get("doubt_refusal"), Some(&1));
+        assert_eq!(
+            chaos.faults.get("rate_limited"),
+            None,
+            "counted under its own name"
         );
     }
 
