@@ -144,7 +144,7 @@ jobs:
                exit "$code" ;;
           esac
           if [ -s mutants.out/timeout.txt ]; then
-            echo "::warning::Timeouts in this shard. See mutants.out/timeout.txt."
+            echo "::warning::Timeouts in this shard: mutants.out/timeout.txt, .cargo/mutants.toml."
             cat mutants.out/timeout.txt
           fi
           cp mutants.out/missed.txt "$RUNNER_TEMP/missed.txt"

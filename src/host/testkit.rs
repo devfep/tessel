@@ -14,7 +14,7 @@ use crate::protocol::{AgentId, ClientMsg, Event, ServerMsg};
 use crate::shell::{Session, EVENT_PREFIX, STATE_KEY};
 
 /// The most answers `settle` delivers: far more than any test needs.
-const SETTLE_LIMIT: usize = 1_000;
+pub(crate) const SETTLE_LIMIT: usize = 1_000;
 
 /// What one client has been given.
 #[derive(Debug, Default)]
@@ -207,6 +207,18 @@ impl Testkit {
         };
         self.input(answer);
         true
+    }
+
+    /// Deliver every answer that is not a replay page, like `settle` for the rest. A host that
+    /// keeps asking, or a `deliver_next_but_pages` that never says false, fails the test after
+    /// `SETTLE_LIMIT` answers instead of hanging it.
+    pub fn settle_but_pages(&mut self) {
+        for _ in 0..SETTLE_LIMIT {
+            if !self.deliver_next_but_pages() {
+                return;
+            }
+        }
+        panic!("the host still hands the adapter answers after {SETTLE_LIMIT} deliveries");
     }
 
     /// Deliver answers until the host is waiting for none. A host that keeps asking (a load that
