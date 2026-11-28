@@ -7,22 +7,25 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-28 12:00 UTC (a checkpoint). Main and the coordinator's head at `a6976df`; main's
-CI and Adapter suite passed on `02006e2`, with the "mutants on changed lines" job green again, so
-main is no longer red. Three landings through the server since 05:15, all held for review as
-merge-path changes and approved by the orchestrator. MAIN-RED-SIM-MUTANTS at 11:28 UTC as
-`ecff1cd`..`02006e2` (claim 235, rebased onto `41e0f49`; the daemon copied the note), on an Opus
-review (REVIEW-1 "Yes", no must-fixes; `~/tessel-orch-notes/2026-11-28/main-red-sim-mutants/`): unit
-tests pin the new `src/sim` decisions, and `taken_probe_for`'s body moved unchanged into a pure
-`taken_probe(state, call, now_ms)`; the reviewer ran cargo-mutants 27.1.0 on CI's diff
-`7f989f8`..`ecff1cd` with CI's settings and one job: 86 mutants, 80 caught, 6 unviable, none missed,
-so all 17 that CI missed are caught, and a rewrite of `taken_probe` with the same behaviour still
-passed every test. REPLAY-ORDER-CONTRACT at 11:42 UTC as `4c487cc`..`87279e0` (claim 239, a
-fast-forward: lane B rebased its five commits onto `02006e2` unchanged, dropped the
-`.cargo/mutants.toml` and workflow scopes, and added `87279e0`, the vote's comment nit).
-LANDER-SIGNAL-NUMBER at 11:52 UTC as `ccf9638`..`a6976df` (claim 238; the first submit was refused
-because `59dc170` did not contain the coordinator's head, so lane A rebased it onto `02006e2` with
-an unchanged range-diff; the daemon copied both notes). The reviewer's first mutants pass, with
+**As of:** 2026-11-28 12:00 UTC (a checkpoint). Main and the coordinator's head at `a6976df`; CI and
+the Adapter suite passed on `02006e2` and `87279e0`; on `a6976df` the Adapter suite and Own users
+passed, and CI was still running at 12:10 UTC. `02006e2`'s changed-lines job checks only that
+commit's lines; the reviewer's run below shows the 17 caught. Three landings through the server
+since 05:15, claims 239 and 238 held for review as signature changes and approved by the
+orchestrator; claim 235 went straight to the queue. MAIN-RED-SIM-MUTANTS at 11:28 UTC as `02006e2`
+(claim 235, `ecff1cd` rebased onto `41e0f49`; the daemon copied the note), on an Opus review
+(REVIEW-1 "Yes", no must-fixes; `~/tessel-orch-notes/2026-11-28/main-red-sim-mutants/`): unit tests
+pin the new `src/sim` decisions, and `taken_probe_for`'s body moved unchanged into a pure
+`taken_probe(state, call, now_ms)`; the reviewer ran cargo-mutants 27.1.0 on the diff
+`7f989f8`..`ecff1cd` (both landings and the fix) with CI's settings and one job: 86 mutants, 80
+caught, 6 unviable, none missed, so all 17 that CI missed are caught, and a rewrite of `taken_probe`
+with the same behaviour still passed every test. REPLAY-ORDER-CONTRACT at 11:42 UTC as
+`4c487cc`..`87279e0` (claim 239, a fast-forward: lane B rebased its five commits onto `02006e2`
+unchanged, dropped the `.cargo/mutants.toml` and workflow scopes, and added `87279e0`, the vote's
+comment nit). LANDER-SIGNAL-NUMBER at 11:52 UTC as `ccf9638`..`a6976df` (claim 238; the first submit
+was refused because `59dc170` was based on neither the coordinator's head (`02006e2`) nor the lane's
+start (`ecff1cd`), so lane A rebased it onto `02006e2` with an unchanged range-diff; the lander
+rebased it onto `87279e0`; the daemon copied both notes). The reviewer's first mutants pass, with
 `CARGO_TARGET_DIR` set and `--jobs 2`, had both jobs build one test binary, so a mutant could be
 tested against the other job's build; it was discarded. Lane A's own run counted four mutants that
 cannot compile as caught (84 caught and 2 unviable, against 80 and 6), which fits the same fault and
@@ -2126,13 +2129,13 @@ Lane B:
   `shell.rs:32` and `testkit.rs:201` mutants now fail fast; PR #140's Nightly lists only
   `src/host/mod.rs:471:12`, explained in `.cargo/mutants.toml`.
 - [x] **LANDER-SIGNAL-NUMBER** (`ccf9638`..`a6976df`, landed by the server 28 November:
-  `5f86421`..`59dc170` rebased onto `02006e2` unchanged; merge-path vote 3 "Yes with should-fixes",
-  no must-fix) — S; from LANDER-VERSION-CHECK's vote (VOTE-1, VOTE-3). A git killed by a signal is
-  reported as "killed by a signal" without its number, because `GitOutput`
-  (`tessel-lander/src/run.rs`) keeps only `status.code()`; the number tells an outside kill
-  (SIGKILL) from a crash (SIGSEGV, SIGABRT). Keep it (`ExitStatusExt::signal()`) and show it, with a
-  test. Done (narrowed by its vote): the version check reports a git killed by a signal with its
-  number; the other sites are LANDER-SIGNAL-ALL-SITES.
+  `5f86421`..`59dc170` rebased unchanged, by lane A onto `02006e2` and by the lander onto `87279e0`;
+  merge-path vote 3 "Yes with should-fixes", no must-fix) — S; from LANDER-VERSION-CHECK's vote
+  (VOTE-1, VOTE-3). A git killed by a signal is reported as "killed by a signal" without its number,
+  because `GitOutput` (`tessel-lander/src/run.rs`) keeps only `status.code()`; the number tells an
+  outside kill (SIGKILL) from a crash (SIGSEGV, SIGABRT). Keep it (`ExitStatusExt::signal()`) and
+  show it, with a test. Done (narrowed by its vote): the version check reports a git killed by a
+  signal with its number; the other sites are LANDER-SIGNAL-ALL-SITES.
 - [x] **REPLAY-ORDER-CONTRACT** (`4c487cc`..`87279e0`, landed by the server 28 November, a
   fast-forward: `76ec75b`..`1ea2a4d` rebased onto `02006e2` unchanged, and `87279e0`, the vote's
   comment nit; merge-path vote 3-0 "Yes" after one fix pass; site 3 stays out of the contract's
@@ -2145,14 +2148,15 @@ Lane B:
   why the helper stays. Done: no host test relies on an order the contract excludes, or each that
   does says so.
 - [x] **MAIN-RED-SIM-MUTANTS** (`02006e2`, landed by the server 28 November; Opus "Yes", no
-  must-fix; CI's command on `7f989f8`..`ecff1cd`: 86 mutants, none missed; CI's changed-lines job
-  passed on `02006e2`) — S, lane A (`src/sim`, `tests/simulator.rs`); found 28 November. Main's CI
-  "mutants on changed lines" job missed 4 mutants of SIM-DOUBT-PREPARED-TRAFFIC (`eb1770a`:
-  `driver.rs:1125` in `without_doubt_after_prepare`, `lander.rs:381` in `Lander::plan`,
-  `lander.rs:40` in `doubt_mode`) and 13 of SIM-DOUBT-LIVENESS (`4e94d32`: `driver/merge_path.rs` in
-  `taken_probe_for`, `drop_if_planted`, `answered_at` and `with_flight_and_work`; `store.rs:37` in
-  `Store::restage`), because the 2-seed sweep and the 20-seed plant searches assert only that a
-  checker catches a plant, not the decisions inside the new functions (PLAN-1). Lane A's plan
+  must-fix; the reviewer's run of CI's command on `7f989f8`..`ecff1cd`: 86 mutants, none missed;
+  CI's changed-lines job passed on `02006e2`'s own lines) — S, lane A (`src/sim`,
+  `tests/simulator.rs`); found 28 November. Main's CI "mutants on changed lines" job missed 4
+  mutants of SIM-DOUBT-PREPARED-TRAFFIC (`eb1770a`: `driver.rs:1125` in
+  `without_doubt_after_prepare`, `lander.rs:381` in `Lander::plan`, `lander.rs:40` in `doubt_mode`)
+  and 13 of SIM-DOUBT-LIVENESS (`4e94d32`: `driver/merge_path.rs` in `taken_probe_for`,
+  `drop_if_planted`, `answered_at` and `with_flight_and_work`; `store.rs:37` in `Store::restage`),
+  because the 2-seed sweep and the 20-seed plant searches assert only that a checker catches a
+  plant, not the decisions inside the new functions (PLAN-1). Lane A's plan
   (`~/tessel-orch-notes/2026-11-28/main-red-sim-mutants/PLAN-1.md`): unit tests for the pure
   functions, `taken_probe_for` split into a pure function over the state, no exclusion. Done: CI's
   changed-lines job reports no missed mutant on the diffs `7f989f8`..`eb1770a` and
@@ -2163,7 +2167,7 @@ Lane B:
   `scripts/ci/mutants-diff.sh`) only after a landing. Every lane gate runs CI's command with CI's
   settings on the branch's diff before it reports, and every merge-path vote runs it once. A run
   with `CARGO_TARGET_DIR` set uses `--jobs 1`: with two jobs both build one test binary, and a
-  mutant is tested against the other job's build (MAIN-RED-SIM-MUTANTS' review). Done: the gate
+  mutant can be tested against the other job's build (MAIN-RED-SIM-MUTANTS' review). Done: the gate
   scripts and the brief template carry it.
 - [ ] **LANDER-WORKFLOW-SCOPE** — S, lane B (`tessel-lander`, `tessel-server/src/landing`,
   `src/merge.rs`; merge path: a vote); found 28 November (claim 229). A push to `main` that the git
