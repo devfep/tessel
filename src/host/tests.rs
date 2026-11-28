@@ -3568,8 +3568,10 @@ fn host_other_sockets_are_served_while_a_replay_pages() {
 /// The hello's commit is asked after page 1 is answered (so after page 2's read) and answered after
 /// page 2 and before page 3: the contract's order, with the core loaded first. The welcome arrives
 /// while the watcher holds pages 1 and 2 only. The page handed over last lacks the commit's event,
-/// so only the replay's buffer can send it. It differs from the test below, whose commit is asked
-/// before page 1 is answered, in where the commit falls and in the mid-replay look.
+/// so only the replay's buffer can send it. It differs from
+/// `host_a_commit_asked_before_the_last_read_and_missing_from_its_page_is_sent_once_after_it`,
+/// whose commit is asked before page 1 is answered, in where the commit falls and in the
+/// mid-replay look.
 #[test]
 fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
     let mut kit = kit();
