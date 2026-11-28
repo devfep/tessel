@@ -1215,4 +1215,40 @@ mod tests {
         lander.lose_candidates();
         assert_eq!(lander.candidate_count(), 0);
     }
+
+    #[test]
+    fn the_doubt_mode_die_puts_every_seed_but_each_third_in_doubt_mode() {
+        assert!(!doubt_mode(0));
+        assert!(doubt_mode(1));
+        assert!(doubt_mode(2));
+        assert!(!doubt_mode(3));
+    }
+
+    #[test]
+    fn only_the_doubted_lands_that_are_sent_again_wait_a_second() {
+        let (mut resent, mut prompt_others) = (0, 0);
+        for seed in (0..60).filter(|seed| doubt_mode(*seed)) {
+            let mut lander = Lander::new().with_faults(seed);
+            let refused = lander.plan(&call(1, land(MAIN0, "h1")), 1_000);
+            assert_eq!(refused.fate, Fate::RateLimited, "seed {seed}");
+            assert_eq!(
+                refused.run_after_ms, 0,
+                "seed {seed}: the refusal is at once"
+            );
+            let again = lander.plan(&call(2, land(MAIN0, "h1")), 1_000);
+            if again.fate != Fate::RateLimited {
+                resent += 1;
+                assert!(
+                    again.run_after_ms >= DOUBT_MODE_LAND_DELAY_MS,
+                    "seed {seed}"
+                );
+            }
+            let other = lander.plan(&call(3, prepare("f")), 1_000);
+            if other.fate != Fate::RateLimited && other.run_after_ms == 0 {
+                prompt_others += 1;
+            }
+        }
+        assert!(resent > 0, "no seed sent the doubted Land again");
+        assert!(prompt_others > 0, "every other call was delayed");
+    }
 }

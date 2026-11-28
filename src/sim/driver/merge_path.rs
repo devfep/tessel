@@ -372,42 +372,9 @@ impl Sim {
     }
 
     /// The state to compare with, if `call` is the offered call of the merge in flight of a claim
-    /// in doubt: its dispatch and stage are the stored flight's, and the flight is not waiting
-    /// out a backoff at `now_ms`, so the host takes the answer.
+    /// in doubt (`taken_probe`).
     fn taken_probe_for(&self, call: &Call, now_ms: Option<u64>) -> Option<TakenProbe> {
-        let state = self.stored_state_value()?;
-        let flight = state
-            .get("merge_in_flight")
-            .filter(|flight| !flight.is_null())?;
-        let stage = flight.pointer("/stage/stage")?.as_str()?;
-        let matches = match call.request {
-            Request::Prepare { .. } => stage == "prepare",
-            Request::Test { .. } => stage == "test",
-            Request::Land { .. } => stage == "land",
-            Request::Reconcile { .. } => stage == "reconcile",
-            Request::Trial { .. } | Request::ReadHead { .. } => false,
-        };
-        if !matches || flight.get("dispatch")?.as_u64()? != call.dispatch_id.0 {
-            return None;
-        }
-        let claim = flight.get("claim")?.as_u64()?;
-        let claim_entry = state.pointer(&format!("/claims/{claim}"))?;
-        let work = claim_entry.get("work")?;
-        if work.get("in_doubt") != Some(&Value::Bool(true)) {
-            return None;
-        }
-        let due = work.get("retry_at_ms").and_then(Value::as_u64);
-        if due.is_some_and(|due| now_ms.is_none_or(|now| due > now)) {
-            return None;
-        }
-        Some(TakenProbe {
-            call: call.id.0,
-            dispatch: call.dispatch_id.0,
-            stage: stage.to_string(),
-            claim,
-            flight: flight.clone(),
-            claim_entry: claim_entry.clone(),
-        })
+        taken_probe(&self.stored_state_value()?, call, now_ms)
     }
 
     /// The planted cores that take the answer and drop it: the flight and work from before it go
@@ -524,6 +491,44 @@ fn answered_at(input: &Input) -> Option<u64> {
         | Input::Committed { .. }
         | Input::CommitFailed { .. } => None,
     }
+}
+
+/// The probe for `call` if it is the offered call of the merge in flight of a claim in doubt in
+/// `state`: its dispatch and stage are the stored flight's, and the flight is not waiting out a
+/// backoff at `now_ms`, so the host takes the answer.
+fn taken_probe(state: &Value, call: &Call, now_ms: Option<u64>) -> Option<TakenProbe> {
+    let flight = state
+        .get("merge_in_flight")
+        .filter(|flight| !flight.is_null())?;
+    let stage = flight.pointer("/stage/stage")?.as_str()?;
+    let matches = match call.request {
+        Request::Prepare { .. } => stage == "prepare",
+        Request::Test { .. } => stage == "test",
+        Request::Land { .. } => stage == "land",
+        Request::Reconcile { .. } => stage == "reconcile",
+        Request::Trial { .. } | Request::ReadHead { .. } => false,
+    };
+    if !matches || flight.get("dispatch")?.as_u64()? != call.dispatch_id.0 {
+        return None;
+    }
+    let claim = flight.get("claim")?.as_u64()?;
+    let claim_entry = state.pointer(&format!("/claims/{claim}"))?;
+    let work = claim_entry.get("work")?;
+    if work.get("in_doubt") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let due = work.get("retry_at_ms").and_then(Value::as_u64);
+    if due.is_some_and(|due| now_ms.is_none_or(|now| due > now)) {
+        return None;
+    }
+    Some(TakenProbe {
+        call: call.id.0,
+        dispatch: call.dispatch_id.0,
+        stage: stage.to_string(),
+        claim,
+        flight: flight.clone(),
+        claim_entry: claim_entry.clone(),
+    })
 }
 
 /// `json`, a state about to be stored, with the merge in flight and its claim's work as `taken`
@@ -1208,5 +1213,256 @@ pub(super) mod tests {
         assert!(!notes.is_empty());
         assert_eq!(notes[0].call, super::SlotCall::MergeStart);
         assert!(notes.iter().all(|note| !note.verification_ready));
+    }
+}
+
+/// What the checker for a claim in doubt takes as an answer, decided on states built by hand.
+#[cfg(test)]
+mod taken {
+    use serde_json::{json, Value};
+
+    use super::{answered_at, taken_probe, with_flight_and_work, TakenProbe, STATE_KEY};
+    use crate::host::call::{Call, CallAnswer, CallId, DispatchId, Request};
+    use crate::host::{BatchId, HostConfig, Input};
+    use crate::protocol::{AgentId, ClaimId, CommitId};
+    use crate::sim::driver::Sim;
+    use crate::sim::variant::Variant;
+
+    const NOW: u64 = 1_000;
+    const STAGES: [&str; 4] = ["prepare", "test", "land", "reconcile"];
+
+    fn commit() -> CommitId {
+        CommitId("c".to_string())
+    }
+
+    fn request(stage: &str) -> Request {
+        match stage {
+            "prepare" => Request::Prepare {
+                claim: ClaimId(4),
+                agent: AgentId("a".to_string()),
+                fork_commit: commit(),
+                scopes: Vec::new(),
+            },
+            "test" => Request::Test {
+                base: commit(),
+                head: commit(),
+            },
+            "land" => Request::Land {
+                base: commit(),
+                head: commit(),
+            },
+            "reconcile" => Request::Reconcile { head: commit() },
+            "trial" => Request::Trial {
+                agent: AgentId("a".to_string()),
+                commit: None,
+                before: commit(),
+                main: commit(),
+            },
+            _ => Request::ReadHead {
+                submitted: Vec::new(),
+            },
+        }
+    }
+
+    fn call(stage: &str, dispatch: u64) -> Call {
+        Call {
+            id: CallId(9),
+            dispatch_id: DispatchId(dispatch),
+            request: request(stage),
+            deadline_ms: u64::MAX,
+        }
+    }
+
+    fn state(stage: &str, dispatch: u64, in_doubt: bool, retry_at_ms: Value) -> Value {
+        json!({
+            "clock_ms": 5,
+            "merge_in_flight": {"claim": 4, "dispatch": dispatch, "stage": {"stage": stage}},
+            "claims": {"4": {"work": {"in_doubt": in_doubt, "retry_at_ms": retry_at_ms}}},
+        })
+    }
+
+    fn probe_of(stage: &str, retry_at_ms: Value, now: Option<u64>) -> Option<TakenProbe> {
+        taken_probe(&state(stage, 3, true, retry_at_ms), &call(stage, 3), now)
+    }
+
+    #[test]
+    fn a_call_is_taken_only_at_the_stage_of_its_own_kind() {
+        for asked in STAGES {
+            for held in STAGES {
+                let probe = taken_probe(&state(held, 3, true, Value::Null), &call(asked, 3), None);
+                assert_eq!(
+                    probe.is_some(),
+                    asked == held,
+                    "{asked} call, {held} flight"
+                );
+            }
+        }
+        for asked in ["trial", "read_head"] {
+            let probe = taken_probe(
+                &state("prepare", 3, true, Value::Null),
+                &call(asked, 3),
+                None,
+            );
+            assert!(probe.is_none(), "{asked} is never taken");
+        }
+    }
+
+    #[test]
+    fn a_call_needs_the_flights_dispatch_a_claim_in_doubt_and_its_entry() {
+        let held = state("land", 3, true, Value::Null);
+        assert!(taken_probe(&held, &call("land", 3), None).is_some());
+        assert!(
+            taken_probe(&held, &call("land", 4), None).is_none(),
+            "other dispatch"
+        );
+        let quiet = state("land", 3, false, Value::Null);
+        assert!(
+            taken_probe(&quiet, &call("land", 3), None).is_none(),
+            "not in doubt"
+        );
+        let mut no_flight = state("land", 3, true, Value::Null);
+        no_flight["merge_in_flight"] = Value::Null;
+        assert!(taken_probe(&no_flight, &call("land", 3), None).is_none());
+        let mut no_claim = state("land", 3, true, Value::Null);
+        no_claim["claims"] = json!({});
+        assert!(taken_probe(&no_claim, &call("land", 3), None).is_none());
+    }
+
+    #[test]
+    fn a_flight_inside_its_backoff_is_not_taken_and_one_due_is() {
+        assert!(
+            probe_of("reconcile", json!(NOW + 1), Some(NOW)).is_none(),
+            "due later"
+        );
+        assert!(
+            probe_of("reconcile", json!(NOW), Some(NOW)).is_some(),
+            "due now"
+        );
+        assert!(
+            probe_of("reconcile", json!(NOW - 1), Some(NOW)).is_some(),
+            "due before"
+        );
+        assert!(
+            probe_of("reconcile", json!(NOW), None).is_none(),
+            "due, time unknown"
+        );
+        assert!(
+            probe_of("reconcile", Value::Null, None).is_some(),
+            "no backoff"
+        );
+    }
+
+    #[test]
+    fn a_taken_call_keeps_what_the_answer_may_move() {
+        let held = state("test", 3, true, Value::Null);
+        let probe = taken_probe(&held, &call("test", 3), None).expect("taken");
+        assert_eq!((probe.call, probe.dispatch, probe.claim), (9, 3, 4));
+        assert_eq!(probe.stage, "test");
+        assert_eq!(probe.flight, held["merge_in_flight"]);
+        assert_eq!(probe.claim_entry, held["claims"]["4"]);
+    }
+
+    #[test]
+    fn answered_at_is_the_time_of_an_answer_and_nothing_for_any_other_input() {
+        let replied = Input::Replied {
+            now_ms: 7,
+            call: CallId(1),
+            answer: CallAnswer::Unknown,
+        };
+        assert_eq!(answered_at(&replied), Some(7));
+        let lost = Input::CallLost {
+            now_ms: 7,
+            call: CallId(1),
+        };
+        assert_eq!(answered_at(&lost), Some(7));
+        assert_eq!(answered_at(&Input::Wake { now_ms: 7 }), None);
+    }
+
+    fn probe_for_restore() -> TakenProbe {
+        let held = json!({"work": {"in_doubt": true, "moved": 1}, "fence": 2});
+        TakenProbe {
+            call: 9,
+            dispatch: 3,
+            stage: "reconcile".to_string(),
+            claim: 4,
+            flight: json!({"claim": 4, "dispatch": 3}),
+            claim_entry: held,
+        }
+    }
+
+    #[test]
+    fn the_flight_and_work_go_back_and_a_claim_the_answer_removed_comes_back() {
+        let taken = probe_for_restore();
+        let after = json!({
+            "clock_ms": 8,
+            "merge_in_flight": {"claim": 4, "dispatch": 5},
+            "claims": {"4": {"work": {"in_doubt": false}, "fence": 2}},
+        });
+        let restored: Value =
+            serde_json::from_str(&with_flight_and_work(&after.to_string(), &taken)).expect("json");
+        assert_eq!(restored["merge_in_flight"], taken.flight);
+        assert_eq!(restored["claims"]["4"]["work"], taken.claim_entry["work"]);
+        assert_eq!(restored["clock_ms"], 8, "the rest is left as it was");
+        let gone = json!({"merge_in_flight": null, "claims": {}});
+        let back: Value =
+            serde_json::from_str(&with_flight_and_work(&gone.to_string(), &taken)).expect("json");
+        assert_eq!(back["claims"]["4"], taken.claim_entry);
+        assert_eq!(back["merge_in_flight"], taken.flight);
+        assert_eq!(with_flight_and_work("not json", &taken), "not json");
+    }
+
+    fn staged_with(variant: Variant, stage: &str) -> (Vec<(String, String)>, Option<String>) {
+        let mut sim = Sim::new(HostConfig::default(), variant);
+        let after = json!({"merge_in_flight": null, "claims": {}}).to_string();
+        let entries = vec![
+            (STATE_KEY.to_string(), after.clone()),
+            ("event:1".to_string(), "{}".to_string()),
+        ];
+        sim.store.stage(BatchId(1), entries);
+        sim.answer_state = Some(after);
+        let mut taken = probe_for_restore();
+        taken.stage = stage.to_string();
+        sim.drop_if_planted(&taken);
+        let staged = sim.store.staged().expect("staged").to_vec();
+        (staged, sim.answer_state.clone())
+    }
+
+    fn rewritten(variant: Variant, stage: &str) -> bool {
+        let (staged, asked) = staged_with(variant, stage);
+        let event = staged.iter().find(|(key, _)| key == "event:1");
+        assert_eq!(
+            event.map(|(_, json)| json.as_str()),
+            Some("{}"),
+            "events are left alone"
+        );
+        let state = staged
+            .iter()
+            .find(|(key, _)| key == STATE_KEY)
+            .expect("state");
+        let state_changed = state.1.contains("dispatch");
+        assert_eq!(
+            asked.is_some_and(|json| json.contains("dispatch")),
+            state_changed
+        );
+        state_changed
+    }
+
+    #[test]
+    fn a_planted_core_drops_only_the_answers_of_its_own_stage() {
+        assert!(rewritten(
+            Variant::DoubtedReconcileAnswerDropped,
+            "reconcile"
+        ));
+        assert!(!rewritten(
+            Variant::DoubtedReconcileAnswerDropped,
+            "prepare"
+        ));
+        assert!(rewritten(Variant::DoubtedPrepareAnswerDropped, "prepare"));
+        assert!(!rewritten(
+            Variant::DoubtedPrepareAnswerDropped,
+            "reconcile"
+        ));
+        assert!(!rewritten(Variant::Correct, "reconcile"));
+        assert!(!rewritten(Variant::UntoldDoubt, "prepare"));
     }
 }

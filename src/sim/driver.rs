@@ -1298,4 +1298,39 @@ mod tests {
         sim.count_failed_attempt(BatchId(2));
         assert_eq!(sim.failing_batch, None, "the last attempt is spent");
     }
+
+    fn flight_state(stage: &str, dispatch: u64) -> String {
+        serde_json::json!({
+            "merge_in_flight": {
+                "dispatch": dispatch,
+                "stage": {"stage": stage},
+                "doubt_since_ms": 5,
+            },
+        })
+        .to_string()
+    }
+
+    fn doubt_after(before: &str, after: &str) -> serde_json::Value {
+        let written = without_doubt_after_prepare(Some(before), after);
+        let value: serde_json::Value = serde_json::from_str(&written).expect("json");
+        value["merge_in_flight"]["doubt_since_ms"].clone()
+    }
+
+    #[test]
+    fn the_doubt_is_lost_only_when_a_prepare_moves_to_a_land_under_a_new_dispatch() {
+        let prepare = flight_state("prepare", 1);
+        assert!(doubt_after(&prepare, &flight_state("land", 2)).is_null());
+        assert_eq!(
+            doubt_after(&prepare, &flight_state("land", 1)),
+            5,
+            "same dispatch"
+        );
+        assert_eq!(
+            doubt_after(&prepare, &flight_state("test", 2)),
+            5,
+            "not a land"
+        );
+        let untouched = without_doubt_after_prepare(None, &flight_state("land", 2));
+        assert_eq!(untouched, flight_state("land", 2), "no state before");
+    }
 }

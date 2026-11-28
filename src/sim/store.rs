@@ -194,4 +194,16 @@ mod tests {
         assert_eq!(store.stale_state(), Some("one"));
         assert_eq!(store.state(), Some("two"));
     }
+
+    #[test]
+    fn a_staged_write_can_be_rewritten_and_no_write_is_conjured() {
+        let mut store = Store::default();
+        store.restage(|entries| entries.push((STATE_KEY.to_string(), "none".to_string())));
+        assert_eq!(store.staged(), None, "nothing staged, nothing to rewrite");
+        store.stage(BatchId(1), entry(STATE_KEY, "one"));
+        store.restage(|entries| entries[0].1 = "two".to_string());
+        assert_eq!(store.staged(), Some(entry(STATE_KEY, "two").as_slice()));
+        assert!(store.apply(BatchId(1)));
+        assert_eq!(store.state(), Some("two"));
+    }
 }
