@@ -3565,13 +3565,15 @@ fn host_other_sockets_are_served_while_a_replay_pages() {
     assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
 }
 
+/// The hello's commit is asked after page 1 is answered (so after page 2's read) and answered after
+/// page 2 and before page 3: the contract's order, with the core loaded first. The welcome arrives
+/// while the watcher holds pages 1 and 2 only. The page handed over last lacks the commit's event,
+/// so only the replay's buffer can send it. It differs from the test below, whose commit is asked
+/// before page 1 is answered, in where the commit falls and in the mid-replay look.
 #[test]
-/// The core is loaded first, so the hello's commit is asked right after the watch's read and is
-/// answered after page 1 and before page 2 (asked once page 1 is answered): the contract's order.
-/// The page handed over last lacks the commit's event, so only the replay's buffer can send it.
 fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
     let mut kit = kit();
-    seed_log(&mut kit, 150);
+    seed_log(&mut kit, 250);
     let a1 = kit.open("a1");
     kit.send(a1, &hello("a1"));
     kit.settle();
@@ -3585,32 +3587,27 @@ fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
         text: watch,
     });
     kit.execute(without_reads(outputs));
-    kit.send(other, &hello("a2"));
-    let first: Vec<Event> = (0..shell::REPLAY_PAGE as u64).map(old_event).collect();
-    let page = Input::ReplayPage {
+    let page = |from: u64, to: u64| Input::ReplayPage {
         now_ms,
         sock: watcher,
-        events: first,
+        events: (from..to).map(old_event).collect(),
         done: false,
     };
-    let outputs = kit.host.step(page);
+    let outputs = kit.host.step(page(0, 100));
+    kit.execute(without_reads(outputs));
+    kit.send(other, &hello("a2"));
+    let outputs = kit.host.step(page(100, 200));
     kit.execute(without_reads(outputs));
     deliver_until_welcome(&mut kit, other);
     assert_eq!(
         replayed_seqs(&kit, watcher),
-        (0..shell::REPLAY_PAGE as u64).collect::<Vec<_>>(),
+        (0..200).collect::<Vec<_>>(),
         "the live event waits behind the replay"
     );
 
-    let last: Vec<Event> = (100..151).map(old_event).collect();
-    kit.input(Input::ReplayPage {
-        now_ms,
-        sock: watcher,
-        events: last,
-        done: false,
-    });
+    kit.input(page(200, 251));
     kit.settle();
-    assert_eq!(replayed_seqs(&kit, watcher), (0..=151).collect::<Vec<_>>());
+    assert_eq!(replayed_seqs(&kit, watcher), (0..=251).collect::<Vec<_>>());
     assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
 }
 
