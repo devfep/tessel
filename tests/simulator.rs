@@ -1767,6 +1767,48 @@ fn a_doubt_cleared_at_land_is_caught_by_the_fenced_rule_and_by_no_other_checker(
     assert!(caught >= 1, "no default seed caught the variant");
 }
 
+#[test]
+fn the_liveness_checker_alone_sees_a_doubted_prepare_answer_the_core_drops() {
+    let caught = first_caught(Variant::DoubtedPrepareAnswerDropped, Checker::DoubtLiveness);
+    assert!(caught.is_some(), "no default seed caught the planted core");
+}
+
+#[test]
+fn the_liveness_checker_alone_sees_a_reconcile_answer_the_core_drops() {
+    let caught = first_caught(
+        Variant::DoubtedReconcileAnswerDropped,
+        Checker::DoubtLiveness,
+    );
+    assert!(caught.is_some(), "no default seed caught the planted core");
+}
+
+#[test]
+fn a_dropped_answer_in_doubt_is_caught_by_the_liveness_checker_and_by_no_other_checker() {
+    for variant in [
+        Variant::DoubtedPrepareAnswerDropped,
+        Variant::DoubtedReconcileAnswerDropped,
+    ] {
+        let mut caught = 0;
+        for seed in 0..SEARCH_SEEDS {
+            let run = sim::run_seed(seed, variant, &Checker::ALL);
+            if run.violations.is_empty() {
+                continue;
+            }
+            caught += 1;
+            let only_liveness = run
+                .violations
+                .iter()
+                .all(|v| v.checker == Checker::DoubtLiveness);
+            assert!(
+                only_liveness,
+                "{variant:?} seed {seed}: {:?}",
+                run.violations
+            );
+        }
+        assert!(caught >= 1, "no default seed caught {variant:?}");
+    }
+}
+
 /// Whether the correct core's stored merge in flight is at a `Prepare` that waits in doubt (it
 /// carries `doubt_since_ms`) at the end of a step of `seed`: the answer to such a `Prepare` is what
 /// `prepared()` sends on to `Land`.

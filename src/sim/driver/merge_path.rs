@@ -18,6 +18,7 @@ use crate::shell::{EVENT_PREFIX, STATE_KEY};
 use crate::sim::check::Waits;
 use crate::sim::driver::{Answer, Dispatch, Failpoint, Moment, Sim, Step};
 use crate::sim::lander::{Fate, Plan};
+use crate::sim::variant::Variant;
 
 /// Something that happens to the merge path at a set time.
 #[derive(Debug)]
@@ -41,6 +42,19 @@ pub struct StaleAnswer {
     pub dispatch: u64,
     /// What the host stored in answer, if it stored anything beyond the time it had seen.
     pub changed: Option<String>,
+}
+
+/// What the host did with an answer it took for the offered call of a claim in doubt: the answer
+/// matched the stored merge in flight (its dispatch and its stage) and that flight was not
+/// waiting out a backoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TakenAnswer {
+    pub call: u64,
+    pub dispatch: u64,
+    /// The stage of the merge in flight the answer was for.
+    pub stage: String,
+    /// Whether what the host staged left the merge in flight and its claim's work as they were.
+    pub unchanged: bool,
 }
 
 /// Which call a dispatch was.
@@ -68,6 +82,16 @@ pub(super) struct Probe {
     call: u64,
     dispatch: u64,
     state: Value,
+}
+
+/// The stored state before a taken answer: the merge in flight and its claim's work.
+pub(super) struct TakenProbe {
+    call: u64,
+    dispatch: u64,
+    stage: String,
+    claim: u64,
+    flight: Value,
+    work: Value,
 }
 
 /// The state without the time the host has seen, which any answer may move.
@@ -300,10 +324,17 @@ impl Sim {
         }
         let known = open.or_else(|| self.answered_calls.get(&call.0).cloned());
         let step = known.as_ref().map(|known| Step::of(&known.request));
+        let taken = known
+            .as_ref()
+            .and_then(|known| self.taken_probe_for(known, answered_at(&input)));
         let probe = known.and_then(|known| self.probe_for(&known));
         self.input(input);
         if let Some(probe) = probe {
             self.settle(probe);
+        }
+        if let Some(taken) = taken {
+            self.drop_if_planted(&taken);
+            self.settle_taken(taken);
         }
         if let (Some(step), true) = (step, self.store.staged().is_some()) {
             self.answered = Some(step);
@@ -333,6 +364,92 @@ impl Sim {
             dispatch: call.dispatch_id.0,
             state: without_clock(&state),
         })
+    }
+
+    /// The state to compare with, if `call` is the offered call of the merge in flight of a claim
+    /// in doubt: its dispatch and stage are the stored flight's, and the flight is not waiting
+    /// out a backoff at `now_ms`, so the host takes the answer.
+    fn taken_probe_for(&self, call: &Call, now_ms: Option<u64>) -> Option<TakenProbe> {
+        let state = self.stored_state_value()?;
+        let flight = state
+            .get("merge_in_flight")
+            .filter(|flight| !flight.is_null())?;
+        let stage = flight.pointer("/stage/stage")?.as_str()?;
+        let matches = match call.request {
+            Request::Prepare { .. } => stage == "prepare",
+            Request::Test { .. } => stage == "test",
+            Request::Land { .. } => stage == "land",
+            Request::Reconcile { .. } => stage == "reconcile",
+            Request::Trial { .. } | Request::ReadHead { .. } => false,
+        };
+        if !matches || flight.get("dispatch")?.as_u64()? != call.dispatch_id.0 {
+            return None;
+        }
+        let claim = flight.get("claim")?.as_u64()?;
+        let work = state.pointer(&format!("/claims/{claim}/work"))?;
+        if work.get("in_doubt") != Some(&Value::Bool(true)) {
+            return None;
+        }
+        let due = work.get("retry_at_ms").and_then(Value::as_u64);
+        if due.is_some_and(|due| now_ms.is_none_or(|now| due > now)) {
+            return None;
+        }
+        Some(TakenProbe {
+            call: call.id.0,
+            dispatch: call.dispatch_id.0,
+            stage: stage.to_string(),
+            claim,
+            flight: flight.clone(),
+            work: work.clone(),
+        })
+    }
+
+    /// The planted cores that take the answer and drop it: the flight and work from before it go
+    /// back over what the host staged.
+    fn drop_if_planted(&mut self, taken: &TakenProbe) {
+        let dropped = match self.variant {
+            Variant::DoubtedPrepareAnswerDropped => "prepare",
+            Variant::DoubtedReconcileAnswerDropped => "reconcile",
+            Variant::Correct
+            | Variant::WriteBehind
+            | Variant::StaleLoad
+            | Variant::DriftingCodec
+            | Variant::LostWake
+            | Variant::SkipsReplayEvent
+            | Variant::LosesScopesOnLoad
+            | Variant::PhantomHeartbeat
+            | Variant::UntoldDoubt
+            | Variant::DoubtClearedAtLand => return,
+        };
+        if taken.stage != dropped {
+            return;
+        }
+        self.store.restage(|entries| {
+            for (key, json) in entries {
+                if key == STATE_KEY {
+                    *json = with_flight_and_work(json, taken);
+                }
+            }
+        });
+    }
+
+    fn settle_taken(&mut self, taken: TakenProbe) {
+        let staged = self.store.staged().and_then(|entries| {
+            entries
+                .iter()
+                .find(|(key, _)| key == STATE_KEY)
+                .and_then(|(_, json)| serde_json::from_str::<Value>(json).ok())
+        });
+        let unchanged = staged.is_none_or(|after| {
+            let work = after.pointer(&format!("/claims/{}/work", taken.claim));
+            after.get("merge_in_flight") == Some(&taken.flight) && work == Some(&taken.work)
+        });
+        self.taken_answers.push(TakenAnswer {
+            call: taken.call,
+            dispatch: taken.dispatch,
+            stage: taken.stage,
+            unchanged,
+        });
     }
 
     fn settle(&mut self, probe: Probe) {
@@ -382,6 +499,30 @@ impl Sim {
             .collect();
         self.tally.add_page(&page);
     }
+}
+
+/// The time an answer reached the host, if `input` is an answer.
+fn answered_at(input: &Input) -> Option<u64> {
+    if let Input::Replied { now_ms, .. } | Input::CallLost { now_ms, .. } = input {
+        return Some(*now_ms);
+    }
+    None
+}
+
+/// `json`, a state about to be stored, with the merge in flight and its claim's work as `taken`
+/// found them.
+fn with_flight_and_work(json: &str, taken: &TakenProbe) -> String {
+    let Ok(mut state) = serde_json::from_str::<Value>(json) else {
+        return json.to_string();
+    };
+    if let Some(object) = state.as_object_mut() {
+        object.insert("merge_in_flight".to_string(), taken.flight.clone());
+    }
+    let work = state.pointer_mut(&format!("/claims/{}/work", taken.claim));
+    if let Some(work) = work {
+        *work = taken.work.clone();
+    }
+    serde_json::to_string(&state).unwrap_or_else(|_| json.to_string())
 }
 
 /// How a staged entry differs from the state before it, if it does.

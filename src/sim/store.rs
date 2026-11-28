@@ -32,6 +32,13 @@ impl Store {
         self.staged = Some((batch, entries));
     }
 
+    /// Rewrite the entries of the write the adapter has accepted and not yet made durable.
+    pub fn restage(&mut self, rewrite: impl FnOnce(&mut Vec<(String, String)>)) {
+        if let Some((_, entries)) = self.staged.as_mut() {
+            rewrite(entries);
+        }
+    }
+
     /// The write the adapter has accepted and not yet made durable.
     pub fn staged(&self) -> Option<&[(String, String)]> {
         self.staged.as_ref().map(|(_, entries)| entries.as_slice())

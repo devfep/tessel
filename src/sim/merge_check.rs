@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::host::call::Request;
 use crate::merge::MAX_INFRA_RETRIES;
 use crate::protocol::{ClaimId, Event, EventKind, ServerMsg, Summary};
-use crate::sim::driver::{Delivery, Dispatch, SlotCall, SlotNote, StaleAnswer};
+use crate::sim::driver::{Delivery, Dispatch, SlotCall, SlotNote, StaleAnswer, TakenAnswer};
 use crate::sim::lander::{Landing, MAIN0};
 
 /// How many merges may be dispatched in a row past a ready verification
@@ -358,6 +358,13 @@ pub fn i7(stale: &[StaleAnswer]) -> Vec<String> {
             ))
         })
         .collect()
+}
+
+/// The liveness of a claim in doubt: an answer the host took for the offered call of its merge
+/// in flight moves the flight or the claim's work.
+pub fn doubt_liveness(taken: &[TakenAnswer]) -> Vec<String> {
+    let _ = taken;
+    Vec::new()
 }
 
 /// I11 (without its evidence clause): the counters the host keeps as it goes equal

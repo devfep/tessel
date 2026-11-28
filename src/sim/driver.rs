@@ -23,7 +23,7 @@ mod merge_path;
 
 pub use failpoint::{Failpoint, Moment, Step};
 use merge_path::Due;
-pub use merge_path::{SlotCall, SlotNote, StaleAnswer};
+pub use merge_path::{SlotCall, SlotNote, StaleAnswer, TakenAnswer};
 
 /// The most answers and wakes one `quiet` delivers: far more than any workload needs.
 const QUIET_LIMIT: usize = 10_000;
@@ -195,6 +195,7 @@ pub struct Sim {
     /// Restarts and failed commits that struck while a merge of the fork commit was in flight.
     fork_strikes: BTreeMap<String, u64>,
     stale_answers: Vec<StaleAnswer>,
+    taken_answers: Vec<TakenAnswer>,
     slot_notes: Vec<SlotNote>,
     /// The host's counters as the summary route keeps them: fed the log a page at a time.
     tally: SummaryTally,
@@ -246,6 +247,7 @@ impl Sim {
             answered_calls: BTreeMap::new(),
             fork_strikes: BTreeMap::new(),
             stale_answers: Vec::new(),
+            taken_answers: Vec::new(),
             slot_notes: Vec::new(),
             tally: SummaryTally::default(),
         }
@@ -312,6 +314,11 @@ impl Sim {
     /// Answers the host was given for a dispatch that was not in flight.
     pub fn stale_answers(&self) -> &[StaleAnswer] {
         &self.stale_answers
+    }
+
+    /// Answers the host took for the offered call of a claim in doubt.
+    pub fn taken_answers(&self) -> &[TakenAnswer] {
+        &self.taken_answers
     }
 
     /// The state of the verification queue at each dispatch, in order.
@@ -723,7 +730,9 @@ impl Sim {
                     | Variant::LosesScopesOnLoad
                     | Variant::PhantomHeartbeat
                     | Variant::UntoldDoubt
-                    | Variant::DoubtClearedAtLand => self.store.apply(batch),
+                    | Variant::DoubtClearedAtLand
+                    | Variant::DoubtedPrepareAnswerDropped
+                    | Variant::DoubtedReconcileAnswerDropped => self.store.apply(batch),
                 };
                 if !stored {
                     let fault = format!("batch {} was acknowledged with nothing staged", batch.0);
@@ -845,7 +854,9 @@ impl Sim {
                     | Variant::LosesScopesOnLoad
                     | Variant::PhantomHeartbeat
                     | Variant::UntoldDoubt
-                    | Variant::DoubtClearedAtLand => self.store.state(),
+                    | Variant::DoubtClearedAtLand
+                    | Variant::DoubtedPrepareAnswerDropped
+                    | Variant::DoubtedReconcileAnswerDropped => self.store.state(),
                 };
                 let mut stored = stored.map(str::to_string);
                 if self.variant == Variant::LosesScopesOnLoad {

@@ -46,6 +46,10 @@ pub enum Checker {
     /// A claim whose landing is in doubt (a doubted `Land` pair is set) is the one whose merge is
     /// in flight, and that merge carries `doubt_since_ms`: the rule the doubt code rests on.
     FencedRule,
+    /// A claim in doubt whose merge in flight has its offered call answered: the host takes the
+    /// answer and must move the flight or the claim's work, so a taken answer that changed
+    /// neither is a merge that cannot make progress.
+    DoubtLiveness,
     /// COORD-HEAD-FROM-AGENT: no dispatch names a head an agent declared.
     AgentBase,
     /// The harness itself: the host kept asking the adapter past any bound, or the driver
@@ -55,7 +59,7 @@ pub enum Checker {
 
 impl Checker {
     /// The checkers a run enables by default. `Harness` reports the driver's own mistakes.
-    pub const ALL: [Checker; 15] = [
+    pub const ALL: [Checker; 16] = [
         Checker::I1,
         Checker::I2,
         Checker::I3,
@@ -69,6 +73,7 @@ impl Checker {
         Checker::I11,
         Checker::I12,
         Checker::FencedRule,
+        Checker::DoubtLiveness,
         Checker::AgentBase,
         Checker::Harness,
     ];
@@ -119,6 +124,7 @@ pub fn run(sim: &Sim, enabled: &[Checker]) -> Vec<Violation> {
             Checker::FencedRule => {
                 merge_check::fenced_rule(stored_state(sim.store()).ok().flatten().as_ref())
             }
+            Checker::DoubtLiveness => merge_check::doubt_liveness(sim.taken_answers()),
             Checker::AgentBase => merge_check::agent_base(sim.dispatches(), BASE),
             Checker::Harness => sim.faults().to_vec(),
         };

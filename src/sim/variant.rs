@@ -36,10 +36,17 @@ pub enum Variant {
     /// fenced, the merge is in flight, and nobody was told (breaks the fenced-claim rule,
     /// `Checker::FencedRule`).
     DoubtClearedAtLand,
+    /// The adapter writes the merge in flight and its claim's work from before the answer to a
+    /// `Prepare` in doubt back over the state the host staged, as a core would that took the
+    /// answer and dropped it: the `Prepare` is sent again and dropped again (breaks the liveness
+    /// rule, `Checker::DoubtLiveness`).
+    DoubtedPrepareAnswerDropped,
+    /// The same for the answer to a `Reconcile` (breaks `Checker::DoubtLiveness`).
+    DoubtedReconcileAnswerDropped,
 }
 
 impl Variant {
-    pub const PLANTED: [Variant; 9] = [
+    pub const PLANTED: [Variant; 11] = [
         Variant::WriteBehind,
         Variant::StaleLoad,
         Variant::DriftingCodec,
@@ -49,5 +56,7 @@ impl Variant {
         Variant::PhantomHeartbeat,
         Variant::UntoldDoubt,
         Variant::DoubtClearedAtLand,
+        Variant::DoubtedPrepareAnswerDropped,
+        Variant::DoubtedReconcileAnswerDropped,
     ];
 }
