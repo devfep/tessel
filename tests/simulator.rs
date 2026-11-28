@@ -1817,6 +1817,21 @@ fn a_dropped_answer_in_doubt_is_always_caught_by_the_liveness_checker_and_alone_
     }
 }
 
+/// On these seeds the answer to a `Reconcile` in doubt lands the work, so the claim is gone from
+/// the state the host staged: the planted core must put the claim back with the flight and work,
+/// or the checker reads the answer as changed and only I4 speaks.
+#[test]
+fn a_dropped_reconcile_answer_that_lands_the_work_is_caught_by_the_liveness_checker() {
+    for seed in [108, 117] {
+        let run = sim::run_seed(seed, Variant::DoubtedReconcileAnswerDropped, &Checker::ALL);
+        let named = run
+            .violations
+            .iter()
+            .any(|v| v.checker == Checker::DoubtLiveness);
+        assert!(named, "seed {seed}: {:?}", run.violations);
+    }
+}
+
 /// Whether the correct core's stored merge in flight is at a `Prepare` that waits in doubt (it
 /// carries `doubt_since_ms`) at the end of a step of `seed`: the answer to such a `Prepare` is what
 /// `prepared()` sends on to `Land`.

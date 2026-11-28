@@ -36,12 +36,13 @@ pub enum Variant {
     /// fenced, the merge is in flight, and nobody was told (breaks the fenced-claim rule,
     /// `Checker::FencedRule`).
     DoubtClearedAtLand,
-    /// The adapter writes the merge in flight and its claim's work from before the answer to a
-    /// `Prepare` in doubt back over the state the host staged, as a core would that took the
-    /// answer and dropped it: the `Prepare` is sent again and dropped again (breaks the liveness
-    /// rule, `Checker::DoubtLiveness`).
+    /// After the host takes the answer to a `Prepare` in doubt, the adapter writes the merge in
+    /// flight and its claim's work from before the answer back over the state the host staged
+    /// (and the claim itself, if the answer removed it), as a core would whose answer left no
+    /// trace in what it stores: the host's memory moves on and the stored state does not (breaks
+    /// the liveness rule, `Checker::DoubtLiveness`).
     DoubtedPrepareAnswerDropped,
-    /// The same for the answer to a `Reconcile` (breaks `Checker::DoubtLiveness`).
+    /// The same for the answer to a `Reconcile` in doubt (breaks `Checker::DoubtLiveness`).
     DoubtedReconcileAnswerDropped,
 }
 

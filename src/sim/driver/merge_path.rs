@@ -91,7 +91,8 @@ pub(super) struct TakenProbe {
     stage: String,
     claim: u64,
     flight: Value,
-    work: Value,
+    /// The claim's whole entry, whose `work` is what the answer may move.
+    claim_entry: Value,
 }
 
 /// The state without the time the host has seen, which any answer may move.
@@ -390,7 +391,8 @@ impl Sim {
             return None;
         }
         let claim = flight.get("claim")?.as_u64()?;
-        let work = state.pointer(&format!("/claims/{claim}/work"))?;
+        let claim_entry = state.pointer(&format!("/claims/{claim}"))?;
+        let work = claim_entry.get("work")?;
         if work.get("in_doubt") != Some(&Value::Bool(true)) {
             return None;
         }
@@ -404,7 +406,7 @@ impl Sim {
             stage: stage.to_string(),
             claim,
             flight: flight.clone(),
-            work: work.clone(),
+            claim_entry: claim_entry.clone(),
         })
     }
 
@@ -446,7 +448,8 @@ impl Sim {
         let after = asked.and_then(|json| serde_json::from_str::<Value>(&json).ok());
         let unchanged = after.is_none_or(|after| {
             let work = after.pointer(&format!("/claims/{}/work", taken.claim));
-            after.get("merge_in_flight") == Some(&taken.flight) && work == Some(&taken.work)
+            let before = taken.claim_entry.get("work");
+            after.get("merge_in_flight") == Some(&taken.flight) && work == before
         });
         self.taken_answers.push(TakenAnswer {
             call: taken.call,
@@ -507,14 +510,24 @@ impl Sim {
 
 /// The time an answer reached the host, if `input` is an answer.
 fn answered_at(input: &Input) -> Option<u64> {
-    if let Input::Replied { now_ms, .. } | Input::CallLost { now_ms, .. } = input {
-        return Some(*now_ms);
+    match input {
+        Input::Replied { now_ms, .. } | Input::CallLost { now_ms, .. } => Some(*now_ms),
+        Input::Opened { .. }
+        | Input::Frame { .. }
+        | Input::Binary { .. }
+        | Input::Closed { .. }
+        | Input::SendFailed { .. }
+        | Input::Wake { .. }
+        | Input::TrunkPoked { .. }
+        | Input::Loaded { .. }
+        | Input::ReplayPage { .. }
+        | Input::Committed { .. }
+        | Input::CommitFailed { .. } => None,
     }
-    None
 }
 
 /// `json`, a state about to be stored, with the merge in flight and its claim's work as `taken`
-/// found them.
+/// found them, and the claim itself put back if the answer took it out (it landed the work).
 fn with_flight_and_work(json: &str, taken: &TakenProbe) -> String {
     let Ok(mut state) = serde_json::from_str::<Value>(json) else {
         return json.to_string();
@@ -522,9 +535,16 @@ fn with_flight_and_work(json: &str, taken: &TakenProbe) -> String {
     if let Some(object) = state.as_object_mut() {
         object.insert("merge_in_flight".to_string(), taken.flight.clone());
     }
-    let work = state.pointer_mut(&format!("/claims/{}/work", taken.claim));
-    if let Some(work) = work {
-        *work = taken.work.clone();
+    let id = taken.claim.to_string();
+    let work = taken.claim_entry.get("work").cloned();
+    match (state.pointer_mut(&format!("/claims/{id}/work")), work) {
+        (Some(after), Some(before)) => *after = before,
+        (None, _) | (_, None) => {
+            let claims = state.get_mut("claims").and_then(Value::as_object_mut);
+            if let Some(claims) = claims {
+                claims.insert(id, taken.claim_entry.clone());
+            }
+        }
     }
     serde_json::to_string(&state).unwrap_or_else(|_| json.to_string())
 }
