@@ -1780,9 +1780,10 @@ fn host_a_merge_marker_is_stored_before_its_call_and_its_outcome_before_anyone_i
     let (sock, _, _) = submitted(&mut kit);
     kit.wake_now();
     let mut stored_before_the_call = false;
+    let mut delivered = 0;
     while kit.calls().is_empty() {
         stored_before_the_call |= merge_marker_stored(&kit);
-        assert!(kit.deliver_next(), "the host asks for nothing more");
+        deliver_counted(&mut kit, &mut delivered, "the host asks for nothing more");
     }
     assert!(
         stored_before_the_call,
@@ -1821,10 +1822,15 @@ fn host_the_head_is_stored_before_the_test_goes_out_and_the_passed_test_before_t
         let call = kit.calls().last().unwrap().id;
         kit.reply(call, answer);
         let mut stored_first = false;
+        let mut delivered = 0;
         while kit.calls().len() == out {
             let marker = &state(&kit)["merge_in_flight"]["stage"];
             stored_first |= marker["stage"] == json!(stage) && marker["head"] == json!("new");
-            assert!(kit.deliver_next(), "the host asks for the {next} call");
+            deliver_counted(
+                &mut kit,
+                &mut delivered,
+                &format!("the host asks for the {next} call"),
+            );
         }
         assert!(
             stored_first,
@@ -1858,8 +1864,9 @@ fn host_a_restart_at_test_sends_the_journaled_head_to_test_again() {
     wake(&mut kit);
     let prepare = kit.calls().last().unwrap().id;
     kit.reply(prepare, prepared());
+    let mut delivered = 0;
     while kit.calls().len() == 1 {
-        assert!(kit.deliver_next(), "the host asks for the test call");
+        deliver_counted(&mut kit, &mut delivered, "the host asks for the test call");
     }
     let Request::Test { base, head } = kit.calls().last().unwrap().request.clone() else {
         panic!("the second call is a Test");
@@ -1935,9 +1942,10 @@ fn host_a_verification_marker_is_stored_before_its_call_and_its_outcome_before_a
     let sock = welcomed(&mut kit, "a1");
     kit.wake_now();
     let mut stored_before_the_call = false;
+    let mut delivered = 0;
     while kit.calls().is_empty() {
         stored_before_the_call |= state(&kit)["verification_in_flight"].is_object();
-        assert!(kit.deliver_next(), "the host asks for nothing more");
+        deliver_counted(&mut kit, &mut delivered, "the host asks for nothing more");
     }
     assert!(
         stored_before_the_call,
@@ -3455,7 +3463,7 @@ fn host_only_the_replaying_sockets_frames_wait_for_its_replay() {
         delivered += 1;
         assert!(
             kit.deliver_next(),
-            "an answer is owed until the hello is parked"
+            "an answer is owed until the replay ends"
         );
     }
     kit.settle();
@@ -3558,9 +3566,15 @@ fn host_other_sockets_are_served_while_a_replay_pages() {
 }
 
 #[test]
+/// The core is loaded first, so the hello's commit is asked right after the watch's read and is
+/// answered after page 1 and before page 2 (asked once page 1 is answered): the contract's order.
+/// The page handed over last lacks the commit's event, so only the replay's buffer can send it.
 fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
     let mut kit = kit();
     seed_log(&mut kit, 150);
+    let a1 = kit.open("a1");
+    kit.send(a1, &hello("a1"));
+    kit.settle();
     let watcher = kit.open("w");
     let other = kit.open("a2");
     let now_ms = kit.now_ms();
@@ -3588,7 +3602,7 @@ fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
         "the live event waits behind the replay"
     );
 
-    let last: Vec<Event> = (100..150).map(old_event).collect();
+    let last: Vec<Event> = (100..151).map(old_event).collect();
     kit.input(Input::ReplayPage {
         now_ms,
         sock: watcher,
@@ -3596,7 +3610,7 @@ fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
         done: false,
     });
     kit.settle();
-    assert_eq!(replayed_seqs(&kit, watcher), (0..=150).collect::<Vec<_>>());
+    assert_eq!(replayed_seqs(&kit, watcher), (0..=151).collect::<Vec<_>>());
     assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
 }
 
@@ -3617,6 +3631,17 @@ fn host_an_event_the_replay_read_and_the_buffer_both_hold_is_sent_once() {
         (0..=250).collect::<Vec<_>>(),
         "no event twice, none missed"
     );
+}
+
+/// Deliver the next answer, in the order asked, failing the test instead of looping on when the
+/// host keeps asking past `SETTLE_LIMIT` answers or asks for nothing.
+fn deliver_counted(kit: &mut Testkit, delivered: &mut usize, why: &str) {
+    assert!(
+        *delivered < SETTLE_LIMIT,
+        "{why}: still going after {SETTLE_LIMIT} answers"
+    );
+    *delivered += 1;
+    assert!(kit.deliver_next(), "{why}");
 }
 
 /// Deliver answers in the order they were asked until `sock` has its welcome, so the test can look
@@ -4143,8 +4168,9 @@ fn host_a_replay_buffer_of_exactly_the_bound_stays_open() {
 
 /// Out of the contract's order on purpose: the hello's commit is answered before the page asked
 /// ahead of it, so `last_sent` is still empty and only `from_seq` keeps seq 3 out of the buffer. In
-/// the contract's order a page has been sent by then and `owed` alone does it; this pins the check
-/// for an adapter outside the contract.
+/// the contract's order a page has been sent, or the replay has ended, by then, and `owed` alone
+/// does it; this pins the check for an adapter outside the contract. The core's `Loaded` answer
+/// also comes before the page here.
 #[test]
 fn host_live_events_below_the_start_of_a_replay_are_never_buffered() {
     let mut kit = kit();
