@@ -52,7 +52,11 @@ fn a_git_whose_version_check_fails_is_refused_with_why() {
 
     let error = refusal(scratch.path(), &bin, "kill -9 $$");
     assert_version_failed(&error, None);
-    assert!(error.to_string().contains("killed by a signal"), "{error}");
+    assert!(error.to_string().contains("killed by signal 9"), "{error}");
+
+    let error = refusal(scratch.path(), &bin, "kill -SEGV $$");
+    assert_version_failed(&error, None);
+    assert!(error.to_string().contains("killed by signal 11"), "{error}");
 
     let error = refusal(
         scratch.path(),
