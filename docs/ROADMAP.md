@@ -7,10 +7,56 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-27 22:50 UTC. Main and the coordinator's head at `df625c2`. Four landings through
-the server since 17:50. P1-ADAPTER-SUITE's rest at 21:14 UTC as `251a4c2`..`ec3ceb0` (claim 218,
-rebased onto `0f3d483`; the daemon copied all nine notes), on an Opus review (REVIEW-1 "No", five
-must-fixes; re-check 1 "No", two; re-check 2 "Yes" on `016b067`;
+**As of:** 2026-11-28 05:15 UTC. Main at `652d83d` (PR #140's merge); the coordinator's head at
+`4e94d32`, since a pull request's merge does not move it. Main's CI is red on `eb1770a` and
+`4e94d32`: its "mutants on changed lines" job missed 4 and 13 mutants in the new `src/sim` code
+(runs 46099378473 and 46104947233; lists in `~/tessel-orch-notes/2026-11-28/main-red-sim-mutants/`).
+No lane gate or review had run that job (LANE-GATE-MUTANTS). Lane A reproduced it
+(`TESSEL_SIM_SEEDS=2`) and finds all 17 killable by deterministic tests, with no exclusion
+(MAIN-RED-SIM-MUTANTS, claim 235, `PLAN-1.md`; the local and CI miss sets differ, cause unknown). CI
+passed on `652d83d`, and the Adapter suite on all three. Two landings through the server since
+22:50. SIM-DOUBT-PREPARED-TRAFFIC at 02:42 UTC as `e43609b`..`eb1770a` (claim 228, rebased onto
+`7f989f8`; the daemon copied all six notes; the lane had rebased onto `df625c2` first, because the
+commit hook refuses a base that is neither the coordinator's head nor the start), on an Opus review
+(REVIEW-1 with re-checks 1-3, re-check 3 "Yes with changes", to the note only;
+`~/tessel-orch-notes/2026-11-27/lane-a/sim-doubt-prepared-traffic/`): the doubted head's first
+`Land` is refused without opening the 15 s rate-limit window and counted as `doubt_refusal`; the
+planted `prepared()` break is caught on default seeds 1, 7 and 11 and on 50 of 300 seeds; refused
+compare-and-swaps fall from 52 to 37 over 300 seeds, the default seeds hold one (seed 0, against
+four), and the Nightly mutants were not run against that loss. SIM-DOUBT-LIVENESS at 03:53 UTC as
+`39689ee`..`4e94d32` (claim 232, a fast-forward), on an Opus review (REVIEW-1 "Yes with changes" on
+`9033fc2`: the `Reconcile` plant half-applied on seeds 108 and 117; re-check 1 "Yes" on `4e94d32`;
+`~/tessel-orch-notes/2026-11-28/lane-a/sim-doubt-liveness/`): `Checker::DoubtLiveness` flags an
+answer the host took for a claim in doubt (its call still open, dispatch and stage matching the
+stored flight, the retry due or unset) that leaves the flight and the work unchanged, so the bound
+is one taken answer; the two plants are caught on 69 and 191 of 300 seeds, each catch naming the
+checker. NIGHTLY-MUTANT-TIMEOUTS (claim 229, `2b38c7e`..`fc65977`) did not land through the server:
+GitHub refused each push to `main` from 23:44 UTC (GH013: the token has no Workflows permission, and
+the change edits `.github/workflows`). The deployed build (`455c889`'s strings, before the staged
+landing) re-ran the whole merge, tests included, about every 10 minutes and rejected the submission
+after 4 tries, at 00:16 UTC; main's code would ask the `Land` again forever, as `docs/dogfood.md`
+says. The orchestrator first asked Felix to add the scope; that was wrong: `docs/dogfood.md`
+withholds Workflows on purpose, because the runner's tests can read `github-token`. A resubmit at
+01:34 UTC was refused again and rejected at 02:17 UTC; the commits were merged by PR #140 as
+`652d83d` at 04:03 UTC (a merge commit, so the notes stand; the merge has a hand note). PR #140's
+Nightly (run 46097369661) lists only `src/host/mod.rs:471:12` as a timeout and misses only the four
+baselined mutants, so NIGHTLY-MISSED-1127 and NIGHTLY-MUTANT-TIMEOUTS are done.
+LANDER-WORKFLOW-SCOPE has its design (DESIGN-2, re-check 1 "Yes with changes"): a push that git
+marks `[remote rejected]`, with main read back at the base, becomes `Refusal::Rule`; this record
+adds `.github/workflows/` to `docs/dogfood.md`'s by-PR list. Two merge-path votes finished.
+LANDER-SIGNAL-NUMBER, 3 "Yes with should-fixes" and no must-fix, lands unchanged after
+MAIN-RED-SIM-MUTANTS (lane A released claim 233); its Done is narrowed to the version check, and the
+other sites are LANDER-SIGNAL-ALL-SITES. REPLAY-ORDER-CONTRACT, 3-0 "Yes" on `1ea2a4d` after voter
+3's "No" on `d97233d` (site 2 answered a commit asked after the second read before page 2), keeps
+site 3 out of order as a guard (2 of 3); it lands after a rebase onto the next coordinator head
+(claim 234 also covers `.cargo/mutants.toml` and the workflows only because the coordinator's head
+lacks #140). SIM-DOUBT-TEST-ANSWER closes as a note. A `CARGO_TARGET_DIR` shared by two worktrees of
+the crate built against the other tree's library and let a red test pass (review-sdl-design): one
+target directory per worktree or clone. PR #139 (the 22:50 record) merged as `7f989f8`.
+**Earlier (27 November 22:50 UTC):** Main and the coordinator's head at `df625c2`. Four landings
+through the server since 17:50. P1-ADAPTER-SUITE's rest at 21:14 UTC as `251a4c2`..`ec3ceb0` (claim
+218, rebased onto `0f3d483`; the daemon copied all nine notes), on an Opus review (REVIEW-1 "No",
+five must-fixes; re-check 1 "No", two; re-check 2 "Yes" on `016b067`;
 `~/tessel-orch-notes/2026-11-27/lane-b/adapter-suite-rest/`): a wire nobody reads is dropped without
 stalling the repository (a `repo.rs` test where a blocking send or close fails at the drop and a
 stall after the drop at the next socket's Welcome), a watcher that never reads over TCP, unreadable
@@ -573,35 +619,45 @@ required checks, the repository admin role as bypass; always). Proven first on
 Felix's own force-push was refused. A `pre-push` hook in the checkout's shared hooks directory
 (`pre-push.pre-tessel` since `tessel init`) refuses pushing `main` of `devfep/tessel`.
 **Waiting on Felix** (the tokens were renewed, the build cap lowered and ruleset step 3 made, STATE
-above): whether leases pause while the machine is suspended (CLAIM-LEASE-LAPSE, PROPOSAL-SUSPEND.md
-above; it changes I10; two claims lapsing together under load at 13:29 UTC, above, is new evidence,
-by inference, that a stalled server, not only a sleeping one, lapses open claims); a second
-reviewer, to decide claim 153, which now also blocks lanes (the coordinator denied
-SUDO-GATE-FOLLOWUPS' `docs/dogfood.md` claim, by lane A's report); RUNNER-OWN-UID's sudo steps;
-whether the simulator gets a check that the merge path drains (a run that never finishes its work
-fails; most of the 50 simulator mutants survive for want of one; scope, rule 10); whether to define
-GA (no phase is called that; the nearest is Phase 3's end) as a proposed PLAN change; deleting
-branch `state-1101-2`; whether CLAUDE.md rule 1 should also name a never-logged live notice an older
-daemon can skip and stay correct as additive (invariant 13 since `f1ea1f6`); the plan's rule (d)
-(`docs/proposals/phase-1.md`), which says a build bumps `state_version` "only if the old binary can
-still read the new state", a case the store's `refuse_unknown` rules out (#125 follows the code); a
-GitHub token that can push `tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the
-dogfood token cannot; where P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the
-sandbox trunk now that lanes push branches; the suggested patch to his push hook that exempts only a
-URL git resolves to itself (`~/tessel-dogfood/push-hook-resolved-url.patch`). The second reviewer
-goes in the server's `reviewers` (only `orchestrator` now).
+above): nothing on the GitHub token's Workflows permission: the orchestrator's 28 November request
+to add it was wrong (`docs/dogfood.md` withholds it as a backstop), so it stays off and a
+`.github/workflows/` change goes by pull request; before the dogfood upgrade, a push with the
+dogfood token of a `refs/tessel/candidate/*` ref carrying a `.github/workflows` change, to learn
+whether GitHub refuses it at `Prepare` (LANDER-WORKFLOW-SCOPE; the orchestrator never reads that
+token), and the upgrade now also waits on LANDER-WORKFLOW-SCOPE's `Land` half, since main's code
+asks a refused `Land` again forever; whether leases pause while the machine is suspended
+(CLAIM-LEASE-LAPSE, PROPOSAL-SUSPEND.md above; it changes I10; two claims lapsing together under
+load at 13:29 UTC, above, is new evidence, by inference, that a stalled server, not only a sleeping
+one, lapses open claims); a second reviewer, to decide claim 153, which now also blocks lanes (the
+coordinator denied SUDO-GATE-FOLLOWUPS' `docs/dogfood.md` claim, by lane A's report);
+RUNNER-OWN-UID's sudo steps; whether the simulator gets a check that the merge path drains (a run
+that never finishes its work fails; most of the 50 simulator mutants survive for want of one; scope,
+rule 10); whether to define GA (no phase is called that; the nearest is Phase 3's end) as a proposed
+PLAN change; deleting branch `state-1101-2`; whether CLAUDE.md rule 1 should also name a
+never-logged live notice an older daemon can skip and stay correct as additive (invariant 13 since
+`f1ea1f6`); the plan's rule (d) (`docs/proposals/phase-1.md`), which says a build bumps
+`state_version` "only if the old binary can still read the new state", a case the store's
+`refuse_unknown` rules out (#125 follows the code); a GitHub token that can push
+`tessel-sandbox/m4-trunk` for the upgrade's trial landing, which the dogfood token cannot; where
+P1-DENIAL-BOUND goes in the order; narrowing `PUSH_ALLOW_REMOTES` to the sandbox trunk now that
+lanes push branches; the suggested patch to his push hook that exempts only a URL git resolves to
+itself (`~/tessel-dogfood/push-hook-resolved-url.patch`). The second reviewer goes in the server's
+`reviewers` (only `orchestrator` now).
 Note: commits on `devfep/tessel` carry the author address of Felix's global git config; the sandbox
 commits use his GitHub noreply address.
 **Blocked:** CLI-GITHOOK-FIRST-COMMIT, not reproduced (see its entry).
 SWARM-AGENT-CHECKS-UNDER-LOAD waits for its next failure's note. P1-FAKE-HELLO-LOST: the test
 cannot see the flake (see its entry).
-**Next:** SIM-DOUBT-PREPARED-TRAFFIC's fix pass 3 (lane A); NIGHTLY-MUTANT-TIMEOUTS (lane B); then
-SIM-DOUBT-LIVENESS (lane B, after SIM-DOUBT-PREPARED-TRAFFIC: both change `src/sim/variant.rs`); the
-28 November Nightly shows whether NIGHTLY-MISSED-1127 is done; LANDER-SIGNAL-NUMBER;
-REPLAY-ORDER-CONTRACT; TESSEL-ON-PATH; CLAIM-LEASE-LAPSE's code on Felix's decision; the dogfood.md
-steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is decided; then P1-ONE-BATCH
-(it flips R20, an M5 done check). Felix's Homebrew postgres trusts local connections on a
-world-writable socket; he closes it before the accounts move. LANDER-ADMIN-POLICY-DEAD waits for M6.
+**Next:** MAIN-RED-SIM-MUTANTS first (lane A, claim 235: main is red); then LANDER-SIGNAL-NUMBER
+lands unchanged (lane A re-claims its scopes) and REPLAY-ORDER-CONTRACT is rebased onto the next
+coordinator head, its comment nit fixed, and lands (lane B); LANDER-WORKFLOW-SCOPE's `Land` half
+(lane B, BRIEF-2) after LANDER-SIGNAL-NUMBER (both change `tessel-lander`); LANDER-SIGNAL-ALL-SITES;
+LANE-GATE-MUTANTS; REPLAY-COMMIT-BEFORE-PAGE-DOC; HOST-FAILED-SEND-EXPIRY-PINS;
+GIT-VERSION-IN-DOUBT; DAEMON-INTENT-UPDATE; TESSEL-ON-PATH; CLAIM-LEASE-LAPSE's code on Felix's
+decision; the dogfood.md steps of SUDO-GATE-FOLLOWUPS and RESOLVE-RUNBOOK-NITS once claim 153 is
+decided; then P1-ONE-BATCH (it flips R20, an M5 done check). Felix's Homebrew postgres trusts local
+connections on a world-writable socket; he closes it before the accounts move.
+LANDER-ADMIN-POLICY-DEAD waits for M6.
 **Decided by Felix (25 October), OWN-USERS-DESIGN:** the note as written
 (`docs/proposals/own-users.md`).
 **Decided by Felix (30 October), CORE-LATE-LAND:** option B of the late-`Land` vote
@@ -1988,22 +2044,31 @@ Lane B:
   SIM-FENCED-RULE-CHECKER) — S, lane B (`src/sim`); from RACE-TEXTS-SHARED's votes.
   `src/sim/driver/merge_path.rs` (~831) repeats the no-result race text as a literal; use the shared
   constant from `src/protocol.rs` once RACE-TEXTS-SHARED lands.
-- [ ] **SIM-DOUBT-PREPARED-TRAFFIC** — S, lane B (`src/sim`); from SIM-FENCED-RULE-CHECKER's
-  REVIEW-1. A core whose `prepared()` clears `doubt_since_ms` when it answers the doubted pair and
-  goes to `Land` is caught on only 3 of 300 seeds, because the simulator's traffic rarely takes that
-  path. Make it common enough that the default seeds catch that break (a fault or a traffic mode),
-  saying which pinned transcripts change, or say why it cannot. Done: the planted break fails a
-  default run.
-- [ ] **SIM-DOUBT-LIVENESS** — S, lane B (`src/sim`); from MERGE-OUTCOME-UNOFFERED's VOTE-2. The
-  simulator has no liveness check for a merge in doubt: a core that drops every answer to a doubted
-  `Prepare` (each redispatched and dropped again) survives 300 seeds with every checker, and so does
-  one that drops every `Reconcile` answer; unit tests catch both. Add a checker that flags a claim
-  in doubt redispatched without progress past a bound, with a planted variant that fails it and the
-  correct core silent on a 300-seed sweep. Done: the planted variant fails a default run.
-- [ ] **NIGHTLY-MISSED-1127** (`71b2571`..`df625c2`, landed by the server 27 November; merge-path
-  vote 3-0 "Yes" after two fix passes; done when the next Nightly reports neither mutant beyond the
-  baseline) — S, lane A; from the Nightly 45995920783 on `941db87`, whose full-mutants job found 2
-  missed mutants beyond the baseline. `src/host/replay.rs` (~187) `>` to `<` in
+- [x] **SIM-DOUBT-PREPARED-TRAFFIC** (`e43609b`..`eb1770a`, landed by the server 28 November; Opus
+  "Yes with changes" (to the note) after three fix passes; refused compare-and-swaps fall from 52 to
+  37 over 300 seeds, the default seeds hold one, and the Nightly mutants were not run against that
+  loss; CI's changed-line mutants missed 4, MAIN-RED-SIM-MUTANTS) — S, lane A (`src/sim`); from
+  SIM-FENCED-RULE-CHECKER's REVIEW-1. A core whose `prepared()` clears `doubt_since_ms` when it
+  answers the doubted pair and goes to `Land` is caught on only 3 of 300 seeds, because the
+  simulator's traffic rarely takes that path. Make it common enough that the default seeds catch
+  that break (a fault or a traffic mode), saying which pinned transcripts change, or say why it
+  cannot. Done: the planted break fails a default run (seeds 1, 7 and 11; 50 of 300).
+- [x] **SIM-DOUBT-LIVENESS** (`39689ee`..`4e94d32`, landed by the server 28 November; Opus "Yes"
+  after one fix pass; the bound is one taken answer: every answer the core takes for a doubted
+  claim's offered flight must change the stored state; a catch must name the checker, not fire
+  alone, since the plants also trip I4 while eight real-core drops (29 to 191 of 300 seeds each)
+  trip only it; CI's changed-line mutants missed 13, MAIN-RED-SIM-MUTANTS) — S, lane A (`src/sim`);
+  from MERGE-OUTCOME-UNOFFERED's VOTE-2. The simulator has no liveness check for a merge in doubt: a
+  core that drops every answer to a doubted `Prepare` (each redispatched and dropped again) survives
+  300 seeds with every checker, and so does one that drops every `Reconcile` answer; unit tests
+  catch both. Add a checker that flags a claim in doubt redispatched without progress past a bound,
+  with a planted variant that fails it and the correct core silent on a 300-seed sweep. Done: the
+  planted variant fails a default run (the `Prepare` plant on seeds 1, 7 and 11, the `Reconcile`
+  plant on nine default seeds).
+- [x] **NIGHTLY-MISSED-1127** (`71b2571`..`df625c2`, landed by the server 27 November; merge-path
+  vote 3-0 "Yes" after two fix passes; PR #140's Nightly, run 46097369661, reported neither beyond
+  the baseline) — S, lane A; from the Nightly 45995920783 on `941db87`, whose full-mutants job found
+  2 missed mutants beyond the baseline. `src/host/replay.rs` (~187) `>` to `<` in
   `Host::buffer_for_replays`: killed by an in-order test (a commit asked before the last read and
   missing from its page, which `Output::Commit` allows, is sent only by the buffer).
   `src/coordinator/merging/doubt.rs` `resend_land`'s `retry_at_ms: None`: equivalent (a past-due
@@ -2027,24 +2092,104 @@ Lane B:
   coordinator may hold the claim; heartbeats keep it until a complete read adopts it; a repeated
   claim is refused as stale only if the lost amend was applied), each with a test; the fake gains
   `Lose::Submit`.
-- [ ] **NIGHTLY-MUTANT-TIMEOUTS** — S; from the Nightly 45995920783. Three mutants time out (the
-  workflow warns, it does not fail): `src/shell.rs:32`, `src/host/mod.rs:471` and
-  `src/host/testkit.rs:201`, the last in test support; each costs about 3 minutes of its shard.
-  Confirm each is a hang a test detects, and exclude or speed up the testkit one. Done: each timeout
-  explained in the workflow or gone.
-- [ ] **LANDER-SIGNAL-NUMBER** — S; from LANDER-VERSION-CHECK's vote (VOTE-1, VOTE-3). A git killed
-  by a signal is reported as "killed by a signal" without its number, because `GitOutput`
-  (`tessel-lander/src/run.rs`) keeps only `status.code()`; the number tells an outside kill
-  (SIGKILL) from a crash (SIGSEGV, SIGABRT). Keep it (`ExitStatusExt::signal()`) and show it, with a
-  test. Done: a git killed by a signal is reported with the signal's number.
-- [ ] **REPLAY-ORDER-CONTRACT** — S; from NIGHTLY-MISSED-1127's votes. The host's contract
-  (`src/host/mod.rs`, `ReplayPage` and `Output::Commit`) says storage answers come in the order
-  asked and lets a commit asked before a read be missing from its page; `tessel-server` runs one
-  storage job at a time, so it always includes it. The testkit's `deliver_next_but_pages`
-  (`src/host/testkit.rs` ~200) lets a later commit's answer overtake an earlier page, an order no
-  contract allows, and older replay tests use it. Rewrite those tests in the contract's order or say
-  why the helper stays. Done: no host test relies on an order the contract excludes, or each that
-  does says so.
+- [x] **NIGHTLY-MUTANT-TIMEOUTS** (`2b38c7e`..`fc65977`, merged by PR #140 as `652d83d`, because the
+  dogfood token cannot push a `.github/workflows` change; merge-path vote 3-0 "Yes" after one fix
+  pass) — S; from the Nightly 45995920783. Three mutants time out (the workflow warns, it does not
+  fail): `src/shell.rs:32`, `src/host/mod.rs:471` and `src/host/testkit.rs:201`, the last in test
+  support; each costs about 3 minutes of its shard. Confirm each is a hang a test detects, and
+  exclude or speed up the testkit one. Done: each timeout explained in the workflow or gone. The
+  `shell.rs:32` and `testkit.rs:201` mutants now fail fast; PR #140's Nightly lists only
+  `src/host/mod.rs:471:12`, explained in `.cargo/mutants.toml`.
+- [ ] **LANDER-SIGNAL-NUMBER** (`5f86421`..`59dc170`, merge-path vote 3 "Yes with should-fixes", no
+  must-fix; lands unchanged after MAIN-RED-SIM-MUTANTS) — S; from LANDER-VERSION-CHECK's vote
+  (VOTE-1, VOTE-3). A git killed by a signal is reported as "killed by a signal" without its number,
+  because `GitOutput` (`tessel-lander/src/run.rs`) keeps only `status.code()`; the number tells an
+  outside kill (SIGKILL) from a crash (SIGSEGV, SIGABRT). Keep it (`ExitStatusExt::signal()`) and
+  show it, with a test. Done (narrowed by its vote): the version check reports a git killed by a
+  signal with its number; the other sites are LANDER-SIGNAL-ALL-SITES.
+- [ ] **REPLAY-ORDER-CONTRACT** (`76ec75b`..`1ea2a4d` on `652d83d`, merge-path vote 3-0 "Yes" after
+  one fix pass; lands after a rebase onto the next coordinator head) — S; from NIGHTLY-MISSED-1127's
+  votes. The host's contract (`src/host/mod.rs`, `ReplayPage` and `Output::Commit`) says storage
+  answers come in the order asked and lets a commit asked before a read be missing from its page;
+  `tessel-server` runs one storage job at a time, so it always includes it. The testkit's
+  `deliver_next_but_pages` (`src/host/testkit.rs` ~200) lets a later commit's answer overtake an
+  earlier page, an order no contract allows, and older replay tests use it. Rewrite those tests in
+  the contract's order or say why the helper stays. Done: no host test relies on an order the
+  contract excludes, or each that does says so.
+- [ ] **MAIN-RED-SIM-MUTANTS** — S, lane A (`src/sim`, `tests/simulator.rs`); found 28 November.
+  Main's CI "mutants on changed lines" job missed 4 mutants of SIM-DOUBT-PREPARED-TRAFFIC
+  (`eb1770a`: `driver.rs:1125` in `without_doubt_after_prepare`, `lander.rs:381` in `Lander::plan`,
+  `lander.rs:40` in `doubt_mode`) and 13 of SIM-DOUBT-LIVENESS (`4e94d32`: `driver/merge_path.rs` in
+  `taken_probe_for`, `drop_if_planted`, `answered_at` and `with_flight_and_work`; `store.rs:37` in
+  `Store::restage`), because the 2-seed sweep and the 20-seed plant searches assert only that a
+  checker catches a plant, not the decisions inside the new functions (PLAN-1). Lane A's plan
+  (`~/tessel-orch-notes/2026-11-28/main-red-sim-mutants/PLAN-1.md`): unit tests for the pure
+  functions, `taken_probe_for` split into a pure function over the state, no exclusion. Done: CI's
+  changed-lines job reports no missed mutant on the diffs `7f989f8`..`eb1770a` and
+  `eb1770a`..`4e94d32`.
+- [ ] **LANE-GATE-MUTANTS** — S, orchestrator (the briefs and gate scripts in
+  `~/tessel-orch-notes/`, not the repository); found 28 November. Main went red on mutants no lane
+  gate or review had run: CI runs `cargo mutants --in-diff` (`.github/workflows/ci.yml`,
+  `scripts/ci/mutants-diff.sh`) only after a landing. Every lane gate runs CI's command with CI's
+  settings on the branch's diff before it reports, and every merge-path vote runs it once. Done: the
+  gate scripts and the brief template carry it.
+- [ ] **LANDER-WORKFLOW-SCOPE** — S, lane B (`tessel-lander`, `tessel-server/src/landing`,
+  `src/merge.rs`; merge path: a vote); found 28 November (claim 229). A push to `main` that the git
+  host refuses by rule (GH013 for a `.github/workflows` change, since the token has no Workflows
+  permission) is asked again forever by main's code (`doubt.rs:415-420`, `resend_land`); the
+  deployed build rejected it after 4 full re-tests. Design
+  (`~/tessel-orch-notes/2026-11-28/lane-b/lander-workflow-scope/DESIGN-2.md`, DESIGN-REVIEW-1
+  re-check 1 "Yes with changes"; build brief `BRIEF-2.md`): a push that git's own `--porcelain`
+  output marks `[remote rejected]`, with main read back at the base, becomes the existing
+  `Refusal::Rule`, with a fixed text that does not claim a rule refused it; main moved stays
+  `MainMoved` and main unreadable stays `PushFailed`; the reason text is never read. Tests: a local
+  bare remote whose `pre-receive` hook refuses, one that moves main and refuses, an `answer.rs` unit
+  test and a `landing.rs` end-to-end test. The docs half (`.github/workflows/` goes by pull request)
+  is in the 28 November STATE record. Whether GitHub also refuses the `Prepare` push of
+  `refs/tessel/candidate/*` carrying a workflow change is not known; only the dogfood token can show
+  it (Felix or the lander), before the dogfood upgrade. Done: a refused push to `main` rejects the
+  claim after one test run, and the upgrade waits for it.
+- [ ] **LANDER-SIGNAL-ALL-SITES** — S; from LANDER-SIGNAL-NUMBER's vote (VOTE-1, VOTE-2, VOTE-3).
+  Eight sites still print `exit None` for a git killed by a signal, the refusal an agent sees among
+  them: `tessel-server/src/landing/answer.rs:25` (`git_note`), `git_read.rs:59` and `:94`,
+  `staged.rs:44`, and `tessel-lander/src/candidate.rs:89`, `:116`, `:158` and `:190`; `holds_in` and
+  `main_and_ancestors` drop the status; the `run.rs` signal test does not assert `Some(9)`. Show the
+  signal there (`GitOutput` carries it), with a test. Done: every merge-path report of a git killed
+  by a signal names the signal.
+- [ ] **GIT-VERSION-IN-DOUBT** — S; from SIM-DOUBT-TEST-ANSWER's review. A rebase is deterministic
+  only for one git binary: the lander runs the `git` on `PATH` with a 2.31 floor
+  (`tessel-lander/src/git.rs:127-147`), and git's default merge strategy moved from recursive to ort
+  in that range, which can change a tree on renames. A git upgrade under an open doubt can then give
+  the same fork on the leased base a new head (`src/coordinator/merging.rs:567-578`, a `Test` in
+  doubt). `docs/dogfood.md` forbids a git upgrade while a claim is in doubt (28 November); record
+  `git --version` with the doubted pair so a change shows. Done: the doubt records the git version
+  and a changed one is reported.
+- [ ] **DAEMON-INTENT-UPDATE** — S, CLI; found 28 November. A running daemon keeps the intent
+  `tessel start` gave it: `tessel start` will not change it while the daemon runs, and `tessel stop`
+  releases every claim, so a lane on its second task carries the intent in its notes by hand. Let a
+  running daemon take a new intent without releasing claims. Done: `tessel status` shows the new
+  intent and the claims stay held.
+- [ ] **REPLAY-COMMIT-BEFORE-PAGE-DOC** — S; from REPLAY-ORDER-CONTRACT's vote. The `from_seq` check
+  in `buffer_for_replays` (`src/host/replay.rs` ~188) is equivalent under the contract (a Watch
+  starts with no commit out, so page 1 is answered first) but is the only guard of I2 if an adapter
+  answers a commit before an earlier read; cargo-mutants never generates its drop, and only
+  `host_live_events_below_the_start_of_a_replay_are_never_buffered`, out of order on purpose, kills
+  it (R36). `Output::Commit` and `ReadEvents` (`src/host/mod.rs`) should say that the host never
+  buffers an event below a replay's start, and name that test. Done: the contract text says so.
+- [ ] **HOST-FAILED-SEND-EXPIRY-PINS** — S; from REPLAY-ORDER-CONTRACT's vote (VOTE-2, VOTE-3). The
+  failed-send expiry test in `src/host/tests.rs`, the overflow test's twin, kills none of the eleven
+  hand mutants the voters applied, before or after the change. Make it pin what it is named for, or
+  fold it into the overflow test. Done: a mutant of the failed-send path fails it.
+- [x] **SIM-DOUBT-TEST-ANSWER** (closed 28 November as a note, no code: lane A's DESIGN-1 and
+  review-sdl-design's DESIGN-REVIEW-1,
+  `~/tessel-orch-notes/2026-11-28/lane-a/sim-doubt-test-answer/`) — S, lane A; from
+  SIM-DOUBT-LIVENESS's REVIEW-1. A core that drops the answer to a `Test` asked for a claim in doubt
+  survives every simulator checker (0 of 300), because the simulator never reaches that stage in
+  doubt. It is reachable in real use only by a git upgrade under an open doubt
+  (GIT-VERSION-IN-DOUBT), not by a force-pushed fork (the lander rebases a sha) or a merge driver;
+  the coordinator's unit tests cover it (dropping every `Test` answer in doubt fails 7 of them,
+  dropping only `Tested` fails 2). A simulator knob would make the simulated lander break
+  requirement 7 for coverage those tests give.
 - [ ] **TESSEL-ON-PATH** — S, orchestrator (the Mac, not the repository); found 27 November. The
   `tessel` first on `PATH` is `~/.cargo/bin/tessel`, built 14 October; the daemons run
   `~/tessel-dogfood/bin/tessel` (26 November). Neither has CLAIM-SCATTER's `--into`. Point the lanes

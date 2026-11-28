@@ -33,12 +33,13 @@ request.
 
 The runner runs the trunk's `tessel.toml` test command, `cargo test --workspace`, on the rebased
 commit in a fresh clone, as you. Clippy, fmt, the named-tests check, actionlint, zizmor and the
-steward's tests stay on CI, which runs on `main` after a landing. Each lane also runs actionlint
-and zizmor in its gate before it submits. The runner is not sandboxed until M5: land only code
-whose tests you trust. Its tests can read `<server dir>` (the tokens, the key and `github-token`)
-and run `gh` as you. The lanes' gates already run the same code as you; M5 separates the user. Two
-things still go through a pull request you merge: a change to `tessel.toml`, which a submission may
-not touch, and a change to this page or `scripts/dogfood/`, the server's own set-up.
+steward's tests stay on CI, which runs on `main` after a landing. Each lane also runs actionlint and
+zizmor in its gate before it submits. The runner is not sandboxed until M5: land only code whose
+tests you trust. Its tests can read `<server dir>` (the tokens, the key and `github-token`) and run
+`gh` as you. The lanes' gates already run the same code as you; M5 separates the user. Three things
+still go through a pull request you merge: a change to `tessel.toml`, which a submission may not
+touch; a change to `.github/workflows/`, which the GitHub token cannot push (it has no Workflows
+permission, below); and a change to this page or `scripts/dogfood/`, the server's own set-up.
 
 ## Build and GitHub, by hand
 
@@ -212,6 +213,10 @@ binaries, upgrade as below first.
 
   It prints nothing when no claim is in doubt. Wait until it does: each printed claim is one the
   running build may have landed, and the new core cannot resolve it (it has no `Land` to ask about).
+- **No git upgrade in doubt.** The lander runs the `git` on the server's `PATH` (2.31 or newer), and
+  a rebase is deterministic only for one git binary: a newer git can choose another merge strategy
+  and give the same fork on the same base a new head. Upgrade git (`brew upgrade git`) only when no
+  claim is in doubt, read as under "Nothing in flight" (GIT-VERSION-IN-DOUBT in `docs/ROADMAP.md`).
 - **The build.** Build only from a landed `main` whose CI is green, in a checkout of that commit,
   and copy `tessel-server` and `tessel` with `install -m 755` into `<server dir>/bin.next`. Leave
   `<server dir>/bin` alone until the swap: git's askpass hook is the running server's own
@@ -643,21 +648,23 @@ command sends no notices itself.
 
 Two doubts that resolving does not fix:
 
-- A `Land` whose push fails for good (a revoked token, a ruleset that refuses the push to `main`)
-  is asked again about every 90 seconds once the backoff is capped (10 s, 30 s, then 90 s, plus
-  the clone and push of each try), forever, each time with a fresh clone of main. The `server.log`
-  shows a repeated `push` warning while the claim stays in doubt. Fix the credential or the
-  ruleset; `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`,
-  and `--landed` is for a push that reached main. No command rejects the work. A refusal of a
-  `Land` that was sent again behaves the same way. A refusal at `Prepare` (a fork branch deleted
-  or force-pushed while in doubt) says nothing of where main is, so the core asks a `Reconcile`
-  after the same backoff. Main still at the base sends the `Land` again, and the claim goes round
-  `Prepare`, `Reconcile` and `Land` until you answer `--not-landed` (the next refusal then rejects
-  it), because a late copy of the `Land` may still land the head. Main elsewhere ends the doubt
-  and the fresh `Prepare` rejects the work. The head on main lands it. `server.log` repeats the
-  doubt line on each pass, with the reason of the refusal quoted at its end. `--landed` and
-  `--not-landed` work while the merge is at `Prepare` or `Test` too, for a doubt that has a `Land`
-  behind it.
+- A `Land` whose push fails for good (a revoked token, a ruleset that refuses the push to `main`) is
+  asked again about every 90 seconds once the backoff is capped (10 s, 30 s, then 90 s, plus the
+  clone and push of each try), forever, each time with a fresh clone of main. The `server.log` shows
+  a repeated `push` warning while the claim stays in doubt. Fix the credential or the ruleset;
+  `--not-landed` only sends the work round again through `Prepare`, `Test` and `Land`, and
+  `--landed` is for a push that reached main. No command rejects the work. A refusal of a `Land`
+  that was sent again behaves the same way. The build deployed on 26 November (`455c889`'s strings,
+  before the staged landing) behaves otherwise: it re-runs the whole merge, tests included, about
+  every 10 minutes and rejects the submission after 4 refused pushes. A refusal at `Prepare` (a fork
+  branch deleted or force-pushed while in doubt) says nothing of where main is, so the core asks a
+  `Reconcile` after the same backoff. Main still at the base sends the `Land` again, and the claim
+  goes round `Prepare`, `Reconcile` and `Land` until you answer `--not-landed` (the next refusal
+  then rejects it), because a late copy of the `Land` may still land the head. Main elsewhere ends
+  the doubt and the fresh `Prepare` rejects the work. The head on main lands it. `server.log`
+  repeats the doubt line on each pass, with the reason of the refusal quoted at its end. `--landed`
+  and `--not-landed` work while the merge is at `Prepare` or `Test` too, for a doubt that has a
+  `Land` behind it.
 - A doubt with no `Land` behind it: a store written before the staged landing (`unstaged`) that
   holds a merge in flight, or a claim the running build left `in_doubt`. It starts a fresh
   `Prepare` that counts as an infrastructure failure. If that `Prepare` and the next ones fail
