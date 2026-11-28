@@ -220,6 +220,7 @@ impl GitRunner for Harness {
             .unwrap_or_else(|| default_reply(step));
         Ok(GitOutput {
             exit_code: Some(reply.exit),
+            signal: None,
             stdout: reply.stdout,
             stderr: format!("{} err", step.label()),
         })

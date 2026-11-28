@@ -346,6 +346,7 @@ impl GitRunner for SaysTip {
         }
         Ok(GitOutput {
             exit_code: Some(0),
+            signal: None,
             stdout: format!("{}\n", self.0),
             stderr: String::new(),
         })

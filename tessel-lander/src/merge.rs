@@ -412,6 +412,7 @@ fn check_coverage(
         Ok(diff) => diff,
         Err(error @ RunError::OutputTooLarge { .. }) => GitOutput {
             exit_code: None,
+            signal: None,
             stdout: String::new(),
             stderr: error.to_string(),
         },

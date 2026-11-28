@@ -5,8 +5,8 @@
 //! remote helper) neither outlives the run nor keeps a pipe open past the deadline.
 
 use std::io::{self, Read};
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +24,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub struct GitOutput {
     /// `None` when a signal ended the process.
     pub exit_code: Option<i32>,
+    /// The signal that ended the process, when one did: what tells an outside kill (9) from a
+    /// crash (11, 6). `None` when the process exited with a code.
+    pub signal: Option<i32>,
     pub stdout: String,
     pub stderr: String,
 }
@@ -127,10 +130,11 @@ fn supervise(
     timeout: Duration,
     description: &str,
 ) -> Result<GitOutput, RunError> {
-    let exit_code = wait_until(child, deadline, timeout, description)?;
+    let status = wait_until(child, deadline, timeout, description)?;
     let (stdout, stderr) = gather(receiver, deadline, timeout, description)?;
     Ok(GitOutput {
-        exit_code,
+        exit_code: status.code(),
+        signal: status.signal(),
         stdout: finish(&stdout, "stdout", description)?,
         stderr: finish(&stderr, "stderr", description)?,
     })
@@ -160,14 +164,14 @@ fn wait_until(
     deadline: Instant,
     timeout: Duration,
     description: &str,
-) -> Result<Option<i32>, RunError> {
+) -> Result<ExitStatus, RunError> {
     loop {
         let waited = child.try_wait().map_err(|source| RunError::Wait {
             command: description.to_owned(),
             source,
         })?;
         if let Some(status) = waited {
-            return Ok(status.code());
+            return Ok(status);
         }
         if Instant::now() >= deadline {
             thread::spawn(move || child.wait());

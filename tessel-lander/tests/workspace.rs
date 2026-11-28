@@ -24,6 +24,7 @@ impl GitRunner for Exits {
     fn run(&self, _command: &GitCommand) -> Result<GitOutput, RunError> {
         Ok(GitOutput {
             exit_code: self.0,
+            signal: None,
             stdout: String::new(),
             stderr: "fatal: no".to_owned(),
         })

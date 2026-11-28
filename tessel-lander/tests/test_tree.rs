@@ -476,6 +476,7 @@ fn a_test_tree_that_cannot_be_cloned_ends_the_merge_before_any_repo_code_or_writ
             if is_clone && command.argv.last().is_some_and(|last| last == self.0) {
                 return Ok(GitOutput {
                     exit_code: Some(128),
+                    signal: None,
                     stdout: String::new(),
                     stderr: "fatal: no room".to_owned(),
                 });
@@ -536,6 +537,7 @@ impl GitRunner for Scripted {
         };
         Ok(GitOutput {
             exit_code: Some(exit),
+            signal: None,
             stdout,
             stderr: "fatal: scripted".to_owned(),
         })

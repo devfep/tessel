@@ -95,20 +95,22 @@ pub enum CommandError {
     UnsupportedGit { found: String },
     #[error(
         "git --version failed ({}); stdout {stdout:?}, stderr {stderr:?}",
-        describe_exit(*exit_code)
+        describe_exit(*exit_code, *signal)
     )]
     VersionFailed {
         exit_code: Option<i32>,
+        signal: Option<i32>,
         stdout: String,
         stderr: String,
     },
 }
 
-fn describe_exit(exit_code: Option<i32>) -> String {
-    match exit_code {
-        None => "killed by a signal".to_owned(),
-        Some(0) => "exit code 0, printed no version".to_owned(),
-        Some(code) => format!("exit code {code}"),
+fn describe_exit(exit_code: Option<i32>, signal: Option<i32>) -> String {
+    match (exit_code, signal) {
+        (Some(0), _) => "exit code 0, printed no version".to_owned(),
+        (Some(code), _) => format!("exit code {code}"),
+        (None, Some(signal)) => format!("killed by signal {signal}"),
+        (None, None) => "ended without an exit code".to_owned(),
     }
 }
 
@@ -233,6 +235,7 @@ impl Git {
         if !output.success() || output.stdout.trim().is_empty() {
             return Err(CommandError::VersionFailed {
                 exit_code: output.exit_code,
+                signal: output.signal,
                 stdout: bounded_version_text(&output.stdout),
                 stderr: bounded_version_text(&output.stderr),
             });

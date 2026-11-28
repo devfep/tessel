@@ -199,6 +199,7 @@ mod tests {
     fn git_output() -> GitOutput {
         GitOutput {
             exit_code: Some(128),
+            signal: None,
             stdout: String::new(),
             stderr: "fatal".to_string(),
         }

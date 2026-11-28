@@ -29,6 +29,7 @@ impl GitRunner for AlwaysOk {
     fn run(&self, _command: &GitCommand) -> Result<GitOutput, RunError> {
         Ok(GitOutput {
             exit_code: Some(0),
+            signal: None,
             stdout: String::new(),
             stderr: String::new(),
         })
