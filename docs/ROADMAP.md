@@ -7,7 +7,7 @@ are in git history (`78bcb9a` and earlier).
 
 ## STATE (rewritten at every dispatch, verdict, merge and close)
 
-**As of:** 2026-11-28 12:00 UTC (a checkpoint). Main and the coordinator's head at `a6976df`; CI and
+**As of:** 2026-11-28 12:10 UTC (a checkpoint). Main and the coordinator's head at `a6976df`; CI and
 the Adapter suite passed on `02006e2` and `87279e0`; on `a6976df` the Adapter suite and Own users
 passed, and CI was still running at 12:10 UTC. `02006e2`'s changed-lines job checks only that
 commit's lines; the reviewer's run below shows the 17 caught. Three landings through the server
