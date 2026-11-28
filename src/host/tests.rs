@@ -3560,21 +3560,43 @@ fn host_other_sockets_are_served_while_a_replay_pages() {
 #[test]
 fn host_an_event_stored_after_the_replay_read_is_sent_once_after_the_replay() {
     let mut kit = kit();
-    seed_log(&mut kit, 250);
+    seed_log(&mut kit, 150);
     let watcher = kit.open("w");
     let other = kit.open("a2");
-    kit.send(watcher, &ClientMsg::Watch { from_seq: 0 });
+    let now_ms = kit.now_ms();
+    let watch = serde_json::to_string(&ClientMsg::Watch { from_seq: 0 }).unwrap();
+    let outputs = kit.host.step(Input::Frame {
+        now_ms,
+        sock: watcher,
+        text: watch,
+    });
+    kit.execute(without_reads(outputs));
     kit.send(other, &hello("a2"));
-    kit.deliver_next();
+    let first: Vec<Event> = (0..shell::REPLAY_PAGE as u64).map(old_event).collect();
+    let page = Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: first,
+        done: false,
+    };
+    let outputs = kit.host.step(page);
+    kit.execute(without_reads(outputs));
     deliver_until_welcome(&mut kit, other);
     assert_eq!(
         replayed_seqs(&kit, watcher),
-        (0..2 * shell::REPLAY_PAGE as u64).collect::<Vec<_>>(),
+        (0..shell::REPLAY_PAGE as u64).collect::<Vec<_>>(),
         "the live event waits behind the replay"
     );
 
+    let last: Vec<Event> = (100..150).map(old_event).collect();
+    kit.input(Input::ReplayPage {
+        now_ms,
+        sock: watcher,
+        events: last,
+        done: false,
+    });
     kit.settle();
-    assert_eq!(replayed_seqs(&kit, watcher), (0..=250).collect::<Vec<_>>());
+    assert_eq!(replayed_seqs(&kit, watcher), (0..=150).collect::<Vec<_>>());
     assert_eq!(kit.session(watcher).unwrap().watch_from, Some(0));
 }
 
@@ -4119,6 +4141,10 @@ fn host_a_replay_buffer_of_exactly_the_bound_stays_open() {
     assert_eq!(replayed_seqs(&kit, watcher), wanted);
 }
 
+/// Out of the contract's order on purpose: the hello's commit is answered before the page asked
+/// ahead of it, so `last_sent` is still empty and only `from_seq` keeps seq 3 out of the buffer. In
+/// the contract's order a page has been sent by then and `owed` alone does it; this pins the check
+/// for an adapter outside the contract.
 #[test]
 fn host_live_events_below_the_start_of_a_replay_are_never_buffered() {
     let mut kit = kit();
@@ -4134,29 +4160,19 @@ fn host_live_events_below_the_start_of_a_replay_are_never_buffered() {
     });
     kit.execute(without_reads(outputs));
     kit.send(other, &hello("a2"));
-    let first: Vec<Event> = (10..10 + shell::REPLAY_PAGE as u64)
-        .map(old_event)
-        .collect();
-    let page = Input::ReplayPage {
-        now_ms,
-        sock: watcher,
-        events: first,
-        done: false,
-    };
-    let outputs = kit.host.step(page);
-    kit.execute(without_reads(outputs));
     deliver_until_welcome(&mut kit, other);
-    assert!(
-        kit.received(other).iter().any(is_welcome),
-        "seq 3 is stored"
-    );
-    let last: Vec<Event> = (110..113).map(old_event).collect();
-    kit.input(Input::ReplayPage {
-        now_ms,
-        sock: watcher,
-        events: last,
-        done: false,
-    });
+    let mut first: Vec<Event> = (10..113).map(old_event).collect();
+    let last = first.split_off(shell::REPLAY_PAGE);
+    for events in [first, last] {
+        let page = Input::ReplayPage {
+            now_ms,
+            sock: watcher,
+            events,
+            done: false,
+        };
+        let outputs = kit.host.step(page);
+        kit.execute(without_reads(outputs));
+    }
     kit.settle();
     assert_eq!(
         replayed_seqs(&kit, watcher),
